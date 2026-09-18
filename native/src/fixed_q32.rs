@@ -134,34 +134,28 @@ impl Fix {
         if rhs.0 == 0 {
             return Err(MathError::DivisionByZero);
         }
-        let mut remainder = self.0.unsigned_abs();
-        let mut divisor = rhs.0.unsigned_abs();
-        let mut quotient = 0_u64;
-        let mut bit = 33_i32;
-        while divisor & 15 == 0 && bit >= 4 {
-            divisor >>= 4;
-            bit -= 4;
+        // This is the same rounded `(abs(lhs) << 32) / abs(rhs)` computed by
+        // FixedMath's restoring loop, expressed directly now that Rust gives
+        // us a native u128 intermediate. Besides being simpler, it avoids the
+        // loop's repeated 64-bit divisions in normalization-heavy physics.
+        let numerator = u128::from(self.0.unsigned_abs()) << 32;
+        let divisor = u128::from(rhs.0.unsigned_abs());
+        let mut quotient = numerator / divisor;
+        let remainder = numerator - quotient * divisor;
+        if remainder * 2 >= divisor {
+            quotient += 1;
         }
-        while remainder != 0 && bit >= 0 {
-            let shift = (remainder.leading_zeros() as i32).min(bit);
-            remainder = remainder.wrapping_shl(shift as u32);
-            bit -= shift;
-            let part = remainder / divisor;
-            remainder %= divisor;
-            quotient = quotient.wrapping_add(part.wrapping_shl(bit as u32));
-            if part & !(u64::MAX >> bit) != 0 {
-                return Ok(if (self.0 ^ rhs.0) < 0 {
-                    Self::MIN
-                } else {
-                    Self::MAX
-                });
-            }
-            remainder = remainder.wrapping_shl(1);
-            bit -= 1;
+        let negative = (self.0 ^ rhs.0) < 0;
+        let limit = if negative {
+            1_u128 << 63
+        } else {
+            i64::MAX as u128
+        };
+        if quotient > limit {
+            return Ok(if negative { Self::MIN } else { Self::MAX });
         }
-        quotient = quotient.wrapping_add(1);
-        let result = (quotient >> 1) as i64;
-        Ok(Self(if (self.0 ^ rhs.0) < 0 {
+        let result = quotient as i64;
+        Ok(Self(if negative {
             result.wrapping_neg()
         } else {
             result
@@ -184,43 +178,39 @@ impl Fix {
         if self.0 < 0 {
             return Err(MathError::Domain);
         }
-        let mut remainder = self.0 as u64;
-        let mut result = 0_u64;
-        let mut bit = 1_u64 << 62;
-        while bit > remainder {
-            bit >>= 2;
+        // sqrt(raw / 2^32) in Q32 is sqrt(raw << 32). The primitive integer
+        // square root produces the same floor as FixedMath's two restoring
+        // passes; its remainder test below preserves FixedMath's final
+        // nearest-integer rounding.
+        let value = (self.0 as u128) << 32;
+        // Q32 magnitudes fit below 2^48 after the root, where f64 still has
+        // sub-integer precision. Use the hardware root as an estimate, then
+        // correct against the integer radicand so the result stays exact.
+        let mut result = ((self.0 as f64).sqrt() * 65_536.0) as u64;
+        while u128::from(result + 1) * u128::from(result + 1) <= value {
+            result += 1;
         }
-        for pass in 0..2 {
-            while bit != 0 {
-                if remainder >= result.wrapping_add(bit) {
-                    remainder = remainder.wrapping_sub(result.wrapping_add(bit));
-                    result = (result >> 1).wrapping_add(bit);
-                } else {
-                    result >>= 1;
-                }
-                bit >>= 2;
-            }
-            if pass == 0 {
-                if remainder > u32::MAX as u64 {
-                    remainder = remainder.wrapping_sub(result);
-                    remainder = remainder.wrapping_shl(32).wrapping_sub(1 << 31);
-                    result = result.wrapping_shl(32).wrapping_add(1 << 31);
-                } else {
-                    remainder = remainder.wrapping_shl(32);
-                    result = result.wrapping_shl(32);
-                }
-                bit = 1 << 30;
-            }
+        while u128::from(result) * u128::from(result) > value {
+            result -= 1;
         }
-        if remainder > result {
-            result = result.wrapping_add(1);
+        let remainder = value - u128::from(result) * u128::from(result);
+        if remainder > u128::from(result) {
+            result += 1;
         }
         Ok(Self(result as i64))
     }
     fn sin_quadrant(self) -> (i64, bool, bool) {
         let mut angle = self.0;
-        for i in 0..29 {
-            angle %= 7_244_019_458_077_122_842_i64 >> i;
+        // FixedMath only needs the overflow-safe descending remainders for
+        // unusually large angles. Simulation transforms are already within
+        // two turns, so avoid 29 signed divisions on every axis rebuild.
+        // Keeping the original cascade in the slow path preserves every raw
+        // Q32 result for replay/oracle parity.
+        const CASCADE_FLOOR: i64 = 7_244_019_458_077_122_842_i64 >> 28;
+        if angle >= CASCADE_FLOOR || angle <= -CASCADE_FLOOR {
+            for i in 0..29 {
+                angle %= 7_244_019_458_077_122_842_i64 >> i;
+            }
         }
         if self.0 < 0 {
             angle += Self::TAU.0;

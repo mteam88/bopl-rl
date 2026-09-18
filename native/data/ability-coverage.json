@@ -6,50 +6,56 @@
       "name": "NullAbility",
       "prefab": "Assets/GameObject/NullAbility.prefab",
       "prefab_guid": "c6184b2da376bc0418d15724e93d435f",
-      "native_status": "partial",
-      "verification": "The shipped prefab lacks FixTransform: 18 exact clone-instantiation failure prefixes retain allocated registered objects. Empty-callback InstantAbility methods are separately verified on supplied graphs with a transform; this does not make the shipped placeholder usable."
+      "native_status": "ported",
+      "verification": "Faithfully unusable: the public ABI rejects id 0 like NativeAOT, while 18 retained clone-instantiation goldens preserve the shipped prefab failure caused by its missing FixTransform; supplied empty-callback InstantAbility graphs are separately covered."
     },
     {
       "id": 1,
       "name": "Random",
       "prefab": "Assets/GameObject/Random.prefab",
       "prefab_guid": "104ab7202bc7daf48bf2cc31fd8cf403",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Spawn-time replacement matches GameSessionHandler across exact seeded draws, ids 2..38, authored cooldowns, and the all-Random offensive fallback; random_ability_ab compares 72 NativeAOT/Rust slots."
     },
     {
       "id": 2,
       "name": "Dash",
       "prefab": "Assets/GameObject/Dash.prefab",
       "prefab_guid": "fb4c4d5ea2fd99d4a91d8ba7efbe0542",
-      "native_status": "slice-only"
+      "native_status": "ported",
+      "verification": "The existing Dash phase, wall/air endpoint, arrow-ray and fidelity-gate coverage is joined by dash_rock_ab: 300 optimized-Q32 NativeAOT/Rust ticks through an active Rock circle ray hit, BounceBall impulse, same-pass Dash death at the exact near point, owner credit and stock-clone reconstruction. dash_player_ab adds 240 ticks through an overlapping ordinary-player callback, one-sided push and pass-through exit. dash_rope_ab adds 300 bit-identical ticks from a live Web Swing bottom endpoint through Dash-prefab PlayerBody constraints, exit straightening/force and resumed ordinary movement. dash_grapple_rope_ab covers the complementary top endpoint through exit with exact player/gameplay state and a 0.16692-world-unit bound on inherited 27-segment Grapple relaxation. dash_bow_ab, dash_gun_forms_ab and dash_throw_forms_ab add fourteen compositions through overlapping active Bow, Blink, Growth, Missile, Shrink, Duplicator, Magnet, Freeze, Grenade, Smoke, Mine, Poke Ball, Tack and Mjolnir forms and their nonlethal, no-push callbacks. dash_roll_ab adds 300 ticks through a released lethal Roll circle, near-point Dash death, owner credit and exact stock reconstruction. dash_remaining_forms_ab adds eighteen 180-tick nonlethal callbacks for Engine, Gust, Spike, Time Stop, Platform, Revival, Black Hole, Invisibility, Meteor, Throw, Push, Tesla, Teleport, Drill, Beam, Rewind, Web Swing and Portal Gun. dash_grapple_form_ab adds 165 differential ticks through a live Grappling Hook form and strand, the nonlethal no-push callback and Dash exit, with a 0.0500-world-unit rope-solver bound. dash_dash_ab adds 240 differential ticks through staggered overlapping Dashes, their nonlethal no-push callback and both exits; only the inert pre-use ENABLED bit differs on hidden duplicate rows. Detached-rope entry, collision-order ties and the public horizontal-under-water failure are translated but do not have isolated public differentials. A source-complete Dash pass now collects the full shipped Player/Projectile/wall/LethalTerrain/Explosion/RigidBodyAffector/orb mask into retained scratch storage, orders it by near distance and hierarchy, and dispatches wall termination, owner immunity and credit, Beam deaths and positive-Black-Hole consumption. The broad active-form set plus focused Arrow, ordinary-player, Rock, Roll and rope differentials remain exact after this change, and the full existing golden suite passes. Spawned Spike/Tesla, explosion, Black Hole and layer-26 orb crossings are ported but remain unmeasured."
     },
     {
       "id": 3,
       "name": "Grenade",
       "prefab": "Assets/GameObject/Grenade_0.prefab",
       "prefab_guid": "7deaedf5cf4a92e4585ce06988f30efd",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "ThrowItem2, Grenade and GrenadeExplode are source-ported wholesale: grounded/airborne entry, held payload and charge paths, scale propagation, ordinary and callback-forced release, owner gating, Magnet hold, Time Stop clocks, projectile/explosion ignition, dynamic contacts, water and bounds removal, timed detonation, shockwaves, lethal explosion, duplication and stock recovery. grenade_broad_ab.sh runs 16 optimized-Q32 NativeAOT/Rust scenarios covering grounded and airborne casts, held fuse, four bounces plus wall reversal, immediate non-owner contact, simultaneous owner/opponent death, Arrow-forced exit, pickup-driven Revival replacement/cast, Arrow contact, Gust, Magnet, Time Stop, Duplicator and Dash. All scenarios pass; the only excluded public field is the previously documented inert destroyed-Arrow angular velocity after forced release."
     },
     {
       "id": 4,
       "name": "Bow",
       "prefab": "Assets/GameObject/Bow.prefab",
       "prefab_guid": "39014498316c3ea4fa825e8bba01c406",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Executable BowTransform and arrows are covered by bow_ab, bow_phase_ab, bow_ground_exit_ab, ability_hitbox_ab, dash_arrow_ab, arrow_bounds_ab, time_stop_arrow_ab, time_stop_bow_ab, magnet_arrow_ab, gust_arrow_ab, gust_bow_ab, ability_pickup_active_form_ab and the seeded 300-episode fidelity gate. The Q32 form matches charge flags and launch timing, active hurtbox contacts, grounded/airborne entry and exit order, landing, boundary death, projectile eviction, ownership and stock reconstruction. Time Stop projectile and active-form freezing/restoration, Magnet pull/pickup/fire, Gust fixed-set Arrow capture and full force-curve updater ordering, Gust active-form oriented-box push, active-form pickup rejection followed by ordinary-slime collection, same-pass Arrow/acquired-ability registration order, and source Arrow hierarchy allocation are differential-covered. portal_arrow_ab adds 430 exact ticks through linked-mouth Arrow traversal, mapped exit momentum and same-pass wall destruction. freeze_bow_ab adds 500 exact ticks through direct Freeze cancellation of the grounded active form, retained inactive Bow collider basis, restored-slime reattachment, FrozenSolid pin, grounded thaw and timed-ragdoll exit. grenade_arrow_ab adds 500 exact ticks through dynamic Arrow/Grenade resolution, Arrow-first callback destruction, Grenade survival and its later fuse explosion. tack_arrow_ab adds 500 differential ticks at a 41-raw-Q32 vector bound through the item-specific circle radius, Arrow-first destruction, resolved Tack impulse, post-resolution wall callback and continued flight without a false settle. black_hole_arrow_ab adds 205 differential ticks through same-pass Black Hole circle force, bit-identical integration, trigger consumption, growth reset and removal. poke_ball_arrow_ab adds 500 differential ticks at a one-raw-Q32-unit vector bound through dynamic Circle/Circle correction, Arrow destruction, Ball survival and its later lower-boundary removal. Remaining gaps are other composed projectile interactions and cosmetic retained-arrow child history. smoke_broad_ab additionally verifies that Bow's serialized non-igniting Arrow is destroyed on released-Smoke contact while Smoke survives and later detonates normally. A source-complete pass adds the full Arrow StickTo mask, BoplBody-sensitive active-Rock landing, PortalShot/item and Spike/Tesla terrain contacts, synchronized collider shapes for every player form, and retained/fixed contact scratch with no per-arrow tick allocation. bow_broad_ab adds 300 ticks through grounded load/fire/exit and an active-Rock hit on tick 140; all discrete decisions and velocities match, with at most two raw position units and 32,768 raw angular-velocity units from fixed-point grouping. Direct PortalShot, lethal-terrain, active-Roll and remaining-form crossings are ported but remain unmeasured. The source's retained landed-Arrow child is visual-only after every gameplay component is destroyed and has no observation row."
     },
     {
       "id": 5,
       "name": "Engine",
       "prefab": "Assets/GameObject/Engine.prefab",
       "prefab_guid": "06006cbd8160cbe4e8f343b1ec17a96c",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "PlantObjectOnPlatform, PlaceRocketEngine and RocketEngine are source-ported wholesale: grounded cast/recovery and failed-ground exit; scale-clamped placement; per-ability four-entry eviction; composite attach/detach mass and inertia; startup, loop and shutdown animations; scaled thrust and Smoke ignition; water shutdown; Time Stop; movable-platform re-homing; platform destruction; Duplicator lifetime; Portal, Black Hole and collision behavior; and nearest-child MachoThrow2 detachment, hidden carry and same-object boulder reinitialization with preserved ownership, scale and collider identity. engine_broad_ab.sh runs 2,040 optimized-Q32 NativeAOT/Rust ticks through ordinary placement, the complete thrust/collision lifecycle and live thrust across all 690 Time Stop passes with restored force clock; both scenarios are exact. Ring eviction, simultaneous engines, Smoke chains, scale effects, destruction, pickup use and the newly translated Macho transfer remain source-ported without separate focused public differentials."
     },
     {
       "id": 6,
       "name": "Blink gun",
       "prefab": "Assets/GameObject/Blink gun.prefab",
       "prefab_guid": "27cf7117645fa164caf281cfa9f34fa8",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "ShootQuantum and QuantumTunnel are now source-ported across the muzzle rounded-rectangle point check, complete serialized collider mask and DetPhysics shape order; Water/submerged handling; base/player cooldown selection; wall delay; every active player form; rope and Magnet detachment; generic item, projectile, pickup, rigid-affector, weapon and spell victims; first-hit orb conversion; per-victim reuse; Time Stop clocks; inactive updater/contact/bounds behavior; and strict restoration. Existing blink_ability_ab, blink_airborne_ab and blink_water_wall_ab remain exact for ordinary grounded/airborne players and reflected walls. blink_broad_ab adds 500 exact NativeAOT/Rust Q32 ticks through a released Grenade registry hit, tick-251 generic tunnel hide, frozen body and fuse, and tick-493 reactivation. Gust, Time Stop and Dash active-form compositions remain exact. Guided projectile, pickup, Black Hole/rigid-affector, weapon/effector, orb conversion/tunnel, active-form-victim, rope/Magnet-detachment, muzzle-overlap, repeated-target and target-destruction branches are translated but do not each have a broad public differential."
     },
     {
       "id": 7,
@@ -57,56 +63,63 @@
       "prefab": "Assets/GameObject/Gust.prefab",
       "prefab_guid": "05feec16b8416224fb842a3774879cf4",
       "native_status": "partial",
-      "verification": "Composed QuickSpell entry/exit and dynamically registered shockwaves, including actor/platform impulses and clone interactions. Complete-match lifecycle and C environment integration remain required."
+      "verification": "The complete QuickSpell/AirWave_Shockwave source path is now represented with fixed-capacity storage: scaled spawn offset, query radius and force, the serialized Player/Projectile/spell/wall/LethalTerrain/item/RigidBodyAffector/orb mask, all pushable active-form collider shapes through synchronized entity rows, every isPushable=false early return, Rock's BoplBody fallback, rounded-platform versus boulder force selection, released ThrowItem2/Arrow/Missile targets, PortalShot bodies, BlackHole.AddForce signed-mass behavior, destroyed-target rejection, curve lifetime, raw updater clock advancement during Time Stop and entity observations. Existing focused differentials remain exact for the cast and platform path, six released item kinds, Arrow, guided Missile, Rock, Roll, Bow, controlling Missile, Mine, all five ThrowItem2 forms and Blink/Growth/Shrink/Duplicator/Freeze/Magnet forms. gust_broad_ab adds one 430-tick four-player differential spanning a released Black Hole, live PortalShot, active Gust, ordinary player/platform force and a spawned Macho boulder; the complete public state stays within the pre-existing Black-Hole/form composition bound and the boulder receives the source tag-selected default-force branch. Direct in-wave PortalShot and Black Hole capture, non-unit Gust scale, a wave overlapping Time Stop, layer-26 orbs, projectile-layer MeteorSmear capacity accounting and the exact 50-hit cross-shape truncation order remain unmeasured, so status is partial. Lethal-terrain IPlatformAttachable children are intentionally ignored by Shockwave; Engine/Tesla and rope hooks are outside the serialized mask."
     },
     {
       "id": 8,
       "name": "Growth ray",
       "prefab": "Assets/GameObject/Growth ray.prefab",
       "prefab_guid": "34c14705ee822d546bac37f0da5c2f19",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "scale_rays_ab matches 500 NativeAOT/Rust Q32 ticks through grounded GunTransform entry, release, Growth ScaleChanger registration, the complete fixed Hermite scale curve, Player.Scale clamping, one-pass-lagged PlayerPhysics radius, and DPhysicsBox inverse-extents rounding. growth_airborne_ab adds 500 exact ticks for an ordinary player hit while rising, the full resize, enlarged-body fall and later platform contacts. growth_water_wall_ab adds 500 exact ticks through downward Water selection, reflection into a rounded wall, the complete non-player curve, incremental Q32 collider ratios, next-pass body-mass changes and attached-rider motion. gust_gun_forms_ab, time_stop_gun_forms_ab and dash_gun_forms_ab cover the active form's push, freeze and nonlethal callback paths. scale_missile_ab adds 450 exact ticks through a live guided Missile resize, scaled collision geometry, boundary destruction and explosion expiry. The complete source query is now ported: unmasked muzzle point-check, full mask and shape order, submerged self-hit, Water reflection, all active player forms, thrown items, platforms, Smoke clouds, generic modeled colliders, orb conversion, direct Black Hole growth and concurrent ScaleChangers. growth_broad_ab adds 520 exact ticks through independent Black Hole casting, Growth's RigidBodyAffector branch, serialized 0.0199999998 inverse-mass absorption and Hermite radius growth. Generic targets and target-specific ISpell.AddScale internals remain ported or identified but unmeasured as detailed in ABILITY_PORT_GAPS.md."
     },
     {
       "id": 9,
       "name": "Rock",
       "prefab": "Assets/GameObject/Rock.prefab",
       "prefab_guid": "44115a8eb36b70448af81e1d922e7e12",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "BounceBall/Rock is source-ported wholesale: grounded/airborne entry, pulse and timed exit, bounds death, dynamic circle/platform and Rock/Rock resolution, Player-layer callbacks across ordinary slimes, active forms and abilityless clones, Arrow/Projectile bounce, Grenade and lethal explosion contacts, BoplBody Shockwaves, Magnet/Black Hole/Portal/scale interactions, Duplicator Rock_noPlayer copies, Time Stop and full rope endpoint mass/force/pull/jump/stretch-detach transfer. rock_broad_ab.sh runs six optimized-Q32 NativeAOT/Rust scenarios covering rigid cast/motion, lethal ordinary-player contact, Gust, Time Stop, PortalShot collision plus later portal transit, and Dash; all pass. Rope, transformed-form/clone, dual-Rock and dedicated explosion branches are source-ported but do not each have a standalone public differential."
     },
     {
       "id": 10,
       "name": "Missile",
       "prefab": "Assets/GameObject/Missile.prefab",
       "prefab_guid": "ffd8f8bdcaa07a44382f6002679021df",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "SparkShot and Missile are source-ported wholesale: grounded/airborne form entry and forced exit, steering, animation state, stabilization and instability thrust, scale, duplication, Magnet hold/fire, Time Stop, portal traversal, bounds and Water handling, dynamic platform/player/form/projectile/item/Missile contacts, plus trigger callbacks for Explosion, EffectorZone, Smoke and orb layers. Missile.OnCollide's RigidBodyAffector and Rope exclusions are preserved. missile_broad_ab.sh runs 16 optimized-Q32 NativeAOT/Rust scenarios covering entry variants, ordinary and Bow victims, Arrow and Grenade contacts, Water, Gust, Time Stop, Duplicator, Growth/Shrink, Magnet including held landing, and Dash. All scenarios pass; newly added Missile/Missile and trigger-layer branches are direct source ports without standalone public captures."
     },
     {
       "id": 11,
       "name": "Spike",
       "prefab": "Assets/GameObject/Spike.prefab",
       "prefab_guid": "b28199828504fa141b09a7fbc4328c9d",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Spike and SpikeAttack are source-ported wholesale: grounded form entry and movement, cast/recovery callbacks, far-side rounded-platform raycast, per-slot recast replacement, manual persistent collider registration, down-thrust animation, composite mass/inertia and correction, cast and contact impulses, one-self-push-per-frame, owner-zero player lethality, platform destruction, duplication, Macho transfer, live Growth/Shrink repositioning, Time Stop, common Shockwave/Portal/Black Hole motion and cleanup. spike_broad_ab.sh gates 4,740 optimized-Q32 NativeAOT/Rust ticks: 500 exact ordinary lifecycle ticks, exact Growth and Shrink of a live attached attack over 1,000 ticks, and the 18-form Dash contact matrix including Spike. Recast, transformed victim, platform-destruction, Macho, Portal/Black Hole and pickup-driven compositions are source-ported but not individually differentially measured."
     },
     {
       "id": 12,
       "name": "Time stop",
       "prefab": "Assets/GameObject/Time stop.prefab",
       "prefab_guid": "13b1168b7f11655458dddcfce3f9b0ce",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "Executable CastSpell and TimeStop are covered by time_stop_ability_ab, time_stop_broad_ab, magnet_time_stop_ab, time_stop_arrow_ab, time_stop_bow_ab, time_stop_rock_ab, time_stop_roll_ab, time_stop_missile_ab, time_stop_mine_form_ab, time_stop_mine_ab, time_stop_mine_anticipation_ab, time_stop_throw_forms_ab, time_stop_mjolnir_ab, time_stop_released_items_ab, time_stop_smoke_cloud_ab, time_stop_poke_capture_ab, time_stop_engine_ab, time_stop_tesla_ab, time_stop_black_hole_ab and time_stop_gun_forms_ab. Grounded channel/cancel/cast phases, team protection, the float32-derived 690-pass global stop, protected cooldowns and motion, held Grenade behavior, Bow-arrow freeze/flight, active-Bow charge/release, active-Rock zero-delta clock/scale behavior, charging-Roll freeze/restored release, slot-two Missile controller/projectile freeze/restoration, held and autonomous Mine freezing/restoration, Mine anticipation through restored disabled-first explosion registration, all five ThrowItem2 held forms, released Grenade/Smoke/Poke Ball/Tack bodies, all four spawned Smoke clouds, a live released Mjolnir outbound and recall flight, frozen ordinary-slime animation state, attached RocketEngine, connected Tesla composites, a released persistent Black Hole, active Blink/Growth/Shrink/Duplicator/Freeze collider retention through restoration, and Meteor's raw vibration/RNG updater against its frozen clock and zero-delta body are exact. Tack enters the stop 43 ticks into its 48-tick arming delay and completes the restored self-kill. The released Grenade fuse remains frozen for all 690 passes, then matches restored detonation and the complete explosion lifetime. Other transformed forms remain partial because Rust still derives one shared updater delta while C# lets each Ability, PlayerPhysics, PlayerBody, component and animator updater select GameTime.FixedDeltaTime independently. Exact broad compositions are also missing for a stop begun during a live explosion, portal object capture, Tack expiry, Mine chase, boulders, ropes, scale effects, Black Hole merging/consumption and pickup collection or replacement. dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback. time_stop_portal_ab adds 2,200 exact differential ticks through 690 frozen linked-mouth lifetime passes and ordinary-player traversal after the pair's unfrozen expiry."
     },
     {
       "id": 13,
       "name": "Smoke",
       "prefab": "Assets/GameObject/Smoke.prefab",
       "prefab_guid": "ce4ee6a2ec049d6498bc13786335c085",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "smoke_ability_ab matches 800 exact NativeAOT/Rust Q32 ticks through grounded ThrowItem2 entry, charged release, ballistic flight, the strict five-second fuse, all randomized cloud offsets and rotations, cloud registration, enter-radius animation, and persistent layer-22 entity export. smoke_broad_ab adds 500 optimized-Q32 ticks through an airborne charged release, Bow's serialized non-igniting Arrow contact and twelve survival passes, later ordinary-contact detonation, all four randomized cloud registrations and persistent animation. gust_throw_forms_ab covers held-form Gust force and release; gust_smoke_ab covers released-item capture and its full force curve. Time Stop differentials cover the held form, released body and all four spawned clouds. magnet_smoke_ab covers pull, nearest pickup, pinning and launch. duplicator_smoke_ab covers item fan copies, fresh runtime state, wall/water contact detonation and below-water cloud removal. Source behavior is also ported for item/cloud scale and delayed body-mass updates, per-cast 40-cloud rings, direct cloud duplication, both duplicate lifetimes and shake/bounds cleanup, and ignition by Missile, Mine, Spike, Engine, Tesla, Grenade and Smoke. Those scale, direct-cloud-duplicate, ignition-chain, cross-cast ring and Portal branches are translated but do not each have exact differential coverage."
     },
     {
       "id": 14,
       "name": "Platform",
       "prefab": "Assets/GameObject/Platform.prefab",
       "prefab_guid": "69401f310afcfa94a84da50ccfc4b638",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "PlatformTransform and ResizablePlatform are source-ported wholesale: anticipation and release latching, scale-aware creation, aim rotation, cursor sizing and area cap, geometry-dependent mass/inertia, raw-versus-player Time Stop deltas, ejection and body reconstruction, one-platform eviction/removal, temporary tunnel pause, destroyed-wall owner death, either-endpoint RopeAttachment transfer, child attachment mass handoff, portals, scale rays, external forces, rider following/drop and transformed-player squish callbacks. platform_broad_ab.sh runs six optimized-Q32 scenarios and 4,140 ticks across entry phases, sizing/ejection, overlap-loaded motion, landing, boundary death, retained spawned-wall collision, rotation and map-2 AntiLockPlatform motion; all pass within the established contact-loaded bounds. The maximum measured source differences remain 0.05 world units for chaotic overlap-loaded platform poses, 0.01 for their velocities, 0.012 radians for contact-loaded rotation and 0.002 units for phase poses; discrete flags, deaths, lifecycles and the unloaded orbiter are exact. Newly translated scaled entry, rope transfer, tunnel/destruction, Time Stop and mixed Spike/Engine/Tesla attachment branches remain without separate focused public differentials."
     },
     {
       "id": 15,
@@ -114,169 +127,191 @@
       "prefab": "Assets/GameObject/Revival.prefab",
       "prefab_guid": "54cfd620d8ce77046b9051f0be61dfaa",
       "native_status": "partial",
-      "verification": "Composed markers, effects, duplicate particle updates, arrival and respawn have source differential coverage, including empty and Invisibility-equipped clones. Copying other concrete ability graphs, full match lifecycle and public C integration remain required."
+      "verification": "Revive, RevivePositionIndicator, ReviveEffect and ReviveParticle are ported for the single-body public path: marker replacement and destroyed-reference cleanup, camera/water clamping, scale changes, Portal/Teleport/Black Hole motion and consumption, copied equipped-ability prefab graphs, wisp and doubly-registered particle timing, moving/destroyed targets, water deaths, repeated End, Time Stop ownership, spawn suppression and launch. revival_broad_ab.sh runs three optimized-Q32 NativeAOT/Rust programs spanning ordinary cast/marker/exit, boundary death through hidden copied clone and respawn, and pickup replacement followed by immediate airborne acquired-Revival activation. The 3,835-tick broad gate is exact. Retained component corpora add 492 exact cases and 91,038 ticks across marker allocation, custom/error paths, interactions, particles, effects, simultaneous actor callbacks, water, mature clones, mixed-owner Time Stop and revived equipped-clone recasts. dash_remaining_forms_ab adds the active form nonlethal callback. C# can create one independent full SlimeController actor per retained marker for the same Player; Rust PlayerSlot can represent only one such actor, so public multi-marker revival, its simultaneous deaths and its shared clone cap remain a structural gap."
     },
     {
       "id": 16,
       "name": "Roll",
       "prefab": "Assets/GameObject/Roll.prefab",
       "prefab_guid": "b021bd38a2adc8c48a6a73b81255f4b2",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Roll is source-ported wholesale: grounded and airborne entry, charge and release, jump cancels and ShortJump, Time Stop, scale callback, source n/(n+1) surface substeps, the retained five-platform hop buffer and recursive residual motion, moving/rotating-platform alignment, thirty swept hurtboxes plus the live collider, ten-entry hierarchy-ordered callback dispatch across players, clones and dynamic items, wall squish eligibility, lethal-form squish immunity, death/Freeze exit and ordinary body reconstruction. roll_broad_ab.sh runs five optimized-Q32 scenarios covering grounded release and stock reconstruction, immediate airborne release, Dash contact, Gust force and all 690 Time Stop passes; all 3,000 ticks pass. Curved-surface pose comparisons retain the established 2,048 raw Q32 bound (<0.0000005 world units) from independently rounded FixTransform fields. Newly translated cross-platform hopping, moving-platform turns, wall squish, dynamic-item/clone contacts, Freeze/death cleanup and post-exit pickup use remain without separate focused public differentials."
     },
     {
       "id": 17,
       "name": "Shrink ray",
       "prefab": "Assets/GameObject/Shrink ray.prefab",
       "prefab_guid": "b67f9e6a1e870ab469ad480333d1022b",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "scale_rays_ab matches 500 NativeAOT/Rust Q32 ticks through grounded GunTransform entry, release, Shrink ScaleChanger registration, the complete fixed Hermite scale curve, Player.Scale clamping, one-pass-lagged PlayerPhysics radius, and DPhysicsBox inverse-extents rounding. shrink_airborne_ab adds 500 exact ticks for an ordinary player hit while rising, the full negative resize, reduced-body fall and later platform contacts. shrink_water_wall_ab adds 500 exact ticks through downward Water selection, reflection into a rounded wall, the complete signed non-player curve, the wall's authored minimum-scale clamp, incremental Q32 collider ratios, next-pass body-mass changes and attached-rider motion. gust_gun_forms_ab, time_stop_gun_forms_ab and dash_gun_forms_ab cover the active form's push, freeze and nonlethal callback paths. scale_missile_ab adds 450 exact ticks through a live guided Missile resize, scaled collision geometry, boundary destruction and explosion expiry. The complete source query is now ported: unmasked muzzle point-check, full mask and shape order, submerged self-hit, Water reflection, all active player forms, thrown items, platforms, Smoke clouds, generic modeled colliders, orb conversion, direct Black Hole growth and concurrent ScaleChangers. shrink_broad_ab adds 520 exact ticks through independent Black Hole casting, Shrink's -0.0199999998 inverse-mass branch, white-hole conversion and absolute-mass Hermite radius growth. Generic targets and target-specific ISpell.AddScale internals remain ported or identified but unmeasured as detailed in ABILITY_PORT_GAPS.md."
     },
     {
       "id": 18,
       "name": "Black hole",
       "prefab": "Assets/GameObject/Black hole.prefab",
       "prefab_guid": "902b30a54480357438ed3cc55485e8de",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "BlackHoleClap and BlackHole are source-ported wholesale: grounded/airborne form entry, cast/exit and one-use state; persistent motion, drag and Hermite growth; Time Stop; complete circle/box/rounded DetPhysics gravity over players, abilityless clones, Arrows, pickups, every released ThrowItem2 payload, Portal shots, guided Missiles, active and duplicated Rocks, attached Spike/Engine/Tesla composite bodies and platforms; controlled-platform scaling; positive-mass generic consumption and growth; center-only wall consumption; player owner credit/no-effect death; unequal, equal-order and positive-versus-negative hole merging; Beam, Shockwave, Magnet, scale, Duplicator, Blink/Teleport and Grappling Hook attachment/reeling interactions. black_hole_broad_ab.sh runs 500 form/wall/player ticks, 205 Arrow ticks and 1,540 Time Stop ticks as one optimized-Q32 gate; all 2,245 NativeAOT/Rust ticks pass. Hole radius differs by about 100 raw Q32 units and the separately synchronized active form by at most 70,000,000 raw units (0.0163 world units), with exact grounded exit and no semantic decision difference. Newly translated generic-body, negative/unequal merge and rope branches remain without isolated public differentials."
     },
     {
       "id": 19,
       "name": "Invisibility",
       "prefab": "Assets/GameObject/Invisibility.prefab",
       "prefab_guid": "98dc74d37d856a44794621d205de7e72",
-      "native_status": "partial",
-      "verification": "Original casts, cooldown restoration, fresh equipped-clone allocation, indicator copying and pooled cleanup have source differential coverage. Complete match lifecycle and public C integration remain required."
+      "native_status": "ported",
+      "verification": "Public rollout plus composed actor runtime reproduce the instant cast, strict five-second expiry, player clocks/flags, 10,000-second live sentinel, six-second restoration, duplicate-slot chaining and telemetry. invisibility_ab matches NativeAOT for 637 ticks. dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback."
     },
     {
       "id": 20,
       "name": "Meteor",
       "prefab": "Assets/GameObject/Meteor.prefab",
       "prefab_guid": "cf66511cb6ed3aa41acdad8d6d7915fe",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "MeteorSmash and its spawned smear/shockwave path are source-ported wholesale: grounded and airborne entry, animation clocks, normalized vibration RNG, Time Stop, scale no-op, sorted full-mask downward RaycastAll, player and dynamic-item callback dispatch, Water/no-hit exits, moving rounded-platform landing, charge-scaled impulse, exact two-pass DropAllAttachedPlayers state and form/held-payload ejection, platform shake, fixed target shockwave and two-tick lethal smear. meteor_broad_ab.sh runs the 1,500-tick three-cast gate plus the 1,540-tick airborne-Meteor/Time-Stop composition; all 3,040 optimized-Q32 NativeAOT/Rust ticks pass. Position/axis comparisons retain the established 50,000 raw Q32 bound (<0.000012 world units) for separately rounded FixTransform and normalized-vector fields; platform dynamics are exact in measured casts. Newly translated player/item ray callbacks, rider ejection, isolated Water/no-hit exits, moving-platform and post-pickup compositions remain without separate focused public differentials."
     },
     {
       "id": 21,
       "name": "Throw",
       "prefab": "Assets/GameObject/Throw.prefab",
       "prefab_guid": "9ad291238c72a1a41a715ba7b7a8477e",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "MachoThrow2 and Boulder are source-ported wholesale: grounded form entry, every animation/movement callback, eight-pass supporting-platform shrink, quick and held spawn/release, scaled launch, common rounded-body collision/riding/water/death behavior, forced exits, Magnet stealing, and nearest attachment transfer for Spike, Engine, Tesla and either rope endpoint. Transfer preserves object identity and source-specific reinitialization; rope transfer uses the boulder pull coefficient, half-chain translation, previous-sample reset and immediate solver pass. throw_broad_ab.sh runs 1,430 optimized-Q32 NativeAOT/Rust ticks across both ordinary release paths, collision/death/stock recovery and a live boulder under Gust alongside Portal Shot and Black Hole. The ordinary lifecycle is exact aside from the documented <=4-raw-unit shrinking-axis reciprocal bound. Attachment transfer, Time Stop, Portal, Magnet stealing, scale-ray and forced-exit compositions are source-ported but not individually differentially measured."
     },
     {
       "id": 22,
       "name": "Push",
       "prefab": "Assets/GameObject/Push.prefab",
       "prefab_guid": "df77479189541ac49a8b01eb919f04b1",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "ControlPlatform is source-ported wholesale: grounded entry, velocity reset, form motion/damping, Time Stop early return, loss-of-ground exit, ten-tick channel boundary, input/deadzone animation state, ordinary AnimateVelocity home retargeting and full force, boulder or sudden-death half force, scene clamps, composite force/torque, release and preservation of accumulated exit velocities. push_broad_ab.sh compares 420 optimized-Q32 NativeAOT/Rust ticks exactly through entry, 120 controlled frames, platform motion, channeling, release and restored slime movement. Supporting-platform destruction, sudden death, boulder control, overlapping players, external forces and pickup-driven acquired use are source-ported but not individually differentially measured."
     },
     {
       "id": 23,
       "name": "Tesla coil",
       "prefab": "Assets/GameObject/Tesla coil.prefab",
       "prefab_guid": "fecc7830c8d177f4d9482f4c4302a06b",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "SimpleSparkNode, PlaceSparkNode and StretchableLightning are source-ported wholesale: grounded placement, scaled circle registration, composite mass/inertia and temporary cast-impulse ordering, two-node connection, deferred line registration, staggered lethality, flicker, player/Smoke/Mine contacts, ring eviction, destroyed-line publication, water-independent persistence, platform destruction, duplication, Time Stop, live Growth/Shrink offset ordering and Macho Throw identity-preserving transfer. tesla_broad_ab.sh runs three optimized-Q32 NativeAOT/Rust scenarios and 3,500 ticks across three casts, eviction/reconnection, a full flicker, lethal contact and all 690 stopped passes. Lifecycle and gameplay state are exact; the placement golden retains the documented <=16-raw-unit fixed-point root/collider reconstruction bound. Growth/Shrink, supporting-platform destruction, Macho transfer, startup Time Stop, mixed attachments and simultaneous contacts are source-ported but not individually differentially measured."
     },
     {
       "id": 24,
       "name": "Mine",
       "prefab": "Assets/GameObject/Mine.prefab",
       "prefab_guid": "aa6bd66183fd339489444ffd04d85fd3",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Mine, ThrowItem and the shared MineExplosion are source-ported wholesale: grounded and airborne form control, scale-aware hover/arming and fixed-four-hit target scan, active forms and abilityless clones, chase/anticipation, held-Magnet pause and holder-hurtbox exclusion, Player/Arrow/Tack/Explosion ignition, Time Stop, duplication, direct scaled detonation, owner credit, water and upper/side bounds effects, and stock recovery. mine_broad_ab.sh runs eight optimized-Q32 NativeAOT/Rust scenarios covering ordinary cast/chase/detonation, held and released Gust, held/released/anticipation Time Stop, Duplicator fan copies and Dash against every ThrowItem form; all pass. The source scan/contact/bounds branches added by the wholesale audit remain ported but do not each have a standalone public differential."
     },
     {
       "id": 25,
       "name": "Teleport",
       "prefab": "Assets/GameObject/Teleport.prefab",
       "prefab_guid": "96597c44420b8d146b7e554c170e3564",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Teleport, TeleportIndicator and TeleportedObjectEffect are source-ported wholesale: both CircleCastAll sets in circle/box/rounded-rectangle registry order with the authored 100-hit cap and layer mask; player-side de-duplication; rope detach, unground and imposed-velocity clearing for PlayerPhysics forms; Rock/Drill no-PlayerPhysics behavior; arrows, pickups, thrown items, Missiles, positive Black Holes, duplicated Rocks, Smoke, Revival markers, Portal shots, Beam orbs, Tesla lightning and tagged Macho-boulder relocation; IPlatformAttachable and ordinary-wall exclusions; scale-aware player/marker radii; strict inactive lifetime; object updater/physics suppression; Time Stop; and allocation-reusing pools. teleport_broad_ab.sh runs the 300-tick stationary and 450-tick moving three-player optimized-Q32 NativeAOT/Rust scenarios as one gate, covering both query directions, mixed-team overlap, exact inactive/reactivation timing, RNG and subsequent airborne movement. The nonplayer branches are source-ported and observable through live entity rows but do not each have an isolated differential."
     },
     {
       "id": 26,
       "name": "Drill",
       "prefab": "Assets/GameObject/Drill.prefab",
       "prefab_guid": "42151d40a4924fd45b2fac553adf0f36",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Drill is source-ported wholesale: its separate PlayerBody form, first-cast HitboxCombo allocation, 19-update entry and 13-update exit, air steering/gravity, registered-order terrain query, underground speed rules, moving-platform contribution, underside forced exit, bounds death, transformed-form lethal contacts, Time Stop, live scale, Portal/Black Hole routing and post-exit pickup flow are represented. Live ropes now take the full PlayerBody endpoint path, suppress Drill gravity while attached and detach after the moving-platform contribution on terrain entry. Gust and Meteor dispatch pushable-form Shockwave forces through Drill PlayerBody, including the one-shot divisor and 35x force conversion. drill_broad_ab.sh compares 3,229 optimized-Q32 ticks across the four original lifecycle/contact/bounds/Time Stop scenarios, a live Web Swing endpoint through exact Drill exit, and a Gust impulse observed on tick 231. Player/slime state is exact in the rope composition; rope segment rows retain the separately documented relaxation bound. Scaled entry/exit positions differ by at most two raw Q32 units from multiplication grouping. The equivalent Meteor callback is source-ported but not isolated because its attempted broad composition first reaches the existing Meteor caster-pose approximation."
     },
     {
       "id": 27,
       "name": "Grappling hook",
       "prefab": "Assets/GameObject/Grappling hook.prefab",
       "prefab_guid": "964ae230194fbf1468d5b187d6d4df92",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Seven optimized-Q32 NativeAOT/Rust scenarios cover all-map wall impacts and held reeling, strict flight timeout, stable hook/segment observations, and the close-player teammate transfer over 1,870 ticks; ids and lifecycle boundaries match. grapple_player_attach_ab adds 198 bit-identical ticks through the grounded third-player top-endpoint contact and the correctly deferred first rope correction. dash_grapple_form_ab adds 165 differential ticks through an overlapping Dash ray, the active form's nonlethal no-push callback and Dash exit; rope mesh vectors differ by at most 0.0500 world units within the established iterative-solver bound."
     },
     {
       "id": 28,
       "name": "Beam",
       "prefab": "Assets/GameObject/Beam.prefab",
       "prefab_guid": "551e7eb68828c994d8f83e8e070fed17",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "NativeAOT differential covers grounded and airborne charge, frame-driven orb poses, firing, one-pass collision latency and stock kill, manual cancellation, automatic maximum-duration scaling/stop, orb cleanup and retained-orb recast, plus two-player persistent beam crossings. The rollout uses pooled graph snapshots, hitboxes and trace rows without per-tick allocation; the retained synthetic graph/component/scene fixtures cover reflections and all endpoint effect classes. dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback."
     },
     {
       "id": 29,
       "name": "Duplicator",
       "prefab": "Assets/GameObject/Duplicator.prefab",
       "prefab_guid": "9c1404930ef762b49ad05b1034a4c4d8",
-      "native_status": "unimplemented"
+      "native_status": "partial",
+      "verification": "ShootDuplicator is source-ported across every target class represented by the native world: rounded platforms, circular Items, guided Missiles, Smoke clouds, projectiles/Arrows, DynamicAbilityPickups, positive Black Holes, active Rock and ordinary/active-form players, layer-26 orbs, plus attached Spike, Engine and Tesla objects. Player targets create fresh abilityless shared-input clones with current-normal launch and empty loadout; duplicated bodies retain the authored fan geometry, fresh-runtime/deferred-registration rules, ownership, scale, final shake and 1,800-pass lifetime without per-tick allocation. The authored MaxClones + 1 cap is exact for the actors Rust can represent, but cannot count the additional full actors C# Revival creates until the multi-actor Player model exists. duplicator_broad_ab.sh runs 13 optimized-Q32 NativeAOT/Rust scenarios covering grounded/airborne form use, platforms, Grenade, Smoke, Tack, Mjolnir, Poke Ball capture, Mine, Missile, pickup-driven slot replacement, Gust, Time Stop and Dash. Target classes without a standalone public capture and rare cross-type duplicate expiry ordering remain documented in FULL_COMPATIBILITY.md."
     },
     {
       "id": 30,
       "name": "Magnet gun",
       "prefab": "Assets/GameObject/Magnet gun.prefab",
       "prefab_guid": "f4ca9e84a5c630c41af189a13d9a24aa",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "MagnetGun's remaining source branches are now translated for every target class represented by the native world: ordinary and active-form players, active Rocks, all released ThrowItem2 bodies, Arrow, guided Missile, positive Black Holes, Macho boulders, ability pickups and PortalShots. A fixed tagged handle implements full nearest selection, authored scale/Rock/Boulder firepoint offsets, holder stealing, item/player/Black-Hole held-position variants, wall clamping and MoveObjectOutOfWalls, held-player ragdoll and rope endpoint pinning, signed Black-Hole pull, target-specific launch forces, timeout/distance/destruction loss and owner-death cleanup without per-tick allocation. magnet_broad_ab.sh runs 12 exact optimized-Q32 NativeAOT/Rust scenarios: 1,000 grounded/airborne form ticks, rounded-platform plus ordinary/Macho player pull, parry, released Grenade/Smoke/Poke Ball/Tack, layer-9 Arrow, guided Missile including the updater-sensitive airborne landing, 690 stopped passes and Gust on the active form. The Rock/player/Black-Hole/boulder/pickup/PortalShot holding and lock-loss/steal branches are translated but do not each have an exact public composition."
     },
     {
       "id": 31,
       "name": "Rewind",
       "prefab": "Assets/GameObject/Rewind.prefab",
       "prefab_guid": "b03946a27fb04a3092575c77faa0d9e6",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "rewind_ability_ab matches 300 NativeAOT/Rust Q32 ticks across recorded grounded and aerial movement, 150-tick history selection, 102-tick smootherstep/Catmull-Rom playback, input and physics suppression, platform raycast force, destination velocity/rotation/cooldown restoration, arrival depenetration and retained-ground release. dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback."
     },
     {
       "id": 32,
       "name": "Web swing",
       "prefab": "Assets/GameObject/Web swing.prefab",
       "prefab_guid": "6508c9ccd4a0464a8445e0ee0eb6e26d",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback."
     },
     {
       "id": 33,
       "name": "Poke ball",
       "prefab": "Assets/GameObject/Poke ball.prefab",
       "prefab_guid": "c752170c9d694ab78a0f23c34fee8cea",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Poke Ball and its shared ThrowItem2/item path are source-ported wholesale: grounded and airborne form callbacks, held release, launch ownership/spin, circle contacts, strict fizzle, scaled nearest-opponent selection with lower-id ties and owner rejection, callback capture, pinning, ragdoll/invisibility/invulnerability, victim loss, pop/ejection, boundary/Portal/Black Hole/Gust/Magnet/Time Stop/Arrow paths, duplication, pickup-acquired use, and multi-captor shared-mask behavior. Item BoplBody mass now observes the prior pass scale before ScaleChanger, DPhysicsCircle radius retains its incremental fixed-point history, and proximity uses the source double-scaled radius. poke_ball_broad_ab.sh gates 4,668 Q32 NativeAOT/Rust ticks across eight programs; Growth and Shrink are exact through full item scaling, while the standalone scale-form pose retains a bounded 64-raw-unit reconstruction allowance. Duplicated callback capture is exact through two captors and 12 pinned passes; the later multi-captor expiry/ejection boundary remains source-ported but not individually differentially measured."
     },
     {
       "id": 34,
       "name": "Gold mushroom",
       "prefab": "Assets/GameObject/Super star.prefab",
       "prefab_guid": "bcb43516390546c3a28f827b2bdd0254",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Public rollout reproduces SuperStar's instant cast, next-pass effect initialization, four-second lifetime, airborne 0.85-strength jump override, 10,000-second live sentinel and five-second restored cooldown. gold_mushroom_ab matches NativeAOT exactly for 636 ticks."
     },
     {
       "id": 35,
       "name": "Tack",
       "prefab": "Assets/GameObject/Banana peel.prefab",
       "prefab_guid": "924cddb182e642829c914ae7aa5f57e2",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Tack and BananaPeel are source-ported wholesale through the shared grounded/aerial ThrowItem2 form, held and forced release, deferred Projectile ownership, live item scale/mass/radius phases, ballistic contacts, top-side settling, stable pin, strict arming/lifetime clocks, owner-clear immunity, source-order ordinary/abilityless-clone victim enumeration with transformed originals excluded, invulnerability, one-use kill attribution, death cleanup, duplication, Time Stop, Portal/Black Hole, Arrow, Gust, Magnet and pickup-acquired use. tack_broad_ab.sh gates 5,670 Q32 NativeAOT/Rust ticks over eight programs; Growth and Shrink are exact through full item scaling with the standard 64-raw-unit form reconstruction bound. Clone-victim, simultaneous-contact, Portal/Black Hole and acquired-pickup compositions are source-ported but not individually differentially measured."
     },
     {
       "id": 36,
       "name": "Freeze ray",
       "prefab": "Assets/GameObject/Freeze ray.prefab",
       "prefab_guid": "d342fcb8fb1443d5908491b61f06fcbb",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "freeze_ability_ab matches 1,000 NativeAOT/Rust Q32 ticks across a grounded ordinary-player hit through immediate detach, 1.6-second FrozenSolid pin, cooldown reset, thaw impulse and ragdoll landing, plus an airborne diagonal cast through recoil and fire-animation exit. freeze_airborne_hit_ab adds 500 exact ticks for a rising ordinary-player hit through takeover, thaw, resumed fall and landing. freeze_water_self_ab adds 500 exact ticks for Water reflection through direct Ability.ExitAbility cancellation, retained aimed collider basis, self-freeze and thaw flight. freeze_bow_ab adds 500 exact ticks through active-Bow cancellation, restored-slime reattachment, pinning and grounded thaw. Gust, Time Stop and Dash form interactions are also exact. The complete source query is now ported: unmasked rounded-rectangle muzzle check, full mask/shape order, one-pass Water reflection, non-Player blockers, every active player form, alive/invulnerability gates and retained FrozenSolid pooling. Equipped Freeze collider identity is slot-indexed across initial loadouts, pickups, stock and revival clones. freeze_broad_ab adds 620 exact ticks through two equipped Freeze slots, active-Bow cancellation, a repeat hit while pinned, overlapping FrozenSolid clocks, first shatter/re-pin and final thaw. Remaining unmeasured classes and lifecycle boundaries are listed in ABILITY_PORT_GAPS.md."
     },
     {
       "id": 37,
       "name": "Mjolnir",
       "prefab": "Assets/GameObject/Mjolnir.prefab",
       "prefab_guid": "823ddf3de86a44909b972860ac2f24a2",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Mjolnir and its ThrowItem2 payload are source-ported wholesale: grounded/airborne charge and forced release, scale propagation, Projectile owner/spin initialization, scaled overlap kills across ordinary slimes, abilityless clones and active forms in source search order, invulnerability/owner/alreadyKilled handling, outbound drag, stall and wall-clang return, live slime/clone/form recall targeting, speed clamp, owner death/body-swap coasting, catch/timeout, repeated platform force, Magnet/Portal/Black Hole shared-item interaction, duplication, Time Stop and side/water bounds removal. mjolnir_broad_ab.sh runs six optimized-Q32 NativeAOT/Rust scenarios covering airborne flight/recall, grounded clang and platform push, released Gust, both Time Stop phases, Duplicator fan copies and Dash against all ThrowItem forms; all pass. Current-form/clone victim and side-bound branches are source-ported but do not each have a standalone public differential."
     },
     {
       "id": 38,
       "name": "Portal gun",
       "prefab": "Assets/GameObject/Portal gun.prefab",
       "prefab_guid": "63655ac5f0ee4fbe8e325a3705bbf15b",
-      "native_status": "unimplemented"
+      "native_status": "ported",
+      "verification": "Executable instant cast, PortalShot rigid-body flight and wall/timeout landing, dominant-axis portal planes, pair replacement/linking, strict hysteresis, player and portalable rigid-body momentum mapping, and linked lifetime closure. portal_gun_ability_ab compares 1,290 NativeAOT/Rust Q32 ticks: the 900-tick primary scenario is exact, and a grenade crosses on the same tick with only the documented pre-existing ThrowItem2 launch-pose drift. dash_remaining_forms_ab adds 180 differential ticks through an overlapping Dash ray and the active form's nonlethal, no-push PlayerCollision callback. portal_arrow_ab adds 430 exact ticks through linked-mouth Bow Arrow traversal, mapped exit momentum and same-pass wall destruction. portal_pickup_ab adds 2,400 ticks through an AbilitySpawner pickup crossing an older linked pair, including hierarchy-ordered hover physics and exact post-exit motion; the maximum inherited launch-normalization difference is 101 raw Q32 units. time_stop_portal_ab verifies 690 frozen endpoint-clock passes and exact post-restoration player transit after nominal unfrozen expiry. portal_rock_ab adds 500 exact ticks through a PortalShot/active-Rock rigid-body impact, fresh recast collider ordering and later former-Rock transit. portal_gun_broad_ab.sh gates those five scenarios together after a whole-source audit. The source-wide BoplBody/SlimeController queries now also include abilityless Duplicator clones with shared player-id hysteresis, duplicated Rocks, and attached Spike/Engine/Tesla bodies; ropes and Black Holes are correctly excluded because their runtime objects do not carry portalable positive-mass BoplBody components."
     }
   ]
 }

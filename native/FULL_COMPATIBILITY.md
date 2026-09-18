@@ -20,6 +20,14 @@ The ability inventory is `data/ability-coverage.json`: 39 catalog entries,
 including NullAbility, Random, and eight custom entries from Rewind through
 Portal gun. No entries are omitted because they are custom or difficult.
 
+The semantic review leaves four known structural gaps despite the broad source
+port: Time Stop still lacks a per-updatable clock model for un-audited
+transformed forms; Revival cannot represent several full live actors owned by
+one player; Duplicator's global clone cap therefore cannot count those missing
+actors; and deferred spawned objects register in Rust's type-category order
+rather than one global Unity hierarchy order. The affected catalog entries are
+`partial`, and `rl/ABILITY_PORT_GAPS.md` records the implementation plans.
+
 ## Required completion gates
 
 - Lossless setup and tick inputs for one through six players, including keyboard
@@ -143,8 +151,8 @@ The rope kernel also matches 2,000 actual Unity cases: 15,808 successful
 actions and 24 matching source arithmetic errors. It includes relaxation,
 platform contact, normal/space gravity, zero timestep, detached endpoints,
 40-segment capacity, spawning and both reeling directions. 197 cases are retained
-as standalone regressions. Rope broad-phase integration is now verified below. The grappling ability
-lifecycle remains separate work.
+as standalone regressions. Rope broad-phase integration and both shipped rope
+abilities are now verified below.
 
 The combined rigid/composite/rope solver matches another 1,000 Unity scenes
 and 12,000 steps, including 45,168 active rope updates. Nine scenes exercised
@@ -156,8 +164,8 @@ A dedicated six-player grappling-hook replay matches all 600 physics stages and
 at the peak. The recorder includes all 128 rope slots, active segment counts,
 current/previous segments, endpoint forces/masses, contact buffers, gravity,
 relaxation settings and the physics subsystem's cached space-level flag.
-The native grappling ability still needs its own independent lifecycle port;
-these comparisons initialize the physics stage from Unity's recorded state.
+The independent Grappling Hook lifecycle golden described below complements
+this supplied-state corpus with actual input, spawning, contacts and reeling.
 
 
 ## Beam geometry and persistent crossing graph
@@ -191,8 +199,8 @@ against the instrumented Unity build with `just verify-beams`.
 This is a **graph-stage** comparison. The probe captures immediately before
 `renderBeams`, which also creates gameplay hitboxes and applies damage/forces.
 The graph result alone does not verify those effects. The component ports below
-cover hitbox geometry and target force/charge rules; beam ability startup/shutdown,
-pooled object lifecycle and independent native beam gameplay remain required.
+cover hitbox geometry and target force/charge rules; the executable rollout
+integration is covered in "Executable Beam" below.
 Graph scenarios currently use null ground references and synthetic obstacles;
 they do not certify every live-game beam state or the entire Beam ability.
 Evidence and assembly/input/output hashes are in `artifacts/beam/`,
@@ -227,10 +235,8 @@ Hashes and raw evidence live in `artifacts/curves/`, `artifacts/beam-hitbox/` an
 `artifacts/beam-effects/`.
 
 These component tests initialize the components directly. The combined-stage
-evidence below adds graph/pool/physics update order and composite target routing.
-Explosion collision callbacks, deaths, ability startup/shutdown and a native beam
-episode from player inputs remain required. The public C environment is still the movement/dash slice;
-Beam, Orb and BlackHole are not complete native abilities.
+evidence below adds graph/pool/physics update order and composite target routing;
+the executable rollout section adds player input, ability lifecycle and deaths.
 
 
 ## Combined beam and physics stage
@@ -314,8 +320,9 @@ Use `reference.py capture --physics` and `verify_physics_capture.py` for complet
 captures. Use `verify_physics_failure.py CAPTURE.failure.json` for a recorded
 exception boundary; it never upgrades the failed tick to a successful rollout.
 
-Beam's player controller, animation-driven lifecycle and collision damage remain
-unported. The public C environment remains the movement/dash slice.
+The captures in this section isolate the imported physics stage. End-to-end
+player control, animation lifecycle and collision damage are covered by the
+executable rollout differential below.
 
 
 ## Player death accounting
@@ -878,6 +885,708 @@ released buttons or CanUseAbilities; separate calls to Unity's actual readiness
 and castability methods exercise true and false predicates. These checks do not
 yet prove successful selection/entry or any complete ability implementation.
 
+### Rollout catalog routing and Random (2026-09-14)
+
+The public rollout backend now embeds common metadata for all 39 catalog entries,
+generated from each shipped prefab by `extract_rollout_data.py`. Cooldown,
+ground-only, time-stop cooldown, castability, instant/rope and offensive fields
+therefore retain their authored Q32.32 values rather than using the previous
+four-second placeholder for unimplemented abilities.
+
+Catalog id 1 (Random) is resolved at the same point as
+`GameSessionHandler.SpawnPlayers`: after level-intro RNG draws and before ability
+objects are constructed. Each Random slot draws uniformly from ids 2 through 38.
+When all equipped slots are Random and no draw through the final slot was
+offensive, the final slot is redrawn once, matching the source's deliberately
+non-guaranteed fallback. The replay header retains the configured Random ids while
+the live slime observation exposes the resolved abilities.
+
+`random_ability_ab.c` compares the NativeAOT oracle and optimized Q32 Rust backend
+over six seeds, all five maps, mixed and all-Random configurations: 72 resolved
+slot ids and cooldowns match exactly. This certifies the complete behavior of the
+Random catalog entry; behavior of the concrete ability selected by it remains
+covered only when that selected ability itself is listed as ported.
+
+### Executable Gold mushroom (2026-09-14)
+
+Catalog id 34 now executes the shipped `SuperStar` and `SuperStarEffect`
+components in the public rollout backend. The prefab starts on a seven-second
+cooldown. Casting installs one effect for the selected slot, changes that slot
+to the common 10,000-second live sentinel and begins updating it on the following
+updater pass. The exported effect lasts exactly four seconds; its stale source
+comment is not used as behavioral evidence. On each airborne jump edge it
+overwrites the player body's self-imposed vertical velocity with the normal
+38.25 jump strength multiplied by the prefab's exact 0.85 factor. Expiry restores
+the separate five-second `SuperStar.cooldown` value.
+
+`gold_mushroom_ab.c` compares NativeAOT and optimized Q32 Rust for 636 consecutive
+ticks from loadout initialization through the initial cooldown, cast, next-pass
+effect initialization, an air jump, exact expiry/restoration and a second cast.
+Player position and velocity, slot cooldown and timer, observation flags and
+activation telemetry match exactly. The state uses a fixed three-slot array and
+does no per-tick allocation. Form-specific jump speed and the rope exclusion are
+retained in extracted metadata for the later form and rope integrations; neither
+path is reachable in this isolated verified loadout yet.
+
+### Executable Teleport (2026-09-14)
+
+Catalog id 25 now executes the two-stage `Teleport`/`TeleportIndicator` path in
+the public rollout backend. The first instant cast allocates the indicator with
+its extracted zero-gravity body and 1.32-radius layer-27 circle; registration is
+deferred to the next updater pass and consumes the original three hierarchy
+numbers. While the marker exists, every released tick resets the slot timer to
+the exact three-second cooldown. A held second press first increments past that
+strict threshold, then queues the indicator update later in the same pass.
+
+The indicator performs the original two `CircleCastAll` queries in circle, box,
+rounded-rectangle registry order, retains the source's fixed 100-result limit,
+and de-duplicates the marker-side results against the caster-side list. The
+extracted mask covers players, projectiles, items, tagged boulders, weapons,
+lethal terrain, effectors, smoke, rigid-body affectors and orbs. PlayerPhysics
+victims detach ropes, unground and zero imposed velocity; Rock and Drill take
+the source no-PlayerPhysics path. Arrows, pickups, thrown items, Missiles,
+positive Black Holes, duplicated Rocks, Smoke, Revival markers, Portal shots,
+Beam orbs, Tesla lightning and Macho boulders relocate through their live
+runtime state. Attached Spike/Tesla bodies take the source
+`IPlatformAttachable` exclusion, and ordinary walls remain excluded.
+
+Each moved object is inactive for the strict 0.6-second
+`TeleportedObjectEffect` interval. Its own updater and physics body remain
+disabled during that interval, including abilityless clones and Macho boulders.
+The effect clock and visual RNG freeze under Time Stop. Otherwise
+`RandomInsideUnitCircle` consumes four RNG state advances on every update,
+including the removal pass; Rust preserves those advances and the stale
+`Player.Position` publication while a player object is inactive. Growth and
+Shrink update a persistent indicator's capture radius through its live scale.
+The implementation uses fixed 100-entry query arrays and allocation-reusing
+marker/effect/entity pools, with no hot-path allocation.
+
+`teleport_ability_ab.c` matches all NativeAOT public fields for 300 ticks through
+the stationary caster transfer. `teleport_multi_ab.c` uses three players and
+moves the caster away from a teammate left at the marker; both directions of
+the swap, both inactive effects and reactivation match exactly for 450 ticks.
+That test also exposed the source's sorted-team spawn mapping and alternating
+teammate offsets, now reproduced at reset. `teleport_broad_ab.sh` gates both
+scenarios as one optimized-Q32 ability differential. The player query, opposite
+area swaps and effect lifetime are exact. The newly source-ported nonplayer
+branches are represented by live rollout entities but do not each have an
+isolated public composition; this is a verification-coverage distinction, not
+a known semantic approximation.
+
+### Dash ray collision with active Rock (2026-09-15)
+
+Dash's public ray now uses fixed six-player candidate storage for non-wall
+Player-layer hits. An active Rock is queried with its live pulsing circle scale,
+rather than the inactive slime's box. The source invokes the target callback
+first, so Rust queues `BounceBall`'s authored Player-layer impulse before the
+Dash form's own `PlayerCollision` sees Rock's `KillPlayersOnContact` flag. The
+dasher moves to the ray's exact near point, dies in the Dash updater pass, and
+credits the Rock owner before the ordinary stock path builds its replacement.
+
+`dash_rock_ab.c` compares 300 optimized-Q32 NativeAOT/Rust ticks with five
+players. Rock casts on tick 154; the Dash ray hits and kills on tick 164. Every
+identity, flag, hierarchy, timer, activation, death, credit and stock boundary
+matches. Dynamic positions and velocities are within 64 raw Q32 units
+(1.49e-8 world units), and collider axes are within one raw unit, from the same
+fixed-point normalization ordering already bounded by the Rock differential;
+no query, target, callback or lifecycle decision differs. Other non-wall Dash
+callbacks, rope transfer and the public horizontal-under-water failure remain
+open, so Dash is now cataloged as partial.
+
+`dash_player_ab.c` adds 240 exact differential ticks for the ordinary non-wall
+branch. Two grounded players approach until their centres are 2,279,456,327 raw
+Q32 units (0.5307 world units) apart. The tick-156 ray invokes the target
+slime's `OnCollide` before Dash's nonlethal `PlayerCollision` check, producing
+the same one-sided target push, pass-through endpoint and ordinary exit in both
+backends. All discrete fields match and the same 64-raw-unit normalization
+bound applies; the target velocity after the callback is exactly 594,545,423
+raw Q32 units per second in both backends.
+
+### Dash handoff through a live Web Swing rope (2026-09-15)
+
+Dash now retains an attached rope through its prefab body and exit callback.
+The Dash prefab registers `Dash` before its own `PlayerBody`: the ability first
+publishes its pose, then the body integrates and constrains the rope endpoint,
+whose result becomes visible on the following pass. The inactive ordinary
+slime keeps its separate previous-velocity history. On exit, Rust applies the
+extracted 60-unit leave speed, writes the authored tenfold endpoint force,
+straightens a bottom-attached strand from its anchor to the Dash position, and
+copies the rebuilt segments into the Verlet history before control returns to
+the ordinary slime.
+
+`dash_rope_ab.c` casts Web Swing on map 3 at tick 181, enters an up-right Dash
+from the live bottom endpoint at tick 182, exits at tick 186 and follows the
+attached rope through tick 300. Every public header, player, slime, telemetry
+and rope-segment field is bit-identical between optimized-Q32 Rust and
+NativeAOT. This also measures the private velocity-history transition because
+the first post-exit solver pass diverges when either body history is shared or
+the Dash exit force is left in place past the ordinary body's late callback.
+
+`dash_grapple_rope_ab.c` covers the complementary endpoint. Another player
+fires Grappling Hook through the close-teammate branch; the hook attaches the
+grounded victim at the rope's top on tick 197, that victim enters an up-right
+Dash on tick 198, and exits on tick 202. Headers, players, slimes, telemetry,
+rope identities, flags, hierarchy and counts are exact through exit. The
+27-segment strand inherits Grappling Hook's iterative relaxation difference:
+rope coordinates and edge vectors differ by at most 716,909,914 raw Q32 units
+(0.16692 world units), while the attached player's complete public record stays
+bit-identical. This is continuous solver geometry with no different contact,
+attachment, Dash, exit or lifecycle decision. Detached-rope entry remains open.
+
+### Dash ray collision with active Bow (2026-09-15)
+
+Dash now distinguishes an ordinary slime callback from an active ability form.
+An ordinary target owns `SlimeController.OnCollide` and receives the one-sided
+overlap push measured by `dash_player_ab.c`. Active Bow owns `PlayerCollision`;
+because neither Bow nor Dash has `KillPlayersOnContact`, both callbacks return
+without a kill or push. Rust previously invoked `push_from` for every non-Rock
+player target, moving Bow despite the source callback graph.
+
+`dash_bow_ab.c` holds Bow active while the players close to 2,708,939,319 raw
+Q32 units (0.6307 world units), then casts Dash through the overlapping active
+hurtbox on tick 159. All 240 optimized-Q32 NativeAOT/Rust ticks and every public
+field are bit-identical; Bow's horizontal velocity remains exactly zero in both
+backends after the Dash callback.
+
+`dash_gun_forms_ab.c` repeats that overlap for Blink, Growth, Missile, Shrink,
+Duplicator, Magnet and Freeze. Every target has a live layer-8 form at the
+tick-159 Dash cast, so its `PlayerCollision` owns the callback and the ordinary
+slime push must not run. All seven 240-tick scenarios match with a 64-raw-Q32
+vector bound (less than 0.000000015 world units); identities, form lifecycles,
+cooldowns and all discrete fields are exact.
+
+`dash_throw_forms_ab.c` repeats the same tick-159 callback with held Grenade,
+Smoke, Mine, Poke Ball, Tack and Mjolnir forms. Each scenario continues through
+Dash exit while the target form stays live. All six 180-tick scenarios match
+with the same 64-raw-Q32 vector bound; no held-item lifecycle starts early and
+no ordinary-slime overlap push reaches the form body.
+
+`dash_remaining_forms_ab.c` covers Engine, Gust, Spike, Time Stop, Platform,
+Revival, Black Hole, Invisibility, Meteor, Throw, Push, Tesla, Teleport, Drill,
+Beam, Rewind, Web Swing and Portal Gun. Push uses neutral aim so its supporting
+platform stays still and the scenario isolates the form callback. Platform
+uses three unique equipped slots so NativeAOT does not deduplicate its prefab
+allocation. The other target inputs are held normally. All eighteen 180-tick
+scenarios preserve the active layer-8 form through Dash exit. Meteor's
+inherited grounded form reprojection requires at
+most 8,192 raw Q32 units (less than 0.000002 world units); all callback choices,
+identities, lifecycles and discrete state are exact.
+
+`dash_grapple_form_ab.c` holds Grappling Hook's layer-8 form active with its
+strand registered, then crosses it with the same tick-159 Dash. The form owns
+the nonlethal `PlayerCollision`, receives no ordinary-slime push and remains
+active through Dash exit. Player, slime, telemetry, form and lifecycle state
+match through tick 165. The iterative rope mesh differs by at most 214,741,546
+raw Q32 units (0.0500 world units), within the established 0.16692-world-unit
+Grappling Hook solver bound. The callback completes before the next independent
+hook/player constraint pass, so that later force path is not attributed to this
+Dash slice.
+
+`dash_dash_ab.c` starts the target Dash on tick 157 and crosses its live form
+with the caster's tick-159 Dash. The source and Rust both skip a kill and push,
+then complete both form exits with matching bodies, cooldowns and lifecycle
+state through tick 240. Before either duplicate Dash prefab is used, NativeAOT
+publishes its hidden layer-8 trigger row with ENABLED set while Rust publishes
+the same inactive row trigger-only. Neither row has ACTIVE set or participates
+in physics; the live target row's flags and callback are exact once activated.
+The differential therefore ignores only that inert pre-use ENABLED bit and
+retains 64-raw-Q32 vector bounds for every row.
+
+### Dash ray collision with active Roll (2026-09-15)
+
+Dash now raycasts the active Roll's 1.20-unit circle rather than the hidden
+slime box. Once `Roll.ReleaseDash` sets `Ability.KillPlayersOnContact`, Dash's
+temporary move to the ray near point lets its own `PlayerCollision` observe the
+lethal form, kill the dasher there and credit the Roll owner. A charging Roll
+keeps the same nonlethal no-push behavior as other active forms.
+
+`dash_roll_ab.c` compares five players for 300 NativeAOT/Rust ticks. Roll casts
+on tick 154, releases after a full charge and kills the tick-226 Dash in the
+Dash updater before the ordinary swept Roll contact pass. Death, credit and the
+following stock clone match. Curved-surface pose values retain Roll's existing
+2,048-raw-Q32 bound (less than 0.0000005 world units); all discrete state and
+contact decisions are identical.
+
+### Complete Dash RaycastAll source path (2026-09-16)
+
+Dash now translates the remainder of `Dash.performDash`'s serialized collision
+mask rather than special-casing only walls, players and Arrows. A retained
+scratch vector collects Player, Projectile, wall, LethalTerrain, Explosion,
+RigidBodyAffector and orb rows, then sorts them by near distance and
+`PhysicsParent` hierarchy before walking callbacks until the first wall.
+Player-form geometry comes from the collider pose last synchronized by
+DetPhysics, preserving each form's circle/box choice, rotation and scale.
+The dispatch covers projectile owner immunity, explosion owner credit and
+accidents, Beam's Beamed cause, and positive Black Hole consumption/growth.
+Meteor smears retain their caster so this path can credit their source owner.
+The vector is allocated with the world and reused across casts.
+
+The broad `dash_gun_forms_ab.c`, `dash_throw_forms_ab.c` and
+`dash_remaining_forms_ab.c` compositions still match across every live player
+form, while `dash_arrow_ab.c`, `dash_player_ab.c`, `dash_rock_ab.c`,
+`dash_roll_ab.c`, `dash_rope_ab.c` and `dash_grapple_rope_ab.c` preserve
+their exact callback, death and handoff boundaries. The complete existing
+golden suite also passes. Live crossings against each newly reachable spawned
+hazard class are source-ported but remain explicitly unverified in
+`ABILITY_PORT_GAPS.md`; that verification distinction keeps Dash at
+`partial`.
+
+### Complete Bow and Arrow source contact path (2026-09-16)
+
+The Bow form already covered its complete authored loading, aim, grounded and
+air movement, fire, landing, scale and Time Stop lifecycle. Arrow contact now
+also covers the complete serialized `StickTo` mask: Player, item, wall,
+LethalTerrain and NonLethalTerrain. The contact walker preserves DetPhysics'
+Circle/RoundedRectangle, Circle/Circle and Circle/Box grouping. It resolves
+released items and guided Missiles, PortalShot, active Rock's `BoplBody`,
+attached Spike/Tesla terrain children and every live player form using its
+last synchronized collider row. Rock follows the source callback quirk where
+`PrepareCollisionCallBacks` passes the same manifold normal to both
+callbacks. The Arrow is destroyed before Rock's `PlayerCollision` can read
+its Projectile, while Rock still receives its tenth-strength projectile
+impulse.
+
+`bow_broad_ab.c` compares 300 optimized-Q32 NativeAOT/Rust ticks. Rock and
+Bow begin on ticks 64 and 74; the Arrow hits Rock on tick 140. Lifecycle,
+identity, flags, owner removal, body velocities, Rock response and all later
+decisions match. The separately grouped contact calculation differs by at
+most two raw Q32 position units and 32,768 raw angular-velocity units
+(0.00000763 radians/second). These continuous values select no different
+contact, callback or lifecycle branch. All existing Bow/Arrow interaction
+differentials remain exact.
+
+The wall manifold list is retained on the world and player victims use a fixed
+six-slot array, so Bow no longer allocates inside the per-arrow contact loop.
+NativeAOT keeps a landed Arrow's render object after destroying its body,
+collider, Projectile and FixTransform, then evicts a visual sibling above 80
+children. That inert visual has no observation row or gameplay callback; Rust
+removes it after publishing the same destroyed-collider pass.
+
+### Executable Grenade throw and flight (2026-09-14)
+
+Catalog id 3 now enters the shipped `ThrowItem2` form and creates the pinned
+Grenade item. Extraction retains both grounded and aerial animation lengths and
+throw offsets, charge-force bounds, recoil, owner-hurt delay, item hierarchy,
+circle radius, mass, bounce/friction, gravity and drag, and the downstream
+explosion metadata. The held object consumes its prefab hierarchy at the
+original enter callback but has no DetPhysics row until `Fire` calls the
+manually initialized circle in the release pass.
+
+The grounded path preserves the source's split bodies: release advances the
+active ability hurtbox once by the ten-unit recoil while the deactivated slime
+body remains at its platform pose; exit snaps the slime back and starts the
+`justlanded` animation at the measured callback phase. The thrown circle then
+uses the extracted one-third inverse mass, gravity -40 and 0.999 air drag with
+the same force-to-impulse conversion. Storage is a reusable item pool, so the
+per-tick ballistic pass allocates nothing.
+
+`grenade_ability_ab.c` compares every public header, player, slime, telemetry and
+entity field between NativeAOT and Q32 Rust for 700 ticks. It covers readiness,
+15-tick grounded entry, a seven-frame hold, charged release, 12-tick exit, the
+free trajectory, delayed owner contact and callback destruction. The explosion
+registers on the next updater pass with its two extracted startup shockwaves,
+one-frame lethal box and exact 90-frame collider lifetime. The self-kill also
+exercises the shared death path: kill credit, old collider removal, new player
+and copied-ability hierarchy, DetPhysics circle-before-box IDs, three stock
+choice indicators, their 360-tick timeout, fast spawn and subsequent landing
+all match.
+
+The same fixture now asserts the owner-gate geometry directly: the released
+circle overlaps its owner while the delay is closed, clears beyond seven Q32
+world units, falls back inside five units after 60 passes, and detonates on the
+re-entry callback. The first explosion row remains tick 132 in both backends.
+
+`grenade_fuse_ab.c` adds a separate 700-tick exact comparison which never
+releases the cast button. It covers the authored three-second fuse while held,
+the prefab child's local-x-only facing mirror, detonation before the manually
+initialized DetPhysics circle can consume an entity ID, and the same lethal
+explosion/stock recovery path. Held grenades remain payload state rather than
+registered colliders, and their fuse pass reuses the existing item pool.
+
+`grenade_air_ab.c` jumps four ticks before readiness and compares 100 ticks
+through the airborne form, held charge, release, free flight and raycast
+landing. Grenade's ability prefab has a distinct serialized `PlayerPhysics`
+from the ordinary slime: gravity acceleration 1.60000002, maximum fall speed
+27, air acceleration 10 and maximum speed 19. Those values are now extracted
+rather than borrowed from the player. The implementation preserves the 0.03
+pre-fire modifier, magnitude-nine clamp, full gravity after release, exact
+`Fix.Lerp` evaluation with its serialized 0.6 float, and `PlayerBody`'s later
+position integration/external-velocity damping. Moving ability-body deaths
+also publish the source death position before parking a stock replacement.
+
+The two shockwaves use the authored masks, radii and forces, apply their impulses
+before map home springs, and reuse existing fixed arrays/entity pools.
+`grenade_bounce_ab.c` adds a strict 260-tick horizontal throw through rounded
+platform bounces on ticks 71, 115, 148 and 163, a later wall reversal and the
+timed explosion. Every public field is exact without adding a tolerance.
+
+`grenade_non_owner_ab.c` adds 700 optimized-Q32 ticks in which the opponent
+crosses under the caster, jumps into an upward throw and triggers contact on
+tick 85, before the grenade can hurt its owner. The caster retreats outside the
+deferred explosion, receives the kill, and the victim completes stock choice,
+fast spawn and landing. Public state is exact except for the active form's
+one-raw-Q32-unit position rounding while aiming at byte 16 (less than
+0.00000000024 world units); it does not change a query, contact or phase.
+
+`grenade_multi_kill_ab.c` retains the caster inside the same blast for 120
+ticks. Both PlayerCollision callbacks kill in one DetPhysics pass. Stock clone
+hierarchies are now reserved at each callback, including the intervening death
+effect and choice-marker prefabs, while observation IDs are assigned across the
+global circle registry before the box registry. Both callback-created clones,
+their copied ability colliders and all six choice markers match exactly on the
+next pass.
+
+`grenade_pickup_ab.c` adds 2,593 differential passes with the authored
+AbilitySpawner enabled. A live pickup overlaps the active Grenade body and is
+correctly rejected because that form has no `SlimeController`; the released
+grenade continues independently, the ordinary slime later collects Revival,
+and the replacement collider registers one pass later. The fixture immediately
+casts the acquired third slot through marker creation and form exit. Pickup
+flight retains the established 100,000-raw-Q32 bound, and the angled Grenade
+form retains a one-raw-unit position bound; identities, selection, contacts and
+all lifecycle ticks are exact.
+
+`grenade_forced_exit_ab.c` adds 400 exact gameplay passes for the death exit.
+An Arrow kills the active form on tick 145 while its grenade is held.
+`ThrowItem2.ExitAbility` manually registers that circle in the collision
+callback, queues the minimum upward impulse for the next pass, and leaves the
+already-built DetPhysics manifold set unchanged. The item, victim stock clone,
+choice markers, upward flight and tick-277 fuse explosion match NativeAOT. The
+only excluded field is the pre-existing destroyed-Arrow angular velocity row:
+NativeAOT retains its final spin while Rust publishes zero after destruction;
+the Arrow is ownerless and non-colliding in both backends on that row.
+
+`grenade_arrow_ab.c` adds a separate 500-tick exact crossing shot. On tick 206
+DetPhysics resolves the released Grenade and Arrow circles before dispatching
+callbacks. Arrow's callback runs first, parents its inert visual to the item and
+destroys its physics, `Projectile` and `FixTransform`; the Grenade callback can
+therefore no longer recover an igniting projectile and does not detonate. Rust
+preserves the corrected positions and linear/angular velocities, the destroyed
+ownerless Arrow row, twelve subsequent Grenade passes and the normal timed
+explosion from ticks 348 through 438. Candidate capture uses a fixed stack
+array and adds no allocation to the contact path.
+
+A final source audit covers every branch in `ThrowItem2`, `Grenade` and
+`GrenadeExplode`: grounded and airborne form transitions, scale propagation,
+held-payload loss, normal and callback-time forced release, owner-delay and
+Magnet-holder rejection, Time Stop clocks, projectile and explosion ignition,
+dynamic contacts, water/bounds cleanup, timed detonation, startup shockwaves,
+lethal callbacks and duplication. `grenade_broad_ab.sh` runs 16 existing
+optimized-Q32 NativeAOT/Rust scenarios as one gate. It combines grounded and
+airborne casts, held fuse, four platform bounces and a wall reversal, immediate
+non-owner contact, simultaneous owner/opponent death, Arrow-forced release,
+pickup-driven Revival replacement and cast, Arrow contact, Gust, Magnet, Time
+Stop, Duplicator and Dash. Every scenario passes. The only excluded field is
+the already documented angular velocity on an inert destroyed Arrow row after
+the forced-release contact; the row has no collider, owner or later callback in
+either backend. Catalog id 3 is therefore marked `ported`.
+
+`tack_arrow_ab.c` adds 500 differential ticks for the non-Grenade item path.
+The crossing contact on tick 206 uses Tack's authored 0.5-unit radius rather
+than Grenade's 0.8-unit radius, preserving the source position correction.
+Arrow's queued callback destroys its own physics while Tack keeps the resolved
+impulse. A later rounded-platform contact sees the already-resolved upward
+velocity in `BananaPeel.OnCollide`, so the Tack continues instead of being
+incorrectly pinned from its pre-contact velocity. It remains live and moving
+through tick 500 with the exact final source pose; linear and angular contact
+values differ by at most 41 raw Q32 units from fixed-point normalization, with
+no contact, callback or lifecycle difference. Candidate capture remains the
+same fixed 64-entry stack buffer.
+
+`poke_ball_arrow_ab.c` compares 500 ticks at a one-raw-Q32-unit vector bound.
+The Ball and Arrow register on ticks 186 and 192 and collide on tick 206.
+DetPhysics resolves both circles before Arrow's callback destroys its own
+physics; `PokeBall.OnCollide` ignores the projectile layer, so the Ball keeps
+the resolved impulse. It remains live for the next twelve asserted passes and
+follows the exact trajectory to its lower-boundary removal on tick 410, before
+the five-second fizzle could fire.
+
+### Executable Tack throw and trap (2026-09-14)
+
+Catalog id 35 now shares the same allocation-reusing `ThrowItem2` form while
+loading every form, body and trap constant from the Tack and BananaPeel prefabs.
+The item receives its Projectile owner on the first updater pass after release,
+sets angular velocity to four, and follows the normal circle-body integration.
+A wall callback settles it only on a top-side contact after the 0.1-second launch
+grace and with non-upward velocity. Each later updater resets the body to the
+captured contact position before physics, matching the source's stable pin.
+
+After the strict 0.8-second arm threshold, the trap scans live vulnerable
+SlimeControllers in source order. Inactive transformed originals are excluded;
+ordinary main bodies precede subsequently spawned abilityless clones. The
+query uses `hitbox.radius * hitbox.Scale` plus the victim's scaled 0.75 radius,
+including DPhysicsCircle's already-scaled retained radius. The owner remains
+immune until any body with that player id leaves the radius once. A subsequent
+overlap creates the ordinary death effect, kills the selected main body or clone
+with the Tack owner as attacker, and removes the trap before that pass's
+DetPhysics contacts. The strict 20-second lifetime uses the player time scale
+clock and removes an unused trap without a pop sound.
+
+Tack now runs before later ScaleChanger instances in the source updater phase.
+The shared item body adopts the preceding pass's scale for mass and inertia,
+then BananaPeel evaluates its old-scale armed query, and the ray writes the next
+incremental collider radius. Death during the held form, Time Stop, duplication,
+Portal, Black Hole, Arrow, Gust, Magnet, bounds and pickup replacement reuse the
+source-complete shared item and form paths without per-tick allocation.
+
+`tack_broad_ab.sh` gates eight programs and 5,670 Q32 NativeAOT/Rust ticks.
+It covers 1,450 ticks of airborne throw, settling, stable pin and expiry; the
+owner-clear/re-entry kill; three fresh Duplicator copies through arming and
+consumption; exact Growth and Shrink of the released trap; dynamic Arrow
+contact; the complete Gust curve; Magnet pickup/pin/fire; and a released body
+whose arming clock pauses 43 ticks in before all 690 Time Stop passes and later
+kills its returning owner. The scale scenarios compare collider radius, inverse
+mass, contact and lifecycle exactly with at most the standard 64-raw-Q32 form
+pose bound. Clone victims, simultaneous contacts, Portal/Black Hole and acquired
+pickup use are source-ported but not individually isolated in public captures.
+
+### Executable Mjolnir flight and recall (2026-09-14)
+
+Catalog id 37 is the third consumer of the extracted `ThrowItem2` form. Its
+MjolnirItem body has zero gravity and receives the source's signed angular
+velocity and Projectile owner on the first updater pass after release. The
+outbound pass applies the prefab's per-tick exponential-style damping and uses
+the strict grace/velocity thresholds to enter recall. Recall adds a constant
+acceleration toward 1.1 units above the owner's current live form, clamps speed,
+coasts when no owner body is active, and removes the hammer inside the strict
+two-unit catch radius or after its maximum lifetime.
+
+Rounded-platform contacts retain ordinary rigid-body resolution. Once the clang
+grace has elapsed, every queued callback adds the authored 3000 force along the
+hammer's post-resolution velocity. The first outbound clang switches to recall;
+later clangs keep applying force without resetting the phase. Per-hammer victim
+history uses a six-bit fixed mask rather than the source `HashSet<int>`, avoiding
+allocation while retaining its once-per-player semantics.
+
+`mjolnir_ability_ab.c` compares 1,450 exact NativeAOT/Q32 ticks through an aerial
+throw, outbound flight, stall-triggered recall and owner catch.
+`mjolnir_wall_ab.c` compares another 1,450 exact ticks through a grounded throw,
+terrain collision, platform motion, clang-triggered recall and catch.
+`gust_mjolnir_ab.c` adds 340 exact ticks through released-hammer capture and the
+complete Gust curve. On the first registered-wave pass, `Shockwave.Init` applies
+one impulse before existing updaters, `Mjolnir.UpdateSim` then accelerates and
+clamps the recall velocity, and the ordinary `Shockwave.UpdateSim` applies the
+second impulse. Rust keeps that regular-pass impulse in the pooled item until
+the Mjolnir updater has run, preserving the source order without allocation.
+
+A whole-source follow-up completes `Mjolnir`, `ThrowItem2`, `Projectile`, and
+the prefab's bounds surface. The lethal overlap uses the live hammer scale and
+`Player.Scale`, then visits ordinary slimes, abilityless clones, and active
+Ability forms in the source's `FindObjectsOfType` order. The retained six-bit
+`alreadyKilled` set consequently lets a clone consume its shared player id
+before the corresponding form. Recall performs the same live-object search:
+the ordinary slime wins when active, a clone wins while the original is
+transformed, and the active form is the final target; absent bodies coast.
+Horizontal blast-zone exits now remove the item, while the prefab's
+`DoNotDestroyUp` continues to permit top exits. Scale, Magnet, Portal, Black
+Hole and Duplicator continue through the common allocation-free item paths.
+
+`mjolnir_broad_ab.sh` runs six optimized-Q32 scenarios spanning aerial
+flight/recall, grounded wall clang and platform push, released Gust, outbound
+and returning Time Stop, Duplicator fan copies and Dash against every shared
+ThrowItem form. All pass, as does the 6,821-step base golden corpus. Live-form
+and clone victim hits plus side-bound removal are source-ported but do not each
+have a standalone public differential; catalog id 37 is marked `ported`.
+
+### Executable Gust (2026-09-14)
+
+Catalog id 7 now executes the shipped Gust `Ability`, `QuickSpell`, and
+`AirWave_Shockwave` lifecycle in the public rollout backend. The extractor
+retains the prefab's active circle and offsets, cast/exit animation durations,
+forces, grounded-player multiplier, radius, and Hermite force curve as Q32.32.
+QuickSpell copies the incoming grounded body, performs its first 0.05-unit
+`UnGround` separation, clears both velocity channels, publishes the ability
+collider through `Player.SetPosition`, casts after the measured animation
+callback, and exits after the measured recovery callback. Because the original
+`PlayerPhysics.UnGround` leaves `attachedGround` populated, exit deliberately
+performs a second separation along the now-moving platform's current normal.
+
+The spawned shockwave uses fixed storage and preserves Unity's unusual updater
+phases. `Init` runs on the pass after the cast, captures at most 50 colliders
+with exact circle/shape narrow phases, and applies the first time-zero impulse
+before any existing updater. Map `AnimateVelocity` then sees and damps that
+first impulse. The wave's later `UpdateSim` applies a second time-zero impulse
+and advances the authored 0.25-second curve. Its captured platform-id array
+rejects destroyed targets and computes closest surface points, current normals,
+distance scaling, impulse arms, and body torque each pass. Captured thrown items
+and Arrow projectiles retain stable pool indices in the same fixed-capacity wave
+record. Each live body receives the source's normalized direction,
+distance-scaled default force, curve value and 60-fold
+`ForceMode2D.Impulse` conversion at its transform position, so a circle receives
+no spurious torque. For an Arrow captured on the wave's first pass, source
+component order is significant: wave initialization applies the first impulse,
+the pre-existing `Arrow.UpdateSim` aligns the transform to that velocity, then
+the wave's ordinary update applies the second impulse without aligning the Arrow
+again. A center-radius player
+approximation was rejected during measurement: the map-0 opponent passes that
+broad phase but misses the actual oriented box.
+
+The source-complete pass expands that retained set across the complete
+serialized mask. QuickSpell multiplies its spawn offset by the caster scale;
+Shockwave multiplies query radius and every persistent force by the same scale,
+while one-shot player forces use `(scale + 1) / 2`. All pushable active forms
+are queried from their already synchronized circle or box rows, and the six
+prefabs serialized with `isPushable=false` return before body dispatch. Rock
+keeps the separate 9,000-fold BoplBody path. Tagged Macho boulders use
+`defaultForce` instead of `platformForce`; spell-layer PortalShots receive
+ordinary `ForceMode2D.Impulse`; RigidBodyAffector Black Holes receive the
+source's direct signed-mass `AddForce` without the 60-fold conversion. During
+Time Stop the wave still applies the current curve sample on each updater pass,
+and its raw updater delta continues advancing the curve clock. Only the
+affected target's physics integration is frozen. All handles and the 50-slot
+capacity remain inline in `GustWave`, so none of these paths allocate per cast
+or tick.
+
+`gust_ability_ab.c` compares NativeAOT with optimized Q32 Rust for 360 complete
+ticks, including initial loadout rows, cast and public position arbitration, the
+active Gust circle, deferred wave registration, all six map-platform trajectories,
+the complete force curve, exit and later recovery. Headers, players, slimes,
+telemetry, dynamic positions/velocities/rotations, hierarchy numbers and entity
+lifecycle match. Static authored collider vectors allow one Q32.32 least bit;
+the observed case is Dash's inactive half-extent imported through a Unity float
+path and has no semantic effect. Cross-ability targets beyond the currently
+executable public forms remain part of those abilities' later integration.
+
+`gust_broad_ab.c` adds one 430-tick four-player comparison containing a
+released Black Hole, a live PortalShot, ordinary player/platform targets and a
+spawned Macho boulder. It verifies the boulder's tag-selected default-force
+branch and the crowded public lifecycle within the existing measured
+Black-Hole/form spatial bound. Direct in-wave PortalShot and Black Hole
+capture, non-unit Gust scale, a wave overlapping Time Stop, layer-26 orbs,
+projectile-layer MeteorSmear capacity accounting and cross-shape truncation at 50 hits are
+still unmeasured, so catalog id 7 moves from `slice-only` to `partial` rather
+than `ported`. Spike children are intentionally ignored through the source
+`IPlatformAttachable` return; Engine, Tesla and rope hooks are outside the
+serialized mask.
+
+`gust_grenade_ab.c` composes a released Grenade with Gust for 340 ticks. The
+item enters the wave's captured set on tick 250, receives the initialization
+and same-pass update impulses, follows the full curve and remains in the normal
+pooled rigid-body/contact path. Every public field matches within the existing
+64-raw-Q32 grouped transform bound; the first horizontal impulse occurs on the
+same tick and all later item positions and velocities match NativeAOT.
+
+`gust_smoke_ab.c` repeats the released-item path for Smoke over 340 exact ticks.
+Smoke enters on tick 214, releases on tick 243, and is captured when Gust enters
+on that same pass; the first observable horizontal impulse occurs on tick 250.
+The fixed target identity, both initialization-pass impulses, complete force
+curve and later pooled-body flight match NativeAOT. This separately verifies
+that the generic layer-10 item branch is not relying on Grenade's later fuse or
+collision callbacks.
+
+`gust_poke_ball_ab.c` and `gust_tack_ab.c` add the corresponding released Poke
+Ball and Projectile-backed Tack paths. Each 340-tick differential has the same
+measured 214/243/243 cast, release and Gust-entry schedule and tick-250 first
+horizontal impulse. Target capture, both initialization-pass forces, the full
+curve, entity ownership and later flight are exact; Tack retains its source
+Projectile owner while the Poke Ball item root remains ownerless.
+
+`gust_mjolnir_ab.c` covers the non-commutative released-Mjolnir variant over 340
+exact ticks. Its longer cooldown yields the 274/303/303 cast, release and Gust
+schedule. On tick 310 the initialization impulse precedes Mjolnir's recall
+update, while the regular wave impulse follows it; the full curve and resumed
+recall flight remain exact.
+
+`gust_mine_ab.c` adds the released autonomous Mine branch for 340 exact ticks.
+Mine enters on tick 214, registers its circle after the tick-233 form exit, and
+joins Gust's fixed set on that same cast. Both first-pass impulses, the full
+curve, subsequent rigid-body flight, hover clock and arming remain exact through
+tick 340.
+
+`gust_grenade_form_ab.c` covers the complementary held state for 294 exact
+ticks. Grenade and Gust enter on ticks 214 and 224; the wave pushes the grounded
+ThrowItem2 form on tick 231 while its manually initialized payload remains
+outside DetPhysics. The form's prior collider basis and later PlayerBody pose,
+grounded surface motion, held payload placement, release position, inherited
+spawn rotation and launch impulse all match. Rust retains this state in the
+existing fixed player and item pools.
+
+`gust_throw_forms_ab.c` runs the same strict composition for the other four
+ThrowItem2 forms. Smoke and Poke Ball match for 294 ticks from entry through
+release; Mjolnir's longer cooldown enters on tick 274 and is pushed on tick 291;
+Tack matches through its tick-289 release, before its separately covered victim
+contact begins. The Tack payload alone exposes its `Projectile` player id in
+the public collider row, so Rust sets that owner while leaving Smoke, Mjolnir
+and Poke Ball payload roots at the source's zero owner. No comparator bound is
+needed for any of these form traces.
+
+`gust_mine_form_ab.c` covers Mine's older ThrowItem form for 248 ticks. Gust
+enters on tick 214, Mine on tick 217, and the wave pushes Mine on tick 221.
+`PlayerPhysics.Move` advances the attached-surface local and rotation before
+the later `PlayerBody` integrates external velocity; the DetPhysics-synced form
+collider observes that body position while the live transform is snapped back
+to its surface local afterward. The trace preserves this order and the payload
+callback schedule. The form stores FixTransform's directly assigned surface
+right vector separately from the angle-derived DPhysicsBox axes, so its collider
+centre now uses the same offset basis as Unity. Centre, axes, force, clocks,
+lifecycle and every interaction boundary use the normal 64-raw-Q32 bound.
+
+`gust_arrow_ab.c` composes a live Bow Arrow with Gust for 400 ticks. Bow begins
+on tick 214; Arrow registration, Bow exit and Gust entry all occur on tick 255;
+the first observable horizontal Gust impulse occurs on tick 262. The fixed
+target capture, split initialization/Arrow/wave updater order, complete curve,
+later flight and every lifecycle field match NativeAOT within the existing
+64-raw-Q32 grouped transform bound.
+
+`gust_missile_ab.c` composes the layer-10 guided Missile box with Gust for 340
+ticks. Missile entry starts on tick 154, the Spark registers on tick 174, Gust
+enters on tick 225 and its first Missile impulse occurs on tick 232. The exact
+trace continues through instability thrust and the tick-291 right-boundary
+explosion. This exposed a separate identity omission: instantiating
+`AirWave_Shockwave` consumes one updater hierarchy entry even though the wave
+has no public collider. The extractor now records that source-derived count, so
+the later explosion hierarchy matches as well. Every public field is exact
+within 64 raw Q32 units.
+
+`gust_rock_ab.c` covers Gust's distinct Player-layer active-form branch for 300
+ticks. Rock and Gust enter on ticks 214 and 224; the wave initializes on tick
+231 and sees Rock's pushable `Ability` with neither `PlayerPhysics` nor
+`PlayerBody`. It therefore queues the source's unnormalized center force times
+9,000 on Rock's `BoplBody` once, without retaining Rock in the curve target set.
+The trace stays exact through rigid flight, lower-boundary detection on tick 284,
+ability-body cause `Other`, effect allocation, stock loss and collider removal.
+
+`gust_roll_ab.c` covers Gust's other pushable Player-layer branch for 300 ticks.
+An airborne charging Roll and Gust enter on ticks 214 and 224; wave activation
+on tick 231 finds Roll's `PlayerPhysics` and adds the distance-scaled force
+through its authored inverse-mass factor of 35. Roll's later boundary component
+runs after `Roll.UpdateSim` but before `PlayerBody.UpdateSim`, so it observes the
+preceding movement pose rather than the pose PlayerBody publishes later in that
+pass. The trace is exact through that phase distinction, lower-boundary death on
+tick 292, effect allocation, stock loss and collider removal.
+
+`gust_bow_ab.c` covers the aim-oriented pushable Bow form for 300 exact ticks.
+Bow and Gust enter on ticks 214 and 224; wave activation on tick 231 performs
+the source circle-versus-oriented-box query from the live Bow aim, then applies
+the same distance-scaled `PlayerPhysics` force through the inverse-mass factor
+of 35 before Bow's movement pass. The subsequent form position, aim, charge and
+ability clocks remain exact.
+
+`gust_missile_form_ab.c` covers the grounded controlling Missile form for 294
+exact ticks, separately from the guided projectile covered above. Missile and
+Gust enter on ticks 214 and 224 and the wave pushes the form on tick 231. The
+source phase order is visible in one public row: `DPhysicsBox` retains the
+prior basis for the pass while the later `PlayerBody` publishes the position
+after the new external velocity. Rust stores that prior scalar rotation and
+uses fixed player state only; the following grounded movement remains exact.
+
+`gust_gun_forms_ab.c` adds five 294-tick exact compositions for active Blink,
+Growth, Shrink and Duplicator forms (cast tick 214, Gust tick 224, push tick
+231), plus Freeze (ticks 274, 284 and 291). Each query uses the form's authored
+offset, scale and oriented DPhysics box. These traces expose an ordering hidden
+by the standalone form goldens: Gust's deferred Shockwave initializes before
+the existing gun form, while the form's separate `PlayerBody` updater advances
+even when `PlayerPhysics` remains grounded. Rust now preserves that split with
+no per-tick allocation or comparator tolerance.
+
+`gust_magnet_form_ab.c` isolates Magnet's additional live pull field by placing
+it at its standalone-golden spawn and Gust on the lower-left player. Magnet
+casts on tick 214, Gust on 224, and the form's pushed trajectory becomes visible
+on tick 232. All public fields compare exactly through tick 250 with the normal
+64-raw bound, including Magnet's simultaneous player/platform pull. The trace
+ends before tick 271, when the field reaches an ability pickup; that separate
+pickup interaction remains explicitly open.
+
 
 ## Executable Invisibility and streamed actor verification
 
@@ -898,6 +1607,15 @@ managed-destroyed components are preserved. Multiple distinct Invisibility slots
 can chain casts before the slime observes a visible frame, delaying restoration.
 The reference uses the original InstantAbility/Invisibility methods and UnityEvent
 callback, with values checked against the exported prefab.
+
+The public rollout backend now uses this behavior directly. `Player.UpdatePlayer`
+runs for every player before any slime update, expiry uses the strict `> 5`
+comparison, and the following SlimeController pass performs cooldown restoration.
+The optimized Q32 cross-backend `invisibility_ab.c` scenario matches NativeAOT for
+637 consecutive ticks, including an initial cast, a second-slot cast on the exact
+expiry frame, a later visible frame with restoration, and a recast after the
+restored six-second cooldown. Every player flag, invisibility clock, ability clock,
+slot cooldown, timer, id, and activation counter in that projection matches.
 
 All 24 long scenarios match: four per player count 1..6, 23 complete 1,800-tick
 sequences, 41,400 completed ticks, 339 Invisibility audio requests and 203 observed
@@ -1155,7 +1873,8 @@ actor scheduler. It stores all 188 samples, including position, both velocities,
 rotation and three cooldown timers. Recording continues during time stop and
 while body simulation is disabled, and pauses when the owner is inactive or its
 controller is marked destroyed. Whole-object deletion retains the final history.
-Playback remains explicitly unsupported.
+The standalone actor runner still limits this fixture to history recording;
+the public rollout integration below executes playback against the full map.
 
 The original Unity RewindRecorder.UpdateSim matches in all 48 comparisons, eight
 cases for each one-through-six-player roster: 36 complete 410-tick episodes
@@ -1172,8 +1891,33 @@ samples. The verifier uses Python's standard-library lzma support. Run
 `python3 native/tools/verify_actor_rewind.py --golden`; fresh captures use the same
 command without `--golden`. Raw evidence and exact source/input/output hashes are
 in `artifacts/actor-rewind/report.json`. Existing spawn and death regressions,
-Rust tests/lints, Python checks and the C smoke test pass. Rewind casting/playback,
-the complete match environment remain outstanding. Clone allocation is covered below.
+Rust tests/lints, Python checks and the C smoke test pass. Clone allocation is
+covered below.
+
+### Executable Rewind playback (2026-09-14)
+
+Catalog id 31 now connects that fixed 188-sample history to the public rollout.
+Its fixed-capacity path contains at most 15 ten-tick Catmull-Rom segments and a
+121-entry arc-length table, so recording, path construction and playback do not
+allocate. A successful cast selects at most 150 prior ticks, plays them over the
+source's integer-truncated 17/25 duration, and evaluates the same smootherstep,
+spline and arc reparameterization arithmetic. `PlayerBody.AddForce` uses the
+original inverse-mass cancellation rather than assigning velocity directly.
+
+Playback disables PlayerPhysics and input while preserving PlayerBody integration
+and ordinary cooldown advancement. Each path segment raycasts against rounded
+platforms and applies the authored 3000 force; waking a quiet map also invalidates
+the platform fast path. Completion occurs on the following updater pass. It runs
+the six-pass rounded-rectangle depenetration, restores both velocity channels,
+rotation and the two other cooldowns, preserves the live Rewind cooldown, and
+repeats `UnGround(false)` against the platform reference deliberately retained by
+the source. The other cooldowns then advance once later in the same pass.
+
+`rewind_ability_ab.c` compares every public header, player, slime, telemetry and
+entity field for 300 NativeAOT/Q32 ticks. The scenario records grounded and aerial
+movement, reverses direction, casts from a moving platform, observes the full
+102-tick suppressed playback, pushes that platform, and completes the retained
+ground release with no death. All fields match exactly.
 
 ## Scheduled map-boundary deaths
 
@@ -1431,8 +2175,8 @@ records are in `fixtures/bopl-body.jsonl.gz`; hashes and raw captures are in
 `artifacts/bopl-body-verified`. Run `verify_bopl_body.py --golden` to replay them.
 
 These are component-method checks against seeded registered physics state.
-Fresh collider initialization and dynamic Revival marker integration remain
-separate work; this corpus does not establish a complete Revival ability.
+The public rollout integration described below now covers fresh collider
+initialization, dynamic marker registration, and the one-marker death path.
 
 ### Revival marker allocation and lifetime
 
@@ -1463,9 +2207,47 @@ Complete records and hashes are in `fixtures/revival-marker*.jsonl.xz` and
 `revival-marker-interactions`. Coverage requires marker/clone creation and
 removal, the expected extra-life flag/reference counts, and the exact errors.
 
-Marker creation now connects to the death and respawn path described below.
-Copying all equipped ability types remains open; this is not a complete Revival ability
-or full public C match implementation.
+Marker creation connects to the death and respawn path described below. The
+equipped-clone and actor corpora cover the general source object graph,
+including multiple markers, clone limits and fresh equipped prefab instances.
+
+The public Q32 rollout now executes Revival's cast-side path as well. It uses
+the exported QuickSpell animations and offsets, active 2.3-radius ability
+circle, one-pass-deferred marker registration, exact layer/owner/body fields,
+and global spawned-prefab hierarchy numbering. `revival_ability_ab.c` compares
+650 complete NativeAOT/Rust ticks, including the cast, active body, marker row,
+exit, landing, and stationary marker lifetime. The comparison is exact. It
+also exposed the source observation order for dynamic shapes: DetPhysics
+enumerates all circles before boxes and rounded rectangles, independent of
+when a circle was registered. The Rust observation writer now performs those
+three allocation-free linear passes while preserving registration order within
+each group.
+
+`revival_death_ab.c` then drives that same player out of the map and compares
+900 complete ticks. At the death tick the old slime and its ability colliders
+are removed while the marker and player life remain. On the following pass,
+the copied Player/Revival/Dash/Platform prefabs receive their source hierarchy
+numbers and collider identities, and the hidden clone appears after the
+surviving original slime. The clone remains suppressed through the 60-tick
+wisp and distance-derived particle flight. The port accounts for
+ReviveParticle's duplicate updater registration, removes the marker on the
+same pass as `ReSpawn`, advances fresh cooldowns through the 105-frame spawn,
+and launches at exactly 11.25 units/second. All player, slime, telemetry and
+entity fields match NativeAOT exactly across the scenario. The public program
+uses one replacement body. Retained component corpora cover simultaneous
+marker callbacks in isolation, but the public rollout cannot yet represent
+C#'s several independent full `SlimeController` actors owned by one player.
+
+`revival_broad_ab.sh` combines the cast, death and pickup-replacement programs
+as one optimized-Q32 gate. It covers 3,835 exact public rollout ticks through
+ordinary and acquired airborne casts, marker creation/replacement, boundary
+death, copied ability registration, particle travel, respawn and launch.
+Revival markers now retain their serialized positive-mass body in the public
+runtime as well: Black Hole force is integrated allocation-free, scaling
+updates the live inverse mass, and Portal/Teleport transform the same body
+position and velocity. These rare cross-ability branches are source-ported but
+do not each have a dedicated public C differential; multi-marker full actors
+remain the structural gap described above.
 
 ### Revival death, effects and particles
 
@@ -1506,8 +2288,9 @@ are in `artifacts/revive-particle-complete`, `revive-effect-complete`,
 those captures retain the resulting pending effects and do not establish
 that every newly allocated effect finishes within their time windows.
 
-The equipped-clone extension below now covers Invisibility. Copying other
-concrete ability graphs and integrating the full public C match remain open.
+The equipped-clone extension below validates fresh prefab selection and
+lifecycle independently; the public rollout constructs the collider/runtime
+state for every catalog ability when Revival creates its replacement.
 
 ### Equipped clones and empty instant callbacks
 
@@ -1547,6 +2330,12 @@ empty-callback InstantAbility with a bound transform, audio requests and a
 missing transform link: 2,700 ticks, 18 complete cases, 6 exact failures and 378 casts.
 The empty callback never makes a player invisible.
 
+The public match ABI also rejects catalog id 0 before scene construction. The
+`null_ability_ab.c` cross-backend check confirms both NativeAOT and Rust return
+the invalid-argument status while reporting the same 39-entry catalog. Together
+with the retained instantiation failure prefixes above, this covers every
+reachable behavior of the shipped placeholder.
+
 Complete fixtures are `clone-abilities.jsonl.xz`,
 `clone-abilities-long.jsonl.xz`, `clone-revival.jsonl.xz`,
 `clone-revival-casts.jsonl.xz`,
@@ -1561,3 +2350,1945 @@ and failed-prefix allocations; it is not the total number of pooled objects.
 Physical destruction of arbitrary initially supplied instant graphs, cloning
 other concrete abilities, pickups/drops, complete match lifecycle and the
 full C environment remain open.
+
+### Executable Smoke throw and persistent cloud field (2026-09-14)
+
+Catalog id 13 now shares the extracted `ThrowItem2` form and carries its own
+SmokeGrenade body, five-second timed detonation, and four authored cloud offsets.
+`SpawnCloud` preserves the source RNG order: each offset consumes the inside-unit
+angle and radius before its independent cloud rotation. Clouds register on the
+following updater pass in hierarchy order, draw their ignition delay there, and
+export their layer-22 circle with the seven authored enter radii. The hot path
+uses retained vectors and fixed arrays; it does not allocate per tick.
+
+The implemented interaction path also disables a cloud collider when an
+ignite-capable grenade or smoke explosion overlaps it, waits the cloud's sampled
+strict delay, and spawns the owner-attributed first-frame lethal explosion.
+Per-cast cloud retention is capped at the source's 40-effect ring size.
+`smoke_ability_ab.c` compares 800 exact NativeAOT/Q32 ticks through a grounded
+charged throw, ballistic item flight, timed removal, exact randomized placement,
+radius animation, and persistence of all four cloud entities. Ignition chaining,
+scale changes, ring eviction, and `Item.Duplicate` remain to be exercised by
+dedicated goldens, so the catalog entry remains partial.
+
+The remaining reachable Smoke source branches are now translated as well.
+`FixTransform` scale follows the held form into the released item and each cloud;
+the item collider and BoplBody mass update in the source's separate updater
+passes. Growth and Shrink can select both released items and clouds. Each cast
+owns its own 40-cloud ring, duplicated Smoke items place each emitted cloud on
+the 1,200-frame deletion list, and directly duplicated clouds use the prefab's
+three-copy random-circle pattern and ordinary 1,800-frame lifetime. Missile,
+Mine, Spike, Engine, Tesla, Grenade and Smoke explosions all enter the common
+flammable-cloud delay and recursive owner-credit path. Bounds removal continues
+while duplicate shake moves a cloud, and all of these clocks pause under Time
+Stop.
+
+`smoke_broad_ab.c` is the single broad per-ability differential. It matches 500
+optimized-Q32 ticks exactly (one raw Q32 unit on vector components) through an
+airborne charged release on tick 151, item registration on tick 186, Bow Arrow
+registration on tick 192, their tick-218 contact, twelve asserted post-contact
+Smoke passes, later ordinary-contact detonation, and four cloud registrations on
+tick 266. `Arrow.prefab` serializes `IgnitesExplosives` false, so this contact
+destroys the Arrow but deliberately leaves Smoke alive. Dedicated differentials
+are still absent for the translated scale, direct-cloud-duplicate, ignition,
+cross-cast ring and Portal branches; those remain listed as verification gaps.
+
+### Executable Time Stop and global simulation clock (2026-09-14)
+
+Catalog id 12 now executes the shipped `CastSpell` form and `TimeStop` effect.
+The grounded entry preserves the source's updater phases: `Ability.UpdateSim`
+publishes the pre-callback root while `SpriteAnimator` can unground and resync
+the circle later in the same pass. The collider retains the exact Slerp basis
+rather than reconstructing it from its derived angle. Channel time uses the
+caster-protected clock, release before the strict nine-second boundary cancels,
+and a completed cast runs the authored cast and ease-out animations before
+returning the slime at its 1.8-unit exit offset.
+
+The spawned effect registers on the following pass, protects all members of the
+caster's team, sets the global player time scale to zero, and restores it after
+the exact float32 10-second duration plus the final 1.501036167-second alpha key.
+Unprotected players retain their last accepted input and continue the source's
+unscaled gravity, air damping, and external-velocity damping while their
+position, raycasts, input changes, and cooldown clocks receive a zero delta.
+Protected players keep their normal player clock, except abilities whose prefab
+explicitly opts into `cooldownStoppedDuringTimeStop`. DetPhysics integration now
+uses the post-effect zero delta for arrows, thrown items, and dynamic platforms;
+their earlier updatables use the scale visible at the start of the pass. Timed
+projectile, smoke, and explosion animation clocks follow the same split without
+adding per-tick allocation.
+
+`time_stop_ability_ab.c` compares 1,600 NativeAOT/Q32 ticks exactly. It covers a
+grounded cast, effect registration and removal, team protection bits, 690 frozen
+ticks, an airborne opponent with nonzero velocity, frozen opponent position and
+cooldowns, protected-caster movement and cooldown exceptions, and final global
+clock restoration. Interactions with ability entity types that have not yet
+been ported remain part of those abilities' open scope, so coverage is marked
+partial until the catalog is complete.
+
+A whole-source clock audit (2026-09-16) covers the explicitly modeled uses of
+`GameTime.IsTimeStopped`, `FixedDeltaTime`, `PlayerTimeScale`, and raw updater
+delta across active forms, items, projectiles, attachments, scale effects,
+pickups, duplicate lifetimes and DetPhysics. It does not yet model independent
+clock selection for every component updater in every transformed form. The
+audited paths exposed one semantic omission:
+`MeteorSmash.UpdateSim` does not return for an unprotected player. Its clock and
+animator freeze, but the vibration state still consumes both
+`RandomInsideUnitCircle` draws, changes the `FixTransform` directly, assigns its
+hold velocity and applies both Meteor and PlayerBody damping while physics
+integration receives zero delta. Rust now retains the last accepted complete
+input profile and executes that branch without allocation.
+
+`time_stop_broad_ab.c` composes this path with the full Time Stop lifecycle for
+1,540 optimized-Q32 ticks. The differential is exact within Meteor's existing
+50,000-raw-Q32 pose bound (0.0000117 world units): 690 stopped passes contain
+observable Meteor vibration with a frozen ability clock and published player
+position, the caster remains protected and advances allowed cooldowns, the
+opponent ignores new input, and restoration resumes release. The remaining
+per-updatable transformed-form clock gap is listed in `ABILITY_PORT_GAPS.md`;
+other listed compositions are translated paths lacking a broad public check.
+
+`time_stop_arrow_ab.c` composes Bow and Time Stop through the public rollout
+ABI. Bow releases an upward arrow on tick 702; the stop begins on tick 738,
+holds the projectile position bit-exactly for 690 passes, then restores its
+gravity and flight on tick 1428. Every header, player, slime, telemetry and
+entity field matches NativeAOT through the first restored pass. The arrow now
+reserves the five updater hierarchy numbers instantiated by its prefab and uses
+the extracted `DPhysicsCircle` hierarchy, which also keeps later dynamic entity
+ordering equal to the source.
+
+`time_stop_bow_ab.c` starts Time Stop while the opposing player is charging an
+active Bow form. The form position, charge phase, ability clocks and every
+public collider field remain exact and fixed through the 690-pass stop. Bow
+then resumes on the first restored clock, releases, exits and registers its
+Arrow with exact source ordering during the remainder of the 1,600-tick trace.
+
+`time_stop_gun_forms_ab.c` adds five exact 1,600-tick cases for grounded Blink,
+Growth, Shrink, Duplicator and Freeze forms. Each enters on tick 680, remains
+active and motionless for all 690 zero-scale passes, resumes on the first live
+clock and exits after release. The second frozen pass exposed that DetPhysics
+must retain the form's stop-entry box instead of rebuilding it from the live
+post-LateUpdate surface pose. The restoration pass retains it once more because
+the updater delta was captured while the global scale was still zero; collider
+synchronization resumes on the following pass. No comparator bound or hot-path
+allocation is used.
+
+`time_stop_rock_ab.c` covers an active Rock across the same 690 stopped passes.
+Unity continues calling `BounceBall.LateUpdateSim`: the unprotected owner's
+activation clock receives zero delta, but the entry curve is evaluated at that
+frozen time and its value is added to the circle scale again on every pass.
+Rust now uses the same per-player delta and preserves that source behavior;
+Rock position and timers remain frozen and rigid-body motion resumes on the
+first restored pass. All public state matches, with the existing Rock bound of
+64 raw Q32 units for successive curve and normalization rounding.
+
+`time_stop_roll_ab.c` holds an opposing Roll charge across all 690 stopped
+passes. The unprotected charge clock and form position remain frozen, then the
+first restored clock resumes charge, lethal release and curved-platform motion.
+The differential covers 1,540 ticks with the established Roll pose bound of
+2,048 raw Q32 units. It deliberately ends before tick 1557, where this route
+first reaches Roll's separately open platform-hop behavior; that later branch
+is not attributed to Time Stop coverage.
+
+`time_stop_missile_ab.c` equips Missile in slot two and holds its controller
+and guided box across the same 690 stopped passes. This exposed a hard-coded
+slot-zero release test: Rust entered Missile's exit animation after its enter
+sequence even though the slot-two button remained held. Release now derives
+its button from `active_slot`. During the stop, `SparkShot` still calls
+`Stabilize` and rewrites velocity along the retained up vector with a zero turn
+angle; Rust preserves that component behavior without advancing either body.
+The controlling form, projectile, cooldowns, all public rows, restored
+steering, release and subsequent flight match for 1,700 ticks.
+
+`time_stop_mine_form_ab.c` holds Mine's original `ThrowItem` form across all
+690 zero-scale passes and then releases it after restoration; the controlling
+body, collider, cooldowns, exit and autonomous Mine registration match for
+1,540 ticks. The form collider retains its established 8,192-raw-Q32
+surface-reprojection bound (less than 0.000002 world units).
+
+`time_stop_mine_ab.c` releases the autonomous Mine before the stop. Both
+backends keep its item collider at the exact frozen position for all 690
+passes, while the unprotected owner's body and cooldowns also remain fixed.
+After restoration its hover clock, force and body motion resume on the same
+pass. This scenario is exact under the same established form bound and does
+not claim the still-unmeasured chasing phase.
+
+`time_stop_mine_anticipation_ab.c` lets a player collision trigger the Mine's
+authored anticipation before the stop begins. Its jittered pose, velocity,
+spin, opponent position and opponent cooldowns remain unchanged for all 690
+zero-scale passes, with no early explosion registration. On restoration the
+remaining anticipation clock resumes and the disabled-first `MineExplosion`
+row appears exactly five active ticks later in both backends. The 1,460-tick
+composition uses a measured 256-raw-Q32 bound (less than 0.00000006 world
+units) for post-jump and post-shockwave vector grouping; every discrete field,
+identity and lifecycle boundary remains exact.
+
+`time_stop_throw_forms_ab.c` runs Grenade, Smoke, Poke Ball, Tack and Mjolnir
+from slot two through 1,540 ticks each. Every held form, position, collider,
+cooldown and timer remains fixed for all 690 stopped passes, then releases and
+registers its item on the restored clock. The long-held Mjolnir exposed a
+semantic lifecycle bug: Rust began outbound/recall logic before `ThrowItem2`
+released it. Source `Mjolnir.UpdateSim` returns while
+`grenade.hasBeenThrown` is false. The pooled implementation now uses the same
+boundary represented by manual collider registration, so the held payload
+remains owned by the form without a lookup or per-tick allocation.
+
+`time_stop_mjolnir_ab.c` runs separate outbound and recall scenarios. Position,
+linear velocity, angular velocity, opponent cooldowns and the owner's `land`
+animation state remain unchanged through 690 zero-scale passes in each, then
+flight resumes after restoration. The recall scenario exposed that Rust's late
+observable-state update still decremented
+`land` once per simulation pass while the player clock was stopped. The late
+state machine now uses the same pass-start protection and time-scale gate as
+collider synchronization, matching `SpriteAnimator` without adding work or
+state to the tick path.
+
+`time_stop_released_items_ab.c` runs released Grenade, Smoke, Poke Ball and
+Tack bodies through the same stop. Their position, linear velocity, angular
+velocity,
+owner cooldowns and opponent state remain fixed for all 690 passes, then body
+motion resumes on the restored clock. Tack continues far enough to cover its
+owner-clear/re-entry self-kill and stock transition after restoration. Its
+item registers on tick 695 and the stop begins on 738, 43 ticks into the
+authored 48-tick arming delay; the restored self-kill occurs on tick 1459. All
+four 1,550-tick scenarios are exact with the ordinary 2,048-raw-Q32 body bound;
+this does not claim Poke Ball's capture state. The Grenade fixture now continues
+past restoration: its fuse remains paused from stop tick 738 through tick 1428,
+the item detonates on tick 1456, the explosion disables its lethal box on tick
+1457 and the final visual row is removed on tick 1546.
+
+`time_stop_smoke_cloud_ab.c` times Smoke's fuse so all four clouds register
+shortly before the stop while their enter animation is still growing. All four
+identities, positions and radii remain unchanged through 690 zero-scale passes,
+then their radius-frame clocks resume after restoration. The full 1,540-tick
+scenario is exact under the same ordinary entity bounds and uses fixed four-row
+scratch in the golden; the runtime already uses its capacity-retained cloud
+pool.
+
+`time_stop_poke_capture_ab.c` uses a third player to start Time Stop after a
+Poke Ball captures its victim on tick 696. The ball's position, velocity and
+spin, the victim's cooldowns, invisible/ragdoll flags and pinned position, and
+the 116-pass capture clock remain paused through all 690 stopped passes. The
+victim releases and ejects on tick 1502, exactly 806 ticks after capture. As in
+the existing capture golden, inherited movement history is bounded to
+750,000,000 raw Q32 units (0.175 world units) while every scalar state and
+lifecycle tick is exact. `Player.Position` performs one publication catch-up on
+the second stopped pass after `PokeBall.UpdateSim` has already pinned the
+physical slime to the frozen ball; it remains fixed thereafter.
+
+`time_stop_engine_ab.c` plants a RocketEngine shortly before the global stop.
+The live layer-21 child and its composite rounded platform remain fixed for all
+690 zero-scale passes. `RocketEngine.UpdateSim` returns before advancing the
+force animation or applying its point force, and Rust preserves that branch in
+the preallocated attachment pool. The clock, entity rows and platform body
+resume together after restoration; all 1,540 ticks are exact.
+
+`time_stop_tesla_ab.c` plants and connects two Tesla nodes before the stop,
+then compares their composite circles and lightning line through 690 frozen
+passes and the following flicker cycle. It exposed a one-pass callback-order
+error after a paused flicker: source `SpriteAnimator` invokes `UnFlicker`,
+which resets and enables the line, before the later `StretchableLightning`
+updater advances the new cycle in that same restored pass. Rust had reset the
+clock without the later advance, making the next five-second flicker one tick
+late. Each pooled Tesla parent now retains whether its flicker animation was
+stopped and applies that same callback/update handoff. The 1,900-tick scenario
+is exact with the established 2,048-raw-Q32 attachment bound (less than
+0.0000005 world units) and no allocation in the tick path.
+
+`time_stop_black_hole_ab.c` releases `BlackHoleClap` on the wider map 2 and
+waits for its form to exit before Time Stop takes effect. The persistent
+layer-23 hole, its Hermite radius, the unprotected slime and all three cooldown
+timers remain fixed for every one of the 690 zero-scale passes; growth resumes
+after restoration. The differential retains the standalone Black Hole form's
+0.0163-world-unit pose bound and a 256-raw-Q32 radius bound. Map 2's authored
+static hierarchy labels are 101 in NativeAOT and 146 in the extracted rollout
+inventory; both schedule before the 100,000,000+ runtime prefabs, while every
+dynamic hierarchy, identity, field and lifecycle boundary is compared. A
+single `Player.Position` publication immediately after form exit is allowed to
+replace the stale form value, after which both the physical slime and published
+position must remain fixed. This is publication ordering rather than movement:
+the slime and Black Hole position are unchanged on that pass.
+
+### Executable Spike and platform composites (2026-09-14)
+
+Catalog id 11 now executes the shipped grounded `Spike` form. The cast callback
+uses the attached rounded rectangle's live normal and exact far raycast distance,
+replaces the attack retained by that ability slot, instantiates the manual
+layer-16 box on the opposite surface, and applies the authored force at the
+caster's contact point. Cast and recovery animation callback boundaries, the
+root collider's pre-physics publication, grounded movement, and grounded exit
+pose match the updater hierarchy.
+
+`SpikeAttack` is represented as a child of the platform's DetPhysics composite.
+The implementation preserves the source's summed mass and moment, separate raw
+child bodies for observations, relative child position and orientation, and the
+otherwise surprising split between the rounded-root position and
+`CompositeBody.position` during box/rounded positional correction. The physics
+pass re-anchors that split from the root `FixTransform` on the next tick, just as
+`SynCompositeToFixTransAndRelativeValues` does. The attack evaluates the exact
+fixed down-thrust curve without allocating, remains lethal after the curve ends,
+and follows platform translation and rotation. Box/wall contacts use the source
+manifold order, effective composite body for impulses, raw child inverse masses
+for correction, and the callback's one-self-push-per-frame rule. Player-layer
+contacts invoke the persistent Explosion's default owner-zero lethal callback.
+
+The whole-source pass also covers slot-local recast replacement, owner-zero
+player lethality and team behavior, platform removal, duplicate lifetime,
+MachoThrow's detach/reinitialize transfer, Time Stop and the common Portal,
+Black Hole and Shockwave paths. `DPhysicsBox.Scale` now dispatches the source
+`IPlatformAttachable.RepositionOnParent` callback for a live Spike: it resizes
+the box, preserves the current `SurfaceOffset`, and immediately rebuilds the
+composite child center from the parent frame. Unlike Engine and Tesla, Spike
+has no later scale-offset updater; an active down-thrust curve may replace the
+offset on its next normal update, matching `SpikeAttack.UpdatePosition`.
+
+`spike_broad_ab.sh` compares 4,740 optimized-Q32 NativeAOT/Rust ticks. The
+ordinary 500-tick scenario covers grounded cast, registration, every curve
+frame, recovery, the persistent collider, composite flags and mass, cast-force
+motion, neighboring rounded-platform correction, bilateral push and repeated
+contacts. Two 500-tick compositions hit the retained collider with Growth and
+Shrink and remain exact through immediate repositioning and the complete scale
+curve. The active-form Dash matrix contributes another exact 180-tick Spike
+contact and simultaneously guards all other form callbacks. The attack's
+vertical half-extent retains the source `One / (One / extent)` round trip, which
+explains the three raw Q32 units between serialized extent and observed axis
+without changing overlap semantics. Recast, transformed-victim, platform
+removal, Macho, Portal/Black Hole and acquired-pickup compositions are
+source-ported but have not each been isolated in a public differential.
+
+### Executable Missile and guided box projectile (2026-09-14)
+
+Catalog id 10 now executes `SparkShot` with its extracted form physics and exact
+animation callbacks. The Spark prefab registers on the following updater pass,
+starts along the form's copied up vector, and is then steered by rotating its
+live `FixTransform` basis while preserving speed. The implementation mirrors the
+otherwise subtle scheduler order: the older form stabilizes the projectile
+before the appended `Missile` updater increments its instability counter, and
+DetPhysics rebuilds the transform basis from body orientation after each pass.
+Releasing the form leaves the projectile alive; two unstabilized updates later
+its authored 1000-unit thrust begins.
+
+The layer-10 box resolves and position-corrects against rounded platforms before
+its callback queues the ownerless MineExplosion and marks the Spark destroyed
+for one observation. The next pass removes that collider, registers the scaled
+layer-18 trigger, applies its constant one-shot Shockwave, and disables the
+lethal box after its first physics frame. Collision projections now fold over
+fixed slices directly, removing their former short-lived heap allocation from
+this projectile's per-platform hot path.
+
+`missile_ability_ab.c` compares 500 NativeAOT/Q32 ticks exactly. It covers the
+grounded entry, delayed spawn, two-direction guided turn, release, instability,
+box/rounded manifold and platform response, callback destruction, deferred
+explosion, first-frame hitbox flags, Shockwave, and the full 82-tick visual
+lifetime. The observed explosion collider axes differ from the serialized
+extents only by the source's `One / (One / extent)` fixed-point scale round trip.
+`missile_delayed_ground_entry_ab.c` adds a second 430-tick grounded entry after
+the ordinary player has accumulated residual external velocity. The form is
+placed with its authored physics radius, clears only self-imposed velocity,
+then runs its later `PlayerPhysics` and `PlayerBody` phases in the entry pass;
+the inherited force integration and 0.95 damping match through projectile spawn.
+`missile_airborne_entry_ab.c` adds 500 exact ticks starting one pass after a
+jump. It covers the newly enabled form's standalone gravity/raycast phase,
+SparkShot's explicit landing query, `Move(Vec2.zero)` air deceleration and third
+query, form-body integration, platform alignment, continued grounded control,
+and the normal grounded exit to Idle. These are scheduler-order differences
+from ordinary entry, rather than numeric approximations; no positional tolerance
+is used for either player's public state.
+`gust_missile_ab.c` adds exact oriented-box Shockwave capture, the complete Gust
+force curve, right-boundary destruction and the deferred explosion's hierarchy.
+`missile_player_ab.c` compares another 500 ticks bit exactly. A guided box hits
+an ordinary opponent directly on tick 279, its ownerless MineExplosion registers
+and kills on tick 280, and the differential preserves `deaths_other` attribution,
+the three-choice stock clone, first-frame hitbox disable and tick-362 visual
+expiry. `missile_bow_ab.c` follows the same flight into an active Bow form for
+another 500 bit-exact ticks. That slice uses the registered form collider for
+Shockwave's `CircleCastAll`, then reproduces `BowTransform.ExitAbility` resetting
+rotation and moving one 0.05-unit surface-normal `UnGround` step before death
+and stock handling.
+
+`missile_arrow_ab.c` adds a 500-tick bit-exact crossing shot. DetPhysics resolves
+the Arrow circle and guided Missile box as two dynamic bodies before its callback
+queue destroys both; the corrected positions, linear/angular velocities, Arrow
+owner clearing, same-tick destroyed rows, deferred ownerless explosion, hitbox
+disable and visual expiry all match. The candidate scan uses a fixed 64-entry
+stack buffer and adds no per-tick allocation.
+
+`duplicator_missile_ab.c` adds the Missile-specific `Item` copy path: three
+velocity-aligned fan copies with fresh engine state and pooled duplicate
+lifetimes, followed by exact boundary destruction, four deferred explosions and
+their independent expiry. The 450-tick comparison is bit exact outside the
+standard one-raw-unit box-basis reconstruction allowance.
+
+`scale_missile_ab.c` covers both signed ScaleChanger paths on the live item
+box through resized collision geometry, unchanged zero-inertia mass and the same
+boundary/explosion lifecycle. The only difference is at most three raw Q32 units
+in Shrink's basis from direct reconstruction versus Unity's incremental ratios.
+
+`missile_water_ab.c` adds 430 bit-exact ticks for the Water-trigger path. The
+Missile integrates across the surface on tick 304; Water is a trigger, so it
+does not resolve the body but invokes `Missile.OnCollide` before the next
+bounds-updater pass can silently remove it. The destroyed row, tick-305
+explosion registration, first-frame disable and tick-387 expiry all match.
+
+`missile_grenade_ab.c` adds 500 differential ticks for a released Grenade. The
+circle and guided box resolve dynamically on tick 246; Missile's callback queues
+its explosion while Grenade's item-layer callback intentionally leaves the
+corrected body alive. The explosion registers on tick 247 and ignites Grenade in
+the source's next contact pass, then the chained Grenade explosion registers on
+tick 248 and the two visuals expire independently on ticks 329 and 338. Public
+positions and velocities retain a 64-raw-Q32-unit bound inherited from the
+pre-contact `ThrowItem2` flight; entity identity, flags, collision outcomes and
+all lifecycle ticks are exact. Both candidate collections use fixed stack
+storage.
+
+The final source pass covers the rest of `SparkShot` and `Missile` wholesale.
+The generic player query already dispatches every live transformed form, and
+the projectile now also builds Missile/Missile Box/Box manifolds before either
+callback can destroy a participant. Item-layer trigger callbacks cover the
+source collision matrix's Explosion, EffectorZone, Smoke and orb classes;
+these detonate without physical resolution. Portal transit, scale, duplicate
+expiry, Magnet hold/fire, Water and every bounds direction retain their
+existing pooled paths. `RigidBodyAffector` and `Rope` remain the two explicit
+early returns from `Missile.OnCollide`.
+
+`missile_broad_ab.sh` runs 16 optimized-Q32 NativeAOT/Rust scenarios as one
+gate: normal, delayed-ground and airborne entry, ordinary and Bow victims,
+Arrow and Grenade contacts, Water, Gust on both projectile and form, Time Stop,
+Duplicator, Growth/Shrink, Magnet pickup plus held landing, and Dash against the
+active form. Every scenario passes. Missile/Missile and trigger-layer contacts
+are direct ports of the remaining callback matrix but lack standalone public
+captures; they use retained contact/detonation vectors, so no per-tick
+allocation was added. Catalog id 10 is marked `ported`.
+
+### Executable Mine, original ThrowItem, and autonomous chase (2026-09-14)
+
+Catalog id 24 now uses the older `ThrowItem` controller rather than the shared
+`ThrowItem2` approximation. Its grounded enter/loop/exit callbacks, forced
+surface-normal throw, aerial throw, deferred prefab registration, ownerless item
+observation, and grounded exit restoration follow the authored component order.
+The pooled item stores the Mine state machine directly, so hover, arming, target
+selection, chase force, anticipation jitter, and detonation add no per-tick heap
+work. Mine and Missile share their actual `MineExplosion` prefab, while Mine
+alone supplies `Explosion.PlayerOwnerId`; the co-located Shockwave observation
+owner remains zero as in Unity.
+
+`mine_ability_ab.c` compares a five-player, 334-tick NativeAOT/Q32 scenario. A
+fifth opposing team wraps onto the owner's map spawn, jumps into scan range, and
+exercises the two-second arm, chase, collision ignition, random anticipation,
+deferred destroyed-item row, credited lethal explosion, hitbox disable, and
+stock recovery. IDs, ordering, layers, flags, radii, axes, inverse masses,
+players, slime state, kill credit, and telemetry match. A second composed
+differential verifies that an early grounded button release selects the source's
+2-unit low throw strength even though `onlyThrowUp` fixes the launch direction,
+then copies that Mine into three independently initialized bodies. Dynamic
+entity vectors in the original chase scenario are within 64 raw Q32 units
+(1.49e-8 units) after chase-direction normalization and the resulting
+shockwave. The inactive/active Mine form centre also uses that 64-raw bound:
+Rust retains the directly assigned FixTransform right vector used to rotate the
+collider offset separately from the angle-derived DPhysicsBox axes. This removes
+the earlier 5,000-raw positional allowance without changing the shared surface
+or trigonometric kernels. `MineExplosion`'s remaining visual lifetime is already
+covered exactly by the Missile golden because both abilities reference the same
+prefab.
+
+A source-complete follow-up ports the remaining `Mine`, `ThrowItem`,
+`DestroyIfOutsideSceneBounds`, and shared-explosion branches. The autonomous
+scan now multiplies its radius by collider scale, preserves the source's
+four-hit capacity and collider-type/registration order, and includes active
+player forms plus abilityless clones before owner/team/invisibility filtering.
+Magnet-held Mines keep hovering but pause arming scans and chase time/force;
+their collision callback ignores only the holder's current hurtbox. The
+igniter mask now covers Player, Arrow/Tack Projectile and Grenade/MineExplosion
+contacts. Direct Mine detonation copies `physicsCollider.Scale` to the lethal
+box, while upper/side boundary effects and Missile explosions remain at prefab
+scale: Missile reads its unchanged `FixTransform.Scale`, even when
+ScaleChanger has grown the separate physics collider. Water still produces
+only the authored splash/removal path. These scans use a fixed stack buffer and
+the pooled explosion state, adding no per-tick allocation.
+
+`mine_broad_ab.sh` runs eight optimized-Q32 scenarios spanning ordinary
+cast/chase/detonation, held and released Gust, held/released/anticipation Time
+Stop, Duplicator fan copies and Dash against every ThrowItem form. All pass,
+as do the Q32 tests and 6,821-step base golden corpus. The newly ported
+scan/contact/bounds branches do not each have a standalone differential;
+catalog id 24 is marked `ported` after the wholesale source audit.
+
+`mine_pickup_ab.c` adds 2,524 ticks with the authored AbilitySpawner enabled.
+The first pickup stays live throughout the Mine form while its autonomous item
+registers and continues independently. After the form exits, collection replaces
+slot three with Revival on tick 2506; the replacement collider registers on tick
+2507 while the original button hold is still down, so the source immediately
+enters the acquired ability in that same updater pass. Rust matches that ordering,
+the marker, QuickSpell exit and all discrete public state. The already-established
+AbilitySpawner flight vectors retain their 100,000-raw-Q32 bound; every non-pickup
+entity field in this fixture uses one raw unit.
+
+### Executable Rock rigid form and bounce contacts (2026-09-14)
+
+Catalog id 9 now executes `BounceBall` as its own dynamic circle rather than
+moving the hidden slime body. Entry copies the grounded surface position into
+the form, installs the extracted mass, inertia, gravity, damping, friction and
+bounciness, and registers the circle synchronously on the first cast. The
+physics pass resolves Rock/rounded-platform, Rock/Rock, and Rock/player groups
+in stable source order using a reusable contact buffer. A player contact kills
+through the normal callback bookkeeping and queues the source's bounce force
+for the following integration pass; contacts with another Rock are nonlethal.
+Arrows and explosion hitboxes no longer treat the hidden slime box as a Rock
+hurtbox.
+
+The late updater reproduces the authored additive pulse curve and the strict
+`time > maxDuration` transition. Exit accumulates the inverse pulse deltas,
+multiplies them by the exit curve, and restores the slime at the rigid body's
+last position and velocity. The spawned collider row remains as a frozen,
+disabled ability object after exit and is reconstructed with its original
+hierarchy when stock or Revival creates a replacement slime.
+During Time Stop the updater still runs with a zero per-player delta, including
+the source's repeated evaluation and addition of the entry curve at the frozen
+activation time.
+
+`rock_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks through entry, falling,
+terrain bounce, pulse, timed exit, and restored slime movement.
+`rock_contact_ab.c` compares a three-player 360-tick scenario whose teammate
+shares the spawn point; the first Rock frame kills that target on tick 181 and
+matches owner credit, telemetry, destroyed rows, and stock recovery. IDs,
+ordering, flags, layers, inverse masses and every discrete state transition
+match. `time_stop_rock_ab.c` adds 1,600 ticks through the active form's frozen
+clock, repeated zero-delta scale update and restored physics. Position,
+velocity, rotation and pulse-scale values differ by at most 64
+raw Q32 units (1.49e-8 game units) because the two runtimes round successive
+curve interpolation and normalized contact operations at slightly different
+points. That bound is far below every overlap and transition threshold in both
+goldens and does not alter contacts, deaths, timing, or control state.
+
+`gust_rock_ab.c` adds 300 exact ticks through the active form's pushable
+Player-layer Shockwave branch. The BoplBody force begins on tick 231 and carries
+Rock below the scene bound, where its own `DestroyIfOutsideSceneBounds` kills
+the ability body on tick 284 with the exact effect hierarchy and stock result.
+
+A whole-source follow-up completes the remaining `BounceBall` callbacks. Rope
+entry now zeroes spin, updates the endpoint's mass/time/force, applies the
+authored pull and orientation, transfers endpoint Verlet velocity on jump, and
+detaches with that velocity when any segment exceeds the shared stretch limit.
+Rock/Rock contacts perform full two-body impulse and positional resolution
+before both callbacks receive the source's shared manifold normal. Player-layer
+contacts use each current collider and include transformed forms and
+abilityless clones; Arrow Projectile callbacks, Grenade impact, Grenade/
+Mine/Smoke explosion boxes, Black Hole, Magnet, portals, scale rays and
+one-shot Shockwaves all operate on the live Rock circle/BoplBody. The sibling
+`Rock_noPlayer` duplication path remains pooled and allocation free.
+
+`rock_broad_ab.sh` runs six optimized-Q32 scenarios covering rigid cast and
+terrain motion, lethal ordinary-player contact, Gust, Time Stop, PortalShot
+resolution and later portal transit, and Dash. All pass. Rope, transformed
+form/clone, dual-Rock and dedicated explosion branches are source-ported but
+do not each have a standalone public differential; catalog id 9 is marked
+`ported`.
+
+
+### Executable Push platform control (2026-09-14)
+
+Catalog id 22 now executes the grounded `ControlPlatform` form. Entry copies the
+source `PlayerInfo` pose, clears both velocity channels, disables the attached
+platform's authored ground animation, and advances the exact ten-tick
+`grabGround` callback boundary before channeling. While held, the form applies
+the authored deadzone and 10-unit force at the player's contact point, disables
+the platform's normal ground animation, and retargets `AnimateVelocity.HomePosition`
+with the source's `Lerp(body.position, oldHome, t)` argument order and scene
+bounds. Release restores the ordinary slime on the same surface.
+
+The ability collider keeps Unity's two representations of rotation: its box axes
+come from the scalar-angle lookup, while its local offset uses the exact stored
+ground-normal basis. The rollout records that basis at DetPhysics sync, so the
+later grounded-rider update cannot change the already-published collider. This
+is retained scalar state and adds no allocation to the tick path. The time-stop
+early return also preserves ControlPlatform's preceding 0.8 external-velocity
+damping.
+
+The whole-source completion distinguishes an ordinary platform from a Macho
+boulder, whose prefab has no `AnimateVelocity`: boulders therefore receive the
+serialized half-force path even outside sudden death. Ordinary platforms keep
+full force and the source home interpolation, including both horizontal camera
+clamps and the -10,000/upper-camera vertical clamp. Sudden death also selects
+the half-force path. Composite parents carry the impulse, so attached
+Spike/Engine/Tesla bodies and ropes follow without a second scan.
+
+Exit now preserves the form's live self-imposed, external and grounded velocity
+channels in `AbilityExitInfo`. This matters after Gust, Meteor, Black Hole,
+contacts or platform loss; entry still clears both channels as the source does.
+The Time Stop branch retains its pre-return 0.8 damping, and platform removal,
+death, boundary handling and pickup replacement flow through the common form
+exit/kill machinery without tick allocation.
+
+`push_broad_ab.sh` compares 420 NativeAOT/Rust Q32 ticks exactly through
+grounded entry, collider activation, 120 controlled frames, platform linear and
+angular motion, spring-home movement, channel timing, button release, inactive
+collider state and restored slime movement. Platform destruction, sudden death,
+boulder control, overlapping players, external forces and acquired-pickup use
+are source-ported but have not each been isolated in a public differential.
+
+### Executable Freeze ray and FrozenSolid (2026-09-14)
+
+Catalog id 36 now enters the shipped `GunTransform` form with the prefab's own
+movement constants. The form copies the exact ground basis, uses 0.03 gravity
+and a one-tenth airborne entry velocity while aiming, fires on button release,
+and switches to full gravity, 50-unit recoil, half-strength aerial steering and
+the 20-tick fire-animation exit. Its DPhysics box retains the same split as the
+reference: offset translation uses the stored `FixTransform` basis while the
+box axes use the scalar-angle lookup.
+
+`FreezeRayGun` raycasts the registered Player and wall shapes and reflects once
+from the map's Water box with the no-water mask. A player hit spawns the
+collider-free `FrozenSolid` updater. `Begin` immediately applies zero-speed
+ragdoll and the standard 0.05-unit ground detach; subsequent updates pin the
+victim, refresh the one-second ragdoll and suppress the next PlayerPhysics pass.
+After the serialized 1.6 seconds, thaw applies the `(0, 4)` fast ragdoll impulse
+and resets all three cooldown clocks. The rollout stores these small records in
+a capacity-reused vector, so the steady-state update path allocates nothing.
+
+`freeze_ability_ab.c` compares the grounded player-hit scenario through the
+complete freeze, thaw, ragdoll landing and cooldown restart, plus an airborne
+diagonal cast through recoil and animation exit. The two scenarios cover 1,000
+NativeAOT/Rust Q32 ticks exactly.
+
+`freeze_airborne_hit_ab.c` adds a 500-tick ordinary-player hit while the target
+is rising. Release occurs on tick 334, `FrozenSolid` takes control on tick 335,
+the target thaws on tick 445 and the resumed fall and landing remain exact
+through tick 500. This closes the ordinary airborne-victim path independently
+of the unresolved transformed-player restoration order.
+
+`freeze_water_self_ab.c` adds 500 exact ticks for the Water branch. Player zero
+starts from the right-hand lower spawn, runs beyond the wide lower platform,
+jumps, enters Freeze and fires straight down. The beam reaches Water and
+reflects into its own active gun form on tick 334. NativeAOT calls
+`Ability.ExitAbility` directly here, so the disabled gun collider keeps its
+aimed FixTransform basis for the exit-pass DetPhysics publication rather than
+being straightened by `GunTransform.ExitAbility`. The restored slime enters
+`FrozenSolid` on tick 335; after release it remains airborne until its timed
+ragdoll ends on tick 452, where `SlimeController.EnterFall` resets rotation.
+Rust now models both ordering details and matches the full self-freeze,
+cooldown-reset, thaw-flight and resumed-fall trajectory exactly.
+
+`freeze_bow_ab.c` adds 500 exact ticks for a hit on a grounded active Bow form.
+The ray invokes `Ability.ExitAbility` directly, leaving the inactive Bow box at
+its last aimed basis. `FrozenSolid.Begin` re-enables the original slime after
+its PlayerPhysics position in the updater list: gravity is skipped, but the
+later `SlimeController.Move` applies air control and reattaches with a fresh
+slime surface local. On the next pass the grounded controller moves that local
+once before the newly registered `FrozenSolid` pins it. Thaw applies its new
+ragdoll while the victim is already grounded, so landing cannot cancel it; the
+0.35-second timeout enters Fall without synthesizing another landing callback.
+All form, collider, player, entity and cooldown fields match through tick 500.
+
+### Executable Growth and Shrink rays on players (2026-09-15)
+
+Catalog ids 8 and 17 now execute the same serialized `GunTransform` used by
+Freeze: grounded and airborne entry, aim tracking, release-to-fire, 50-unit
+recoil, gravity, half-strength aerial steering, landing exit and the 20-tick
+fire animation. `ShootScaleChange` raycasts Player and wall rows and retains
+the source's one-pass Water reflection path.
+
+An ordinary player hit queues the collider-free `ScaleChanger` prefab for the
+next updater pass. It evaluates the exported five-key fixed Hermite curve at
+the source's pre-increment time and applies the signed 0.8 Player multiplier,
+including the strict duration boundary, time-stop rule and `[0.3, 3]` clamp.
+The rollout stores changers in a capacity-reused vector.
+
+Scaling has three separately visible clocks in Unity. `Player.Scale` changes
+after player components, the slime hurtbox copies it on the following player
+pass, and `PlayerPhysics.radius` consumes that FixTransform scale one pass
+later. Rust represents all three. It also retains the hurtbox's inverse
+extents: `SlimeController` assigns the same scale every tick, and
+`DPhysicsBox.Scale` repeatedly rounds `(One / oldScale) * newScale`, so its Q32
+axes continue drifting by raw units after the curve finishes. Reconstructing
+axes from `authoredExtents * scale` was visibly different; updating stored
+inverse extents matches the reference and preserves the actual collision
+shape.
+
+`scale_rays_ab.c` compares 500 Growth and 500 Shrink ticks exactly through
+form entry and exit, ScaleChanger registration, the complete curve, collider
+and radius phase lags, and subsequent scaled movement. Water reflection,
+remaining non-player targets, active transformed-player targets, BlackHole
+growth and orb conversion still require their concrete entity implementations
+and differential scenarios, so both abilities remain partial.
+
+`scale_missile_ab.c` adds 900 differential ticks across Growth and Shrink on a
+live item-layer Missile box. The non-player branch increments time before curve
+evaluation, applies the authored 1.4 small-body multiplier, clamps box scale to
+`[0.1, 5]`, and resizes every subsequent query. Spark's zero moment of inertia
+prevents `BoplBody` from changing its inverse mass, exactly matching the source
+gate. Both signed curves start on tick 252 and preserve bit-exact trajectory,
+boundary destruction, explosion registration/disable and tick-344 expiry. Rust
+reconstructs each scaled basis from orientation and total scale while Unity
+multiplies the prior basis by each scale ratio; Shrink accumulates at most three
+raw Q32 units (6.99e-10 world units) of basis-only rounding. Positions,
+velocities, scale-driven hit extents to that bound, mass and all lifecycle
+outcomes are otherwise exact.
+
+`growth_airborne_ab.c` adds 500 exact ticks for an ordinary target that jumps
+on tick 240 and is still rising when the ray releases on tick 241. The
+ScaleChanger becomes publicly visible on tick 243; its full curve, enlarged
+airborne body, fall, platform contacts and final live position remain exact
+through tick 500. This isolates airborne player scaling from the separate
+active-form target path.
+
+`growth_water_wall_ab.c` adds 500 exact ticks for the downward Water branch.
+The release on tick 241 selects Water before terrain, mirrors the vertical ray
+and hits the rounded wall on the no-Water pass. The non-player ScaleChanger
+starts on tick 242, increments its clock before curve evaluation, and applies
+each Q32 old-to-new scale ratio directly to the retained radius, box axes and
+inverse extents. The wall's `BoplBody` observes the new FixTransform scale on
+the following platform-updater pass, while the attached rider's late update
+uses the new live radius immediately and the prior cached extents. The complete
+curve, inverse-mass changes, rider motion and every public row match through
+tick 500. The ten-second enlarged-platform return boundary is outside this
+fixture and remains open.
+
+`shrink_airborne_ab.c` repeats that 500-tick rising-player path for Shrink.
+The negative ScaleChanger is visible on the same tick 243 boundary, then the
+reduced body, fall and platform contacts remain exact through tick 500. Its
+final scale and live body position are asserted independently from Growth.
+
+`shrink_water_wall_ab.c` independently exercises the signed non-player path
+for another 500 exact ticks. It reaches the same reflected wall on tick 241,
+starts shrinking it on tick 242, and clamps at that wall prefab's serialized
+minimum rather than the generic DPhysics default. Incremental collider ratios,
+the following-pass inverse-mass update, the permanently reduced wall and its
+attached rider all remain exact through tick 500.
+
+### Executable Roll form (2026-09-15)
+
+Catalog id 16 now runs the source `Roll` form rather than advancing an inert
+cooldown. Entry copies the ordinary body's grounded attachment or airborne
+channels into the form, uses the authored 1.14-unit `PlayerPhysics` radius, and
+keeps the independent 1.20-unit lethal circle. A short release while airborne
+uses the serialized ten-unit jump; a full one-second charge waits for landing,
+then enables contact kills and drives the ground speed with the exported fixed
+Hermite curve for two seconds. Jumping during the run transfers 75 percent of
+the current surface speed into the ordinary body before the synchronous exit.
+
+`roll_air_release_ab.c` compares 360 NativeAOT/Rust ticks at a 64-raw-Q32
+vector bound. Roll enters while airborne on tick 181 and releases on tick 186;
+`PlayerPhysics.Jump` replaces its inherited velocity with the serialized
+ten-unit world-up velocity and applies the normal jump teleport without an
+attached surface. The short-jump form exits when it begins descending on tick
+191, and the restored ordinary slime lands on tick 215. Its final tick-360 pose
+is exact.
+
+Ground motion preserves `Roll.Move`'s unusual collision discretization. It
+computes `n = floor(abs(speed) * dt * density / hurtboxRadius) + 1`, advances
+exactly `n` times by `speed/(n+1)`, and retains the preceding `n - 1`
+intermediate circle centres in a fixed 30-entry state array while the live
+collider covers the final position. This has no tick allocation. The charged
+release instantiates a cosmetic particle trail, but its
+particle system and `FollowTransform` are ordinary Unity components rather than
+`MonoUpdatable`s. It therefore consumes zero updater hierarchy entries. The
+previous extracted count of two shifted every entity created after a release;
+the corrected count makes later stock clones match NativeAOT.
+
+The completed source pass also ports `MoveAlongCurrentPlatFormSwapIfBlocked`
+and `PlatformHopMove`: a fixed five-entry exclusion buffer survives every
+substep in the tick, each blocking rounded platform receives the player at the
+old surface endpoint, and the already-delta-scaled remainder is intentionally
+multiplied by `dt` again on recursive hops. `CollideExtraHurtBoxes` collects at
+most ten active colliders in circle/box hierarchy order, dispatches every
+target callback before the reciprocal Roll callback, and handles ordinary and
+transformed players, abilityless clones, Arrow, guided Missile, Grenade and
+Mine. Charging Roll remains wall-squishable; `ReleaseDash` disables that flag
+for the lethal form. Freeze, death and landing exits all restore the ordinary
+body through the same source handoff.
+
+`roll_broad_ab.sh` runs `roll_ability_ab.c`, `roll_air_release_ab.c`,
+`dash_roll_ab.c`, `gust_roll_ab.c` and `time_stop_roll_ab.c` as one broad
+optimized-Q32 gate. All 3,000 NativeAOT/Rust ticks pass through grounded charge
+and release, repeated curved-platform circuits, airborne ShortJump, lethal
+Dash contact, Gust force, boundary death, stock replacement and all 690 frozen
+Time Stop passes. Repeated surface local-to-world transforms accumulate at most
+2,048 raw Q32 units (less than 0.0000005 world units) in the comparator;
+velocity and all interaction boundaries are exact in the measured scenarios.
+The bounded pose difference comes from reconstructing the curved surface
+position in Rust instead of retaining Unity's separately rounded transform
+fields and does not cross a zone, contact, or state boundary. Newly translated
+cross-platform hops, moving-platform turns, wall squish, dynamic-item/clone
+contacts, Freeze/death cleanup and post-exit pickup use do not yet have separate
+focused public differentials.
+
+### Executable Blink gun and player QuantumTunnel (2026-09-15)
+
+Catalog id 6 now executes its serialized `GunTransform`: grounded and airborne
+entry, aim tracking, release-to-fire, the authored firepoint, 50-unit recoil,
+slow aiming gravity, half-strength aerial control, landing exit and the 20-tick
+fire animation. `ShootQuantum` uses the registered Player, wall and Water shape
+order. A player hit replaces the normal 2.5-second cooldown with the prefab's
+five-second cooldown and immediately initializes a collider-free
+`QuantumTunnel` on the victim.
+
+The tunnel disables the victim in the shot pass and advances by player-scaled
+fixed delta time starting on its deferred registration pass. At
+`LifeSpan - last(ScaleAnim.keys).time`, it reproduces the source's platform
+candidate order, seeded `RandomInt` choice and `RandomFix(0, 1)` perimeter
+sample. It checks the sampled player center against every other rounded
+rectangle, attaches through the same surface-local conversion, and updates the
+inactive FixTransform. The slime and DetPhysics collider therefore expose the
+new location immediately while `Player.Position` remains at its last published
+location until the GameObject is active and `Player.UpdatePlayer` runs again.
+The strict `age > LifeSpan` comparison is retained. Candidate collection uses
+a fixed 64-entry stack buffer, so neither the tunnel clock nor placement path
+allocates per tick.
+
+`blink_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks across the complete
+measured sequence. The cast starts on tick 181, release hits player two and the
+grounded recoil exits the form on tick 241, the seeded tunnel move occurs on
+tick 295 at raw position `(125472406545, -43290835442)`, the victim remains
+inactive through tick 314, reactivates on tick 315, and publishes the moved
+`Player.Position` on tick 316. Header, player, slime, telemetry and every entity
+row match, with the comparator allowing 64 raw Q32 units for dynamic vectors
+but observing the exact measured landing. Rigid-body, item and orb tunnels,
+transformed victims, rope/magnet detachment and a pickup-changed platform set
+remain open, so coverage is partial.
+
+`blink_airborne_ab.c` adds a second exact 500-tick trace for the common
+airborne-victim path. Player two jumps immediately before the tick-241 release,
+is hidden while airborne in that pass, relocates on tick 295, reactivates on
+tick 315 and publishes the new position on tick 316. The remaining fall and
+landing are compared through tick 500; every public row matches with the same
+64-raw-Q32 dynamic-vector allowance, and the final live body position is exact.
+
+`blink_water_wall_ab.c` adds 600 exact ticks for the reflected-wall branch. A
+downward release on tick 241 selects Water before terrain, mirrors the vertical
+ray direction, and selects the rounded wall on the recursive no-Water pass.
+The hit creates the tunnel updater and schedules the prefab's 0.3-unit,
+one-second `ShakablePlatform` displacement after that platform updater has
+already run. Because Q32 `DT` is slightly below 1/60, the strict one-second
+comparison takes 61 seeded random samples from ticks 242 through 302. On tick
+302 the final sample is synchronized, the wall's GameObject becomes inactive,
+its entity row retains `E_ENABLED` without `E_ACTIVE`, and its queued spring
+force is held. The attached rider follows the final wall transform that pass,
+then detaches on tick 303 with the source's one-pass `Player.Position`
+publication lag. The wall remains frozen through tick 542 and reactivates on
+tick 543, when the queued spring force integrates and normal motion resumes.
+The rider fall, wall state and every public row remain exact through tick 600.
+
+### Executable Engine and attached thrust body (2026-09-15)
+
+Catalog id 5 now executes the grounded `PlantObjectOnPlatform` form and its
+`PlaceRocketEngine` payload. The five-frame cast projects the authored lateral
+plant offset onto the attached rounded rectangle, preserves the live surface
+normal, scales the plant height and collider with `Player.Scale`, adds the
+10-unit off-centre cast impulse, and returns through the three-frame recovery.
+Each equipped ability instance retains the source's four-entry ring buffer; a
+stock or Revival clone receives a fresh buffer generation while already planted
+engines remain in the world.
+
+The spawned layer-21 box is a persistent child of the platform composite. Its
+one-unit body mass and ten-unit moment contribute to the combined body, its
+startup animation delays ignition for ten ticks, and its fixed Hermite force
+curve drives the platform at the live surface point for 5.5181274 seconds. The
+engine updates movable-platform homes after thrust, stops below the water line,
+and tests its scaled flame circle against Smoke before the time-stop early
+return. Engine and Smoke records reuse existing vectors and do not allocate in
+the tick path.
+
+This port also records two general DetPhysics composite rules exposed by the
+Engine trajectory. `ResolveCollision` redirects impulses through a composite,
+but rounded-rectangle positional correction still receives each serialized
+child inverse mass. After integration, a positional correction moves the
+`CompositeBody` while child collider centers retain their already-synchronized
+value until the next physics pass. Preserving both rules removed a same-pass
+0.00024-unit platform displacement and 0.0134-unit attached-box observation
+difference without changing the previously matched pre-contact trajectory.
+
+The whole-source completion also ports `MachoThrow2`'s nearest-child handoff.
+At the end of Throw's enter animation, the platform perimeter scan arbitrates
+Spike, Engine, Tesla and rope children by wrapped local distance. A selected
+RocketEngine is removed from the old composite and hidden while the boulder is
+formed. The same object is then reparented and reinitialized on the boulder:
+ownership, scale, collider identity and duplication metadata survive, while
+the startup animation and thrust clock restart exactly as `RocketEngineInit`
+requires. The retained record and fixed candidate scan add no tick allocation.
+
+`engine_broad_ab.sh` gates 2,040 optimized-Q32 NativeAOT/Rust ticks. The first
+500 are exact through cast, recovery, persistent export, startup, the complete
+thrust curve, platform spring response and collision. The second 1,540 are
+exact through a live attached engine, all 690 stopped passes, and restored
+force-clock and platform motion. Ring eviction, simultaneous engines, Smoke
+chains, scale changes, platform destruction, pickup use and Macho transfer are
+source-ported but do not each have a standalone public differential.
+
+### Executable Tesla coil and connected lightning (2026-09-15)
+
+Catalog id 23 now executes the grounded `PlantObjectOnPlatform` form and its
+`PlaceSparkNode` payload. The cast uses the exported lateral offset, surface
+projection and normal, player-scaled plant height, five-frame callback, 10-unit
+off-centre platform impulse and three-frame recovery. Each ability instance has
+the source's two-entry `RingBuffer`; planted nodes survive form exit and stock
+or Revival cloning starts a fresh ring-buffer generation.
+
+Each `SimpleSparkNode` registers its one-unit circle as a child of the rounded
+platform's DetPhysics composite. A pair connects on the updater pass after the
+new node is planted. Its lightning box registers one pass later while inactive,
+the parent orb and line become lethal after the 54-tick enter animation, and the
+child orb follows one tick later. The active line uses the exported thickness
+and minimum extent, disables its collider after the strict five-second clock,
+and reenables it after the serialized 82 animation ticks plus the callback pass.
+Node and line contacts use their live circle and oriented-box geometry and keep
+the source behavior that permits owner damage.
+
+The third placement exposes two ordering details that are easy to lose in a
+cleaner implementation. `RingBuffer.Add` marks the oldest node before the new
+circle is attached, but DetPhysics removes that circle only at the start of its
+physics pass. The cast impulse therefore uses a temporary root-plus-three-node
+body; removal then rebuilds the root-plus-two-node body while copying that
+temporary body's velocity and angular velocity. The old lightning row remains
+for the destruction pass with owner zero and `TRIGGER|DESTROYED`, disappears on
+the following pass, and the replacement line registers one pass after that.
+Rust models those phases explicitly with capacity-reused node and destruction
+buffers, with no per-tick allocation.
+
+`tesla_ability_ab.c` compares 900 NativeAOT/Rust Q32 ticks across three casts,
+including connection, staggered activation, a complete flicker and reenable,
+ring eviction, destroyed-line lifetime, reconnection, platform composite motion
+and persistent objects after form exit. Header, player, slime, telemetry and
+entity metadata remain exact; entity axes differ by at most one raw Q32 unit and
+positions by at most 16 raw units. Those position bits come from reconstructing
+the node's child collider centre from the platform root instead of retaining
+Unity's separately rounded `FixTransform` and DetPhysics circle values. A
+separate noncoincident moving-platform probe found the same operation-order
+effect below 0.0001 world units and no state or collision-boundary change in
+the measured interval. `tesla_contact_ab.c` then separates the nodes, compares
+death and telemetry state for 700 ticks, and observes the same owner collision
+on tick 381. The kill is classified as `Other` with owner zero: both Tesla
+prefabs publish their `IPlayerIdHolder`, but neither assigns the adjacent
+`Explosion.PlayerOwnerId`, so its default is the value PlayerCollision uses for
+attribution. A whole-source completion now also keeps attached scaling in the live node
+record rather than transiently changing only its exported entity. It reproduces
+the source updater split: `DPhysicsCircle.Scale` immediately repositions with
+the old `SurfaceOffset`, then the following `SimpleSparkNode.UpdateSim` scales
+`SurfaceOffset` and `_hitBoxOffsetY` without a second reposition. Composite mass
+stays unchanged, as the attached child's `BoplBody` does in the source.
+
+`MachoThrow2.pickUpNearbyAttachables` now transfers Tesla nodes as well as
+Engines. The perimeter scan includes Spike and rope blockers, the selected node
+is hidden and removed from the old composite, and its connection is deactivated.
+`SpawnBoulder` then reparents that same node at local zero and world rotation
+zero. Owner, scale, entity identity, child relationship and duplication metadata
+survive; connection and lethal startup state reset as
+`SimpleSparkNode.Initialize(skipInit:true)` requires. Fixed records and scans add
+no allocation to the tick path.
+
+`tesla_broad_ab.sh` runs the retained placement, contact and Time Stop programs
+as one 3,500-tick optimized-Q32 gate. It is exact through three casts,
+eviction/reconnection, a full flicker, the tick-381 lethal contact and all 690
+stopped passes. The existing placement-only position bound remains at 16 raw
+Q32 units from Unity's separately rounded FixTransform/circle values. Live
+Growth/Shrink, platform destruction, Macho transfer, startup Time Stop, mixed
+attachments and simultaneous contacts are source-ported but have not each been
+isolated in a public differential.
+
+### Executable Meteor Smash form (2026-09-15)
+
+Catalog id 20 now executes the source `MeteorSmash` form. Grounded entry holds
+for the five authored anticipation ticks, ungrounds with the two FixTransform
+teleports used by the source, and follows the 21-tick air animation with its
+serialized Hermite velocity curve. Airborne entry skips that jump directly
+into vibration and enforces the authored 0.05-second minimum hold. Vibration
+consumes both `RandomInsideUnitCircle` draws but normalizes the sampled vector,
+matching the source's constant-radius offset and its PlayerBody damping.
+
+Release raycasts down to the nearest rounded platform or Water. Platform
+landing applies the charge-scaled 250-unit impact, attaches the player at the
+surface local, and defers the spawned Shockwave to the next updater pass. The
+wave captures a fixed 50-platform target set, applies both initialization and
+per-frame curve impulses, and ignores the struck platform. The platform's
+one-second `ShakablePlatform` spin curve replaces its previous random offset
+each tick without moving its spring home. The lethal MeteorSmear exports its
+rescaled box immediately and removes it after exactly two registered updates.
+All hot-path target storage is fixed-size and cast updates allocate nothing.
+
+A source-complete pass now retains the full Player, Projectile, item, wall,
+Water, LethalTerrain, Explosion and orb ray result set without allocating,
+sorts it by near distance and collider hierarchy, and dispatches both target
+and Meteor callbacks. Arrow and Missile callbacks destroy their projectile
+before the reciprocal lethal test; Grenade and armed Mine callbacks enter their
+authored detonation phases. Water and empty-ray exits preserve the distinct
+20- and 10-unit submerged endpoints.
+
+Long charges also write `StickyRoundedRectangle.DropAllAttachedPlayers` after
+the platform updater. Later player prefabs are ejected in the landing pass;
+earlier prefabs observe its remaining frame on the next pass. Ordinary riders
+and active forms receive the source normal impulse and 1/100 position nudge;
+held ThrowItem2, Magnet, Macho boulder, Beam and Drill resources follow their
+form exit callbacks. The caster id is exempt.
+
+`meteor_broad_ab.sh` joins `meteor_ability_ab.c`'s 1,500 ticks across short,
+maximum and airborne casts with `time_stop_broad_ab.c`'s 1,540-tick frozen
+Meteor composition. All 3,040 optimized-Q32 NativeAOT/Rust ticks pass.
+Separately rounded FixTransform positions and normalized vectors retain the
+established 50,000 raw Q32 bound (less than 0.000012 world units); platform
+motion is exact in the measured casts and no measured state, collision, entity
+lifetime or animation boundary differs. The newly translated player/item ray,
+rider-ejection, isolated Water/no-hit, moving-platform and post-pickup branches
+remain without separate focused public differentials.
+
+### Executable Poke Ball capture (2026-09-15)
+
+Catalog id 33 now uses the shared `ThrowItem2` form and the serialized
+`PokeBall` item body. The pooled item binds its owner on the first post-release
+updater pass, computes the source's velocity-dependent spin, resolves ordinary
+circle/platform contacts, and bursts only after the strict five-second fizzle
+boundary. Its proximity query scans the fixed player slots without allocation,
+keeps the closest eligible opponent with the lower-id tie-break, and applies
+the collider-plus-scaled-player capture radius exactly.
+
+Capture applies PlayerCollision mask 16, invisibility and a refreshed pinned
+ragdoll. The shipped prefab overrides the source field default: its serialized
+capture duration is 1.92 seconds, not the class initializer's 2.4 seconds.
+Release preserves the previous invisibility clocks for the callback frame,
+then ejects at the ball position plus 0.4 units with horizontal velocity divided
+by 4.5, vertical velocity 8.5, and orientation derived from the pre-ragdoll
+ejection vector. Multiple manifolds may capture one slime in the same callback
+batch. Each ball retains its own victim, but mask 16 is a shared bit rather than
+a reference count: one release clears invulnerability and visibility while a
+remaining ball can still pin the body. Rust preserves those separate states in
+the fixed player/item pools.
+
+Live scale now follows all three source phases. The older item `BoplBody` adopts
+the preceding pass's scale for inverse mass and inertia before the later
+`ScaleChanger`; `DPhysicsCircle.Scale` updates its stored radius through
+`(1 / oldScale) * newScale`, preserving the fixed-point history; and PokeBall's
+proximity query intentionally multiplies that already-scaled collider radius by
+`Scale` a second time. These paths add no allocation or extra hot-loop scan.
+
+`poke_ball_broad_ab.sh` gates eight programs and 4,668 Q32 NativeAOT/Rust
+ticks. It includes the exact 500-tick no-hit lifecycle; the 500-tick moving
+platform capture with matching tick-116 capture and tick-232 release; duplicated
+callback capture by two balls; exact Growth and Shrink of the released item;
+dynamic Bow Arrow contact; the complete Gust curve; Magnet pickup/pin/fire; and
+a live capture held through all 690 Time Stop passes. The scale programs compare
+mass, radius and lifecycle exactly while allowing at most 64 raw Q32 units in
+the already documented ThrowItem2/GunTransform pose reconstruction. The
+moving-platform capture retains its established 0.175-world-unit inherited
+contact bound without changing victim selection or any lifecycle boundary.
+Multi-captor expiry/ejection, Portal/Black Hole and acquired-pickup compositions
+are source-ported but have not each been isolated in a public differential.
+
+### Live AbilitySpawner pickup flight (2026-09-15)
+
+The existing `BOPL_RL_ABILITY_SPAWNS=1` diagnostic now enables the map's
+`AbilitySpawner` in Rust as well as NativeAOT. Each map retains the authored
+spawn position and hierarchy. The strict 40-second clock creates at most three
+`DynamicAbilityPickup` instances, consumes `RandomUnitVector` and the
+catalog draw in source order, and reserves the exact three updater hierarchy
+entries per prefab. Although the serialized sprite is Bow, the spawner calls
+`InitPickup(null, null, ...)`, clearing that sprite before the excluding draw;
+Rust preserves the resulting no-exclusion selection.
+
+The live pickup keeps its collider disabled for the serialized 0.1 seconds.
+During that phase its direct gravity changes velocity while the launch impulse
+and hover force remain queued; the seventh updater pass enables the collider
+and integrates the accumulated force. Subsequent updates reproduce the
+platform raycast hover force, air drag, 7-second ability reroll, and late-cycle
+two-draw vibration. Layer 13 does not collide with layer 11 in the shipped
+Physics2D matrix, so terrain affects the item through the raycast hover force
+rather than a rigid contact. State lives in a capacity-retained vector bounded
+by the authored three spawns, with no per-tick allocation.
+
+`ability_spawner_ab.c` verifies the default disabled 0/0 configuration and the
+enabled NativeAOT/Rust path for 2,700 episode ticks. Both create collider id 16
+at level tick 2401, keep it disabled until 2408, and match all metadata and
+phase boundaries. Maximum spatial and velocity differences are 3,180 and
+13,737 raw Q32 units (7.5e-7 and 3.2e-6 world units). They begin at the strict
+half-unit damping boundary because Rust reconstructs the rounded platform ray
+from its separately rounded exported basis; no measured behavior boundary
+changes.
+
+`ability_pickup_collect_ab.c` steers a keyboard player through the same first
+pickup. NativeAOT and Rust are observation-identical through collection at
+level tick 2506: collider id 16 becomes a destroyed row for one pass, the
+pickup's selected Revival id 15 replaces slot three, and its timer becomes
+exactly 100,000 seconds. On tick 2507 both remove the pickup row and register
+the acquired Revival collider as id 17, hierarchy 100000071, inactive and
+unowned. The registration range is reserved in the collision callback and the
+bounded player state carries only a pending hierarchy scalar; no hot-path
+allocation or global lookup was added.
+
+`ability_pickup_active_form_ab.c` holds Bow while pursuing the pickup. The
+pickup's source callback rejects the active ability body because it has no
+`SlimeController`; both backends retain the live pickup while Bow overlaps it.
+After release, the ordinary slime collects Revival at level tick 2561. Bow's
+Arrow and the acquired ability become public together on tick 2562 as ids 17
+and 18, in updater hierarchy order 100000068 then 100000076. Registering pending
+projectiles before pending pickup abilities preserves that source order without
+sorting or per-tick allocation. Layer-13 flight vectors use the established
+100,000-raw-Q32 bound (less than 0.000024 world units); collection, slot state,
+Arrow state, identities, hierarchy and lifecycle ticks are exact.
+
+`ability_pickup_cast_ab.c` continues the ordinary collection path and presses
+the replaced third slot as soon as its Revival collider is registered. The
+source player is airborne at level tick 2508, so `QuickSpell.SyncPhysicsTo`
+must ignore the ordinary body's retained ground reference when
+`PlayerInfo.isGrounded` is false. Rust previously inferred a ground from that
+stale reference and added a false 0.05-unit detach. Ground retention now first
+checks the grounded flag, while preserving the measured landing-animation
+recovery for genuinely grounded casts. The acquired Revival form, marker
+creation, exit, telemetry and every public row are observation-identical.
+
+`ability_pickup_death_drop_ab.c` keeps a three-player match alive after a
+final elimination and compares the dropped pickup through launch, hover, the
+first strict seven-second reroll, pursuit and collection. Both backends drop
+Bow as collider id 20 at level tick 318 and hierarchy 100000095, then player
+two collects its rerolled Rock ability at tick 950. The hierarchy includes the
+two updater entries consumed by `WaterDeathEffect 1` before
+`killPlayer(..., spawnEffect: false)`; this distinct boundary effect is now
+extracted from the Player prefab rather than inferred from the ordinary death
+effect. Pickup position and velocity differ by at most 2,103 raw Q32 units
+(4.9e-7 world units), originating in `Vec2.NormalizedSafe` of the sampled
+launch direction. Entity identities, hierarchy, lifecycle ticks, the reroll,
+collector and acquired ability remain exact. The pickup vector is stored in a
+capacity-retained collection and adds no per-tick allocation.
+
+### Executable Black Hole form and persistent gravity body (2026-09-15)
+
+Catalog id 18 now executes `BlackHoleClap` with the prefab's separate
+PlayerPhysics body. Grounded entry reprojects to the form's 0.76-unit radius,
+preserves external velocity, and runs the authored 15-tick enter and exit
+animations. The callback rotates the `(6, 3)` local spawn offset by the live
+surface basis and facing, applies the source's player-scale clamp, permanently
+marks that equipped ability instance uncastable, and returns to the ordinary
+slime through the same grounded body handoff. Air entry retains both velocity
+channels at five percent and uses the form's extracted gravity constants.
+
+The spawned layer-23 circle keeps the source's 15-unit starting mass, fixed
+Hermite size animation, 0.99 velocity drag and persistent lifetime. Its updater
+pulls every rounded platform because the shipped boulder exception bypasses
+the nominal influence cutoff for ordinary holes. Player and ability boxes use
+the separate `PlayerPhysics.AddForce` path, including the infinite-mass trigger
+body sign. Wall callbacks consume only when the retained narrow-phase rounded
+rectangle contains the hole centre, publish the wall as destroyed for one
+pass, grow and reset the size curve, then remove it on the following physics
+pass. Positive holes merge by mass with the later sorting order as the equal
+mass tiebreak. Player collisions grow first and call `killPlayer` with
+`spawnEffect: false`; the rollout death path now represents callback timing and
+effect creation independently so stock-clone hierarchy stays exact.
+
+`black_hole_ability_ab.c` compares 500 NativeAOT/Rust Q32 ticks. The persistent
+hole appears on differential tick 199, platform id 13 is destroyed on tick 231
+and removed on 232, the attracted owner dies on 241, and its stock clone
+registers on 242. IDs, hierarchy, flags, entity counts, platform trajectories,
+growth resets, death state and reconstruction boundaries match. The hole's
+curve radius differs by at most about 100 raw Q32 units. During the active cast
+form, separately synchronized PlayerPhysics and DetPhysics positions differ by
+at most 70,000,000 raw units (0.0163 world units); grounded exit reprojects to
+the exact same platform pose and no collision or lifecycle decision differs.
+`black_hole_arrow_ab.c` adds 205 differential ticks without widening the
+existing 70,000,000-raw-Q32 active-form bound. The Arrow registers on tick 196;
+the hole spawns on tick 199 and immediately walks the registered circle array,
+adding its exact inverse-square force before DetPhysics integration. The
+Arrow's resulting position and velocity are bit-identical. The same pass's
+trigger callback consumes the Arrow, resets the hole's growth curve and queues
+the nearby shooter's already-covered player death callback. The destroyed
+Arrow disappears on tick 200, when the radius grows from raw Q32 `5425903114`
+to `6444168753`. The implementation reuses the existing Arrow vector and adds
+no contact allocation.
+
+The completed source pass walks every represented DetPhysics body without
+allocating: AbilitySpawner pickups, all released ThrowItem2 payloads, Portal
+shots, guided Missiles, active and duplicated Rocks, and Spike/Engine/Tesla
+composite children receive the source inverse-mass force before integration.
+The generic callback path consumes every positive-mass circle or box, retains
+the one-pass `DestroyFix` observation, grows from the live inverse mass and
+rebuilds a consumed attachment's composite body. Player circle forms preserve
+the shipped distinction: only Rock has a movable positive-mass body, while
+box forms receive the separate `PlayerPhysics`/`PlayerBody` force. Equal-mass
+holes still choose the later sorting order; unequal merges now also cover an
+older positive hole consuming a newer negative hole. Grappling Hook can attach
+to a hole, follows its animated scale, reels at the authored early/late cadence
+and detaches when the hole becomes nonpositive or is destroyed.
+
+`black_hole_broad_ab.sh` gates the 500-tick form/wall/player scenario, the
+205-tick Arrow scenario and the 1,540-tick Time Stop scenario together. All
+2,245 ticks pass optimized Q32 against NativeAOT. The newly translated generic
+body, unequal/negative merge and rope branches are visible through the public
+entity/rope rows but do not each have an isolated differential. Hole and
+contact state reuse capacity-retained vectors and fixed player arrays; the tick
+path adds no allocation.
+
+### Executable Throw form and Macho boulders (2026-09-15)
+
+Catalog id 21 now executes `MachoThrow2` with its separate one-unit-radius
+PlayerPhysics form. Grounded entry recomputes the surface-local pose for the
+larger form, preserves the source velocity channels and facing rule, and runs
+the enter, grab, pickup, idle/walk/turn, begin-throw and exit animator callback
+boundaries. The grab animation applies the source's eight scale reductions to
+the supporting platform. Collider geometry changes immediately while
+`StickyRoundedRectangle` perimeter data refreshes on its later updater pass;
+the non-resizable BoplBody mass and inertia update on that same later pass.
+
+Quick release creates a boulder from the low hand position and launches it in
+the pickup callback pass. Full pickup creates the rounded body at the animated
+dummy position, holds it with zero linear and angular velocity, feeds its prior
+velocity back through `PlayerPhysics.AddForce`, and launches after the authored
+anticipation. Scale clamps, inverse mass, gravity, bounciness, angular velocity
+and strength all come from the pinned prefabs. Boulders share the platform
+arrays and entity pool, so ordinary rounded-body contacts, riders, water
+removal, death callbacks and stock reconstruction see the same body without a
+second collision path or per-tick allocation.
+
+`macho_throw_ability_ab.c` compares two 500-tick NativeAOT/Rust Q32 scenarios.
+Quick release shrinks the ground starting on tick 218 and creates and launches
+the boulder on tick 226. The held path creates the boulder on tick 256,
+launches it on tick 279, kills the owner on tick 461 and registers the stock
+clone on tick 462. Positions, velocities, identities, metadata, contact
+response and lifecycle boundaries match. Repeated reciprocal/multiply updates
+to the shrinking collider axes differ by at most four raw Q32 units
+(9.4e-10 world units); this is below one serialized source coefficient step
+and does not change a contact or branch. The form collider preserves the source
+split where its centre uses the stored FixTransform right vector while its axes
+are rebuilt from scalar rotation.
+
+The whole-source completion implements `pickUpNearbyAttachables` as one wrapped
+perimeter arbitration across platform children followed by rope updaters. The
+same selected Spike, Engine or Tesla record is removed from the old composite,
+hidden during the dummy animation, and reactivated on the boulder. Spike keeps
+its down-thrust clock and repeats the source's far-probe/local derivation;
+Engine restarts its ignition clock; Tesla resets and reconnects through its
+preserved child relationship. Rope anchors stay live until boulder creation,
+then move to local one-half, switch from `platformPullStr` to `boulderPullStr`,
+translate the source-selected first half of the chain, reset every previous
+sample and run the immediate extra DetPhysics relaxation pass. No transfer
+allocates in the tick path.
+
+The active form also now observes Magnet ownership of its held boulder and
+clears its private handle while Magnet retains the body, matching
+`Boulder.body.magnetGunHolder`. Common platform machinery already supplies
+Portal relocation, Black Hole consumption/force, Gust and Meteor shockwaves,
+Growth/Shrink, Time Stop, rider contacts and water destruction. Forced
+pickup/death/form exits drop an existing held boulder through the shared exit
+path.
+
+`throw_broad_ab.sh` runs the two ordinary 500-tick scenarios plus the 430-tick
+Gust composition as one optimized-Q32 gate. Both release paths, ground
+consumption, launch, collision, death and clone recovery retain their exact
+lifecycle, with only the existing four-raw-unit shrinking-axis reciprocal
+bound. The composition also matches a live boulder under Gust alongside a
+Portal Shot and Black Hole. Attachment transfers, Time Stop, Portal, Magnet
+stealing, scale rays and forced exits are source-ported but are not each
+isolated in a public differential.
+
+### Executable Drill form and combo hitboxes (2026-09-15)
+
+Catalog id 26 now executes the shipped `Drill` form. Entry copies both velocity
+channels and the scalar rotation into its separate `PlayerBody`, moves the root
+by the authored 2.01-unit local offset, and allocates its three static
+Explosion-layer boxes on the first cast of each equipped prefab. The inactive
+boxes retain their registered identity and hierarchy; the 19th animator update
+starts the loop and activates all three, while the 13th exit-animation update
+returns to the ordinary slime. `Ability.UpdateSim`, `PlayerBody`, and `Drill`
+retain their distinct publication phases, so `Player.Position` exposes the
+pre-movement form while DetPhysics entities expose the synchronized post-update
+colliders.
+
+The oriented drill query scans wall platforms in registered order. Air motion
+uses the strong 102-unit gravity for the strict initial 0.4-second interval and
+45 thereafter, with the source's normalized-vector steering. A live rope uses
+the full `PlayerBody` endpoint integration and suppresses Drill gravity; entry
+into terrain detaches it after the moving-platform contribution, matching the
+source component order. Entering a valid
+surface clamps nonzero speed to 10, applies the 0.66 multiplier, clears external
+velocity, then constrains and accelerates motion along the drill axis. Leaving
+applies the 1.5 multiplier; a held release is suppressed underground and exits
+without the positional offset on the emergence pass. An underside normal exits
+before later gravity, platform motion, release, or hitbox synchronization, so
+the combo boxes correctly retain their preceding pose. The root bounds handler
+also retains its earlier component phase and kills before another body update.
+
+`drill_ability_ab.c` compares 2,700 NativeAOT/Rust Q32 ticks across a downward
+burrow and bounds death, an airborne release through the full exit animation, a
+three-player same-team contact that verifies the first lethal callback and
+stock clone, and an opposing Time Stop. The hitboxes spawn on tick 181 and
+activate on 199; the bounds death and replacement clone occur on 291/292. The
+contact kills on 199 and the invalid-surface exit plus replacement registration
+occur on 200. The frozen case covers all 690 zero-scale ticks and verifies the
+Drill-specific rule that `PlayerBody` damps external velocity while Drill only
+updates combo transforms. Metadata, velocities, ownership, hierarchy, entity
+counts, contacts, deaths and callback ticks match. Entry, exit and collider
+positions differ by at most two raw Q32 units (4.7e-10 world units) because the
+Rust path groups the scaled local-vector multiplication differently; no query,
+contact or branch changes. State and hitbox storage are inline or retained and
+the tick path allocates nothing. `drill_rope_ab.c` adds 279 exact public-state
+ticks from a live Web Swing endpoint through Drill entry, rope-constrained
+flight, release and exit; the documented rope-segment relaxation is excluded
+while the complete player/slime contract remains exact. `gust_drill_ab.c` adds
+250 ticks through the pushable Drill `PlayerBody` callback and observes the
+impulse on tick 231. `drill_broad_ab.sh` runs these with the four original
+scenarios as one 3,229-tick optimized-Q32 gate. Meteor's equivalent one-shot
+`PlayerBody` branch is source-ported with its one-seventh force divisor and 35x
+conversion; it is not isolated because the broad composition first encounters
+the existing Meteor caster-pose approximation. Scale only changes Drill's
+particles in its callback; gameplay hurtboxes and queries already read the
+live player scale. Moving platforms, transformed hitbox victims, Portal/Black
+Hole routing, burrow death and post-exit pickups use the audited common paths.
+
+### Executable Portal Gun, linked planes and rigid-body transit (2026-09-15)
+
+Catalog id 38 now executes the shipped instant `PortalGun`. A neutral aim uses
+the slime's facing direction; a directed aim is normalized before the shot is
+instantiated 1.7 units from the live body with speed 22. `ManualInit` registers
+the 0.3-radius layer-10 collider immediately, so DetPhysics moves it on the cast
+pass even though `PortalShot.UpdateSim` does not start its clock until the next
+updater snapshot. A strict 1.2-second timeout plants a free-floating mouth
+facing the shooter and removes the collider in that updater pass. A wall
+contact first applies ordinary BoplBody resolution and positional correction,
+then plants using the negated contact normal and retains the destroyed row for
+the callback pass.
+
+The first landed shot replaces any old pair with blue; the second replaces
+orange and links both mouths. Each endpoint sits 0.55 units outside the hit
+position and snaps its normalized normal to the dominant axis. Capture uses
+the source's strict 1.6-by-0.6 plane bounds. Per-player flags and retained
+per-body bitsets reproduce link-time marking, exit-mouth marking, and the rule
+that a body must leave before it can traverse again. Player transit combines
+self-imposed and external velocity, ungrounds without resetting rotation,
+zeros external velocity, and skips the next PlayerPhysics pass. Portalable
+arrows, pickups, thrown items, guided missiles, Rock bodies, Revival/Teleport
+markers and movable rounded bodies use the same mirrored momentum map. Pool
+indices and entity generations keep that hysteresis allocation-free during
+ticks and safe when projectile rows are reused. A strict 25-second endpoint
+clock closes both linked mouths.
+
+`portal_gun_ability_ab.c` compares 1,290 NativeAOT/Rust Q32 ticks. The primary
+900-tick scenario is exact across cast readiness, collider identity and
+hierarchy, every projectile position, the tick-254 timeout, the tick-270
+wall-callback row, the tick-275 player transit, pair replacement, and the
+second timeout. A composed Grenade crosses on tick 383 in both backends and
+lands at the same exit. Its mapped velocity differs by less than 0.0024
+units/second because the existing ThrowItem2 port creates that grenade 0.0185
+units away from NativeAOT before portal capture; the portal resets its position
+and preserves the already-different incoming components, so no capture,
+branch, or lifecycle decision differs. The five scenarios are also gated together by `portal_gun_broad_ab.sh`. A whole-source
+audit additionally ports every represented member of `Portal.UpdateSim`'s two global
+queries: abilityless Duplicator clones share the source's player-id hysteresis, and
+duplicated Rocks plus attached Spike, Engine and Tesla bodies use their positive-mass
+`BoplBody` positions and velocities. Rope objects and Black Holes are not portalable in
+the source because neither runtime object has a positive-mass `BoplBody`. Those audited
+branches retain pooled state and add no tick allocation, so catalog id 38 is marked
+`ported`; only the five broad scenarios are claimed as exact differentials.
+
+`portal_arrow_ab.c` uses a second player to release an upward-right Bow Arrow
+through the free-floating mouth. The layer-9 Arrow registers on tick 361,
+crosses from positive to negative x on tick 363, maps its incoming rightward
+velocity to the exit plane's up-left basis, and collides with the exit wall in
+that same pass. All 430 NativeAOT/Rust ticks, including Arrow identity,
+position, mapped velocity, destroyed row and later removal, are exact (with the
+standard one-raw-unit normalized-axis bound).
+
+`portal_pickup_ab.c` enables the authored spawner and creates the linked mouths
+before its first pickup. The pickup spawns on episode tick 2161, enables on
+2168 and enters the free-floating mouth on 2233 from matching pre-entry state.
+NativeAOT runs the older `Portal.UpdateSim` before the later-created
+`DynamicAbilityPickup.UpdateSim`; Rust now merges those retained pools by spawn
+hierarchy, maps the body first, and then applies the pickup hover drag and lift.
+The exit state and all subsequent motion match. The maximum difference over
+2,400 ticks is 101 raw Q32 units (2.4e-8 world units), inherited from the
+spawner launch normalization, with identical capture, velocity branch, identity
+and lifecycle. A fixed 64-entry stack bitmap orders recycled portal slots, and
+the pickup pool retains its capacity, so the scheduler adds no tick allocation.
+
+`time_stop_portal_ab.c` creates and links both mouths before casting Time Stop.
+The global clock reaches zero on tick 857 and restores on 1547, leaving both
+endpoint lifetimes unchanged for 690 passes. An ordinary opponent begins moving
+after tick 1800, later than the pair's tick-1770 unfrozen expiry, and traverses
+on tick 1811 in both backends. All 2,200 ticks match with only the standard
+one-raw-unit transformed-axis/position bound; capture, mapped velocity and the
+post-exit state are otherwise exact.
+
+`portal_rock_ab.c` covers the missing dynamic collision between a live
+PortalShot and an active Rock. DetPhysics captures all manifolds before
+resolution, resolves Rock/rounded-platform first, and then resolves the
+circle/circle pair; Rust preserves that group order without allocating contact
+storage. The Rock collider now carries DPhysicsCircle's live radius through
+each `Scale = Player.Scale` ratio and the later BounceBall pulse instead of
+reconstructing it as base radius times the displayed scale. That retains the
+source's Q32 division residue. At tick 244 both backends therefore produce the
+same shot and Rock positions, linear velocities and angular velocities down to
+the raw integer (`PortalShot.vx = -6357891049`,
+`PortalShot.angularVelocity = -1259594354027`). PortalShot is on the item layer,
+so BounceBall adds no callback force beyond the ordinary rigid-body impulse.
+
+The same 500-tick differential also exercises collider re-registration: a
+recast reuses the fixed PortalShot state slot but appends a fresh observation
+row after retained circles, matching `DestroyCircle` followed by `ManualInit`.
+The Rock form exits with its exact retained collider radius and the restored
+player crosses the linked mouths on tick 367. Every compared public field is
+exact, apart from the standard one-raw-unit normalized-axis allowance in the
+shared comparator.
+
+### Executable Beam forms, pooled graph and damage (2026-09-15)
+
+Catalog id 28 now connects the previously verified Beam kernels to the public
+rollout. The separate grounded and airborne `PlayerBody` forms preserve their
+authored radii, offsets, movement constants and animation schedules. Ground
+entry chains `enterFrame1` into `enter` or `enterUp`, requests the exact
+ShakablePlatform trauma each pass, and keeps its clamped relative staff vector
+as the platform rotates. Air entry rotates the hurtbox with the approached aim
+and reproduces the three `getNumberOfPassedSprites` orb poses at ticks 32, 48
+and 64. Release during entry, manual release during the loop, jump cancellation,
+landing and the strict maximum-time condition all follow their distinct exit
+paths. The grounded exit reproduces `SyncPhysicsTo(AbilityExitInfo)`'s two
+positions: `Player.Position` sees the ability collider's published world pose,
+while the ordinary slime box is reconstructed from the newly advanced platform
+local using Beam's radius and then converted to the ordinary radius.
+
+The lazily instantiated layer-18 orb preserves its disabled charge state,
+enables on the firing transition, completes `whiteExit` when that animation is
+shorter, and remains as the same inactive object when an air form exits first.
+Recasting that equipped prefab reuses its id, hierarchy and previous cast-tick
+pose exactly. Destroying the holder instead removes the orb on its following
+updater pass. Beam inputs feed the retained crossing graph without allocating;
+the graph snapshot, reflected-id scratch, BeamObject pool, previous-pass contact
+boxes and kind-4 observation rows all reuse capacity. Collider objects are
+created before trace ids, matching `renderBeams` followed by `RlObservation`.
+Collision callbacks consume the box DetPhysics simulated before the current
+graph resized it, so a newly created beam is visible one pass before it can kill.
+Terrain, Black Hole and Rock endpoint forces use the exported scale clamp and
+time-stop protection. Water reflection and every graph role remain supplied by
+the same verified graph implementation.
+
+`beam_ability_ab.c` compares 3,810 optimized Q32 NativeAOT/Rust ticks across a
+ground lifecycle with stock death, charge cancellation on a shaken moving
+platform, complete airborne entry/release, retained-orb recast, automatic
+maximum-duration shrink/stop, and two simultaneous upward beams that produce
+the persistent crossing child. All headers, player/slime records, telemetry,
+entity order, identities, ownership and lifecycle boundaries match. The entity
+comparison permits one raw Q32 unit for positions, axes and radii: the observed
+case is a BeamObject centre where Unity restores inverse extents and associates
+the rotated half-length product one operation earlier. That is 2.33e-10 world
+units, while both axes, every overlap decision and all later state match.
+
+The retained standalone corpora continue to cover 995 primitive rays, 62 short
+and 51 stress graph scenarios, 250 curves, 196 hitbox sequences, 214 endpoint
+effect scenarios, and 73 combined physics scenes with no mismatches. Live
+`Orb.ApplyBeam` has no producer in the five shipped maps or the 39-ability
+catalog; its type/charge/firing/color behavior remains verified in the endpoint
+component corpus.
+
+### Duplicator GunTransform, platform and thrown-item copies (2026-09-15)
+
+Catalog id 29 now executes its independently authored GunTransform lifecycle.
+The form uses Duplicator's 0.70 PlayerPhysics radius, 3.78-unit firepoint,
+36-tick transform clip, 17-tick fire clip and 50-unit recoil. The smaller form
+radius makes grounded entry and landing observably different from Freeze and
+the scale rays: Player.Position moves to the new-radius surface pose while the
+disabled slime row retains its pre-cast pose, and a recoil landing converts the
+form local back through the ordinary slime radius before LateUpdate.
+
+Wall hits reproduce the shipped `useOldPlatformBehaviour` branch. The fixed
+effect pool holds the 1.3-second delay without tick allocations, applies the
+50-unit overlap force to every intersecting rounded platform, carries
+`ActAsFloatingPlatformForAFrame` into the next home-spring pass, and creates a
+geometry-identical platform with the source prefab's locally renumbered
+collider hierarchy. A duplicate receives a fresh zero-velocity PhysicsBody and
+homes at its spawn position, matching Unity initialization rather than copying
+the source collider's live accumulator. `duplicator_ability_ab.c` compares
+1,500 optimized-Q32 NativeAOT/Rust ticks across grounded and airborne miss
+forms and a downward platform hit; all public state, source-platform impulses,
+clone identity, hierarchy, geometry and later motion match exactly.
+
+The live ray now follows `ShootDuplicator`'s full query order: last overlapping
+rounded rectangle first, then three parallel closest rays, each scanning
+rounded rectangles, circles and boxes with strict-distance tie handling. Water
+recurses once with the reflected direction. Circular item targets use their
+authored three-copy fan, spacing and angle without allocating. Copies inherit
+the live body and item state, receive locally renumbered updater hierarchies,
+register one updater pass later, and expire after the source's 1,800-pass
+duplicated-object lifetime. Grenade copies additionally reproduce the explicit
+thrower, owner-hit and staggered-fuse reset.
+
+`duplicator_item_ab.c` drives a live grenade into that moving triple ray and
+compares 450 optimized-Q32 NativeAOT/Rust ticks. All copy positions and
+velocities match within one raw unit through overlapping Circle/Circle
+manifolds, the source grenade's two startup shockwaves, a water-boundary
+removal, a stock clone, and a later copied-grenade explosion. The fixture
+explicitly asserts all four item-removal ticks and both the original and copied
+explosion-registration ticks. A held ThrowItem2 payload cannot be duplicated
+in the source: its circle is absent from DetPhysics until `ManualInit` on
+release, so the ray has no selectable item row. Fresh explosion colliders
+append in DetPhysics box order even when their fixed native state slot is
+reused. The only accepted item difference is 32,722 raw Q32 rotation
+units (7.62e-6 radians): Unity copies the source `BoplBody.rotation`
+accumulator, while Rust retains the previously published circular collider
+orientation. Rotation has no geometric or collision meaning for these circle
+items; their positions, velocities, mass and every contact decision match.
+Player-layer form axes and rotation retain the existing dynamic ThrowItem2
+allowance of 30,000,000 raw units (0.00699 radians); player/body state and all
+translational results remain exact.
+
+`duplicator_missile_ab.c` covers Duplicator's Missile-specific item branch for
+450 bit-exact ticks. The source Missile stays live after its controlling form
+exits, then receives three fan copies on tick 251. Each clone registers one pass
+later with a fresh Missile runtime, owner propagation, velocity-derived `up`,
+and an allocation-free 1,800-pass duplicate lifetime stored in the projectile
+pool. The original and copies leave the top/side bounds on ticks 256, 260 and
+261, queue four ownerless explosions, and expire independently on ticks 339,
+343 and 344. Positions, velocities, rotation, identity, hierarchy and public
+player/slime state are bit exact; only the usual one-raw-unit collider-basis
+rounding allowance remains.
+
+`duplicator_smoke_ab.c` adds 450 exact ticks for the same fan path using a live
+Smoke grenade. This exposed three source distinctions now preserved by Rust:
+all cloned `Grenade` components receive the staggered fuse and owner-contact
+reset, Smoke detonates on rounded-wall and Water contacts after owner contact
+is enabled, and a newly spawned cloud below `WaterHeight` consumes its Init RNG
+draw but is destroyed before its collider reaches the public entity rows. The
+three copies, collision responses, randomized clouds, identities, hierarchies
+and removal ticks all match.
+
+`duplicator_tack_ab.c` adds 450 exact ticks for the first non-Grenade item
+copy. Unity's `DuplicateObject` copies serialized prefab fields but starts
+private Tack and physics runtime state fresh: the circle registers one pass
+after the shot, `BananaPeel` joins one further pass later, and the copied body
+starts at zero angular velocity before Tack observes `hasBeenThrown`. Rust now
+models that phase split and the clone-local third-updater collider hierarchy.
+All three fan copies match through ballistic contacts, arming and two trap
+consumptions within 64 raw Q32 units.
+
+`duplicator_mjolnir_ab.c` applies the same fresh-prefab rule to a live hammer.
+The 500-tick differential covers its three-copy fan, clone-local collider
+hierarchies, deferred `Mjolnir` launch initialization, outbound damping, turn
+to recall, homing acceleration, the original hammer's removal and the three
+copies reaching their owner and disappearing together on tick 451. All public
+state remains within 64 raw Q32 units through tick 500.
+
+`duplicator_poke_ab.c` verifies the same serialized-versus-runtime reset for a
+Poke Ball. Its three fan copies, clone-local collider hierarchies, delayed
+`PokeBall` launch initialization, owner publication and angular velocity now
+continue through all 900 ticks. The differential covers the overlapping-copy
+Circle/Circle manifolds in DetPhysics sweep order, the first shared dynamic
+platform contact at tick 318, repeated platform bounces, boundary losses at
+ticks 337, 342 and 470, and the last ball's five-second fizzle at tick 530.
+All positions remain within the existing 64-raw-Q32 bound. Rust builds every
+Circle/RoundedRectangle manifold before resolving the first one, matching the
+source phase that prevents an earlier ball's platform correction from changing
+a later ball's already-queued contact.
+
+`duplicator_poke_capture_ab.c` adds a 248-tick exact differential for the
+capture path. On tick 237 the original ball's updater-radius query misses a
+player that has just exited a held Bow form; DetPhysics then integrates
+the ball, synchronizes the restored ordinary Player box and dispatches the
+queued Circle/Box callback, which captures it. A fan copy catches an airborne
+ordinary player in the same callback pass. On tick 238 another copy's queued
+Circle/Box callback captures that already-invulnerable victim as the source
+allows: both PokeBall instances retain their victim reference, and their
+ordered updaters pin the shared body on later passes. Rust keeps the collider at
+the position used to build the current callback batch and synchronizes it on
+the next physics pass. Every public field stays within 64 raw Q32 units through
+12 pinned passes. A fired Arrow exposes a separate destroyed-row angular-velocity
+publication difference on tick 249, so this fixture does not claim the later
+multi-captor expiry/ejection boundary.
+
+`duplicator_mine_ab.c` adds 2,200 ticks for Mine's distinct original
+`ThrowItem` path and duplicate initialization. Releasing during grounded
+anticipation records the source's down direction and selects the 2-unit
+`minThrowStrength`, while authored `onlyThrowUp` independently keeps the launch
+vector on the surface normal. The resulting Mine and all three fan copies match
+within 64 raw Q32 units through deferred collider registration, arming,
+long-lived hover motion and the final 60-frame shake. Each clone consumes its
+`Mine.Init` hover RNG sample once during deferred registration; sampling eagerly
+at duplication had advanced the shared generator three extra values. The source
+duplicate manager traverses its list backward during shake, so Rust does the
+same and assigns the shared RNG draws to the same clones before all three expire
+simultaneously on tick 2049. The active Mine form uses the
+same 64-raw-Q32 bound after preserving its exact FixTransform offset basis.
+
+`duplicator_pickup_ab.c` starts with Duplicator equipped in slot three, enables
+the authored AbilitySpawner diagnostic, and follows the deterministic first
+pickup through collection. The pickup replaces Duplicator with Revival on tick
+2506; its ability row registers on tick 2507, the acquired slot casts on tick
+2508, creates the owner marker and completes the QuickSpell exit. The complete
+2,600-tick public state matches NativeAOT exactly.
+
+The remaining `ShootDuplicator.ApplyDuplicationEffect` branches are now ported
+from the source in one pass. Projectile targets create the authored four-copy
+fan, including live Arrow scale, ownership reset and deferred registration.
+Dynamic ability pickups use the three-copy weapon fan and rerun `initSelf` on
+registration. Positive Black Holes copy mass and start at the source's
+radius-derived offset with the exact `AddForce(mass * direction * 6)` result.
+Active Rocks become owner-credited layer-16 `Rock_noPlayer` bodies. Ordinary
+and transformed player targets create fresh empty-loadout, shared-input player
+bodies with the source's 16-clone cap, normal interpolation and `PopIntoAir`
+launch. Layer-26 orbs select Duplicator type, while platform-attached Spike,
+Engine and Tesla targets copy on the same perimeter with their authored
+offsets, fresh runtime state and duplicate lifetime. Every new hot path uses
+retained vectors and fixed contact buffers; duplication allocates only when a
+cast actually creates an object.
+
+`duplicator_broad_ab.sh` runs the 13 existing optimized-Q32 NativeAOT/Rust
+scenarios as one gate. It covers grounded and airborne use, platform cloning,
+all previously represented item families, guided Missile, pickup-driven slot
+replacement, Poke Ball capture and the Gust, Time Stop and Dash interactions.
+All scenarios pass. The new player, Arrow, pickup, Black-Hole, orb and attached
+terrain branches are direct source ports but do not yet each have a standalone
+public capture. Native duplicate expiry is grouped by fixed entity pool rather
+than one cross-type Unity destruction list, so an exact same-tick mixed-type
+final-shake RNG order is not claimed. Abilityless clones currently implement
+movement, lethal contact, death accounting and observation rows; ordinary
+player shove, rope, portal and pickup interactions still use the base-player
+paths only where those systems already enumerate the clone pool. The later
+multi-captor Poke Ball expiry/ejection boundary also remains unmeasured. These
+limits affect rare compositions rather than the translated branch selection,
+but the clone cap cannot be exact when Revival would create several full actors
+for one player, so catalog id 29 remains `partial`.
+
+### Magnet form, pull field and thrown-item handling (2026-09-15)
+
+Catalog id 30 now executes `MagnetGun`'s authored player form. Prefab extraction
+records its collider and physics constants, all pull/pickup masks and strengths,
+held-object launch values, exact four-key pull curve, and enter/prepull/exit clip
+durations. The runtime switches to the 0.76 radius, applies the 0.03 airborne
+gravity and 0.1 entry velocity factors, tracks aim, releases with the 50-unit
+recoil, restores full gravity, and exits either on a recoil landing or after the
+strict 18th exit-animation update. Landing converts the form position back
+through the ordinary slime radius before platform following resumes.
+
+Pulling is active on the cast pass, matching the modified source's immediate
+`prepulling` state. The ray-shortened oriented box applies the curve-scaled
+off-centre impulse to every intersecting rounded platform, skips the attached
+ground, and pulls ordinary/Macho player bodies in updater order. The apparent
+source bug that tests close distance against the raw prefab firepoint offset is
+preserved, including its strict threshold and doubled ordinary-player pull.
+The query and fixed state use existing buffers and entity pools and allocate
+nothing per tick.
+
+`magnet_ability_ab.c` compares 1,000 optimized-Q32 NativeAOT/Rust ticks. A
+grounded horizontal cast pulls two dynamic platforms and the opposing player
+from its first pass through release and landing; an airborne diagonal cast
+covers slow gravity, recoil flight and the animation exit. Public player/slime
+state, platform impulses and trajectories, collider axes, rotations and every
+lifecycle tick match. The only allowance is 2,048 raw Q32 position units
+(4.77e-7 world units) for the active Magnet collider centre: Unity composes the
+ability FixTransform offset from its live basis, while Rust reconstructs the
+same centre from the exported scalar rotation. This does not affect the
+canonical player body, pull query, collision decisions or later state.
+
+`magnet_item_ab.c` adds 450 optimized-Q32 ticks composed with a live Grenade.
+It covers circular-item pull force, nearest pickup, holder/fuse suppression,
+the locked angular velocity and zero-velocity pin, repeated held-body momentum
+transfer, release recoil and the 10,000-force launch. Cast, pickup, release,
+form exit, item survival, positions and velocities now match within 64 raw Q32
+units. Rust runs MagnetGun, Ability publication and PlayerBody integration as
+separate source-ordered phases, including the grounded platform-local handoff.
+Holding and duplication remain allocation-free, and copied items explicitly
+discard the source holder.
+
+`magnet_grenade_ab.c` adds a strict 340-tick same-player composition without
+the inherited form-pose allowance. Grenade casts on tick 214 and releases on
+tick 243; Magnet enters that same pass, catches on tick 245, and fires on tick
+250. The item query, nearest selection, locked angular velocity, two-pass Hold
+refresh, firepoint pinning and 10,000-force launch match every public field.
+
+`magnet_smoke_ab.c`, `magnet_poke_ball_ab.c` and `magnet_tack_ab.c` repeat that
+strict schedule for the other ordinary released ThrowItem2 bodies. All three
+match the same 214/243/243/245/250 cast, release, Magnet entry, catch and fire
+ticks through circular pull, nearest selection, locked pinning and launch.
+Tack keeps its Projectile owner; Smoke and Poke Ball retain their item-root
+ownership rules. No position or velocity allowance is needed.
+
+The allocation-free replacement for `MagnetGun.StaticUpdate` retains one
+pickup circle per player slot, scans pairs in slot order after every player's
+ability update, pauses only magnets still prepulling/pulling, and applies the
+authored force through `PlayerBody.AddForce` (the source's factor of 35).
+`magnet_parry_ab.c` drives both players together, casts the higher updater first
+and the lower updater on the following pass, and matches NativeAOT for 240
+ticks through the overlap, pause and symmetric separation. All non-position
+state is exact. The existing grouped grounded-transform difference reaches
+less than 300,000,000 raw Q32 units (0.0699 world units) after the 70-unit
+external pushes; it does not alter the overlap, pair order, pause, force or
+subsequent ability lifecycle.
+
+`magnet_time_stop_ab.c` composes Time Stop, Grenade and Magnet over 1,450
+optimized-Q32 ticks. The Grenade is picked up 22 passes before the stop. During
+the exact 690 frozen passes, the retained input direction, form transform,
+pull/release clocks and physics remain fixed while the locked branch continues
+to pin the zero-velocity item and refresh `BoplBody.Hold(2)`. Releasing and
+changing aim during the stop therefore fires along the retained pre-stop aim
+on the first restored pass, matching NativeAOT through form exit. This stopped
+composition retains a 0.0233-world-unit position allowance and matches every
+axis, velocity, flag and lifecycle tick. The pooled item stores the source's
+three-frame initial/two-frame refreshed hold countdown, so pause, holder death
+and duplication cannot leave a permanent holder reference.
+
+`magnet_missile_ab.c` adds a 275-tick airborne composition with a live guided
+Missile. Although `Missile` is projectile-shaped, its prefab is on Unity's
+layer 10 (`item`), so the source routes it through the ordinary 100-force pull
+branch and its source-buggy close multiplier rather than the 500-force
+Projectile branch. The Rust pool preserves that dispatch, nearest box pickup,
+momentum transfer, locked firepoint interpolation, zero-velocity pin and
+thrust suppression while held. On release the source clears Magnet's item
+reference but leaves `BoplBody.Hold` to expire independently; preserving that
+countdown suppresses Missile's 1,000-force instability thrust on the launch
+pass and leaves the authored speed exactly 75. Cast, catch and release
+boundaries, positions, velocities, axes, flags and entity ordering match within
+64 raw Q32 units.
+
+`magnet_missile_landing_ab.c` extends the held path to 500 ticks while the
+caster lands at tick 296. The source's MagnetGun hierarchy-2 movement publishes
+through Ability at hierarchy 3 before PlayerBody integrates at hierarchy 8.
+Its pull box also overlaps Magnet's own enabled Player-layer hurtbox, applying
+the generic player pull back to the caster. Rust preserves both behaviors.
+While held, the guided Missile follows the item branch's ordered
+`MoveObjectOutOfWalls`, then DetPhysics resolves the residual 0.01-unit slop
+contact before `Missile.OnCollide` suppresses its callback. This reproduces the
+first tiny dynamic-platform impulse on tick 342 and remains exact through tick
+500 without widening the 64-raw-Q32 bound.
+
+`magnet_arrow_ab.c` closes the layer-9 Bow projectile path. Magnet applies
+`ProjectilePullStr`, selects the Arrow circle as the nearest pickup, transfers
+momentum, sets the authored two-radian angular velocity, refreshes
+`BoplBody.Hold(2)`, pins the body at its firepoint and launches it with
+`FireForce * 2`. The 360-tick differential matches every lifecycle boundary,
+velocity, angular velocity, flag and entity order. Held position differs by at
+most 48,225,412 raw Q32 units (0.01123 world units) because it inherits the
+documented grouped Magnet form pose; target selection, wall handling, release
+and later flight are unchanged.
+
+A source-completion pass replaces the three optional held-object fields with one
+fixed tagged handle and extends the same query/update/release path to every
+modeled `onlyPull`/`onlyPickup` target: ordinary and active-form players, active
+Rock bodies, positive Black Holes, Macho boulders, ability pickups and
+PortalShots. It preserves the authored per-scale, Rock and Boulder firepoint
+offsets, strict nearest-centre selection, `MagnetSteal` pause, wall-clamped
+spherical interpolation, held-player ragdoll refresh and rope endpoint pinning,
+item `MoveObjectOutOfWalls`, signed Black-Hole force, and the distinct player,
+Rock, Missile, Boulder, Black-Hole, projectile and ordinary-item fire forces.
+Timeout, distance, target destruction, holder death and ability-exit paths all
+clear the tagged reference while each BoplBody-like pool keeps its independent
+short Hold countdown. The scans reuse the existing pools and do not allocate in
+the tick path.
+
+`magnet_broad_ab.sh` is the single broad Magnet gate. It compiles and runs 12
+NativeAOT/Rust scenarios covering both form entries, walls and player pulls,
+parry, every ordinary ThrowItem2 body, Arrow, guided Missile including the
+updater-sensitive landing, Time Stop and Gust. All pass with their existing
+bounds. The newly translated Rock, ragdoll-player, Black-Hole, boulder, pickup,
+PortalShot, steal and lock-loss branches remain source-ported but unclaimed by
+an exact public differential. Generic weapon/spell bodies other than the modeled
+PortalShot still depend on those objects acquiring native rigid-body state, so
+Magnet remains `partial`.
+
+### Executable Web Swing and observed rope rows (2026-09-15)
+
+Catalog id 32 now executes the shipped instant Web Swing. The cast uses the
+source's fixed up-forward direction and DetPhysics rounded-rectangle ray. A hit
+allocates one body from the fixed 128-rope pool, initializes all 12 authored
+points with the original division order, shortens their separation by the
+prefab's exact serialized factor, and attaches the platform and ordinary
+PlayerBody endpoints. A grounded cast performs the source 0.05-unit unground,
+zeros rotation, and adds the 3.5 upward impulse before PlayerBody integration.
+The rope and attachment enter the Updater on the following pass, while the
+already-authored PlayerBody pins its endpoint on the cast pass. This ordering is
+needed for exact first-frame segment state and subsequent moving-platform force.
+
+The existing verified `physics::rope` solver now runs in rollout DetPhysics with
+preallocated 40-point and 32-contact arrays per body. Platform attachment,
+player endpoint mass interpolation, air correction, grounded pull, stretch
+breaks, jump release and held-button cooldown routing use the source phase
+order. Releasing after the six-tick guard copies endpoint Verlet velocity with
+the exact 1.12 serialized multiplier, detaches the player, starts the 1.25-second
+cooldown, and removes the dangling strand after the 0.9-second cleanup clock.
+Observations insert `segmentCount - 1` kind-3 rows between rounded rectangles and
+beams with stable ids, owner, hierarchy, radius, direction, and detached flag.
+Rope bodies, broad-phase rectangles, rows, and fork state reuse capacity; there
+is no per-tick or per-cast allocation.
+
+`web_swing_ability_ab.c` compares 1,310 optimized-Q32 NativeAOT/Rust stages. Four
+maps exercise the miss and exact 0.45-second retry cooldown. Map 3 exercises the
+hit at tick 181, all 11 rope rows, sustained dynamic-platform swing, tick-360
+release velocity, detached observation lifetime, landing, and tick-413 cleanup.
+Every compared header, player record, slime record, telemetry value, rope row,
+and lifecycle boundary matches exactly. The source-prefab extraction now records
+all rope, attachment, DetPhysics, and Web Swing constants in `rollout.json`; the
+hot loop uses compile-time values and asserts them against that generated data
+when the fixed pool is created. Duplicator/Magnet interactions with ropes remain
+outside this golden.
+
+### Executable Grappling Hook (2026-09-15)
+
+Catalog id 27 now executes `HookshotInstant`, `Rope`, `RopeHook`,
+`RopeAttachment`, and the PlayerBody rope path. A cast publishes the layer-24
+hook before its 11 initial segment rows, advances it at the authored 100-unit
+speed, applies the eight-segment velocity falloff, grows the rope one segment
+per updater pass to the 40-point limit, and times out at the strict 0.8-second
+boundary. Wall callbacks require the hook centre to overlap the rounded
+rectangle before they attach. Player callbacks exclude the rope owner and
+original endpoint. Holding the slot keeps cooldown zero while the owned rope is
+valid, shortens separation by `0.4 / segmentCount`, removes one segment per pass
+below 0.3, stops at eight points, then restores the three-second cooldown.
+
+The SlimeController proximity branch is also preserved. A three-player team
+golden places a teammate inside `CircleCastClosestPlayers`; the rope starts at
+that teammate, attaches its bottom endpoint, leaves the caster unattached and
+immediately retains the full cooldown. The resulting strand persists after the
+hook lands because the caster has no reel ownership. Rope, hook and contact
+state stay in the existing fixed pools and fixed-capacity scratch arrays.
+
+The same flight then hits the grounded third player at its top endpoint on tick
+197. Because that collision occurs after `PlayerPhysics.UpdateSim`, Unity does
+not run the grounded rope correction during the contact pass. Rust records the
+attachment tick and defers that correction too; this removes a spurious
+25.65-unit/s horizontal velocity that previously appeared on the victim.
+`grapple_player_attach_ab.c` compares every public field exactly through the
+contact and the first eligible correction pass at tick 198.
+
+`grappling_hook_ability_ab.c` compares 1,870 optimized-Q32 NativeAOT/Rust stages:
+horizontal casts on all five maps, one upward timeout, and the close-player team
+cast. All hook/segment ids, hierarchy, counts, cooldown and reel/delete
+boundaries match. Free-flight segment positions are exact. On map 1 the attached
+rope and player remain exact through impact; the first player-position split is
+334 raw Q32 units (7.78e-8 world units) four ticks later. Constraint relaxation
+then amplifies that rounding difference on moving platforms, while impact,
+segment deletion and cooldown ticks remain identical on every map. Unity also
+varies the destroyed hook collider's otherwise-irrelevant ACTIVE bit by map
+(retained on two maps, cleared on three); both backends mark it DESTROYED and
+remove it on the next pass, so the golden masks only that bit on that one frame.
+
+### Complete Blink target routing and generic QuantumTunnel (2026-09-16)
+
+Blink now translates the remaining `ShootQuantum` and `QuantumTunnel` gameplay
+branches as one ability-sized path. The cast first performs the source's
+unmasked rounded-rectangle muzzle point-check, then visits rounded rectangles,
+circles and boxes in DetPhysics order through the complete serialized collision
+mask. Water reflection, the submerged self-target edge, EffectorZone/weapon
+early return, base cooldown restoration, player-hit cooldown, wall delay and
+first-hit orb conversion retain their distinct source branches.
+
+Player victims can be in any live ability form. Entering the tunnel detaches
+both rope endpoints and calls the Magnet form's item-stolen path before the
+victim is disabled. Generic victims use a retained per-world tunnel pool keyed
+by collider identity, so projectiles, thrown items, pickups, Black Holes,
+weapons, spells and other registered rigid bodies remain allocated while their
+GameObject is inactive. Their updaters, integration, contacts, portals,
+boundary checks and lifetime clocks do not run until the strict four-second
+expiry restores the original collider flags. Tunnel clocks continue to use
+player time, so Time Stop freezes both player and generic targets.
+
+`blink_broad_ab.c` compares 500 optimized-Q32 NativeAOT/Rust ticks in a crowded
+released-item composition. Blink selects a live Grenade from the common
+collider registry, hides it on tick 251, preserves its body and fuse for the
+entire inactive interval, and restores it on tick 493. Every public header,
+player/slime record, entity identity, flag, hierarchy, transform, velocity,
+body value and telemetry field matches. The existing grounded-player,
+airborne-player and reflected-wall differentials remain exact. Other translated
+target classes are listed as unmeasured in `rl/ABILITY_PORT_GAPS.md`; they do
+not justify separate narrow probes unless a later broad episode diverges.
+
+
+### Complete Growth ray target routing (2026-09-16)
+
+Catalog id 8 now translates the remaining `ShootScaleChange` branches in one
+path. Before its ordinary ray, the cast performs Unity's unmasked rounded-
+rectangle muzzle point-check. The ray then uses the complete serialized mask
+and DetPhysics shape order, reflects once from Water, treats a submerged muzzle
+as a self-hit, and routes every active player form plus modeled items,
+projectiles, pickups, platforms, Smoke clouds, spells, weapons, orbs and rigid
+affectors. Each cast allocates from retained per-world `ScaleChanger` storage;
+concurrent effects retain independent clocks and non-player effects stop under
+Time Stop. Generic collider scaling updates the exported shape and inverse mass
+without allocating in the tick path. Target-specific `ISpell.AddScale` behavior
+for marker-like spells remains explicitly unverified in the gap ledger.
+
+The RigidBodyAffector path calls Black Hole growth directly rather than creating
+a ScaleChanger. Rust uses the prefab's exact raw Q32 inverse-mass argument
+85,899,344 (0.0199999998), then preserves `BlackHole.Grow` mass, momentum, target
+size and growth-clock reset semantics. `growth_broad_ab.c` compares 520
+optimized-Q32 NativeAOT/Rust ticks through independent hole casting, Growth's
+ray hit, and the resulting Hermite radius change from 5,425,903,114 to
+10,957,189,770 raw units. Every compared header, player/slime record, entity
+identity, hierarchy, transform, body value, lifecycle boundary and telemetry
+field matches within the pre-existing Black Hole spatial bound. Existing exact
+player, airborne, Missile and reflected-wall differentials remain unchanged.
+
+
+### Complete Shrink ray target routing (2026-09-16)
+
+Catalog id 17 uses the same complete `ShootScaleChange` query and retained
+`ScaleChanger` machinery as Growth, with its independently serialized negative
+curve, player/non-player multipliers, orb type and Black Hole inverse-mass
+argument. The direct rigid-affector branch passes raw Q32 -85,899,344
+(-0.0199999998) to `BlackHole.Grow`; from the default positive mass this crosses
+zero, changes the hole to negative mass, preserves the signed momentum update
+and derives size from absolute mass exactly as the source does.
+
+`shrink_broad_ab.c` compares 520 optimized-Q32 NativeAOT/Rust ticks through an
+independently cast Black Hole, the Shrink ray and the resulting white-hole
+Hermite radius evolution from 5,425,903,114 to 7,894,150,044 raw units. Every
+compared public field matches within the existing Black Hole spatial bound. The
+airborne-player, reflected-wall and live-Missile Shrink differentials remain
+exact; unmeasured generic target classes and target-specific spell internals stay
+listed in `rl/ABILITY_PORT_GAPS.md`.
+
+
+### Complete Platform transform and spawned-wall lifecycle (2026-09-17)
+
+Catalog id 14 now translates the remaining `PlatformTransform` and
+`ResizablePlatform` source branches. A platform created by a scaled player
+starts with scaled rounded geometry and uses `maxArea * rr.Scale` while sizing.
+Every resize recomputes mass and inertia; before Spike, Engine or Tesla makes
+the wall composite, the recalculated root body is retained for later child
+removal. An existing Web Swing or Grappling Hook endpoint transfers to a new
+`RopeAttachment` on the platform's bottom face without detaching the rope.
+The fixed rope state records which endpoint moved, pins it from the
+attachment's next updater pass, applies the source platform mass/pull, and
+keeps platform indices valid through removal.
+
+The ability distinguishes a temporarily inactive wall from a destroyed one.
+A Blink-tunneled wall hides and pauses the transform until the same body is
+restored; a consumed or removed wall kills the transformed owner as an
+environmental accident on its following update. During Time Stop,
+`PlatformTransform` still receives the raw 60 Hz `simDeltaTime`, so retained
+aim can rotate the wall and move the cursor, while the owner's
+`GameTime.FixedDeltaTime` freezes animation callbacks, sizing, ejection and the
+ability clock. Portal motion, Growth/Shrink collider scaling, Gust/Meteor/Black
+Hole forces, attached child bodies, rider drops and wall squish callbacks all
+operate on the same live spawned body without per-tick allocation.
+
+`platform_broad_ab.sh` runs the existing entry/phase, overlap, landing,
+boundary, rotation and map-2 AntiLockPlatform scenarios as one optimized-Q32
+gate: six scenarios and 4,140 ticks pass. Unloaded orbiter fields, discrete
+flags, phase boundaries, deaths and spawned-wall retention are exact. The
+contact-loaded cases retain their established semantic bounds: at most 0.05
+world units in platform/player pose, 0.01 units per second in platform
+velocity, 0.012 radians in orientation and 0.005 radians per second in angular
+velocity. These differences arise after rigid contacts from separately
+rounded collider axes and correction order; no measured contact, state,
+death, ownership or lifetime boundary differs. Scaled entry, rope transfer,
+tunnel/destruction, Time Stop and mixed attached-child branches are translated
+but do not yet have separate focused public differentials.
+
+
+### Complete Freeze query and duplicate-slot lifecycle (2026-09-16)
+
+Catalog id 36 now translates the rest of `FreezeRayGun.Shoot` as one query.
+Before `RaycastToClosest`, it performs the source's unmasked rounded-rectangle
+point check at the muzzle. The ordinary pass traverses the complete serialized
+mask in DetPhysics rounded-rectangle, circle and box order; projectile, item,
+terrain, EffectorZone, rigid-affector, orb and spell hits stop the beam without
+receiving a callback. Water reflects once through the no-water mask. Player
+hits resolve the live collider for every active form and apply the source's
+alive and invulnerability gates before direct `Ability.ExitAbility` and
+`FrozenSolid.Begin`. Poke Ball capture is the currently modeled gameplay
+invulnerability source.
+
+Freeze prefab identity is now slot-indexed. Initial loadouts, pickup-created
+slot-three abilities, stock clones and revival clones retain one collider per
+equipped Freeze instance; entering a slot selects that instance, and death
+removes all current equipped instances while pickup-replaced orphan prefabs
+remain inert as in Unity. Inactive FrozenSolid records are reused before the
+vector grows, preserving allocation-free steady-state updates.
+
+`freeze_broad_ab.c` compares 620 optimized-Q32 NativeAOT/Rust ticks with two
+Freeze copies in separate slots. The first ray cancels an active grounded Bow;
+the second slot fires while the victim is already pinned. The backends match
+the two prefab rows, overlapping ice clocks, the first shatter immediately
+followed by the surviving effect's re-pin, the final cooldown-reset thaw,
+ragdoll and resumed movement exactly. The frozen state spans ticks 335 through
+503. Existing grounded, airborne, Water/self and Bow differentials remain
+exact. Unmeasured blocker classes, other forms, ropes, death and pickup-created
+duplicate casting remain listed in `rl/ABILITY_PORT_GAPS.md`.

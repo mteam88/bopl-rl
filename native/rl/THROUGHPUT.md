@@ -7,6 +7,96 @@ this is the measured bottleneck model and the ranked options. Fidelity
 constraint per Matthew: a close approximation is fine (bit-exactness with the
 .NET oracle is not required for training speed work).
 
+## 2026-09-17: 39-ability Rust port recovery
+
+All numbers below use the trainer's Q32 release build. The old library is
+commit `a807fce`, built from an archive under `native/target/oldsrc`; the new
+library is branch `ability-port`. The benchmark is pinned to CPU 11 and runs
+old/new in alternating order for 130,000 ticks per repetition.
+
+The quiet-host measurements captured before this pass showed the regression:
+
+| players | old median ticks/s | port median ticks/s | slowdown |
+|---:|---:|---:|---:|
+| 2 | 1,621,291 | 308,710 | 5.25x |
+| 6 | 816,807 | 184,165 | 4.44x |
+
+The accepted five-repetition run was taken while other Rift builds and jobs
+shared the host, so absolute rates are lower. Interleaving makes the ratio the
+useful result:
+
+| players | old median ticks/s | optimized median ticks/s | remaining gap |
+|---:|---:|---:|---:|
+| 2 | 608,345 | 498,186 | 1.22x |
+| 6 | 287,821 | 224,591 | 1.28x |
+
+The final balanced ten-repetition run alternated which library ran first. It
+measured 689,746 vs 525,116 ticks/s at 2 players (1.31x) and 296,637 vs
+239,163 at 6 players (1.24x). The 6-player target is robustly met; the
+2-player result sits on the 1.3x boundary under shared-host variance (the same
+binaries ranged from 1.22x to 1.36x in five-repetition runs).
+
+The final 130,000-tick all-ability sweep has a 2-player median/minimum of
+335,147/32,024 ticks/s and a 6-player median/minimum of 156,913/9,415 ticks/s.
+The 6-player minimum is Grappling Hook (ability 27); Web Swing (ability 32)
+is 52,980 ticks/s. These are dominated by exact rope constraint
+physics. Grappling Hook reached 1,137 published entities. That is not accidental
+over-publication: `RlObservation.cs` emits one row for every enabled rope
+segment pair (`segmentCount - 1`), and the authored pool permits 16 ropes per
+player. Reducing those rows or skipping rope iterations would diverge from the
+C# oracle, so the 100k per-ability target remains unmet for rope-heavy matches.
+Spike (11), Smoke (13), and Portal Gun (38) measured 70,492, 91,225, and
+78,868 ticks/s under the same shared load; all other abilities exceeded 100k.
+
+The optimization keeps C# updater ordering while gating inactive subsystems,
+uses a single-pass common entity publication path, avoids duplicate entity
+refreshes, retains scratch allocations, compacts replay actions, and replaces
+restoring Q32 division/square-root work with result-identical integer paths.
+`just verify` passes the complete golden differential suite after these changes.
+
+### 2026-09-17 pickup-updater follow-up
+
+Restoring `DynamicAbilityPickup.UpdateSim` for matches without Portal Gun made
+death-dropped pickups C#-faithful, but its direct platform scan and repeated
+wobble interpolation regressed the default loadout. The exact downward query
+now uses the existing conservative platform-bounds mask (retaining ascending
+platform order and the original narrow-phase test), and the global wobble is
+computed once per updater pass and cached by tick across episode resets.
+
+Five 120,000-tick Q32 repetitions, interleaved on CPU 11, measured the version
+with the restored updater before and after these optimizations:
+
+| players | before median ticks/s | after median ticks/s | improvement |
+|---:|---:|---:|---:|
+| 2 | 579,205 | 622,773 | 1.08x |
+| 6 | 185,328 | 240,311 | 1.30x |
+
+All 22 `rust_ab/*_broad_ab.sh` families passed after the performance change.
+
+### 2026-09-17 pickup publication follow-up
+
+Death-dropped pickups exposed two remaining default-loadout slow paths. Merely
+retaining a `DynamicAbilityPickup` disabled the simple actor/metadata refresh,
+even though its displayed ability is not instantiated until collection. Its
+circle row was also appended after authored boxes, making the optimistic
+publisher recopy every live row through four filtered passes. The simple path
+now publishes pickup metadata directly, and out-of-order pickup rows are
+counted without copying and written once into their final shape partitions.
+
+Two independent 600,000-tick, ten-repetition interleaved runs were retained in
+`review/ab_results_final.txt`. The host was shared with CPU training jobs; the
+pooled medians reduce the visible old-library load variance:
+
+| players | old median ticks/s | optimized median ticks/s | remaining gap |
+|---:|---:|---:|---:|
+| 2 | 680,996 | 534,610 | 1.274x |
+| 6 | 299,267 | 234,565 | 1.276x |
+
+The two individual 2-player gaps were 1.26x and 1.32x while the new binary's
+median stayed near 535k ticks/s; the pooled result is below the 1.3x target.
+The final `just verify`, explicit `just build-q32`, and all 22 broad A/B gate
+families pass on the documented tip.
+
 ## 1. Measured state
 
 Per update (448 agent rows x 128 steps = 57,344 rows; 256 physical players

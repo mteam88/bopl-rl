@@ -11,9 +11,22 @@ use serde::{Deserialize, Serialize};
 mod dash;
 
 pub const DT: Fix = Fix::from_raw(71_582_788);
+fn default_scale() -> Fix {
+    Fix::ONE
+}
+fn default_true() -> bool {
+    true
+}
+fn is_true(value: &bool) -> bool {
+    *value
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Platform {
     pub id: u32,
+    /// Unity keeps inactive platform colliders registered, but excludes them
+    /// from queries and simulation until their GameObject is reactivated.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub active: bool,
     pub surface: Surface,
     pub collider: RoundedRect,
     pub ice: bool,
@@ -44,6 +57,13 @@ pub struct Player {
     pub velocity: Vec2,
     pub external_velocity: Vec2,
     pub radius: Fix,
+    /// LevelType.space changes gravity and the lower blast boundary.
+    #[serde(default, skip_serializing)]
+    pub space: bool,
+    /// FixTransform/DPhysics collider scale. Player.Scale lives above the
+    /// body and can lead this value by one updater phase.
+    #[serde(skip, default = "default_scale")]
+    pub scale: Fix,
     pub grounded: bool,
     pub ground: Option<u32>,
     pub local: Fix,
@@ -414,7 +434,7 @@ pub(crate) fn closest_among(
         let index = candidates.trailing_zeros() as usize;
         candidates &= candidates - 1;
         let platform = &platforms[index];
-        if exclude == Some(platform.id) {
+        if !platform.active || exclude == Some(platform.id) {
             continue;
         }
         if let Some(hit) = platform.collider.raycast(origin, direction)
@@ -462,7 +482,7 @@ impl Player {
         platforms
             .iter()
             .enumerate()
-            .find(|(_, p)| Some(p.id) == self.ground)
+            .find(|(_, p)| p.active && Some(p.id) == self.ground)
     }
     /// `input.normalized_safe()`, memoized on the exact input vector.
     fn normalized_input(&mut self, input: Vec2) -> Vec2 {
@@ -515,7 +535,7 @@ impl Player {
         self.local = motion.local;
         self.grounded_speed = motion.grounded_speed;
     }
-    fn attach(&mut self, platform: &Platform, position: Vec2) {
+    pub(crate) fn attach(&mut self, platform: &Platform, position: Vec2) {
         let mut motion = self.ground_state();
         motion
             .attach(platform.id, &platform.surface, position)
@@ -549,22 +569,48 @@ impl Player {
     }
 
     fn jump(&mut self, platforms: &[Platform]) {
-        let platform = self.platform(platforms).unwrap();
-        let normal = platform.surface.normal(self.position);
+        self.jump_with_strength(platforms, self.constants.jump_strength);
+    }
+    pub(crate) fn jump_with_strength(&mut self, platforms: &[Platform], strength: Fix) {
+        // PlayerPhysics.Jump uses world up while airborne and only reads the
+        // attached platform when grounded (PlayerPhysics.cs:333). Roll can
+        // charge in the air, so an attached platform is not required here.
+        let platform = self.grounded.then(|| self.platform(platforms).unwrap());
+        let normal = platform.map_or(Vec2::UP, |p| p.surface.normal(self.position));
         let amount = ((normal.y + Fix::ONE) / self.constants.jump_normal_scale)
             .min(Fix::ONE)
             .max(Fix::ZERO);
         let up = Vec2::UP * amount + Vec2::new(normal.x, Fix::ZERO) * self.constants.jump_extra_x;
-        self.velocity = normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum
-            + up * self.constants.jump_strength;
+        self.velocity =
+            normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum + up * strength;
         self.position += self.velocity * self.constants.jump_teleport;
         self.jumped_this_frame = true;
         let mut motion = self.ground_state();
-        motion.unground(Some(&platform.surface), true);
+        motion.unground(platform.map(|p| &p.surface), true);
         self.apply_ground_state(motion);
     }
     fn move_grounded(&mut self, input: Vec2, terrain: Terrain) {
-        let (platform_index, platform) = self.platform_indexed(terrain.platforms).unwrap();
+        self.move_grounded_scaled(input, Fix::ONE, terrain);
+    }
+    fn move_grounded_scaled(&mut self, input: Vec2, speed_scale: Fix, terrain: Terrain) {
+        // PlayerPhysics.Move computes ground input against the retained
+        // attachedGround reference before testing activeSelf. Blink therefore
+        // leaves one legal pass where the platform is present but inactive.
+        let Some((platform_index, platform)) = terrain
+            .platforms
+            .iter()
+            .enumerate()
+            .find(|(_, p)| Some(p.id) == self.ground)
+        else {
+            // SlimeController.UpdateSim handles a destroyed retained ground
+            // before calling Move: it zeros rotation, then UnGround(false).
+            self.rotation = Fix::ZERO;
+            self.up = Vec2::UP;
+            let mut motion = self.ground_state();
+            motion.unground(None, false);
+            self.apply_ground_state(motion);
+            return;
+        };
         let normal = platform.surface.normal(self.position);
         let forward = normal.perp_cw();
         let alignment = self.normalized_input(input).dot(forward);
@@ -590,9 +636,15 @@ impl Player {
                 DT,
             );
         }
+        if !platform.active {
+            let mut motion = self.ground_state();
+            motion.unground(Some(&platform.surface), true);
+            self.apply_ground_state(motion);
+            return;
+        }
         // The position has not moved since `normal` was evaluated above.
         self.align_to(normal);
-        let speed = self.grounded_speed + self.external_velocity.dot(forward);
+        let speed = (self.grounded_speed + self.external_velocity.dot(forward)) * speed_scale;
         let velocity = forward * speed;
         // The own platform is excluded from the blocking test; with no other
         // platform near the rays `movement_limit` would return its unblocked
@@ -636,7 +688,7 @@ impl Player {
                 self.constants.gravity_accel,
                 self.constants.gravity_modifier,
                 self.constants.gravity_max_fall_speed,
-                false,
+                self.space,
             )
             .expect("valid movement gravity constants");
             self.collision_rays(terrain);
@@ -704,8 +756,32 @@ impl Player {
             self.collision_rays(terrain);
         }
     }
+    /// PlayerPhysics.MachoMove: normal player acceleration with a reduced
+    /// distance around a rounded platform corner.
+    pub(crate) fn macho_move(&mut self, input: Vec2, roundedness: Fix, terrain: Terrain) {
+        if self.grounded {
+            self.move_grounded_scaled(input, roundedness, terrain);
+        } else {
+            crate::player_physics::air_movement(
+                &mut self.velocity,
+                input.x,
+                self.constants.air_accel,
+                self.constants.max_speed,
+            )
+            .expect("valid MachoThrow air constants");
+            self.collision_rays(terrain);
+        }
+    }
     pub(crate) fn outside_bounds(&self) -> bool {
-        self.position.y < Fix::from_f32(-11.3)
+        self.position.y
+            < if self.space {
+                // DestroyIfOutsideSceneBounds uses Camera_YMin in space;
+                // SceneBounds.WaterHeight (-50) is only the off-screen water
+                // plane used by other component-specific queries.
+                Fix::from_int(-26)
+            } else {
+                Fix::from_f32(-11.3)
+            }
             || self.position.y > Fix::from_f64(72.5)
             || self.position.x < Fix::from_f64(-131.25)
             || self.position.x > Fix::from_f64(131.25)
@@ -727,7 +803,7 @@ impl Player {
             Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))
         } else {
             Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
-        };
+        } * self.scale;
         let inv = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
         if self.rotation != self.collider_rotation || self.collider_basis == Vec2::ZERO {
             self.collider_basis = Vec2::angle(self.rotation);
@@ -754,6 +830,21 @@ impl Player {
         if self.alive && self.grounded && !self.dash.active {
             let platform = self.platform(platforms).unwrap();
             self.position = platform.surface.position(self.local, self.radius);
+            self.align(platform);
+        }
+    }
+
+    pub(crate) fn late_step_with_shape_radius(
+        &mut self,
+        platforms: &[Platform],
+        shape_radius: Fix,
+    ) {
+        if self.alive && self.grounded && !self.dash.active {
+            let platform = self.platform(platforms).unwrap();
+            self.position =
+                platform
+                    .surface
+                    .position_with_shape_radius(self.local, self.radius, shape_radius);
             self.align(platform);
         }
     }

@@ -7,6 +7,20 @@ all: $(OUT)/libbopl_rl.so $(OUT)/benchmark $(OUT)/coverage $(OUT)/record $(OUT)/
 # Standalone evaluation/extraction binding; does not require rebuilding CUDA.
 research: $(OUT)/libbopl_research.so
 
+map-ab: $(OUT)/map_ab
+
+REFERENCE ?= ../../sim/Native/bin/Release/net8.0/linux-x64/native/BoplSimNative.so
+RUST_ROLLOUT ?= ../target/release/libbopl_sim.so
+
+# Exhaustive authored-map gate: all 124 maps, both 2- and 6-player layouts,
+# 3000 ticks per live case, with discrete player/slime state required exact.
+map-sweep-3000: $(OUT)/map_ab
+	MAP_AB_STRICT_ACTORS=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT)) 3000
+
+$(OUT)/map_ab: research/rust_ab/map_ab.c bopl_rl.c bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -I. research/rust_ab/map_ab.c bopl_rl.c -ldl -lm -o $@
+
 $(OUT)/libbopl_research.so: puffer/eval_binding.c puffer/bopl_puffer.h puffer/bopl_bots.h puffer/bopl_bots_v2.h puffer/bopl_bots_v2_play.h puffer/bopl_layout.h puffer/bopl_aim.h bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -shared -I. puffer/eval_binding.c bopl_rl.c -lm -o $@
@@ -62,4 +76,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research agent agent-mac
+.PHONY: all research map-ab agent agent-mac

@@ -101,7 +101,10 @@ pub unsafe extern "C" fn bopl_rl_reset_begin(world: *mut Handle, config: *const 
         Err(message) => {
             handle.world.valid = false;
             handle.world.set_error(&message);
-            GAME_ERROR
+            // RolloutWorld::reset completes infallibly after validating the
+            // caller-owned configuration; every error from it is therefore
+            // the public ABI's invalid-argument class, as in NativeApi.
+            ARGUMENT
         }
     };
     handle.reset_pending = true;
@@ -334,7 +337,7 @@ pub extern "C" fn bopl_rl_catalog_hash(_world: *const Handle) -> *const c_char {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn bopl_rl_map_count(_world: *const Handle) -> u32 {
-    super::MAP_COUNT
+    super::data::get().maps.len() as u32
 }
 
 #[unsafe(no_mangle)]
