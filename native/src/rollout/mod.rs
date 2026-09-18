@@ -30560,7 +30560,7 @@ impl RolloutWorld {
         let simple_mask = ability_bit(ABILITY_DASH)
             | ability_bit(ABILITY_GUST)
             | ability_bit(ABILITY_INVISIBILITY);
-        if self.active_subsystems & !simple_mask == 0 && self.ability_pickups.is_empty() {
+        if self.active_subsystems & !simple_mask == 0 {
             for slot in &self.players {
                 for (entity, ability) in [
                     (slot.dash_entity, ABILITY_DASH),
@@ -30577,6 +30577,27 @@ impl RolloutWorld {
                         row.clock_rate = 0;
                     }
                 }
+            }
+            let pickup_clock = if self.player_time_scale < Fix::from_f32(0.01) {
+                Fix::ZERO
+            } else {
+                Fix::ONE
+            };
+            let swap_period = data::get().pickup.swap_period;
+            for pickup in &self.ability_pickups {
+                let Some(entity) = pickup.entity else {
+                    continue;
+                };
+                let row = &mut self.entities[entity];
+                if row.flags & E_DESTROYED != 0 {
+                    continue;
+                }
+                row.flags |= E_PICKUP | E_TIMER_KNOWN;
+                row.reserved = [
+                    pickup.ability,
+                    remaining_ticks(swap_period - pickup.time_since_swap),
+                ];
+                row.clock_rate = pickup_clock.raw();
             }
             return;
         }
@@ -30965,7 +30986,7 @@ impl RolloutWorld {
         let simple_mask = ability_bit(ABILITY_DASH)
             | ability_bit(ABILITY_GUST)
             | ability_bit(ABILITY_INVISIBILITY);
-        if self.active_subsystems & !simple_mask == 0 && self.ability_pickups.is_empty() {
+        if self.active_subsystems & !simple_mask == 0 {
             self.refresh_simple_actor_entities();
             return;
         }
