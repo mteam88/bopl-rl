@@ -330,8 +330,9 @@ Merged (not rebased: the branch carries the maps-round2 merge). Conflicts:
 the two comment blocks (`Tools/play-vs-agent-mac.sh`,
 `native/tools/extract_rollout_data.py`) took main's side; `native/rl/Makefile`
 kept the campaign's `writer-bench` target next to main's rules;
-`research/elo_ladder.py`'s `on_result` is present (tournament.py and
-tournament_cross.py call it). Rebuilt the sim (`cargo build --release`, nice
+`research/elo_ladder.py`'s `on_result` callback (dropped by the maps-round2
+merge e52b83bf; tournament.py and tournament_cross.py pass it) restored in
+9f2b2753. Rebuilt the sim (`cargo build --release`, nice
 19), the CUDA extension, writer_bench; `check_v4.py --build` pass_all,
 `check_dump.py --only v4` ok. New incumbent `v4-base-m46fb-1/2`: 223918 /
 224117 (train_s 0.1086 / 0.1085, rollout_s 0.0858 / 0.0841; the merged
