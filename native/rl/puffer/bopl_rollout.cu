@@ -180,6 +180,7 @@ struct BrGemmArgs {
     const float* in; int ld_in;
     float* out; int ld_out;
     int K, N, ldb, relu;  // ldb: fp32 = row stride of the (K, ldb) transposed weights; tf32 = n-tiles (ceil(N/8))
+    int units;            // column-subtile rounds per block (BOPL_BR_UNITS): a block covers units * (8 / sub) subtiles
     BrGroups g;
     BrLinear wt;  // per-group weights: fp32 (K, ldb) transposed; tf32 fragment order (see br_frag_index)
     int tiles[BR_MAX_GROUPS + 1];
@@ -225,9 +226,14 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     const int subtiles = BR_KG / sub;
     const int tid = threadIdx.x, warp = tid / BR_TN, c = tid % BR_TN;
     const int kg = warp % sub;  // this warp's K slot within its subtile
-    const int col0 = (blockIdx.y * subtiles + warp / sub) * BR_TN;
     const float* __restrict__ Wt = a.wt.w[grp];
     float* Aw = As[warp];
+    // Rounds over the block's column subtiles (a.units of them per warp): the
+    // same chunk -> warp assignment and partial-sum order as one round per
+    // block, so the sums are bit-identical for any units; fewer, longer blocks
+    // hold fewer SMs while the training pass runs beside the rollout.
+    for (int u = 0; u < a.units; u++) {
+    const int col0 = ((blockIdx.y * a.units + u) * subtiles + warp / sub) * BR_TN;
 
     // A chunk: 16 rows x 64 k = 512 float2 over the warp (element i: row i%16, k-pair i/16).
     float2 av[BR_TK / 4];
@@ -342,20 +348,31 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
         int st = o / (BR_TM * BR_TN), e = o % (BR_TM * BR_TN), r = e / BR_TN, cc = e % BR_TN;
         float v = 0.f;
         for (int w = st * sub; w < (st + 1) * sub; w++) v += As[w][r * BR_TN + cc];
-        int row = row0 + r, cl = (blockIdx.y * subtiles + st) * BR_TN + cc;
+        int row = row0 + r, cl = ((blockIdx.y * a.units + u) * subtiles + st) * BR_TN + cc;
         if (row < row_end && cl < N) {
             if (a.relu) v = fmaxf(0.f, v);
             a.out[(long)row * a.ld_out + cl] = v;
         }
     }
+    __syncthreads();  // the C tiles are read before the next round's A tiles overwrite them
+    }
 }
 
-// Column-tile count of br_gemm's grid for a GEMM of depth K over N columns.
-static int br_gemm_col_tiles(int K, int N) {
+// Column-tile count of br_gemm's grid for a GEMM of depth K over N columns,
+// and the rounds per block (BOPL_BR_UNITS, default 1: one subtile set per
+// block; u: up to u sets per block, the grid shrinks u-fold).
+static int br_gemm_units() {
+    static int u = -1;
+    if (u < 0) { const char* e = getenv("BOPL_BR_UNITS"); u = e && atoi(e) > 0 ? atoi(e) : 1; }
+    return u;
+}
+static int br_gemm_col_tiles(int K, int N, int* units) {
     int nchunks = (K + BR_TK - 1) / BR_TK, sub = 1;
     while (sub < nchunks && sub < BR_KG) sub <<= 1;
     int cols = (BR_KG / sub) * BR_TN;
-    return (N + cols - 1) / cols;
+    int tiles = (N + cols - 1) / cols;
+    *units = std::min(br_gemm_units(), tiles);
+    return (tiles + *units - 1) / *units;
 }
 
 // TF32: dst_g = src_g (N, K) in B-fragment order (br_frag_index), zero padded to
@@ -464,7 +481,7 @@ static void br_gemm_launch(const BrPlan& p, const float* in, int ld_in, float* o
     if (p.tf32) a.ldb = (N + 7) / 8;  // n-tiles of the fragment layout
     a.g = p.g; a.wt = wt;
     memcpy(a.tiles, p.tiles, sizeof(a.tiles));
-    dim3 grid(p.tiles[p.g.n], br_gemm_col_tiles(K, N));
+    dim3 grid(p.tiles[p.g.n], br_gemm_col_tiles(K, N, &a.units));
     if (p.tf32) br_gemm<true><<<grid, BR_THREADS, 0, stream>>>(a);
     else br_gemm<false><<<grid, BR_THREADS, 0, stream>>>(a);
 }

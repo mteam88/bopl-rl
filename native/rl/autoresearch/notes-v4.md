@@ -339,3 +339,20 @@ merge e52b83bf; tournament.py and tournament_cross.py pass it) restored in
 sim's env step is cheaper, eval_env 0.24 vs 0.28 ms per buffer step, which
 the train-bound wall does not see). Candidates from here compare against
 ~224k.
+
+## Rollout chain: br_gemm column rounds per block (`BOPL_BR_UNITS`), parked
+
+The chain's GEMMs at M = 64 (7 row tiles: 3 of the learner's 48 rows, then
+one 4-of-16 tile per frozen bank) launch one block per (row tile, column
+subtile group): 9 launches per buffer step of 7 x 4..64 blocks. `units`
+rounds per block (`BrGemmArgs.units`, `BOPL_BR_UNITS`, default 1) makes a
+block cover `units` column groups in sequence with the same chunk -> warp
+assignment and partial-sum order, so the sums are bit-identical for any
+`units` (checked on the device word for word over a 300-update run with a
+temporary compare against `units = 1`, since removed: 0 mismatching words).
+A/B 2x2 at load 6.7: `units = 4` 226.5k vs 224.1k (+1.1%: train 0.1074 vs
+0.1085, rollout 0.102 vs 0.084); `units = 2` 228.0k vs 225.2k (+1.2%:
+train 0.1068 vs 0.1080, rollout 0.091 vs 0.084). Real but small, and it is
+the same trade as the priority experiments (fewer, longer rollout blocks
+leave SMs to the train pass while the rollout takes longer). Knob kept,
+default 1; decide after the chain's own work shrinks (L11 next).

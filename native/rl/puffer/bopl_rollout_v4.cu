@@ -394,16 +394,25 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
     br4_rows<<<rows, 256, 0, stream>>>(ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
     br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
     if (q.C) {
-        br_gemm_launch(p, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
-        ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
+        // The critic runs over the learner's rows only (group 0, its own row
+        // tiles): the frozen banks' values are never read (their advantages
+        // are zeroed, the statistics take learner rows), and their value
+        // column stays the zero A.dec was allocated with. The banks' rows are
+        // 4 of 16 per tile, so this is 4 of the 7 tiles of the three widest
+        // GEMMs (K, N = 512) and the two LNs.
+        static int critic_all = br_env_int("BOPL_BR_CRITIC_ALL", 0);   // TEMP A/B toggle
+        BrPlan pl = p; int crows = rows;
+        if (!critic_all) { pl.g.n = 1; crows = p.g.end[1]; }
+        br_gemm_launch(pl, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
+        ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_LN; ra.W = q.C; ra.x = A.z; ra.ldx = q.C; ra.out = A.lnc; ra.ldout = q.C;
-        br4_rows<<<rows, 256, 0, stream>>>(ra);
-        br_gemm_launch(p, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, stream);
-        br_gemm_launch(p, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, stream);
-        ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
+        br4_rows<<<crows, 256, 0, stream>>>(ra);
+        br_gemm_launch(pl, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, stream);
+        br_gemm_launch(pl, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, stream);
+        ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_CRITIC_OUT; ra.W = q.C; ra.x = A.z2; ra.ldx = q.C; ra.res = A.z; ra.ldres = q.C;
         ra.out = A.dec; ra.ldout = p.ld_dec; ra.vcol = p.dec_cols; ra.cout = w_cout;
-        br4_rows<<<rows, 256, 0, stream>>>(ra);
+        br4_rows<<<crows, 256, 0, stream>>>(ra);
     }
 }
 
@@ -475,7 +484,8 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
                 double o = ours[(size_t)(off + r) * p.ld_dec + c], e = theirs[(size_t)r * od1 + c];
                 dl = std::max(dl, std::fabs(o - e)); scale = std::max(scale, std::fabs(e));
             }
-            dv = std::max(dv, std::fabs((double)ours[(size_t)(off + r) * p.ld_dec + p.dec_cols] - theirs[(size_t)r * od1 + p.dec_cols]));
+            if (g == 0 || !p.v4)   /* v4: the banks' value column is not computed (critic on learner rows only) */
+                dv = std::max(dv, std::fabs((double)ours[(size_t)(off + r) * p.ld_dec + p.dec_cols] - theirs[(size_t)r * od1 + p.dec_cols]));
         }
         fprintf(stderr, "bopl batched forward check: buffer %d step %d group %d (%d rows): logits max|diff| %.3g (max|logit| %.3g), value max|diff| %.3g\n",
                 buf, t, g, n, dl, scale, dv);
