@@ -147,3 +147,30 @@ Result: fuse-1 179188, fuse-2 179436 learner_sps (load 4.0-4.2), train_s
 against the 168.9-169.1k incumbent repeats taken 15 minutes earlier at load
 8.3; rollout_s 0.103 in both, so the load difference did not contribute).
 With L2 on top it should stack (different kernels).
+
+### Rollout: br4_sets without the per-block W2 staging (commit 9b3777ec), keep
+
+Hypothesis (THROUGHPUT_V4.md L4, and the split: `br4_sets` was the rollout's
+one big kernel at 96-118 us of the ~300 us GPU-busy per buffer step, min 21
+us alone): each of the 256 (row, set) blocks per buffer step re-read the
+group's fp32 W2 (64 KB), converted it to bf16 pairs into 33 KB of shared
+(2 blocks per SM), and thread 0 walked the set's 48 rows serially to find the
+valid ones (a chain of dependent loads). Change (`bopl_rollout_v4.cu`):
+`br4_prepare` packs each group's W1 (transposed to (features, I), so thread
+i of the h1 loop reads column i coalesced) and W2 to bf16 once per rollout
+(`br4_pack_set_weights`, the same bf16 roundings the kernel applied on the
+fly); each h2 thread holds its W2 row (I bf16) in registers; valid rows by
+warp ballot. Shared per block 45.7 -> 12.2 KB. The fma order per element is
+unchanged. Exactness: BOPL_BR_CHECK=1 turned out vacuous on this trainer (it
+only runs in eager steps, and those see all-zero rows: every line says
+`max|logit| 0`, on the old build too), so I compiled the old kernel in
+temporarily and compared the pooled `joined` columns bit for bit on every
+eager buffer step of a `--cudagraphs -1` run: **0 of 838,860,800 values
+differ** (12800 buffer steps, 598M of them nonzero). The check code was
+removed before the commit. Result: sets-1 194293, sets-2 194447 learner_sps
+(load 3.8-4.7) vs 179.2-179.4k: **+8.4%**; rollout_s 0.089 vs 0.103,
+eval_gpu 0.407 vs 0.497 ms per buffer step, and train_s 0.1254 vs 0.136
+although the train pass did not change: the SMs the set blocks no longer
+occupy go to the trainer's stream (the contention the split predicted).
+
+Running total: 169.0k -> 194.4k (+15.0%), train-bound still (0.125 vs 0.089).
