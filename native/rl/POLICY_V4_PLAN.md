@@ -480,8 +480,9 @@ spread), together with the tournament's cross-family head-to-head
 build); it defaults to `v4-aim` on a tie because the more-maps runs and the
 Mac shim are built on it. Shape ablations stop here: `25 v4-no-relational`
 and `27 v4-critic-shared` are single-seed input / head ablations that
-cannot resolve below ~75 and are parked with `sym-critic` / `rays16` /
-`maxpool`. Rays cost no
+cannot resolve below ~75; proposed to park them with `sym-critic` /
+`rays16` / `maxpool` (still in gpu-queue/ behind 19f as of 22:20; the
+parent moves job files). Rays cost no
 sps (`v4-no-rays`, bit 2, runs the same 163k), the evidence on them is flat
 not negative, and the more-maps run below is the test where the egocentric
 geometry channel is the point. Queue (gpu-queue/, lexical order): `13zz
