@@ -447,11 +447,15 @@ of kills: `v4-aim` s73 0.06 (0.03-0.10 per eval; 0.27/min), squish 6.6%;
 (0.18-0.30; 1.17/min) / 14.4%. The same shape spans 0.06-0.19 activations
 and 6.6-10.4% squish across two seeds, which covers every shape's mean but
 `v4-aim-only`'s 14.4%: `v4-aim` s73 was the low draw, not the fan. What
-remains shape-attributable is small: the no-fan shapes (`no-rays`,
-`aim-only`) are at the top of the platform range and `aim-only` alone is
-above the two-seed squish band, one seed each; 19b/19c (`v4-aim-only`
-s74/s75) say whether that holds. Squish share follows platform use across
-runs (rank order the same), so it is one behaviour, not two.
+remained shape-attributable was small: the no-fan shapes (`no-rays`,
+`aim-only`) at the top of the platform range and `aim-only` alone above
+the two-seed squish band, one seed each. `v4-aim-only-s74` (2026-09-17
+22:20) closed that too: 0.09 platforms per game (0.40/min), squish 5.3% of
+kills (52/972) over its last five evals, against s73's 0.23 / 14.4%; so the
+same shape spans 0.09-0.23 activations and 5-14% squish, the whole
+between-shape range. Platform use and squish share are seed draws, not
+shape; squish share follows platform use across runs (rank order the
+same), so it is one behaviour, not two.
 
 ### 7c. Queue after the aim runs (2026-09-17)
 
@@ -460,9 +464,24 @@ clearly beats it (IQM above `v4-aim`'s 697 + ~30, outside the v4 seed
 spread of ~27 measured by `v4-full` 703 / `v4-full-s74` 676). Revised
 2026-09-17 with `v4-aim-s74` at 648: the same-shape spread is ~50 (aim
 697/648, full 703/676), so single-seed differences below ~50 are noise, and
-`v4-aim-only`'s 759 is +62..+111 over the two aim seeds, still the only
-shape effect that clears the band; `19b`/`19c` (aim-only s74/s75) decide
-it. Rays cost no
+`v4-aim-only`'s 759 was +62..+111 over the two aim seeds, the only shape
+effect that cleared the band. Revised again 2026-09-17 22:20 with
+`v4-aim-only-s74` at 683 (bands 685/667/695; held-out gap 5.4, EV 0.08, 19
+losses / 217, kills 68.7% arrow / 6.0% squish): 759 was a high draw, the
+same-shape spread is up to ~75 (aim-only 759/683), and every v4 shape sits
+in one 650-760 cluster (lite 676; no-rays 693; full 703/676; aim 697/648;
+aim-only 759/683). The aim-only production-shape call of 13:22 is
+withdrawn. Single-seed pool-v7 runs cannot rank v4 shapes; the only
+resolved result is v4 over v3 (+40..+130 over 628/636). The production
+shape is decided on the three-seed means, aim-only (s73/s74/s75, `19c`
+s75 pending) against aim (s73/s74 plus a third if the means are within the
+spread), together with the tournament's cross-family head-to-head
+(1267 pairs, running overnight 2026-09-17/18 on the per-player ablation
+build); it defaults to `v4-aim` on a tie because the more-maps runs and the
+Mac shim are built on it. Shape ablations stop here: `25 v4-no-relational`
+and `27 v4-critic-shared` are single-seed input / head ablations that
+cannot resolve below ~75 and are parked with `sym-critic` / `rays16` /
+`maxpool`. Rays cost no
 sps (`v4-no-rays`, bit 2, runs the same 163k), the evidence on them is flat
 not negative, and the more-maps run below is the test where the egocentric
 geometry channel is the point. Queue (gpu-queue/, lexical order): `13zz
