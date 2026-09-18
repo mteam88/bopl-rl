@@ -13614,16 +13614,17 @@ impl RolloutWorld {
                 }
                 // PlayerCollision.IgnoreBeamId only suppresses the owning
                 // ability's beam. Crossed beams retain each segment's id.
-                let own_beam_id = if self.players[victim].beam_entity == usize::MAX {
-                    i32::MIN
-                } else {
-                    self.entities[self.players[victim].beam_entity]
+                // A player without a beam ignores none (the source's
+                // ignoredBeamId = -1 guard); the former i32::MIN sentinel
+                // overflowed .abs() and aborted the sim on any Beam contact.
+                if self.players[victim].beam_entity != usize::MAX {
+                    let own_beam_id = self.entities[self.players[victim].beam_entity]
                         .hierarchy
                         .wrapping_sub(100_000_000)
-                        .wrapping_add(2) as i32
-                };
-                if slot.contact_beam_id.abs() == own_beam_id.abs() {
-                    continue;
+                        .wrapping_add(2) as i32;
+                    if slot.contact_beam_id.wrapping_abs() == own_beam_id.wrapping_abs() {
+                        continue;
+                    }
                 }
                 let target = match self.players[victim].active {
                     ActiveAbility::None => self.players[victim].body_entity,
