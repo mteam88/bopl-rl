@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 --- pristine-src/bindings.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/bindings.cu	2026-09-18 16:45:18.947315563 -0400
++++ puffer-overlay/bindings.cu	2026-09-18 16:59:41.380372535 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -257,7 +257,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 --- pristine-src/kernels.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/kernels.cu	2026-09-18 16:45:18.947703685 -0400
++++ puffer-overlay/kernels.cu	2026-09-18 16:59:41.380745669 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -516,7 +516,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
 --- pristine-src/models.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/models.cu	2026-09-18 16:45:18.948146010 -0400
++++ puffer-overlay/models.cu	2026-09-18 16:59:41.381104136 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -849,8 +849,8 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 --- pristine-src/muon.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/muon.cu	2026-09-18 16:45:18.948518373 -0400
-@@ -83,6 +83,68 @@
++++ puffer-overlay/muon.cu	2026-09-18 17:02:31.330454339 -0400
+@@ -83,6 +83,71 @@
      {2.8366, -3.0525, 1.2012},
  };
  
@@ -866,7 +866,10 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +// X B) whose grid is the union of all matrices' 64 x 64 output tiles, then
 +// one fused weight update. 17 launches per step, ~0.6 ms. Plain fp32 FMAs
 +// (the cuBLAS path runs TF32 by default); BOPL_MUON_FUSED=0 restores the
-+// per-matrix cuBLAS path bit for bit.
++// per-matrix cuBLAS path bit for bit. Policy v4 has 19 matrices, over this
++// cap, so it runs the per-matrix TF32 cuBLAS path (~530 launches, ~12 ms per
++// update at w128); the grouped fp32 path at a cap of 32 measured the same
++// 11 ms (notes-v4.md), so v4 keeps the numerics its runs were trained with.
 +#define MUON_MAX_MATS 16
 +#define MUON_MAX_SPLITK 8
 +// BOPL_MUON_SPLITK: k slices for the gram products (0 / 1 = off, exact old
@@ -919,7 +922,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  struct Muon {
      double momentum, weight_decay, eps;
      float lr_val_init;
-@@ -98,8 +160,192 @@
+@@ -98,8 +163,192 @@
      Allocator* param_alloc;  // params allocator — shapes used by muon_step
      ncclComm_t nccl_comm;
      int world_size;
@@ -1112,7 +1115,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  void muon_init(Muon* m, Allocator* param_alloc, double lr_val,
          double momentum, double eps, double weight_decay,
          Allocator* alloc) {
-@@ -144,6 +390,54 @@
+@@ -144,6 +393,55 @@
          alloc_register(alloc, &m->x_buf);
          alloc_register(alloc, &m->ns_norm_puf);
      }
@@ -1126,6 +1129,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +            if (ndim(e.shape) >= 2) { long R = e.shape[0], C = numel(e.shape) / R, M = min(R, C); mats++; gram_elems += M * M; }
 +        }
 +        m->fused = (!USE_BF16 && mats > 0 && mats <= MUON_MAX_MATS && (flag == nullptr || atoi(flag) != 0)) ? 1 : 0;
++        if (!m->fused && mats > MUON_MAX_MATS) fprintf(stderr, "muon: %d matrices exceed MUON_MAX_MATS=%d, per-matrix cuBLAS path\n", mats, MUON_MAX_MATS);
 +        m->mats = {};
 +        if (m->fused) {
 +            m->fused_x_buf = {.shape = {n}};
@@ -1167,7 +1171,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  }
  
  void muon_post_create(Muon* m) {
-@@ -168,6 +462,21 @@
+@@ -168,6 +466,21 @@
      muon_norm_partials<<<clip_blocks, 256, 0, stream>>>(
          m->norm_partials.data, grads.data, numel(grads.shape));
      muon_norm_reduce<<<1, 256, 0, stream>>>(m->grad_norm_ptr, m->norm_partials.data, clip_blocks);
@@ -1191,7 +1195,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 --- pristine-src/ocean.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/ocean.cu	2026-09-18 16:45:18.948804593 -0400
++++ puffer-overlay/ocean.cu	2026-09-18 16:59:41.381660536 -0400
 @@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
@@ -1229,7 +1233,7 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 --- pristine-src/pufferlib.cu	2026-09-18 16:41:04.173539658 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-18 16:47:01.880862890 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-18 16:59:41.382569271 -0400
 @@ -1,15 +1,72 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -3298,7 +3302,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 --- pristine-src/vecenv.h	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/vecenv.h	2026-09-18 16:45:18.950740967 -0400
++++ puffer-overlay/vecenv.h	2026-09-18 16:59:41.383574327 -0400
 @@ -97,6 +97,30 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.

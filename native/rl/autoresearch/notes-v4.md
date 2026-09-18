@@ -255,3 +255,20 @@ question is now only about memory (the packed buffers) and worst-case drops.
 
 Running total: 169.0k -> 218.3k (**+29.2%**, exact-class only). Train-bound
 (0.1115 vs 0.089).
+
+### Muon: grouped Newton-Schulz for v4's 19 matrices, discard
+
+The profile of the new build (train stream 6590 ms / 61.5 updates = 107 ms
+per update) showed the per-matrix cuBLAS Muon path running: 22390 tiny
+`s1688gemm_64x64` launches, 50844 DtoD memcpys, 37238 splitKreduce: ~530
+launches per pass, ~12 ms per update (11%). v3's grouped fp32 path
+(`BOPL_MUON_FUSED`, default on) has a `MUON_MAX_MATS 16` cap and v4 has 19
+matrices, so it fell back silently. At a cap of 32: muon32-1 216895,
+muon32-2 217507 vs 218.2-218.3k: no gain; CUPTI says grouped 11.2 ms per
+update (15 `muon_grouped_gemm` per pass at 140 us: the 64 x 64 fp32 SIMT
+tiles run at ~7 TFLOPS under the rollout's contention, and v4's grams are
+big: fusion 256 x 256 over K = 1280, critic 512 x 512 over 512) vs 12.0.
+Reverted to 16 (the wave-3 runs were trained with the TF32 cuBLAS path, so
+this also keeps the optimizer's numerics); the fallback prints a note now.
+A tensor-core grouped NS would take Muon from ~11 to ~3-4 ms but changes the
+optimizer's rounding: Matthew's call, not this campaign's.
