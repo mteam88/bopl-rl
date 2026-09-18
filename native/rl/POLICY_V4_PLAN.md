@@ -454,8 +454,10 @@ the two-seed squish band, one seed each. `v4-aim-only-s74` (2026-09-17
 kills (52/972) over its last five evals, against s73's 0.23 / 14.4%; so the
 same shape spans 0.09-0.23 activations and 5-14% squish, the whole
 between-shape range. Platform use and squish share are seed draws, not
-shape; squish share follows platform use across runs (rank order the
-same), so it is one behaviour, not two.
+shape. `v4-aim-only-s75` (00:20): 0.25 platforms per game (1.24/min) with
+squish 6.8% (67/988), so the two are not even one behaviour: s75 casts as
+often as s73 and squishes like s74. Aim-only over three seeds: 0.23 / 0.09
+/ 0.25 platforms, 14.4 / 5.3 / 6.8% squish.
 
 ### 7c. Queue after the aim runs (2026-09-17)
 
@@ -473,12 +475,17 @@ in one 650-760 cluster (lite 676; no-rays 693; full 703/676; aim 697/648;
 aim-only 759/683). The aim-only production-shape call of 13:22 is
 withdrawn. Single-seed pool-v7 runs cannot rank v4 shapes; the only
 resolved result is v4 over v3 (+40..+130 over 628/636). The production
-shape is decided on the three-seed means, aim-only (s73/s74/s75, `19c`
-s75 pending) against aim (s73/s74 plus a third if the means are within the
-spread), together with the tournament's cross-family head-to-head
-(1267 pairs, running overnight 2026-09-17/18 on the per-player ablation
-build); it defaults to `v4-aim` on a tie because the more-maps runs and the
-Mac shim are built on it. Shape ablations stop here: `25 v4-no-relational`
+shape is decided on the three-seed means, aim-only (s73/s74/s75) against
+aim (s73/s74 plus a third if the means are within the spread), together
+with the tournament's cross-family head-to-head (1267 pairs, running
+overnight 2026-09-17/18 on the per-player ablation build); it defaults to
+`v4-aim` on a tie because the more-maps runs and the Mac shim are built on
+it. 2026-09-18 00:20, `v4-aim-only-s75`: bands 726/715/696, IQM 714
+(held-out gap 14.9, EV 0.09, 20 losses / 217, kills 69.6% arrow / 6.9%
+squish). Aim-only three seeds 759/683/714, mean 719 (s.e. ~22); aim two
+seeds 697/648, mean 672; difference +47 with aim's third seed missing, and
+aim-only ahead on every seed pair. Not decided under the rule until the
+head-to-head reports; no action until then. Shape ablations stop here: `25 v4-no-relational`
 and `27 v4-critic-shared` are single-seed input / head ablations that
 cannot resolve below ~75; proposed to park them with `sym-critic` /
 `rays16` / `maxpool`; parked by the parent at 22:30 together with `28
