@@ -7900,7 +7900,13 @@ impl RolloutWorld {
                             (
                                 slot.base.position,
                                 slot.base.rotation,
-                                slot.base.up,
+                                if slot.base.grounded {
+                                    // SlimeController snapshots PlayerInfo.upVector as the
+                                    // normalized attached-ground normal, not PlayerBody.up.
+                                    slot.base.up.normalized()
+                                } else {
+                                    Vec2::UP
+                                },
                                 slot.player_scale,
                             )
                         };
