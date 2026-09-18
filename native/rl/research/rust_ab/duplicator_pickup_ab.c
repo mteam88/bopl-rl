@@ -213,7 +213,7 @@ int main(int argc, char **argv) {
             }
             collected = 1; collect_tick = state[0]->header.tick;
         } else if (collected && revival && !registered) {
-            if (revival->flags != 10 || revival->hierarchy != 100000071 ||
+            if (revival->flags != (10 | BOPL_ENTITY_CONTACT_DAMAGE_KNOWN) || revival->hierarchy != 100000071 ||
                 revival->owner != 0 || revival->x != 0 || revival->y != 5196910592) {
                 fprintf(stderr, "deferred Revival row mismatch at tick %u\n", state[0]->header.tick);
                 return 1;

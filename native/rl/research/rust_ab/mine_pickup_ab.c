@@ -243,7 +243,7 @@ int main(int argc, char **argv) {
             /* The replacement registers one pass later while the original
              * slot-three hold is still down, so SlimeController immediately
              * enters the acquired Revival in that same pass. */
-            if (revival->flags != 11 || revival->hierarchy != 100000075 ||
+            if (revival->flags != (11 | BOPL_ENTITY_CONTACT_DAMAGE_KNOWN) || revival->hierarchy != 100000075 ||
                 revival->owner != 1 ||
                 !(state[0]->slimes[0].ability_flags[2] & 8)) {
                 fprintf(stderr, "deferred Revival activation mismatch at tick %u\n",
