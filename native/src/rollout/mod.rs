@@ -12352,6 +12352,7 @@ impl RolloutWorld {
                 owner,
                 flags: E_ENABLED | E_TRIGGER,
                 hierarchy: 100_000_000 + hierarchy_base + data.drill.hitbox_collider_hierarchy,
+                reserved: [ABILITY_DRILL, 0],
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
             });
@@ -30547,6 +30548,7 @@ impl RolloutWorld {
             }
             return;
         }
+        let drill_hitbox_layer = data::get().drill.hitbox_layer;
         for row in &mut self.entities {
             row.flags &= !E_COMPONENT_METADATA;
             row.reserved[1] = 0;
@@ -30558,6 +30560,16 @@ impl RolloutWorld {
                 && row.reserved[0] != ABILITY_NULL
             {
                 row.flags |= ability_collider_flags(row.reserved[0]);
+            }
+            // Drill's HitboxCombo objects outlive the owning player stock. The
+            // slot index is cleared during reconstruction, but Unity retains
+            // the hitbox component on each inactive collider object.
+            if row.kind == 1
+                && row.layer == drill_hitbox_layer
+                && row.flags & E_DESTROYED == 0
+                && row.reserved[0] == ABILITY_DRILL
+            {
+                row.flags |= E_HITBOX;
             }
         }
 
