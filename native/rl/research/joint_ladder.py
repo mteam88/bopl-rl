@@ -166,10 +166,12 @@ def discover_pools(root, extra=None):
     anchors = root / 'sweeps' / 'anchors'
     if anchors.is_dir():
         for child in sorted(anchors.iterdir()):
-            for name in ('pool.json', 'tournament.json'):
-                file = child / name
-                if file.is_file():
-                    paths.append(file)
+            tournament = child / 'tournament.json'
+            pool = child / 'pool.json'
+            if tournament.is_file():
+                paths.append(tournament)
+            elif pool.is_file():
+                paths.append(pool)
     for path in extra or ():
         path = Path(path)
         if path.is_file() and path not in paths:

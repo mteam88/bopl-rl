@@ -427,7 +427,7 @@ def main():
         sig = tuple((str(path), stamp(path)) for path in extra)
         anchors = root / 'sweeps' / 'anchors'
         if anchors.is_dir():
-            sig += tuple((str(child / 'pool.json'), stamp(child / 'pool.json'))
+            sig += tuple((str(child), stamp(child / 'pool.json'), stamp(child / 'tournament.json'))
                          for child in sorted(anchors.iterdir()) if child.is_dir())
         with cache_lock:
             if pools_state[0] == sig:
