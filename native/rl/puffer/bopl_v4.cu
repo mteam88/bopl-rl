@@ -431,73 +431,129 @@ __global__ void add_into(float* dst, const float* src, int n) {
  * pass produced before). The backward writes dx's first `cols` columns with
  * leading dimension ldx (the critic input LN's gradient to y is its first H
  * columns, accumulated into g_y directly) and optionally a bf16 copy. */
-constexpr int LN_ROWS = 8, LN_MAXW = 512, LN_PER_LANE = LN_MAXW / 32;
+constexpr int LN_ROWS = 8, LN_MAXW = 512;
 __device__ __forceinline__ float warp_sum(float v) {
     for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffff, v, o);
     return v;
 }
+/* The lanes stride the row in units of VEC columns (VEC = 4: float4 loads and
+ * stores when every width and leading dimension is a multiple of 4, which the
+ * shipped shapes are; VEC = 1: the scalar form for any other width). */
+template <int VEC> struct LnVec { static constexpr int PER_LANE = LN_MAXW / (32 * VEC); };
+template <int VEC> __device__ __forceinline__ void ln_load(const float* p, float* v) {
+    if (VEC == 4) { float4 t = *reinterpret_cast<const float4*>(p); v[0] = t.x; v[1] = t.y; v[2] = t.z; v[3] = t.w; }
+    else v[0] = *p;
+}
+template <int VEC> __device__ __forceinline__ void ln_store(float* p, const float* v) {
+    if (VEC == 4) *reinterpret_cast<float4*>(p) = make_float4(v[0], v[1], v[2], v[3]);
+    else *p = v[0];
+}
+template <int VEC> __device__ __forceinline__ void ln_store16(bf16* p, const float* v) {
+    if (VEC == 4) {
+        __nv_bfloat162 lo = __floats2bfloat162_rn(v[0], v[1]), hi = __floats2bfloat162_rn(v[2], v[3]);
+        uint2 u; u.x = *reinterpret_cast<unsigned*>(&lo); u.y = *reinterpret_cast<unsigned*>(&hi);
+        *reinterpret_cast<uint2*>(p) = u;
+    } else *p = tobf(v[0]);
+}
+template <int VEC>
 __global__ void __launch_bounds__(LN_ROWS * 32) ln_forward(const float* x, int H, const float* tail, int P, int B, float* xsave,
                                                             float* y32, bf16* y16, float* mean, float* rstd) {
+    constexpr int PL = LnVec<VEC>::PER_LANE;
     int W = H + P, lane = threadIdx.x & 31;
     long row = (long)blockIdx.x * LN_ROWS + (threadIdx.x >> 5);
     if (row >= B) return;
-    float v[LN_PER_LANE];
+    float v[PL][VEC];
     float s = 0.0f;
     #pragma unroll
-    for (int k = 0; k < LN_PER_LANE; k++) {
-        int c = lane + k * 32;
-        v[k] = c < W ? (c < H ? x[row * H + c] : (tail ? tail[row * P + c - H] : 0.0f)) : 0.0f;
-        s += v[k];
+    for (int k = 0; k < PL; k++) {
+        int c = (lane + k * 32) * VEC;
+        if (c < H) ln_load<VEC>(x + row * H + c, v[k]);
+        else if (c < W) { if (tail) ln_load<VEC>(tail + row * P + c - H, v[k]); else { for (int j = 0; j < VEC; j++) v[k][j] = 0.0f; } }
+        else { for (int j = 0; j < VEC; j++) v[k][j] = 0.0f; }
+        #pragma unroll
+        for (int j = 0; j < VEC; j++) s += v[k][j];
     }
     float mu = warp_sum(s) / W;
     float q = 0.0f;
     #pragma unroll
-    for (int k = 0; k < LN_PER_LANE; k++) { int c = lane + k * 32; float d = c < W ? v[k] - mu : 0.0f; q += d * d; }
+    for (int k = 0; k < PL; k++) {
+        int c = (lane + k * 32) * VEC;
+        if (c < W) {
+            #pragma unroll
+            for (int j = 0; j < VEC; j++) { float d = v[k][j] - mu; q += d * d; }
+        }
+    }
     float r = rsqrtf(warp_sum(q) / W + LN_EPS);
     #pragma unroll
-    for (int k = 0; k < LN_PER_LANE; k++) {
-        int c = lane + k * 32;
+    for (int k = 0; k < PL; k++) {
+        int c = (lane + k * 32) * VEC;
         if (c < W) {
-            float y = (v[k] - mu) * r;
-            if (xsave) xsave[row * W + c] = v[k];
-            if (y32) y32[row * W + c] = y;
-            if (y16) y16[row * W + c] = tobf(y);
+            float y[VEC];
+            #pragma unroll
+            for (int j = 0; j < VEC; j++) y[j] = (v[k][j] - mu) * r;
+            if (xsave) ln_store<VEC>(xsave + row * W + c, v[k]);
+            if (y32) ln_store<VEC>(y32 + row * W + c, y);
+            if (y16) ln_store16<VEC>(y16 + row * W + c, y);
         }
     }
     if (lane == 0) { mean[row] = mu; rstd[row] = r; }
 }
 /* dx[:, :cols] (+)= rstd * (dy - mean(dy) - xhat * mean(dy * xhat)) */
+template <int VEC>
 __global__ void __launch_bounds__(LN_ROWS * 32) ln_backward(const float* dy, const float* x, const float* mean, const float* rstd, int W, int B,
                                                              float* dx, int ldx, int cols, int accumulate, bf16* dx16) {
+    constexpr int PL = LnVec<VEC>::PER_LANE;
     int lane = threadIdx.x & 31;
     long row = (long)blockIdx.x * LN_ROWS + (threadIdx.x >> 5);
     if (row >= B) return;
     float mu = mean[row], r = rstd[row];
-    float g[LN_PER_LANE], xh[LN_PER_LANE];
+    float g[PL][VEC], xh[PL][VEC];
     float s1 = 0.0f, s2 = 0.0f;
     #pragma unroll
-    for (int k = 0; k < LN_PER_LANE; k++) {
-        int c = lane + k * 32;
-        g[k] = c < W ? dy[row * W + c] : 0.0f;
-        xh[k] = c < W ? (x[row * W + c] - mu) * r : 0.0f;
-        s1 += g[k]; s2 += g[k] * xh[k];
+    for (int k = 0; k < PL; k++) {
+        int c = (lane + k * 32) * VEC;
+        if (c < W) {
+            ln_load<VEC>(dy + row * W + c, g[k]);
+            ln_load<VEC>(x + row * W + c, xh[k]);
+            #pragma unroll
+            for (int j = 0; j < VEC; j++) { xh[k][j] = (xh[k][j] - mu) * r; s1 += g[k][j]; s2 += g[k][j] * xh[k][j]; }
+        } else {
+            #pragma unroll
+            for (int j = 0; j < VEC; j++) { g[k][j] = 0.0f; xh[k][j] = 0.0f; }
+        }
     }
     float m1 = warp_sum(s1) / W, m2 = warp_sum(s2) / W;
     #pragma unroll
-    for (int k = 0; k < LN_PER_LANE; k++) {
-        int c = lane + k * 32;
+    for (int k = 0; k < PL; k++) {
+        int c = (lane + k * 32) * VEC;
         if (c < cols) {
-            float v = r * (g[k] - m1 - xh[k] * m2);
+            float o[VEC];
             long i = row * ldx + c;
-            float o = accumulate ? dx[i] + v : v;
-            dx[i] = o;
-            if (dx16) dx16[row * W + c] = tobf(o);
+            if (accumulate) ln_load<VEC>(dx + i, o);
+            #pragma unroll
+            for (int j = 0; j < VEC; j++) { float v = r * (g[k][j] - m1 - xh[k][j] * m2); o[j] = accumulate ? o[j] + v : v; }
+            ln_store<VEC>(dx + i, o);
+            if (dx16) ln_store16<VEC>(dx16 + row * W + c, o);
         }
     }
 }
 static int ln_grid(int B, int W) {
     if (W > LN_MAXW) throw std::runtime_error("Bopl v4 LayerNorm: width " + std::to_string(W) + " is above " + std::to_string(LN_MAXW));
     return (B + LN_ROWS - 1) / LN_ROWS;
+}
+/* Launchers: the float4 form when the widths (and, for the backward, the
+ * output's leading dimension and column count) are multiples of 4. */
+static void ln_fwd(const float* x, int H, const float* tail, int P, int B, float* xsave, float* y32, bf16* y16, float* mean, float* rstd, cudaStream_t stream) {
+    int grid = ln_grid(B, H + P);
+    static int scalar = getenv("BOPL_LN_SCALAR") ? atoi(getenv("BOPL_LN_SCALAR")) : 0;   // TEMP A/B toggle
+    if (!scalar && H % 4 == 0 && P % 4 == 0) ln_forward<4><<<grid, LN_ROWS * 32, 0, stream>>>(x, H, tail, P, B, xsave, y32, y16, mean, rstd);
+    else ln_forward<1><<<grid, LN_ROWS * 32, 0, stream>>>(x, H, tail, P, B, xsave, y32, y16, mean, rstd);
+}
+static void ln_bwd(const float* dy, const float* x, const float* mean, const float* rstd, int W, int B, float* dx, int ldx, int cols, int accumulate, bf16* dx16, cudaStream_t stream) {
+    int grid = ln_grid(B, W);
+    static int scalar = getenv("BOPL_LN_SCALAR") ? atoi(getenv("BOPL_LN_SCALAR")) : 0;   // TEMP A/B toggle
+    if (!scalar && W % 4 == 0 && ldx % 4 == 0 && cols % 4 == 0) ln_backward<4><<<grid, LN_ROWS * 32, 0, stream>>>(dy, x, mean, rstd, W, B, dx, ldx, cols, accumulate, dx16);
+    else ln_backward<1><<<grid, LN_ROWS * 32, 0, stream>>>(dy, x, mean, rstd, W, B, dx, ldx, cols, accumulate, dx16);
 }
 
 /* ---- attention hook ------------------------------------------------------
@@ -657,7 +713,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
         prof_mark("enc.set_mlp_pool", stream);
     }
     puf_mm(&a->joined, &w->fusion, &a->fused, stream);
-    ln_forward<<<ln_grid(B, H), LN_ROWS * 32, 0, stream>>>(a->fused.data, H, nullptr, 0, B, nullptr, a->out.data, nullptr, a->ln_mean.data, a->ln_rstd.data);
+    ln_fwd(a->fused.data, H, nullptr, 0, B, nullptr, a->out.data, nullptr, a->ln_mean.data, a->ln_rstd.data, stream);
     prof_mark("enc.fusion_ln", stream);
     return a->out;
 }
@@ -665,7 +721,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
 static void enc_backward(void* weights, void* activations, PrecisionTensor grad, cudaStream_t stream) {
     auto* w = (EncWeights*)weights; auto* a = (EncActs*)activations;
     int B = a->B, H = w->hidden, D = w->D, I = w->I, FD = w->flat_dim, LDJ = FD + SETS * 2 * D;
-    ln_backward<<<ln_grid(B, H), LN_ROWS * 32, 0, stream>>>(grad.data, a->fused.data, a->ln_mean.data, a->ln_rstd.data, H, B, a->grad_fused.data, H, H, 0, nullptr);
+    ln_bwd(grad.data, a->fused.data, a->ln_mean.data, a->ln_rstd.data, H, B, a->grad_fused.data, H, H, 0, nullptr, stream);
     puf_mm_tn(&a->grad_fused, &a->joined, &a->wgrad_fusion, stream);
     puf_mm_nn(&a->grad_fused, &w->fusion, &a->grad_joined, stream);
     relu_grad_from<<<grid_size(B * FD), BLOCK_SIZE, 0, stream>>>(a->grad_joined.data, LDJ, a->joined.data, LDJ, a->grad_flat.data, B, FD);
@@ -861,7 +917,7 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
     /* y = h + FFN(LN(h)) */
     PrecisionTensor* y = &a->y;
     if (w->ffn) {
-        ln_forward<<<ln_grid(B, H), LN_ROWS * 32, 0, stream>>>(h.data, H, nullptr, 0, B, nullptr, a->ln1.data, nullptr, a->m1.data, a->r1.data);
+        ln_fwd(h.data, H, nullptr, 0, B, nullptr, a->ln1.data, nullptr, a->m1.data, a->r1.data, stream);
         int F = w->ffn;
         /* f = ReLU(ln1 W_in^T) with the ReLU in the epilogue; y = h + f W_out^T with h as the addend */
         lt_gemm32(false, true, B, F, H, a->ln1.data, H, w->ffn_in.data, H, nullptr, a->f.data, F, CUBLASLT_EPILOGUE_RELU, stream);
@@ -882,13 +938,13 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
         int C = w->cdim;
         /* zin = [y | priv], saved for the backward; LN(zin) straight to its bf16 GEMM operand.
          * The critic GEMMs run bf16 on tensor cores (fp32 accumulation, fp32 outputs). */
-        ln_forward<<<ln_grid(B, W), LN_ROWS * 32, 0, stream>>>(y->data, H, priv, P, B, a->zin.data, nullptr, bfp(a->lnin_b), a->min_.data, a->rin.data);
+        ln_fwd(y->data, H, priv, P, B, a->zin.data, nullptr, bfp(a->lnin_b), a->min_.data, a->rin.data, stream);
         to_bf16<<<grid_size(C * W), BLOCK_SIZE, 0, stream>>>(w->critic_in.data, bfp(a->cin_b), C * W);
         to_bf16<<<grid_size(C * C), BLOCK_SIZE, 0, stream>>>(w->critic_b1.data, bfp(a->b1_b), C * C);
         to_bf16<<<grid_size(C * C), BLOCK_SIZE, 0, stream>>>(w->critic_b2.data, bfp(a->b2_b), C * C);
         lt_gemm(false, true, B, C, W, bfp(a->lnin_b), W, bfp(a->cin_b), W, nullptr, a->z.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         prof_mark("dec.critic_in", stream);
-        ln_forward<<<ln_grid(B, C), LN_ROWS * 32, 0, stream>>>(a->z.data, C, nullptr, 0, B, nullptr, nullptr, bfp(a->ln2_b), a->m2.data, a->r2.data);
+        ln_fwd(a->z.data, C, nullptr, 0, B, nullptr, nullptr, bfp(a->ln2_b), a->m2.data, a->r2.data, stream);
         /* bblk = ReLU(ln2 B1^T) written bf16 by the epilogue (the next GEMM's operand), its bitmask for the
          * backward's DRELU when registered; z2 = z + bblk B2^T with z as the addend */
         void* b1mask = a->b1_mask.data;
@@ -896,7 +952,7 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
                 b1mask ? CUBLASLT_EPILOGUE_RELU_AUX : CUBLASLT_EPILOGUE_RELU, stream, b1mask);
         lt_gemm(false, true, B, C, C, bfp(a->bblk_b), C, bfp(a->b2_b), C, a->z.data, a->z2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         prof_mark("dec.critic_block", stream);
-        ln_forward<<<ln_grid(B, C), LN_ROWS * 32, 0, stream>>>(a->z2.data, C, nullptr, 0, B, nullptr, a->ln3.data, nullptr, a->m3.data, a->r3.data);
+        ln_fwd(a->z2.data, C, nullptr, 0, B, nullptr, a->ln3.data, nullptr, a->m3.data, a->r3.data, stream);
         puf_mm(&a->ln3, &vout, &a->value, stream);
         write_column<<<grid_size(B), BLOCK_SIZE, 0, stream>>>(a->base.out.data, pad, w->od, a->value.data, B);
     }
@@ -924,7 +980,7 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
         puf_mm_nn(&a->gv, &vout, &a->g_ln3, stream);
         prof_mark("bwd.dec.value_gemms", stream);
         /* g_z2 = LN3 backward, into g_z (the residual: g_z = g_z2 + LN2 backward below) and its bf16 copy for the GEMMs */
-        ln_backward<<<ln_grid(B, C), LN_ROWS * 32, 0, stream>>>(a->g_ln3.data, a->z2.data, a->m3.data, a->r3.data, C, B, a->g_z.data, C, C, 0, bfp(a->g_z2_b));
+        ln_bwd(a->g_ln3.data, a->z2.data, a->m3.data, a->r3.data, C, B, a->g_z.data, C, C, 0, bfp(a->g_z2_b), stream);
         prof_mark("bwd.dec.ln3_bwd", stream);
         /* bf16 operands as in the forward: dW = dY^T X, dX = dY W */
         lt_gemm(true, false, C, C, B, bfp(a->g_z2_b), C, bfp(a->bblk_b), C, nullptr, a->wgrad_b2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
@@ -937,13 +993,13 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
         lt_gemm(true, false, C, C, B, bfp(a->g_b_b), C, bfp(a->ln2_b), C, nullptr, a->wgrad_b1.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         lt_gemm(false, false, B, C, C, bfp(a->g_b_b), C, bfp(a->b1_b), C, nullptr, a->g_ln2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         prof_mark("bwd.dec.critic_block_gemms", stream);
-        ln_backward<<<ln_grid(B, C), LN_ROWS * 32, 0, stream>>>(a->g_ln2.data, a->z.data, a->m2.data, a->r2.data, C, B, a->g_z.data, C, C, 1, bfp(a->g_z_b));
+        ln_bwd(a->g_ln2.data, a->z.data, a->m2.data, a->r2.data, C, B, a->g_z.data, C, C, 1, bfp(a->g_z_b), stream);
         prof_mark("bwd.dec.ln2_bwd", stream);
         lt_gemm(true, false, C, W, B, bfp(a->g_z_b), C, bfp(a->lnin_b), W, nullptr, a->wgrad_critic_in.data, W, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         lt_gemm(false, false, B, W, C, bfp(a->g_z_b), C, bfp(a->cin_b), W, nullptr, a->g_lnin.data, W, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         /* g_y += LN_in backward [:, :H] (the privileged columns' gradient goes nowhere; detached: nothing flows to y) */
         if (!w->detach)
-            ln_backward<<<ln_grid(B, W), LN_ROWS * 32, 0, stream>>>(a->g_lnin.data, a->zin.data, a->min_.data, a->rin.data, W, B, a->g_y.data, H, H, 1, nullptr);
+            ln_bwd(a->g_lnin.data, a->zin.data, a->min_.data, a->rin.data, W, B, a->g_y.data, H, H, 1, nullptr, stream);
         prof_mark("bwd.dec.critic_in", stream);
     }
     /* FFN: grad_h = g_y + LN_bwd(W_i^T (ReLU' * W_o^T g_y)) */
@@ -955,7 +1011,7 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
         relu_grad_from<<<grid_size(B * F), BLOCK_SIZE, 0, stream>>>(a->g_f.data, F, a->f.data, F, a->g_f.data, B, F);
         puf_mm_tn(&a->g_f, &a->ln1, &a->wgrad_ffn_in, stream);
         puf_mm_nn(&a->g_f, &w->ffn_in, &a->g_ln1, stream);
-        ln_backward<<<ln_grid(B, H), LN_ROWS * 32, 0, stream>>>(a->g_ln1.data, a->base.saved_input.data, a->m1.data, a->r1.data, H, B, a->base.grad_input.data, H, H, 1, nullptr);
+        ln_bwd(a->g_ln1.data, a->base.saved_input.data, a->m1.data, a->r1.data, H, B, a->base.grad_input.data, H, H, 1, nullptr, stream);
     }
     (void)grad_logstd;
     prof_mark("bwd.dec.ffn", stream);

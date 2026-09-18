@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 --- pristine-src/bindings.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/bindings.cu	2026-09-18 18:30:49.054901998 -0400
++++ puffer-overlay/bindings.cu	2026-09-18 18:36:51.124931107 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -257,7 +257,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 --- pristine-src/kernels.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/kernels.cu	2026-09-18 18:35:07.016602667 -0400
++++ puffer-overlay/kernels.cu	2026-09-18 18:36:51.125293831 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -549,7 +549,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
 --- pristine-src/models.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/models.cu	2026-09-18 18:30:49.055712937 -0400
++++ puffer-overlay/models.cu	2026-09-18 18:36:51.125743279 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -882,7 +882,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 --- pristine-src/muon.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/muon.cu	2026-09-18 18:36:51.092331611 -0400
++++ puffer-overlay/muon.cu	2026-09-18 18:47:44.540544941 -0400
 @@ -1,4 +1,5 @@
  #include <nccl.h>
 +#include <algorithm>
@@ -915,7 +915,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +#define MUON_MAX_REGS 64
 +static int muon_lanes_wanted() {
 +    static int n = -1;
-+    if (n < 0) { const char* e = getenv("BOPL_MUON_STREAMS"); n = e && e[0] ? atoi(e) : 4; n = n < 1 ? 1 : (n > MUON_MAX_LANES ? MUON_MAX_LANES : n); }
++    if (n < 0) { const char* e = getenv("BOPL_MUON_STREAMS"); n = e && e[0] ? atoi(e) : 8; n = n < 1 ? 1 : (n > MUON_MAX_LANES ? MUON_MAX_LANES : n); }
 +    return n;
 +}
 +// BOPL_MUON_SPLITK: k slices for the gram products (0 / 1 = off, exact old
@@ -978,7 +978,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +    FloatTensor fused_grams;      // 2 x sum(M^2)
 +    FloatTensor fused_parts;      // MUON_MAX_SPLITK x sum(M^2) split-K partials
 +    MuonMats mats;                // filled by muon_post_create (needs device pointers)
-+    // Bopl per-matrix path on side streams (BOPL_MUON_STREAMS, default 4; 1 =
++    // Bopl per-matrix path on side streams (BOPL_MUON_STREAMS, default 8; 1 =
 +    // every matrix in turn on the caller's stream, upstream's order). The
 +    // matrices' Newton-Schulz chains are independent: each is ~30 launches of
 +    // 5-10 us, latency-bound, so `lanes` chains run concurrently, forked from
@@ -1393,7 +1393,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  }
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 --- pristine-src/ocean.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/ocean.cu	2026-09-18 18:30:49.056498088 -0400
++++ puffer-overlay/ocean.cu	2026-09-18 18:36:51.126465111 -0400
 @@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
@@ -1431,7 +1431,7 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 --- pristine-src/pufferlib.cu	2026-09-18 16:41:04.173539658 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-18 18:30:49.056880550 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-18 18:36:51.127438678 -0400
 @@ -1,15 +1,72 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -3510,7 +3510,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 --- pristine-src/vecenv.h	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/vecenv.h	2026-09-18 18:30:49.058134996 -0400
++++ puffer-overlay/vecenv.h	2026-09-18 18:36:51.128525237 -0400
 @@ -97,6 +97,30 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.

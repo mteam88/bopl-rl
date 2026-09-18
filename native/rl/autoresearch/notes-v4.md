@@ -401,3 +401,55 @@ other train GEMM. A/B 2x2 twice (cand = the old copies behind a temporary
 toggle, removed): 237.7k vs 236.1k (+0.7%) at load 7.9, 238.3k vs 235.0k
 (+1.4%) at load 6.8; train 0.1022 vs 0.1033. Tune log: the D!=C shapes get
 2-8 candidates at 4.3-6.4 us.
+
+### Muon per-matrix path: the matrices' NS chains on concurrent side streams (lanes), keep
+
+With the copies gone each matrix is still ~30 launches of 4-10 us in a
+row on the train stream, latency-bound, 19 matrices in turn: the profile
+had Muon at ~12 ms of the ~100 ms update. The chains are independent, so
+`muon_step` now forks `BOPL_MUON_STREAMS` lanes (default 8) off the train
+stream by events and joins them at the end; under capture they become
+parallel graph branches. The matrices go to lanes longest-first onto the
+least loaded (NS flops), each lane has its own gram / gram_buf / x_buf /
+norm scratch, and the lanes' cuBLAS handles and tune workspaces are made
+on the first (eager) step, since a handle cannot be created under capture
+(`bopl_gemm_tune_stream_add`: the side streams tune like the train stream
+and share its kernel choices). A matrix's kernels and their inputs are the
+same as on one stream, so the result is the same; the streams get the
+train stream's priority. `BOPL_MUON_STREAMS=1` is the old serial order.
+A/B 2x2 (cand = 1 lane): 242.4k vs 238.5k (+1.6%), 242.8k vs 237.6k
+(+2.2%), train 0.1003 vs 0.1022; lanes 8 vs 4: 244.0k vs 241.9k (+0.9%,
+train 0.0997 vs 0.1006); 2 vs 4: 241.9k vs 242.6k. Default 8; each lane
+past the first costs ~45 MB of GPU memory (cuBLAS handle + tune workspace,
+6.37 GB total at 8 vs 6.06 at 4 on the 12 GB card), the knob trims it.
+`check_v4 --build` pass_all, `check_dump --only v4` ok (the forward is
+untouched); the optimizer change is covered by the learning gate
+(`sanity_v4.sh`), scheduled below.
+
+Running total: 169.0k -> ~244k (**+44%**, exact-class only). Train 0.0997,
+rollout 0.085.
+
+### Profile of this build (CUPTI, 280 updates, train stream 27.48 s busy of a 31.4 s span = 98 ms per update)
+
+Per update, train stream: TF32 fp32 GEMMs ~25 ms (128x256 tn 10.3, 128x128
+nt 4.4, 256x128 nn 3.6, 128x256 nn 3.5, others), bf16 GEMMs ~19 ms (relu
+128x256 6.9, drelu 64x64 4.8, 64x128 3.7, 64x64 tn/nn 3.1 + 2.5, drelu
+128x128 1.8, ...), `ln_backward` 7.9 (5.4 per pass, avg 367 us),
+`unpool_rows` 5.4, `relu_grad_from` 3.6, `pool_rows` 3.5, `ln_forward` 2.9,
+mingru scan 2.4 + 1.2, `count_rows` 1.7 + `scatter_rows` 2.5 + `pack_flat`
+1.2 (the prepass reading the observations), `ppo_loss` 1.8, splitKreduce
+1.4, DtoD memcpy 1.3, `br_transpose_frag` 1.0. Muon's lanes sit on their
+own streams (~0.3 s busy each over the run, ~1 ms per update on the
+critical path). Rollout, per buffer stream (4): `br_gemm` 4.2 s (9 per
+step, avg 12 us, min 3.7), `br4_sets` 2.15 s (avg 56, min 5.8), HtoD 1.04
+s (27 us per step: the observation upload, copy engine), `br_sample` 0.9 s
+(avg 23, min 9), `br4_rows` 0.8 s, `br_gate` 0.15 s. The averages are
+contention (min = isolated); as GPU work the rollout is ~27 ms of SM time
+per update against the train pass's ~63. B = 24576 rows per pass (4
+buffers x 48 learner rows x 128 steps), one minibatch per pass, so every
+train kernel is a pass over 24576 x (256 | 512) fp32: the LN, pool /
+unpool, relu_grad and prepass kernels are memory-bound at ~50-60% of the
+bandwidth. Exact-class levers left on this side are each 1-3%: LN loads as
+float4 (next), pool / unpool traffic (int32 winner -> narrower, unpool's
+h2 re-read), relu_grad_from. The GEMMs (44 ms) move only with bf16
+operands (gated).
