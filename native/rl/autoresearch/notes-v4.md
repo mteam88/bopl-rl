@@ -272,3 +272,31 @@ Reverted to 16 (the wave-3 runs were trained with the TF32 cuBLAS path, so
 this also keeps the optimizer's numerics); the fallback prints a note now.
 A tensor-core grouped NS would take Muon from ~11 to ~3-4 ms but changes the
 optimizer's rounding: Matthew's call, not this campaign's.
+
+### Train pass: elementwise ops into the cublasLt epilogues (commit 61c317ff), keep
+
+Hypothesis: the train profile still had ~6 ms per update of standalone
+elementwise kernels around GEMMs (add_into 2.4, relu_into 2.0, relu_grad_bf16
+1.6, relu_grad_from 3.2 ms per 61 updates x 4 passes), each a full read +
+write of a (B, 256..512) fp32 activation; cublasLt can do them in the GEMM
+epilogue. `lt_gemm` got an fp32-operand twin (`lt_gemm32`, both over a
+shared `lt_matmul`; `LtKey.ab_f32`). Fused: the encoder's flat GEMM writes
+ReLU(x W^T) straight into `joined` at stride LDJ (flat_pre gone); the FFN
+input GEMM has the RELU epilogue; the FFN output and the critic block's
+second GEMM take the residual as the beta = 1 C operand (add_into gone); the
+critic block (bf16 GEMMs) runs RELU_AUX forward and DRELU backward with a
+B x C/32 bitmask, so relu_grad_bf16 and the fp32 g_b buffer are gone there.
+Tried and dropped inside the experiment: RELU_AUX / DRELU on the fp32 FFN.
+It passes check_v4 but the CUPTI profile showed cublasLt running them as a
+separate `cublasLt::epilogue::impl::globalKernel` (0.38 ms forward, 0.45 ms
+backward per call), slower than the relu_into / relu_grad_from kernels they
+replaced: first build measured 219.1-219.7k, i.e. flat. The fp32 plain RELU
+epilogue is fused (relu_into vanished, no new kernel). Result, all at load
+5-7: epi2-1..3 219758 / 221615 / 223224 vs epi2-inc-1 217073 (39d7f1a9
+rebuilt in place between runs): **+1.2..+2.8%**, train_s 0.1091-0.1105 vs
+0.1121, rollout unchanged. check_v4 pass_all; check_v4 now also runs a
+2048-row case so the decoder's B >= LT_AUX_MIN_ROWS mask path is covered
+(the 1024-row case only reaches it in the encoder's set GEMMs).
+
+Running total: 169.0k -> ~221.6k (median of 3) (**+31%**, exact-class
+only). Train-bound (0.110 vs 0.091).
