@@ -24875,6 +24875,17 @@ impl RolloutWorld {
     }
 
     fn register_pending_missile_explosions(&mut self, data: &data::RolloutData) {
+        // Mine detonations use this same prefab but do not pass through the
+        // Grenade registration path that normally retires callback-destroyed
+        // thrown-item rows before registering the queued explosion.
+        for item in &self.thrown_items {
+            if !item.active
+                && let Some(entity) = item.entity
+                && self.entities[entity].flags & E_DESTROYED != 0
+            {
+                self.entities[entity].flags = E_REMOVED;
+            }
+        }
         for index in 0..self.missile_explosions.len() {
             let explosion = self.missile_explosions[index];
             if !explosion.active || explosion.registered || explosion.born_tick >= self.tick {
