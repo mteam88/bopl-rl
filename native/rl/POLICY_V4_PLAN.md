@@ -672,7 +672,7 @@ held-out | <rl list>`, translated to the player's `BOPL_LEVEL_SET` levels by
 `games.jsonl` rows carry `rl_map` and `map_role`, and `reference_pool.py
 human --map-role training|held-out|unported` rates them apart.
 
-### 7e. Next wave: the opponent distribution (design 2026-09-18; GPU after 19h and the parent's go)
+### 7e. Next wave: the opponent distribution (design 2026-09-18; go 05:55; queued 06:15 as 20a-20f behind 19h)
 
 What the tournament says. The v4 checkpoints beat every pool-v7 member
 about 90% of the time and are even among themselves (aim-only vs aim
@@ -690,10 +690,21 @@ gap to Matthew is aiming and awareness against a moving opponent (7b), an
 opponent-distribution problem.
 
 Runs (all `v4-aim`, the production shape, 024's recipe, 1.73B steps, two
-seeds each, 73 and 74; scored on pool v8 primary, v7 alongside, plus a
-fixed head-to-head band against the tournament's five v4-aim / v4-aim-only
-finals, 48 games each, the cheapest direct measure of the target; v8 bands
-at 480 games, +-26 instead of +-37):
+seeds each, 73 and 74; scored on pool v8 primary (480-game band, in-run 160
+games) with pool v7 alongside (in-run 96 games after the v8 rating in the
+same nice-19 chain; the 480-game v7 band offline right after the run, so
+every run has both columns), plus a fixed head-to-head band. Contamination
+rule (parent, 05:55): the band holds no checkpoint the league trained
+against. Band = the finals of `v4-aim-only` s73 / s74 / s75, `v4-full` and
+`v4-lite` (cross-family, through the per-player writer bits), 16 games x 3
+evaluation maps = 48 each, every evaluation
+(`anchors/wave3-opponents/head-to-head.json`). The learner's win rate
+against the pinned members is reported from the pool ledger
+(metrics `pool.pinned`: games, wins, draws, draw share, game share) as a
+training-curve diagnostic, not a claim. Pool v8 has 3 of its 34 members
+among the league's training opponents (the v4-aim s73 / s74 2313M
+checkpoints, and v4-aim s73 2133M / 2240M are near-copies); stated,
+accepted: the band is the clean measure, v8 the common scale.
 
 1. `v4-aim-league` (the main bet): a fourth kind of opponent, other runs.
    The self-play pool starts pinned with the finals of `v4-aim` s73/s74
@@ -707,14 +718,31 @@ at 480 games, +-26 instead of +-37):
    no C change. Cross-family members (aim-only, bits 2|8) would need the
    per-bank writer mask in the trainer's vec (env->ablate[player] exists
    since 2026-09-17; the bank-to-player routing does not carry it yet):
-   second step, not this wave.
+   second step, not this wave. Implemented (wave3 8b5083b):
+   `native_selfplay.add_pinned` / `install_sampler` route
+   pufferlib.selfplay's module-level `sample_opponent` / `evict` through the
+   league rules (pinned members at the front of the pool, never evicted,
+   `--pool-size` bounds the run's own snapshots; the draw is over pinned +
+   own minus the five newest, weights `(1 - p)^2` with `p = (wins+1)/(games+2)`
+   from the ledger, floor 0.01, so an unplayed member is drawn like an even
+   one and a beaten one still comes back now and then); banks start on the
+   bootstrap as before. Flags `--pinned-opponents name=path,...` (sidecar
+   shape and writer bits checked against the run), `--opponent-sampler
+   index|pfsp`; both recorded in config.selfplay and restored by --resume.
+   Without either flag the upstream path runs untouched (unit tests:
+   puffer/test_native_selfplay.py, 11 pass).
 2. `v4-aim-pfsp`: the sampler change alone on the own-snapshot pool
    (`pool_size` 32, weight (1 - winrate)^2, no pinned externals). Separates
    "who" from "how sampled": if 1 beats 2, the externals carry the effect.
 3. `v4-aim-search`: `search-medium` (pool v7 589, the strongest bot, absent
    from the training roster because `bopl_rl_fork` costs ~4 ms a decision)
-   in one scripted bank at share max 0.25. Gated on a 2-minute sps check:
-   below 120k sps it is dropped from the wave, not slowed.
+   added to the scripted roster with its share of the scripted banks' draws
+   capped at 0.25 (`--scripted-draw-cap search-medium=0.25`; every
+   scripted bank draws from one roster, so the cap is on draws, not on a
+   bank). Gated on a 2-minute sps check at full width
+   (`sweep/sps_gate.py`, run by the job itself before the driver): below
+   120k learner sps the job exits without training, the run is dropped
+   from the wave, not slowed.
 
 Pre-registered claims. (1) `v4-aim-league` beats the `v4-aim` two-seed mean
 on pool v8 (594; 613 / 576) by more than 40, the widest same-shape seed
@@ -724,6 +752,36 @@ does not widen (no overfit to the pinned opponents). A league win with the
 pool-v7 IQM unchanged is the expected shape of the result: v7 cannot see
 it, which is why v8 exists. Cost: 6 runs x ~3 h = 18 h GPU, behind 19h;
 `v4-aim-search` only if its sps gate passes.
+
+Queue (parent 05:55, both league seeds before anything else so claim 1
+resolves first): 20a `v4-aim-league` (s73), 20b `v4-aim-pfsp` (s73), 20c
+`v4-aim-league-s74`, 20d `v4-aim-pfsp-s74`, 20e `v4-aim-search` (gated),
+20f `v4-aim-search-s74` (gated); job files in gpu-queue/, same shape as 19g,
+nice 0, max_seconds 21600, steps 1734936776, scoring pool v8. Where they
+run: the policy-v4 rift cannot take the cross-family band (its evaluator
+predates the per-player writer bits, and landing 6c19394 there touches
+bopl_puffer.h / bopl_obs_v4.h, which the trainer's staleness check would
+turn into a failed start for 19g / 19h), and policy-v4-work carries the
+64-map trainer and keeps moving for round 2. So a third worktree,
+`policy-v4-wave3` (branch `wave3` = policy-v4 a2a9b82 + 6c19394 + the 7e
+trainer commit), with its own `_C` / research / policy_eval build and the
+rift's venv, sim (`native/target` symlink, the same .so 19d-19h load) and
+`sweeps/anchors` pools by symlink; frozen once the jobs are queued. The
+pinned and band checkpoints are copies under
+`anchors/wave3-opponents/` (README.json maps them to their runs).
+
+Smoke (06:03, `sps_gate.py` on the league config, `--workers 32`, 150 s
+then SIGTERM, beside 19e at 128 workers): 1109 updates, 6.8M learner
+steps, 58k learner sps mid-run (47.6k median over the last 40 once the
+evaluation and the rating chain took their cores); `min_games 16` and
+`opponent_timeout 1M` to force swaps: 31 draws, 26 of them pinned (draw
+share 0.84, game share 0.85), all four banks on pinned members at the end,
+8 own snapshots behind them; the learner at 6.8M steps wins 8-11% against
+the three finals. Evaluation ran the five-member band (97 games with
+2 per opponent, 37 s), the rating chain wrote v8 then v7 records, train.py
+stopped clean on SIGTERM. In a full run the own pool grows to 32 (total
+weight 3-8 against the pinned ~2.4-3), so the pinned share should settle
+near 0.3-0.5 rather than the smoke's 0.85; the metrics say.
 
 ## 8. Config and flags
 
