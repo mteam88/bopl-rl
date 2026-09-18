@@ -396,6 +396,66 @@ __global__ void unpool_rows(const bf16* h2, bf16* dh2, int D, const int* offsets
         dh2[i] = tobf(bf(h2[i]) > 0.0f ? g : 0.0f);
     }
 }
+/* The same pools with 4 columns per thread (8-byte bf16 loads, float4 / int4
+ * stores): POOL_SAMPLES samples per block of POOL_THREADS, sample = warp when
+ * D = 128. Column c's max / sum / winner are the same sequential scan over the
+ * rows as pool_rows / unpool_rows, so the results are bit-identical; the
+ * thread count per pass is a quarter (the scalar forms issued 2-byte loads).
+ * Used when D % 4 == 0 and D / 4 divides POOL_THREADS. */
+constexpr int POOL_THREADS = 128;
+__device__ __forceinline__ void bf4_load(const bf16* p, float* v) {
+    uint2 u = *reinterpret_cast<const uint2*>(p);
+    __nv_bfloat162 lo = *reinterpret_cast<__nv_bfloat162*>(&u.x), hi = *reinterpret_cast<__nv_bfloat162*>(&u.y);
+    v[0] = __low2float(lo); v[1] = __high2float(lo); v[2] = __low2float(hi); v[3] = __high2float(hi);
+}
+__device__ __forceinline__ void bf4_store(bf16* p, const float* v) {
+    __nv_bfloat162 lo = __floats2bfloat162_rn(v[0], v[1]), hi = __floats2bfloat162_rn(v[2], v[3]);
+    uint2 u; u.x = *reinterpret_cast<unsigned*>(&lo); u.y = *reinterpret_cast<unsigned*>(&hi);
+    *reinterpret_cast<uint2*>(p) = u;
+}
+__global__ void __launch_bounds__(POOL_THREADS) pool_rows4(const bf16* h2, int D, const int* offsets, const int* counts, int total_index,
+                                                          const int* totals, float* joined, int ldj, int col0, int* winner, int mean_pool, int B) {
+    const int tps = D / 4;   /* threads per sample */
+    const int b = blockIdx.x * (POOL_THREADS / tps) + threadIdx.x / tps, c = (threadIdx.x % tps) * 4;
+    if (b >= B) return;
+    int off = offsets[b], n = counts[b], total = totals[total_index];
+    if (off + n > total) n = max(0, total - off);
+    float best[4] = {0.0f, 0.0f, 0.0f, 0.0f}, sum[4] = {0.0f, 0.0f, 0.0f, 0.0f}; int win[4] = {-1, -1, -1, -1};
+    for (int r = 0; r < n; r++) {
+        float v[4]; bf4_load(h2 + (long)(off + r) * D + c, v);
+        #pragma unroll
+        for (int j = 0; j < 4; j++) { if (v[j] > best[j]) { best[j] = v[j]; win[j] = r; } sum[j] += v[j]; }
+    }
+    *reinterpret_cast<float4*>(joined + (long)b * ldj + col0 + c) = make_float4(best[0], best[1], best[2], best[3]);
+    float4 m = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (mean_pool && n > 0) m = make_float4(sum[0] / n, sum[1] / n, sum[2] / n, sum[3] / n);
+    *reinterpret_cast<float4*>(joined + (long)b * ldj + col0 + D + c) = m;
+    *reinterpret_cast<int4*>(winner + (long)b * D + c) = make_int4(win[0], win[1], win[2], win[3]);
+}
+__global__ void __launch_bounds__(POOL_THREADS) unpool_rows4(const bf16* h2, bf16* dh2, int D, const int* offsets, const int* counts, const int* totals,
+                                                            int total_index, const float* grad_joined, int ldj, int col0, const int* winner, int mean_pool, int B) {
+    const int tps = D / 4;
+    const int b = blockIdx.x * (POOL_THREADS / tps) + threadIdx.x / tps, c = (threadIdx.x % tps) * 4;
+    if (b >= B) return;
+    int off = offsets[b], n = counts[b], total = totals[total_index];
+    if (off + n > total) n = max(0, total - off);
+    int4 w4 = *reinterpret_cast<const int4*>(winner + (long)b * D + c);
+    float4 gm4 = *reinterpret_cast<const float4*>(grad_joined + (long)b * ldj + col0 + c);
+    float gmax[4] = {gm4.x, gm4.y, gm4.z, gm4.w}, gmean[4] = {0.0f, 0.0f, 0.0f, 0.0f}; int win[4] = {w4.x, w4.y, w4.z, w4.w};
+    if (mean_pool && n > 0) {
+        float4 t = *reinterpret_cast<const float4*>(grad_joined + (long)b * ldj + col0 + D + c);
+        gmean[0] = t.x / n; gmean[1] = t.y / n; gmean[2] = t.z / n; gmean[3] = t.w / n;
+    }
+    for (int r = 0; r < n; r++) {
+        long i = (long)(off + r) * D + c;
+        float v[4], g[4]; bf4_load(h2 + i, v);
+        #pragma unroll
+        for (int j = 0; j < 4; j++) { float gg = gmean[j] + (win[j] == r ? gmax[j] : 0.0f); g[j] = v[j] > 0.0f ? gg : 0.0f; }
+        bf4_store(dh2 + i, g);
+    }
+}
+static bool pool4_ok(int D, int ldj, int col0) { return D % 4 == 0 && POOL_THREADS % (D / 4) == 0 && ldj % 4 == 0 && col0 % 4 == 0; }
+static int pool4_grid(int D, int B) { int per = POOL_THREADS / (D / 4); return (B + per - 1) / per; }
 /* ---- elementwise and LayerNorm ------------------------------------------ */
 __global__ void relu_into(const float* src, float* dst, int rows, int cols, int ldd) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -545,14 +605,12 @@ static int ln_grid(int B, int W) {
  * output's leading dimension and column count) are multiples of 4. */
 static void ln_fwd(const float* x, int H, const float* tail, int P, int B, float* xsave, float* y32, bf16* y16, float* mean, float* rstd, cudaStream_t stream) {
     int grid = ln_grid(B, H + P);
-    static int scalar = getenv("BOPL_LN_SCALAR") ? atoi(getenv("BOPL_LN_SCALAR")) : 0;   // TEMP A/B toggle
-    if (!scalar && H % 4 == 0 && P % 4 == 0) ln_forward<4><<<grid, LN_ROWS * 32, 0, stream>>>(x, H, tail, P, B, xsave, y32, y16, mean, rstd);
+    if (H % 4 == 0 && P % 4 == 0) ln_forward<4><<<grid, LN_ROWS * 32, 0, stream>>>(x, H, tail, P, B, xsave, y32, y16, mean, rstd);
     else ln_forward<1><<<grid, LN_ROWS * 32, 0, stream>>>(x, H, tail, P, B, xsave, y32, y16, mean, rstd);
 }
 static void ln_bwd(const float* dy, const float* x, const float* mean, const float* rstd, int W, int B, float* dx, int ldx, int cols, int accumulate, bf16* dx16, cudaStream_t stream) {
     int grid = ln_grid(B, W);
-    static int scalar = getenv("BOPL_LN_SCALAR") ? atoi(getenv("BOPL_LN_SCALAR")) : 0;   // TEMP A/B toggle
-    if (!scalar && W % 4 == 0 && ldx % 4 == 0 && cols % 4 == 0) ln_backward<4><<<grid, LN_ROWS * 32, 0, stream>>>(dy, x, mean, rstd, W, B, dx, ldx, cols, accumulate, dx16);
+    if (W % 4 == 0 && ldx % 4 == 0 && cols % 4 == 0) ln_backward<4><<<grid, LN_ROWS * 32, 0, stream>>>(dy, x, mean, rstd, W, B, dx, ldx, cols, accumulate, dx16);
     else ln_backward<1><<<grid, LN_ROWS * 32, 0, stream>>>(dy, x, mean, rstd, W, B, dx, ldx, cols, accumulate, dx16);
 }
 
@@ -708,8 +766,13 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
         lt_gemm(false, true, act, D, I, bfp(a->h1[s]), I, bfp(a->w2b[s]), I, nullptr, bfp(a->h2[s]), D, true, CUBLASLT_EPILOGUE_RELU, stream);
         if (g_set_stage.forward)
             g_set_stage.forward(s, bfp(a->h2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
-        pool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, a->cap[s], s,
-                                       a->totals.data, a->joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool);
+        static int pool_scalar = getenv("BOPL_POOL_SCALAR") ? atoi(getenv("BOPL_POOL_SCALAR")) : 0;   // TEMP A/B toggle
+        if (!pool_scalar && pool4_ok(D, LDJ, FD + s * 2 * D))
+            pool_rows4<<<pool4_grid(D, B), POOL_THREADS, 0, stream>>>(bfp(a->h2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, s,
+                                                                     a->totals.data, a->joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool, B);
+        else
+            pool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, a->cap[s], s,
+                                           a->totals.data, a->joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool);
         prof_mark("enc.set_mlp_pool", stream);
     }
     puf_mm(&a->joined, &w->fusion, &a->fused, stream);
@@ -730,8 +793,13 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
     for (int s = SETS - 1; s >= 0; s--) {
         const int* total = a->totals.data + s;
         int K = SPEC[s].kpad, act = a->act[s];
-        unpool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
-                                         a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool);
+        static int pool_scalar = getenv("BOPL_POOL_SCALAR") ? atoi(getenv("BOPL_POOL_SCALAR")) : 0;   // TEMP A/B toggle
+        if (!pool_scalar && pool4_ok(D, LDJ, FD + s * 2 * D))
+            unpool_rows4<<<pool4_grid(D, B), POOL_THREADS, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
+                                                                       a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool, B);
+        else
+            unpool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
+                                             a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool);
         zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->dh2[s]), D, nullptr, 0, a->totals.data, s, act);
         if (g_set_stage.backward)
             g_set_stage.backward(s, bfp(a->h2[s]), bfp(a->dh2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
