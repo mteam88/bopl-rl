@@ -4688,10 +4688,10 @@ impl RolloutWorld {
         first: u32,
         second: u32,
     ) -> Result<(), String> {
-        if first + second > 16 {
+        if first < 1 || second < 1 || first > 16 || second > 16 || first > 16 - second {
             return Err("Sampled step phases too long".into());
         }
-        self.step(actions, first.max(1))?;
+        self.step(actions, first)?;
         self.observe_sample();
         self.sample_valid = true;
         if !self.terminal {
