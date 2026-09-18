@@ -23,6 +23,7 @@ HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent / 'sweep')]
 import reference_pool
 import joint_ladder
+import map_catalogue
 import visuals
 
 CHART_KEYS = (
@@ -180,6 +181,7 @@ def _compact_report(path, inode, modified, size):
     report = json.loads(path.read_text())
     if not report:
         return None
+    report = map_catalogue.normalize_record(report, *map_catalogue.run_records(path.parents[2]))
     value = {key: report[key] for key in
              ('schema', 'step', 'suite', 'groups', 'frozen_opponents', 'flags', 'flag_metrics')
              if key in report}
@@ -212,6 +214,7 @@ def discover_sweeps(root, extra_runs):
 def pool_brief(pool, members=False):
     if not pool:
         return None
+    pool = map_catalogue.normalize_record(pool, pool)
     brief = dict(
         path=pool.get('path'), sha256=pool.get('pool_sha256'),
         sha8=pool.get('sha8') or reference_pool.pool_sha8(pool),
@@ -658,8 +661,9 @@ def main():
         fit = joint_fit()
         joint = joint_for_run(fit, name)
         flags = (picked or {}).get('flags') or run_flags(directory)
+        config = map_catalogue.normalize_record(read_json(directory / 'config.json') or {}, status)
         return dict(
-            name=name, config=read_json(directory / 'config.json'), status=status,
+            name=name, config=config, status=status,
             evaluations=evaluations,
             ratings=[] if not picked else picked.get('ratings') or [],
             pools=[{k: row[k] for k in row if k != 'ratings'} | dict(
@@ -717,8 +721,11 @@ def main():
             summary = store.read(directory / 'metrics.jsonl')
         except ValueError:
             raise ValueError('Invalid metrics record')
+        records = map_catalogue.run_records(directory)
+        summary['rows'] = [map_catalogue.normalize_record(row, *records) for row in summary['rows']]
+        matches = map_catalogue.translate_map_matches(summary['map_matches'], *records)
         return dict(metrics=thin_metrics(summary), metrics_total=summary['count'],
-                    map_matches=summary['map_matches'])
+                    map_matches=matches, map_catalogue=map_catalogue.IDENTITY)
 
     def metrics_snapshot(directory, name):
         sig = stamp(directory / 'metrics.jsonl')

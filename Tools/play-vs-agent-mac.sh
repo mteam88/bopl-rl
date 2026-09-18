@@ -60,9 +60,9 @@ RESULTS=$HUMAN/.session-$SESSION.jsonl
 [ -n "$SEED" ] || SEED=$(( $(date +%s) % 1000000000 ))
 ROSTER_LOG=$HUMAN/.session-$SESSION.roster.jsonl
 export BOPL_AGENT=$AGENT BOPL_AGENT_SEED=$SEED BOPL_AGENT_RESULTS=$RESULTS BOPL_AGENT_ROSTER_LOG=$ROSTER_LOG
-# The game's BOPL_LEVEL_SET takes Unity levels; --maps takes RL map indices or a
-# role of the more-maps split, translated through the catalogue (map_set.py):
-# RL 0-4 are levels 0-4, the appended maps are not.
+# The game's BOPL_LEVEL_SET takes Unity levels; --maps takes canonical RL map
+# ids, a named map set, or a campaign role. map_set.py validates/translates the
+# selection; the identity-124 catalogue maps every RL id 0-123 to the same level.
 if [ -n "$MAPS" ]; then
   LEVELS=$("$PYTHON" "$ROOT/native/rl/research/map_set.py" levels "$MAPS") || { echo "bad --maps $MAPS" >&2; exit 2; }
   export BOPL_LEVEL_SET=$LEVELS

@@ -14,6 +14,7 @@ import threading
 
 sys.path[:0]=[str(Path(__file__).resolve().parent)]
 import visuals
+import map_catalogue
 
 SCHEMA=3
 ARROW_BIT=2
@@ -67,7 +68,8 @@ def game_insights(visual,side):
 
 def evaluate_directory(directory):
     """Compute insights for one evaluation directory (result.json required)."""
-    report=json.loads((directory/'result.json').read_text())
+    records=map_catalogue.run_records(directory.parents[1])
+    report=map_catalogue.normalize_record(json.loads((directory/'result.json').read_text()),*records)
     holds=[]; aim_changes=[]; games=0
     maps={}
     for game in report['games']:
@@ -91,7 +93,7 @@ def evaluate_directory(directory):
                              if e['kind'] in (1,2) and not e['owner'] and not e['flags']&8]
     for cell in maps.values():
         cell['occupancy']=[[int(k),v] for k,v in sorted(cell['occupancy'].items())]
-    return dict(schema=SCHEMA,step=report['step'],games=games,
+    return dict(schema=SCHEMA,map_catalogue=map_catalogue.IDENTITY,step=report['step'],games=games,
                 grid=dict(x0=GRID_X0,y0=GRID_Y0,w=GRID_W,h=GRID_H,cell=GRID_CELL),
                 gauges=dict(bow_hold_seconds=median(holds),completed_holds=len(holds),
                             aim_change_degrees=median(aim_changes),decisions=len(aim_changes)),
@@ -115,12 +117,15 @@ def _backfill(directory):
 def collect(run_directory):
     """Read published insights; one background worker backfills missing results."""
     global _pending
-    rows=[];missing=None
+    rows=[];missing=None;records=map_catalogue.run_records(run_directory)
     for result in sorted(run_directory.glob('evaluations/*/result.json'),key=lambda p:int(p.parent.name),reverse=True):
         directory=result.parent
         try:
             value=json.loads((directory/'insights.json').read_text())
             if value.get('schema')!=SCHEMA: raise ValueError
+            if value.get('map_catalogue')!=map_catalogue.IDENTITY:
+                value['maps']=map_catalogue.translate_keyed_maps(value.get('maps'),*records)
+                value['map_catalogue']=map_catalogue.IDENTITY
         except (OSError,ValueError):
             if missing is None: missing=directory
             continue

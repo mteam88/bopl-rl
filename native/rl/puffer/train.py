@@ -273,7 +273,8 @@ def arguments():
     p.add_argument('--reward-timeout', type=float, default=-.5,
                    help='Terminal reward for both players when the episode hits --episode-ticks (<= 0)')
     p.add_argument('--stocks', type=int, default=0, help='Smash-style extra-life setting; 0 = vanilla Bopl, one life per round')
-    p.add_argument('--training-maps', type=maps, default=[0])
+    p.add_argument('--training-maps', type=maps, default=[0],
+                   help='identity map IDs, inclusive ranges, all, or named sets from native/data/map-sets.json')
     p.add_argument('--loadout', type=_arg(p,loadout_ids), default=list(DEFAULT_LOADOUT),
                    help='fixed three-slot loadout (default: 2,4,14)')
     p.add_argument('--loadout-pool', type=_arg(p,loadout_pool),
@@ -586,7 +587,7 @@ def main():
     obs_layout_version = layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3
     obs_size = layout.obs_size_of(obs_layout_version)
     architecture = {'set': layout.ARCHITECTURE, 'v4': layout.V4_ARCHITECTURE}.get(a.encoder, 'puffernet-mingru')
-    config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native',
+    config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native', map_catalogue='identity-124',
                   step_unit='physical_player_decisions', steps=target_physical, learner_steps=a.steps,
                   seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
                   scripted_bots=a.scripted_bots, scripted_level=a.scripted_level, scripted_roster=a.scripted_roster,

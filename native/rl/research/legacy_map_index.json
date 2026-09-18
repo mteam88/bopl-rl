@@ -1,0 +1,15 @@
+{
+  "_comment": "Legacy maps-round2 RL index to Unity level mapping introduced by ef212768 and extended by b45d921e; 6c193945 is the merged legacy source.",
+  "catalogue": "legacy-curated-54",
+  "source_commits": ["ef212768", "b45d921e", "6c193945"],
+  "sim_sha256": [
+    "33b328dde00c7729fd12382047f52fdcaddaca785e7da8224b5d98c6c082ed70",
+    "60e8f6b61be57dc11a777b2b4e9f15ad0587f6fc1b8c5c1e65ee8562e0d63f02"
+  ],
+  "rl_to_unity_level": [
+    0, 1, 2, 3, 4, 5, 6, 8, 10, 13, 14, 15, 19, 20, 42, 45, 46, 49,
+    65, 68, 69, 71, 72, 73, 76, 77, 79, 84, 86, 90, 93, 7, 9, 18, 39,
+    40, 41, 43, 44, 47, 48, 64, 66, 70, 74, 78, 81, 83, 85, 87, 88, 89,
+    91, 92
+  ]
+}

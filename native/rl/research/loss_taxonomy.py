@@ -30,6 +30,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(HERE))
 from evaluation_protocol import SCRIPTED_KINDS as BOTS  # noqa: E402  kind name -> id (v1 and v2 kinds)
+from map_catalogue import IDENTITY, normalize_record, parse_map_ids  # noqa: E402
 HARD = 2
 # Death geometry, Assets/Scripts/Assembly-CSharp/SceneBounds.cs + DestroyIfOutsideSceneBounds.UpdateSim
 WATER_Y = -11.3
@@ -157,7 +158,8 @@ def play(args):
     for item in args.checkpoint:
         name, _, path = item.partition('=')
         checkpoints[name] = str(Path(path).resolve())
-    tasks = _schedule(checkpoints, args.bots.split(','), [int(m) for m in args.maps.split(',')],
+    maps=parse_map_ids(args.maps)
+    tasks = _schedule(checkpoints, args.bots.split(','), maps,
                       args.seed_pairs, args.bot_vs_bot_pairs)
     done = set()
     manifest = out / 'games.jsonl'
@@ -169,7 +171,8 @@ def play(args):
                 pass
     todo = [t for t in tasks if t['name'] not in done]
     print(f'{len(tasks)} games scheduled, {len(todo)} to play, {args.workers} workers', flush=True)
-    (out / 'schedule.json').write_text(json.dumps(dict(checkpoints=checkpoints, tasks=tasks), indent=1))
+    (out / 'schedule.json').write_text(json.dumps(dict(map_catalogue=IDENTITY,
+                                                       checkpoints=checkpoints,tasks=tasks),indent=1))
     # Interleave so long (timeout) games spread over workers.
     buckets = [todo[i::args.workers] for i in range(args.workers)]
     started = time.monotonic()
@@ -651,7 +654,15 @@ def classify_game(result, out):
 
 def classify(args):
     out = args.out.resolve()
-    rows = [json.loads(l) for l in (out / 'games.jsonl').read_text().splitlines() if l.strip()]
+    schedule=json.loads((out/'schedule.json').read_text()) if (out/'schedule.json').is_file() else {}
+    catalogue_records=[schedule]
+    for checkpoint in (schedule.get('checkpoints') or {}).values():
+        try:
+            catalogue_records.append(json.loads(Path(checkpoint+'.json').read_text()))
+        except (OSError,ValueError):
+            pass
+    rows = [normalize_record(json.loads(l),*catalogue_records)
+            for l in (out / 'games.jsonl').read_text().splitlines() if l.strip()]
     seen = set(); unique = []
     for r in rows:
         if r['name'] not in seen:

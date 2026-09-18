@@ -16,7 +16,11 @@ FIELDS) pooled over every non-selfplay group on the evaluation maps.
 """
 import json
 import re
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'research'))
+import map_catalogue  # noqa: E402
 
 DEFAULT_RULES = {
     'no-offense': 'arrows_per_game < 0.05',
@@ -50,10 +54,19 @@ def _ratio(numerator, denominator):
     return numerator / denominator if denominator else 0.0
 
 
-def evaluation_metrics(report):
+def evaluation_metrics(report, catalogue_records=()):
     """Behaviour rates pooled over the report's evaluation-map groups (not selfplay, not held-out maps)."""
+    report = map_catalogue.normalize_record(report, *catalogue_records)
+    training = set(report.get('training_maps') or ())
+    heldout_maps = set(report.get('heldout_maps') or ())
+    def role(group):
+        if group.get('map') in heldout_maps:
+            return 'untrained'
+        if group.get('map') in training:
+            return 'trained'
+        return group.get('map_role')
     groups = [g for g in report.get('groups', ())
-              if g['opponent'] != 'selfplay' and g.get('map_role') != 'untrained']
+              if g['opponent'] != 'selfplay' and role(g) != 'untrained']
     totals = {}
     for group in groups:
         for key, value in group.get('behavior_totals', {}).items():
@@ -63,7 +76,7 @@ def evaluation_metrics(report):
     deaths = sum(g.get('mean_deaths', 0.0) * g['games'] for g in groups)
     duration = sum(g.get('mean_duration', 0.0) * g['games'] for g in groups)
     heldout = [g for g in report.get('groups', ())
-               if g['opponent'] != 'selfplay' and g.get('map_role') == 'untrained']
+               if g['opponent'] != 'selfplay' and role(g) == 'untrained']
     heldout_games = sum(g['games'] for g in heldout)
     win_rate = _ratio(sum(g['wins'] for g in groups), games)
     heldout_win_rate = _ratio(sum(g['wins'] for g in heldout), heldout_games)
@@ -96,9 +109,9 @@ def raised(metrics, rules):
             if compare[op](metrics[metric], value)]
 
 
-def annotate(report, rules=None):
+def annotate(report, rules=None, catalogue_records=()):
     """flags/flag_metrics/flag_rules for one evaluation report (not written)."""
-    metrics = evaluation_metrics(report)
+    metrics = evaluation_metrics(report, catalogue_records)
     return dict(flags=raised(metrics, rules), flag_metrics=metrics,
                 flag_rules=dict(rules or DEFAULT_RULES))
 
@@ -108,6 +121,7 @@ def annotate_run(run_dir, rules=None, write=True):
     flags in each report and in the run's result.json. Returns
     [(evaluation directory name, annotation)] in step order."""
     run_dir = Path(run_dir)
+    catalogue_records = map_catalogue.run_records(run_dir)
     rows = []
     for result_file in sorted(run_dir.glob('evaluations/*/result.json'),
                               key=lambda p: int(re.sub(r'\D', '', p.parent.name) or 0)):
@@ -115,7 +129,7 @@ def annotate_run(run_dir, rules=None, write=True):
             report = json.loads(result_file.read_text())
         except ValueError:
             continue
-        annotation = annotate(report, rules)
+        annotation = annotate(report, rules, catalogue_records)
         rows.append((result_file.parent.name, annotation))
         if write and any(report.get(key) != value for key, value in annotation.items()):
             report.update(annotation)

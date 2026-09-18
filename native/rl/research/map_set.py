@@ -13,7 +13,7 @@ CLI, for shells (the Mac launcher):
 import json
 import sys
 from pathlib import Path
-from evaluation_protocol import map_ids
+from map_catalogue import parse_map_ids
 
 ROOT = Path(__file__).resolve().parents[3]
 TABLE = ROOT / 'native/data/map-set.json'
@@ -55,7 +55,7 @@ def parse_maps(spec, table=None):
         return list(table['split']['training' if spec == 'training' else 'held_out'])
     if spec == 'all':
         return [m['rl'] for m in table['maps']]
-    return map_ids(spec)
+    return parse_map_ids(spec)
 
 
 def main(argv):

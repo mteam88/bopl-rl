@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 import elo_ladder
+import map_catalogue
 import reference_pool
 
 SKIP_DIRS = frozenset({
@@ -184,6 +185,7 @@ def discover_pools(root, extra=None):
         except (ValueError, OSError, json.JSONDecodeError) as error:
             issues.append(f'pool {path}: {error}')
             continue
+        pool = map_catalogue.normalize_record(pool, pool)
         label = pool_label(path)
         pool['label'] = label
         pool['sha8'] = reference_pool.pool_sha8(pool)
@@ -260,6 +262,7 @@ def rating_files(run_dir):
     if not reference.is_dir():
         return []
     grouped = {}
+    catalogue_records = map_catalogue.run_records(run_dir)
     for dirpath, dirs, files in os.walk(reference, followlinks=False):
         dirs[:] = [name for name in dirs if name not in SKIP_DIRS]
         folder = Path(dirpath)
@@ -270,6 +273,7 @@ def rating_files(run_dir):
             payload = read_json(path)
             if not payload or not isinstance(payload, dict):
                 continue
+            payload = map_catalogue.normalize_record(payload, *catalogue_records)
             if payload.get('schema') not in (None, 1, reference_pool.SCHEMA):
                 continue
             records = payload.get('records')

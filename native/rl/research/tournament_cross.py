@@ -115,11 +115,13 @@ def run(args):
     if not partial_path.is_file():
         raise RuntimeError('writer-family report.json is missing; let the current family run finish first')
     partial = json.loads(partial_path.read_text())
-    pool = base.reference_pool.load_pool(args.pool.resolve(), verify=True)
+    raw_pool = base.reference_pool.load_pool(args.pool.resolve(), verify=True)
+    pool = base.map_catalogue.normalize_record(raw_pool, raw_pool)
     game = Path(pool['game']['path']).resolve()
     if base.sha256_file(game) != pool['game']['sha256']:
         raise RuntimeError('pool-v7 simulator SHA changed')
-    partial_pool = json.loads((args.out / 'tournament.json').read_text())
+    raw_partial_pool = json.loads((args.out / 'tournament.json').read_text())
+    partial_pool = base.map_catalogue.normalize_record(raw_partial_pool, raw_partial_pool)
     roster = []
     for member in partial_pool['members']:
         item = {key: member[key] for key in ('name', 'kind', 'sha256', 'metadata_sha256', 'path')
@@ -129,7 +131,7 @@ def run(args):
         roster.append(item)
     skipped = int(partial.get('skipped_missing') or 0)
     smoke(roster, pool, game, args.out)
-    existing = base.load_games(args.out / 'games.jsonl')
+    existing = base.load_games(args.out / 'games.jsonl', (raw_pool, raw_partial_pool))
     pairs, tasks = cross_tasks(roster, pool['maps'], args.games_per_pair, existing)
     print(f'cross_pairs={pairs} games_existing={len(existing)} cross_games_missing={len(tasks)}', flush=True)
     started = time.monotonic()
@@ -161,7 +163,7 @@ def run(args):
     failed = [process.exitcode for process in processes if process.exitcode]
     if failed:
         raise RuntimeError(f'cross-family worker exits: {failed}')
-    games = base.load_games(args.out / 'games.jsonl')
+    games = base.load_games(args.out / 'games.jsonl', (raw_pool, raw_partial_pool))
     full_pairs = len(roster) * (len(roster) - 1) // 2
     expected = full_pairs * args.games_per_pair
     if len(games) != expected:

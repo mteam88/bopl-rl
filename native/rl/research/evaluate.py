@@ -17,6 +17,7 @@ import layout
 from telemetry import FIELDS,summarize
 from evaluation_protocol import (checkpoint_identity,map_ids,opponents,schedule,scripted_names,scripted_opponent,
                                  DEFAULT_EVAL_SCRIPTED,DEFAULT_LOADOUT,loadout_ids,loadout_pool,resolve_loadouts)
+import map_catalogue
 
 def selection_arg(function):
     def parse(value):
@@ -42,8 +43,10 @@ def main():
     parser.add_argument('--initial',type=Path,required=True)
     parser.add_argument('--games-per-opponent',type=int,default=8)
     parser.add_argument('--heldout-games',type=int,default=4)
-    parser.add_argument('--evaluation-maps',type=map_ids,default=[0])
-    parser.add_argument('--heldout-maps',type=map_ids,default=[1,2])
+    parser.add_argument('--evaluation-maps',type=map_ids,default=[0],
+                        help='identity IDs, ranges, all, or native/data/map-sets.json names')
+    parser.add_argument('--heldout-maps',type=map_ids,default=[1,2],
+                        help='identity IDs, ranges, all, or native/data/map-sets.json names')
     parser.add_argument('--opponents',type=Path,help='Manifest of frozen trained opponents and SHA256 identities')
     parser.add_argument('--frozen-games',type=int,default=16)
     parser.add_argument('--scripted-opponents',type=scripted_names,default=DEFAULT_EVAL_SCRIPTED,
@@ -80,7 +83,8 @@ def main():
         models[item['name']]=load(Path(item['path']))[0]
     # Every participant reads its own observation layout (v3 or v4, layout.py); the
     # environment writes each side's row in its checkpoint's layout below.
-    step=checkpoint['step']; config=checkpoint['config']
+    step=checkpoint['step']; raw_config=checkpoint['config']
+    config=map_catalogue.normalize_record(raw_config,checkpoint)
     override=(args.loadout is not None or args.loadout_pool is not None or args.loadout_set is not None
               or args.loadout_no_dup or args.mirror_share is not None)
     if override:
@@ -241,7 +245,8 @@ def main():
     for ability in range(1,39):
         row=overflow_totals.setdefault(str(ability),dict(rows=0,dropped=0))
         row['rate']=row['dropped']/row['rows'] if row['rows'] else None
-    report=dict(schema=2,decision_dump_schema=1,step=step,suite=args.suite,checkpoint=args.checkpoint.name,
+    report=dict(schema=2,decision_dump_schema=1,map_catalogue=map_catalogue.IDENTITY,
+                step=step,suite=args.suite,checkpoint=args.checkpoint.name,
                 checkpoint_identity=checkpoint_id, baseline_identity=baseline_id,
                 frozen_opponents=frozen,scripted_opponents=args.scripted_opponents,
                 evaluation_maps=args.evaluation_maps,heldout_maps=args.heldout_maps,
