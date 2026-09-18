@@ -30690,6 +30690,12 @@ impl RolloutWorld {
                     .find(|&ability| matches!(ability, ABILITY_TESLA | ABILITY_MISSILE))
                     .unwrap_or(ABILITY_NULL);
             }
+            if let Some(entity) = node.line_entity {
+                let row = &mut self.entities[entity];
+                if row.flags & E_DESTROYED == 0 {
+                    row.flags |= E_EXPLOSIVE;
+                }
+            }
         }
         for spike in &self.spike_attacks {
             if let Some(entity) = spike.entity
