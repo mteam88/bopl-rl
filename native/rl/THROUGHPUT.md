@@ -73,6 +73,30 @@ with the restored updater before and after these optimizations:
 
 All 22 `rust_ab/*_broad_ab.sh` families passed after the performance change.
 
+### 2026-09-17 pickup publication follow-up
+
+Death-dropped pickups exposed two remaining default-loadout slow paths. Merely
+retaining a `DynamicAbilityPickup` disabled the simple actor/metadata refresh,
+even though its displayed ability is not instantiated until collection. Its
+circle row was also appended after authored boxes, making the optimistic
+publisher recopy every live row through four filtered passes. The simple path
+now publishes pickup metadata directly, and out-of-order pickup rows are
+counted without copying and written once into their final shape partitions.
+
+Two independent 600,000-tick, ten-repetition interleaved runs were retained in
+`review/ab_results_final.txt`. The host was shared with CPU training jobs; the
+pooled medians reduce the visible old-library load variance:
+
+| players | old median ticks/s | optimized median ticks/s | remaining gap |
+|---:|---:|---:|---:|
+| 2 | 680,996 | 534,610 | 1.274x |
+| 6 | 299,267 | 234,565 | 1.276x |
+
+The two individual 2-player gaps were 1.26x and 1.32x while the new binary's
+median stayed near 535k ticks/s; the pooled result is below the 1.3x target.
+The final `just verify`, explicit `just build-q32`, and all 22 broad A/B gate
+families pass on the documented tip.
+
 ## 1. Measured state
 
 Per update (448 agent rows x 128 steps = 57,344 rows; 256 physical players
