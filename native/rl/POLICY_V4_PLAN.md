@@ -484,8 +484,20 @@ it. 2026-09-18 00:20, `v4-aim-only-s75`: bands 726/715/696, IQM 714
 (held-out gap 14.9, EV 0.09, 20 losses / 217, kills 69.6% arrow / 6.9%
 squish). Aim-only three seeds 759/683/714, mean 719 (s.e. ~22); aim two
 seeds 697/648, mean 672; difference +47 with aim's third seed missing, and
-aim-only ahead on every seed pair. Not decided under the rule until the
-head-to-head reports; no action until then. Shape ablations stop here: `25 v4-no-relational`
+aim-only ahead on every seed pair. Decided 2026-09-18 03:40 when the
+tournament reported (68,400 games, 2,850 pairs, all four families
+cross-played on the per-player writer-ablation stack;
+`sweeps/anchors/tournament-20260917/`): aim-only vs aim head-to-head
+1107-1053-480 = 51.0%, a tie; three-seed means +47 for aim-only with s.e.
+~31 on the difference. Under the rule (means + head-to-head, `v4-aim` wins
+ties) the production shape is `v4-aim`: rays + aim/LOS, writer bit 8. Two
+more tournament facts: the joint ladder's top 20 are all v4 checkpoints in
+736-789 with CI widths down from ~130 to ~31, and `v4-lite`, the smallest
+net, holds #1 and #4, so capacity is not the lever (the opponent
+distribution is, 7c'); and tournament-only ratings fall outside the prior
+pool-v7-anchored intervals for 71 of 76 members, because the v4s beat the
+v7 members ~90% but are even among themselves and one Bradley-Terry scale
+cannot hold both: pool v7's saturation, the reason for pool v8. Shape ablations stop here: `25 v4-no-relational`
 and `27 v4-critic-shared` are single-seed input / head ablations that
 cannot resolve below ~75; proposed to park them with `sym-critic` /
 `rays16` / `maxpool`; parked by the parent at 22:30 together with `28

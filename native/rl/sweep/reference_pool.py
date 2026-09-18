@@ -606,6 +606,108 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
     return pool
 
 
+def build_pool_from_games(out, games_path, source_pool, scripted=(), checkpoints=(), note='', log=None,
+                          bootstrap_samples=200):
+    """A pool fitted from games already played (a tournament's games.jsonl)
+    instead of a fresh round robin; writes pool.json in build_pool's shape.
+
+    games_path: one JSON per line with a / b (names), a_sha / b_sha (checkpoint
+    weights hashes, null for bots), map, seed, side, outcome ('a' | 'b' | 'draw'),
+    ticks. source_pool: the tournament's pool.json, for the sim, maps, seeds and
+    episode length the games were played with. Members are random, the named
+    scripted bots and checkpoints (name, path); checkpoint participants are
+    matched to games by weights sha256, bots by name. Only games between two
+    members count, and every member pair must have games (a pool is a full round
+    robin). Checkpoints are copied next to the pool file so it stays
+    self-contained and immutable like a played pool.
+    """
+    import shutil
+    out = Path(out).resolve()
+    if out.exists():
+        raise FileExistsError(f'{out} exists; a pool is immutable, build a new file instead')
+    games_path = Path(games_path).resolve()
+    source = json.loads(Path(source_pool).read_text())
+    out.parent.mkdir(parents=True, exist_ok=True)
+    members = [dict(name='random', kind='random')]
+    members += [dict(name=name, kind='scripted') for name in scripted]
+    by_sha, names = {}, {'random', *scripted}
+    for name, path in checkpoints:
+        path = Path(path).resolve()
+        if name in names:
+            raise ValueError(f'Duplicate pool member {name}')
+        names.add(name)
+        copy = out.parent / f'{name}.bin'
+        if not copy.exists():
+            shutil.copy2(path, copy); shutil.copy2(str(path) + '.json', str(copy) + '.json')
+        identity = checkpoint_identity(copy)
+        if identity['sha256'] in by_sha:
+            raise ValueError(f'{name} and {by_sha[identity["sha256"]]} are the same weights')
+        by_sha[identity['sha256']] = name
+        members.append(dict(name=name, kind='checkpoint', path=copy.name, **identity))
+
+    def participant(game, side):
+        sha = game.get(f'{side}_sha')
+        if sha:
+            return by_sha.get(sha)
+        name = game.get(f'{side}_name') or game[side]
+        return name if name in names else None
+
+    games, skipped, seen = [], 0, set()
+    with games_path.open() as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            game = json.loads(line)
+            a, b = participant(game, 'a'), participant(game, 'b')
+            if a is None or b is None or a == b:
+                skipped += 1
+                continue
+            key = (a, b, game['map'], game['seed'], game['side'])
+            if key in seen:
+                raise ValueError(f'duplicate game {key} in {games_path}')
+            seen.add(key)
+            games.append(dict(a=a, b=b, map=game['map'], seed=game['seed'], side=game['side'],
+                              outcome=game['outcome'], ticks=game.get('ticks')))
+    ordered = sorted(names)
+    records = elo_ladder.tally(games)
+    # a pair may appear as (a, b) in some games and (b, a) in others: fold
+    folded = {}
+    for (a, b), (wa, wb, d) in records.items():
+        if a > b:
+            a, b, wa, wb = b, a, wb, wa
+        row = folded.setdefault((a, b), [0, 0, 0])
+        row[0] += wa; row[1] += wb; row[2] += d
+    records = folded
+    missing = [(a, b) for i, a in enumerate(ordered) for b in ordered[i + 1:] if (a, b) not in records]
+    if missing:
+        raise ValueError(f'{len(missing)} member pairs have no games, e.g. {missing[:3]}; a pool is a full round robin')
+    per_pair = sorted(set(sum(row) for row in records.values()))
+    if log:
+        log(f'{len(ordered)} members, {len(games)} games kept ({skipped} skipped: non-members), '
+            f'{len(records)} pairs, games per pair {per_pair[0]}..{per_pair[-1]}')
+    ratings = elo_ladder.bradley_terry(ordered, records, 'random')
+    intervals = pool_intervals(ordered, records, samples=bootstrap_samples)
+    counts = tally_counts(ordered, records)
+    for member in members:
+        wins, losses, draws = counts[member['name']]
+        member.update(rating=round(ratings[member['name']], 3), interval=intervals[member['name']],
+                      games=wins + losses + draws, wins=wins, losses=losses, draws=draws)
+    pool = dict(schema=SCHEMA, created=time.time(), note=note, game=source['game'],
+                maps=source['maps'], games_per_pair=per_pair[-1], seed_base=source['seed_base'],
+                episode_ticks=source['episode_ticks'], observation_delay_ticks=source['observation_delay_ticks'],
+                games=len(games), elapsed=0.0,
+                source=dict(games=str(games_path), games_sha256=sha256_file(games_path),
+                            pool=str(Path(source_pool).resolve()), pool_sha256=source.get('pool_sha256'),
+                            games_skipped=skipped),
+                fit='Bradley-Terry MLE, timeouts as draws, one virtual draw per pair, random anchored at 0 Elo',
+                members=members,
+                matches=[dict(a=a, b=b, wins_a=wa, wins_b=wb, draws=d) for (a, b), (wa, wb, d) in sorted(records.items())])
+    pool['pool_sha256'] = pool_hash(members)
+    atomic_json(out, pool)
+    pool['path'] = str(out)
+    return pool
+
+
 def play_pairs(by_name, pairs, maps, games_per_pair, seed_base, episode_ticks, delay, workers, slow_workers, log):
     """Side-swapped fixed-seed games for every (a, b) pair, games_per_pair split
     evenly over maps and sides. Rollout-search bots (bopl_rl_fork, ~4 ms per
@@ -851,6 +953,14 @@ def main():
     build.add_argument('--library', type=Path, default=None, help='CPU policy library (native_policy.load)')
     build.add_argument('--game', type=Path, default=None)
     build.add_argument('--note', default='')
+    from_games = commands.add_parser('build-from-games', help="BT fit of a tournament's games.jsonl -> pool.json (no play)")
+    from_games.add_argument('--out', type=Path, required=True)
+    from_games.add_argument('--games', type=Path, required=True, help='games.jsonl: a, b, a_sha, b_sha, map, seed, side, outcome')
+    from_games.add_argument('--source-pool', type=Path, required=True, help="the tournament's pool.json (sim, maps, seeds)")
+    from_games.add_argument('--scripted', type=scripted_names, default='')
+    from_games.add_argument('--checkpoint', action='append', default=[], metavar='NAME=PATH')
+    from_games.add_argument('--bootstrap', type=int, default=200, help='refits for the percentile CIs')
+    from_games.add_argument('--note', default='')
     verify = commands.add_parser('verify', help='Check checkpoint hashes and the pool hash')
     verify.add_argument('pool', type=Path)
     rate = commands.add_parser('rate', help='Rate one checkpoint against a pool')
@@ -905,6 +1015,12 @@ def main():
                           slow_workers=args.slow_workers, library=args.library, game=args.game, note=args.note, log=log)
         print(format_table(pool['members']))
         print(f"pool {pool['pool_sha256'][:16]}  {pool['games']} games in {pool['elapsed']:.0f}s -> {pool['path']}")
+    elif args.command == 'build-from-games':
+        pool = build_pool_from_games(args.out, args.games, args.source_pool, scripted=args.scripted,
+                                     checkpoints=named_checkpoints(), note=args.note, log=log,
+                                     bootstrap_samples=args.bootstrap)
+        print(format_table(pool['members']))
+        print(f"pool {pool['pool_sha256'][:16]}  {pool['games']} games from {pool['source']['games']} -> {pool['path']}")
     elif args.command == 'verify':
         pool = load_pool(args.pool)
         print(format_table(pool['members']))
