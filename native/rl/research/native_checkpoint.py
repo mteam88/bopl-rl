@@ -15,7 +15,7 @@ import layout
 
 
 def write_checkpoint(path, save_weights, *, obs_size, hidden, num_layers,
-                     architecture, game_steps, learner_steps, config, aim_fourier=0, aim_ar=0):
+                     architecture, game_steps, learner_steps, config, aim_fourier=0, aim_ar=0, v4_shape=None):
     """Call save_weights(str_path), validate float32 weights, return metadata.
 
     Pass lambda name: _C.save_weights(trainer, name) as save_weights. Steps are
@@ -32,17 +32,24 @@ def write_checkpoint(path, save_weights, *, obs_size, hidden, num_layers,
         raise ValueError("Invalid native hidden size or decision counters")
     if aim_fourier > layout.AIM_MAX_HARMONICS or aim_ar > 1:
         raise ValueError("Invalid native checkpoint aim head parameterisation")
-    if architecture == layout.ARCHITECTURE and obs_size == layout.OBS_SIZE:
-        encoder = layout.set_encoder_weights(hidden)
-    elif architecture == "puffernet-mingru":
-        encoder = hidden * obs_size
+    if architecture == layout.V4_ARCHITECTURE and obs_size == layout.V4_OBS_SIZE:
+        # Policy v4 (POLICY_V4_PLAN.md): the whole network is described by the shape dict.
+        v4_shape = {**layout.V4_DEFAULTS, **(v4_shape or {})}
+        expected = layout.policy_v4_weights(hidden, num_layers, aim_fourier=aim_fourier, aim_ar=aim_ar, **v4_shape)
     else:
-        raise ValueError("Unsupported native checkpoint architecture or observation size")
-    expected = encoder + (layout.decoder_logits(aim_fourier, aim_ar) + 1) * hidden + num_layers * 3 * hidden**2
+        if architecture == layout.ARCHITECTURE and obs_size == layout.OBS_SIZE:
+            encoder = layout.set_encoder_weights(hidden)
+        elif architecture == "puffernet-mingru":
+            encoder = hidden * obs_size
+        else:
+            raise ValueError("Unsupported native checkpoint architecture or observation size")
+        expected = encoder + (layout.decoder_logits(aim_fourier, aim_ar) + 1) * hidden + num_layers * 3 * hidden**2
+        v4_shape = None
     if not config.get("training_maps") or type(config.get("episode_ticks")) is not int or config["episode_ticks"] < 1:
         raise ValueError("Checkpoint config requires training_maps and positive episode_ticks")
     metadata = dict(schema=1, backend="pufferlib-native", architecture=architecture,
                     precision="float32", **dimensions, **aim, action_sizes=list(layout.ACTION_SIZES),
+                    **({"v4_shape": v4_shape} if v4_shape else {}),
                     step=game_steps, learner_steps=learner_steps,
                     step_unit="physical_player_decisions", config=config)
     # Reject unserializable/nonfinite configuration before invoking the backend.

@@ -9,6 +9,7 @@ them. Thresholds live in the sweep TOML:
     no-offense = "arrows_per_game < 0.05"
     platform-spam = "platforms_per_game > 8"
     stalemate = "timeout_rate > 0.5"
+    heldout-gap = "heldout_gap > 8"        # training-map minus held-out-map win rate, points
 
 Metrics come from evaluate.py's per-group behavior_totals (research/telemetry.py
 FIELDS) pooled over every non-selfplay group on the evaluation maps.
@@ -25,7 +26,10 @@ DEFAULT_RULES = {
 
 METRICS = ('arrows_per_game', 'arrow_hits_per_game', 'arrow_hit_rate', 'platforms_per_game',
            'dashes_per_game', 'bows_per_game', 'kills_per_game', 'deaths_per_game',
-           'timeout_rate', 'win_rate', 'mean_duration_seconds', 'games')
+           'timeout_rate', 'win_rate', 'mean_duration_seconds', 'games',
+           # the held-out-map band (POLICY_V4_PLAN.md "More maps"): scripted-bot win rate on
+           # the report's held-out maps and its shortfall against the training maps, in points
+           'heldout_games', 'heldout_win_rate', 'heldout_gap')
 
 _RULE = re.compile(r'\s*([a-z_]+)\s*(<=|>=|<|>)\s*(-?\d+(?:\.\d+)?(?:e-?\d+)?)\s*$')
 
@@ -58,8 +62,16 @@ def evaluation_metrics(report):
     kills = sum(g.get('mean_kills', 0.0) * g['games'] for g in groups)
     deaths = sum(g.get('mean_deaths', 0.0) * g['games'] for g in groups)
     duration = sum(g.get('mean_duration', 0.0) * g['games'] for g in groups)
+    heldout = [g for g in report.get('groups', ())
+               if g['opponent'] != 'selfplay' and g.get('map_role') == 'untrained']
+    heldout_games = sum(g['games'] for g in heldout)
+    win_rate = _ratio(sum(g['wins'] for g in groups), games)
+    heldout_win_rate = _ratio(sum(g['wins'] for g in heldout), heldout_games)
     return dict(
         games=games,
+        heldout_games=heldout_games,
+        heldout_win_rate=heldout_win_rate,
+        heldout_gap=100.0 * (win_rate - heldout_win_rate) if heldout_games else 0.0,
         arrows_per_game=_ratio(totals.get('arrows_fired', 0.0), games),
         arrow_hits_per_game=_ratio(totals.get('arrow_hits', 0.0), games),
         arrow_hit_rate=_ratio(totals.get('arrow_hits', 0.0), totals.get('arrows_fired', 0.0)),
@@ -69,7 +81,7 @@ def evaluation_metrics(report):
         kills_per_game=_ratio(kills, games),
         deaths_per_game=_ratio(deaths, games),
         timeout_rate=_ratio(sum(g.get('timeouts', 0) for g in groups), games),
-        win_rate=_ratio(sum(g['wins'] for g in groups), games),
+        win_rate=win_rate,
         mean_duration_seconds=_ratio(duration, games),
     )
 

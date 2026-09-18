@@ -21,8 +21,8 @@ aim_ar the aim logits of step() are those of button combo 0; decide() samples
 the way the trainer does (buttons, then the aim block of the sampled combo,
 then hold) and returns the logits it sampled from.
 """
-import argparse
 import os
+import argparse
 import ctypes
 import hashlib
 import json
@@ -39,9 +39,15 @@ ROOT = Path(__file__).resolve().parents[3]
 REVISION = "42f70d6932c30ac977736f861006809c50168ba9"
 LIBRARY = ROOT / "native/artifacts/rl/libbopl_policy_eval.so"
 ARCHITECTURES = {"puffernet-mingru", layout.ARCHITECTURE, layout.V4_ARCHITECTURE}
-_V4_ABLATE_APPLIED = [None]
+_V4_ABLATE_APPLIED = [None]   # the BOPL4_ABLATE value this process's v4 policies run under
 V4_SHAPE_KEYS = ("set_dim", "set_inner", "flat_dim", "ffn_dim", "critic_dim", "critic_privileged", "critic_detach", "mean_pool")
 HEAD_BOUNDS = [sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS + 1)]  # logits row offsets per head
+
+
+def writer_ablation(policy):
+    """The v4 writer bits (v4_shape.ablate) a policy's row must be written with; -1 for
+    v3 policies and scripted players (the process default, which they never read)."""
+    return int(policy.v4_shape["ablate"]) if getattr(policy, "architecture", None) == layout.V4_ARCHITECTURE else -1
 
 
 def build(output=LIBRARY):
@@ -49,9 +55,11 @@ def build(output=LIBRARY):
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
     include = ROOT / "native/artifacts/rl/dependencies" / f"PufferLib-{REVISION}" / "src"
+    temporary = output.with_name(output.name + ".tmp")   # link then rename: a loaded copy keeps its inode
     subprocess.run(["cc", "-O3", "-std=gnu11", "-fPIC", "-shared",
                     "-I" + str(include), str(ROOT / "native/rl/puffer/policy_eval.c"),
-                    "-lm", "-o", str(output)], check=True)
+                    "-lm", "-o", str(temporary)], check=True)
+    os.replace(temporary, output)
     return output
 
 
@@ -68,9 +76,8 @@ def _library(path):
     ints = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
     lib.bopl_policy_eval_create_aim.argtypes = [array, ctypes.c_size_t, *([ctypes.c_int] * 7)]
     lib.bopl_policy_eval_create_aim.restype = ctypes.c_void_p
-    if hasattr(lib, 'bopl_policy_eval_create_v4'):
-        lib.bopl_policy_eval_create_v4.argtypes = [array, ctypes.c_size_t, *([ctypes.c_int] * 5), ints]
-        lib.bopl_policy_eval_create_v4.restype = ctypes.c_void_p
+    lib.bopl_policy_eval_create_v4.argtypes = [array, ctypes.c_size_t, *([ctypes.c_int] * 5), ints]
+    lib.bopl_policy_eval_create_v4.restype = ctypes.c_void_p
     lib.bopl_policy_eval_step_raw.argtypes = [ctypes.c_void_p, array, array, array, array]
     lib.bopl_policy_eval_step_raw.restype = None
     lib.bopl_policy_eval_game_logits.argtypes = [ctypes.c_void_p, array, ints, array]
@@ -84,11 +91,8 @@ class _Context:
     def __init__(self, lib, weights, batch, observations, hidden, layers, use_set, aim_fourier, aim_ar, v4_shape=None):
         self.lib = lib
         if v4_shape is not None:
-            if not hasattr(lib, 'bopl_policy_eval_create_v4'):
-                raise RuntimeError('Policy evaluator library does not support v4 checkpoints')
             shape = np.array([v4_shape[key] for key in V4_SHAPE_KEYS], dtype=np.int32)
-            self.handle = lib.bopl_policy_eval_create_v4(weights, weights.size, batch, hidden, layers,
-                                                         aim_fourier, aim_ar, shape)
+            self.handle = lib.bopl_policy_eval_create_v4(weights, weights.size, batch, hidden, layers, aim_fourier, aim_ar, shape)
         else:
             self.handle = lib.bopl_policy_eval_create_aim(weights, weights.size, batch, observations, hidden, layers,
                                                           use_set, aim_fourier, aim_ar)
@@ -120,23 +124,26 @@ class NativePolicy:
         self.width = layout.decoder_logits(self.aim_fourier, self.aim_ar)  # decoder logit columns; the row is width + 1
         self.v4_shape = None
         if self.architecture == layout.V4_ARCHITECTURE:
+            # Policy v4 (POLICY_V4_PLAN.md): layout v4 rows, the sidecar's v4_shape sizes the network.
             if self.obs_size != layout.V4_OBS_SIZE:
                 raise ValueError(f"Bopl v4 checkpoints require {layout.V4_OBS_SIZE} observation features")
-            self.v4_shape = {**layout.V4_DEFAULTS,
-                             **{k: int(v) for k, v in (v4_shape or {}).items() if k in layout.V4_DEFAULTS}}
-            expected = layout.policy_v4_weights(self.hidden, self.num_layers,
-                                                aim_fourier=self.aim_fourier, aim_ar=self.aim_ar,
+            self.v4_shape = {**layout.V4_DEFAULTS, **{k: int(v) for k, v in (v4_shape or {}).items() if k in layout.V4_DEFAULTS}}
+            expected = layout.policy_v4_weights(self.hidden, self.num_layers, aim_fourier=self.aim_fourier, aim_ar=self.aim_ar,
                                                 **self.v4_shape)
+            # The writer ablation (bopl_obs_v4.h) is per player: Environment.set_layout(side,
+            # layout, ablate=writer_ablation(policy)) writes this checkpoint's family for
+            # its row, so checkpoints of different families share a game. The process
+            # default (BOPL4_ABLATE, rows without an explicit family) follows the first v4
+            # checkpoint loaded, for callers that select the layout alone.
             ablate = str(self.v4_shape["ablate"])
-            current = os.environ.get("BOPL4_ABLATE", "0") or "0"
-            if current != ablate:
-                if _V4_ABLATE_APPLIED[0] is not None:
-                    raise ValueError(f"v4 checkpoints with writer ablations {_V4_ABLATE_APPLIED[0]} and {ablate} cannot share a process")
+            if _V4_ABLATE_APPLIED[0] is None and not os.environ.get("BOPL4_ABLATE"):
                 os.environ["BOPL4_ABLATE"] = ablate
-            _V4_ABLATE_APPLIED[0] = ablate
+            if _V4_ABLATE_APPLIED[0] is None:
+                _V4_ABLATE_APPLIED[0] = ablate
         else:
-            encoder_weights = (layout.set_encoder_weights(self.hidden)
-                               if self.architecture == layout.ARCHITECTURE else self.hidden * self.obs_size)
+            # layout.policy_weights for the set encoder; the linear encoder accepts any obs width.
+            encoder_weights = (layout.set_encoder_weights(self.hidden) if self.architecture == layout.ARCHITECTURE
+                               else self.hidden * self.obs_size)
             expected = encoder_weights + self.hidden * (self.width + 1) + self.num_layers * 3 * self.hidden**2
         self.weights = np.asarray(weights, dtype=np.float32).reshape(-1).copy()
         if self.weights.size != expected or not np.isfinite(self.weights).all():

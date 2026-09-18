@@ -5,7 +5,12 @@
  * how the divergence grows. Also usable against .NET as the first library.
  *
  *   cc -O2 -I. -o /tmp/repr_ab research/rust_ab/repr_ab.c bopl_rl.c -ldl -lm
- *   /tmp/repr_ab <a.so> <b.so> [episodes=10] [seed0=1000] [tol_raw=4096] [warmup=240]
+ *   /tmp/repr_ab <a.so> <b.so> [episodes=10] [seed0=1000] [tol_raw=4096] [warmup=240] [map_a] [map_b]
+ *
+ * Episodes rotate over maps 0-4 unless map_a/map_b pin one map per backend:
+ * the .NET oracle addresses Unity levels while the Rust backend addresses its
+ * RL catalogue (native/data/map-set.json rl -> level), so a more-maps parity
+ * check passes the level to a and the RL index to b.
  *
  * With warmup 0 every simulated tick is observable, so the first differing
  * field can be attributed to the operation that produced it. REPR_AB_TRACE=<e>
@@ -230,6 +235,7 @@ int main(int argc, char **argv) {
     uint32_t seed0 = argc > 4 ? (uint32_t)atoi(argv[4]) : 1000;
     int64_t tol = argc > 5 ? strtoll(argv[5], NULL, 10) : 4096;
     uint32_t warmup = argc > 6 ? (uint32_t)atoi(argv[6]) : 240;
+    int map_pin[2] = {argc > 7 ? atoi(argv[7]) : -1, argc > 8 ? atoi(argv[8]) : -1};
     char error[512] = {0};
     BoplRl *w[2];
     for (int b = 0; b < 2; b++) {
@@ -256,11 +262,14 @@ int main(int argc, char **argv) {
             config.player[p].abilities[1] = 4;
             config.player[p].abilities[2] = 14;
         }
-        for (int b = 0; b < 2; b++)
+        for (int b = 0; b < 2; b++) {
+            if (map_pin[b] >= 0) config.map = (uint32_t)map_pin[b];
             if (bopl_rl_reset(w[b], &config) != BOPL_RL_OK) {
                 fprintf(stderr, "reset failed: %s\n", bopl_rl_error(w[b]));
                 return 1;
             }
+        }
+        if (map_pin[1] >= 0) config.map = (uint32_t)map_pin[1]; /* reported as b's index */
         Rng rng = {.s = 0x9e3779b97f4a7c15ull ^ (seed0 + (uint64_t)e * 2654435761ull)};
         Sticky st[PLAYERS] = {0};
         BoplRlAction actions[PLAYERS];
@@ -307,6 +316,19 @@ int main(int argc, char **argv) {
                        " b=%" PRId64 " (%.10f vs %.10f, delta %.3e units)\n",
                        e, config.map, t, n, d.what, d.a, d.b, fix_f(d.a), fix_f(d.b),
                        fix_f(d.a - d.b));
+                if (getenv("REPR_AB_ENTITY") && !strncmp(d.what, "entity", 6)) {
+                    unsigned id = (unsigned)atoi(d.what + 6);
+                    for (int b = 0; b < 2; b++) {
+                        const BoplRlState *s = b ? sb : sa;
+                        for (uint32_t i = 0; i < s->header.entity_count; i++)
+                            if (s->entities[i].id == id)
+                                printf("    %c entity%u kind %u layer %u owner %u flags %u pos %.4f %.4f rot %.4f right %.4f %.4f up %.4f %.4f radius %.4f\n",
+                                       b ? 'b' : 'a', id, s->entities[i].kind, s->entities[i].layer, s->entities[i].owner,
+                                       s->entities[i].flags, fix_f(s->entities[i].x), fix_f(s->entities[i].y),
+                                       fix_f(s->entities[i].rotation), fix_f(s->entities[i].right_x), fix_f(s->entities[i].right_y),
+                                       fix_f(s->entities[i].up_x), fix_f(s->entities[i].up_y), fix_f(s->entities[i].radius));
+                    }
+                }
             }
             if (first_tick >= 0)
                 for (int g = 0; g < 6; g++)

@@ -27,6 +27,8 @@ from pathlib import Path
 
 import flags
 
+ROOT = Path(__file__).resolve().parents[3]
+
 # Reserved keys PufferLib's _params_from_puffer_sweep skips; parameters may not
 # use these names (they live in their own [params.*] tables, but the flattened
 # sweep_config dict would collide).
@@ -48,9 +50,12 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder'
                'elo_k', 'pool_seed', 'cudagraphs', 'no_eval', 'eval_every',
                'evaluation_maps', 'heldout_maps', 'evaluation_baseline',
                'evaluation_opponents', 'evaluation_games', 'heldout_games',
-               'frozen_games', 'evaluation_workers', 'scripted_bots', 'scripted_level',
+               'frozen_games', 'evaluation_workers', 'evaluation_pool', 'scripted_bots', 'scripted_level',
                'scripted_roster', 'scripted_banks', 'scripted_share_min', 'scripted_share_max',
-               'scripted_opponents', 'aim_fourier', 'aim_ar')
+               'scripted_opponents', 'aim_fourier', 'aim_ar',
+               # policy v4 (POLICY_V4_PLAN.md): --encoder v4 shape flags and the writer ablation
+               'v4_set_dim', 'v4_set_inner', 'v4_flat_dim', 'v4_ffn_dim', 'v4_critic_dim',
+               'v4_critic_privileged', 'v4_critic_detach', 'v4_mean_pool', 'v4_ablate', 'v4_row_budget')
 STORE_TRUE = ('no_eval',)
 # Virtual swept parameters for the scripted-bot curriculum (SCRIPTED_BOTS.md):
 # scripted_banks = how many banks draw from [fixed].scripted_roster (passed
@@ -64,6 +69,8 @@ HEAD_SCALE = {'head_scale_aim': 0, 'head_scale_buttons': 1, 'head_scale_hold': 2
 # Parameters that must be integers on the command line even when the space
 # yields floats (log_normal steps, for example).
 ALWAYS_INTEGER = ('steps', 'workers', 'buffers', 'banks', 'hidden', 'layers', 'aim_fourier', 'aim_ar',
+                  'v4_set_dim', 'v4_set_inner', 'v4_flat_dim', 'v4_ffn_dim', 'v4_critic_dim',
+                  'v4_critic_privileged', 'v4_critic_detach', 'v4_mean_pool', 'v4_ablate',
                   'scripted_banks', 'scripted_level_index',
                   'horizon', 'learner_passes', 'entropy_half_life', 'episode_ticks',
                   'pool_size', 'min_games', 'snapshot_interval', 'opponent_timeout',
@@ -251,6 +258,11 @@ class SweepSpec:
         # trial still runs a decaying schedule instead of crashing.
         if 'entropy' in merged and 'entropy_floor' in merged:
             merged['entropy_floor'] = min(merged['entropy_floor'], merged['entropy'] / 2)
+        # The eval hook rates in-run evaluations on the same pool the final
+        # scorer uses, so the in-run curve and the band score share a scale.
+        if 'evaluation_pool' not in merged and self.scoring.get('pool'):
+            pool = Path(self.scoring['pool'])
+            merged['evaluation_pool'] = str(pool if pool.is_absolute() else ROOT / pool)
         arguments = ['--output', str(output)]
         for name in sorted(merged):
             value = merged[name]
