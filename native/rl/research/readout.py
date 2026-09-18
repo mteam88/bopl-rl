@@ -35,6 +35,8 @@ import statistics
 import sys
 from pathlib import Path
 
+import map_catalogue
+
 ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -94,12 +96,17 @@ class Run:
         self.path = resolve(path)
         if not self.path.exists():
             raise SystemExit(f"{name}: no run at {path}")
-        self.config = json.loads((self.path / "config.json").read_text()) if (self.path / "config.json").exists() else {}
-        self.status = json.loads((self.path / "status.json").read_text()) if (self.path / "status.json").exists() else {}
+        raw_config = json.loads((self.path / "config.json").read_text()) if (self.path / "config.json").exists() else {}
+        raw_status = json.loads((self.path / "status.json").read_text()) if (self.path / "status.json").exists() else {}
         if (self.path / "result.json").exists():
-            self.status = json.loads((self.path / "result.json").read_text())
-        self.metrics = read_jsonl(self.path / "metrics.jsonl")
-        log = read_jsonl(self.path / "evaluation.log")
+            raw_status = json.loads((self.path / "result.json").read_text())
+        self.catalogue = map_catalogue.catalogue_from_records(raw_config, raw_status)
+        self.config = map_catalogue.normalize_record(raw_config, raw_status)
+        self.status = map_catalogue.normalize_record(raw_status, raw_config)
+        self.metrics = [map_catalogue.normalize_record(row, raw_config, raw_status)
+                        for row in read_jsonl(self.path / "metrics.jsonl")]
+        log = [map_catalogue.normalize_record(row, raw_config, raw_status)
+               for row in read_jsonl(self.path / "evaluation.log")]
         self.diagnostics = {d["step"]: d for d in log if d.get("suite") == "diagnostic"}
         # the elo line follows its step's game lines and diagnostic; attach by order
         self.elo = {}
@@ -163,7 +170,7 @@ class Run:
         if not d:
             return out
         for g in d.get("groups", []):
-            role = ROLE.get(g.get("map_role", "trained"), "trained")
+            role = self.map_role(g)
             out[role][0] += g["wins"]
             out[role][1] += g["games"]
             out["timeouts"] += g.get("timeouts", 0)
@@ -175,10 +182,18 @@ class Run:
         if not d:
             return out
         for g in d.get("groups", []):
-            role = ROLE.get(g.get("map_role", "trained"), "trained")
+            role = self.map_role(g)
             out[g["opponent"]][role][0] += g["wins"]
             out[g["opponent"]][role][1] += g["games"]
         return out
+
+    def map_role(self, group):
+        map_id = group.get('map')
+        if map_id in self.config.get('heldout_maps', ()):
+            return 'heldout'
+        if map_id in self.config.get('training_maps', ()):
+            return 'trained'
+        return ROLE.get(group.get('map_role', 'trained'), 'trained')
 
     def deaths(self, step):
         """Learner deaths and kills by cause over the evaluation's games.
@@ -433,7 +448,7 @@ def elo_curve_logged(runs, steps):
 
 
 def win_rates(runs, steps, by_opponent=False):
-    section("3. Win rate, training maps (0-2) vs held-out maps (3-4), all opponents pooled")
+    section("3. Win rate, training maps vs held-out maps, all opponents pooled")
     ratio = runs[0].learner_ratio()
     print(f"  {'learner':>9}  " + "  ".join(f"{r.name:>26}" for r in runs))
     print(f"  {'':>9}  " + "  ".join(f"{'trained  heldout   gap':>26}" for _ in runs))
@@ -552,7 +567,8 @@ def main():
 
     c = runs[0].config
     print(f"Readout of {runs[0].name}: encoder {c.get('encoder')}, hidden {c.get('hidden')}, layers {c.get('layers')}, seed {c.get('seed')},"
-          f" training maps {c.get('training_maps')}, held-out {c.get('heldout_maps')}, v4 shape {c.get('v4_shape')}")
+          f" map catalogue {c.get('map_catalogue')}, training maps {c.get('training_maps')},"
+          f" held-out {c.get('heldout_maps')}, v4 shape {c.get('v4_shape')}")
     for r in runs:
         throughput(r)
         for resumed in r.config.get('resumed', []):

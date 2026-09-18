@@ -18,6 +18,7 @@ sys.path[:0] = [str(HERE), str(HERE.parent / 'sweep'), str(ROOT / 'native/tools'
 
 import elo_ladder
 import joint_ladder
+import map_catalogue
 import reference_pool
 from evaluation_protocol import checkpoint_identity
 
@@ -140,13 +141,13 @@ def playable(roster, library):
     return result
 
 
-def load_games(path):
+def load_games(path, catalogue_records=()):
     rows = []
     if path.is_file():
         for number, line in enumerate(path.read_text().splitlines(), 1):
             if line.strip():
                 try:
-                    rows.append(json.loads(line))
+                    rows.append(map_catalogue.normalize_record(json.loads(line), *catalogue_records))
                 except json.JSONDecodeError as error:
                     raise ValueError(f'{path}:{number}: {error}') from error
     return rows
@@ -196,7 +197,7 @@ def write_pool(out, roster, games, pool_v7, game, games_per_pair, skipped_pairs,
     records, fitted, counts = local_fit(roster, games)
     members = [public_member(member, fitted, counts) for member in roster]
     result = dict(
-        schema=reference_pool.SCHEMA, created=time.time(),
+        schema=reference_pool.SCHEMA, map_catalogue=map_catalogue.IDENTITY, created=time.time(),
         note='Direct top-ladder round robin; side-swapped fixed-seed games on pool-v7 maps. '
              f'{skipped_pairs} cross-family v4 pairs are temporarily skipped because the current '
              'observation writer has process-global BOPL4_ABLATE; each v4 family plays every '
@@ -305,7 +306,8 @@ def run(args):
     if args.games_per_pair < 6 or args.games_per_pair % 6:
         raise ValueError('--games-per-pair must be a positive multiple of 6')
     base_root = args.base_root.resolve()
-    pool_v7 = reference_pool.load_pool(args.pool.resolve(), verify=True)
+    raw_pool_v7 = reference_pool.load_pool(args.pool.resolve(), verify=True)
+    pool_v7 = map_catalogue.normalize_record(raw_pool_v7, raw_pool_v7)
     game = Path(pool_v7['game']['path']).resolve()
     if sha256_file(game) != pool_v7['game']['sha256']:
         raise ValueError(f'{game} does not match pool v7 game sha256')
@@ -316,7 +318,7 @@ def run(args):
     print_roster(roster, skipped)
     groups = writer_groups(roster)
     allowed_pairs, skipped_pairs, total = schedule_counts(roster, args.games_per_pair)
-    existing = load_games(args.out / 'games.jsonl')
+    existing = load_games(args.out / 'games.jsonl', (raw_pool_v7,))
     print(f'families={{{", ".join(f"{key}: {len(value)}" for key, value in sorted(groups.items()))}}} '
           f'allowed_pairs={allowed_pairs} skipped_pairs={skipped_pairs} '
           f'games_existing={len(existing)} games_total={total}', flush=True)
@@ -328,7 +330,7 @@ def run(args):
         process.join()
         if process.exitcode:
             raise RuntimeError(f'writer family {family} failed with exit code {process.exitcode}')
-    games = load_games(args.out / 'games.jsonl')
+    games = load_games(args.out / 'games.jsonl', (raw_pool_v7,))
     if len(games) != total:
         raise RuntimeError(f'expected {total} compatible games, found {len(games)}')
     tournament = write_pool(args.out, roster, games, pool_v7, game, args.games_per_pair,

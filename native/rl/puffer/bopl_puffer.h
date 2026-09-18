@@ -35,11 +35,21 @@ typedef struct {
      * was chosen when the button state was free, and how many decisions the
      * button head was ignored because a latch was in force. */
     float hold_choice[BOPL_ACT_HOLD], latched_decisions;
-    float map_fraction[64];   /* BOPL_COUNTER_MAPS */
+    float map_fraction[124];   /* BOPL_COUNTER_MAPS */
 } Log;
 enum { BOPL_MAX_PLAYERS=6, BOPL_MAX_BANKS=8, BOPL_MAX_SLOTS=BOPL_MAX_PLAYERS+BOPL_MAX_BANKS };
-/* 64 maps: training_map_mask is 64 bits wide (bits 0-61 reach the binding as two 31-bit halves). */
-enum { BOPL_COUNTER_MAPS=64, BOPL_COUNTER_SIZE=5+4+BOPL_TELEMETRY_SIZE+BOPL_COUNTER_MAPS };
+/* The authored catalogue is dense at 0..123. Selection is a real 128-bit mask;
+ * binding.c reconstructs it from four exact 31-bit option chunks. */
+enum { BOPL_COUNTER_MAPS=124,
+       BOPL_COUNTER_SIZE=5+4+BOPL_TELEMETRY_SIZE+3*BOPL_ABILITY_COUNT+BOPL_COUNTER_MAPS };
+typedef struct { uint64_t lo, hi; } BoplMapMask;
+static int bopl_map_selected(BoplMapMask mask, uint32_t map) {
+    return map<64?(int)((mask.lo>>map)&1u):(map<128?(int)((mask.hi>>(map-64))&1u):0);
+}
+static void bopl_map_select(BoplMapMask *mask, uint32_t map) {
+    if (map<64) mask->lo|=1ull<<map; else if (map<128) mask->hi|=1ull<<(map-64);
+}
+static int bopl_maps_selected(BoplMapMask mask) { return mask.lo!=0 || mask.hi!=0; }
 typedef struct {
     double learner_steps;            /* learner decisions (self-play: every player; historical: the learner side) */
     double game_steps;               /* physical decisions of every player, learner or frozen */
@@ -48,6 +58,9 @@ typedef struct {
     double kills;                    /* game-credited kills by learner players */
     double buttons[4];               /* learner decisions holding jump, dash, arrow, platform */
     double telemetry[BOPL_TELEMETRY_SIZE]; /* learner-only sums in telemetry FIELDS order */
+    double ability_activations[BOPL_ABILITY_COUNT]; /* learner slot presses, keyed by equipped ability id */
+    double entity_rows[BOPL_ABILITY_COUNT];         /* visible candidate entity rows by source ability id */
+    double entity_overflow[BOPL_ABILITY_COUNT];     /* candidates dropped beyond the active layout budget */
     double map_matches[BOPL_COUNTER_MAPS]; /* completed matches per map */
 } BoplCounters;
 _Static_assert(sizeof(BoplCounters)==BOPL_COUNTER_SIZE*sizeof(double), "BoplCounters layout");
@@ -65,6 +78,11 @@ int bopl_roster_n=0;
 uint8_t bopl_roster_kind[BOPL_ROSTER_MAX];
 uint8_t bopl_roster_level[BOPL_ROSTER_MAX];
 float bopl_roster_weight[BOPL_ROSTER_MAX];
+/* Explicit two-player lineup table installed by train.py before vector creation.
+ * Three-ID file rows are expanded to the same six-byte representation there. */
+enum { BOPL_LOADOUT_SET_MAX=256, BOPL_LOADOUT_FIXED=0, BOPL_LOADOUT_POOL=1, BOPL_LOADOUT_SET=2 };
+int bopl_loadout_set_count=0;
+uint8_t bopl_loadout_sets[BOPL_LOADOUT_SET_MAX*6];
 /* A world state that outlives the game's own state buffer: header, players and
  * telemetry by value, entity and slime rows in owned buffers. */
 typedef struct {
@@ -159,7 +177,10 @@ typedef struct {
     int world_opening, world_checked;
     char world_log[4096], world_error[512];
     int repeat, random_maps, random_loadouts, failed;
-    uint64_t training_map_mask;
+    BoplMapMask training_map_mask;
+    int loadout_mode, loadout_no_dup, mirror_share_ppm, loadout_set_count;
+    uint64_t loadout_pool;
+    uint8_t loadout_set[BOPL_LOADOUT_SET_MAX][6];
     int observation_delay, delay_cursor, no_autoreset;
     /* Observation delay (nine ticks = two decisions at repeat 4): the world
      * states sampled at phase 3 of the last two decisions, encoded into the
@@ -375,23 +396,49 @@ static void bopl_note_overflow(BoplPuffer *env, int active_count, int count,
         env->log.observation_overflow++;
     }
 }
+static void bopl_note_entity_rows(BoplPuffer *env, const BoplRlState *state,
+                                  const uint32_t *nearest, int count, const int *source_counts) {
+    int kept[BOPL_ABILITY_COUNT]={0};
+    for (int i=0; i<count; i++) {
+        uint32_t source=state->entities[nearest[i]].reserved[0];
+        if (source>0 && source<BOPL_ABILITY_COUNT) kept[source]++;
+    }
+    for (int ability=1; ability<BOPL_ABILITY_COUNT; ability++) {
+        int total=source_counts[ability-1];
+        env->counters.entity_rows[ability]+=total;
+        env->counters.entity_overflow[ability]+=total-kept[ability];
+    }
+}
 /* Every visible-entity and visible-slime count of `state` per observer, for
  * the overflow telemetry of a state that is encoded later. */
 static void bopl_count_overflow(BoplPuffer *env, const BoplRlState *state) {
     if (!state) return;
     for (int a=0; a<env->players; a++) {
         const BoplRlPlayer *self=&state->players[a];
-        int active_count=0, visible_slimes=0, visible_slots=0;
+        uint32_t nearest[BOPL_OBS_ENTITIES]; double distances[BOPL_OBS_ENTITIES];
+        int capacity=bopl_layout_of(env,a)==4?BOPL4_ENTITIES:BOPL_OBS_ENTITIES;
+        int count=0, active_count=0, visible_slimes=0, visible_slots=0;
+        int source_counts[BOPL_ABILITY_COUNT]={0};
         for (uint32_t i=0; i<state->header.entity_count;) {
             const BoplRlEntity *entity=&state->entities[i];
             if (entity->kind==3) {
-                int end=bopl_rope_group_end(state, i), count=end-(int)i;
-                for (int j=0; j<count; j++)
-                    if (bopl_rope_span_kept(j, count)
-                        && bopl_entity_visible(state, &state->entities[i+j], self->id)) active_count++;
+                int end=bopl_rope_group_end(state, i), group_count=end-(int)i;
+                for (int j=0; j<group_count; j++) if (bopl_rope_span_kept(j, group_count)) {
+                    const BoplRlEntity *entity=&state->entities[i+j];
+                    if (!bopl_entity_visible(state,entity,self->id)) continue;
+                    double distance=bopl_surface_distance(entity,bopl_fix(self->x),bopl_fix(self->y));
+                    if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
+                    bopl_nearest(nearest,distances,&count,capacity,i+(uint32_t)j,distance);active_count++;
+                    if (entity->reserved[0]>0 && entity->reserved[0]<BOPL_ABILITY_COUNT) source_counts[entity->reserved[0]-1]++;
+                }
                 i=(uint32_t)end;
             } else {
-                if (bopl_entity_visible(state, entity, self->id)) active_count++;
+                if (bopl_entity_visible(state, entity, self->id)) {
+                    double distance=bopl_surface_distance(entity,bopl_fix(self->x),bopl_fix(self->y));
+                    if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
+                    bopl_nearest(nearest,distances,&count,capacity,i,distance);active_count++;
+                    if (entity->reserved[0]>0 && entity->reserved[0]<BOPL_ABILITY_COUNT) source_counts[entity->reserved[0]-1]++;
+                }
                 i++;
             }
         }
@@ -400,9 +447,8 @@ static void bopl_count_overflow(BoplPuffer *env, const BoplRlState *state) {
             if (bopl_spatial_hidden(state, slime->owner, self->id)) continue;
             visible_slimes++; visible_slots+=bopl_slime_inventory(slime);
         }
-        bopl_note_overflow(env, active_count,
-                           active_count<BOPL_OBS_ENTITIES?active_count:BOPL_OBS_ENTITIES,
-                           visible_slimes, visible_slots);
+        bopl_note_overflow(env, active_count, count, visible_slimes, visible_slots);
+        bopl_note_entity_rows(env,state,nearest,count,source_counts);
     }
 }
 /* The row counts the last encode left in observation row `row`, or NULL when
@@ -537,7 +583,10 @@ static void bopl_encode_v3_row(BoplPuffer *env, const BoplRlState *state, int a,
         obs[63]=time_stop_known?bopl_clip(time_stop_remaining/300.0):0.0f;
         obs[64]=time_stop_known;
         obs[65]=controller?((controller->flags>>BOPL_SLIME_PICKUP_SLOT_SHIFT)&BOPL_SLIME_PICKUP_SLOT_MASK)/2.0f:0.0f;
-        if (count_overflow) bopl_note_overflow(env, active_count, count, visible_slimes, visible_slots);
+        if (count_overflow) {
+            bopl_note_overflow(env, active_count, count, visible_slimes, visible_slots);
+            bopl_note_entity_rows(env,state,nearest,count,source_counts);
+        }
 
         bopl_player_features(obs+BOPL_OBS_SELF_OFFSET, state, self, self, self_x, self_y);
         uint32_t player_count=state->header.player_count<BOPL_OBS_PLAYERS?state->header.player_count:BOPL_OBS_PLAYERS;
@@ -697,16 +746,17 @@ static uint16_t bopl_latch(BoplPuffer *env, int player, uint16_t buttons, int ho
     for (int bit=0; bit<4; bit++) env->hold_run[player][bit]=(applied&(1<<bit))?env->hold_run[player][bit]+1:0;
     return applied;
 }
-static int bopl_bow_button(const BoplPuffer *env, int player) {
+static uint16_t bopl_bow_buttons(const BoplPuffer *env, int player) {
     const BoplRlState *state=bopl_rl_state(env->world);
-    if (!state || player<0 || player>=(int)state->header.player_count) return -1;
+    if (!state || player<0 || player>=(int)state->header.player_count) return 0;
     const BoplRlPlayer *self=&state->players[player];
     const BoplRlSlime *controller=bopl_controlling_slime(
         state, self->id, bopl_fix(self->x), bopl_fix(self->y));
-    if (!controller) return -1;
+    if (!controller) return 0;
+    uint16_t buttons=0;
     for (int slot=0; slot<3; slot++)
-        if ((controller->ability_flags[slot]&1) && controller->abilities[slot]==4) return slot+1;
-    return -1;
+        if ((controller->ability_flags[slot]&1) && controller->abilities[slot]==4) buttons|=(uint16_t)(1u<<(slot+1));
+    return buttons;
 }
 /* Publish the action mask for player i's next decision from its latch state. */
 static void bopl_write_mask(BoplPuffer *env, int player) {
@@ -718,10 +768,12 @@ static void bopl_write_mask(BoplPuffer *env, int player) {
         mask[BOPL_ACT_AIM+env->held[player]]=1;
         mask[BOPL_ACT_AIM+BOPL_ACT_BUTTONS]=1;
     } else {
-        int bow=bopl_bow_button(env, player);
-        if (bow>=0 && env->hold_run[player][bow]>0)
+        uint16_t bows=bopl_bow_buttons(env, player), latched=0;
+        for (int slot=0; slot<3; slot++) if ((bows&(1u<<(slot+1))) && env->hold_run[player][slot+1]>0)
+            latched|=(uint16_t)(1u<<(slot+1));
+        if (latched)
             for (int b=0; b<BOPL_ACT_BUTTONS; b++)
-                if (b&(1<<bow)) mask[BOPL_ACT_AIM+b]=0;
+                if (b&latched) mask[BOPL_ACT_AIM+b]=0;
     }
 }
 static uint32_t bopl_side_random(BoplPuffer *env) {
@@ -755,7 +807,7 @@ static void bopl_world_ready(BoplPuffer *env) {
     if (env->world_checked) return;
     env->world_checked=1;
     for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++)
-        if ((env->training_map_mask&(1ull<<map)) && map>=bopl_rl_map_count(env->world)) {
+        if (bopl_map_selected(env->training_map_mask, map) && map>=bopl_rl_map_count(env->world)) {
             fprintf(stderr, "Training map outside game catalog\n"); abort();
         }
     if (bopl_rl_ability_count(env->world)!=BOPL_ABILITY_COUNT) { fprintf(stderr, "Bopl RL policy catalog changed\n"); abort(); }
@@ -765,7 +817,7 @@ static void init(BoplPuffer *env) {
     if (!game || !replay || !logs) { fprintf(stderr, "Set BOPL_RL_GAME, BOPL_RL_BOOTSTRAP and BOPL_RL_LOG_DIR to absolute paths\n"); abort(); }
     int length=snprintf(env->world_log, sizeof(env->world_log), "%s/worker-%ld-%u.log", logs, (long)getpid(), env->rng);
     if (length<0 || (size_t)length>=sizeof(env->world_log)) abort();
-    if (env->training_map_mask && env->random_maps) {
+    if (bopl_maps_selected(env->training_map_mask) && env->random_maps) {
         fprintf(stderr, "Choose explicit training maps or all random maps\n"); abort();
     }
     if (pthread_create(&env->world_thread, NULL, bopl_world_open, env)) abort();
@@ -806,17 +858,71 @@ static void bopl_spare_ready(BoplPuffer *env) {
  * single-process path makes at the start of that episode. */
 static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
     config->seed=bopl_random(env);
-    if (env->training_map_mask) {
+    if (bopl_maps_selected(env->training_map_mask)) {
         uint32_t count=0;
-        for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++) count+=(uint32_t)((env->training_map_mask>>map)&1u);
+        for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++) count+=(uint32_t)bopl_map_selected(env->training_map_mask, map);
         uint32_t selected=bopl_random(env)%count;
-        for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++) if (env->training_map_mask&(1ull<<map)) {
+        for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++) if (bopl_map_selected(env->training_map_mask, map)) {
             if (selected==0) { config->map=map; break; }
             selected--;
         }
     } else if (env->random_maps) config->map=bopl_random(env)%bopl_rl_map_count(env->world);
-    if (env->random_loadouts) for (int i=0; i<env->players; i++) for (uint32_t j=0; j<config->slots; j++)
-        config->player[i].abilities[j]=1+bopl_random(env)%(BOPL_ABILITY_COUNT-1); // Exclude the source's NullAbility placeholder.
+    int mode=env->loadout_mode;
+    uint64_t pool=env->loadout_pool;
+    if (env->random_loadouts && mode==BOPL_LOADOUT_FIXED) {
+        mode=BOPL_LOADOUT_POOL;
+        for (uint32_t ability=1; ability<BOPL_ABILITY_COUNT; ability++) pool|=1ull<<ability;
+    }
+    if (mode!=BOPL_LOADOUT_FIXED) {
+        int mirror=env->mirror_share_ppm>=1000000;
+        if (!mirror && env->mirror_share_ppm>0)
+            mirror=(int)(bopl_random(env)%1000000u)<env->mirror_share_ppm;
+        if (mode==BOPL_LOADOUT_SET) {
+            const uint8_t *row=env->loadout_set[bopl_random(env)%(uint32_t)env->loadout_set_count];
+            for (int player=0; player<env->players; player++) for (uint32_t slot=0; slot<config->slots; slot++)
+                config->player[player].abilities[slot]=row[(mirror && player==1?0:player)*3+(int)slot];
+        } else {
+            for (int player=0; player<env->players; player++) {
+                if (mirror && player==1) {
+                    for (uint32_t slot=0; slot<config->slots; slot++)
+                        config->player[player].abilities[slot]=config->player[0].abilities[slot];
+                    continue;
+                }
+                uint64_t available=pool;
+                for (uint32_t slot=0; slot<config->slots; slot++) {
+                    uint32_t count=0;
+                    for (uint32_t ability=1; ability<BOPL_ABILITY_COUNT; ability++) count+=(uint32_t)((available>>ability)&1u);
+                    uint32_t pick=bopl_random(env)%count, chosen=0;
+                    for (uint32_t ability=1; ability<BOPL_ABILITY_COUNT; ability++) if (available&(1ull<<ability)) {
+                        if (pick--==0) { chosen=ability; break; }
+                    }
+                    config->player[player].abilities[slot]=chosen;
+                    if (env->loadout_no_dup) available&=~(1ull<<chosen);
+                }
+            }
+        }
+    }
+}
+static int bopl_loadouts_valid(const BoplPuffer *env) {
+    if (env->mirror_share_ppm<0 || env->mirror_share_ppm>1000000
+        || env->loadout_set_count<0 || env->loadout_set_count>BOPL_LOADOUT_SET_MAX
+        || (env->loadout_mode==BOPL_LOADOUT_SET && env->players!=2)) return 0;
+    int pool_count=0;
+    for (uint32_t ability=1; ability<BOPL_ABILITY_COUNT; ability++) pool_count+=(int)((env->loadout_pool>>ability)&1u);
+    if (env->loadout_mode==BOPL_LOADOUT_POOL && (!pool_count || (env->loadout_no_dup && pool_count<(int)env->config.slots))) return 0;
+    for (int player=0; player<env->players; player++) for (uint32_t slot=0; slot<env->config.slots; slot++) {
+        uint32_t ability=env->config.player[player].abilities[slot];
+        if (ability==0 || ability>=BOPL_ABILITY_COUNT) return 0;
+        if (env->loadout_no_dup) for (uint32_t prior=0; prior<slot; prior++)
+            if (env->config.player[player].abilities[prior]==ability) return 0;
+    }
+    for (int row=0; row<env->loadout_set_count; row++) for (int player=0; player<2; player++) for (int slot=0; slot<3; slot++) {
+        uint8_t ability=env->loadout_set[row][player*3+slot];
+        if (ability==0 || ability>=BOPL_ABILITY_COUNT) return 0;
+        if (env->loadout_no_dup) for (int prior=0; prior<slot; prior++)
+            if (env->loadout_set[row][player*3+prior]==ability) return 0;
+    }
+    return 1;
 }
 /* The decision-loop half of c_reset, from the episode's first state: first
  * observation, the delay history primed with it, latches cleared, the neutral
@@ -968,6 +1074,15 @@ static void bopl_step_begin_from(BoplPuffer *env, BoplStepPhase *phase, const Bo
         holds[i]=(int)hold;
         actions[i].angle=(uint8_t)angle;
         actions[i].buttons=bopl_latch(env, i, (uint16_t)buttons, holds[i], &fresh[i]);
+        if (!env->banks || i==env->side) {
+            const BoplRlPlayer *player=&before->players[i];
+            const BoplRlSlime *controller=bopl_controlling_slime(before,player->id,bopl_fix(player->x),bopl_fix(player->y));
+            if (controller) for (int slot=0; slot<3; slot++) if (actions[i].buttons&(1u<<(slot+1))) {
+                uint32_t ability=controller->abilities[slot];
+                if ((controller->ability_flags[slot]&1) && ability>0 && ability<BOPL_ABILITY_COUNT)
+                    env->counters.ability_activations[ability]++;
+            }
+        }
     }
     /* The inputs as sent this step, for the next decision's foe model (v2 kinds only). */
     for (int i=0; i<env->players; i++) if (env->bot_select[i]) memcpy(env->bots[i].applied, phase->actions, sizeof(phase->actions));

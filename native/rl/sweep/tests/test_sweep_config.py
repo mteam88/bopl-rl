@@ -159,6 +159,12 @@ class FlagRendering(unittest.TestCase):
         self.assertEqual(argv[argv.index('--steps') + 1], '3000000')
         self.assertEqual(argv[argv.index('--entropy-head-scale') + 1], '1,1,1')
 
+    def test_named_map_sets_pass_through_fixed_toml(self):
+        spec = load_text(MINIMAL.replace('training_maps = [0, 1]',
+                                         'training_maps = "legacy31,123"'))
+        argv = spec.trial_arguments(spec.defaults(), Path('/tmp/out'))
+        self.assertEqual(argv[argv.index('--training-maps') + 1], 'legacy31,123')
+
 
 CURRICULUM = '''
 [sweep]

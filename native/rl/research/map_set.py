@@ -1,10 +1,10 @@
 """The RL map catalogue: RL map index <-> Unity level (native/data/map-set.json).
 
-The Rust sim addresses maps by RL index (dense, stable; 0-30 in round 1); the game, the
+The Rust sim addresses maps by RL index (dense and stable, 0-123); the game, the
 Unity player's BOPL_LEVEL_SET hook and the human result rows address Unity
 levels (0-123, scene 6+level, Assets/Scenes/FFA/Level{level+1}.unity). RL
-indices 0-4 are levels 0-4; the more-maps catalogue appends 26 grass levels.
-native/tools/extract_rollout_data.py writes the table and the campaign split.
+indices are the same authored level IDs. native/data/map-set.json carries the
+catalogue and the retained campaign split.
 
 CLI, for shells (the Mac launcher):
   map_set.py levels training|held-out|all|<rl,indices>   -> Unity levels, comma separated
@@ -13,6 +13,7 @@ CLI, for shells (the Mac launcher):
 import json
 import sys
 from pathlib import Path
+from map_catalogue import parse_map_ids
 
 ROOT = Path(__file__).resolve().parents[3]
 TABLE = ROOT / 'native/data/map-set.json'
@@ -54,7 +55,7 @@ def parse_maps(spec, table=None):
         return list(table['split']['training' if spec == 'training' else 'held_out'])
     if spec == 'all':
         return [m['rl'] for m in table['maps']]
-    return [int(x) for x in spec.split(',') if x.strip()]
+    return parse_map_ids(spec)
 
 
 def main(argv):

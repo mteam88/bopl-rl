@@ -635,7 +635,10 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
     obs[63]=time_stop_known?bopl_clip(time_stop_remaining/300.0):0.0f;
     obs[64]=time_stop_known;
     obs[65]=controller?((controller->flags>>BOPL_SLIME_PICKUP_SLOT_SHIFT)&BOPL_SLIME_PICKUP_SLOT_MASK)/2.0f:0.0f;
-    if (count_overflow) bopl_note_overflow(env, active_count, count, visible_slimes, visible_slots);
+    if (count_overflow) {
+        bopl_note_overflow(env, active_count, count, visible_slimes, visible_slots);
+        bopl_note_entity_rows(env,state,nearest,count,source_counts);
+    }
 
     /* Self: the v3 player row about oneself, then the controlling body. */
     float *self_block=obs+BOPL4_OBS_SELF_OFFSET;

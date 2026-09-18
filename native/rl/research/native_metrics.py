@@ -14,7 +14,8 @@ from telemetry import EVENT_FIELDS, FIELDS
 def empty_counters():
     return dict(learner_steps=0, game_steps=0, matches=0, map_matches={},
                 buttons=[0]*4, telemetry=[0.0]*len(FIELDS), kills=0,
-                opponent_game_decisions=0)
+                opponent_game_decisions=0, ability_activations=[0]*39,
+                entity_rows=[0]*39, entity_overflow=[0]*39)
 
 
 def update(log, counters, previous, *, elapsed, previous_elapsed,
@@ -55,6 +56,13 @@ def update(log, counters, previous, *, elapsed, previous_elapsed,
     buttons = [now-before for now,before in zip(counters['buttons'],previous['buttons'])]
     if any(n < 0 or n > decisions for n in buttons):
         raise ValueError('Held-button counts must be within learner decisions')
+    ability_activations=[now-before for now,before in zip(counters['ability_activations'],previous['ability_activations'])]
+    entity_rows=[now-before for now,before in zip(counters['entity_rows'],previous['entity_rows'])]
+    entity_overflow=[now-before for now,before in zip(counters['entity_overflow'],previous['entity_overflow'])]
+    if any(value<0 for values in (ability_activations,entity_rows,entity_overflow) for value in values):
+        raise ValueError('Ability/entity counters moved backwards')
+    if any(dropped>rows for dropped,rows in zip(entity_overflow,entity_rows)):
+        raise ValueError('Entity overflow exceeds candidate rows')
     loss, perf, util = (log.get(key, {}) for key in ('loss','perf','util'))
     result = dict(schema=1, backend='pufferlib-native', step_unit='physical_player_decisions',
                   step=counters['game_steps'], learner_steps=counters['learner_steps'],
@@ -65,6 +73,11 @@ def update(log, counters, previous, *, elapsed, previous_elapsed,
                   entropy_coefficient=entropy_coefficient, learning_rate=learning_rate,
                   action_rates=dict(zip(('jump','dash','arrow','platform'),
                                         (n/decisions for n in buttons))), behavior=behavior,
+                  ability_activations={str(ability):count for ability,count in enumerate(ability_activations) if count},
+                  entity_overflow={str(ability):dict(rows=entity_rows[ability],dropped=entity_overflow[ability],
+                                                     rate=(entity_overflow[ability]/entity_rows[ability]
+                                                           if entity_rows[ability] else None))
+                                   for ability in range(1,39)},
                   mean_reward=sum(totals[k] for k in ('reward_outcome','reward_kills','reward_deaths'))/decisions,
                   pool_steps=list(pool_steps), opponent_game_decisions=counters['opponent_game_decisions'],
                   script_assignments={}, env=dict(log.get('env', {})),

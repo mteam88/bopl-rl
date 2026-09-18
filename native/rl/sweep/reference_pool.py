@@ -44,7 +44,8 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
 
 import elo_ladder  # noqa: E402  (pure until games are played)
-from evaluation_protocol import checkpoint_identity, opponents, scripted_names  # noqa: E402
+import map_catalogue  # noqa: E402
+from evaluation_protocol import checkpoint_identity, opponents, scripted_names, map_ids  # noqa: E402
 
 SCHEMA = 1
 RUST_SIM = ROOT / 'native/target/release/libbopl_sim.so'
@@ -169,6 +170,7 @@ def find_rating(run_dir, pool, checkpoint):
 def load_run_ratings(run_dir, pool):
     """{checkpoint stem: rating payload} for this pool, sha8 files overriding legacy."""
     run_dir = Path(run_dir)
+    catalogue_records = map_catalogue.run_records(run_dir)
     files = {}
     for directory in (run_dir / 'reference', rating_dir(run_dir, pool)):
         if not directory.is_dir():
@@ -178,7 +180,7 @@ def load_run_ratings(run_dir, pool):
                 continue
             payload = _read_rating(path, pool)
             if payload:
-                files[path.stem] = payload
+                files[path.stem] = map_catalogue.normalize_record(payload, *catalogue_records)
     return files
 
 
@@ -315,10 +317,12 @@ def rating_records(records, rating, ratings):
             for member, (w, l, d) in sorted(records.items())}
 
 
-def games_from_evaluation(report, pool):
-    """play_games-shaped rows for eval games against pool members on pool maps."""
+def games_from_evaluation(report, pool, catalogue_records=()):
+    """play_games-shaped rows for eval games against pool members on this run's maps."""
+    report = map_catalogue.normalize_record(report, *catalogue_records)
+    pool = map_catalogue.normalize_record(pool, pool)
     members = {m['name'] for m in pool['members']}
-    maps = set(pool.get('maps') or ())
+    maps = set(report.get('training_maps') or pool.get('maps') or ())
     games = []
     for game in report.get('games') or ():
         if game.get('opponent') not in members:
@@ -336,8 +340,9 @@ def games_from_evaluation(report, pool):
     return games
 
 
-def rating_from_evaluation(report, pool, checkpoint, game=None, bootstrap=1000):
+def rating_from_evaluation(report, pool, checkpoint, game=None, bootstrap=1000, catalogue_records=()):
     """Fit a cheap in-run Elo from evaluate.py games (no extra play)."""
+    report = map_catalogue.normalize_record(report, *catalogue_records)
     games = games_from_evaluation(report, pool)
     if not games:
         return None
@@ -347,7 +352,8 @@ def rating_from_evaluation(report, pool, checkpoint, game=None, bootstrap=1000):
     game_sha = sha256_file(game_path) if Path(game_path).is_file() else None
     pool_sha = (pool.get('game') or {}).get('sha256')
     return dict(
-        schema=SCHEMA, source='evaluation', checkpoint=str(checkpoint),
+        schema=SCHEMA, map_catalogue=map_catalogue.IDENTITY,
+        source='evaluation', checkpoint=str(checkpoint),
         checkpoint_identity=report.get('checkpoint_identity'),
         pool=pool['path'], pool_sha256=pool['pool_sha256'], budget=len(games),
         maps=sorted({g['map'] for g in games}), seed_base=report.get('seed_base'),
@@ -362,7 +368,9 @@ def rating_from_evaluation(report, pool, checkpoint, game=None, bootstrap=1000):
 
 def write_evaluation_rating(run_dir, report, pool, checkpoint, game=None):
     """Write <run>/reference/<sha8>/<stem>.json unless a fuller band rating exists."""
-    result = rating_from_evaluation(report, pool, checkpoint, game=game)
+    result = rating_from_evaluation(
+        report, pool, checkpoint, game=game,
+        catalogue_records=map_catalogue.run_records(run_dir))
     if not result:
         return None
     identity = result.get('checkpoint_identity') or {}
@@ -480,9 +488,18 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
     the eval hook's smaller budget on every evaluation checkpoint (train.py);
     cache_hit lets a fuller rating replace a smaller one, so the scorer's band
     rating overwrites the in-run point of the checkpoints it rates."""
+    pool = map_catalogue.normalize_record(pool, pool)
     checkpoint = Path(checkpoint).resolve()
     identity = checkpoint_identity(checkpoint)
-    maps = list(maps or pool['maps'])
+    if maps is None:
+        try:
+            metadata=json.loads(Path(str(checkpoint)+'.json').read_text())
+            config=map_catalogue.normalize_record(metadata['config'], metadata)
+            maps=map_ids(config['training_maps'])
+        except (FileNotFoundError,KeyError,TypeError,ValueError):
+            maps=list(pool['maps'])
+    else:
+        maps=map_ids(maps)
     if out is None:
         if checkpoint.parent.name != 'checkpoints':
             raise ValueError('out is required when the checkpoint is not in a run directory')
@@ -537,7 +554,8 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
     records = records_against(all_games, name)
     interval = bootstrap_interval(all_games, name, ratings, samples=bootstrap, seed=seed_base)
     result = dict(
-        schema=SCHEMA, checkpoint=str(checkpoint), checkpoint_identity=identity,
+        schema=SCHEMA, map_catalogue=map_catalogue.IDENTITY,
+        checkpoint=str(checkpoint), checkpoint_identity=identity,
         pool=pool['path'], pool_sha256=pool['pool_sha256'], budget=games, maps=maps,
         band=list(band), first_pass_games=first_pass_games, round_games=round_games,
         seed_base=seed_base, episode_ticks=limit, observation_delay_ticks=delay,
@@ -594,7 +612,8 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
         wins, losses, draws = counts[member['name']]
         member.update(rating=round(ratings[member['name']], 3), interval=intervals[member['name']],
                       games=wins + losses + draws, wins=wins, losses=losses, draws=draws)
-    pool = dict(schema=SCHEMA, created=time.time(), note=note, game=dict(path=str(game), sha256=sha256_file(game)),
+    pool = dict(schema=SCHEMA, map_catalogue=map_catalogue.IDENTITY,
+                created=time.time(), note=note, game=dict(path=str(game), sha256=sha256_file(game)),
                 maps=maps, games_per_pair=games_per_pair, seed_base=seed_base, episode_ticks=episode_ticks,
                 observation_delay_ticks=delay, games=len(games), elapsed=time.monotonic() - started, timing=timing,
                 fit='Bradley-Terry MLE, timeouts as draws, one virtual draw per pair, random anchored at 0 Elo',
@@ -761,7 +780,8 @@ def rate_human(pool, directory, excluded=None, bootstrap=1000, seed=0, map_role=
     rating, interval, records, ratings = fit_rating(games, 'human', pool, bootstrap=bootstrap, seed=seed)
     pool_sha = (pool.get('game') or {}).get('sha256')
     return dict(
-        schema=SCHEMA, source='human', name='human', pool=pool['path'], pool_sha256=pool['pool_sha256'],
+        schema=SCHEMA, map_catalogue=map_catalogue.IDENTITY,
+        source='human', name='human', pool=pool['path'], pool_sha256=pool['pool_sha256'],
         budget=len(games), maps=sorted(set(maps)), map_min=min(maps), map_max=max(maps),
         skipped_unknown=skipped, excluded=len(skip), map_role=map_role, off_role=off_role,
         game_mismatch=True,  # Unity, maps 0-123
@@ -855,7 +875,8 @@ def main():
                        help='Comma-separated scripted bots (kind-level)')
     build.add_argument('--checkpoint', action='append', default=[], metavar='NAME=PATH')
     build.add_argument('--manifest', type=Path, help='Evaluation-opponents manifest (schema 2) to include')
-    build.add_argument('--maps', default='0,1,2')
+    build.add_argument('--maps', type=map_ids, default=[0,1,2],
+                       help='map IDs, inclusive ranges, or all')
     build.add_argument('--games-per-pair', type=int, default=48)
     build.add_argument('--seed-base', type=int, default=50001)
     build.add_argument('--episode-ticks', type=int, default=7200)
@@ -914,7 +935,7 @@ def main():
         for item in opponents(args.manifest) if args.manifest else []:
             checkpoints.append((item['name'], item['path']))
         pool = build_pool(args.out, scripted=args.scripted, checkpoints=checkpoints,
-                          maps=[int(m) for m in args.maps.split(',')], games_per_pair=args.games_per_pair,
+                          maps=args.maps, games_per_pair=args.games_per_pair,
                           seed_base=args.seed_base, episode_ticks=args.episode_ticks, workers=args.workers,
                           slow_workers=args.slow_workers, library=args.library, game=args.game, note=args.note, log=log)
         print(format_table(pool['members']))

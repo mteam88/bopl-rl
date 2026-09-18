@@ -4688,10 +4688,10 @@ impl RolloutWorld {
         first: u32,
         second: u32,
     ) -> Result<(), String> {
-        if first + second > 16 {
+        if first < 1 || second < 1 || first > 16 || second > 16 || first > 16 - second {
             return Err("Sampled step phases too long".into());
         }
-        self.step(actions, first.max(1))?;
+        self.step(actions, first)?;
         self.observe_sample();
         self.sample_valid = true;
         if !self.terminal {
@@ -16494,6 +16494,13 @@ impl RolloutWorld {
                 while hit_count < hit_entities.len() {
                     let mut next = None;
                     for (entity, row) in self.entities.iter().enumerate() {
+                        if row.kind != kind
+                            || row.id <= previous_id
+                            || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                            || GUST_COLLISION_MASK & (1 << row.layer) == 0
+                        {
+                            continue;
+                        }
                         let platform_index = self
                             .platform_entities
                             .iter()
@@ -16507,12 +16514,7 @@ impl RolloutWorld {
                         } else {
                             self.circle_overlaps_entity(query, entity)
                         };
-                        if row.kind != kind
-                            || row.id <= previous_id
-                            || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
-                            || GUST_COLLISION_MASK & (1 << row.layer) == 0
-                            || !overlaps
-                        {
+                        if !overlaps {
                             continue;
                         }
                         if next.is_none_or(|(_, id)| row.id < id) {

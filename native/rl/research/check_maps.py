@@ -7,6 +7,7 @@ import numpy as np
 
 from environment import Environment,configure
 from evaluation_protocol import map_ids
+import map_catalogue
 from layout import ACT_AIM,ACT_BUTTONS
 from telemetry import FIELDS
 
@@ -15,8 +16,12 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--maps',type=map_ids,default=[0,1,2,3,4])
+    parser.add_argument('--run',type=Path,help='interpret numeric --maps through this legacy run catalogue')
     parser.add_argument('--games',type=int,default=8)
-    args=parser.parse_args();args.output.mkdir(parents=True,exist_ok=False)
+    args=parser.parse_args()
+    if args.run:
+        args.maps=[map_catalogue.to_identity(args.run,map_id) for map_id in args.maps]
+    args.output.mkdir(parents=True,exist_ok=False)
     configure(args.output/'workers');results=[]
     with Environment(limit=3600) as env:
         for map_id in args.maps:
@@ -43,7 +48,8 @@ def main():
                 results.append(dict(map=map_id,seed=seed,ticks=ticks,decisions=decisions,
                                     observations_sha256=digest.hexdigest(),replay_sha256=hashlib.sha256(replay.read_bytes()).hexdigest()))
                 print(json.dumps(results[-1]),flush=True)
-    (args.output/'result.json').write_text(json.dumps(dict(status='pass',maps=args.maps,games=results),indent=2)+'\n')
+    (args.output/'result.json').write_text(json.dumps(dict(status='pass',map_catalogue=map_catalogue.IDENTITY,
+                                                           maps=args.maps,games=results),indent=2)+'\n')
 
 
 if __name__=='__main__': main()

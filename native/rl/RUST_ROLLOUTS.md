@@ -20,6 +20,34 @@ fidelity gate, `benchmark.c`) accepts `native/target/release/libbopl_sim.so`
 directly in place of `BoplSimNative.so` — the in-process loader in
 `bopl_rl.c` sees the same 17 exported symbols.
 
+### Training maps and loadouts
+
+Training and evaluation use the canonical identity catalogue (RL map id = Unity
+level id, 0-123) and accept comma lists, inclusive ranges, `all`, or names from
+`native/data/map-sets.json`; a name and explicit ids can be combined, for
+example `--training-maps legacy31,123`. The trainer carries the result as a
+native 128-bit mask and records telemetry for every id. Historical maps-wave
+TOMLs remain unedited in their legacy curated-index notation; readers translate
+their artifacts through `research/legacy_map_index.json`. For example,
+`v4-aim-maps.toml`'s training list becomes identity ids
+`0,1,2,5,6,8,13,15,19,20,42,45,46,65,69,71,72,76,77,79,84,86,93`
+(`legacy31`) and its held-out list becomes
+`3,4,10,14,49,68,73,90` (`legacy31-heldout`). New runs record
+`map_catalogue = identity-124` explicitly. Policy-v4 rows retain the shared
+observation layout: `BOPL_OBS_STRIDE` is 4812 floats (v3 was 3690).
+
+The default loadout remains `--loadout 2,4,14`. `--loadout-pool <ids|all|all-ids>`
+samples every player slot in native C at episode reset, `--loadout-set FILE`
+samples explicit lineups (three shared or six player-ordered ids per line),
+`--loadout-no-dup` samples without replacement within a player, and
+`--mirror-share P` copies player 0's lineup to player 1 with probability P.
+Duplicates are otherwise legal. `all` deliberately excludes Time Stop (12)
+and Revival (15), the two partial cases in `ABILITY_PORT_GAPS.md`; an explicit
+id list can opt into either. Startup prints and `config.json` records the
+effective selection. Evaluation records the two concrete loadouts per game,
+slot presses are counted by equipped ability id, and entity-row candidate/drop
+rates by source ability id are present in evaluation and training telemetry.
+
 ## What is implemented
 
 - **ABI**: every `bopl_rl_*` entry point including `step_sampled` (bank

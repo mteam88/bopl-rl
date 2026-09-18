@@ -2077,6 +2077,32 @@ def main():
         fh.write("\n")
     print(f"wrote {coverage_target}")
 
+    # Dense RL ids now are the authored level ids. Retain the established
+    # evaluation split for its old ids and make every newly ported map a
+    # training candidate; run configs remain the authority for a given run.
+    held_out = {3, 4, 8, 10, 17, 19, 23, 29, 36, 39, 42, 44, 53}
+    map_set = {
+        "maps": [
+            {
+                "rl": m["level"],
+                "level": m["level"],
+                "scene": m["path"],
+                "platforms": len(m["platforms"]),
+                "role": "held-out" if m["level"] in held_out else "training",
+            }
+            for m in out["maps"]
+        ],
+        "split": {
+            "training": [m["level"] for m in out["maps"] if m["level"] not in held_out],
+            "held_out": [m["level"] for m in out["maps"] if m["level"] in held_out],
+        },
+    }
+    map_set_target = ROOT / "data" / "map-set.json"
+    with open(map_set_target, "w") as fh:
+        json.dump(map_set, fh, indent=1)
+        fh.write("\n")
+    print(f"wrote {map_set_target} ({len(map_set['maps'])} maps)")
+
 
 if __name__ == "__main__":
     main()

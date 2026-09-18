@@ -227,7 +227,7 @@ pub unsafe extern "C" fn bopl_rl_step_sampled(
     if actions.is_null() || !handle.world.valid || count != handle.world.players.len() {
         return ARGUMENT;
     }
-    if first < 1 || first + second > 16 {
+    if first < 1 || second < 1 || first > 16 || second > 16 || first > 16 - second {
         return ARGUMENT;
     }
     if handle.world.terminal {

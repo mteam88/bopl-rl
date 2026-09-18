@@ -8,6 +8,7 @@ import numpy as np
 from telemetry import EVENT_FIELDS,FIELDS
 import layout
 from layout import ACTION_SIZES,NUM_ATNS
+from evaluation_protocol import DEFAULT_LOADOUT,resolve_loadouts
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'native/tools'))
@@ -55,6 +56,11 @@ if (LIB.research_layout_v4(_fields4,len(_fields4))!=len(layout.V4_LAYOUT_FIELDS)
 LIB.research_open.argtypes = [C.c_uint32,C.c_uint32,C.c_uint32,C.c_int]
 LIB.research_open.restype = C.c_void_p
 LIB.research_reset.argtypes = [C.c_void_p,C.c_uint32,C.c_uint32]
+LIB.research_configure_loadouts.argtypes = [C.c_void_p,C.POINTER(C.c_uint32),C.c_uint64,C.POINTER(C.c_uint8),C.c_int,C.c_int,C.c_int]
+LIB.research_configure_loadouts.restype = C.c_int
+LIB.research_loadouts.argtypes = [C.c_void_p,C.POINTER(C.c_uint8),C.c_int]; LIB.research_loadouts.restype = C.c_int
+LIB.research_ability_telemetry.argtypes = [C.c_void_p,C.POINTER(C.c_double),C.POINTER(C.c_double),C.POINTER(C.c_double),C.c_int]
+LIB.research_ability_telemetry.restype = C.c_int
 LIB.research_step.argtypes = [C.c_void_p,C.POINTER(C.c_float)]
 LIB.research_step_begin.argtypes = [C.c_void_p,C.POINTER(C.c_float)]; LIB.research_step_begin.restype = C.c_int
 LIB.research_step_tick.argtypes = [C.c_void_p]; LIB.research_step_tick.restype = C.c_int
@@ -109,7 +115,7 @@ def configure(logs, game=None):
     os.environ['BOPL_RL_LOG_DIR']=str(logs)
 
 class Environment:
-    def __init__(self, seed=73, map_id=0, limit=3600, delay=9, reward=None):
+    def __init__(self, seed=73, map_id=0, limit=3600, delay=9, reward=None, loadouts=None):
         setter = None
         if reward is not None:
             kill, timeout = float(reward['kill']), float(reward['timeout'])
@@ -124,6 +130,17 @@ class Environment:
             setter.restype = C.c_int
         self.handle=LIB.research_open(seed,map_id,limit,delay)
         if not self.handle: raise RuntimeError('Could not open Bopl evaluator')
+        self.loadout_config=loadouts or resolve_loadouts(DEFAULT_LOADOUT)
+        fixed=(C.c_uint32*3)(*self.loadout_config['fixed'])
+        pool=sum(1<<ability for ability in self.loadout_config['pool'])
+        flat=[ability for row in self.loadout_config['lineups'] for ability in row]
+        sets=(C.c_uint8*len(flat))(*flat) if flat else None
+        if LIB.research_configure_loadouts(self.handle,fixed,pool,sets,len(self.loadout_config['lineups']),
+                                           int(self.loadout_config['no_dup']),round(self.loadout_config['mirror_share']*1_000_000)):
+            self.close(); raise ValueError('Invalid native loadout selection')
+        # research_open already reset the default configuration; replay the
+        # same seed/map once so the requested sampler owns episode zero.
+        LIB.research_reset(self.handle,seed,map_id)
         if setter is not None and setter(self.handle, kill, timeout):
             self.close()
             raise ValueError('Evaluation reward values are outside native float range')
@@ -173,6 +190,19 @@ class Environment:
     def observation_overflow(self):
         """Cumulative sampled states truncated by the policy layout; non-fatal."""
         return int(LIB.research_overflow(self.handle))
+    @property
+    def loadouts(self):
+        values=(C.c_uint8*6)()
+        count=LIB.research_loadouts(self.handle,values,len(values))
+        if count!=6: raise RuntimeError('Unexpected native loadout width')
+        return [list(values[:3]),list(values[3:6])]
+    def ability_telemetry(self):
+        activations=(C.c_double*39)(); rows=(C.c_double*39)(); overflow=(C.c_double*39)()
+        if LIB.research_ability_telemetry(self.handle,activations,rows,overflow,39)!=39:
+            raise RuntimeError('Unexpected native ability telemetry width')
+        return dict(activations=[int(value) for value in activations],
+                    entity_rows=[int(value) for value in rows],
+                    entity_overflow=[int(value) for value in overflow])
     @property
     def state(self): return LIB.research_state(self.handle).contents
     @property
