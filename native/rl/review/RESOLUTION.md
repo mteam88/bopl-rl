@@ -347,10 +347,11 @@ fixed entry is committed separately with its finding id in the subject.
   armed, chasing, and anticipation states now honor their separate global
   stop checks. They no longer scan, steer, or count down merely because their
   owner is protected.
-- **#8 — fixed.** Missile form now performs its airborne landing ray and
-  exits immediately before touching the live spark. Stabilization/steering is
-  dispatched only after the form survives `PlayerPhysics.Move`, so a landing
-  pass no longer rotates the projectile or clears its instability counter.
+- **#8 — fixed.** The Missile prefab registers `PlayerPhysics` before
+  `SparkShot`. Its gravity raycast can therefore land the form first;
+  `SparkShot` then observes the grounded body, calls `PlayerPhysics.Move(zero)`,
+  and stabilizes/steers the live projectile on that same pass. Only a landing
+  detected by SparkShot's later own airborne check exits before steering.
 - **#9 — fixed.** All five Rock callback paths now gate BounceBall's extra
   Player/Projectile impulse on the Rock having no attached rope. Player,
   abilityless-clone, Rock/Rock, Arrow, and Dash contacts still resolve and
