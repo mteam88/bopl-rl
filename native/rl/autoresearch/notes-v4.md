@@ -492,3 +492,26 @@ warp per sample with a ballot per 32 slots. Counts identical (check_v4's
 overflow numbers unchanged, pass_all). A/B 2x2 twice (cand = the old
 kernel): 247.2k vs 246.7k (+0.2%, repeats overlapping), 247.0k vs 246.5k
 (+0.2%). Inside the noise; reverted to the old kernel.
+
+### Learning gate at ae63d96d: pass
+
+`sanity_v4.sh run/report exact-ae63d96d` (the v4-aim recipe, seed 73, 160M
+learner steps, 12.7 min of training at 243.6k learner_sps vs the
+reference's 169.3k: x1.44 on the production recipe). Readout
+(`sanity-exact-ae63d96d.json`): refit Elo 516 at 80M (floor 304), 574 at
+160M (floor 571; reference 646, one seed each, spread 75); band rating of
+the 160M checkpoint 475.7 [434, 515] vs the reference's 523.5 [479, 568],
+floor 448.5: ok. explained_variance ratio 1.00, entropy 0.96, kl 1.66
+(0.0057 vs 0.0034; flagged as drift by the readout; the in-run kl at the
+213M step was 0.0045 vs 0.0043). passed: true.
+
+Because the Muon changes (D != C, lanes) are not bit-identical, a
+temporary self-check (BOPL_MUON_CHECK, removed) recomputed each eager step
+from copies of the weights and the post-Nesterov gradients with the
+pre-campaign sequence (in-place cuBLAS default GEMMs with the copies, one
+stream) and compared the weights: worst max|w - w_ref| / max|w_ref - w0| =
+0.6e-3 .. 3.1e-3 with TF32, 1.5e-4 .. 4.3e-4 with BOPL_TF32=0. That is
+the amplification of the GEMMs' summation order through the five
+Newton-Schulz steps (slope 4.08 at zero: ~1e3 on the smallest singular
+directions), the same class as the tuner's algorithm choice the branch
+already had; a race would show as O(1). No systematic difference.
