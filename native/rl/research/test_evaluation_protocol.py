@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from evaluation_protocol import (SCRIPTED_KINDS,SCRIPTED_NAMES,checkpoint_identity,map_ids,opponents,schedule,
+                                 loadout_ids,loadout_pool,resolve_loadouts,
                                  scripted_names,scripted_opponent)
 
 
@@ -83,10 +84,20 @@ class EvaluationProtocolTests(unittest.TestCase):
         self.assertEqual([scripted_opponent(f'{k}-v2-hard')[0] for k in ('archer','pursuer','evasive','mixed')],[6,7,8,9])
 
     def test_invalid_maps_and_counts_fail(self):
-        for value in ('','0,0','-1','62'):
+        self.assertEqual(map_ids('0-2,63,123'),[0,1,2,63,123])
+        self.assertEqual(len(map_ids('all')),124)
+        for value in ('','0,0','-1','124','3-1'):
             with self.assertRaises(ValueError): map_ids(value)
         with self.assertRaises(ValueError): schedule([0,1],[1],[],8,4,16,1,2,3)
         with self.assertRaises(ValueError): schedule([0],[1],[],7,4,16,1,2,3)
+
+    def test_loadout_selection_includes_38_and_excludes_partial_all_defaults(self):
+        self.assertEqual(loadout_ids('38,4,38'),[38,4,38])
+        pool=loadout_pool('all')
+        self.assertIn(38,pool);self.assertNotIn(12,pool);self.assertNotIn(15,pool)
+        self.assertNotIn(38,loadout_pool('all-38'))
+        resolved=resolve_loadouts([2,4,14],[1,2,38],None,True,.5)
+        self.assertEqual(resolved['mode'],'pool');self.assertEqual(resolved['pool'],[1,2,38])
 
     def test_manifest_freezes_weights_and_metadata_and_rejects_duplicate_names(self):
         with tempfile.TemporaryDirectory() as directory:

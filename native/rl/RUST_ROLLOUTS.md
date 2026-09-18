@@ -20,6 +20,25 @@ fidelity gate, `benchmark.c`) accepts `native/target/release/libbopl_sim.so`
 directly in place of `BoplSimNative.so` — the in-process loader in
 `bopl_rl.c` sees the same 17 exported symbols.
 
+### Training maps and loadouts
+
+Training and evaluation accept comma lists, inclusive ranges, or `all` for the
+dense 124-map catalogue, for example `--training-maps 0-31,64,93-123`. The
+trainer carries this as a native 128-bit mask and records/maps telemetry for
+every id 0-123; existing numeric-list TOML configs are unchanged.
+
+The default loadout remains `--loadout 2,4,14`. `--loadout-pool <ids|all|all-ids>`
+samples every player slot in native C at episode reset, `--loadout-set FILE`
+samples explicit lineups (three shared or six player-ordered ids per line),
+`--loadout-no-dup` samples without replacement within a player, and
+`--mirror-share P` copies player 0's lineup to player 1 with probability P.
+Duplicates are otherwise legal. `all` deliberately excludes Time Stop (12)
+and Revival (15), the two partial cases in `ABILITY_PORT_GAPS.md`; an explicit
+id list can opt into either. Startup prints and `config.json` records the
+effective selection. Evaluation records the two concrete loadouts per game,
+slot presses are counted by equipped ability id, and entity-row candidate/drop
+rates by source ability id are present in evaluation and training telemetry.
+
 ## What is implemented
 
 - **ABI**: every `bopl_rl_*` entry point including `step_sampled` (bank

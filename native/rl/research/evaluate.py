@@ -238,7 +238,9 @@ def main():
         for ability,row in result['entity_overflow'].items():
             total=overflow_totals.setdefault(ability,dict(rows=0,dropped=0))
             total['rows']+=row['rows'];total['dropped']+=row['dropped']
-    for row in overflow_totals.values(): row['rate']=row['dropped']/row['rows']
+    for ability in range(1,39):
+        row=overflow_totals.setdefault(str(ability),dict(rows=0,dropped=0))
+        row['rate']=row['dropped']/row['rows'] if row['rows'] else None
     report=dict(schema=2,decision_dump_schema=1,step=step,suite=args.suite,checkpoint=args.checkpoint.name,
                 checkpoint_identity=checkpoint_id, baseline_identity=baseline_id,
                 frozen_opponents=frozen,scripted_opponents=args.scripted_opponents,

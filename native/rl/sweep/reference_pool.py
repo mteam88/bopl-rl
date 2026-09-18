@@ -316,9 +316,9 @@ def rating_records(records, rating, ratings):
 
 
 def games_from_evaluation(report, pool):
-    """play_games-shaped rows for eval games against pool members on pool maps."""
+    """play_games-shaped rows for eval games against pool members on this run's maps."""
     members = {m['name'] for m in pool['members']}
-    maps = set(pool.get('maps') or ())
+    maps = set(report.get('training_maps') or pool.get('maps') or ())
     games = []
     for game in report.get('games') or ():
         if game.get('opponent') not in members:
@@ -482,7 +482,14 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
     rating overwrites the in-run point of the checkpoints it rates."""
     checkpoint = Path(checkpoint).resolve()
     identity = checkpoint_identity(checkpoint)
-    maps = list(maps or pool['maps'])
+    if maps is None:
+        try:
+            metadata=json.loads(Path(str(checkpoint)+'.json').read_text())
+            maps=map_ids(metadata['config']['training_maps'])
+        except (FileNotFoundError,KeyError,TypeError,ValueError):
+            maps=list(pool['maps'])
+    else:
+        maps=map_ids(maps)
     if out is None:
         if checkpoint.parent.name != 'checkpoints':
             raise ValueError('out is required when the checkpoint is not in a run directory')

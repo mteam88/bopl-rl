@@ -429,7 +429,7 @@ static void bopl_count_overflow(BoplPuffer *env, const BoplRlState *state) {
                     double distance=bopl_surface_distance(entity,bopl_fix(self->x),bopl_fix(self->y));
                     if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
                     bopl_nearest(nearest,distances,&count,capacity,i+(uint32_t)j,distance);active_count++;
-                    if (entity->reserved[0]>0 && entity->reserved[0]<=BOPL_ABILITY_COUNT) source_counts[entity->reserved[0]-1]++;
+                    if (entity->reserved[0]>0 && entity->reserved[0]<BOPL_ABILITY_COUNT) source_counts[entity->reserved[0]-1]++;
                 }
                 i=(uint32_t)end;
             } else {
@@ -437,7 +437,7 @@ static void bopl_count_overflow(BoplPuffer *env, const BoplRlState *state) {
                     double distance=bopl_surface_distance(entity,bopl_fix(self->x),bopl_fix(self->y));
                     if (entity->flags&BOPL_ENTITY_PICKUP) distance-=1.0e12;
                     bopl_nearest(nearest,distances,&count,capacity,i,distance);active_count++;
-                    if (entity->reserved[0]>0 && entity->reserved[0]<=BOPL_ABILITY_COUNT) source_counts[entity->reserved[0]-1]++;
+                    if (entity->reserved[0]>0 && entity->reserved[0]<BOPL_ABILITY_COUNT) source_counts[entity->reserved[0]-1]++;
                 }
                 i++;
             }

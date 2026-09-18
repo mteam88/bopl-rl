@@ -74,9 +74,10 @@ def update(log, counters, previous, *, elapsed, previous_elapsed,
                   action_rates=dict(zip(('jump','dash','arrow','platform'),
                                         (n/decisions for n in buttons))), behavior=behavior,
                   ability_activations={str(ability):count for ability,count in enumerate(ability_activations) if count},
-                  entity_overflow={str(ability):dict(rows=rows,dropped=entity_overflow[ability],
-                                                     rate=entity_overflow[ability]/rows)
-                                   for ability,rows in enumerate(entity_rows) if rows},
+                  entity_overflow={str(ability):dict(rows=entity_rows[ability],dropped=entity_overflow[ability],
+                                                     rate=(entity_overflow[ability]/entity_rows[ability]
+                                                           if entity_rows[ability] else None))
+                                   for ability in range(1,39)},
                   mean_reward=sum(totals[k] for k in ('reward_outcome','reward_kills','reward_deaths'))/decisions,
                   pool_steps=list(pool_steps), opponent_game_decisions=counters['opponent_game_decisions'],
                   script_assignments={}, env=dict(log.get('env', {})),
