@@ -31955,7 +31955,10 @@ impl RolloutWorld {
                     E_ENABLED | E_TRIGGER
                 };
                 let (offset, extents) = data.drill.hitboxes[hitbox_index];
-                let basis = slot.drill.hitbox_up.perp_cw();
+                // HitboxCombo assigns each spawned FixTransform's rotation,
+                // which rebuilds `right` from the angle. It does not inherit
+                // the Drill body's retained up/right basis.
+                let basis = Vec2::angle(slot.drill.hitbox_rotation);
                 let center =
                     slot.drill.hitbox_position + (offset * slot.player_scale).complex_mul(basis);
                 let collider = OrientedBox::from_basis(
