@@ -2266,6 +2266,10 @@ pub struct RolloutWorld {
     pub platform_entities: Vec<usize>,
     pub arrows: Vec<Arrow>,
     pub ability_pickups: Vec<AbilityPickup>,
+    /// Pure tick-indexed DynamicAbilityPickup wobble values. Kept across
+    /// episode resets so repeated matches do not redo identical Q32 sine
+    /// interpolation.
+    pickup_wobble_cache: Vec<Fix>,
     pub black_holes: Vec<BlackHoleState>,
     pub duplicated_rocks: Vec<DuplicatedRock>,
     pub abilityless_clones: Vec<AbilitylessClone>,
@@ -2421,6 +2425,7 @@ impl RolloutWorld {
             platform_entities: Vec::with_capacity(64),
             arrows: Vec::with_capacity(64),
             ability_pickups: Vec::with_capacity(4),
+            pickup_wobble_cache: Vec::with_capacity(2048),
             black_holes: Vec::with_capacity(16),
             duplicated_rocks: Vec::with_capacity(MAX_PLAYERS * 8),
             abilityless_clones: Vec::with_capacity(MAX_PLAYERS * 16),
@@ -2628,6 +2633,7 @@ impl RolloutWorld {
             platform_entities: _,
             arrows: _,
             ability_pickups: _,
+            pickup_wobble_cache: _,
             black_holes: _,
             duplicated_rocks: _,
             abilityless_clones: _,
@@ -3787,7 +3793,13 @@ impl RolloutWorld {
         }
     }
 
-    fn ability_pickup_tick(&mut self, index: usize, data: &data::RolloutData, _updater_dt: Fix) {
+    fn ability_pickup_tick(
+        &mut self,
+        index: usize,
+        data: &data::RolloutData,
+        _updater_dt: Fix,
+        wobble: Fix,
+    ) {
         let pickup = &data.pickup;
         if self.blink_object_hidden(self.ability_pickups[index].entity) {
             return;
@@ -3848,7 +3860,14 @@ impl RolloutWorld {
         };
         let mut height = self.ability_pickups[index].position.y - floor;
         let mut platform_height = None;
-        for platform in &self.platforms {
+        let bottom = Vec2::new(center.x, center.y - height);
+        let lo = Vec2::new(center.x, center.y.min(bottom.y));
+        let hi = Vec2::new(center.x, center.y.max(bottom.y));
+        let mut candidates = self.bounds.candidates(lo, hi);
+        while candidates != 0 {
+            let platform_index = candidates.trailing_zeros() as usize;
+            candidates &= candidates - 1;
+            let platform = &self.platforms[platform_index];
             if let Some(hit) = platform.collider.raycast(center, -Vec2::UP)
                 && platform_height.is_none_or(|nearest| hit.near < nearest)
             {
@@ -3867,8 +3886,6 @@ impl RolloutWorld {
             self.ability_pickups[index].body.velocity *= Fix::from_f64(0.95);
         }
         let divisor = height.max(Fix::ONE);
-        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-        let wobble = (sim_time * pickup.wobble_speed).sin() * pickup.wobble_amount;
         let state = &mut self.ability_pickups[index];
         state.body.velocity.y -= pickup.gravity * DT;
         state.body.force.y += wobble + pickup.up_force / divisor;
@@ -3888,17 +3905,32 @@ impl RolloutWorld {
         data: &data::RolloutData,
         updater_dt: Fix,
     ) {
+        let wobble = self.ability_pickup_wobble(data);
         for index in 0..self.ability_pickups.len() {
             if self.ability_pickups[index].hierarchy_base < hierarchy {
-                self.ability_pickup_tick(index, data, updater_dt);
+                self.ability_pickup_tick(index, data, updater_dt, wobble);
             }
         }
     }
 
     fn ability_pickups_tick_remaining(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        let wobble = self.ability_pickup_wobble(data);
         for index in 0..self.ability_pickups.len() {
-            self.ability_pickup_tick(index, data, updater_dt);
+            self.ability_pickup_tick(index, data, updater_dt, wobble);
         }
+    }
+
+    fn ability_pickup_wobble(&mut self, data: &data::RolloutData) -> Fix {
+        let tick = self.tick as usize;
+        if self.pickup_wobble_cache.len() <= tick {
+            self.pickup_wobble_cache.resize(tick + 1, Fix::MAX);
+        }
+        if self.pickup_wobble_cache[tick] == Fix::MAX {
+            let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+            self.pickup_wobble_cache[tick] =
+                (sim_time * data.pickup.wobble_speed).sin() * data.pickup.wobble_amount;
+        }
+        self.pickup_wobble_cache[tick]
     }
 
     fn ability_pickups_integrate(&mut self, data: &data::RolloutData, physics_dt: Fix) {

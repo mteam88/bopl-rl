@@ -54,6 +54,25 @@ refreshes, retains scratch allocations, compacts replay actions, and replaces
 restoring Q32 division/square-root work with result-identical integer paths.
 `just verify` passes the complete golden differential suite after these changes.
 
+### 2026-09-17 pickup-updater follow-up
+
+Restoring `DynamicAbilityPickup.UpdateSim` for matches without Portal Gun made
+death-dropped pickups C#-faithful, but its direct platform scan and repeated
+wobble interpolation regressed the default loadout. The exact downward query
+now uses the existing conservative platform-bounds mask (retaining ascending
+platform order and the original narrow-phase test), and the global wobble is
+computed once per updater pass and cached by tick across episode resets.
+
+Five 120,000-tick Q32 repetitions, interleaved on CPU 11, measured the version
+with the restored updater before and after these optimizations:
+
+| players | before median ticks/s | after median ticks/s | improvement |
+|---:|---:|---:|---:|
+| 2 | 579,205 | 622,773 | 1.08x |
+| 6 | 185,328 | 240,311 | 1.30x |
+
+All 22 `rust_ab/*_broad_ab.sh` families passed after the performance change.
+
 ## 1. Measured state
 
 Per update (448 agent rows x 128 steps = 57,344 rows; 256 physical players
