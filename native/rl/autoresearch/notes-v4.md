@@ -300,3 +300,26 @@ rebuilt in place between runs): **+1.2..+2.8%**, train_s 0.1091-0.1105 vs
 
 Running total: 169.0k -> ~221.6k (median of 3) (**+31%**, exact-class
 only). Train-bound (0.110 vs 0.091).
+
+### L12 and stream priority: where the contention lands, discard
+
+L12 (green-context partition, `BOPL_GPU_SPLIT`), A/B 2x2 at load 6.3-6.7:
+rollout 16 SMs / train 32: 155.3-155.9k (rollout 0.157 s, train 0.0874);
+24 / 24: 205.8-206.0k (0.118 / 0.106); shared (default): 223.1-223.3k.
+Then the priority itself, shared GPU (`BOPL_TRAIN_PRIO`, new, kept as a
+diagnostic knob in the patch; the default is unchanged): equal 202.0k
+(train 0.0825, rollout 0.1207), train ahead 199.2k (train 0.0711, rollout
+0.1225). A mix (first k of the 4 passes on a second, high-priority train
+stream with event-ordered hops; the two train streams never run
+concurrently, the GEMM tune list covered both) k=1: 224.2k (+0.6%: train
+0.1086, rollout 0.101); k=2: 221.6k. Reverted.
+
+What these say, with the serial run (`BOPL_ASYNC=0`, 61c317ff): rollout
+alone 71.6 ms per update (eval_gpu 0.243 ms per buffer step against 0.418
+shared, env 0.309), train alone 63.0 ms, serial wall 136 ms (180.8k);
+overlapped wall 110 ms (223k). The overlap recovers 26 of the 64 ms it
+could: the GPU is saturated, the wall is about the sum of the two sides'
+GPU work, and priority / partition only choose which side the contention
+shows up in. The rollout's chain (~19 kernels per 64-row buffer step, each
+tiny and latency-bound, 512 steps per update) is ~40% of the GPU's time,
+the train pass ~60%. From here only less GPU work counts, on either side.
