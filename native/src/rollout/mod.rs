@@ -10803,13 +10803,20 @@ impl RolloutWorld {
         // SimpleSparkNode.UpdateLightningLine runs before DetPhysics, so this
         // pose uses centers synchronized by the preceding physics pass and
         // remains one pass behind the node rows.
-        let node_up = Vec2::angle(node.collider_rotation).perp();
-        let child_up = Vec2::angle(child_node.collider_rotation).perp();
-        let from = node.collider_center - node_up * data.tesla.node_collider_offset.y * node.scale
-            + node_up * data.tesla.hitbox_offset_y * node.scale;
-        let to = child_node.collider_center
-            - child_up * data.tesla.node_collider_offset.y * child_node.scale
-            + child_up * data.tesla.hitbox_offset_y * child_node.scale;
+        let node_right = Vec2::angle(node.collider_rotation);
+        let child_right = Vec2::angle(child_node.collider_rotation);
+        // SyncGameObject reconstructs the root with ComplexMul(right,
+        // offset), then SimpleSparkNode adds `up * _hitBoxOffsetY`. Keeping
+        // that operation order matters for negative Q32 products by one raw
+        // unit; `right.perp() * offset.y` is algebraically equivalent but not
+        // bit-identical.
+        let node_root = node.collider_center
+            - (data.tesla.node_collider_offset * node.scale).complex_mul(node_right);
+        let child_root = child_node.collider_center
+            - (data.tesla.node_collider_offset * child_node.scale).complex_mul(child_right);
+        let from = node_root + node_right.perp() * (data.tesla.hitbox_offset_y * node.offset_scale);
+        let to = child_root
+            + child_right.perp() * (data.tesla.hitbox_offset_y * child_node.offset_scale);
         let delta = to - from;
         let distance = delta.length();
         let direction = if distance != Fix::ZERO {
