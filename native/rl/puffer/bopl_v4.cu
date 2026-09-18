@@ -9,7 +9,9 @@
  *            minibatch by a deterministic per-sample prefix sum into one
  *            packed bf16 matrix (rows, KPAD); the row count lives on the
  *            device so the launch shape is fixed (CUDA-graph capture); the
- *            GEMMs run over the fixed capacity with the tail kept at zero
+ *            GEMMs run over the capacity, or in training over the batch's
+ *            row count rounded up to a bucket (enc_prepass: one train graph
+ *            per bucket tuple), with the tail kept at zero
  *   h1     = ReLU(W1 x + E[id])   h2 = ReLU(W2 h1)               cuBLAS bf16
  *            (E[id] as the one-hot id block of the packed row against E^T
  *            appended to W1: one GEMM, no gathered addend)
@@ -516,6 +518,11 @@ struct EncActs {
     Gather gather;
     const float* saved_input;
     int B, cap[SETS];
+    int act[SETS];          /* rows this pass's GEMMs / tails run over: cap, or the prepass's bucket (see enc_prepass) */
+    int prepassed;          /* enc_prepass ran count_rows / scan_rows for the coming forward */
+    int* host_totals;       /* pinned, mapped (SETS): the prepass's readback, written by publish_totals */
+    int* host_totals_dev;   /* its device pointer */
+    cudaEvent_t ready_event;   /* blocking-sync event the prepass sleeps on */
     PrecisionTensor flat_input, flat_pre, joined, fused, out, priv;
     FloatTensor ln_mean, ln_rstd;
     IntTensor counts, offsets, totals, overflow, ids[SETS], sample[SETS], winner[SETS];
@@ -539,6 +546,63 @@ static int g_v4_train_rows = 0;
 
 static bf16* bfp(IntTensor& t) { return (bf16*)t.data; }
 
+/* ---- active rows ------------------------------------------------------------
+ * The set GEMMs' M is baked into the captured train graph, but a batch packs
+ * far fewer rows than the capacity (the budget sizes the buffers for the
+ * worst batch; the bench workload needs 2 / 6 / 11 / 2 rows per sample against
+ * 6 / 12 / 20 / 8), so most of the set MLP work was on the zero tail. The
+ * trainer calls enc_prepass before the graph launch / capture: it runs
+ * count_rows + scan_rows on the stream, reads the totals back (one host
+ * sync) and rounds each set's total up to a granule (cap / ACTIVE_BUCKETS,
+ * a TILE multiple) -> act[s]; the pass's GEMMs, tails and masks run over
+ * act[s] rows and the bucket tuple is the trainer's graph key (one captured
+ * graph per tuple seen). Rows [total, act) are zero as before, rows
+ * [act, cap) are never touched; the drop semantics (scatter's cap) are
+ * unchanged. The GEMM shapes change with the bucket (tile order, split-K),
+ * so fp32 sums reassociate: the check_v4 class, not bit-identical.
+ * BOPL4_ACTIVE_ROWS=0 restores the fixed capacity. */
+constexpr int ACTIVE_BUCKETS = 16;
+static int active_granule(int cap) { int g = (cap / ACTIVE_BUCKETS + TILE - 1) / TILE * TILE; return g < TILE ? TILE : g; }
+__global__ void publish_totals(const int* totals, int* host) { if (threadIdx.x < SETS) host[threadIdx.x] = totals[threadIdx.x]; }
+static void count_and_scan(EncActs* a, PrecisionTensor input, cudaStream_t stream) {
+    int B = a->B;
+    count_rows<<<grid_size(B * SETS), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->counts.data);
+    scan_rows<<<SETS, 1024, 0, stream>>>(a->counts.data, B, make_int4(a->cap[0], a->cap[1], a->cap[2], a->cap[3]), a->offsets.data, a->totals.data, a->overflow.data);
+}
+/* Returns the graph key (>= 1) of the coming forward, 0 when the feature is off
+ * (act = cap, count / scan run inside the forward). Not for use under capture. */
+static int enc_prepass(void* activations, PrecisionTensor input, cudaStream_t stream) {
+    auto* a = (EncActs*)activations;
+    static int on = env_int("BOPL4_ACTIVE_ROWS", 1);
+    if (!on) return 0;
+    if (!a->host_totals) {
+        if (cudaHostAlloc((void**)&a->host_totals, SETS * sizeof(int), cudaHostAllocMapped) != cudaSuccess
+            || cudaHostGetDevicePointer((void**)&a->host_totals_dev, a->host_totals, 0) != cudaSuccess)
+            throw std::runtime_error("Bopl v4: pinned totals allocation failed");
+    }
+    count_and_scan(a, input, stream);
+    /* The readback waits behind the previous pass's graph (~25 ms): a kernel
+     * writes the totals into mapped host memory (a cudaMemcpyAsync queued that
+     * long on the copy engine stalled the buffer streams' action copies behind
+     * it: rollout 0.089 -> 0.125 s) and the thread sleeps on a blocking event,
+     * as the trainer does between updates. */
+    if (!a->ready_event && cudaEventCreateWithFlags(&a->ready_event, cudaEventDisableTiming | cudaEventBlockingSync) != cudaSuccess)
+        throw std::runtime_error("Bopl v4: prepass event creation failed");
+    publish_totals<<<1, 32, 0, stream>>>(a->totals.data, a->host_totals_dev);
+    if (cudaEventRecord(a->ready_event, stream) != cudaSuccess || cudaEventSynchronize(a->ready_event) != cudaSuccess)
+        throw std::runtime_error("Bopl v4: prepass readback failed");
+    int key = 0;
+    for (int s = 0; s < SETS; s++) {
+        int g = active_granule(a->cap[s]), act = (a->host_totals[s] + g - 1) / g * g;
+        if (act < g) act = g;
+        if (act > a->cap[s]) act = a->cap[s];
+        a->act[s] = act;
+        key = key * (ACTIVE_BUCKETS + 1) + (act + g - 1) / g;
+    }
+    a->prepassed = 1;
+    return key + 1;
+}
+
 static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTensor input, cudaStream_t stream) {
     auto* w = (EncWeights*)weights; auto* a = (EncActs*)activations;
     int B = a->B, H = w->hidden, D = w->D, I = w->I, FD = w->flat_dim, LDJ = FD + SETS * 2 * D;
@@ -556,8 +620,8 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     relu_into<<<grid_size(B * FD), BLOCK_SIZE, 0, stream>>>(a->flat_pre.data, a->joined.data, B, FD, LDJ);
     prof_mark("enc.flat_gemm", stream);
     /* sets */
-    count_rows<<<grid_size(B * SETS), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->counts.data);
-    scan_rows<<<SETS, 1024, 0, stream>>>(a->counts.data, B, make_int4(a->cap[0], a->cap[1], a->cap[2], a->cap[3]), a->offsets.data, a->totals.data, a->overflow.data);
+    if (!a->prepassed) { count_and_scan(a, input, stream); for (int s = 0; s < SETS; s++) a->act[s] = a->cap[s]; }
+    a->prepassed = 0;
     scatter_rows<0><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[0], bfp(a->xpack[0]), a->ids[0].data, a->sample[0].data);
     scatter_rows<1><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[1], bfp(a->xpack[1]), a->ids[1].data, a->sample[1].data);
     scatter_rows<2><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[2], bfp(a->xpack[2]), a->ids[2].data, a->sample[2].data);
@@ -565,14 +629,15 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     prof_mark("enc.count_scan_scatter", stream);
     for (int s = 0; s < SETS; s++) {
         const int* total = a->totals.data + s;
-        int K = SPEC[s].kpad, cap = a->cap[s];
-        /* h1 = ReLU([X | 1_id] [W1 | E^T]^T) = ReLU(W1 x + E[id]) over the capacity */
-        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->xpack[s]), K, nullptr, 0, a->totals.data, s, cap);
-        void* mask = a->relu_mask[s].data;   /* the backward's DRELU bitmask when registered (training, cap >= LT_AUX_MIN_ROWS) */
-        lt_gemm(false, true, cap, I, K, bfp(a->xpack[s]), K, bfp(a->w1b[s]), K, nullptr, bfp(a->h1[s]), I, true,
+        int K = SPEC[s].kpad, act = a->act[s];
+        /* h1 = ReLU([X | 1_id] [W1 | E^T]^T) = ReLU(W1 x + E[id]) over the active rows */
+        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->xpack[s]), K, nullptr, 0, a->totals.data, s, act);
+        /* the backward's DRELU bitmask when registered (training) and the pass is wide enough for RELU_AUX to round like RELU */
+        void* mask = act >= LT_AUX_MIN_ROWS ? a->relu_mask[s].data : nullptr;
+        lt_gemm(false, true, act, I, K, bfp(a->xpack[s]), K, bfp(a->w1b[s]), K, nullptr, bfp(a->h1[s]), I, true,
                 mask ? CUBLASLT_EPILOGUE_RELU_AUX : CUBLASLT_EPILOGUE_RELU, stream, mask);
         /* h2 = ReLU(h1 W2^T); W2 stored (D, I) */
-        lt_gemm(false, true, cap, D, I, bfp(a->h1[s]), I, bfp(a->w2b[s]), I, nullptr, bfp(a->h2[s]), D, true, CUBLASLT_EPILOGUE_RELU, stream);
+        lt_gemm(false, true, act, D, I, bfp(a->h1[s]), I, bfp(a->w2b[s]), I, nullptr, bfp(a->h2[s]), D, true, CUBLASLT_EPILOGUE_RELU, stream);
         if (g_set_stage.forward)
             g_set_stage.forward(s, bfp(a->h2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
         pool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, a->cap[s], s,
@@ -596,25 +661,25 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
     prof_mark("bwd.enc.fusion_flat", stream);
     for (int s = SETS - 1; s >= 0; s--) {
         const int* total = a->totals.data + s;
-        int K = SPEC[s].kpad, cap = a->cap[s];
+        int K = SPEC[s].kpad, act = a->act[s];
         unpool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
                                          a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool);
-        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->dh2[s]), D, nullptr, 0, a->totals.data, s, cap);
+        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->dh2[s]), D, nullptr, 0, a->totals.data, s, act);
         if (g_set_stage.backward)
             g_set_stage.backward(s, bfp(a->h2[s]), bfp(a->dh2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
         prof_mark("bwd.enc.unpool", stream);
-        /* dW2 (D, I) = dh2^T h1 over the capacity (zero rows past the count) */
-        lt_gemm(true, false, D, I, cap, bfp(a->dh2[s]), D, bfp(a->h1[s]), I, nullptr, a->wgrad_w2[s].data, I, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
+        /* dW2 (D, I) = dh2^T h1 over the active rows (zero rows past the count) */
+        lt_gemm(true, false, D, I, act, bfp(a->dh2[s]), D, bfp(a->h1[s]), I, nullptr, a->wgrad_w2[s].data, I, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         prof_mark("bwd.enc.dW2", stream);
         /* dh1 = (dh2 W2) * ReLU'(h1), written over h2 (no longer needed) */
         bf16* dh1 = bfp(a->h2[s]);
-        void* mask = a->relu_mask[s].data;
-        lt_gemm(false, false, cap, I, D, bfp(a->dh2[s]), D, bfp(a->w2b[s]), I, nullptr, dh1, I, true,
+        void* mask = act >= LT_AUX_MIN_ROWS ? a->relu_mask[s].data : nullptr;   /* as the forward decided */
+        lt_gemm(false, false, act, I, D, bfp(a->dh2[s]), D, bfp(a->w2b[s]), I, nullptr, dh1, I, true,
                 mask ? CUBLASLT_EPILOGUE_DRELU : CUBLASLT_EPILOGUE_DEFAULT, stream, mask);
-        if (!mask) mask_rows<<<grid_long((long)cap * I), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)cap * I);
+        if (!mask) mask_rows<<<grid_long((long)act * I), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I);
         prof_mark("bwd.enc.dh1", stream);
         /* dW1 (I, K) = dh1^T X into the scratch, then keep the first `features` of the padded K */
-        lt_gemm(true, false, I, K, cap, dh1, I, bfp(a->xpack[s]), K, nullptr, a->acc.data, K, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
+        lt_gemm(true, false, I, K, act, dh1, I, bfp(a->xpack[s]), K, nullptr, a->acc.data, K, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         reduce_partials<<<grid_size(I * SPEC[s].features), BLOCK_SIZE, 0, stream>>>(a->acc.data, 1, 0, I, K, SPEC[s].features, a->wgrad_w1[s].data, 0);
         prof_mark("bwd.enc.dW1", stream);
         if (SPEC[s].id_col >= 0) {   /* the embedding gradient: dW1's one-hot columns; entity set first (s=2), slot adds */
@@ -662,7 +727,7 @@ static void enc_reg_forward(EncWeights* w, EncActs* a, Allocator* alloc, int B) 
     for (int s = 0; s < SETS; s++) {
         int cap = (B * w->budget[s] + TILE - 1) / TILE * TILE;
         if (cap > B * SPEC[s].rows) cap = (B * SPEC[s].rows + TILE - 1) / TILE * TILE;
-        a->cap[s] = cap;
+        a->cap[s] = a->act[s] = cap;
         a->ids[s] = {.shape = {cap}}; a->sample[s] = {.shape = {cap}}; a->winner[s] = {.shape = {B, D}};
         a->w1b[s] = {.shape = {I, SPEC[s].kpad / 2}}; a->w2b[s] = {.shape = {D, I / 2}};
         a->xpack[s] = {.shape = {cap, SPEC[s].kpad / 2}}; a->h1[s] = {.shape = {cap, I / 2}}; a->h2[s] = {.shape = {cap, D / 2}};
@@ -991,6 +1056,12 @@ static void bopl_create_v4_decoder(Decoder* decoder) {
 static bool bopl_is_v4_encoder(const Encoder& e) { return e.forward == v4::enc_forward; }
 static void bopl_v4_bind_gather(void* activations, const precision_t* rollout_obs, const int* idx, int T, int B_total) {
     v4::enc_bind_gather(activations, rollout_obs, idx, T, B_total);
+}
+/* Before a training pass (never under capture): pack-count the minibatch and
+ * return the pass's graph key (>= 1; 0 = fixed capacity, see enc_prepass).
+ * The trainer keeps one captured train graph per key. */
+static int bopl_v4_train_prepass(void* activations, PrecisionTensor obs, cudaStream_t stream) {
+    return v4::enc_prepass(activations, obs, stream);
 }
 /* The last training forward's packing, for the trainer's log: out[0..3] the
  * dropped rows per set, out[4..7] the rows packed per set (clamped to the

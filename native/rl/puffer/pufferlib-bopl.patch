@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
---- pristine-src/bindings.cu	2026-09-16 18:31:54.835509749 -0400
-+++ puffer-overlay/bindings.cu	2026-09-17 12:10:27.932210708 -0400
+--- pristine-src/bindings.cu	2026-09-18 16:41:04.170703556 -0400
++++ puffer-overlay/bindings.cu	2026-09-18 16:45:18.947315563 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -256,9 +256,9 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
          .def("num_params", [](PuffeRL& self) -> int64_t {
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
---- pristine-src/kernels.cu	2026-09-16 18:31:54.835509749 -0400
-+++ puffer-overlay/kernels.cu	2026-09-16 23:40:30.197645103 -0400
-@@ -6,6 +7,8 @@
+--- pristine-src/kernels.cu	2026-09-18 16:41:04.170703556 -0400
++++ puffer-overlay/kernels.cu	2026-09-18 16:45:18.947703685 -0400
+@@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
  #include <cublas_v2.h>
@@ -267,7 +267,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
  #include <curand.h>
  #include <cassert>
  #include <stdlib.h>
-@@ -159,6 +162,14 @@
+@@ -159,6 +161,14 @@
      int src_row, int dst_row, int row_bytes) {
      const char* s = src + (int64_t)src_row * row_bytes;
      char* d = dst + (int64_t)dst_row * row_bytes;
@@ -282,7 +282,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      for (int i = threadIdx.x; i < row_bytes; i += blockDim.x) {
          d[i] = s[i];
      }
-@@ -248,17 +259,185 @@
+@@ -248,17 +258,185 @@
  // Strides derived from M, N, K assuming tightly packed row-major storage.
  static const size_t CUBLAS_WS_BYTES = 32 * 1024 * 1024;
  
@@ -475,7 +475,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
  static inline void cublasGemmExDense(
          cublasOperation_t op_a, cublasOperation_t op_b,
          int M, int N, int K, void* A, void* B, void* C,
-@@ -266,11 +445,10 @@
+@@ -266,11 +444,10 @@
      int lda = (op_a == CUBLAS_OP_N) ? K : M;
      int ldb = (op_b == CUBLAS_OP_N) ? N : K;
  
@@ -490,7 +490,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
  }
  
  // out(...,N) = a(...,K) @ b(N,K)^T  — leading dims folded into M
-@@ -446,8 +624,22 @@
+@@ -446,8 +623,22 @@
  
  cudaError_t alloc_create(Allocator* alloc) {
      if (alloc->total_bytes == 0) return cudaSuccess;
@@ -515,9 +515,9 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      long offset = 0;
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
---- pristine-src/models.cu	2026-09-16 18:31:54.835509749 -0400
-+++ puffer-overlay/models.cu	2026-09-16 23:40:30.198171065 -0400
-@@ -147,8 +148,16 @@
+--- pristine-src/models.cu	2026-09-18 16:41:04.170703556 -0400
++++ puffer-overlay/models.cu	2026-09-18 16:45:18.948146010 -0400
+@@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
      PrecisionTensor grad_input;        // (B, T, H) highway gate gradient w.r.t. input
@@ -534,7 +534,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
  // Checkpointing trades off partial recomputation for memory bandwidth.
  #define CHECKPOINT_INTERVAL 4
  __global__ void mingru_scan_forward(PrefixScan scan) {
-@@ -161,6 +170,7 @@
+@@ -161,6 +169,7 @@
      const precision_t* __restrict__ combined = scan.combined_ptr;
      const precision_t* __restrict__ state = scan.state_ptr;
      const precision_t* __restrict__ input = scan.input_ptr;
@@ -542,7 +542,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
  
      int idx = blockIdx.x * blockDim.x + threadIdx.x;
      if (idx >= B * H) {
-@@ -200,11 +210,34 @@
+@@ -200,11 +209,34 @@
      int out_curr = out_base;
      int t_offset = 0;
  
@@ -581,7 +581,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
  
          float log_coeff_val;
          log_coeffs_and_values_fwd(gate_val, hidden_val, &log_coeff_val, &log_value);
-@@ -245,8 +278,8 @@
+@@ -245,8 +277,8 @@
      precision_t* __restrict__ grad_state = scan.grad_state.data;
      precision_t* __restrict__ grad_input = scan.grad_input.data;
      const precision_t* __restrict__ combined = scan.combined_ptr;
@@ -591,7 +591,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      const float* __restrict__ a_star_buf = scan.a_star.data;
      const float* __restrict__ s_buf = scan.s_vals.data;
      const float* __restrict__ log_values_buf = scan.log_values_buf.data;
-@@ -280,10 +313,16 @@
+@@ -280,10 +312,16 @@
      float acc = 0.0;
      float s_val_next = 0.0;
      float carry_grad_a = 0.0;
@@ -611,7 +611,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
  
          // Chunk storage in registers
          float chunk_a_star[CHECKPOINT_INTERVAL];
-@@ -291,6 +330,7 @@
+@@ -291,6 +329,7 @@
          float chunk_log_values[CHECKPOINT_INTERVAL];
          float chunk_hidden[CHECKPOINT_INTERVAL];
          float chunk_gate[CHECKPOINT_INTERVAL];
@@ -619,7 +619,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
  
          // Load checkpoint from global memory
          int ckpt_buf_idx = buf_base + chunk_start * H;
-@@ -298,13 +338,24 @@
+@@ -298,13 +337,24 @@
          float recomp_s = s_buf[ckpt_buf_idx];
          float recomp_log_value = log_values_buf[ckpt_buf_idx];
  
@@ -646,7 +646,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
              float lc;
              log_coeffs_and_values_fwd(gv, hv, &lc, &recomp_log_value);
              recomp_a_star += lc;
-@@ -319,7 +370,9 @@
+@@ -319,7 +369,9 @@
              chunk_gate[i] = gv;
          }
  
@@ -657,7 +657,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
              int t = chunk_start + 1 + i;
              int t_offset = (t - 1) * H3;
  
-@@ -348,17 +401,22 @@
+@@ -348,17 +400,22 @@
              float grad_log_h = grad_scan_result * scan_result;
              float grad_s = grad_log_h;
  
@@ -685,7 +685,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
              float grad_g, grad_h;
              log_coeffs_and_values_bwd(grad_a, grad_z, gate_val, hidden_val, &grad_g, &grad_h);
  
-@@ -368,22 +426,12 @@
+@@ -368,22 +425,12 @@
          }
      }
  
@@ -714,7 +714,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
  }
  
  __global__ void sum_rows_to_precision_kernel(precision_t* __restrict__ dst,
-@@ -407,7 +455,9 @@
+@@ -407,7 +454,9 @@
          return;
      }
      int row = idx / od_plus_1, col = idx % od_plus_1;
@@ -725,7 +725,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
  }
  
  static PrecisionTensor encoder_forward(void* w, void* activations, PrecisionTensor input, cudaStream_t stream) {
-@@ -479,16 +529,48 @@
+@@ -479,16 +528,48 @@
      bool continuous;
  };
  
@@ -774,7 +774,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      puf_mm(&input, &dw->weight, &a->out, stream);
      return a->out;
  }
-@@ -516,18 +598,24 @@
+@@ -516,18 +597,24 @@
      DecoderWeights* dw = (DecoderWeights*)w;
      DecoderActivations* a = (DecoderActivations*)activations;
      int od1 = dw->output_dim + 1;
@@ -801,7 +801,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      alloc_register(grads,&a->wgrad_scratch);
      if (dw->continuous) alloc_register(grads,&a->logstd_scratch);
  }
-@@ -537,6 +625,7 @@
+@@ -537,6 +624,7 @@
      DecoderActivations* a = (DecoderActivations*)activations;
      a->out = {.shape = {B, dw->output_dim + 1}};
      alloc_register(alloc,&a->out);
@@ -809,7 +809,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
  }
  
  static void* decoder_create_weights(void* self) {
-@@ -560,14 +649,25 @@
+@@ -560,14 +648,25 @@
      DecoderActivations* a = (DecoderActivations*)activations;
      int B_TT = a->saved_input.shape[0];
      int od = dw->output_dim, od1 = od + 1;
@@ -839,7 +839,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      return a->grad_input;
  }
  
-@@ -731,6 +831,7 @@
+@@ -731,6 +830,7 @@
          a->scan_bufs[i].combined_ptr = a->combined_bufs[i].data;
          a->scan_bufs[i].state_ptr = state_i.data;
          a->scan_bufs[i].input_ptr = a->saved_inputs[i].data;
@@ -848,9 +848,9 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
          x = a->scan_bufs[i].out;
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
---- pristine-src/muon.cu	2026-09-16 18:31:54.835563921 -0400
-+++ puffer-overlay/muon.cu	2026-09-16 23:40:30.198764624 -0400
-@@ -83,6 +84,68 @@
+--- pristine-src/muon.cu	2026-09-18 16:41:04.170703556 -0400
++++ puffer-overlay/muon.cu	2026-09-18 16:45:18.948518373 -0400
+@@ -83,6 +83,68 @@
      {2.8366, -3.0525, 1.2012},
  };
  
@@ -919,7 +919,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  struct Muon {
      double momentum, weight_decay, eps;
      float lr_val_init;
-@@ -98,8 +161,192 @@
+@@ -98,8 +160,192 @@
      Allocator* param_alloc;  // params allocator — shapes used by muon_step
      ncclComm_t nccl_comm;
      int world_size;
@@ -1112,7 +1112,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  void muon_init(Muon* m, Allocator* param_alloc, double lr_val,
          double momentum, double eps, double weight_decay,
          Allocator* alloc) {
-@@ -144,6 +391,54 @@
+@@ -144,6 +390,54 @@
          alloc_register(alloc, &m->x_buf);
          alloc_register(alloc, &m->ns_norm_puf);
      }
@@ -1167,7 +1167,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  }
  
  void muon_post_create(Muon* m) {
-@@ -168,6 +463,21 @@
+@@ -168,6 +462,21 @@
      muon_norm_partials<<<clip_blocks, 256, 0, stream>>>(
          m->norm_partials.data, grads.data, numel(grads.shape));
      muon_norm_reduce<<<1, 256, 0, stream>>>(m->grad_norm_ptr, m->norm_partials.data, clip_blocks);
@@ -1190,9 +1190,9 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
          grads.data, m->grad_norm_ptr, max_grad_norm, 1e-6f, numel(grads.shape));
  
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
---- pristine-src/ocean.cu	2026-09-16 18:31:54.835563921 -0400
-+++ puffer-overlay/ocean.cu	2026-09-16 23:40:30.199264347 -0400
-@@ -3,6 +4,9 @@
+--- pristine-src/ocean.cu	2026-09-18 16:41:04.170703556 -0400
++++ puffer-overlay/ocean.cu	2026-09-18 16:45:18.948804593 -0400
+@@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
  #include "nethack.cu"
@@ -1202,7 +1202,7 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
  
  // ---- NMMO3 constants ----
  
-@@ -589,9 +593,24 @@
+@@ -589,9 +592,24 @@
          };
      } else if (env_name == "nethack") {
          create_nethack_encoder(enc);
@@ -1228,14 +1228,20 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 +    }
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
---- pristine-src/pufferlib.cu	2026-09-16 18:31:54.835563921 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-17 12:10:27.932851398 -0400
-@@ -1,3 +2,4 @@
+--- pristine-src/pufferlib.cu	2026-09-18 16:41:04.173539658 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-18 16:47:01.880862890 -0400
+@@ -1,15 +1,72 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
  #include <cuda_profiler_api.h>
  #include <nvtx3/nvToolsExt.h>
-@@ -10,6 +12,61 @@
+ #include <nvml.h>
+ #include <nccl.h>
+ #include <vector>
++#include <map>
+ 
+ #include <time.h>
+ #include "models.cu"
  #include "ocean.cu"
  #include "muon.cu"
  #include "vecenv.h"
@@ -1473,7 +1479,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      cudaGraphExec_t* fused_rollout_cudagraphs;  // [horizon][num_buffers]
      cudaGraphExec_t train_cudagraph;
      cudaStream_t* streams;  // per-buffer raw CUDA streams
-@@ -388,12 +557,161 @@
+@@ -388,12 +557,165 @@
      // worker thread only writes inside its own physical chunk.
      // Bank 0 = primary (learner). NULL = no layout set (primary owns full chunk).
      int* bank_layout;
@@ -1512,8 +1518,12 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +    cudaEvent_t rollout_ready_event;  // snapshot/zero work of rollouts_start; buffer streams wait on it
 +    cudaEvent_t train_done_event;     // cudaEventBlockingSync: the trainer thread sleeps, not spins, while training
 +    int train_wait_block;             // BOPL_TRAIN_WAIT=block (default) | spin (cudaStreamSynchronize)
-+    cudaGraphExec_t train_cudagraphs[2];  // per ready slot (the set encoder gathers obs in place)
-+    bool train_captured_slot[2];
++    // Bopl: per ready slot (the set encoder gathers obs in place) and, for
++    // policy v4, per row-bucket key of bopl_v4_train_prepass (the set GEMMs run
++    // over the minibatch's packed rows rounded up to a bucket, so the shape
++    // baked into the graph follows the batch); 0 = the fixed-shape graph.
++    std::map<int, cudaGraphExec_t> train_cudagraphs[2];
++    std::map<int, int> train_graph_seen[2];  // eager passes run under the key (a new key's first pass tunes the cuBLASLt plans)
 +    // Bopl async: spatial GPU partition (CUDA green contexts). Stream priority
 +    // only orders pending blocks; a training kernel whose resident blocks fill
 +    // the SMs still delays every one of the ~85 tiny inference kernels per
@@ -1636,7 +1646,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      static_vec_log(pufferl.vec, out);
      return out;
  }
-@@ -415,6 +733,44 @@
+@@ -415,6 +737,44 @@
      tl_stream = pufferl->streams[buf];
  }
  
@@ -1681,7 +1691,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  __global__ void rng_init(curandStatePhilox4_32_10_t* states, uint64_t seed, int n) {
      int idx = blockIdx.x * blockDim.x + threadIdx.x;
      if (idx < n) {
-@@ -499,8 +855,9 @@
+@@ -499,8 +859,9 @@
          const precision_t* __restrict__ action_mask, // (B, A_total) or nullptr
          int mask_stride,                      // 0 when action_mask is nullptr
          const signed char* __restrict__ head_consume, // (nverbs, num_atns) or nullptr
@@ -1693,7 +1703,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int fused_cols = dec_out.shape[1];
      int num_atns = numel(act_sizes_puf.shape);
      const int* act_sizes = act_sizes_puf.data;
-@@ -624,12 +981,148 @@
+@@ -624,12 +985,148 @@
      rng_states[idx] = state;
  }
  
@@ -1843,7 +1853,16 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      profile_begin("fused_rollout", hypers.profile);
  
      cudaStream_t current_stream = tl_stream;
-@@ -646,7 +1139,11 @@
+@@ -642,11 +1139,19 @@
+ 
+     bool capturing = pufferl->epoch == hypers.cudagraphs;
+     if (capturing) {
+-        assert(cudaStreamBeginCapture(current_stream, cudaStreamCaptureModeGlobal) == cudaSuccess
++        // Bopl: thread-local capture mode. The trainer thread runs eager
++        // passes (cuBLASLt plan tuning, first kernel loads) whenever it meets a
++        // new row-bucket key, which can coincide with these captures; in
++        // global mode those calls would fail from any thread.
++        assert(cudaStreamBeginCapture(current_stream, cudaStreamCaptureModeThreadLocal) == cudaSuccess
                  && "cudaStreamBeginCapture failed");
      }
  
@@ -1856,7 +1875,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      EnvBuf& env = pufferl->env;
      int block_size = pufferl->vec->total_agents / hypers.num_buffers;
      int start = buf * block_size;
-@@ -687,11 +1184,23 @@
+@@ -687,11 +1192,23 @@
      // Cudagraph capture absorbs the extra kernel launches.
      int num_banks = 1 + pufferl->num_frozen_banks;
      long act_cols = env.actions.shape[1];
@@ -1880,7 +1899,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
          Policy* p_bank;
          PolicyWeights* w_bank;
-@@ -699,7 +1208,9 @@
+@@ -699,7 +1216,9 @@
          PrecisionTensor* s_bank;
          if (b == 0) {
              p_bank = &pufferl->policy;
@@ -1891,7 +1910,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              a_bank = &pufferl->buffer_activations[buf];
              s_bank = &pufferl->buffer_states[buf];
          } else {
-@@ -722,6 +1233,15 @@
+@@ -722,6 +1241,15 @@
              mask_stride_b = mask_stride;
          }
  
@@ -1907,7 +1926,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          PrecisionTensor dec_puf = policy_forward(p_bank, *w_bank, *a_bank, obs_b, *s_bank, stream);
  
          PrecisionTensor p_logstd = {};
-@@ -733,16 +1253,42 @@
+@@ -733,16 +1261,42 @@
          // Offset RNG by bank_off so banks don't collide on per-buffer rng slots.
          int hc_stride_s = 0;
          const signed char* hc_dev_s = get_head_consume_dev(&hc_stride_s);
@@ -1955,7 +1974,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      if (capturing) {
          cudaGraph_t _graph;
-@@ -888,6 +1434,7 @@
+@@ -888,6 +1442,7 @@
      float pg_loss, total_entropy, logratio, ratio;
      float total_log_prob = 0.0f;
      total_entropy = 0.0f;
@@ -1963,7 +1982,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      // Discrete-only: per-head arrays needed across forward + backward
      float head_logsumexp[MAX_ATN_HEADS];
-@@ -896,7 +1443,7 @@
+@@ -896,7 +1451,7 @@
      int head_used[MAX_ATN_HEADS];
  
      int mask_base = (a.action_mask != nullptr)
@@ -1972,7 +1991,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      if (!a.is_continuous) {
          // consumed-head gating: heads the sampled verb (head 0) does not use
-@@ -915,7 +1462,7 @@
+@@ -915,7 +1470,7 @@
                                a.action_mask, mask_base, &lse, &ent, &lp);
              head_logsumexp[h] = lse;
              head_entropy[h] = ent;
@@ -1981,7 +2000,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              logits_offset += A;
          }
      } else {
-@@ -927,6 +1474,7 @@
+@@ -927,6 +1482,7 @@
              ppo_continuous_head(mean, log_std, action, &lp, &ent);
              total_log_prob += lp;
              total_entropy += ent;
@@ -1989,7 +2008,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          }
      }
  
-@@ -961,6 +1509,7 @@
+@@ -961,6 +1517,7 @@
              int act = head_act[h];
              float logsumexp = head_logsumexp[h];
              float ent = head_entropy[h];
@@ -1997,7 +2016,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
              for (int j = 0; j < A; ++j) {
                  float l = load_logit_masked(a.logits, logits_base, a.logits_stride_a,
-@@ -969,7 +1518,7 @@
+@@ -969,7 +1526,7 @@
                  float p = __expf(logp);
                  float d_logit = (j == act) ? d_new_logp : 0.0f;
                  d_logit -= p * d_new_logp;
@@ -2006,7 +2025,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
                  a.grad_logits[grad_logits_base + logits_offset + j] = d_logit;
              }
              logits_offset += A;
-@@ -989,7 +1538,7 @@
+@@ -989,7 +1546,7 @@
      }
  
      // Forward: loss partials
@@ -2015,7 +2034,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      block_losses[LOSS_PG][tid] = pg_loss * inv_NT;
      block_losses[LOSS_VF][tid] = v_loss * inv_NT;
      block_losses[LOSS_ENT][tid] = total_entropy * inv_NT;
-@@ -997,6 +1546,11 @@
+@@ -997,6 +1554,11 @@
      block_losses[LOSS_OLD_APPROX_KL][tid] = (-logratio) * inv_NT;
      block_losses[LOSS_APPROX_KL][tid] = ((ratio - 1.0f) - logratio) * inv_NT;
      block_losses[LOSS_CLIPFRAC][tid] = (fabsf(ratio - 1.0f) > a.clip_coef ? 1.0f : 0.0f) * inv_NT;
@@ -2027,7 +2046,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      } // end if (idx < total_elements)
  
  // Deterministic aggregation
-@@ -1021,6 +1575,259 @@
+@@ -1021,6 +1583,259 @@
      }
  }
  
@@ -2287,7 +2306,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  // Deterministic reduction of per-block PPO loss partials + count increment
  __global__ void ppo_loss_reduce(
          float* __restrict__ loss,
-@@ -1091,6 +1898,11 @@
+@@ -1091,6 +1906,11 @@
  // This is a huge kernel for a relatively cheap operation. But without this,
  // it's death by a thousand cuts with repeated kernel launches. Even graphed, you
  // blow up the memory bandwidth.
@@ -2299,7 +2318,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  void ppo_loss_fwd_bwd(
          PrecisionTensor& dec_out,    // (N, T, fused_cols) — fused logits+value from decoder
          PrecisionTensor& logstd,     // continuous logstd or empty
-@@ -1098,9 +1910,19 @@
+@@ -1098,9 +1918,19 @@
          IntTensor& act_sizes, FloatTensor& losses_acc,
          float clip_coef, float vf_clip_coef, float vf_coef, const float* ent_coef,
          PPOBuffersPuf& bufs, bool is_continuous,
@@ -2321,7 +2340,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int total = N * T;
  
      // Pointers into fused decoder output
-@@ -1111,7 +1933,9 @@
+@@ -1111,7 +1941,9 @@
      ppo_var_mean<<<1, 256, 0, stream>>>(
          graph.mb_advantages.data, adv_var_ptr, adv_mean_ptr, numel(graph.mb_advantages.shape));
  
@@ -2332,7 +2351,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      static float* ppo_partials_buf = nullptr;
      static int ppo_partials_capacity = 0;
-@@ -1135,7 +1959,7 @@
+@@ -1135,7 +1967,7 @@
          .returns = graph.mb_returns.data,
      };
  
@@ -2341,7 +2360,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              int hc_stride_l = 0;
          const signed char* hc_dev_l = get_head_consume_dev(&hc_stride_l);
  PPOKernelArgs args = {
-@@ -1144,13 +1968,16 @@
+@@ -1144,13 +1976,16 @@
          .grad_values_pred = bufs.grad_values.data,
          .logits = logits_ptr,
          .logstd = is_continuous ? logstd.data : nullptr,
@@ -2362,7 +2381,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          .head_consume = hc_dev_l,
          .hc_stride = hc_stride_l,
          .num_atns = (int)numel(act_sizes.shape),
-@@ -1160,9 +1987,15 @@
+@@ -1160,9 +1995,15 @@
          .logits_stride_n = T * fused_cols, .logits_stride_t = fused_cols, .logits_stride_a = 1,
          .values_stride_n = T * fused_cols, .values_stride_t = fused_cols,
          .is_continuous = is_continuous,
@@ -2379,7 +2398,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      ppo_loss_reduce<<<1, LOSS_N + 1, 0, stream>>>(
          bufs.loss_output.data, losses_acc.data, ppo_partials_buf, ppo_grid);
-@@ -1174,10 +2007,16 @@
+@@ -1174,10 +2015,16 @@
  #define PRIO_NUM_WARPS (PRIO_BLOCK_SIZE / PRIO_WARP_SIZE)
  __global__ void compute_prio_adv_reduction(
          const precision_t* __restrict__ advantages,
@@ -2397,7 +2416,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      float local_sum = 0.0f;
      for (int t = tx; t < stride; t += blockDim.x) {
-@@ -1196,7 +2035,8 @@
+@@ -1196,7 +2043,8 @@
      }
  }
  
@@ -2407,7 +2426,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      __shared__ float shmem[PRIO_NUM_WARPS];
      __shared__ float block_sum;
  
-@@ -1207,7 +2047,8 @@
+@@ -1207,7 +2055,8 @@
  
      float local_sum = 0.0f;
      for (int t = tx; t < length; t += blockDim.x) {
@@ -2417,7 +2436,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
      for (int s = PRIO_WARP_SIZE / 2; s >= 1; s /= 2) {
          local_sum += __shfl_down_sync(PRIO_FULL_MASK, local_sum, s);
-@@ -1223,13 +2064,14 @@
+@@ -1223,13 +2072,14 @@
              val += __shfl_down_sync(PRIO_FULL_MASK, val, s);
          }
          if (tx == 0) {
@@ -2434,7 +2453,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  }
  
-@@ -1265,6 +2107,7 @@
+@@ -1265,6 +2115,7 @@
  
  // Multinomial with replacement (uses cuRAND)
  __global__ void multinomial_sample(int* __restrict__ out_idx, const float* __restrict__ cdf,
@@ -2442,7 +2461,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          int B, int num_samples, uint64_t seed, const int64_t* __restrict__ offset_ptr) {
      int tid = blockIdx.x * blockDim.x + threadIdx.x;
      if (tid >= num_samples) return;
-@@ -1280,6 +2123,10 @@
+@@ -1280,6 +2131,10 @@
          if (cdf[mid] < u) lo = mid + 1;
          else hi = mid;
      }
@@ -2453,7 +2472,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      out_idx[tid] = lo;
  }
  
-@@ -1288,26 +2135,31 @@
+@@ -1288,26 +2143,31 @@
  // It is a major improvement in some complex environments
  // The values of alpha and beta found by sweeps will tell you
  // whether it is important for your task
@@ -2490,7 +2509,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  }
  
  // Experience the puffer advantage! Generalized advantage estimation + V-Trace
-@@ -1464,12 +2316,24 @@
+@@ -1464,12 +2324,24 @@
  }
  
  // Minor copy bandwidth optimizations
@@ -2519,7 +2538,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  }
  
-@@ -1496,9 +2360,9 @@
+@@ -1496,9 +2368,9 @@
  
  __global__ void select_copy(RolloutBuf rollouts, TrainGraph graph,
          const int* __restrict__ idx, const precision_t* __restrict__ advantages,
@@ -2531,7 +2550,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int src_row = idx[mb];
  
      // Compute row byte counts from tensor shapes
-@@ -1528,13 +2392,19 @@
+@@ -1528,13 +2400,19 @@
          }
          break;
      case 5:
@@ -2552,7 +2571,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  }
  
-@@ -1549,11 +2419,15 @@
+@@ -1549,11 +2427,15 @@
      // Update to HypersT& p
      HypersT& hypers = pufferl.hypers;
  
@@ -2571,7 +2590,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      RolloutBuf& rollouts = pufferl.train_rollouts;
      PrecisionTensor& advantages_puf = pufferl.advantages_puf;
  
-@@ -1561,8 +2435,21 @@
+@@ -1561,8 +2443,21 @@
      int obs_size = (ndim(src.observations.shape) >= 3) ? src.observations.shape[2] : 1;
      int num_atns = (ndim(src.actions.shape) >= 3) ? src.actions.shape[2] : 1;
  
@@ -2595,7 +2614,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      transpose_102<<<grid_size(T*B*num_atns), BLOCK_SIZE, 0, train_stream>>>(
          rollouts.actions.data, src.actions.data, T, B, num_atns);
      transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
-@@ -1575,15 +2462,23 @@
+@@ -1575,15 +2470,23 @@
          rollouts.ratio.data, src.ratio.data, T, B, 1);
      transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
          rollouts.values.data, src.values.data, T, B, 1);
@@ -2623,7 +2642,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      // Set importance weights to 1.0
      fill_precision_kernel<<<grid_size(numel(rollouts.ratio.shape)), BLOCK_SIZE, 0, train_stream>>>(
-@@ -1600,10 +2495,14 @@
+@@ -1600,10 +2503,14 @@
  
      Muon* muon = &pufferl.muon;
      int total_epochs = hypers.total_timesteps / batch_size;
@@ -2639,7 +2658,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      }
  
      // Annealed entropy coefficient — same cosine shape as lr. With PG signal
-@@ -1617,17 +2516,25 @@
+@@ -1617,17 +2524,25 @@
                                              current_epoch, total_epochs);
      }
      // copy ent_coef to the device buffer read by the loss kernel
@@ -2669,7 +2688,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          puf_zero(&advantages_puf, train_stream);
  
          profile_begin("compute_advantage", hypers.profile);
-@@ -1639,6 +2546,13 @@
+@@ -1639,6 +2554,13 @@
              zero_frozen_advantages_cuda(advantages_puf, apb,
                  pufferl.bank_layout[1], train_stream);
          }
@@ -2683,7 +2702,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          profile_end(hypers.profile);
  
          profile_begin("compute_prio", hypers.profile);
-@@ -1646,28 +2560,44 @@
+@@ -1646,30 +2568,55 @@
          long* train_rng_offset = pufferl.rng_offset_puf.data + hypers.num_buffers;
          prio_replay_cuda(advantages_puf, prio_alpha, minibatch_segments,
              hypers.total_agents, anneal_beta,
@@ -2727,18 +2746,30 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          profile_begin("train_forward_backward", hypers.profile);
 -        if (pufferl.train_captured) {
 -            cudaGraphLaunch(pufferl.train_cudagraph, train_stream);
-+        // Bopl: one train graph per ready slot (the gathering set encoder bakes
-+        // the slot's observation pointer in); captured on the first minibatch
-+        // at or after the warmup count that sees an uncaptured slot.
-+        if (pufferl.train_captured_slot[slot]) {
-+            cudaGraphLaunch(pufferl.train_cudagraphs[slot], train_stream);
++        // Bopl: one train graph per (ready slot, row-bucket key): the gathering
++        // set encoder bakes the slot's observation pointer in, and policy v4's
++        // prepass (count + scan + one readback, before the launch) sizes the set
++        // GEMMs to the minibatch. Captured on the first minibatch at or after
++        // the warmup count that sees an uncaptured key which has already run
++        // once eagerly (v4 keys; the fixed key 0 captures immediately).
++        int graph_key = bopl_is_v4_encoder(pufferl.policy.encoder)
++            ? bopl_v4_train_prepass(pufferl.train_activations.encoder, graph.mb_obs, train_stream) : 0;
++        cudaGraphExec_t& train_graph = pufferl.train_cudagraphs[slot][graph_key];
++        if (train_graph) {
++            cudaGraphLaunch(train_graph, train_stream);
          } else {
 -            bool capturing = pufferl.train_warmup == hypers.cudagraphs;
-+            bool capturing = hypers.cudagraphs >= 0 && pufferl.train_warmup >= hypers.cudagraphs;
++            int& seen = pufferl.train_graph_seen[slot][graph_key];
++            bool capturing = hypers.cudagraphs >= 0 && pufferl.train_warmup >= hypers.cudagraphs
++                && (graph_key == 0 || seen > 0) && pufferl.train_cudagraphs[slot].size() <= 64;
++            seen++;
              if (capturing) {
-                 assert(cudaStreamBeginCapture(train_stream, cudaStreamCaptureModeGlobal) == cudaSuccess
+-                assert(cudaStreamBeginCapture(train_stream, cudaStreamCaptureModeGlobal) == cudaSuccess
++                assert(cudaStreamBeginCapture(train_stream, cudaStreamCaptureModeThreadLocal) == cudaSuccess
                          && "cudaStreamBeginCapture failed");
-@@ -1683,11 +2613,18 @@
+             }
+ 
+@@ -1683,11 +2630,18 @@
                  p_logstd = dw_train->logstd;
              }
  
@@ -2758,7 +2789,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
              FloatTensor grad_logits_puf = pufferl.ppo_bufs_puf.grad_logits;
              FloatTensor grad_logstd_puf = pufferl.is_continuous ? pufferl.ppo_bufs_puf.grad_logstd : FloatTensor();
-@@ -1696,6 +2633,8 @@
+@@ -1696,6 +2650,8 @@
                  grad_logits_puf, grad_logstd_puf, grad_values_puf, stream);
  
              muon_step(&pufferl.muon, pufferl.master_weights, pufferl.grad_puf, hypers.max_grad_norm, stream);
@@ -2767,20 +2798,21 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              if (USE_BF16) {
                  int n = numel(pufferl.param_puf.shape);
                  cast<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
-@@ -1705,10 +2644,11 @@
+@@ -1705,11 +2661,12 @@
                  cudaGraph_t _graph;
                  assert(cudaStreamEndCapture(train_stream, &_graph) == cudaSuccess
                          && "cudaStreamEndCapture failed");
 -                assert(cudaGraphInstantiate(&pufferl.train_cudagraph, _graph, 0) == cudaSuccess
-+                assert(cudaGraphInstantiate(&pufferl.train_cudagraphs[slot], _graph, 0) == cudaSuccess
++                assert(cudaGraphInstantiate(&train_graph, _graph, 0) == cudaSuccess
                          && "cudaGraphInstantiate failed");
                  assert(cudaGraphDestroy(_graph) == cudaSuccess && "cudaGraphDestroy failed");
                  cudaDeviceSynchronize();
-+                pufferl.train_captured_slot[slot] = true;
                  pufferl.train_captured = true;
++                if (graph_key) fprintf(stderr, "bopl v4 train graph: slot %d key %d captured (%zu keys)\n", slot, graph_key, pufferl.train_cudagraphs[slot].size());
              }
              pufferl.train_warmup++;
-@@ -1720,22 +2660,31 @@
+         }
+@@ -1720,22 +2677,31 @@
          {
              int num_idx = numel(pufferl.prio_bufs.idx.shape);
              int row_bytes = (numel(graph.mb_ratio.shape) / graph.mb_ratio.shape[0]) * sizeof(precision_t);
@@ -2816,7 +2848,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      if (total_minibatches > 0) {
          float ms;
-@@ -1819,7 +2768,7 @@
+@@ -1819,7 +2785,7 @@
      int* raw_act_sizes = get_act_sizes();
      int act_n = 0;
      for (int i = 0; i < num_action_heads; i++) act_n += raw_act_sizes[i];
@@ -2825,7 +2857,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      bank->policy = build_policy(pufferl->env_name.c_str(), input_size, hidden_size,
          num_layers, decoder_output_size, act_n, pufferl->is_continuous, pufferl->hypers.horizon);
      bank->hidden_size = hidden_size;
-@@ -1838,8 +2787,13 @@
+@@ -1838,8 +2804,13 @@
          alloc_register(acts, &bank->buffer_states[i]);
      }
  
@@ -2841,7 +2873,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      bank->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
      if (USE_BF16) {
-@@ -1889,14 +2843,15 @@
+@@ -1889,14 +2860,15 @@
      for (int b = 0; b < pufferl->num_frozen_banks; b++) {
          frozen_total += pufferl->frozen_banks[b].slice_size;
      }
@@ -2861,7 +2893,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int cumul = pufferl->bank_layout[1];
      for (int b = 0; b < pufferl->num_frozen_banks; b++) {
          cumul += pufferl->frozen_banks[b].slice_size;
-@@ -1993,6 +2948,21 @@
+@@ -1993,6 +2965,21 @@
      pufferl->env_name = env_name;
  
      cudaSetDevice(hypers.gpu_id);
@@ -2883,7 +2915,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
      // Multi-GPU: initialize NCCL
      if (hypers.world_size > 1) {
-@@ -2050,7 +3020,7 @@
+@@ -2050,7 +3037,7 @@
      int hidden_size = hypers.hidden_size;
      int num_layers = hypers.num_layers;
      bool is_continuous = pufferl->is_continuous;
@@ -2892,7 +2924,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int minibatch_segments = hypers.minibatch_size / hypers.horizon;
      int inf_batch = vec->total_agents / hypers.num_buffers;
      int B_TT = minibatch_segments * hypers.horizon;
-@@ -2081,13 +3051,27 @@
+@@ -2081,13 +3068,27 @@
          alloc_register(acts, &pufferl->buffer_states[i]);
      }
      int mask_size = pufferl->vec->action_mask_size;
@@ -2923,7 +2955,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      register_ppo_buffers(pufferl->ppo_bufs_puf,
          acts, minibatch_segments, hypers.horizon, decoder_output_size, is_continuous);
      register_prio_buffers(pufferl->prio_bufs,
-@@ -2106,6 +3090,14 @@
+@@ -2106,6 +3107,14 @@
      pufferl->advantages_puf = {.shape = {total_agents, horizon}};
      alloc_register(acts, &pufferl->advantages_puf);
  
@@ -2938,7 +2970,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      muon_init(&pufferl->muon, params, hypers.lr, hypers.beta1, hypers.eps, 0.0, acts);
      pufferl->muon.nccl_comm = pufferl->nccl_comm;
      pufferl->muon.world_size = hypers.world_size;
-@@ -2122,6 +3114,82 @@
+@@ -2122,6 +3131,80 @@
      }
  
      pufferl->grad_puf = {.data = (precision_t*)grads->mem, .shape = {grads->total_elems}};
@@ -2991,8 +3023,6 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +            vec->streams[i] = pufferl->streams[i];
 +        }
 +    }
-+    pufferl->train_cudagraphs[0] = pufferl->train_cudagraphs[1] = nullptr;
-+    pufferl->train_captured_slot[0] = pufferl->train_captured_slot[1] = false;
 +    // Bopl: per-head entropy scales, BOPL_ENT_HEAD_SCALE="s0,s1,..." (default 1
 +    // each; missing heads keep 1). Copied once; the coefficient itself is
 +    // rewritten at slot 0 every update.
@@ -3021,7 +3051,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      pufferl->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
  
      ulong init_seed = hypers.seed;
-@@ -2159,6 +3227,8 @@
+@@ -2159,6 +3242,8 @@
      DictItem* fbp_item = dict_get_unsafe(vec_kwargs, "frozen_bank_pct");
      DictItem* fbh_item = dict_get_unsafe(vec_kwargs, "frozen_bank_hidden_size");
      DictItem* fbl_item = dict_get_unsafe(vec_kwargs, "frozen_bank_num_layers");
@@ -3030,7 +3060,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      int num_frozen = nb_item ? (int)nb_item->value : 0;
      float frozen_pct = fbp_item ? (float)fbp_item->value : 0.0f;
      int frozen_hidden = fbh_item ? (int)fbh_item->value : hidden_size;
-@@ -2167,10 +3237,11 @@
+@@ -2167,10 +3252,11 @@
          int agents_per_buffer = total_agents / num_buffers;
          int frozen_size = (int)((float)agents_per_buffer * frozen_pct);  // truncates = floor for positive
          int frozen_total = num_frozen * frozen_size;
@@ -3045,7 +3075,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
              return nullptr;
          }
          // add_frozen_bank auto-builds the sequential bank_layout.
-@@ -2178,10 +3249,12 @@
+@@ -2178,10 +3264,12 @@
              pufferl_add_frozen_bank(pufferl.get(), frozen_size, frozen_hidden, frozen_layers);
          }
      }
@@ -3059,7 +3089,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          pufferl->train_warmup = 0;
  
          // Snapshot weights + optimizer state before init-time capture
-@@ -2193,40 +3266,41 @@
+@@ -2193,40 +3281,41 @@
          cudaMalloc(&saved_momentum, wb_bytes);
          cudaMemcpy(saved_momentum, pufferl->muon.mb_puf.data, wb_bytes, cudaMemcpyDeviceToDevice);
  
@@ -3122,7 +3152,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
          // Restore weights + optimizer state corrupted by warmup/capture
          cudaMemcpy(pufferl->master_weights.data, saved_weights, wb_bytes, cudaMemcpyDeviceToDevice);
-@@ -2250,15 +3324,6 @@
+@@ -2250,15 +3339,6 @@
          pufferl->global_step = 0;
      }
  
@@ -3138,7 +3168,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      create_static_threads(vec, hypers.num_threads, horizon, pufferl.get(),
          net_callback_wrapper, thread_init_wrapper);
      static_vec_reset(vec);
-@@ -2276,21 +3341,107 @@
+@@ -2276,21 +3356,108 @@
      return pufferl;
  }
  
@@ -3226,7 +3256,8 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
  
 -    if (pufferl.train_cudagraph) cudaGraphExecDestroy(pufferl.train_cudagraph);
 +    for (int s = 0; s < 2; s++) {
-+        if (pufferl.train_cudagraphs[s]) cudaGraphExecDestroy(pufferl.train_cudagraphs[s]);
++        for (auto& kv : pufferl.train_cudagraphs[s]) if (kv.second) cudaGraphExecDestroy(kv.second);
++        pufferl.train_cudagraphs[s].clear();
 +    }
      if (pufferl.fused_rollout_cudagraphs) {
 -        for (int i = 0; i < pufferl.hypers.horizon * pufferl.hypers.num_buffers; i++) {
@@ -3248,7 +3279,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      policy_activations_free(&pufferl.policy, pufferl.train_activations);
      for (int buf = 0; buf < pufferl.hypers.num_buffers; buf++) {
          policy_activations_free(&pufferl.policy, pufferl.buffer_activations[buf]);
-@@ -2315,6 +3466,8 @@
+@@ -2315,6 +3482,8 @@
      for (int i = 0; i < NUM_TRAIN_EVENTS; i++) {
          cudaEventDestroy(pufferl.profile.events[i]);
      }
@@ -3257,7 +3288,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      nvmlShutdown();
  
      static_vec_close(pufferl.vec);
-@@ -2329,6 +3482,7 @@
+@@ -2329,6 +3498,7 @@
      }
      free(pufferl.frozen_banks);
      free(pufferl.bank_layout);
@@ -3266,9 +3297,9 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      if (pufferl.nccl_comm != nullptr) {
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
---- pristine-src/vecenv.h	2026-09-16 18:31:54.835563921 -0400
-+++ puffer-overlay/vecenv.h	2026-09-16 23:40:30.201806322 -0400
-@@ -97,6 +98,30 @@
+--- pristine-src/vecenv.h	2026-09-18 16:41:04.170703556 -0400
++++ puffer-overlay/vecenv.h	2026-09-18 16:45:18.950740967 -0400
+@@ -97,6 +97,30 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
      int* agent_perm;
@@ -3299,7 +3330,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  } StaticVec;
  
  // Callback types
-@@ -113,12 +138,20 @@
+@@ -113,12 +137,20 @@
  // Functions implemented by env's static library
  StaticVec* create_static_vec(int total_agents, int num_buffers, int gpu, Dict* vec_kwargs, Dict* env_kwargs);
  void static_vec_reset(StaticVec* vec);
@@ -3320,7 +3351,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  void static_vec_seq_step(StaticVec* vec);
  void static_vec_render(StaticVec* vec, int env_id);
  void static_vec_read_profile(StaticVec* vec, float out[NUM_EVAL_PROF]);
-@@ -186,9 +219,11 @@
+@@ -186,9 +218,11 @@
  #define cudaMemcpyHostToDevice 1
  #define cudaMemcpyDeviceToHost 2
  #define cudaHostAllocPortable 1
@@ -3332,7 +3363,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  extern cudaError_t cudaMalloc(void**, size_t);
  extern cudaError_t cudaMemcpy(void*, const void*, size_t, cudaMemcpyKind);
  extern cudaError_t cudaMemcpyAsync(void*, const void*, size_t, cudaMemcpyKind, cudaStream_t);
-@@ -201,6 +236,11 @@
+@@ -201,6 +235,11 @@
  extern cudaError_t cudaStreamCreateWithFlags(cudaStream_t*, unsigned int);
  extern cudaError_t cudaStreamQuery(cudaStream_t);
  extern const char* cudaGetErrorString(cudaError_t);
@@ -3344,7 +3375,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
  #define OMP_WAITING 5
  #define OMP_RUNNING 6
-@@ -217,13 +257,163 @@
+@@ -217,13 +256,163 @@
  #endif
  
  
@@ -3509,7 +3540,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  };
  
  typedef struct StaticOMPArg {
-@@ -235,7 +425,311 @@
+@@ -235,7 +424,311 @@
      thread_init_fn thread_init;
  } StaticOMPArg;
  
@@ -3822,7 +3853,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  static void* static_omp_threadmanager(void* arg) {
      StaticOMPArg* worker_arg = (StaticOMPArg*)arg;
      StaticVec* vec = worker_arg->vec;
-@@ -246,98 +740,264 @@
+@@ -246,98 +739,264 @@
      net_callback_fn net_callback = worker_arg->net_callback;
      thread_init_fn thread_init = worker_arg->thread_init;
  
@@ -4139,7 +4170,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -418,11 +1078,17 @@
+@@ -418,11 +1077,17 @@
      vec->size = num_envs;
  
      size_t obs_elem_size = obs_element_size();
@@ -4161,7 +4192,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
          cudaMalloc((void**)&vec->gpu_observations, total_agents * OBS_SIZE * obs_elem_size);
          cudaMalloc((void**)&vec->gpu_actions, total_agents * NUM_ATNS * sizeof(float));
-@@ -449,9 +1115,11 @@
+@@ -449,9 +1114,11 @@
      vec->action_mask_size = MY_ACTION_MASK;
      size_t mask_bytes = (size_t)total_agents * MY_ACTION_MASK * sizeof(unsigned char);
      if (gpu) {
@@ -4174,7 +4205,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      } else {
          vec->action_mask = (unsigned char*)calloc(total_agents * MY_ACTION_MASK, sizeof(unsigned char));
          vec->gpu_action_mask = vec->action_mask;
-@@ -576,6 +1244,7 @@
+@@ -576,6 +1243,7 @@
              (size_t)vec->total_agents * MY_ACTION_MASK * sizeof(unsigned char),
              cudaMemcpyHostToDevice);
  #endif
@@ -4182,7 +4213,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          cudaDeviceSynchronize();
      } else {
          memset(vec->rewards, 0, vec->total_agents * sizeof(float));
-@@ -591,6 +1260,88 @@
+@@ -591,6 +1259,88 @@
      vec->threading->buffer_states = (atomic_int*)calloc(vec->buffers, sizeof(atomic_int));
      vec->threading->threads = (pthread_t*)calloc(vec->buffers, sizeof(pthread_t));
      vec->threading->accum = (float*)calloc(vec->buffers * NUM_EVAL_PROF, sizeof(float));
@@ -4271,7 +4302,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
      // Streams are now created by pufferlib.cu (PyTorch-managed streams)
      // Do NOT create streams here - they've already been set up
-@@ -603,7 +1354,11 @@
+@@ -603,7 +1353,11 @@
          args[i].ctx = ctx;
          args[i].net_callback = net_callback;
          args[i].thread_init = thread_init;
@@ -4284,7 +4315,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -611,10 +1366,21 @@
+@@ -611,10 +1365,21 @@
      Env* envs = (Env*)vec->envs;
  
      if (vec->threading != NULL) {
@@ -4308,7 +4339,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  
      for (int i = 0; i < vec->size; i++) {
-@@ -628,6 +1394,7 @@
+@@ -628,6 +1393,7 @@
          free(vec->threading->buffer_states);
          free(vec->threading->threads);
          free(vec->threading->accum);
@@ -4316,7 +4347,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          free(vec->threading);
      }
      free(vec->buffer_env_starts);
-@@ -723,6 +1490,48 @@
+@@ -723,6 +1489,48 @@
      for (int i = 0; i < NUM_EVAL_PROF; i++) {
          out[i] /= threading->num_buffers;
      }
