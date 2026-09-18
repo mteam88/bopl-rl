@@ -295,14 +295,10 @@ const E_REMOVED: u32 = 1 << 31;
 #[inline]
 const fn ability_collider_flags(ability: u32) -> u32 {
     E_CONTACT_DAMAGE_KNOWN
-        | match ability {
-            ABILITY_ROCK => E_CONTACT_DAMAGE,
-            // These components live on the authored ability-form collider,
-            // so RlObservation.GetComponent sees them even while the form is
-            // inactive. Drill's box owns Hitbox; Tesla's owns Explosion.
-            ABILITY_DRILL => E_HITBOX,
-            ABILITY_TESLA => E_EXPLOSIVE,
-            _ => 0,
+        | if ability == ABILITY_ROCK {
+            E_CONTACT_DAMAGE
+        } else {
+            0
         }
 }
 
@@ -30781,7 +30777,10 @@ impl RolloutWorld {
                 kind: 1,
                 layer: data.tesla.lightning_layer,
                 owner: node.owner as u32 + 1,
+                // LightningLine implements IGrenadeDetonation; the authored
+                // Tesla form collider itself does not.
                 flags: E_TRIGGER
+                    | E_EXPLOSIVE
                     | if node.line_active && !line_hidden {
                         E_ACTIVE
                     } else {
