@@ -174,3 +174,37 @@ although the train pass did not change: the SMs the set blocks no longer
 occupy go to the trainer's stream (the contention the split predicted).
 
 Running total: 169.0k -> 194.4k (+15.0%), train-bound still (0.125 vs 0.089).
+
+### L2 upper bound: row budget 2,6,12,2, A/B against 9b3777ec, flag only
+
+The measured need on this workload (`set_rows` mean 2.0 / 6.0 / 10.9 / 2.0,
+max 2.0 / 6.0 / 11.5 / 2.0 per sample) as the budget: learner_sps 214084,
+214458 vs 194494 (**+10.2%**), train_s 0.1136 vs 0.1253, rollout unchanged,
+`set_overflow` 0 in 600 candidate updates. Incumbent repeats 2-3 and
+candidate 3 refused to start (stale `pufferlib._C`) because I edited
+`bopl_v4.cu` while the A/B ran: do not touch tracked sources during a bench.
+Recorded as the size of the prize for Matthew; the default stays.
+
+### Train pass: embedding as a one-hot block of the GEMM (commit a606f1ca), keep
+
+Hypothesis: the entity set's embedding add cost two extra passes over the
+packed rows per forward (scatter_rows writing `erows`, the cuBLASLt C-addend
+reading it: ~126 MB each at 65k rows x 64 x 2 B... times 4 passes x 4
+buffers) plus `embedding_partials` in the backward (a 64-slot atomics kernel
+over every row). Change (`bopl_v4.cu`): the packed row is
+`[features | one-hot(id) (16)]` (kpad: entities 48 -> 96, slots 32 -> 64;
+players/slimes have no id and keep 32) and the set's GEMM operand is
+`w1b = [W1 | E^T]` (`pack_w1`), so the GEMM computes `x W1^T + E[id]` with no
+addend; the embedding gradient is the one-hot columns of dW1 transposed
+(`embed_grad_from_w1`, replaces `embedding_partials`; `erows`, `partials`
+and the E `to_bf16` gone). Same bf16 roundings of x, W1 and E as before; the
+fp32 GEMM accumulation order differs (the E term is now one product inside
+the dot). check_v4.py pass_all (embedding grad rel 5e-4, same as before the
+change; the reference's fp32 sum vs bf16 GEMM). Result: onehot-1 198635,
+onehot-2 198766 vs sets-1/2 194.3-194.4k: **+2.2%**, train_s 0.1226 vs
+0.1253, cuda_mb 5868 vs 6018. Less than the 4% I hoped: the wider kpad
+doubles the GEMM's A-operand and dW1 traffic for the two id sets, eating
+half of what the removed passes gave back.
+
+Running total: 169.0k -> 198.8k (+17.6%, exact-class only); with the
+flagged budget change on top it would be ~+30%. Train-bound (0.123 vs 0.089).
