@@ -11,6 +11,8 @@
  *            device so the launch shape is fixed (CUDA-graph capture); the
  *            GEMMs run over the fixed capacity with the tail kept at zero
  *   h1     = ReLU(W1 x + E[id])   h2 = ReLU(W2 h1)               cuBLAS bf16
+ *            (E[id] as the one-hot id block of the packed row against E^T
+ *            appended to W1: one GEMM, no gathered addend)
  *   [attention hook: bopl_v4_set_stage, below]
  *   pool   = [max_rows h2, mean_rows h2] per set (empty set -> 0)
  *   out    = LN(W_fusion [flat, pool x 4])                      cuBLAS
@@ -26,8 +28,9 @@
  * Row budget: each set's packed capacity is B x BOPL4_BUDGET_<set> rows
  * (BOPL4_ROW_BUDGET="p,s,e,l" overrides); rows past the capacity are dropped
  * in sample order and counted (bopl_v4_overflow), never silently.
- * Determinism: the embedding gradient is a fixed-order chunked partial sum;
- * the GEMMs are cuBLAS with a fixed shape and kernel choice.
+ * Determinism: the GEMMs are cuBLAS with a fixed shape and kernel choice and
+ * deterministic split-K reductions; the embedding gradient is dW1's one-hot
+ * columns, so it inherits that.
  */
 #ifndef BOPL_V4_CU
 #define BOPL_V4_CU
@@ -50,25 +53,26 @@ constexpr int PRIV = BOPL4_PRIVILEGED;
 constexpr int PRIV_OFF = BOPL4_OBS_PRIVILEGED_OFFSET;
 constexpr int IDS = BOPL_EMBEDDING_IDS;
 constexpr int SETS = 4;
+/* A set's packed row is [features | one-hot(id) (IDS, id sets only)] padded
+ * to kpad: the embedding add E[id] is the GEMM's product with the one-hot
+ * block against [W1 | E^T] (pack_w1), so h1 = ReLU([x | 1_id] [W1 | E^T]^T) =
+ * ReLU(W1 x + E[id]) in one GEMM without a gathered addend, and the embedding
+ * gradient is dW1's one-hot columns (the same fp32-accumulated GEMM). */
 struct Spec { int offset, rows, width, id_col, features, kpad; };
 __host__ __device__ constexpr int round16(int x) { return (x + 15) / 16 * 16; }
-constexpr Spec SPEC[SETS] = {
-    {BOPL4_OBS_PLAYER_OFFSET, BOPL4_PLAYERS, BOPL4_PLAYER_FEATURES, -1, BOPL4_PLAYER_FEATURES, round16(BOPL4_PLAYER_FEATURES)},
-    {BOPL4_OBS_SLOT_OFFSET, BOPL4_SLOTS, BOPL4_SLOT_FEATURES, BOPL4_SLOT_ABILITY_ID, BOPL4_SLOT_FEATURES - 1, round16(BOPL4_SLOT_FEATURES - 1)},
-    {BOPL4_OBS_ENTITY_OFFSET, BOPL4_ENTITIES, BOPL4_ENTITY_FEATURES, BOPL4_ENTITY_ABILITY_ID, BOPL4_ENTITY_FEATURES - 1, round16(BOPL4_ENTITY_FEATURES - 1)},
-    {BOPL4_OBS_SLIME_OFFSET, BOPL4_SLIMES, BOPL4_SLIME_FEATURES, -1, BOPL4_SLIME_FEATURES, round16(BOPL4_SLIME_FEATURES)},
-};
-__constant__ Spec c_spec[SETS] = {
-    {BOPL4_OBS_PLAYER_OFFSET, BOPL4_PLAYERS, BOPL4_PLAYER_FEATURES, -1, BOPL4_PLAYER_FEATURES, round16(BOPL4_PLAYER_FEATURES)},
-    {BOPL4_OBS_SLOT_OFFSET, BOPL4_SLOTS, BOPL4_SLOT_FEATURES, BOPL4_SLOT_ABILITY_ID, BOPL4_SLOT_FEATURES - 1, round16(BOPL4_SLOT_FEATURES - 1)},
-    {BOPL4_OBS_ENTITY_OFFSET, BOPL4_ENTITIES, BOPL4_ENTITY_FEATURES, BOPL4_ENTITY_ABILITY_ID, BOPL4_ENTITY_FEATURES - 1, round16(BOPL4_ENTITY_FEATURES - 1)},
-    {BOPL4_OBS_SLIME_OFFSET, BOPL4_SLIMES, BOPL4_SLIME_FEATURES, -1, BOPL4_SLIME_FEATURES, round16(BOPL4_SLIME_FEATURES)},
-};
-constexpr int MAX_KPAD = 48;
+__host__ __device__ constexpr int kpad_of(int features, int id_col) { return round16(features + (id_col >= 0 ? IDS : 0)); }
+#define BOPL4_SPEC_TABLE { \
+    {BOPL4_OBS_PLAYER_OFFSET, BOPL4_PLAYERS, BOPL4_PLAYER_FEATURES, -1, BOPL4_PLAYER_FEATURES, kpad_of(BOPL4_PLAYER_FEATURES, -1)}, \
+    {BOPL4_OBS_SLOT_OFFSET, BOPL4_SLOTS, BOPL4_SLOT_FEATURES, BOPL4_SLOT_ABILITY_ID, BOPL4_SLOT_FEATURES - 1, kpad_of(BOPL4_SLOT_FEATURES - 1, BOPL4_SLOT_ABILITY_ID)}, \
+    {BOPL4_OBS_ENTITY_OFFSET, BOPL4_ENTITIES, BOPL4_ENTITY_FEATURES, BOPL4_ENTITY_ABILITY_ID, BOPL4_ENTITY_FEATURES - 1, kpad_of(BOPL4_ENTITY_FEATURES - 1, BOPL4_ENTITY_ABILITY_ID)}, \
+    {BOPL4_OBS_SLIME_OFFSET, BOPL4_SLIMES, BOPL4_SLIME_FEATURES, -1, BOPL4_SLIME_FEATURES, kpad_of(BOPL4_SLIME_FEATURES, -1)}, \
+}
+constexpr Spec SPEC[SETS] = BOPL4_SPEC_TABLE;
+__constant__ Spec c_spec[SETS] = BOPL4_SPEC_TABLE;
+constexpr int MAX_KPAD = 96;
 static_assert(SPEC[0].kpad <= MAX_KPAD && SPEC[1].kpad <= MAX_KPAD && SPEC[2].kpad <= MAX_KPAD && SPEC[3].kpad <= MAX_KPAD, "kpad");
 constexpr int DEFAULT_BUDGET[SETS] = {6, 12, 20, 8};   /* average valid rows per sample the packed buffers hold */
 constexpr int TILE = 64;                               /* packed capacities are rounded up to this many rows */
-constexpr int CHUNK = 512;                             /* packed rows per embedding-gradient partial */
 constexpr float LN_EPS = 1e-5f;
 
 /* Stage timing for the harness (check_v4.cu): when enabled, an event per
@@ -142,17 +146,14 @@ __global__ void scan_rows(const int* counts, int B, int4 caps, int* offsets, int
         overflow[s] = carry > cap ? carry - cap : 0;
     }
 }
-/* Scatter set S's valid rows into the packed bf16 matrix (KPAD columns, zero
- * padded), with their embedding id and sample index: one warp per sample, the
- * valid mask by ballot, rows copied by the warp in row order (the thread-per-
- * row form recomputed each row's rank with an O(rows) strided walk). For the
- * id sets the warp also copies the row's embedding E[id] (I bf16) into erows,
- * the h1 GEMM's addend: this kernel is latency bound on its per-sample walk
- * with the memory system idle, where the separate embed_rows pass over
- * cap x I was a full extra write of the largest activation. */
+/* Scatter set S's valid rows into the packed bf16 matrix ([features |
+ * one-hot id] in KPAD columns, zero padded), with their embedding id and
+ * sample index: one warp per sample, the valid mask by ballot, rows copied by
+ * the warp in row order (the thread-per-row form recomputed each row's rank
+ * with an O(rows) strided walk). */
 template<int S>
 __global__ void scatter_rows(const float* input, Gather g, int B, const int* offsets, int cap,
-                             bf16* packed, int* ids, int* sample, const bf16* E, int I, bf16* erows) {
+                             bf16* packed, int* ids, int* sample) {
     const Spec sp = c_spec[S];
     int b = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, lane = threadIdx.x & 31;
     if (b >= B) return;
@@ -164,12 +165,9 @@ __global__ void scatter_rows(const float* input, Gather g, int B, const int* off
         for (; valid && dst < cap; valid &= valid - 1, dst++) {
             const float* src = row + (r0 + __ffs(valid) - 1) * sp.width;
             bf16* out = packed + (long)dst * sp.kpad;
-            for (int k = lane; k < sp.kpad; k += 32) out[k] = tobf(k < sp.features ? src[k] : 0.0f);
             int id = sp.id_col >= 0 ? embedding_id(src[sp.id_col]) : 0;
-            if (erows) {
-                const bf16* e = E + (long)id * I; bf16* o = erows + (long)dst * I;
-                for (int k = lane; k < I; k += 32) o[k] = e[k];
-            }
+            for (int k = lane; k < sp.kpad; k += 32)
+                out[k] = tobf(k < sp.features ? src[k] : (sp.id_col >= 0 && k - sp.features == id) ? 1.0f : 0.0f);
             if (lane == 0) { ids[dst] = id; sample[dst] = b; }
         }
     }
@@ -187,12 +185,21 @@ __global__ void to_bf16(const float* src, bf16* dst, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) dst[i] = tobf(src[i]);
 }
-/* W (rows, cols) -> bf16 (rows, kpad) with zero padding. */
-__global__ void to_bf16_padded(const float* src, bf16* dst, int rows, int cols, int kpad) {
+/* [W1 (I, features) | E^T (I, IDS) if the set has ids] -> bf16 (I, kpad), zero padded. */
+__global__ void pack_w1(const float* w1, int features, const float* E, bf16* dst, int I, int kpad) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= rows * kpad) return;
+    if (i >= I * kpad) return;
     int r = i / kpad, c = i - r * kpad;
-    dst[i] = tobf(c < cols ? src[r * cols + c] : 0.0f);
+    float v = c < features ? w1[r * features + c] : (E && c - features < IDS) ? E[(long)(c - features) * I + r] : 0.0f;
+    dst[i] = tobf(v);
+}
+/* wgrad_embedding (IDS, I) (+)= the one-hot columns of dW1 (I, K) transposed. */
+__global__ void embed_grad_from_w1(const float* dw1, int K, int features, int I, float* out, int accumulate) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= IDS * I) return;
+    int id = i / I, c = i - id * I;
+    float v = dw1[(long)c * K + features + id];
+    out[i] = accumulate ? out[i] + v : v;
 }
 
 /* Fixed-order sum of chunk partials (chunks, n, k_full), keeping the first k_keep columns. */
@@ -211,10 +218,10 @@ __global__ void reduce_partials(const float* partials, int chunks, long per_chun
  * accumulation, D bf16 (activations, ReLU fused in the epilogue) or fp32
  * (weight gradients). M is the fixed capacity so the shape is graph-
  * capturable; rows past the count are kept at zero (zero_tail on the packed
- * input and the embedding addend, zero_tail / unpool_rows on the gradients) so they
- * contribute nothing. a_t / b_t: the operand is stored transposed (K, M) /
- * (N, K). C, when given, is a bf16 (M, N) addend (the gathered embedding
- * rows, beta = 1). Plans (layouts + the heuristic's first algorithm, split-K
+ * input, zero_tail / unpool_rows on the gradients) so they contribute
+ * nothing. a_t / b_t: the operand is stored transposed (K, M) / (N, K). C,
+ * when given, is a bf16 (M, N) addend (beta = 1; unused since the embedding
+ * moved into the GEMM, kept for the attention hook). Plans (layouts + the heuristic's first algorithm, split-K
  * restricted to the deterministic workspace reductions) are cached per shape
  * under a mutex: the buffer threads' per-bank chains and the trainer run
  * concurrently. The workspace is allocated once at enc_create. */
@@ -375,40 +382,6 @@ __global__ void unpool_rows(const bf16* h2, bf16* dh2, int D, const int* offsets
         dh2[i] = tobf(bf(h2[i]) > 0.0f ? g : 0.0f);
     }
 }
-/* Embedding gradient partials: one block per chunk of packed rows, fixed
- * order. EMB_LANES row lanes each own an (IDS, I) accumulator and walk every
- * EMB_LANES-th row with EMB_UNROLL loads in flight (the one-row-at-a-time
- * walk was latency bound: 512 dependent load-add steps per block); the lanes
- * are summed in fixed order at the end so the result stays deterministic. */
-constexpr int EMB_LANES = 2, EMB_UNROLL = 4;
-__global__ void embedding_partials(const bf16* dh1, int I, const int* ids, const int* totals, int total_index, int cap,
-                                   float* partials /* (chunks, IDS, I) */) {
-    extern __shared__ float acc[];   /* EMB_LANES x IDS x I */
-    int ch = blockIdx.x, i = threadIdx.x % I, lane = threadIdx.x / I;
-    float* mine = acc + lane * IDS * I;
-    for (int e = threadIdx.x; e < EMB_LANES * IDS * I; e += blockDim.x) acc[e] = 0.0f;
-    __syncthreads();
-    int total = totals[total_index];
-    int begin = ch * CHUNK, end = min(cap, min(total, begin + CHUNK));
-    for (int r0 = begin + lane; r0 < end; r0 += EMB_LANES * EMB_UNROLL) {
-        float v[EMB_UNROLL]; int id[EMB_UNROLL];
-        #pragma unroll
-        for (int u = 0; u < EMB_UNROLL; u++) {
-            int r = r0 + u * EMB_LANES;
-            v[u] = r < end ? bf(dh1[(long)r * I + i]) : 0.0f;
-            id[u] = r < end ? ids[r] : 0;
-        }
-        #pragma unroll
-        for (int u = 0; u < EMB_UNROLL; u++) mine[id[u] * I + i] += v[u];
-    }
-    __syncthreads();
-    for (int e = threadIdx.x; e < IDS * I; e += blockDim.x) {
-        float sum = 0.0f;
-        for (int l = 0; l < EMB_LANES; l++) sum += acc[l * IDS * I + e];
-        partials[(long)ch * IDS * I + e] = sum;
-    }
-}
-
 /* ---- elementwise and LayerNorm ------------------------------------------ */
 __global__ void relu_into(const float* src, float* dst, int rows, int cols, int ldd) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -546,11 +519,10 @@ struct EncActs {
     PrecisionTensor flat_input, flat_pre, joined, fused, out, priv;
     FloatTensor ln_mean, ln_rstd;
     IntTensor counts, offsets, totals, overflow, ids[SETS], sample[SETS], winner[SETS];
-    IntTensor w1b[SETS], w2b[SETS], embb;              /* bf16 weight copies, 2 per int */
+    IntTensor w1b[SETS], w2b[SETS];                    /* bf16 weight copies ([W1 | E^T] per set, W2), 2 per int */
     IntTensor xpack[SETS], h1[SETS], h2[SETS];         /* bf16 packed rows, 2 per int */
     /* training */
-    IntTensor erows[SETS];                               /* bf16 gathered embedding rows (id sets), the h1 GEMM's addend */
-    PrecisionTensor grad_fused, grad_joined, grad_flat, partials, acc;
+    PrecisionTensor grad_fused, grad_joined, grad_flat, acc;
     IntTensor dh2[SETS];
     IntTensor relu_mask[SETS];   /* h1's ReLU bitmask (cap, I/32) for the DRELU epilogue; unset in rollout, at small caps, or when I % 128 != 0 */
     PrecisionTensor wgrad_w1[SETS], wgrad_w2[SETS], wgrad_embedding, wgrad_flat, wgrad_fusion;
@@ -573,10 +545,9 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     a->saved_input = input.data;
     /* bf16 weights */
     for (int s = 0; s < SETS; s++) {
-        to_bf16_padded<<<grid_size(I * SPEC[s].kpad), BLOCK_SIZE, 0, stream>>>(w->w1[s].data, bfp(a->w1b[s]), I, SPEC[s].features, SPEC[s].kpad);
+        pack_w1<<<grid_size(I * SPEC[s].kpad), BLOCK_SIZE, 0, stream>>>(w->w1[s].data, SPEC[s].features, SPEC[s].id_col >= 0 ? w->embedding.data : nullptr, bfp(a->w1b[s]), I, SPEC[s].kpad);
         to_bf16<<<grid_size(D * I), BLOCK_SIZE, 0, stream>>>(w->w2[s].data, bfp(a->w2b[s]), D * I);
     }
-    to_bf16<<<grid_size(IDS * I), BLOCK_SIZE, 0, stream>>>(w->embedding.data, bfp(a->embb), IDS * I);
     /* flat block and privileged block */
     pack_flat<<<grid_size(B * (FLAT + PRIV)), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->flat_input.data, a->priv.data);
     g_v4_privileged = a->priv.data; g_v4_privileged_rows = B;
@@ -587,19 +558,18 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     /* sets */
     count_rows<<<grid_size(B * SETS), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->counts.data);
     scan_rows<<<SETS, 1024, 0, stream>>>(a->counts.data, B, make_int4(a->cap[0], a->cap[1], a->cap[2], a->cap[3]), a->offsets.data, a->totals.data, a->overflow.data);
-    scatter_rows<0><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[0], bfp(a->xpack[0]), a->ids[0].data, a->sample[0].data, bfp(a->embb), I, SPEC[0].id_col >= 0 ? bfp(a->erows[0]) : nullptr);
-    scatter_rows<1><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[1], bfp(a->xpack[1]), a->ids[1].data, a->sample[1].data, bfp(a->embb), I, SPEC[1].id_col >= 0 ? bfp(a->erows[1]) : nullptr);
-    scatter_rows<2><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[2], bfp(a->xpack[2]), a->ids[2].data, a->sample[2].data, bfp(a->embb), I, SPEC[2].id_col >= 0 ? bfp(a->erows[2]) : nullptr);
-    scatter_rows<3><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[3], bfp(a->xpack[3]), a->ids[3].data, a->sample[3].data, bfp(a->embb), I, SPEC[3].id_col >= 0 ? bfp(a->erows[3]) : nullptr);
+    scatter_rows<0><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[0], bfp(a->xpack[0]), a->ids[0].data, a->sample[0].data);
+    scatter_rows<1><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[1], bfp(a->xpack[1]), a->ids[1].data, a->sample[1].data);
+    scatter_rows<2><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[2], bfp(a->xpack[2]), a->ids[2].data, a->sample[2].data);
+    scatter_rows<3><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[3], bfp(a->xpack[3]), a->ids[3].data, a->sample[3].data);
     prof_mark("enc.count_scan_scatter", stream);
     for (int s = 0; s < SETS; s++) {
         const int* total = a->totals.data + s;
         int K = SPEC[s].kpad, cap = a->cap[s];
-        /* h1 = ReLU(X W1^T + E[id]) over the capacity; W1 stored (I, K), E[id] gathered by scatter_rows as the bf16 addend */
-        const bf16* erows = SPEC[s].id_col >= 0 ? bfp(a->erows[s]) : nullptr;
-        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->xpack[s]), K, (bf16*)erows, I, a->totals.data, s, cap);
+        /* h1 = ReLU([X | 1_id] [W1 | E^T]^T) = ReLU(W1 x + E[id]) over the capacity */
+        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->xpack[s]), K, nullptr, 0, a->totals.data, s, cap);
         void* mask = a->relu_mask[s].data;   /* the backward's DRELU bitmask when registered (training, cap >= LT_AUX_MIN_ROWS) */
-        lt_gemm(false, true, cap, I, K, bfp(a->xpack[s]), K, bfp(a->w1b[s]), K, erows, bfp(a->h1[s]), I, true,
+        lt_gemm(false, true, cap, I, K, bfp(a->xpack[s]), K, bfp(a->w1b[s]), K, nullptr, bfp(a->h1[s]), I, true,
                 mask ? CUBLASLT_EPILOGUE_RELU_AUX : CUBLASLT_EPILOGUE_RELU, stream, mask);
         /* h2 = ReLU(h1 W2^T); W2 stored (D, I) */
         lt_gemm(false, true, cap, D, I, bfp(a->h1[s]), I, bfp(a->w2b[s]), I, nullptr, bfp(a->h2[s]), D, true, CUBLASLT_EPILOGUE_RELU, stream);
@@ -647,11 +617,8 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
         lt_gemm(true, false, I, K, cap, dh1, I, bfp(a->xpack[s]), K, nullptr, a->acc.data, K, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         reduce_partials<<<grid_size(I * SPEC[s].features), BLOCK_SIZE, 0, stream>>>(a->acc.data, 1, 0, I, K, SPEC[s].features, a->wgrad_w1[s].data, 0);
         prof_mark("bwd.enc.dW1", stream);
-        if (SPEC[s].id_col >= 0) {
-            int chunks = (cap + CHUNK - 1) / CHUNK;
-            embedding_partials<<<chunks, EMB_LANES * I, EMB_LANES * IDS * I * sizeof(float), stream>>>(dh1, I, a->ids[s].data, a->totals.data, s, cap, a->partials.data);
-            reduce_partials<<<grid_size(IDS * I), BLOCK_SIZE, 0, stream>>>(a->partials.data, chunks, (long)IDS * I, IDS, I, I,
-                                                                          a->wgrad_embedding.data, s != 2 /* entity set first (s=2), slot adds */);
+        if (SPEC[s].id_col >= 0) {   /* the embedding gradient: dW1's one-hot columns; entity set first (s=2), slot adds */
+            embed_grad_from_w1<<<grid_size(IDS * I), BLOCK_SIZE, 0, stream>>>(a->acc.data, K, SPEC[s].features, I, a->wgrad_embedding.data, s != 2);
             prof_mark("bwd.enc.embedding", stream);
         }
     }
@@ -702,8 +669,6 @@ static void enc_reg_forward(EncWeights* w, EncActs* a, Allocator* alloc, int B) 
         for (auto* t : {&a->ids[s], &a->sample[s], &a->winner[s], &a->w1b[s], &a->w2b[s], &a->xpack[s], &a->h1[s], &a->h2[s]}) alloc_register(alloc, t);
         if (g_set_stage.reg) g_set_stage.reg(alloc, s, cap, D);
     }
-    a->embb = {.shape = {IDS, I / 2}}; alloc_register(alloc, &a->embb);
-    for (int s = 0; s < SETS; s++) if (SPEC[s].id_col >= 0) { a->erows[s] = {.shape = {a->cap[s], I / 2}}; alloc_register(alloc, &a->erows[s]); }
 }
 /* BOPL_V4_MEMLOG=1: print what each registration adds to the activation allocator. */
 static void memlog(const char* what, int B, const Allocator* alloc, long before) {
@@ -722,18 +687,15 @@ static void enc_reg_train(void* weights, void* activations, Allocator* acts, All
     enc_reg_forward(w, a, acts, B);
     a->grad_fused = {.shape = {B, H}}; a->grad_joined = {.shape = {B, FD + SETS * 2 * D}}; a->grad_flat = {.shape = {B, FD}};
     for (auto* t : {&a->grad_fused, &a->grad_joined, &a->grad_flat}) alloc_register(acts, t);
-    long partial = 0, acc = 0;   /* embedding-gradient chunk partials; dW1's fp32 (I, kpad) */
+    long acc = 0;   /* dW1's fp32 (I, kpad) */
     for (int s = 0; s < SETS; s++) {
         a->dh2[s] = {.shape = {a->cap[s], D / 2}}; alloc_register(acts, &a->dh2[s]);
         if (I % 128 == 0 && a->cap[s] >= LT_AUX_MIN_ROWS && env_int("BOPL4_DRELU", 1)) {
             a->relu_mask[s] = {.shape = {a->cap[s], I / 32}}; alloc_register(acts, &a->relu_mask[s]);
         }
-        long chunks = (a->cap[s] + CHUNK - 1) / CHUNK;
-        if (SPEC[s].id_col >= 0) partial = std::max(partial, chunks * (long)IDS * I);
         acc = std::max(acc, (long)I * SPEC[s].kpad);
     }
     a->acc = {.shape = {acc}}; alloc_register(acts, &a->acc);
-    a->partials = {.shape = {partial}}; alloc_register(acts, &a->partials);
     /* gradients in reg_params order */
     for (int s = 0; s < SETS; s++) {
         a->wgrad_w1[s] = {.shape = {I, SPEC[s].features}}; alloc_register(grads, &a->wgrad_w1[s]);
