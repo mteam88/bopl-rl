@@ -14,7 +14,7 @@ static BoplRlState state;
 static BoplRlConfig last;
 const BoplRlState *sampling_state(const BoplRl *world) { (void)world; return &state; }
 const char *sampling_error(const BoplRl *world) { (void)world; return "sampling test"; }
-uint32_t sampling_map_count(const BoplRl *world) { (void)world; return 5; }
+uint32_t sampling_map_count(const BoplRl *world) { (void)world; return BOPL_COUNTER_MAPS; }
 uint32_t sampling_ability_count(const BoplRl *world) { (void)world; return BOPL_ABILITY_COUNT; }
 int sampling_reset_pending(const BoplRl *world) { (void)world; return 0; }
 int sampling_reset_begin(BoplRl *world, const BoplRlConfig *config) { return sampling_reset(world,config); }
@@ -57,11 +57,14 @@ int main(int argc, char **argv) {
     env.training_map_mask=(BoplMapMask){0};for (uint32_t map=0;map<3;map++) bopl_map_select(&env.training_map_mask,map);env.rng=902;memset(counts,0,sizeof(counts));
     for (int i=0;i<200;i++) { c_reset(&env);assert(last.map<3);counts[last.map]++; }
     for (int i=0;i<3;i++) assert(counts[i]>0);
+    /* The high bit survives the native selection -> reset mask representation. */
+    env.training_map_mask=(BoplMapMask){0};bopl_map_select(&env.training_map_mask,123);env.rng=903;
+    c_reset(&env);assert(last.map==123);
     /* Ability 38 survives the native pool sampler; no-dup draws without replacement. */
-    env.loadout_mode=BOPL_LOADOUT_POOL;env.loadout_pool=1ull<<38;env.rng=903;
+    env.loadout_mode=BOPL_LOADOUT_POOL;env.loadout_pool=1ull<<38;env.rng=904;
     c_reset(&env);
     for (int player=0;player<2;player++) for (int slot=0;slot<3;slot++) assert(last.player[player].abilities[slot]==38);
-    env.loadout_pool=(1ull<<1)|(1ull<<2)|(1ull<<38);env.loadout_no_dup=1;env.rng=904;
+    env.loadout_pool=(1ull<<1)|(1ull<<2)|(1ull<<38);env.loadout_no_dup=1;env.rng=905;
     c_reset(&env);
     for (int player=0;player<2;player++) {
         uint64_t seen=0;
@@ -69,9 +72,9 @@ int main(int argc, char **argv) {
     }
     /* Explicit lineups and mirror share are selected in C, not Python. */
     env.loadout_mode=BOPL_LOADOUT_SET;env.loadout_set_count=1;env.loadout_no_dup=0;
-    uint8_t lineup[6]={4,4,38,2,14,5};memcpy(env.loadout_set[0],lineup,6);env.mirror_share_ppm=0;env.rng=905;
+    uint8_t lineup[6]={4,4,38,2,14,5};memcpy(env.loadout_set[0],lineup,6);env.mirror_share_ppm=0;env.rng=906;
     c_reset(&env);for (int player=0;player<2;player++) for (int slot=0;slot<3;slot++) assert(last.player[player].abilities[slot]==lineup[player*3+slot]);
-    env.mirror_share_ppm=1000000;env.rng=906;c_reset(&env);
+    env.mirror_share_ppm=1000000;env.rng=907;c_reset(&env);
     for (int slot=0;slot<3;slot++) assert(last.player[0].abilities[slot]==last.player[1].abilities[slot]);
     /* Every active Bow slot participates in forced-release masking. */
     BoplRlSlime slime={0};state.header.player_count=2;state.header.slime_count=1;state.slimes=&slime;
