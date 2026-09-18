@@ -15,7 +15,14 @@ from common import atomic_json
 import decision_dump
 import layout
 from telemetry import FIELDS,summarize
-from evaluation_protocol import checkpoint_identity,map_ids,opponents,schedule,scripted_names,scripted_opponent,DEFAULT_EVAL_SCRIPTED
+from evaluation_protocol import (checkpoint_identity,map_ids,opponents,schedule,scripted_names,scripted_opponent,
+                                 DEFAULT_EVAL_SCRIPTED,DEFAULT_LOADOUT,loadout_ids,loadout_pool,resolve_loadouts)
+
+def selection_arg(function):
+    def parse(value):
+        try: return function(value)
+        except ValueError as error: raise argparse.ArgumentTypeError(str(error)) from error
+    return parse
 
 def random_action(rng):
     """Scripted opponent without a hold output: hold index 0 (length 1) keeps every decision free."""
@@ -52,6 +59,11 @@ def main():
     parser.add_argument('--suite',choices=('diagnostic','final'),default='diagnostic')
     parser.add_argument('--workers',type=int,default=2)
     parser.add_argument('--game',type=Path,help='Unity player (otherwise BOPL_RL_GAME or LinuxIL2CPP)')
+    parser.add_argument('--loadout',type=selection_arg(loadout_ids),default=None)
+    parser.add_argument('--loadout-pool',type=selection_arg(loadout_pool),default=None)
+    parser.add_argument('--loadout-set',type=Path,default=None)
+    parser.add_argument('--loadout-no-dup',action='store_true')
+    parser.add_argument('--mirror-share',type=float,default=None)
     args=parser.parse_args()
     if min(args.games_per_opponent,args.heldout_games,args.workers)<1:
         parser.error('Positive game and worker counts required')
@@ -69,6 +81,17 @@ def main():
     # Every participant reads its own observation layout (v3 or v4, layout.py); the
     # environment writes each side's row in its checkpoint's layout below.
     step=checkpoint['step']; config=checkpoint['config']
+    override=(args.loadout is not None or args.loadout_pool is not None or args.loadout_set is not None
+              or args.loadout_no_dup or args.mirror_share is not None)
+    if override:
+        try:
+            loadouts=resolve_loadouts(args.loadout or DEFAULT_LOADOUT,args.loadout_pool,args.loadout_set,
+                                      args.loadout_no_dup,args.mirror_share or 0.)
+        except (ValueError,OSError) as error:
+            parser.error(str(error))
+    else:
+        loadouts=config.get('loadouts') or resolve_loadouts(DEFAULT_LOADOUT)
+    print('Effective loadouts: '+json.dumps(loadouts,separators=(',',':')),flush=True)
     observation_delay=config.get('observation_delay_ticks',9)
     if set(args.heldout_maps)&set(config['training_maps']):
         raise ValueError('A held-out map was used for training')
@@ -105,10 +128,13 @@ def main():
         return torch.from_numpy(batch)
     def work(bucket):
         results=[]
-        with Environment(seed=90001+tasks.index(bucket[0]),limit=config['episode_ticks'],delay=observation_delay, reward=config.get('reward')) as env:
+        with Environment(seed=90001+tasks.index(bucket[0]),limit=config['episode_ticks'],delay=observation_delay,
+                         reward=config.get('reward'),loadouts=loadouts) as env:
             for task in bucket:
                 env.reset(task['seed'],task['map'])
                 overflow_before=env.observation_overflow
+                episode_loadouts=env.loadouts
+                ability_before=env.ability_telemetry()
                 state=policy.initial(2,'cpu')
                 opponent=models.get(task['opponent'])
                 other_state=opponent.initial(2,'cpu') if opponent is not None else None
@@ -157,8 +183,17 @@ def main():
                         frames[-1]['actions']=actions.tolist()
                         frames.append(env.frame())
                 final=env.frame(); me=final['players'][task['side']]
+                ability_after=env.ability_telemetry()
+                activations=[after-before for after,before in zip(ability_after['activations'],ability_before['activations'])]
+                entity_rows=[after-before for after,before in zip(ability_after['entity_rows'],ability_before['entity_rows'])]
+                entity_overflow=[after-before for after,before in zip(ability_after['entity_overflow'],ability_before['entity_overflow'])]
                 timeout=bool(final['flags']&2); win=bool(me['flags']&2) and not timeout
                 result={**task,'win':win,'timeout':timeout,'kills':me['kills'],'deaths':me['deaths'],
+                        'loadouts':episode_loadouts,
+                        'ability_activations':{str(ability):count for ability,count in enumerate(activations) if count},
+                        'entity_overflow':{str(ability):dict(rows=rows,dropped=entity_overflow[ability],
+                                                            rate=entity_overflow[ability]/rows)
+                                           for ability,rows in enumerate(entity_rows) if rows},
                         'observation_overflow':env.observation_overflow-overflow_before,
                         'ticks':final['t'],'final_players':final['players'],'behavior':summarize(np.asarray(events)),
                         'action_rates':dict(zip(['jump','dash','arrow','platform'],(button_counts/max(1,decisions)).tolist())),
@@ -195,11 +230,21 @@ def main():
     if (checkpoint_identity(args.checkpoint) != checkpoint_id
         or checkpoint_identity(args.initial) != baseline_id or opponents(args.opponents) != frozen):
         raise ValueError('Checkpoint or frozen opponents changed during evaluation')
+    activation_totals={}
+    overflow_totals={}
+    for result in results:
+        for ability,count in result['ability_activations'].items():
+            activation_totals[ability]=activation_totals.get(ability,0)+count
+        for ability,row in result['entity_overflow'].items():
+            total=overflow_totals.setdefault(ability,dict(rows=0,dropped=0))
+            total['rows']+=row['rows'];total['dropped']+=row['dropped']
+    for row in overflow_totals.values(): row['rate']=row['dropped']/row['rows']
     report=dict(schema=2,decision_dump_schema=1,step=step,suite=args.suite,checkpoint=args.checkpoint.name,
                 checkpoint_identity=checkpoint_id, baseline_identity=baseline_id,
                 frozen_opponents=frozen,scripted_opponents=args.scripted_opponents,
                 evaluation_maps=args.evaluation_maps,heldout_maps=args.heldout_maps,
                 training_maps=config['training_maps'],
+                loadout_selection=loadouts,ability_activations=activation_totals,entity_overflow=overflow_totals,
                 seed_base=args.seed_base,heldout_seed_base=args.heldout_seed_base,selfplay_seed=args.selfplay_seed,
                 interval_note='Descriptive Wilson interval; does not adjust for correlation within seed pairs',
                 elapsed=time.monotonic()-started,groups=groups,games=results)

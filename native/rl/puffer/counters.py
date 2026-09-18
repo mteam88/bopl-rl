@@ -8,8 +8,9 @@ learner work. Read them between rollouts only.
 import ctypes
 
 FIELDS = 16
+ABILITIES = 39
 MAPS = 124   # BOPL_COUNTER_MAPS
-SIZE = 5 + 4 + FIELDS + MAPS
+SIZE = 5 + 4 + FIELDS + 3*ABILITIES + MAPS
 
 def bind(lib):
     lib.bopl_vec_counters.restype = ctypes.c_int
@@ -22,7 +23,13 @@ def snapshot(lib, vec):
     out = (ctypes.c_double * SIZE)()
     if lib.bopl_vec_counters(ctypes.c_void_p(vec.gpu_obs_ptr), out, SIZE) != SIZE: raise RuntimeError('Unknown native vector')
     v = list(out)
-    maps = v[9+FIELDS:]
+    offset=9+FIELDS
+    activations=v[offset:offset+ABILITIES];offset+=ABILITIES
+    entity_rows=v[offset:offset+ABILITIES];offset+=ABILITIES
+    entity_overflow=v[offset:offset+ABILITIES];offset+=ABILITIES
+    maps = v[offset:]
     return dict(learner_steps=int(v[0]), game_steps=int(v[1]), matches=int(v[2]), opponent_game_decisions=int(v[3]),
                 kills=int(v[4]), buttons=[int(x) for x in v[5:9]], telemetry=v[9:9+FIELDS],
+                ability_activations=[int(x) for x in activations],entity_rows=[int(x) for x in entity_rows],
+                entity_overflow=[int(x) for x in entity_overflow],
                 map_matches={str(m): int(n) for m, n in enumerate(maps) if n})

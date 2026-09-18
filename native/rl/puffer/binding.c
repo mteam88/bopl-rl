@@ -71,6 +71,17 @@ void my_init(Env *env, Dict *kwargs) {
             bopl_map_select(&env->training_map_mask, chunk*31+bit);
     }
     env->random_loadouts=option(kwargs, "random_loadouts", 0);
+    uint64_t pool_lo=(uint32_t)option(kwargs,"loadout_pool",0);
+    uint64_t pool_hi=(uint32_t)option(kwargs,"loadout_pool_hi",0);
+    if ((pool_lo|pool_hi)&0x80000000ull) abort();
+    env->loadout_pool=pool_lo|(pool_hi<<31);
+    env->loadout_no_dup=option(kwargs,"loadout_no_dup",0);
+    env->mirror_share_ppm=option(kwargs,"mirror_share_ppm",0);
+    env->loadout_set_count=bopl_loadout_set_count;
+    if (env->loadout_set_count<0 || env->loadout_set_count>BOPL_LOADOUT_SET_MAX) abort();
+    if (env->loadout_set_count) memcpy(env->loadout_set,bopl_loadout_sets,(size_t)env->loadout_set_count*6);
+    if (env->loadout_pool && env->loadout_set_count) abort();
+    env->loadout_mode=env->loadout_set_count?BOPL_LOADOUT_SET:(env->loadout_pool?BOPL_LOADOUT_POOL:BOPL_LOADOUT_FIXED);
     bopl_rl_default_config(&env->config, (uint32_t)env->players);
     env->config.map=(uint32_t)option(kwargs, "map", 0);
     env->config.slots=(uint32_t)option(kwargs, "slots", 3);
@@ -97,6 +108,7 @@ void my_init(Env *env, Dict *kwargs) {
         env->config.player[i].abilities[1]=(uint32_t)option(kwargs, "ability2", 4);
         env->config.player[i].abilities[2]=(uint32_t)option(kwargs, "ability3", 14);
     }
+    if (!bopl_loadouts_valid(env)) abort();
     init(env);
 }
 /* Called by the vector at creation and after every set_agent_perm: slot s of
@@ -266,7 +278,8 @@ int bopl_vec_set_tags(const void *gpu_observations, const int *tags) {
 }
 /* Cumulative counters summed over the vector's environments (BOPL_COUNTER_SIZE
  * doubles in BoplCounters order: learner_steps, game_steps, matches,
- * opponent_game_decisions, kills, buttons[4], telemetry[16], map_matches[124]).
+ * opponent_game_decisions, kills, buttons[4], telemetry[16], ability_activations[39],
+ * entity_rows[39], entity_overflow[39], map_matches[124]).
  * Read between rollouts, when no environment thread is stepping. */
 int bopl_vec_counters(const void *gpu_observations, double *out, int capacity) {
     StaticVec *vec=bopl_find_vec(gpu_observations);

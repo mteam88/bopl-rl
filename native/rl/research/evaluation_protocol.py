@@ -5,6 +5,11 @@ from pathlib import Path
 import re
 
 MAP_COUNT = 124
+ABILITY_COUNT = 39
+DEFAULT_LOADOUT = (2, 4, 14)
+# ABILITY_PORT_GAPS.md: Time Stop still needs per-updatable clock coverage and
+# Revival still lacks its full multi-actor model. Explicit pools may opt in.
+DEFAULT_POOL_EXCLUSIONS = (12, 15)
 
 
 def map_ids(value):
@@ -37,6 +42,87 @@ def map_ids(value):
     if not result or len(set(result))!=len(result) or any(m<0 or m>=MAP_COUNT for m in result):
         raise ValueError(f'Distinct map IDs between 0 and {MAP_COUNT-1} required')
     return result
+
+
+def loadout_ids(value):
+    """Exactly three ability IDs. Duplicate abilities are game-legal."""
+    try:
+        result=[int(item.strip()) for item in str(value).split(',')]
+    except ValueError as error:
+        raise ValueError('Expected three comma-separated ability IDs') from error
+    if len(result)!=3 or any(ability<1 or ability>=ABILITY_COUNT for ability in result):
+        raise ValueError(f'Expected three ability IDs between 1 and {ABILITY_COUNT-1}')
+    return result
+
+
+def loadout_pool(value):
+    """Explicit IDs, ``all``, or ``all-<excluded IDs>``.
+
+    ``all`` always excludes the partial abilities in ABILITY_PORT_GAPS.md;
+    ``all-...`` adds exclusions. An explicit list may intentionally include
+    those abilities.
+    """
+    text=str(value).strip().lower()
+    if text == 'all' or text.startswith('all-'):
+        excluded=set(DEFAULT_POOL_EXCLUSIONS)
+        if text != 'all':
+            try:
+                excluded.update(int(item.strip()) for item in text[4:].split(',') if item.strip())
+            except ValueError as error:
+                raise ValueError('Expected all or all-<comma-separated ability IDs>') from error
+        if any(ability<1 or ability>=ABILITY_COUNT for ability in excluded):
+            raise ValueError(f'Excluded ability IDs must be between 1 and {ABILITY_COUNT-1}')
+        result=[ability for ability in range(1,ABILITY_COUNT) if ability not in excluded]
+    else:
+        try:
+            result=[int(item.strip()) for item in text.split(',')]
+        except ValueError as error:
+            raise ValueError('Expected ability IDs, all, or all-<excluded IDs>') from error
+    if not result or len(set(result))!=len(result) or any(ability<1 or ability>=ABILITY_COUNT for ability in result):
+        raise ValueError(f'Pool needs distinct ability IDs between 1 and {ABILITY_COUNT-1}')
+    return result
+
+
+def loadout_lineups(path):
+    """Read explicit two-player lineups: three shared IDs or six player-ordered IDs per line."""
+    rows=[]
+    for number, raw in enumerate(Path(path).read_text().splitlines(), 1):
+        text=raw.split('#',1)[0].strip()
+        if not text:
+            continue
+        try:
+            values=[int(item) for item in re.split(r'[\s,|/;]+',text) if item]
+        except ValueError as error:
+            raise ValueError(f'{path}:{number}: expected ability IDs') from error
+        if len(values)==3:
+            values=values*2
+        if len(values)!=6 or any(ability<1 or ability>=ABILITY_COUNT for ability in values):
+            raise ValueError(f'{path}:{number}: expected three shared or six player-ordered IDs in 1..{ABILITY_COUNT-1}')
+        rows.append(values)
+    if not rows:
+        raise ValueError(f'{path}: no lineups')
+    if len(rows)>256:
+        raise ValueError(f'{path}: at most 256 lineups')
+    return rows
+
+
+def resolve_loadouts(fixed=DEFAULT_LOADOUT, pool=None, lineup_file=None, no_dup=False, mirror_share=0.0):
+    fixed=list(fixed)
+    if pool is not None and lineup_file is not None:
+        raise ValueError('--loadout-pool and --loadout-set are mutually exclusive')
+    if not 0 <= mirror_share <= 1:
+        raise ValueError('--mirror-share must be in [0, 1]')
+    rows=loadout_lineups(lineup_file) if lineup_file is not None else []
+    if no_dup:
+        candidates=rows or ([fixed] if pool is None else [])
+        if any(len(set(row[:3]))<3 or (len(row)>3 and len(set(row[3:6]))<3) for row in candidates):
+            raise ValueError('--loadout-no-dup conflicts with a fixed/set lineup containing duplicates')
+        if pool is not None and len(pool)<3:
+            raise ValueError('--loadout-no-dup needs at least three abilities in the pool')
+    mode='set' if rows else ('pool' if pool is not None else 'fixed')
+    return dict(mode=mode,fixed=fixed,pool=list(pool or []),lineups=rows,
+                set_file=str(Path(lineup_file).resolve()) if lineup_file is not None else None,
+                no_dup=bool(no_dup),mirror_share=float(mirror_share))
 
 
 # Scripted opponents (native/rl/puffer/bopl_bots.h): hand-coded bots that read

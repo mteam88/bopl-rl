@@ -26,7 +26,7 @@ int sampling_reset(BoplRl *world, const BoplRlConfig *config) {
 }
 
 int main(int argc, char **argv) {
-    BoplPuffer env={0};env.num_agents=2;env.players=2;env.config.max_episode_ticks=3600;
+    BoplPuffer env={0};env.num_agents=2;env.players=2;env.config.players=2;env.config.slots=3;env.config.max_episode_ticks=3600;
     env.world=(BoplRl*)1;env.world_checked=1;
     env.observations=calloc(2*BOPL_OBS_STRIDE,sizeof(float));
     env.scratch=env.observations;
@@ -57,6 +57,30 @@ int main(int argc, char **argv) {
     env.training_map_mask=(BoplMapMask){0};for (uint32_t map=0;map<3;map++) bopl_map_select(&env.training_map_mask,map);env.rng=902;memset(counts,0,sizeof(counts));
     for (int i=0;i<200;i++) { c_reset(&env);assert(last.map<3);counts[last.map]++; }
     for (int i=0;i<3;i++) assert(counts[i]>0);
+    /* Ability 38 survives the native pool sampler; no-dup draws without replacement. */
+    env.loadout_mode=BOPL_LOADOUT_POOL;env.loadout_pool=1ull<<38;env.rng=903;
+    c_reset(&env);
+    for (int player=0;player<2;player++) for (int slot=0;slot<3;slot++) assert(last.player[player].abilities[slot]==38);
+    env.loadout_pool=(1ull<<1)|(1ull<<2)|(1ull<<38);env.loadout_no_dup=1;env.rng=904;
+    c_reset(&env);
+    for (int player=0;player<2;player++) {
+        uint64_t seen=0;
+        for (int slot=0;slot<3;slot++) { uint32_t id=last.player[player].abilities[slot];assert(id==1||id==2||id==38);assert(!(seen&(1ull<<id)));seen|=1ull<<id; }
+    }
+    /* Explicit lineups and mirror share are selected in C, not Python. */
+    env.loadout_mode=BOPL_LOADOUT_SET;env.loadout_set_count=1;env.loadout_no_dup=0;
+    uint8_t lineup[6]={4,4,38,2,14,5};memcpy(env.loadout_set[0],lineup,6);env.mirror_share_ppm=0;env.rng=905;
+    c_reset(&env);for (int player=0;player<2;player++) for (int slot=0;slot<3;slot++) assert(last.player[player].abilities[slot]==lineup[player*3+slot]);
+    env.mirror_share_ppm=1000000;env.rng=906;c_reset(&env);
+    for (int slot=0;slot<3;slot++) assert(last.player[0].abilities[slot]==last.player[1].abilities[slot]);
+    /* Every active Bow slot participates in forced-release masking. */
+    BoplRlSlime slime={0};state.header.player_count=2;state.header.slime_count=1;state.slimes=&slime;
+    state.players[0].id=1;slime.owner=1;slime.abilities[0]=4;slime.abilities[1]=2;slime.abilities[2]=4;
+    slime.ability_flags[0]=slime.ability_flags[1]=slime.ability_flags[2]=1;
+    assert(bopl_bow_buttons(&env,0)==((1u<<1)|(1u<<3)));
+    unsigned char mask[BOPL_LOGITS];env.scratch=NULL;env.mask_ptr[0]=mask;env.hold_run[0][1]=env.hold_run[0][3]=1;
+    bopl_write_mask(&env,0);
+    assert(!mask[BOPL_ACT_AIM+2] && !mask[BOPL_ACT_AIM+8] && !mask[BOPL_ACT_AIM+10] && mask[BOPL_ACT_AIM+4]);
     free(env.observations);
-    puts("EXPLICIT_MAP_SELECTION_AND_DEFAULT_RNG_OK");
+    puts("MAP_123_ABILITY_38_LOADOUT_AND_BOW_MASK_OK");
 }

@@ -14,7 +14,9 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools'), str(ROOT / 'native/rl/sweep')]
 from common import atomic_json
 import counters
-from evaluation_protocol import SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents, DEFAULT_EVAL_SCRIPTED, map_ids
+from evaluation_protocol import (SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents,
+                                 DEFAULT_EVAL_SCRIPTED, DEFAULT_LOADOUT, map_ids, loadout_ids,
+                                 loadout_pool, resolve_loadouts)
 from native_checkpoint import write_checkpoint
 import layout
 from native_metrics import empty_counters, update
@@ -36,6 +38,28 @@ def map_mask_chunks(selected):
     """Four exact 31-bit integers consumed by binding.c as a 128-bit mask."""
     return [sum(1 << (map_id - 31*chunk) for map_id in selected
                 if 31*chunk <= map_id < 31*(chunk+1)) for chunk in range(4)]
+
+
+def _arg(parser, function):
+    def parse(value):
+        try:
+            return function(value)
+        except ValueError as error:
+            raise argparse.ArgumentTypeError(str(error)) from error
+    return parse
+
+
+def install_loadout_set(module, rows):
+    """Copy parsed lineups into the C module; episode selection remains native."""
+    import ctypes
+    library=ctypes.CDLL(module.__file__)
+    ctypes.c_int.in_dll(library,'bopl_loadout_set_count').value=len(rows)
+    storage=(ctypes.c_uint8*(256*6)).in_dll(library,'bopl_loadout_sets')
+    for index in range(len(storage)):
+        storage[index]=0
+    for row_index,row in enumerate(rows):
+        for column,value in enumerate(row):
+            storage[row_index*6+column]=value
 
 
 def scripted_bots(value):
@@ -109,7 +133,7 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
-                 'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape')
+                 'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts')
 # Policy v4 (POLICY_V4_PLAN.md, puffer/bopl_v4.cu) network shape: flag name -> (env var the
 # CUDA module reads, layout.V4_DEFAULTS key). Recorded in config.json / the checkpoint sidecar.
 V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNER', 'set_inner'),
@@ -157,7 +181,7 @@ def recorded_hypers(config):
                 scripted_share_max=config.get('scripted_share_max', 1.0),
                 n_scripted=config.get('scripted_banks', len(config.get('scripted_bots', [])) or (1 if config.get('scripted_roster') else 0)),
                 aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0),
-                v4_shape=config.get('v4_shape'))
+                v4_shape=config.get('v4_shape'), loadouts=config.get('loadouts',resolve_loadouts()))
 
 
 def offset_counters(counts, base):
@@ -169,6 +193,8 @@ def offset_counters(counts, base):
         out[key] = counts[key] + base[key]
     out['buttons'] = [x + y for x, y in zip(counts['buttons'], base['buttons'])]
     out['telemetry'] = [x + y for x, y in zip(counts['telemetry'], base['telemetry'])]
+    for key in ('ability_activations','entity_rows','entity_overflow'):
+        out[key] = [x + y for x, y in zip(counts[key], base.get(key,[0]*len(counts[key])))]
     out['map_matches'] = {m: counts['map_matches'].get(m, 0) + base['map_matches'].get(m, 0)
                           for m in set(counts['map_matches']) | set(base['map_matches'])}
     return out
@@ -248,6 +274,16 @@ def arguments():
                    help='Terminal reward for both players when the episode hits --episode-ticks (<= 0)')
     p.add_argument('--stocks', type=int, default=0, help='Smash-style extra-life setting; 0 = vanilla Bopl, one life per round')
     p.add_argument('--training-maps', type=maps, default=[0])
+    p.add_argument('--loadout', type=_arg(p,loadout_ids), default=list(DEFAULT_LOADOUT),
+                   help='fixed three-slot loadout (default: 2,4,14)')
+    p.add_argument('--loadout-pool', type=_arg(p,loadout_pool),
+                   help='native per-episode slot pool: IDs, all, or all-<excluded IDs>')
+    p.add_argument('--loadout-set', type=Path,
+                   help='lineup file: three shared or six player-ordered ability IDs per line')
+    p.add_argument('--loadout-no-dup', action='store_true',
+                   help='sample distinct slots within each player (duplicates are legal by default)')
+    p.add_argument('--mirror-share', type=float, default=0.,
+                   help='probability both players receive player 0\'s loadout')
     p.add_argument('--checkpoint-every', type=int, default=1_000_000, help='Learner decisions between immutable snapshots')
     p.add_argument('--pool-size', type=int, default=16, help='Historical snapshots kept by the self-play pool')
     p.add_argument('--swap-winrate', type=float, default=.6,
@@ -353,6 +389,10 @@ def arguments():
             p.error('heldout maps must be disjoint from training and evaluation maps')
         if any(n < 2 or n % 2 for n in (a.evaluation_games, a.heldout_games, a.frozen_games)):
             p.error('evaluation game counts must be positive and even')
+    try:
+        a.loadouts=resolve_loadouts(a.loadout,a.loadout_pool,a.loadout_set,a.loadout_no_dup,a.mirror_share)
+    except (ValueError,OSError) as error:
+        p.error(str(error))
     return a
 
 
@@ -460,6 +500,8 @@ def main():
     from pufferlib import _C, pufferl, selfplay
     if not _C.gpu:
         raise RuntimeError('Native training requires the CUDA build')
+    install_loadout_set(_C,a.loadouts['lineups'])
+    print('Effective loadouts: '+json.dumps(a.loadouts,separators=(',',':')),flush=True)
     # A binding compiled from another checkout (a rift's copied venv finder) or before
     # the current env/kernel sources trains silently on stale code; fail instead.
     binding = Path(_C.__file__).resolve()
@@ -519,11 +561,15 @@ def main():
             kind_name, _, _, _ = scripted_roster.split_name(a.scripted_roster[0])
         scripted_kinds |= SCRIPTED_KINDS[kind_name] << 4 * (scripted_first_bank + i)
     map_chunks=map_mask_chunks(a.training_maps)
+    pool_mask=sum(1 << ability for ability in a.loadouts['pool'])
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
                        # Four 31-bit chunks: binding options travel as doubles.
                        training_map_mask=map_chunks[0], training_map_mask_hi=map_chunks[1],
                        training_map_mask_2=map_chunks[2], training_map_mask_3=map_chunks[3],
+                       ability1=a.loadouts['fixed'][0], ability2=a.loadouts['fixed'][1], ability3=a.loadouts['fixed'][2],
+                       loadout_pool=pool_mask&0x7fffffff, loadout_pool_hi=(pool_mask>>31)&0x7fffffff,
+                       loadout_no_dup=int(a.loadouts['no_dup']), mirror_share_ppm=round(a.loadouts['mirror_share']*1_000_000),
                        max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=round(a.reward_kill*1000), reward_timeout_milli=round(a.reward_timeout*1000),
                        scripted_kinds=scripted_kinds, scripted_level=SCRIPTED_LEVELS[a.scripted_level],
                        obs_layout=layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3)
@@ -548,6 +594,7 @@ def main():
                   scripted_banks=a.n_scripted,
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
+                  loadouts=a.loadouts,
                   observation_delay_ticks=9, telemetry_schema=1,
                   reward=dict(win=1, loss=-1, timeout=a.reward_timeout, kill=a.reward_kill, death=-a.reward_kill),
                   entropy=a.entropy, entropy_floor=a.entropy_floor, entropy_head_scale=a.head_scale,

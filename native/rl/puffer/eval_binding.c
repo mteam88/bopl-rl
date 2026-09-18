@@ -133,6 +133,34 @@ BoplPuffer *research_open(uint32_t seed, uint32_t map, uint32_t limit, int delay
     research_route(env);
     init(env); c_reset(env); return env;
 }
+/* Configure the same native episode sampler as training. `sets` is count rows
+ * of six player-ordered bytes. The caller resets once after this call. */
+int research_configure_loadouts(BoplPuffer *env, const uint32_t *fixed, uint64_t pool,
+                                const uint8_t *sets, int count, int no_dup, int mirror_share_ppm) {
+    if (!env || !fixed || count<0 || count>BOPL_LOADOUT_SET_MAX || (count && !sets) || (pool && count)) return -1;
+    for (int player=0; player<env->players; player++) for (int slot=0; slot<3; slot++)
+        env->config.player[player].abilities[slot]=fixed[slot];
+    env->loadout_pool=pool; env->loadout_no_dup=no_dup!=0; env->mirror_share_ppm=mirror_share_ppm;
+    env->loadout_set_count=count;
+    if (count) memcpy(env->loadout_set,sets,(size_t)count*6);
+    env->loadout_mode=count?BOPL_LOADOUT_SET:(pool?BOPL_LOADOUT_POOL:BOPL_LOADOUT_FIXED);
+    return bopl_loadouts_valid(env)?0:-1;
+}
+int research_loadouts(BoplPuffer *env, uint8_t *out, int capacity) {
+    int count=env->players*(int)env->config.slots;
+    if (!out || capacity<count) return -count;
+    for (int player=0; player<env->players; player++) for (uint32_t slot=0; slot<env->config.slots; slot++)
+        out[player*env->config.slots+(int)slot]=(uint8_t)env->config.player[player].abilities[slot];
+    return count;
+}
+int research_ability_telemetry(BoplPuffer *env, double *activations, double *rows,
+                               double *overflow, int capacity) {
+    if (!env || !activations || !rows || !overflow || capacity<BOPL_ABILITY_COUNT) return -BOPL_ABILITY_COUNT;
+    memcpy(activations,env->counters.ability_activations,sizeof(env->counters.ability_activations));
+    memcpy(rows,env->counters.entity_rows,sizeof(env->counters.entity_rows));
+    memcpy(overflow,env->counters.entity_overflow,sizeof(env->counters.entity_overflow));
+    return BOPL_ABILITY_COUNT;
+}
 /* Reward telemetry configuration for an open evaluator: the kill/death
  * shaping magnitude and the timeout outcome (<=0, both finite). Takes effect
  * from the next step; research_open keeps the phase-1 defaults (0.1, 0). */
