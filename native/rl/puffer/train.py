@@ -5,6 +5,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -48,6 +49,61 @@ def scripted_roster_arg(value):
         return scripted_roster.parse_roster(value)
     except ValueError as error:
         raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def pinned_opponents(text):
+    """--pinned-opponents NAME=PATH,...: distinct safe names, existing .bin checkpoints (paths relative to ROOT)."""
+    out = []
+    for part in [p for p in text.split(',') if p.strip()]:
+        name, sep, path = part.partition('=')
+        if not sep or not re.fullmatch(r'[a-z][a-z0-9-]{0,47}', name.strip()):
+            raise argparse.ArgumentTypeError(f'pinned opponent {part!r}: expected safe-name=path')
+        checkpoint = Path(path.strip())
+        checkpoint = (checkpoint if checkpoint.is_absolute() else ROOT/checkpoint).resolve()
+        if checkpoint.suffix != '.bin' or not checkpoint.exists() or not Path(str(checkpoint) + '.json').exists():
+            raise argparse.ArgumentTypeError(f'pinned opponent {name}: {checkpoint} needs .bin weights and a .bin.json sidecar')
+        out.append((name.strip(), str(checkpoint)))
+    if len({name for name, _ in out}) != len(out):
+        raise argparse.ArgumentTypeError('pinned opponent names must be distinct')
+    return out
+
+
+def draw_caps(text):
+    out = {}
+    for part in [p for p in text.split(',') if p.strip()]:
+        name, sep, value = part.partition('=')
+        try:
+            fraction = float(value)
+        except ValueError:
+            fraction = -1.0
+        if not sep or not 0 < fraction < 1:
+            raise argparse.ArgumentTypeError(f'scripted draw cap {part!r}: expected name=fraction in (0, 1)')
+        out[name.strip()] = fraction
+    return out
+
+
+def capped_draw_weights(weights, names, caps):
+    """Scale a capped entry's weight down so its normalised share is at most its cap."""
+    weights = list(weights)
+    for name, cap in caps.items():
+        if name not in names:
+            continue
+        i = names.index(name)
+        others = sum(w for j, w in enumerate(weights) if j != i)
+        if others > 0:
+            weights[i] = min(weights[i], cap * others / (1.0 - cap))
+    return weights
+
+
+def check_pinned_shape(pinned, *, hidden, layers, architecture, aim_fourier, aim_ar, v4_shape):
+    """A pinned checkpoint loads into a frozen bank as a snapshot does: same network, same writer bits."""
+    for name, path in pinned:
+        meta = json.loads(Path(path + '.json').read_text())
+        want = dict(hidden=hidden, num_layers=layers, architecture=architecture, aim_fourier=aim_fourier, aim_ar=aim_ar)
+        got = {key: meta.get(key) for key in want}
+        if got != want or (meta.get('v4_shape') or None) != (v4_shape or None):
+            raise SystemExit(f'pinned opponent {name}: shape {got} / v4 {meta.get("v4_shape")} differs from this run '
+                             f'{want} / {v4_shape}')
 
 
 def resolve_scripted(scripted_kinds, level, roster, banks=0):
@@ -105,7 +161,8 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
-                 'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape')
+                 'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape',
+                 'opponent_sampler', 'pinned_opponents')
 # Policy v4 (POLICY_V4_PLAN.md, puffer/bopl_v4.cu) network shape: flag name -> (env var the
 # CUDA module reads, layout.V4_DEFAULTS key). Recorded in config.json / the checkpoint sidecar.
 V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNER', 'set_inner'),
@@ -153,7 +210,9 @@ def recorded_hypers(config):
                 scripted_share_max=config.get('scripted_share_max', 1.0),
                 n_scripted=config.get('scripted_banks', len(config.get('scripted_bots', [])) or (1 if config.get('scripted_roster') else 0)),
                 aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0),
-                v4_shape=config.get('v4_shape'))
+                v4_shape=config.get('v4_shape'),
+                opponent_sampler=pool.get('sampler', 'index'),
+                pinned_opponents=[(item['name'], item['path']) for item in pool.get('pinned', [])])
 
 
 def offset_counters(counts, base):
@@ -254,6 +313,14 @@ def arguments():
     p.add_argument('--elo-init', type=float, default=0.)
     p.add_argument('--elo-k', type=float, default=16.)
     p.add_argument('--pool-seed', type=int, help='Opponent sampling seed (defaults to --seed)')
+    p.add_argument('--opponent-sampler', choices=('index', 'pfsp'), default='index',
+                   help='How a bank draws its next pool opponent (POLICY_V4_PLAN.md 7e): index = upstream\'s '
+                        '(i+1)^0.5 over all but the five newest snapshots; pfsp = weight (1 - winrate)^2 from the '
+                        'ledger (prioritised fictitious self-play), unplayed members at 0.5')
+    p.add_argument('--pinned-opponents', type=pinned_opponents, default=[],
+                   help='Comma-separated NAME=PATH checkpoints (.bin with sidecar, same network shape and writer '
+                        'bits as this run) kept in the self-play pool for the whole run: candidates of every draw, '
+                        'never evicted, outside --pool-size (the league of 7e)')
     p.add_argument('--scripted-bots', type=scripted_bots, default='',
                    help='Comma-separated bot kinds that take over the last banks. Without '
                         '--scripted-roster each kind is a one-entry roster at --scripted-level; '
@@ -270,6 +337,9 @@ def arguments():
     p.add_argument('--scripted-share-max', type=float, default=1.0,
                    help='Upper clamp on the scripted bank\'s bot-match share (1 = the bank always '
                         'plays a roster bot while some entry is a coin flip)')
+    p.add_argument('--scripted-draw-cap', type=draw_caps, default={},
+                   help='Comma-separated NAME=FRACTION: cap a roster entry\'s share of the scripted banks\' draws '
+                        '(7e: search-medium=0.25, its bopl_rl_fork costs ~4 ms a decision)')
     p.add_argument('--scripted-share-min', type=float, default=0.0,
                    help='Lower clamp on the scripted bank\'s bot-match share (0 = drop the bot '
                         'once every roster entry is beaten or hopeless)')
@@ -293,6 +363,10 @@ def arguments():
     p.add_argument('--evaluation-pool', type=Path, default=None,
                    help='reference pool.json the eval hook rates in-run evaluations on (evaluate.py --pool; '
                         'default reference_pool.DEFAULT_POOL, pool v7). The sweep driver passes [scoring].pool.')
+    p.add_argument('--evaluation-pool-secondary', type=Path, default=None,
+                   help='a second pool.json each in-run rating also plays, after the primary, in the same '
+                        'nice-19 background chain (--in-run-pool-secondary-games games)')
+    p.add_argument('--in-run-pool-secondary-games', type=int, default=96)
     a = p.parse_args()
     for name in ('steps', 'workers', 'horizon', 'layers', 'learner_passes', 'episode_ticks',
                  'checkpoint_every', 'eval_every', 'evaluation_workers', 'entropy_half_life',
@@ -318,6 +392,8 @@ def arguments():
         p.error(f'scripted-banks {n_scripted} exceeds --banks {a.banks}')
     if n_scripted and not roster_names:
         p.error('scripted-roster/scripted-bots produced no roster entries')
+    if unknown := set(a.scripted_draw_cap) - set(roster_names):
+        p.error(f'scripted-draw-cap names not in the roster: {sorted(unknown)}')
     if not (math.isfinite(a.scripted_share_min) and math.isfinite(a.scripted_share_max)
             and 0 <= a.scripted_share_min <= 1 and 0 <= a.scripted_share_max <= 1):
         p.error('scripted-share-min/max must be finite in [0, 1]')
@@ -374,6 +450,10 @@ def main():
     runtime = {key: hashlib.sha256(path.read_bytes()).hexdigest()
                for key, path in reference.player_sources(game).items() if path.exists()}
     a.v4_shape = {key: getattr(a, 'v4_' + name) for name, (_, key) in V4_SHAPE.items()} if a.encoder == 'v4' else None
+    if a.pinned_opponents:
+        check_pinned_shape(a.pinned_opponents, hidden=a.hidden, layers=a.layers,
+                           architecture={'set': layout.ARCHITECTURE, 'v4': layout.V4_ARCHITECTURE}.get(a.encoder, 'puffernet-mingru'),
+                           aim_fourier=a.aim_fourier, aim_ar=a.aim_ar, v4_shape=a.v4_shape)
     resume = None
     if a.resume:
         resume = json.loads((output/'pool/state.json').read_text())
@@ -526,6 +606,8 @@ def main():
                     max_size=a.pool_size, swap_winrate=a.swap_winrate, min_games=a.min_games,
                     snapshot_interval=a.snapshot_interval, opponent_timeout=a.opponent_timeout,
                     elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed, step_unit='learner_decisions',
+                    sampler=a.opponent_sampler,
+                    pinned=[dict(name=name, path=path, **checkpoint_identity(Path(path))) for name, path in a.pinned_opponents],
                     native_steps_per_learner_decision=native_per_learner, mid_match_swaps='counted in neither bank statistic')
     obs_layout_version = layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3
     obs_size = layout.obs_size_of(obs_layout_version)
@@ -535,7 +617,7 @@ def main():
                   seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
                   scripted_bots=a.scripted_bots, scripted_level=a.scripted_level, scripted_roster=a.scripted_roster,
                   scripted_share_min=a.scripted_share_min, scripted_share_max=a.scripted_share_max,
-                  scripted_banks=a.n_scripted,
+                  scripted_banks=a.n_scripted, scripted_draw_cap=a.scripted_draw_cap,
                   training_maps=a.training_maps, evaluation_maps=a.evaluation_maps,
                   heldout_maps=a.heldout_maps, episode_ticks=a.episode_ticks, stocks=a.stocks,
                   observation_delay_ticks=9, telemetry_schema=1,
@@ -600,7 +682,10 @@ def main():
                 return
             elos = [entry['elo'] for entry in roster_entries]
             share = scripted_roster.scripted_share(elos, learner_elo, a.scripted_share_min, a.scripted_share_max)
-            set_scripted_curriculum(_C, share, roster_entries, scripted_roster.draw_weights(elos, learner_elo))
+            set_scripted_curriculum(_C, share, roster_entries, roster_weights(elos, learner_elo))
+        def roster_weights(elos, learner_elo):
+            return capped_draw_weights(scripted_roster.draw_weights(elos, learner_elo),
+                                       [entry['name'] for entry in roster_entries], a.scripted_draw_cap)
         def save():
             step = counts['game_steps']
             if step not in saved:
@@ -654,6 +739,12 @@ def main():
                                          opp_timeout_steps=round(a.opponent_timeout*native_per_learner),
                                          elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed)
             ledger = native_selfplay.members(str(initial))
+            if a.pinned_opponents:
+                native_selfplay.add_pinned(pool, ledger, a.pinned_opponents)
+        if a.pinned_opponents or a.opponent_sampler != 'index':
+            # Pinned members and/or the PFSP draw (7e). Without either the
+            # upstream sampler and eviction run untouched.
+            native_selfplay.install_sampler(selfplay, pool, ledger, mode=a.opponent_sampler)
         if roster_entries:
             sync_scripted(pool['primary_elo'])
         vector.reset()
@@ -721,10 +812,25 @@ def main():
             for process, log in rating:
                 log.close()
             rating.clear()
-            command = ['nice', '-n', '19', sys.executable, str(ROOT/'native/rl/sweep/reference_pool.py'), 'rate',
-                       '--pool', str(a.evaluation_pool or DEFAULT_POOL), '--checkpoint', str(checkpoint),
-                       '--games', str(a.in_run_pool_games), '--first-pass-games', '10', '--workers', '2',
-                       '--game', str(game), '--source', 'in-run']
+            def rate(pool_path, games_count):
+                # First pass: an even share of the budget per member (pool v7's 16
+                # members at 160 games: 10, as before; pool v8's 34 at 160: 4), the
+                # rest in band rounds, so the budget is the budget.
+                members = len(json.loads(Path(pool_path).read_text())['members'])
+                first_pass = max(2, (games_count // members) // 2 * 2)
+                return ['nice', '-n', '19', sys.executable, str(ROOT/'native/rl/sweep/reference_pool.py'), 'rate',
+                        '--pool', str(pool_path), '--checkpoint', str(checkpoint),
+                        '--games', str(games_count), '--first-pass-games', str(first_pass), '--workers', '2',
+                        '--game', str(game), '--source', 'in-run']
+            command = rate(a.evaluation_pool or DEFAULT_POOL, a.in_run_pool_games)
+            if a.evaluation_pool_secondary:
+                # One background chain: the secondary pool after the primary,
+                # so the two never compete for the same two cores.
+                command = [sys.executable, '-c',
+                           'import subprocess, sys, json; a, b = json.loads(sys.argv[1]); '
+                           'subprocess.run(a, check=True); sys.exit(subprocess.run(b).returncode)',
+                           json.dumps([rate(a.evaluation_pool or DEFAULT_POOL, a.in_run_pool_games),
+                                       rate(a.evaluation_pool_secondary, a.in_run_pool_secondary_games)])]
             log = (output/'reference.log').open('a')
             rating.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
         def finish_rating():
@@ -848,7 +954,7 @@ def main():
                         window.append((games, wins))
                     scripted_roster.apply_window(roster_entries, window, after_pool['elo'], a.elo_k)
                     sync_scripted(after_pool['elo'])
-                    weights = scripted_roster.draw_weights([e['elo'] for e in roster_entries], after_pool['elo'])
+                    weights = roster_weights([e['elo'] for e in roster_entries], after_pool['elo'])
                     scripted = {}
                     for i, entry in enumerate(roster_entries):
                         games = entry['games']

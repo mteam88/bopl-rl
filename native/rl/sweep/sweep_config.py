@@ -53,6 +53,11 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder'
                'frozen_games', 'evaluation_workers', 'evaluation_pool', 'scripted_bots', 'scripted_level',
                'scripted_roster', 'scripted_banks', 'scripted_share_min', 'scripted_share_max',
                'scripted_opponents', 'aim_fourier', 'aim_ar',
+               # the opponent distribution (POLICY_V4_PLAN.md 7e): the pool's draw rule, pinned league
+               # members ("name=path,..."), a second in-run rating pool
+               'opponent_sampler', 'pinned_opponents', 'evaluation_pool_secondary', 'in_run_pool_secondary_games',
+               'scripted_draw_cap',
+               'in_run_pool_games',
                # policy v4 (POLICY_V4_PLAN.md): --encoder v4 shape flags and the writer ablation
                'v4_set_dim', 'v4_set_inner', 'v4_flat_dim', 'v4_ffn_dim', 'v4_critic_dim',
                'v4_critic_privileged', 'v4_critic_detach', 'v4_mean_pool', 'v4_ablate', 'v4_row_budget')
@@ -75,7 +80,8 @@ ALWAYS_INTEGER = ('steps', 'workers', 'buffers', 'banks', 'hidden', 'layers', 'a
                   'horizon', 'learner_passes', 'entropy_half_life', 'episode_ticks',
                   'pool_size', 'min_games', 'snapshot_interval', 'opponent_timeout',
                   'checkpoint_every', 'eval_every', 'evaluation_games',
-                  'heldout_games', 'frozen_games', 'evaluation_workers', 'seed')
+                  'heldout_games', 'frozen_games', 'evaluation_workers', 'seed',
+                  'in_run_pool_games', 'in_run_pool_secondary_games')
 
 
 class ConfigError(ValueError):
@@ -263,6 +269,11 @@ class SweepSpec:
         if 'evaluation_pool' not in merged and self.scoring.get('pool'):
             pool = Path(self.scoring['pool'])
             merged['evaluation_pool'] = str(pool if pool.is_absolute() else ROOT / pool)
+        for name in ('evaluation_pool_secondary', 'evaluation_opponents'):
+            # Config paths are repository-relative, like [scoring].pool.
+            if merged.get(name):
+                path = Path(merged[name])
+                merged[name] = str(path if path.is_absolute() else ROOT / path)
         arguments = ['--output', str(output)]
         for name in sorted(merged):
             value = merged[name]

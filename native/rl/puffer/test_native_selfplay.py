@@ -10,6 +10,8 @@ import native_selfplay
 
 from pufferlib import selfplay
 
+UPSTREAM_SAMPLE, UPSTREAM_EVICT = selfplay.sample_opponent, selfplay.evict
+
 
 class FakeBackend:
     """Records the calls the pool makes; alignment is scripted per bank."""
@@ -43,7 +45,7 @@ def logs(n, **per_bank):
     return flat
 
 
-class NativeSelfplayTests(unittest.TestCase):
+class PoolFixture(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.pool_dir = Path(self.directory.name)
@@ -67,6 +69,8 @@ class NativeSelfplayTests(unittest.TestCase):
     def summary(self):
         return native_selfplay.summary(self.pool, self.ledger)
 
+
+class NativeSelfplayTests(PoolFixture):
     def test_state_matches_selfplay_step_contract(self):
         self.assertEqual(self.pool['num_banks'], 2)
         self.assertEqual([b['num_hist_envs'] for b in self.pool['banks']], [3, 3])
@@ -169,6 +173,109 @@ class NativeSelfplayTests(unittest.TestCase):
         self.assertEqual(after['size'], 1)
         self.assertTrue(all(b['pending_step'] == 0 for b in after['banks']))
         self.assertEqual([e['event'] for e in native_selfplay.events(before, after, self.ledger, learner_steps=0)], ['armed', 'armed'])
+
+
+class LeagueTests(PoolFixture):
+    """Pinned members and the PFSP draw (POLICY_V4_PLAN.md 7e) on the same fake backend."""
+    def setUp(self):
+        super().setUp()
+        self.pinned = []
+        for name in ('aim-s73', 'aim-s74', 'aim-maps'):
+            path = self.pool_dir / f'{name}.bin'
+            path.write_bytes(b'p')
+            self.pinned.append((name, str(path)))
+        native_selfplay.add_pinned(self.pool, self.ledger, self.pinned)
+        native_selfplay.install_sampler(selfplay, self.pool, self.ledger, mode='pfsp')
+
+    def tearDown(self):
+        # The upstream module must be restored for the other test class.
+        selfplay.sample_opponent, selfplay.evict = UPSTREAM_SAMPLE, UPSTREAM_EVICT
+        super().tearDown()
+
+    def test_pinned_are_members_with_negative_steps(self):
+        summary = self.summary()
+        self.assertEqual(summary['size'], 4)
+        self.assertEqual([e['step'] for e in summary['entries']], [-1, -2, -3, 0])
+        self.assertEqual([r['name'] for r in summary['pinned']], ['aim-s73', 'aim-s74', 'aim-maps'])
+        self.assertEqual(summary['sampler'], 'pfsp')
+        self.assertIsNone(summary['pinned_draw_share'])
+        self.assertEqual(summary['pinned_banks'], 0, 'banks start on the bootstrap as before')
+        with self.assertRaises(ValueError):
+            native_selfplay.add_pinned(self.pool, self.ledger, self.pinned[:1])
+
+    def test_pinned_survive_eviction_and_max_size_bounds_own_snapshots(self):
+        self.pool['opp_timeout_steps'] = 0
+        for epoch in range(8):
+            self.trainer.global_step = 1000 * (epoch + 1)
+            self.step(logs(1), epoch)
+        entries = self.pool['pool']
+        self.assertEqual([e.get('name') for e in entries[:3]], ['aim-s73', 'aim-s74', 'aim-maps'])
+        own = [e for e in entries if not e.get('pinned')]
+        self.assertEqual(len(own), 4, 'max_size caps the run\'s own snapshots, not the pinned members')
+        self.assertEqual(self.ledger[own[0]['path']]['step'], 0, 'the bootstrap anchor is still kept')
+
+    def test_pfsp_weights_follow_the_ledger(self):
+        # Unplayed: 0.25. A member beaten 9/10 (smoothed 10/12): (1/6)^2. One never beaten: (11/12)^2.
+        paths = [p for _, p in self.pinned]
+        self.ledger[paths[0]].update(games=10, wins=9)
+        self.ledger[paths[1]].update(games=10, wins=0)
+        weights = native_selfplay.pfsp_weights(self.pool['pool'][:3], self.ledger)
+        self.assertAlmostEqual(weights[0], (1 - 10 / 12) ** 2)
+        self.assertAlmostEqual(weights[1], (1 - 1 / 12) ** 2)
+        self.assertAlmostEqual(weights[2], 0.25)
+        # A member beaten 1000/1000 keeps the floor.
+        self.ledger[paths[0]].update(games=1000, wins=1000)
+        self.assertEqual(native_selfplay.pfsp_weights(self.pool['pool'][:1], self.ledger)[0], native_selfplay.PFSP_FLOOR)
+
+    def test_draws_prefer_the_unbeaten_and_are_counted(self):
+        paths = [p for _, p in self.pinned]
+        self.ledger[paths[0]].update(games=200, wins=200)   # beaten: floor
+        self.ledger[paths[1]].update(games=200, wins=0)     # never beaten: ~1
+        self.ledger[paths[2]].update(games=200, wins=100)   # even: ~0.25
+        self.ledger[self.bootstrap].update(games=200, wins=200)
+        draws = {}
+        for _ in range(400):
+            entry = selfplay.sample_opponent(self.pool['pool'], self.pool['rng'])
+            draws[entry.get('name', 'own')] = draws.get(entry.get('name', 'own'), 0) + 1
+        self.assertGreater(draws['aim-s74'], 0.6 * 400)
+        self.assertGreater(draws['aim-maps'], 0.1 * 400)
+        self.assertLess(draws.get('aim-s73', 0) + draws.get('own', 0), 0.05 * 400)
+        summary = self.summary()
+        self.assertEqual(sum(r['draws'] for r in summary['pinned']) + self.pool['pool'][3].get('draws', 0), 400)
+        self.assertGreater(summary['pinned_draw_share'], 0.95)
+        self.assertAlmostEqual(summary['pinned_game_share'], 600 / 800)
+
+    def test_swap_can_arm_a_pinned_member_and_summary_counts_it(self):
+        # Bank 0 beats the bootstrap; the draw (PFSP, all unplayed at 0.25 vs a
+        # beaten bootstrap at the floor) lands on a pinned member.
+        self.trainer.global_step = 100
+        self.step(logs(4, **{'0': (4, 4)}), 0)
+        bank = self.pool['banks'][0]
+        self.assertIsNotNone(bank['pending_opp_path'])
+        self.assertTrue(self.ledger[bank['pending_opp_path']].get('pinned'))
+        self.backend.aligned[0] = 3
+        self.trainer.global_step = 200
+        before = self.summary()
+        self.step(logs(4), 1)
+        after = self.summary()
+        self.assertEqual(after['pinned_banks'], 1)
+        self.assertLess(after['banks'][0]['opponent_step'], 0)
+        events = native_selfplay.events(before, after, self.ledger, learner_steps=0)
+        self.assertEqual([e['event'] for e in events], ['loaded'])
+        # Games against the pinned member are credited to it.
+        self.step(logs(4, **{'0': (4, 1)}), 2)
+        row = next(r for r in self.summary()['pinned'] if r['name'] == self.ledger[bank['cur_opp_path']]['name'])
+        self.assertEqual((row['games'], row['wins']), (4, 1))
+
+    def test_index_mode_keeps_upstream_weights_but_protects_pinned(self):
+        native_selfplay.install_sampler(selfplay, self.pool, self.ledger, mode='index')
+        self.assertEqual(self.pool['sampler'], 'index')
+        self.pool['opp_timeout_steps'] = 0
+        for epoch in range(8):
+            self.trainer.global_step = 1000 * (epoch + 1)
+            self.step(logs(1), epoch)
+        self.assertEqual(sum(1 for e in self.pool['pool'] if e.get('pinned')), 3)
+        self.assertEqual(sum(1 for e in self.pool['pool'] if not e.get('pinned')), 4)
 
 
 if __name__ == '__main__':

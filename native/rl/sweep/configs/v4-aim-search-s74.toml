@@ -1,0 +1,99 @@
+# Policy v4 next wave, the opponent distribution (POLICY_V4_PLAN.md 7e, run 3, second seed): v4-aim-search-s74
+#   v4-aim with search-medium (pool v7 589, the strongest bot, absent from the default roster because bopl_rl_fork
+#   costs ~4 ms a decision) added to the scripted roster, its draw share capped at 0.25 of the scripted banks'
+#   draws. Gated: sps_gate.py runs it 120 s at full width first and the job skips the run below 120k learner sps.
+# Scored on pool v8 (primary; head-to-head band and pool v7 alongside). Runs from the policy-v4-wave3 worktree.
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"
+downsample = 3
+fixed_cost = true
+max_suggestion_cost = 1.75e9
+max_runs = 1
+num_random_samples = 1
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "10G"
+nice = 0
+max_seconds = 21600                # steps stay 1734936776 (the 024 budget); the comparison is at equal steps (every 20M checkpoint), not equal wall time, so full runs are wanted even at 3x
+poll_seconds = 60
+
+[scoring]
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/pool-v8/pool.json"   # 7c': the v4 scale; v7 in-run alongside and offline (rate-runs) after
+last_k = 3
+games = 480
+first_pass_games = 6
+band = [0.15, 0.85]
+round_games = 96
+workers = 8
+seed_base = 80001
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+
+[fixed]
+# 7e run 3: search-medium in the roster at <= 0.25 of the scripted draws
+scripted_draw_cap = "search-medium=0.25"
+
+# 7e: in-run rating on pool v8 (primary, 160 games) then pool v7 (96 games) in one nice-19 chain;
+# the head-to-head band: aim-only s73/s74/s75, v4-full, v4-lite finals, 16 games x 3 evaluation maps = 48 each
+evaluation_pool_secondary = "native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"
+in_run_pool_games = 160
+in_run_pool_secondary_games = 96
+evaluation_opponents = "native/artifacts/rl/sweeps/anchors/wave3-opponents/head-to-head.json"
+frozen_games = 16
+
+# policy v4 (POLICY_V4_PLAN.md), width 256, one MinGRU layer; shape flags below
+encoder = "v4"
+hidden = 256
+layers = 1
+v4_ablate = 8
+# overnight-9 024, verbatim
+steps = 1734936776
+workers = 128
+buffers = 4
+banks = 4
+seed = 74
+horizon = 128
+learner_passes = 4
+aim_fourier = 4
+learning_rate = 0.0003431012662975937
+entropy = 0.01532588085540654
+entropy_floor = 0.001
+entropy_half_life = 718611646
+entropy_head_scale = "0.028821467398601395,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.2883693237829292
+reward_timeout = -1
+scripted_roster = "default,search-medium"
+scripted_banks = 3
+scripted_share_max = 1.0
+scripted_share_min = 0.11048204896277423
+scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 20000000
+eval_every = 80000000
+evaluation_games = 8
+heldout_games = 4
+evaluation_workers = 4
+cudagraphs = 1
+
+# sweep_config requires one swept parameter; at its default this is [fixed].learning_rate.
+[params.learning_rate]
+distribution = "log_normal"
+min = 1e-4
+max = 3e-3
+scale = 0.5
+default = 0.0003431012662975937
