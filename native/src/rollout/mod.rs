@@ -17638,6 +17638,12 @@ impl RolloutWorld {
             self.players[index].missile.ticks = 0;
         }
 
+        // PlayerPhysics is registered before SparkShot on this prefab. Its
+        // gravity raycast can therefore attach the form before SparkShot's
+        // own landing-exit check; SparkShot then observes a grounded body,
+        // calls Move(zero), and still steers the live projectile this pass.
+        self.steer_active_missile(index, action, DT, data);
+
         if self.players[index].base.grounded {
             self.players[index]
                 .base
@@ -17666,12 +17672,12 @@ impl RolloutWorld {
                 }
             }
             if self.players[index].base.grounded {
+                self.players[index]
+                    .base
+                    .move_only(Vec2::ZERO, terrain!(self));
                 let slot = &mut self.players[index];
-                slot.active = ActiveAbility::None;
-                slot.obs_state = STATE_LAND;
-                slot.state_ticks = LAND_TICKS + 2;
-                slot.reported_position = slot.base.position;
-                return;
+                slot.base.position += slot.base.external_velocity * DT;
+                slot.base.external_velocity *= Fix::from_f64(0.95);
             } else {
                 self.players[index].base.collision_rays(terrain!(self));
                 if self.players[index].base.grounded {
@@ -17697,7 +17703,6 @@ impl RolloutWorld {
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
         }
-        self.steer_active_missile(index, action, DT, data);
     }
 
     /// Original ThrowItem ability used only by Mine. It differs materially
@@ -33384,7 +33389,7 @@ mod tests {
     }
 
     #[test]
-    fn missile_landing_exits_before_projectile_steering() {
+    fn player_physics_landing_precedes_missile_steering() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let platform = &world.platforms[0];
@@ -33411,10 +33416,18 @@ mod tests {
             ..GuidedMissile::default()
         });
 
-        world.missile_form_tick(0, Action::default(), data::get());
+        world.missile_form_tick(
+            0,
+            Action {
+                buttons: 2,
+                ..Action::default()
+            },
+            data::get(),
+        );
 
-        assert!(world.players[0].active == ActiveAbility::None);
-        assert_eq!(world.guided_missiles[0].instability_ticks, 7);
+        assert!(world.players[0].base.grounded);
+        assert!(world.players[0].active == ActiveAbility::Missile);
+        assert_eq!(world.guided_missiles[0].instability_ticks, 0);
     }
 
     #[test]
