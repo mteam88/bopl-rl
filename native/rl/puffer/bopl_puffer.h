@@ -35,11 +35,20 @@ typedef struct {
      * was chosen when the button state was free, and how many decisions the
      * button head was ignored because a latch was in force. */
     float hold_choice[BOPL_ACT_HOLD], latched_decisions;
-    float map_fraction[64];   /* BOPL_COUNTER_MAPS */
+    float map_fraction[124];   /* BOPL_COUNTER_MAPS */
 } Log;
 enum { BOPL_MAX_PLAYERS=6, BOPL_MAX_BANKS=8, BOPL_MAX_SLOTS=BOPL_MAX_PLAYERS+BOPL_MAX_BANKS };
-/* 64 maps: training_map_mask is 64 bits wide (bits 0-61 reach the binding as two 31-bit halves). */
-enum { BOPL_COUNTER_MAPS=64, BOPL_COUNTER_SIZE=5+4+BOPL_TELEMETRY_SIZE+BOPL_COUNTER_MAPS };
+/* The authored catalogue is dense at 0..123. Selection is a real 128-bit mask;
+ * binding.c reconstructs it from four exact 31-bit option chunks. */
+enum { BOPL_COUNTER_MAPS=124, BOPL_COUNTER_SIZE=5+4+BOPL_TELEMETRY_SIZE+BOPL_COUNTER_MAPS };
+typedef struct { uint64_t lo, hi; } BoplMapMask;
+static int bopl_map_selected(BoplMapMask mask, uint32_t map) {
+    return map<64?(int)((mask.lo>>map)&1u):(map<128?(int)((mask.hi>>(map-64))&1u):0);
+}
+static void bopl_map_select(BoplMapMask *mask, uint32_t map) {
+    if (map<64) mask->lo|=1ull<<map; else if (map<128) mask->hi|=1ull<<(map-64);
+}
+static int bopl_maps_selected(BoplMapMask mask) { return mask.lo!=0 || mask.hi!=0; }
 typedef struct {
     double learner_steps;            /* learner decisions (self-play: every player; historical: the learner side) */
     double game_steps;               /* physical decisions of every player, learner or frozen */
@@ -159,7 +168,7 @@ typedef struct {
     int world_opening, world_checked;
     char world_log[4096], world_error[512];
     int repeat, random_maps, random_loadouts, failed;
-    uint64_t training_map_mask;
+    BoplMapMask training_map_mask;
     int observation_delay, delay_cursor, no_autoreset;
     /* Observation delay (nine ticks = two decisions at repeat 4): the world
      * states sampled at phase 3 of the last two decisions, encoded into the
@@ -755,7 +764,7 @@ static void bopl_world_ready(BoplPuffer *env) {
     if (env->world_checked) return;
     env->world_checked=1;
     for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++)
-        if ((env->training_map_mask&(1ull<<map)) && map>=bopl_rl_map_count(env->world)) {
+        if (bopl_map_selected(env->training_map_mask, map) && map>=bopl_rl_map_count(env->world)) {
             fprintf(stderr, "Training map outside game catalog\n"); abort();
         }
     if (bopl_rl_ability_count(env->world)!=BOPL_ABILITY_COUNT) { fprintf(stderr, "Bopl RL policy catalog changed\n"); abort(); }
@@ -765,7 +774,7 @@ static void init(BoplPuffer *env) {
     if (!game || !replay || !logs) { fprintf(stderr, "Set BOPL_RL_GAME, BOPL_RL_BOOTSTRAP and BOPL_RL_LOG_DIR to absolute paths\n"); abort(); }
     int length=snprintf(env->world_log, sizeof(env->world_log), "%s/worker-%ld-%u.log", logs, (long)getpid(), env->rng);
     if (length<0 || (size_t)length>=sizeof(env->world_log)) abort();
-    if (env->training_map_mask && env->random_maps) {
+    if (bopl_maps_selected(env->training_map_mask) && env->random_maps) {
         fprintf(stderr, "Choose explicit training maps or all random maps\n"); abort();
     }
     if (pthread_create(&env->world_thread, NULL, bopl_world_open, env)) abort();
@@ -806,11 +815,11 @@ static void bopl_spare_ready(BoplPuffer *env) {
  * single-process path makes at the start of that episode. */
 static void bopl_draw_config(BoplPuffer *env, BoplRlConfig *config) {
     config->seed=bopl_random(env);
-    if (env->training_map_mask) {
+    if (bopl_maps_selected(env->training_map_mask)) {
         uint32_t count=0;
-        for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++) count+=(uint32_t)((env->training_map_mask>>map)&1u);
+        for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++) count+=(uint32_t)bopl_map_selected(env->training_map_mask, map);
         uint32_t selected=bopl_random(env)%count;
-        for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++) if (env->training_map_mask&(1ull<<map)) {
+        for (uint32_t map=0; map<BOPL_COUNTER_MAPS; map++) if (bopl_map_selected(env->training_map_mask, map)) {
             if (selected==0) { config->map=map; break; }
             selected--;
         }

@@ -4,12 +4,39 @@ import json
 from pathlib import Path
 import re
 
+MAP_COUNT = 124
+
 
 def map_ids(value):
-    maps=[int(item) for item in value.split(',')]
-    if not maps or len(set(maps))!=len(maps) or any(m<0 or m>61 for m in maps):
-        raise ValueError('Distinct map IDs between 0 and 61 required')
-    return maps
+    """Map selection syntax shared by training, evaluation and sweep tools.
+
+    Accepts comma-separated IDs, inclusive ranges (``0-7,120-123``), or
+    ``all``. Order is retained and duplicates are rejected.
+    """
+    if isinstance(value, (list, tuple)):
+        result=[int(item) for item in value]
+    elif str(value).strip().lower() == 'all':
+        result=list(range(MAP_COUNT))
+    else:
+        result=[]
+        try:
+            for item in str(value).split(','):
+                item=item.strip()
+                if not item:
+                    raise ValueError
+                if '-' in item:
+                    lo_text, hi_text=item.split('-', 1)
+                    lo, hi=int(lo_text), int(hi_text)
+                    if lo>hi:
+                        raise ValueError
+                    result.extend(range(lo, hi+1))
+                else:
+                    result.append(int(item))
+        except ValueError as error:
+            raise ValueError('Expected map IDs, inclusive ranges, or all') from error
+    if not result or len(set(result))!=len(result) or any(m<0 or m>=MAP_COUNT for m in result):
+        raise ValueError(f'Distinct map IDs between 0 and {MAP_COUNT-1} required')
+    return result
 
 
 # Scripted opponents (native/rl/puffer/bopl_bots.h): hand-coded bots that read

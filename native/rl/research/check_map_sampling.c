@@ -28,7 +28,7 @@ int sampling_reset(BoplRl *world, const BoplRlConfig *config) {
 int main(int argc, char **argv) {
     BoplPuffer env={0};env.num_agents=2;env.players=2;env.config.max_episode_ticks=3600;
     env.world=(BoplRl*)1;env.world_checked=1;
-    env.observations=calloc(2*BOPL_OBS_SIZE,sizeof(float));
+    env.observations=calloc(2*BOPL_OBS_STRIDE,sizeof(float));
     env.scratch=env.observations;
     if (argc==2 && strcmp(argv[1],"overflow")==0) {
         BoplRlEntity entities[BOPL_OBS_ENTITIES+1]={{0}};
@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
     env.rng=73;BoplPuffer old=env;uint32_t expected=bopl_random(&old);
     c_reset(&env);assert(env.rng==old.rng && last.seed==expected && last.map==0);
     /* A sparse set must never silently broaden to a range or the whole catalog. */
-    env.training_map_mask=(1u<<0)|(1u<<2);env.rng=901;
+    bopl_map_select(&env.training_map_mask,0);bopl_map_select(&env.training_map_mask,2);env.rng=901;
     unsigned int counts[5]={0};uint32_t maps[200],seeds[200];
     for (int i=0;i<200;i++) {
         c_reset(&env);assert(last.map==0 || last.map==2);
@@ -54,7 +54,7 @@ int main(int argc, char **argv) {
     for (int i=0;i<200;i++) {
         c_reset(&env);assert(last.map==maps[i] && last.seed==seeds[i]);
     }
-    env.training_map_mask=7;env.rng=902;memset(counts,0,sizeof(counts));
+    env.training_map_mask=(BoplMapMask){0};for (uint32_t map=0;map<3;map++) bopl_map_select(&env.training_map_mask,map);env.rng=902;memset(counts,0,sizeof(counts));
     for (int i=0;i<200;i++) { c_reset(&env);assert(last.map<3);counts[last.map]++; }
     for (int i=0;i<3;i++) assert(counts[i]>0);
     free(env.observations);

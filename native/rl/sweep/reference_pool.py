@@ -44,7 +44,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
 
 import elo_ladder  # noqa: E402  (pure until games are played)
-from evaluation_protocol import checkpoint_identity, opponents, scripted_names  # noqa: E402
+from evaluation_protocol import checkpoint_identity, opponents, scripted_names, map_ids  # noqa: E402
 
 SCHEMA = 1
 RUST_SIM = ROOT / 'native/target/release/libbopl_sim.so'
@@ -855,7 +855,8 @@ def main():
                        help='Comma-separated scripted bots (kind-level)')
     build.add_argument('--checkpoint', action='append', default=[], metavar='NAME=PATH')
     build.add_argument('--manifest', type=Path, help='Evaluation-opponents manifest (schema 2) to include')
-    build.add_argument('--maps', default='0,1,2')
+    build.add_argument('--maps', type=map_ids, default=[0,1,2],
+                       help='map IDs, inclusive ranges, or all')
     build.add_argument('--games-per-pair', type=int, default=48)
     build.add_argument('--seed-base', type=int, default=50001)
     build.add_argument('--episode-ticks', type=int, default=7200)
@@ -914,7 +915,7 @@ def main():
         for item in opponents(args.manifest) if args.manifest else []:
             checkpoints.append((item['name'], item['path']))
         pool = build_pool(args.out, scripted=args.scripted, checkpoints=checkpoints,
-                          maps=[int(m) for m in args.maps.split(',')], games_per_pair=args.games_per_pair,
+                          maps=args.maps, games_per_pair=args.games_per_pair,
                           seed_base=args.seed_base, episode_ticks=args.episode_ticks, workers=args.workers,
                           slow_workers=args.slow_workers, library=args.library, game=args.game, note=args.note, log=log)
         print(format_table(pool['members']))

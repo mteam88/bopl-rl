@@ -8,7 +8,7 @@ learner work. Read them between rollouts only.
 import ctypes
 
 FIELDS = 16
-MAPS = 64   # BOPL_COUNTER_MAPS
+MAPS = 124   # BOPL_COUNTER_MAPS
 SIZE = 5 + 4 + FIELDS + MAPS
 
 def bind(lib):

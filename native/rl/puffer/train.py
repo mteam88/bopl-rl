@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools'), str(ROOT / 'native/rl/sweep')]
 from common import atomic_json
 import counters
-from evaluation_protocol import SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents, DEFAULT_EVAL_SCRIPTED
+from evaluation_protocol import SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents, DEFAULT_EVAL_SCRIPTED, map_ids
 from native_checkpoint import write_checkpoint
 import layout
 from native_metrics import empty_counters, update
@@ -27,12 +27,15 @@ import scripted_roster
 
 def maps(value):
     try:
-        result = [int(x) for x in value.split(',')]
+        return map_ids(value)
     except ValueError as error:
-        raise argparse.ArgumentTypeError('Expected comma-separated map IDs') from error
-    if not result or len(set(result)) != len(result) or any(x < 0 or x >= 62 for x in result):
-        raise argparse.ArgumentTypeError('Expected distinct map IDs in 0..61')
-    return result
+        raise argparse.ArgumentTypeError(str(error)) from error
+
+
+def map_mask_chunks(selected):
+    """Four exact 31-bit integers consumed by binding.c as a 128-bit mask."""
+    return [sum(1 << (map_id - 31*chunk) for map_id in selected
+                if 31*chunk <= map_id < 31*(chunk+1)) for chunk in range(4)]
 
 
 def scripted_bots(value):
@@ -515,11 +518,12 @@ def main():
         else:
             kind_name, _, _, _ = scripted_roster.split_name(a.scripted_roster[0])
         scripted_kinds |= SCRIPTED_KINDS[kind_name] << 4 * (scripted_first_bank + i)
+    map_chunks=map_mask_chunks(a.training_maps)
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
-                       # two 31-bit halves: the binding's options travel as doubles
-                       training_map_mask=sum(1 << m for m in a.training_maps if m < 31),
-                       training_map_mask_hi=sum(1 << (m - 31) for m in a.training_maps if m >= 31),
+                       # Four 31-bit chunks: binding options travel as doubles.
+                       training_map_mask=map_chunks[0], training_map_mask_hi=map_chunks[1],
+                       training_map_mask_2=map_chunks[2], training_map_mask_3=map_chunks[3],
                        max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=round(a.reward_kill*1000), reward_timeout_milli=round(a.reward_timeout*1000),
                        scripted_kinds=scripted_kinds, scripted_level=SCRIPTED_LEVELS[a.scripted_level],
                        obs_layout=layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3)
