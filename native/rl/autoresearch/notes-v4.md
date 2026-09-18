@@ -355,7 +355,10 @@ A/B 2x2 at load 6.7: `units = 4` 226.5k vs 224.1k (+1.1%: train 0.1074 vs
 train 0.1068 vs 0.1080, rollout 0.091 vs 0.084). Real but small, and it is
 the same trade as the priority experiments (fewer, longer rollout blocks
 leave SMs to the train pass while the rollout takes longer). Knob kept,
-default 1; decide after the chain's own work shrinks (L11 next).
+default 1. Re-run on top of L11: `units = 2` 238.2k vs 236.1k (+0.9%,
+repeats 237.4 / 239.0 vs 235.7 / 236.5; rollout 0.090 vs 0.085 s). Parked
+at default 1: the rollout side (0.085) is closing on the train side
+(0.103), and this lever lengthens it.
 
 ### L11: the rollout chain's critic on learner rows only (commit 8cb488c6), keep
 
