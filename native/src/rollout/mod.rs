@@ -4687,6 +4687,7 @@ impl RolloutWorld {
             || has(ABILITY_MJOLNIR)
             || has(ABILITY_POKE_BALL)
             || has(ABILITY_MINE);
+        let has_mine_explosion = has(ABILITY_MISSILE) || has(ABILITY_MINE);
         // DestroyFix from a BlackHole wall callback leaves the rounded body
         // visible as destroyed for that contact pass. DetPhysics removes it
         // at the beginning of the following simulation pass.
@@ -4714,6 +4715,8 @@ impl RolloutWorld {
         }
         if has(ABILITY_MISSILE) {
             self.register_pending_guided_missiles(data);
+        }
+        if has_mine_explosion {
             self.register_pending_missile_explosions(data);
         }
         if has(ABILITY_REVIVAL) {
@@ -5052,7 +5055,7 @@ impl RolloutWorld {
         if has(ABILITY_GRENADE) {
             self.grenade_explosions_tick(data, updater_dt);
         }
-        if has(ABILITY_MISSILE) {
+        if has_mine_explosion {
             self.missile_explosions_tick(data, updater_dt);
         }
         if has(ABILITY_SMOKE) {
@@ -5332,7 +5335,7 @@ impl RolloutWorld {
         if has(ABILITY_GRENADE) {
             self.grenade_explosion_contacts(data);
         }
-        if has(ABILITY_MISSILE) {
+        if has_mine_explosion {
             self.missile_explosion_contacts(data);
         }
         if has(ABILITY_SMOKE) {
