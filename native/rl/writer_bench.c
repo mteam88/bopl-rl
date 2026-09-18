@@ -20,6 +20,7 @@
  *
  *   writer_bench <libbopl_sim.so> [ticks=130000] [loadout=default|random] [repeats=5] [states=4096] [seed=37]
  *
+ * Episodes cycle maps 0, 1, 2 (bench_shape.sh's --training-maps).
  * default = the training loadout 2/4/14 (Dash, Bow, Platform; binding.c);
  * random = binding.c's random_loadouts draw per episode. Pin and nice it
  * (taskset -c 11 nice -n 19), Q32 build (just build-q32). One JSON line per
@@ -79,7 +80,7 @@ int main(int argc, char **argv) {
     while (ticks<wanted) {
         const BoplRlState *state=bopl_rl_state(world);
         if (state->header.flags&BOPL_RL_TERMINAL) {
-            config.seed=random_u32(&rng);
+            config.seed=random_u32(&rng); config.map=(uint32_t)(resets%3);   /* the bench's training maps 0, 1, 2 in turn */
             if (random_loadouts) for (int i=0; i<PLAYERS; i++) for (uint32_t j=0; j<config.slots; j++)
                 config.player[i].abilities[j]=1+random_u32(&rng)%(BOPL_ABILITY_COUNT-1);
             double t=seconds();
@@ -113,6 +114,27 @@ int main(int argc, char **argv) {
     BoplPuffer env={0};
     env.config=config; env.players=PLAYERS; env.num_agents=PLAYERS; env.scratch=scratch;
     for (int i=0; i<PLAYERS; i++) env.applied[i].angle=(uint8_t)(64+61*i);   /* an aimed decision, so the aim ray is cast (98% of real rows) */
+    /* The vector march (bopl4_march_avx512) against the scalar one
+     * (bopl4_march_scalar: bot_raycast's steps): every production row (bits
+     * 8) of every recorded state, both players, bit for bit. */
+    {
+        static float reference[BOPL_MAX_PLAYERS*BOPL_OBS_STRIDE];
+        long mismatches=0, rows=0;
+        for (int i=0; i<PLAYERS; i++) { env.layout[i]=BOPL4_LAYOUT_VERSION; bopl_set_ablate_of(&env, i, 8); }
+        for (int s=0; s<recorded; s++) {
+            const BoplRlState *state=bopl_state_copy_get(&states[s]);
+            bopl4_march_scalar_only=1; bopl_written_forget(&env); compute_observations_from(&env, state);
+            memcpy(reference, scratch, sizeof(float)*(size_t)PLAYERS*BOPL_OBS_STRIDE);
+            bopl4_march_scalar_only=0; bopl_written_forget(&env); compute_observations_from(&env, state);
+            for (int i=0; i<PLAYERS; i++) {
+                rows++;
+                if (memcmp(reference+(size_t)i*BOPL_OBS_STRIDE, scratch+(size_t)i*BOPL_OBS_STRIDE, sizeof(float)*BOPL4_OBS_SIZE)) mismatches++;
+            }
+        }
+        printf("{\"bench\": \"march-check\", \"loadout\": \"%s\", \"rows\": %ld, \"mismatches\": %ld, \"load1\": %.2f}\n", loadout, rows, mismatches, load1());
+        fflush(stdout);
+        if (mismatches) { fprintf(stderr, "vector march changed %ld of %ld rows\n", mismatches, rows); return 1; }
+    }
     double us[N_VARIANTS+1][64]; if (repeats>64) repeats=64;
     for (int r=0; r<repeats; r++) {
         for (int k=0; k<=N_VARIANTS; k++) {

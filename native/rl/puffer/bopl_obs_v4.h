@@ -235,11 +235,10 @@ static double bot_raycast_below(const BotView *view, double x, double y, double 
 }
 /* bot_raycast_below for up to BOPL4_MARCH rays (own origins), marched
  * together: each ray's steps are exactly bot_raycast's (the same SDF calls on
- * the same points, in the same order per ray), interleaved across rays so the
- * core overlaps their independent chains (one step of one ray is a dependent
- * chain: point, SDF over the walls, sqrt, horizontal min, compare, add;
- * ~80 cycles of latency for ~25 cycles of work). */
-#define BOPL4_MARCH 6
+ * the same points, in the same order per ray). The scalar body interleaves
+ * the rays so the core overlaps their independent chains; the AVX-512 march
+ * below puts the 8 rays in the lanes. */
+#define BOPL4_MARCH 8
 #define BOPL4_MARCH_BODY(SDF) \
     double t[BOPL4_MARCH]; \
     int live=0; \
@@ -256,42 +255,74 @@ static double bot_raycast_below(const BotView *view, double x, double y, double 
     } \
     /* Rays still live after 32 steps: bot_raycast returns max (out[i] already is). */
 #if BOT_SDF_AVX512
-/* Same march, compiled for AVX-512 and with the SDF's own optimisation
- * options, so bot_sdf_avx512 inlines into the loop (a target("avx512f")
- * function cannot inline into a plain caller, nor across differing optimize
- * attributes). fp-contract=off also keeps x+dx*t from becoming an FMA now
- * that the target has one, so the sample points stay bot_raycast's. */
+/* Compiled with the SDF's own optimisation options: fp-contract=off keeps
+ * x+dx*t and the SDF's sums from becoming FMAs now that the target has one,
+ * so the sample points and distances stay bot_raycast's. */
 #if defined(__clang__)
 #pragma clang fp contract(off)
 #elif defined(__GNUC__)
 #pragma GCC push_options
 #pragma GCC optimize("fp-contract=off")
 #endif
-/* bot_sdf_avx512, spelled again so it can be forced inline here (the original
- * must stay callable from the plain bot_sdf dispatcher). */
-__attribute__((target("avx512f"), always_inline)) static inline double bopl4_sdf_avx512(const BotView *view, double x, double y) {
-    __m512d best=_mm512_set1_pd(1e9), vx=_mm512_set1_pd(x), vy=_mm512_set1_pd(y);
-    for (int k=0; k<view->wall_count; k+=8) {
-        int n=view->wall_count-k;
-        __mmask8 m=n>=8?(__mmask8)0xFF:(__mmask8)((1u<<n)-1u);
-        best=_mm512_mask_min_pd(best, m, best, bot_sdf_lanes(view, k, m, vx, vy));
-    }
-    return _mm512_reduce_min_pd(best);
-}
+/* The same march with the rays in the lanes and the walls in the loop: one
+ * step of up to 8 rays is wall_count evaluations of bot_sdf_lanes' arithmetic
+ * (the same IEEE operations on the same operands per (ray, wall), so the same
+ * per-wall distance) and an elementwise min over the walls (the minimum of a
+ * set of doubles does not depend on the order it is taken in; a tie between
+ * +0 and -0 can only change the sign of a d that is a hit either way, and
+ * t + -0 == t + +0 for the t >= +0 here). The step's control flow is the
+ * scalar body's, per lane, in the same order: t < max, t >= limit, the hit
+ * test, t += d. Per ray-step this is wall_count/8 SDF chains and no
+ * horizontal reduction, against one chain plus a reduction before. */
 __attribute__((target("avx512f"))) static void bopl4_march_avx512(const BotView *view, const double *ox, const double *oy, int n,
         const double *dx, const double *dy, double max, const double *limit, double *out) {
-    BOPL4_MARCH_BODY(bopl4_sdf_avx512)
+    __mmask8 lanes=(__mmask8)((1u<<n)-1u), live=lanes;
+    __m512d vox=_mm512_maskz_loadu_pd(lanes, ox), voy=_mm512_maskz_loadu_pd(lanes, oy);
+    __m512d vdx=_mm512_maskz_loadu_pd(lanes, dx), vdy=_mm512_maskz_loadu_pd(lanes, dy);
+    __m512d vlimit=_mm512_maskz_loadu_pd(lanes, limit), vmax=_mm512_set1_pd(max);
+    __m512d t=_mm512_setzero_pd(), vout=vmax, zero=_mm512_setzero_pd(), hit_at=_mm512_set1_pd(0.05), far=_mm512_set1_pd(1e9);
+    for (int iter=0; iter<32 && live; iter++) {
+        live=_mm512_mask_cmp_pd_mask(live, t, vmax, _CMP_LT_OQ);               /* !(t<max): out stays max */
+        __mmask8 reach=_mm512_mask_cmp_pd_mask(live, t, vlimit, _CMP_GE_OQ);   /* t>=limit: out=limit */
+        vout=_mm512_mask_mov_pd(vout, reach, vlimit); live=(__mmask8)(live&~reach);
+        if (!live) break;
+        __m512d px=_mm512_add_pd(vox, _mm512_mul_pd(vdx, t)), py=_mm512_add_pd(voy, _mm512_mul_pd(vdy, t));
+        __m512d d=far;
+        for (int k=0; k<view->wall_count; k++) {
+            __m512d rpx=_mm512_sub_pd(px, _mm512_set1_pd(view->soa.cx[k])), rpy=_mm512_sub_pd(py, _mm512_set1_pd(view->soa.cy[k]));
+            __m512d lx=_mm512_add_pd(_mm512_mul_pd(rpx, _mm512_set1_pd(view->soa.rx[k])), _mm512_mul_pd(rpy, _mm512_set1_pd(view->soa.ry[k])));
+            __m512d ly=_mm512_add_pd(_mm512_mul_pd(rpx, _mm512_set1_pd(view->soa.ux[k])), _mm512_mul_pd(rpy, _mm512_set1_pd(view->soa.uy[k])));
+            __m512d qx=_mm512_sub_pd(_mm512_abs_pd(lx), _mm512_set1_pd(view->soa.ex[k]));
+            __m512d qy=_mm512_sub_pd(_mm512_abs_pd(ly), _mm512_set1_pd(view->soa.ey[k]));
+            __m512d o_x=_mm512_max_pd(qx, zero), o_y=_mm512_max_pd(qy, zero);
+            __m512d outside=_mm512_sqrt_pd(_mm512_add_pd(_mm512_mul_pd(o_x, o_x), _mm512_mul_pd(o_y, o_y)));
+            __m512d inside=_mm512_min_pd(_mm512_max_pd(qx, qy), zero);
+            d=_mm512_min_pd(d, _mm512_sub_pd(_mm512_add_pd(outside, inside), _mm512_set1_pd(view->soa.radius[k])));
+        }
+        __mmask8 hit=_mm512_mask_cmp_pd_mask(live, d, hit_at, _CMP_LT_OQ);   /* d<0.05: out=t */
+        vout=_mm512_mask_mov_pd(vout, hit, t); live=(__mmask8)(live&~hit);
+        t=_mm512_mask_add_pd(t, live, t, d);
+    }
+    _mm512_mask_storeu_pd(out, lanes, vout);
 }
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC pop_options
 #endif
 #endif
+/* The scalar march: bot_raycast's steps, one ray after another (the CPUs
+ * without AVX-512, and the reference writer_bench checks the vector march
+ * against, row for row, through bopl4_march_scalar_only). */
+static void bopl4_march_scalar(const BotView *view, const double *ox, const double *oy, int n, const double *dx, const double *dy,
+                               double max, const double *limit, double *out) {
+    BOPL4_MARCH_BODY(bot_sdf_scalar)
+}
+static __thread int bopl4_march_scalar_only=0;
 static void bopl4_march(const BotView *view, const double *ox, const double *oy, int n, const double *dx, const double *dy,
                         double max, const double *limit, double *out) {
 #if BOT_SDF_AVX512
-    if (bot_cpu_avx512>0) { bopl4_march_avx512(view, ox, oy, n, dx, dy, max, limit, out); return; }
+    if (bot_cpu_avx512>0 && !bopl4_march_scalar_only) { bopl4_march_avx512(view, ox, oy, n, dx, dy, max, limit, out); return; }
 #endif
-    BOPL4_MARCH_BODY(bot_sdf_scalar)
+    bopl4_march_scalar(view, ox, oy, n, dx, dy, max, limit, out);
 }
 /* Classes: 0 wall, 1 lethal wall, 2 water / blast plane, 3 hostile projectile
  * or object, 4 opponent body, 5 own object; out[7] the hit's closing speed
