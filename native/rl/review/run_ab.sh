@@ -1,11 +1,11 @@
 #!/bin/bash
 # Interleaved A/B of OLD vs NEW libbopl_sim.so under the default loadout.
 # Usage: run_ab.sh <ticks> <reps>
-B=/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/ability-port
-BENCH=$B/native/target/perf/benchmark
-NEW=$B/native/target/release/libbopl_sim.so
-OLD=$B/native/target/oldsrc/target/release/libbopl_sim.so
-LOG=$B/native/target/perf/ab-benchmark.log
+NATIVE=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+BENCH=$NATIVE/target/perf/benchmark
+NEW=$NATIVE/target/release/libbopl_sim.so
+OLD=$NATIVE/target/oldsrc/target/release/libbopl_sim.so
+LOG=$NATIVE/target/perf/ab-benchmark.log
 TICKS=${1:-120000}
 REPS=${2:-5}
 CPU=${CPU:-11}
