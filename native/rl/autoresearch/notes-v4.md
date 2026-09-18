@@ -453,3 +453,18 @@ bandwidth. Exact-class levers left on this side are each 1-3%: LN loads as
 float4 (next), pool / unpool traffic (int32 winner -> narrower, unpool's
 h2 re-read), relu_grad_from. The GEMMs (44 ms) move only with bf16
 operands (gated).
+
+### Train pass: LayerNorm lanes as float4, keep (marginal)
+
+`ln_forward` / `ln_backward` (10.8 ms per update, memory-bound) loaded one
+float per lane per step. Now templated on the vector width: float4 loads
+and stores (bf16 outputs as 8-byte pairs) when the widths and leading
+dimensions are multiples of 4 (all the shipped shapes: H 256, C 512, the
+critic input 256 + 12), the scalar form otherwise. The lanes' partial sums
+group the columns differently, so the moments round differently in the
+last bit; `check_v4 --build` pass_all (tolerance gate against PyTorch),
+`check_dump --only v4` ok. A/B 2x2 twice (cand = scalar behind a temporary
+toggle, removed): 244.8k vs 244.0k (+0.3%), 245.1k vs 243.6k (+0.65%),
+train 0.0993 vs 0.0997. Every cand below every inc in both, but ~0.4 ms of
+the 10.8: the kernels were already close to the bandwidth. Kept as the
+simpler code path forward; not a lever.
