@@ -379,3 +379,25 @@ temporary toggle, since removed): 236.0-236.1k vs 223.4-224.3k and
 236.5-236.7k vs 223.8-225.1k: **+5.4%**. Rollout unchanged (0.0837 s), train
 0.103 vs 0.1085: the saved rollout GPU work goes to the train pass.
 `check_v4 --build` pass_all, `check_dump --only v4` ok.
+
+### Muon per-matrix path: out-of-place cublasLt (D != C) for the Newton-Schulz addends, keep
+
+v4's 19 matrices run upstream's per-matrix cuBLAS Newton-Schulz (the
+grouped path is capped at 16 and measured no faster, above). Each of the 5
+NS steps was gram GEMM, `puf_copy(gram_buf <- gram)`, in-place GEMM
+`gram = c2 gram_buf gram_buf + c1 gram`, `puf_copy(dst <- src)`, in-place
+GEMM `dst = src gram_buf + c0 dst`: the copies exist because cuBLAS's C is
+also its D, and the beta != 0 GEMMs were excluded from the kernel tuning
+(timing an in-place accumulate corrupts C), so they ran the heuristic
+default with its split-K reduce kernels (the profile's 830 DtoD memcpys and
+600 splitKreduce per update). `bopl_gemm` now takes an optional D:
+`D = alpha op(A) op(B) + beta C` through cublasLt with C read in place,
+tuned like the rest (idempotent, so the timing loop is safe); the fallback
+without a tuned kernel is the old copy + in-place GEMM. The two NS GEMMs
+write out of place: `gram_buf = c2 gram gram + c1 gram`, `dst = src
+gram_buf + c0 src`. Same products, same operands, same TF32 compute type;
+the algorithm is the tuned choice instead of the default, as for every
+other train GEMM. A/B 2x2 twice (cand = the old copies behind a temporary
+toggle, removed): 237.7k vs 236.1k (+0.7%) at load 7.9, 238.3k vs 235.0k
+(+1.4%) at load 6.8; train 0.1022 vs 0.1033. Tune log: the D!=C shapes get
+2-8 candidates at 4.3-6.4 us.

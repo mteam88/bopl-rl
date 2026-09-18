@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 --- pristine-src/bindings.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/bindings.cu	2026-09-18 16:59:41.380372535 -0400
++++ puffer-overlay/bindings.cu	2026-09-18 18:30:49.054901998 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -257,7 +257,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 --- pristine-src/kernels.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/kernels.cu	2026-09-18 16:59:41.380745669 -0400
++++ puffer-overlay/kernels.cu	2026-09-18 18:35:07.016602667 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -282,7 +282,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      for (int i = threadIdx.x; i < row_bytes; i += blockDim.x) {
          d[i] = s[i];
      }
-@@ -248,17 +258,185 @@
+@@ -248,29 +258,228 @@
  // Strides derived from M, N, K assuming tightly packed row-major storage.
  static const size_t CUBLAS_WS_BYTES = 32 * 1024 * 1024;
  
@@ -359,6 +359,9 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 +struct BoplGemmChoice { BoplGemmKey key; cublasLtMatmulAlgo_t algo; size_t workspace; bool lt; };
 +static cudaStream_t g_bopl_tune_stream = nullptr;
 +static void* g_bopl_tune_ws = nullptr;
++// Bopl: further tune-eligible streams (Muon's lanes), each with its own
++// workspace since they run concurrently; the kernel choices are shared.
++static std::vector<std::pair<cudaStream_t, void*>> g_bopl_tune_side;
 +static std::vector<BoplGemmChoice> g_bopl_gemm_choices;
 +static bool bopl_gemm_tune_enabled() {
 +    static int on = -1;
@@ -369,26 +372,48 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 +    g_bopl_tune_stream = stream;
 +    if (stream && !g_bopl_tune_ws) cudaMalloc(&g_bopl_tune_ws, CUBLAS_WS_BYTES);
 +}
++void bopl_gemm_tune_stream_add(cudaStream_t stream) {
++    if (!g_bopl_tune_stream) return;   // no tuning at all
++    for (auto& p : g_bopl_tune_side) if (p.first == stream) return;
++    void* ws = nullptr; cudaMalloc(&ws, CUBLAS_WS_BYTES);
++    g_bopl_tune_side.push_back({stream, ws});
++}
++static void* bopl_gemm_tune_ws(cudaStream_t stream) {
++    if (stream == g_bopl_tune_stream) return g_bopl_tune_ws;
++    for (auto& p : g_bopl_tune_side) if (p.first == stream) return p.second;
++    return nullptr;
++}
 +// C(m,n) = alpha op(A) op(B) + beta C in cuBLAS's column-major convention.
 +// A and B are fp32, or bf16 (ab = CUDA_R_16BF) with fp32 accumulation; C is fp32.
 +// epi: a cublasLt epilogue (e.g. RELU) fused into the tuned kernel; returns
 +// whether it was applied (false: the caller runs it as a separate kernel).
++// D (optional, cublasLt's out-of-place form): D = alpha op(A) op(B) + beta C
++// with C read and D written, so an addend need not be copied into the output
++// first (Muon's Newton-Schulz). Without a tuned cublasLt kernel the fallback
++// copies C into D and runs cuBLAS in place there.
 +static bool bopl_gemm(cublasHandle_t handle, cudaStream_t stream,
 +        cublasOperation_t ta, cublasOperation_t tb, int m, int n, int k, const float* alpha,
 +        const float* A, int lda, const float* B, int ldb, const float* beta, float* C, int ldc,
-+        cublasComputeType_t ct, cudaDataType ab = CUBLAS_PRECISION, cublasLtEpilogue_t epi = CUBLASLT_EPILOGUE_DEFAULT) {
++        cublasComputeType_t ct, cudaDataType ab = CUBLAS_PRECISION, cublasLtEpilogue_t epi = CUBLASLT_EPILOGUE_DEFAULT,
++        float* D = nullptr, int ldd = 0) {
++    const bool out_of_place = D != nullptr && D != C;
++    if (!out_of_place) { D = C; ldd = ldc; }
 +    auto plain = [&]() {
++        if (out_of_place)
++            cudaMemcpy2DAsync(D, (size_t)ldd * sizeof(float), C, (size_t)ldc * sizeof(float),
++                (size_t)m * sizeof(float), n, cudaMemcpyDeviceToDevice, stream);
 +        cublasGemmEx(handle, ta, tb, m, n, k, alpha, A, ab, lda, B, ab, ldb,
-+            beta, C, CUBLAS_PRECISION, ldc, ct, CUBLAS_GEMM_DEFAULT);
++            beta, D, CUBLAS_PRECISION, ldd, ct, CUBLAS_GEMM_DEFAULT);
 +        return false;
 +    };
-+    if (!bopl_gemm_tune_enabled() || stream == nullptr || stream != g_bopl_tune_stream) return plain();
-+    BoplGemmKey key{ta, tb, m, n, k, lda, ldb, ldc, ct, ab, (int)epi};
++    void* tune_ws = bopl_gemm_tune_enabled() && stream != nullptr ? bopl_gemm_tune_ws(stream) : nullptr;
++    if (tune_ws == nullptr) return plain();
++    BoplGemmKey key{ta, tb, m, n, k, lda, ldb, ldc, ct, ab, (int)epi | (out_of_place ? 1 << 30 : 0) | (ldd != ldc ? 1 << 29 : 0)};
 +    BoplGemmChoice* choice = nullptr;
 +    for (auto& c : g_bopl_gemm_choices) if (c.key == key) { choice = &c; break; }
 +    cublasLtHandle_t lt = (cublasLtHandle_t)handle;
 +    cublasLtMatmulDesc_t op = nullptr;
-+    cublasLtMatrixLayout_t la = nullptr, lb = nullptr, lc = nullptr;
++    cublasLtMatrixLayout_t la = nullptr, lb = nullptr, lc = nullptr, ld = nullptr;
 +    auto build = [&]() {
 +        cublasLtMatmulDescCreate(&op, ct, CUDA_R_32F);
 +        cublasLtMatmulDescSetAttribute(op, CUBLASLT_MATMUL_DESC_TRANSA, &ta, sizeof(ta));
@@ -397,17 +422,21 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 +        cublasLtMatrixLayoutCreate(&la, ab, ta == CUBLAS_OP_N ? m : k, ta == CUBLAS_OP_N ? k : m, lda);
 +        cublasLtMatrixLayoutCreate(&lb, ab, tb == CUBLAS_OP_N ? k : n, tb == CUBLAS_OP_N ? n : k, ldb);
 +        cublasLtMatrixLayoutCreate(&lc, CUDA_R_32F, m, n, ldc);
++        cublasLtMatrixLayoutCreate(&ld, CUDA_R_32F, m, n, ldd);
 +    };
 +    auto destroy = [&]() {
 +        if (op) cublasLtMatmulDescDestroy(op);
 +        if (la) cublasLtMatrixLayoutDestroy(la);
 +        if (lb) cublasLtMatrixLayoutDestroy(lb);
 +        if (lc) cublasLtMatrixLayoutDestroy(lc);
++        if (ld) cublasLtMatrixLayoutDestroy(ld);
 +    };
 +    if (choice == nullptr) {
 +        cudaStreamCaptureStatus cap = cudaStreamCaptureStatusNone;
 +        cudaStreamIsCapturing(stream, &cap);
-+        if (cap != cudaStreamCaptureStatusNone || *beta != 0.0f) return plain();  // untuned shape: default
++        // An untuned shape under capture takes the default. Timing an in-place
++        // beta != 0 GEMM would accumulate into C; out of place it is idempotent.
++        if (cap != cudaStreamCaptureStatusNone || (*beta != 0.0f && !out_of_place)) return plain();
 +        build();
 +        cublasLtMatmulPreference_t pref;
 +        cublasLtMatmulPreferenceCreate(&pref);
@@ -424,7 +453,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 +        cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_REDUCTION_SCHEME_MASK, &red, sizeof(red));
 +        cublasLtMatmulHeuristicResult_t results[64];
 +        int count = 0;
-+        cublasLtMatmulAlgoGetHeuristic(lt, op, la, lb, lc, lc, pref, 64, results, &count);
++        cublasLtMatmulAlgoGetHeuristic(lt, op, la, lb, lc, ld, pref, 64, results, &count);
 +        cublasLtMatmulPreferenceDestroy(pref);
 +        BoplGemmChoice best{key, {}, 0, false};
 +        float best_ms = 1e30f, first_ms = 0.0f;
@@ -436,8 +465,8 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 +            bool ok = true;
 +            for (int rep = 0; rep < 4 && ok; rep++) {
 +                cudaEventRecord(e0, stream);
-+                ok = cublasLtMatmul(lt, op, alpha, A, la, B, lb, beta, C, lc, C, lc, &results[i].algo,
-+                    g_bopl_tune_ws, results[i].workspaceSize, stream) == CUBLAS_STATUS_SUCCESS;
++                ok = cublasLtMatmul(lt, op, alpha, A, la, B, lb, beta, C, lc, D, ld, &results[i].algo,
++                    tune_ws, results[i].workspaceSize, stream) == CUBLAS_STATUS_SUCCESS;
 +                cudaEventRecord(e1, stream);
 +                cudaEventSynchronize(e1);
 +                float t = 0.0f; cudaEventElapsedTime(&t, e0, e1);
@@ -451,8 +480,8 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 +        if (getenv("BOPL_GEMM_TUNE_LOG")) {
 +            int algo_id = -1;
 +            if (best.lt) cublasLtMatmulAlgoConfigGetAttribute(&best.algo, CUBLASLT_ALGO_CONFIG_ID, &algo_id, sizeof(algo_id), nullptr);
-+            fprintf(stderr, "bopl gemm tune: %c%c m=%d n=%d k=%d %s%s: %d candidates, first %.1f us, best %.1f us (algo %d)\n",
-+                ta == CUBLAS_OP_N ? 'N' : 'T', tb == CUBLAS_OP_N ? 'N' : 'T', m, n, k, epi == CUBLASLT_EPILOGUE_RELU ? "relu " : "",
++            fprintf(stderr, "bopl gemm tune: %c%c m=%d n=%d k=%d %s%s%s: %d candidates, first %.1f us, best %.1f us (algo %d)\n",
++                ta == CUBLAS_OP_N ? 'N' : 'T', tb == CUBLAS_OP_N ? 'N' : 'T', m, n, k, epi == CUBLASLT_EPILOGUE_RELU ? "relu " : "", out_of_place ? "D!=C " : "",
 +                ab == CUDA_R_16BF ? "bf16" : ct == CUBLAS_COMPUTE_32F_FAST_TF32 ? "tf32" : "fp32", count, first_ms * 1e3f, best_ms * 1e3f, algo_id);
 +        }
 +        g_bopl_gemm_choices.push_back(best);
@@ -462,8 +491,8 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 +    }
 +    bool applied = false;
 +    if (choice->lt) {
-+        applied = cublasLtMatmul(lt, op, alpha, A, la, B, lb, beta, C, lc, C, lc, &choice->algo,
-+                g_bopl_tune_ws, choice->workspace, stream) == CUBLAS_STATUS_SUCCESS;
++        applied = cublasLtMatmul(lt, op, alpha, A, la, B, lb, beta, C, lc, D, ld, &choice->algo,
++                tune_ws, choice->workspace, stream) == CUBLAS_STATUS_SUCCESS;
 +        if (!applied) plain();
 +    } else {
 +        plain();
@@ -472,10 +501,13 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 +    return applied;
 +}
 +
++// Row-major (M, N) = alpha op(A) op(B) + beta C, in place; D: the out-of-place
++// form, D = alpha op(A) op(B) + beta C with C unchanged (bopl_gemm).
  static inline void cublasGemmExDense(
          cublasOperation_t op_a, cublasOperation_t op_b,
          int M, int N, int K, void* A, void* B, void* C,
-@@ -266,11 +444,10 @@
+-        cudaStream_t stream, float alpha = 1.0f, float beta = 0.0f) {
++        cudaStream_t stream, float alpha = 1.0f, float beta = 0.0f, void* D = nullptr) {
      int lda = (op_a == CUBLAS_OP_N) ? K : M;
      int ldb = (op_b == CUBLAS_OP_N) ? N : K;
  
@@ -486,11 +518,12 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 -        B, CUBLAS_PRECISION, ldb, A, CUBLAS_PRECISION, lda, &beta,
 -        C, CUBLAS_PRECISION, N, CUBLAS_COMPUTE_PRECISION, CUBLAS_GEMM_DEFAULT);
 +    bopl_gemm(handle, stream, op_b, op_a, N, M, K, &alpha,
-+        (const float*)B, ldb, (const float*)A, lda, &beta, (float*)C, N, bopl_cublas_compute_type());
++        (const float*)B, ldb, (const float*)A, lda, &beta, (float*)C, N, bopl_cublas_compute_type(),
++        CUBLAS_PRECISION, CUBLASLT_EPILOGUE_DEFAULT, (float*)D, N);
  }
  
  // out(...,N) = a(...,K) @ b(N,K)^T  — leading dims folded into M
-@@ -446,8 +623,22 @@
+@@ -446,8 +655,22 @@
  
  cudaError_t alloc_create(Allocator* alloc) {
      if (alloc->total_bytes == 0) return cudaSuccess;
@@ -516,7 +549,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
 --- pristine-src/models.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/models.cu	2026-09-18 16:59:41.381104136 -0400
++++ puffer-overlay/models.cu	2026-09-18 18:30:49.055712937 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -849,8 +882,14 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 --- pristine-src/muon.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/muon.cu	2026-09-18 17:02:31.330454339 -0400
-@@ -83,6 +83,71 @@
++++ puffer-overlay/muon.cu	2026-09-18 18:36:51.092331611 -0400
+@@ -1,4 +1,5 @@
+ #include <nccl.h>
++#include <algorithm>
+ 
+ __global__ void muon_norm_reduce(float* __restrict__ out, const float* __restrict__ partials, int num_blocks) {
+     __shared__ float sdata[256];
+@@ -83,6 +84,78 @@
      {2.8366, -3.0525, 1.2012},
  };
  
@@ -872,6 +911,13 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +// 11 ms (notes-v4.md), so v4 keeps the numerics its runs were trained with.
 +#define MUON_MAX_MATS 16
 +#define MUON_MAX_SPLITK 8
++#define MUON_MAX_LANES 8
++#define MUON_MAX_REGS 64
++static int muon_lanes_wanted() {
++    static int n = -1;
++    if (n < 0) { const char* e = getenv("BOPL_MUON_STREAMS"); n = e && e[0] ? atoi(e) : 4; n = n < 1 ? 1 : (n > MUON_MAX_LANES ? MUON_MAX_LANES : n); }
++    return n;
++}
 +// BOPL_MUON_SPLITK: k slices for the gram products (0 / 1 = off, exact old
 +// summation order; default: auto, K / 64 clamped to [1, 8]). With one 64 x 64
 +// tile per block the flat gram (M = 128, K = 946) ran 4 blocks over 60 k steps
@@ -922,7 +968,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  struct Muon {
      double momentum, weight_decay, eps;
      float lr_val_init;
-@@ -98,8 +163,192 @@
+@@ -98,8 +171,205 @@
      Allocator* param_alloc;  // params allocator — shapes used by muon_step
      ncclComm_t nccl_comm;
      int world_size;
@@ -932,6 +978,19 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +    FloatTensor fused_grams;      // 2 x sum(M^2)
 +    FloatTensor fused_parts;      // MUON_MAX_SPLITK x sum(M^2) split-K partials
 +    MuonMats mats;                // filled by muon_post_create (needs device pointers)
++    // Bopl per-matrix path on side streams (BOPL_MUON_STREAMS, default 4; 1 =
++    // every matrix in turn on the caller's stream, upstream's order). The
++    // matrices' Newton-Schulz chains are independent: each is ~30 launches of
++    // 5-10 us, latency-bound, so `lanes` chains run concurrently, forked from
++    // and joined back to the caller's stream by events (captured as parallel
++    // graph branches). Each lane has its own scratch; a matrix's kernels and
++    // their inputs are the same as on one stream, so the result is the same.
++    int lanes;
++    cudaStream_t lane_stream[MUON_MAX_LANES];
++    cudaEvent_t fork_event, join_event[MUON_MAX_LANES];
++    PrecisionTensor lane_gram[MUON_MAX_LANES], lane_gram_buf[MUON_MAX_LANES], lane_x_buf[MUON_MAX_LANES];
++    FloatTensor lane_norm[MUON_MAX_LANES], lane_partials[MUON_MAX_LANES];
++    int lane_of[MUON_MAX_REGS];   // 2-D parameter (by allocator entry) -> lane
  };
  
 +// One 64 x 64 output tile of one problem per block; 4 x 4 outputs per thread.
@@ -1115,10 +1174,41 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  void muon_init(Muon* m, Allocator* param_alloc, double lr_val,
          double momentum, double eps, double weight_decay,
          Allocator* alloc) {
-@@ -144,6 +393,55 @@
+@@ -144,6 +414,86 @@
          alloc_register(alloc, &m->x_buf);
          alloc_register(alloc, &m->ns_norm_puf);
      }
++    // Bopl: the per-matrix path's lanes. Lane 0 is the scratch above; the
++    // matrices go to lanes longest-first onto the least loaded (NS flops).
++    m->lanes = 1;
++    assert(param_alloc->num_regs <= MUON_MAX_REGS && "muon: too many parameter entries");
++    if (max_M > 0) {
++        int mats = 0;
++        for (int _i = 0; _i < param_alloc->num_regs; _i++) if (ndim(param_alloc->regs[_i].shape) >= 2) mats++;
++        m->lanes = min(muon_lanes_wanted(), mats);
++        for (int l = 1; l < m->lanes; l++) {
++            m->lane_gram[l] =     {.shape = {max_M, max_M}};
++            m->lane_gram_buf[l] = {.shape = {max_M, max_M}};
++            m->lane_x_buf[l] =    {.shape = {max_M, max_N}};
++            m->lane_norm[l] =     {.shape = {1}};
++            m->lane_partials[l] = {.shape = {256}};
++            alloc_register(alloc, &m->lane_gram[l]);
++            alloc_register(alloc, &m->lane_gram_buf[l]);
++            alloc_register(alloc, &m->lane_x_buf[l]);
++            alloc_register(alloc, &m->lane_norm[l]);
++            alloc_register(alloc, &m->lane_partials[l]);
++        }
++        double load[MUON_MAX_LANES] = {};
++        int order[MUON_MAX_REGS], n2 = 0;
++        for (int _i = 0; _i < param_alloc->num_regs; _i++) if (ndim(param_alloc->regs[_i].shape) >= 2) order[n2++] = _i;
++        auto cost = [&](int i) { AllocEntry& e = param_alloc->regs[i]; double R = e.shape[0], C = numel(e.shape) / R, M = min(R, C), N = max(R, C); return M * M * N + M * M * M + R * C * M; };
++        std::sort(order, order + n2, [&](int a, int b) { return cost(a) > cost(b); });
++        for (int k = 0; k < n2; k++) {
++            int best = 0;
++            for (int l = 1; l < m->lanes; l++) if (load[l] < load[best]) best = l;
++            m->lane_of[order[k]] = best; load[best] += cost(order[k]);
++        }
++    }
 +    // Bopl grouped path: fp32 only (the kernels read the gradient as float),
 +    // at most MUON_MAX_MATS matrices.
 +    {
@@ -1171,7 +1261,17 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  }
  
  void muon_post_create(Muon* m) {
-@@ -168,6 +466,21 @@
+@@ -151,6 +501,9 @@
+     m->lr_derived_ptr = m->lr_derived_puf.data;
+     m->grad_norm_ptr = m->grad_norm_puf.data;
+     if (m->ns_norm_puf.data) m->norm_ptr = m->ns_norm_puf.data;
++    m->lane_gram[0] = m->gram; m->lane_gram_buf[0] = m->gram_buf; m->lane_x_buf[0] = m->x_buf;
++    m->lane_norm[0] = m->ns_norm_puf; m->lane_partials[0] = m->norm_partials;
++    m->lane_stream[0] = nullptr;
+     cudaMemcpy(m->lr_ptr, &m->lr_val_init, sizeof(float), cudaMemcpyHostToDevice);
+     cudaMemset(m->lr_derived_ptr, 0, 2 * sizeof(float));
+     cudaMemset(m->mb_puf.data, 0, numel(m->mb_puf.shape) * sizeof(float));
+@@ -168,6 +521,21 @@
      muon_norm_partials<<<clip_blocks, 256, 0, stream>>>(
          m->norm_partials.data, grads.data, numel(grads.shape));
      muon_norm_reduce<<<1, 256, 0, stream>>>(m->grad_norm_ptr, m->norm_partials.data, clip_blocks);
@@ -1193,9 +1293,107 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
      muon_clip_norm<<<grid_size(numel(grads.shape)), BLOCK_SIZE, 0, stream>>>(
          grads.data, m->grad_norm_ptr, max_grad_norm, 1e-6f, numel(grads.shape));
  
+@@ -175,6 +543,23 @@
+     muon_nesterov<<<grid_size(numel(m->mb_puf.shape)), BLOCK_SIZE, 0, stream>>>(
+         m->mb_puf.data, grads.data, (float)m->momentum, numel(m->mb_puf.shape));
+ 
++    // Bopl: fork the lanes (the side streams and their cuBLAS handles are made
++    // on the first, eager step: a handle cannot be created under capture).
++    if (m->lanes > 1 && m->lane_stream[1] == nullptr) {
++        int lo, hi; cudaDeviceGetStreamPriorityRange(&lo, &hi);
++        int prio = lo; cudaStreamGetPriority(stream, &prio);
++        cudaEventCreateWithFlags(&m->fork_event, cudaEventDisableTiming);
++        for (int l = 1; l < m->lanes; l++) {
++            cudaStreamCreateWithPriority(&m->lane_stream[l], cudaStreamNonBlocking, prio);
++            cudaEventCreateWithFlags(&m->join_event[l], cudaEventDisableTiming);
++            cublas_get_handle(m->lane_stream[l]);
++            bopl_gemm_tune_stream_add(m->lane_stream[l]);
++        }
++    }
++    if (m->lanes > 1) {
++        cudaEventRecord(m->fork_event, stream);
++        for (int l = 1; l < m->lanes; l++) cudaStreamWaitEvent(m->lane_stream[l], m->fork_event, 0);
++    }
+     long offset = 0;
+     for (int _i = 0; _i < m->param_alloc->num_regs; _i++) {
+         AllocEntry& e = m->param_alloc->regs[_i];
+@@ -183,45 +568,61 @@
+         long ne = numel(e.shape);
+         const precision_t* update_ptr = gc_ptr;
+         float scale = 1.0f;
++        cudaStream_t ls = stream;
+ 
+         // Orthogonalize the update
+         if (ndim(e.shape) >= 2) {
+             long R = e.shape[0], C = ne / R;
+             long M = min(R, C), N = max(R, C);
+             bool tall = R > C;
++            const int lane = m->lane_of[_i];
++            if (lane > 0) ls = m->lane_stream[lane];
+             PrecisionTensor x = {.data = gc_ptr, .shape = {R, C}};
+-            PrecisionTensor x_buf = {.data = m->x_buf.data, .shape = {R, C}};
+-            PrecisionTensor gram = {.data = m->gram.data, .shape = {M, M}};
+-            PrecisionTensor gram_buf = {.data = m->gram_buf.data, .shape = {M, M}};
++            PrecisionTensor x_buf = {.data = m->lane_x_buf[lane].data, .shape = {R, C}};
++            PrecisionTensor gram = {.data = m->lane_gram[lane].data, .shape = {M, M}};
++            PrecisionTensor gram_buf = {.data = m->lane_gram_buf[lane].data, .shape = {M, M}};
++            float* norm_ptr = m->lane_norm[lane].data;
++            float* partials = m->lane_partials[lane].data;
++            cudaStream_t stream = ls;   // shadows the caller's stream for this matrix
+ 
+             int nblk = min((int)grid_size(numel(x.shape)), 256);
+             muon_norm_partials<<<nblk, 256, 0, stream>>>(
+-                m->norm_partials.data, x.data, numel(x.shape));
+-            muon_norm_reduce<<<1, 256, 0, stream>>>(m->norm_ptr, m->norm_partials.data, nblk);
++                partials, x.data, numel(x.shape));
++            muon_norm_reduce<<<1, 256, 0, stream>>>(norm_ptr, partials, nblk);
+             muon_norm_apply<<<grid_size(numel(x.shape)), BLOCK_SIZE, 0, stream>>>(
+-                x.data, m->norm_ptr, 1e-7f, numel(x.shape));
++                x.data, norm_ptr, 1e-7f, numel(x.shape));
+ 
+             cublasOperation_t gram_op_a = tall ? CUBLAS_OP_T : CUBLAS_OP_N;
+             cublasOperation_t gram_op_b = tall ? CUBLAS_OP_N : CUBLAS_OP_T;
++            // Bopl: each Newton-Schulz step is three GEMMs, the polynomial and
++            // the update written out of place (D != C) with the addend read
++            // where it is, in place of the copy + in-place GEMM pairs.
+             for (int i = 0; i < 5; ++i) {
+                 PrecisionTensor& src = (i % 2 == 0) ? x : x_buf;
+                 PrecisionTensor& dst = (i % 2 == 0) ? x_buf : x;
+                 cublasGemmExDense(gram_op_a, gram_op_b, (int)M, (int)M, (int)N,
+                     src.data, src.data, gram.data, stream);
+-                puf_copy(&gram_buf, &gram, stream);
+-                puf_addmm_nn(&gram, &gram, &gram_buf, ns_coeffs[i][2], ns_coeffs[i][1], stream);
+-                puf_copy(&dst, &src, stream);
++                // gram_buf = c2 gram gram + c1 gram
++                cublasGemmExDense(CUBLAS_OP_N, CUBLAS_OP_N, (int)M, (int)M, (int)M,
++                    gram.data, gram.data, gram.data, stream, ns_coeffs[i][2], ns_coeffs[i][1], gram_buf.data);
++                // dst = (src gram_buf | gram_buf src) + c0 src
+                 cublasGemmExDense(CUBLAS_OP_N, CUBLAS_OP_N, (int)R, (int)C, (int)M,
+-                    tall ? src.data : gram_buf.data, tall ? gram_buf.data : src.data, dst.data,
+-                    stream, 1.0f, ns_coeffs[i][0]);
++                    tall ? src.data : gram_buf.data, tall ? gram_buf.data : src.data, src.data,
++                    stream, 1.0f, ns_coeffs[i][0], dst.data);
+             }
+ 
+             update_ptr = x_buf.data;
+             scale = sqrtf(fmaxf(1.0f, (float)R / (float)C));
+         }
+ 
+-        muon_weight_update<<<grid_size(ne), BLOCK_SIZE, 0, stream>>>(
++        muon_weight_update<<<grid_size(ne), BLOCK_SIZE, 0, ls>>>(
+             wb_ptr, update_ptr, m->lr_ptr, (float)m->weight_decay, scale, (int)ne);
+         offset += ne;
+     }
++    if (m->lanes > 1) {   // join
++        for (int l = 1; l < m->lanes; l++) {
++            cudaEventRecord(m->join_event[l], m->lane_stream[l]);
++            cudaStreamWaitEvent(stream, m->join_event[l], 0);
++        }
++    }
+ }
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 --- pristine-src/ocean.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/ocean.cu	2026-09-18 16:59:41.381660536 -0400
++++ puffer-overlay/ocean.cu	2026-09-18 18:30:49.056498088 -0400
 @@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
@@ -1233,7 +1431,7 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 --- pristine-src/pufferlib.cu	2026-09-18 16:41:04.173539658 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-18 16:59:41.382569271 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-18 18:30:49.056880550 -0400
 @@ -1,15 +1,72 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -3312,7 +3510,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 --- pristine-src/vecenv.h	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/vecenv.h	2026-09-18 16:59:41.383574327 -0400
++++ puffer-overlay/vecenv.h	2026-09-18 18:30:49.058134996 -0400
 @@ -97,6 +97,30 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
