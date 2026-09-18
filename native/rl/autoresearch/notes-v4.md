@@ -208,3 +208,50 @@ half of what the removed passes gave back.
 
 Running total: 169.0k -> 198.8k (+17.6%, exact-class only); with the
 flagged budget change on top it would be ~+30%. Train-bound (0.123 vs 0.089).
+
+Profile of this build (CUPTI, 60 updates, train stream 7384 ms = 119 ms per
+update, 96% of train_s): GEMMs ~73 ms per update (61%), v4 elementwise ~33 ms
+(ln_backward 6.6, unpool 4.3, pool 3.8, relu_grad_from 2.8, ln_forward 2.6,
+add_into 2.4, relu_into 2.0, relu_grad_bf16 1.6, count_rows 1.4, scatter
+2.7, pack_flat 1.3, zero_tail 1.3), memcpy DtoD 2.0, mingru 3.1, PPO 1.9.
+The set GEMMs (the relu bf16 128x256 forward 13.4 ms, drelu 9.2, the nt
+wgrads ~7) run over the capacity while the batch fills 33 / 50 / 56 / 25% of
+it (set_rows 2 / 6 / 11.2 / 2 vs budget 6 / 12 / 20 / 8): the tight-budget
+experiment's +10% is that tail.
+
+### Train pass: set GEMMs over the batch's rows, one graph per bucket (commit 431a53b4), keep
+
+Hypothesis: the row budget's gain comes from GEMM rows, not from the buffer
+size, so it can be had without changing the budget: run the pass over the
+minibatch's packed rows. The M is baked into the captured train graph, so
+the trainer now runs a prepass before each pass's launch (`enc_prepass`:
+count_rows + scan_rows, the totals published into mapped pinned memory by a
+one-warp kernel, a blocking-event wait), rounds each set's total up to a
+granule (cap / 16, TILE multiple) -> `act[s]`, and keys the train graph by
+the bucket tuple: one captured graph per (ready slot, key), a key's first
+pass eager (the cuBLASLt plan tuning runs there), captured on its second.
+Inside the pass every `cap` in the set MLP path (zero_tail, the four GEMMs'
+M / K, mask_rows, the RELU_AUX threshold) became `act`; scatter's drop cap
+and pool/unpool (valid rows only) are untouched, rows [act, cap) are never
+read. Two things bit on the way: (1) the eager passes now happen after
+warmup, while the buffer threads capture their rollout graphs in
+cudaStreamCaptureModeGlobal, so the eager cuBLASLt calls failed ("an
+internal operation failed"); captures are ThreadLocal now (rollout and
+train). (2) Reading the totals back with cudaMemcpyAsync made the rollout
+40% slower (eval_gpu 0.53 vs 0.40 ms per step with the GPU window itself
+shorter): the D2H sat on the copy engine behind the previous pass's ~25 ms
+graph and the buffer streams' action copies queued behind it. Publishing
+through a kernel into mapped host memory fixed it (rollout 0.089 again).
+Numerics: GEMM shapes follow the bucket (tile order, split-K), so fp32 sums
+reassociate; check_v4.py pass_all with the harness running the prepass and
+recapturing on a key change (batch 257 differs from the fixed-cap run in the
+6th digit, so the bucketed path is exercised). 8 captures in 300 updates
+(keys 5221 then 31931 / 31948 / 31965: the entity bucket 9 -> 10 -> 11 as
+episodes fill in). Result: actrows-1 218166, actrows-2 218293 vs 198.6-198.8k:
+**+9.8%**, train_s 0.1115 vs 0.1226, rollout_s 0.089 unchanged, cuda_mb
++12 (graph execs). The tight-budget flag measured +10.2%: this is that gain
+without the budget or drop semantics changing, so the DEFAULT_BUDGET
+question is now only about memory (the packed buffers) and worst-case drops.
+
+Running total: 169.0k -> 218.3k (**+29.2%**, exact-class only). Train-bound
+(0.1115 vs 0.089).
