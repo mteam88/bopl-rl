@@ -633,6 +633,59 @@ held-out | <rl list>`, translated to the player's `BOPL_LEVEL_SET` levels by
 `games.jsonl` rows carry `rl_map` and `map_role`, and `reference_pool.py
 human --map-role training|held-out|unported` rates them apart.
 
+### 7e. Next wave: the opponent distribution (design 2026-09-18; GPU after 19h and the parent's go)
+
+What the tournament says. The v4 checkpoints beat every pool-v7 member
+about 90% of the time and are even among themselves (aim-only vs aim
+1107-1053-480); the smallest net (`v4-lite`) holds #1 and #4 of the joint
+ladder. So the learner has exhausted what its opponents teach: the training
+distribution is three scripted banks whose bot share decays to 11% once the
+roster is beaten, and one self-play bank drawn from the run's own snapshots
+(`pool_size` 16, `sample_opponent` weights index^0.5 over all but the five
+newest, no win-rate term, eviction of the oldest half). Late in a run
+almost every game is against a slightly older copy of itself or a bot it
+already beats; nothing in the mix plays the way the other v4 seeds play,
+which is the only kind of opponent the tournament found it does not beat.
+Capacity is not the lever (lite); the critic is at its ceiling (3b); the
+gap to Matthew is aiming and awareness against a moving opponent (7b), an
+opponent-distribution problem.
+
+Runs (all `v4-aim`, the production shape, 024's recipe, 1.73B steps, two
+seeds each, 73 and 74; scored on pool v8 primary, v7 alongside, plus a
+fixed head-to-head band against the tournament's five v4-aim / v4-aim-only
+finals, 48 games each, the cheapest direct measure of the target):
+
+1. `v4-aim-league` (the main bet): a fourth kind of opponent, other runs.
+   The self-play pool starts pinned with the finals of `v4-aim` s73/s74
+   and `v4-aim-maps` (same net, same writer bit 8: they load into a bank as
+   any snapshot does), never evicted, sampled by a prioritised rule
+   (weight (1 - winrate)^2 per entry from the bank ledger, PFSP) instead of
+   index^0.5, with the own-snapshot pool behind them at `pool_size` 32.
+   Scripted banks 2, share min 0.11 as now. Trainer changes: pinned pool
+   entries and the sampler (our `native_selfplay.step` wraps
+   `pufferlib.selfplay.step`; the sampler is one function in the overlay),
+   no C change. Cross-family members (aim-only, bits 2|8) would need the
+   per-bank writer mask in the trainer's vec (env->ablate[player] exists
+   since 2026-09-17; the bank-to-player routing does not carry it yet):
+   second step, not this wave.
+2. `v4-aim-pfsp`: the sampler change alone on the own-snapshot pool
+   (`pool_size` 32, weight (1 - winrate)^2, no pinned externals). Separates
+   "who" from "how sampled": if 1 beats 2, the externals carry the effect.
+3. `v4-aim-search`: `search-medium` (pool v7 589, the strongest bot, absent
+   from the training roster because `bopl_rl_fork` costs ~4 ms a decision)
+   in one scripted bank at share max 0.25. Gated on a 2-minute sps check:
+   below 120k sps it is dropped from the wave, not slowed.
+
+Pre-registered claims. (1) `v4-aim-league` beats the `v4-aim` two-seed mean
+on pool v8 by more than the v8 same-shape spread (measured on the v8 column
+of this wave's seeds before the run starts, 7c') and wins more than 55% of
+the head-to-head band; (2) `v4-aim-pfsp` does not: the externals, not the
+sampler, are the effect; (3) the trained-minus-held-out scripted-bot gap
+does not widen (no overfit to the pinned opponents). A league win with the
+pool-v7 IQM unchanged is the expected shape of the result: v7 cannot see
+it, which is why v8 exists. Cost: 6 runs x ~3 h = 18 h GPU, behind 19h;
+`v4-aim-search` only if its sps gate passes.
+
 ## 8. Config and flags
 
 `train.py --policy v4` (default `v3` so existing configs are unchanged) with
