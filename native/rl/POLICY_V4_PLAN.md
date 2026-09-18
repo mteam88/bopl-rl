@@ -672,7 +672,7 @@ held-out | <rl list>`, translated to the player's `BOPL_LEVEL_SET` levels by
 `games.jsonl` rows carry `rl_map` and `map_role`, and `reference_pool.py
 human --map-role training|held-out|unported` rates them apart.
 
-### 7e. Next wave: the opponent distribution (design 2026-09-18; go 05:55; queued 06:15 as 20a-20f behind 19h)
+### 7e. Next wave: the opponent distribution (design 2026-09-18; go 05:55; queued 06:15 as 20a-20f; PARKED 14:40)
 
 What the tournament says. The v4 checkpoints beat every pool-v7 member
 about 90% of the time and are even among themselves (aim-only vs aim
@@ -753,8 +753,18 @@ pool-v7 IQM unchanged is the expected shape of the result: v7 cannot see
 it, which is why v8 exists. Cost: 6 runs x ~3 h = 18 h GPU, behind 19h;
 `v4-aim-search` only if its sps gate passes.
 
-Queue (parent 05:55, both league seeds before anything else so claim 1
-resolves first): 20a `v4-aim-league` (s73), 20b `v4-aim-pfsp` (s73), 20c
+Parked 2026-09-18 14:40 (Matthew, via the parent): no GPU hours on wave 3
+yet. 20a-20f moved to gpu-queue/parked/ intact, the `policy-v4-wave3`
+worktree and its build left as they are, so the wave can be unparked by
+moving the six files back; nothing else is needed. Context: the Rust sim's
+all-124-maps + 39-abilities port landed on main at 4d66b2f8 the same day,
+and the next wave is likely multi-ability / all-maps on that foundation,
+planned with Matthew first; the 7e trainer changes (pinned members, PFSP
+draw, the sps gate, the secondary in-run pool) carry over to whatever
+recipe that wave uses.
+
+Queue as prepared (parent 05:55, both league seeds before anything else so
+claim 1 resolves first): 20a `v4-aim-league` (s73), 20b `v4-aim-pfsp` (s73), 20c
 `v4-aim-league-s74`, 20d `v4-aim-pfsp-s74`, 20e `v4-aim-search` (gated),
 20f `v4-aim-search-s74` (gated); job files in gpu-queue/, same shape as 19g,
 nice 0, max_seconds 21600, steps 1734936776, scoring pool v8. Where they
