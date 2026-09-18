@@ -229,10 +229,11 @@ __global__ void reduce_partials(const float* partials, int chunks, long per_chun
  * concurrently. The workspace is allocated once at enc_create. */
 struct LtKey {
     int a_t, b_t, M, N, K, lda, ldb, ldd, d_bf16, has_c, epi;
+    int ab_f32;        /* A, B fp32 (the flat / FFN GEMMs: TF32 tensor cores per BOPL_TF32, as puf_mm) instead of bf16 */
     const void* aux;   /* RELU_AUX / DRELU bitmask, part of the plan (a descriptor attribute) */
     bool operator==(const LtKey& o) const {
         return a_t == o.a_t && b_t == o.b_t && M == o.M && N == o.N && K == o.K && lda == o.lda && ldb == o.ldb && ldd == o.ldd
-            && d_bf16 == o.d_bf16 && has_c == o.has_c && epi == o.epi && aux == o.aux;
+            && d_bf16 == o.d_bf16 && has_c == o.has_c && epi == o.epi && ab_f32 == o.ab_f32 && aux == o.aux;
     }
 };
 struct LtPlan { LtKey key; cublasLtMatmulDesc_t op; cublasLtMatrixLayout_t la, lb, lc, ld; cublasLtMatmulAlgo_t algo; };
@@ -261,7 +262,8 @@ static const LtPlan& lt_plan(cublasLtHandle_t lt, const LtKey& k, const void* A,
     /* column-major: D^T (N, M) = op(B)^T op(A)^T, so cublas's A is our B and its B our A */
     cublasOperation_t ta = k.b_t ? CUBLAS_OP_T : CUBLAS_OP_N, tb = k.a_t ? CUBLAS_OP_T : CUBLAS_OP_N;
     int m = k.N, n = k.M, kk = k.K;
-    lt_check(cublasLtMatmulDescCreate(&p.op, CUBLAS_COMPUTE_32F, CUDA_R_32F), "desc");
+    cudaDataType ab = k.ab_f32 ? CUDA_R_32F : CUDA_R_16BF;
+    lt_check(cublasLtMatmulDescCreate(&p.op, k.ab_f32 ? bopl_cublas_compute_type() : CUBLAS_COMPUTE_32F, CUDA_R_32F), "desc");
     lt_check(cublasLtMatmulDescSetAttribute(p.op, CUBLASLT_MATMUL_DESC_TRANSA, &ta, sizeof ta), "transa");
     lt_check(cublasLtMatmulDescSetAttribute(p.op, CUBLASLT_MATMUL_DESC_TRANSB, &tb, sizeof tb), "transb");
     cublasLtEpilogue_t epi = (cublasLtEpilogue_t)k.epi;
@@ -271,8 +273,8 @@ static const LtPlan& lt_plan(cublasLtHandle_t lt, const LtKey& k, const void* A,
         lt_check(cublasLtMatmulDescSetAttribute(p.op, CUBLASLT_MATMUL_DESC_EPILOGUE_AUX_POINTER, &k.aux, sizeof k.aux), "aux pointer");
         lt_check(cublasLtMatmulDescSetAttribute(p.op, CUBLASLT_MATMUL_DESC_EPILOGUE_AUX_LD, &ld, sizeof ld), "aux ld");
     }
-    lt_check(cublasLtMatrixLayoutCreate(&p.la, CUDA_R_16BF, ta == CUBLAS_OP_N ? m : kk, ta == CUBLAS_OP_N ? kk : m, k.ldb), "layout A");
-    lt_check(cublasLtMatrixLayoutCreate(&p.lb, CUDA_R_16BF, tb == CUBLAS_OP_N ? kk : n, tb == CUBLAS_OP_N ? n : kk, k.lda), "layout B");
+    lt_check(cublasLtMatrixLayoutCreate(&p.la, ab, ta == CUBLAS_OP_N ? m : kk, ta == CUBLAS_OP_N ? kk : m, k.ldb), "layout A");
+    lt_check(cublasLtMatrixLayoutCreate(&p.lb, ab, tb == CUBLAS_OP_N ? kk : n, tb == CUBLAS_OP_N ? n : kk, k.lda), "layout B");
     cudaDataType dt = k.d_bf16 ? CUDA_R_16BF : CUDA_R_32F;
     lt_check(cublasLtMatrixLayoutCreate(&p.lc, dt, m, n, k.ldd), "layout C");
     lt_check(cublasLtMatrixLayoutCreate(&p.ld, dt, m, n, k.ldd), "layout D");
@@ -285,7 +287,10 @@ static const LtPlan& lt_plan(cublasLtHandle_t lt, const LtKey& k, const void* A,
     cublasLtMatmulHeuristicResult_t results[LT_CANDIDATES]; int found = 0;
     lt_check(cublasLtMatmulAlgoGetHeuristic(lt, p.op, p.la, p.lb, p.lc, p.ld, pref, LT_CANDIDATES, results, &found), "heuristic");
     cublasLtMatmulPreferenceDestroy(pref);
-    if (found < 1) throw std::runtime_error("Bopl v4 cublasLt: no algorithm for M=" + std::to_string(k.M) + " N=" + std::to_string(k.N) + " K=" + std::to_string(k.K));
+    if (found < 1) {
+        cublasLtMatmulDescDestroy(p.op); cublasLtMatrixLayoutDestroy(p.la); cublasLtMatrixLayoutDestroy(p.lb); cublasLtMatrixLayoutDestroy(p.lc); cublasLtMatrixLayoutDestroy(p.ld);
+        throw std::runtime_error("Bopl v4 cublasLt: no algorithm for M=" + std::to_string(k.M) + " N=" + std::to_string(k.N) + " K=" + std::to_string(k.K) + " epilogue " + std::to_string(k.epi));
+    }
     int best = 0;
     cudaStreamCaptureStatus capturing = cudaStreamCaptureStatusNone;
     cudaStreamIsCapturing(stream, &capturing);
@@ -315,14 +320,21 @@ static const LtPlan& lt_plan(cublasLtHandle_t lt, const LtKey& k, const void* A,
     return g_lt_plans.back();
 }
 /* epi: DEFAULT, RELU, RELU_AUX (ReLU, writing its bitmask to aux) or DRELU
- * (multiply by the bitmask read from aux). */
-static void lt_gemm(bool a_t, bool b_t, int M, int N, int K, const bf16* A, int lda, const bf16* B, int ldb,
-                    const bf16* C, void* D, int ldd, bool d_bf16, cublasLtEpilogue_t epi, cudaStream_t stream, void* aux = nullptr) {
+ * (multiply by the bitmask read from aux). C: an addend of D's type (beta 1). */
+static void lt_matmul(const LtKey& key, const void* A, const void* B, const void* C, void* D, cudaStream_t stream) {
     cublasLtHandle_t lt = (cublasLtHandle_t)cublas_get_handle(stream);
-    LtKey key = {a_t, b_t, M, N, K, lda, ldb, ldd, d_bf16, C != nullptr, (int)epi, aux};
     const LtPlan& p = lt_plan(lt, key, A, B, C, D, stream);
     float alpha = 1.0f, beta = C ? 1.0f : 0.0f;
-    lt_check(cublasLtMatmul(lt, p.op, &alpha, B, p.la, A, p.lb, &beta, C ? (const void*)C : D, p.lc, D, p.ld, &p.algo, g_lt_ws, LT_WS_BYTES, stream), "matmul");
+    lt_check(cublasLtMatmul(lt, p.op, &alpha, B, p.la, A, p.lb, &beta, C ? C : D, p.lc, D, p.ld, &p.algo, g_lt_ws, LT_WS_BYTES, stream), "matmul");
+}
+static void lt_gemm(bool a_t, bool b_t, int M, int N, int K, const bf16* A, int lda, const bf16* B, int ldb,
+                    const void* C, void* D, int ldd, bool d_bf16, cublasLtEpilogue_t epi, cudaStream_t stream, void* aux = nullptr) {
+    lt_matmul({a_t, b_t, M, N, K, lda, ldb, ldd, d_bf16, C != nullptr, (int)epi, 0, aux}, A, B, C, D, stream);
+}
+/* fp32 operands and output (the compute type follows BOPL_TF32 like puf_mm). */
+static void lt_gemm32(bool a_t, bool b_t, int M, int N, int K, const float* A, int lda, const float* B, int ldb,
+                      const float* C, float* D, int ldd, cublasLtEpilogue_t epi, cudaStream_t stream, void* aux = nullptr) {
+    lt_matmul({a_t, b_t, M, N, K, lda, ldb, ldd, 0, C != nullptr, (int)epi, 1, aux}, A, B, C, D, stream);
 }
 /* Zero the packed rows [total, cap) of one or two (rows2 nullable) row
  * matrices so the GEMMs over the capacity see finite zeros. */
@@ -523,7 +535,7 @@ struct EncActs {
     int* host_totals;       /* pinned, mapped (SETS): the prepass's readback, written by publish_totals */
     int* host_totals_dev;   /* its device pointer */
     cudaEvent_t ready_event;   /* blocking-sync event the prepass sleeps on */
-    PrecisionTensor flat_input, flat_pre, joined, fused, out, priv;
+    PrecisionTensor flat_input, joined, fused, out, priv;
     FloatTensor ln_mean, ln_rstd;
     IntTensor counts, offsets, totals, overflow, ids[SETS], sample[SETS], winner[SETS];
     IntTensor w1b[SETS], w2b[SETS];                    /* bf16 weight copies ([W1 | E^T] per set, W2), 2 per int */
@@ -616,8 +628,8 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     pack_flat<<<grid_size(B * (FLAT + PRIV)), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->flat_input.data, a->priv.data);
     g_v4_privileged = a->priv.data; g_v4_privileged_rows = B;
     prof_mark("enc.pack_flat", stream);
-    puf_mm(&a->flat_input, &w->flat, &a->flat_pre, stream);
-    relu_into<<<grid_size(B * FD), BLOCK_SIZE, 0, stream>>>(a->flat_pre.data, a->joined.data, B, FD, LDJ);
+    /* joined[:, :FD] = ReLU(flat_input W_flat^T): the ReLU in the epilogue, written at the joined stride */
+    lt_gemm32(false, true, B, FD, FLAT, a->flat_input.data, FLAT, w->flat.data, FLAT, nullptr, a->joined.data, LDJ, CUBLASLT_EPILOGUE_RELU, stream);
     prof_mark("enc.flat_gemm", stream);
     /* sets */
     if (!a->prepassed) { count_and_scan(a, input, stream); for (int s = 0; s < SETS; s++) a->act[s] = a->cap[s]; }
@@ -716,10 +728,10 @@ static void enc_reg_params(void* weights, Allocator* alloc) {
 static void enc_reg_forward(EncWeights* w, EncActs* a, Allocator* alloc, int B) {
     int H = w->hidden, D = w->D, I = w->I, FD = w->flat_dim;
     a->B = B; a->gather = Gather{};
-    a->flat_input = {.shape = {B, FLAT}}; a->flat_pre = {.shape = {B, FD}};
+    a->flat_input = {.shape = {B, FLAT}};
     a->joined = {.shape = {B, FD + SETS * 2 * D}}; a->fused = {.shape = {B, H}}; a->out = {.shape = {B, H}};
     a->priv = {.shape = {B, PRIV}};
-    for (auto* t : {&a->flat_input, &a->flat_pre, &a->joined, &a->fused, &a->out, &a->priv}) alloc_register(alloc, t);
+    for (auto* t : {&a->flat_input, &a->joined, &a->fused, &a->out, &a->priv}) alloc_register(alloc, t);
     a->ln_mean = {.shape = {B}}; a->ln_rstd = {.shape = {B}};
     alloc_register(alloc, &a->ln_mean); alloc_register(alloc, &a->ln_rstd);
     a->counts = {.shape = {SETS, B}}; a->offsets = {.shape = {SETS, B}}; a->totals = {.shape = {SETS}}; a->overflow = {.shape = {SETS}};
@@ -814,6 +826,14 @@ struct DecActs {
      * weights, the forward inputs (reused by the weight gradients) and the
      * output gradients; 2 per int */
     IntTensor cin_b, b1_b, b2_b, lnin_b, ln2_b, bblk_b, g_z_b, g_b_b, g_z2_b;
+    /* The critic block's ReLU bitmask (B, C / 32), written by the forward
+     * GEMM's RELU_AUX epilogue and applied by the backward's DRELU epilogue
+     * (training, B >= LT_AUX_MIN_ROWS); without it the ReLU backward is a
+     * kernel. Only the bf16 GEMMs: for fp32 operands cublasLt runs RELU_AUX
+     * and DRELU as a separate epilogue kernel (measured: 0.38 / 0.45 ms per
+     * call on the FFN, slower than the elementwise kernels they replace), so
+     * the FFN keeps the plain fused RELU forward and a kernel backward. */
+    IntTensor b1_mask;
     /* training */
     PrecisionTensor g_y, g_f, g_ln1, gv, g_ln3, g_b, g_ln2, g_z, g_lnin;
     PrecisionTensor wgrad_ffn_in, wgrad_ffn_out, wgrad_actor, wgrad_critic_in, wgrad_b1, wgrad_b2, wgrad_critic_out;
@@ -842,10 +862,10 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
     PrecisionTensor* y = &a->y;
     if (w->ffn) {
         ln_forward<<<ln_grid(B, H), LN_ROWS * 32, 0, stream>>>(h.data, H, nullptr, 0, B, nullptr, a->ln1.data, nullptr, a->m1.data, a->r1.data);
-        puf_mm(&a->ln1, &w->ffn_in, &a->f, stream);
-        relu_into<<<grid_size(B * w->ffn), BLOCK_SIZE, 0, stream>>>(a->f.data, a->f.data, B, w->ffn, w->ffn);
-        puf_mm(&a->f, &w->ffn_out, &a->y, stream);
-        add_into<<<grid_size(B * H), BLOCK_SIZE, 0, stream>>>(a->y.data, h.data, B * H);
+        int F = w->ffn;
+        /* f = ReLU(ln1 W_in^T) with the ReLU in the epilogue; y = h + f W_out^T with h as the addend */
+        lt_gemm32(false, true, B, F, H, a->ln1.data, H, w->ffn_in.data, H, nullptr, a->f.data, F, CUBLASLT_EPILOGUE_RELU, stream);
+        lt_gemm32(false, true, B, H, F, a->f.data, F, w->ffn_out.data, F, h.data, a->y.data, H, CUBLASLT_EPILOGUE_DEFAULT, stream);
     } else {
         puf_copy(&a->y, &h, stream);
     }
@@ -869,10 +889,12 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
         lt_gemm(false, true, B, C, W, bfp(a->lnin_b), W, bfp(a->cin_b), W, nullptr, a->z.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         prof_mark("dec.critic_in", stream);
         ln_forward<<<ln_grid(B, C), LN_ROWS * 32, 0, stream>>>(a->z.data, C, nullptr, 0, B, nullptr, nullptr, bfp(a->ln2_b), a->m2.data, a->r2.data);
-        /* bblk = ReLU(ln2 B1^T) written bf16 by the epilogue: the next GEMM's operand and the backward's ReLU mask */
-        lt_gemm(false, true, B, C, C, bfp(a->ln2_b), C, bfp(a->b1_b), C, nullptr, bfp(a->bblk_b), C, true, CUBLASLT_EPILOGUE_RELU, stream);
-        lt_gemm(false, true, B, C, C, bfp(a->bblk_b), C, bfp(a->b2_b), C, nullptr, a->z2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
-        add_into<<<grid_size(B * C), BLOCK_SIZE, 0, stream>>>(a->z2.data, a->z.data, B * C);
+        /* bblk = ReLU(ln2 B1^T) written bf16 by the epilogue (the next GEMM's operand), its bitmask for the
+         * backward's DRELU when registered; z2 = z + bblk B2^T with z as the addend */
+        void* b1mask = a->b1_mask.data;
+        lt_gemm(false, true, B, C, C, bfp(a->ln2_b), C, bfp(a->b1_b), C, nullptr, bfp(a->bblk_b), C, true,
+                b1mask ? CUBLASLT_EPILOGUE_RELU_AUX : CUBLASLT_EPILOGUE_RELU, stream, b1mask);
+        lt_gemm(false, true, B, C, C, bfp(a->bblk_b), C, bfp(a->b2_b), C, a->z.data, a->z2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         prof_mark("dec.critic_block", stream);
         ln_forward<<<ln_grid(B, C), LN_ROWS * 32, 0, stream>>>(a->z2.data, C, nullptr, 0, B, nullptr, a->ln3.data, nullptr, a->m3.data, a->r3.data);
         puf_mm(&a->ln3, &vout, &a->value, stream);
@@ -906,8 +928,12 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
         prof_mark("bwd.dec.ln3_bwd", stream);
         /* bf16 operands as in the forward: dW = dY^T X, dX = dY W */
         lt_gemm(true, false, C, C, B, bfp(a->g_z2_b), C, bfp(a->bblk_b), C, nullptr, a->wgrad_b2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
-        lt_gemm(false, false, B, C, C, bfp(a->g_z2_b), C, bfp(a->b2_b), C, nullptr, a->g_b.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
-        relu_grad_bf16<<<grid_long((long)B * C), BLOCK_SIZE, 0, stream>>>(a->g_b.data, bfp(a->bblk_b), bfp(a->g_b_b), (long)B * C);
+        if (a->b1_mask.data)   /* g_b_b = (g_z2 B2) * ReLU'(bblk) by the DRELU epilogue, bf16 */
+            lt_gemm(false, false, B, C, C, bfp(a->g_z2_b), C, bfp(a->b2_b), C, nullptr, bfp(a->g_b_b), C, true, CUBLASLT_EPILOGUE_DRELU, stream, a->b1_mask.data);
+        else {
+            lt_gemm(false, false, B, C, C, bfp(a->g_z2_b), C, bfp(a->b2_b), C, nullptr, a->g_b.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
+            relu_grad_bf16<<<grid_long((long)B * C), BLOCK_SIZE, 0, stream>>>(a->g_b.data, bfp(a->bblk_b), bfp(a->g_b_b), (long)B * C);
+        }
         lt_gemm(true, false, C, C, B, bfp(a->g_b_b), C, bfp(a->ln2_b), C, nullptr, a->wgrad_b1.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         lt_gemm(false, false, B, C, C, bfp(a->g_b_b), C, bfp(a->b1_b), C, nullptr, a->g_ln2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         prof_mark("bwd.dec.critic_block_gemms", stream);
@@ -923,9 +949,10 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
     /* FFN: grad_h = g_y + LN_bwd(W_i^T (ReLU' * W_o^T g_y)) */
     puf_copy(&a->base.grad_input, &a->g_y, stream);
     if (w->ffn) {
+        int F = w->ffn;
         puf_mm_tn(&a->g_y, &a->f, &a->wgrad_ffn_out, stream);
         puf_mm_nn(&a->g_y, &w->ffn_out, &a->g_f, stream);
-        relu_grad_from<<<grid_size(B * w->ffn), BLOCK_SIZE, 0, stream>>>(a->g_f.data, w->ffn, a->f.data, w->ffn, a->g_f.data, B, w->ffn);
+        relu_grad_from<<<grid_size(B * F), BLOCK_SIZE, 0, stream>>>(a->g_f.data, F, a->f.data, F, a->g_f.data, B, F);
         puf_mm_tn(&a->g_f, &a->ln1, &a->wgrad_ffn_in, stream);
         puf_mm_nn(&a->g_f, &w->ffn_in, &a->g_ln1, stream);
         ln_backward<<<ln_grid(B, H), LN_ROWS * 32, 0, stream>>>(a->g_ln1.data, a->base.saved_input.data, a->m1.data, a->r1.data, H, B, a->base.grad_input.data, H, H, 1, nullptr);
@@ -998,10 +1025,13 @@ static void dec_reg_train(void* weights, void* activations, Allocator* acts, All
     a->wgrad_actor_pad = {.shape = {pad, H}}; a->g_y = {.shape = {B, H}}; a->g_ln1 = {.shape = {B, H}};
     for (auto* t : {&a->base.grad_out, &a->base.saved_input, &a->base.grad_input, &a->wgrad_actor_pad, &a->g_y, &a->g_ln1}) alloc_register(acts, t);
     if (w->ffn) { a->g_f = {.shape = {B, w->ffn}}; alloc_register(acts, &a->g_f); }
+    /* the critic block's ReLU bitmask (RELU_AUX rounds like RELU from LT_AUX_MIN_ROWS up; the width must be a multiple of 128 bits) */
+    if (C && B >= LT_AUX_MIN_ROWS && C % 128 == 0) { a->b1_mask = {.shape = {B, C / 32}}; alloc_register(acts, &a->b1_mask); }
     if (C) {
-        a->gv = {.shape = {B, 1}}; a->g_ln3 = {.shape = {B, C}}; a->g_b = {.shape = {B, C}};
+        a->gv = {.shape = {B, 1}}; a->g_ln3 = {.shape = {B, C}};
         a->g_ln2 = {.shape = {B, C}}; a->g_z = {.shape = {B, C}}; a->g_lnin = {.shape = {B, W}};
-        for (auto* t : {&a->gv, &a->g_ln3, &a->g_b, &a->g_ln2, &a->g_z, &a->g_lnin}) alloc_register(acts, t);
+        for (auto* t : {&a->gv, &a->g_ln3, &a->g_ln2, &a->g_z, &a->g_lnin}) alloc_register(acts, t);
+        if (!a->b1_mask.data) { a->g_b = {.shape = {B, C}}; alloc_register(acts, &a->g_b); }   /* the fp32 ReLU-backward input when no DRELU */
         a->g_z_b = {.shape = {B, C / 2}}; a->g_b_b = {.shape = {B, C / 2}}; a->g_z2_b = {.shape = {B, C / 2}};
         for (auto* t : {&a->g_z_b, &a->g_b_b, &a->g_z2_b}) alloc_register(acts, t);
     }

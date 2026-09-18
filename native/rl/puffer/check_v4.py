@@ -403,9 +403,11 @@ def main():
         print(json.dumps(timing(library, rng, batches=[int(b) for b in args.time_only.split(",")]), indent=1))
         return
     # 1024 rows at density 0.5 puts every set's capacity past bopl_v4.cu's
-    # LT_AUX_MIN_ROWS, covering the RELU_AUX / DRELU epilogue path the trainer runs.
+    # LT_AUX_MIN_ROWS, covering the RELU_AUX / DRELU epilogue path the trainer
+    # runs in the encoder; 2048 rows puts the decoder's batch past it too (the
+    # FFN's and critic block's ReLU bitmasks).
     report["random"] = [compare(library, random_obs(rng, batch, density), hidden, rng)
-                        for batch, hidden, density in ((1, 64, 0.5), (3, 128, 0.5), (65, 64, 0.3), (257, 256, 0.3), (130, 64, 0.6), (1024, 256, 0.5))]
+                        for batch, hidden, density in ((1, 64, 0.5), (3, 128, 0.5), (65, 64, 0.3), (257, 256, 0.3), (130, 64, 0.6), (1024, 256, 0.5), (2048, 128, 0.3))]
     report["empty_sets"] = compare(library, random_obs(rng, 5, density=0.0), 64, rng)
     report["crowded"] = compare(library, crowded_fixture(args.output), 64, rng)
     report["graph"] = compare(library, random_obs(rng, 33), 128, rng, graph=True)
