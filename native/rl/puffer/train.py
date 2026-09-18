@@ -872,8 +872,12 @@ def main():
                 # eval_env = OpenMP game stepping, rollout = whole barrier.
                 record['native_perf'] = {key: native['perf'].get(key) for key in ('rollout', 'eval_gpu', 'eval_env')}
                 if a.encoder == 'v4':
-                    # Rows the packed set buffers dropped in the last training forward (players, slots, entities, slimes).
-                    record['set_overflow'] = list(_C.bopl_v4_overflow())
+                    # The last training forward's packing (players, slots, entities, slimes): rows the packed set
+                    # buffers dropped, and the rows packed per batch row (the row budget the batch needed).
+                    packing = list(_C.bopl_v4_overflow())
+                    record['set_overflow'] = packing[:4]
+                    if len(packing) == 9 and packing[8]:
+                        record['set_rows'] = [round(n / packing[8], 3) for n in packing[4:8]]
                 metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
                 for event in native_selfplay.events(before_pool, after_pool, ledger, counts['learner_steps']):
                     events.write(json.dumps(event, allow_nan=False)+'\n')

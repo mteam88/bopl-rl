@@ -145,10 +145,14 @@ __global__ void scan_rows(const int* counts, int B, int4 caps, int* offsets, int
 /* Scatter set S's valid rows into the packed bf16 matrix (KPAD columns, zero
  * padded), with their embedding id and sample index: one warp per sample, the
  * valid mask by ballot, rows copied by the warp in row order (the thread-per-
- * row form recomputed each row's rank with an O(rows) strided walk). */
+ * row form recomputed each row's rank with an O(rows) strided walk). For the
+ * id sets the warp also copies the row's embedding E[id] (I bf16) into erows,
+ * the h1 GEMM's addend: this kernel is latency bound on its per-sample walk
+ * with the memory system idle, where the separate embed_rows pass over
+ * cap x I was a full extra write of the largest activation. */
 template<int S>
 __global__ void scatter_rows(const float* input, Gather g, int B, const int* offsets, int cap,
-                             bf16* packed, int* ids, int* sample) {
+                             bf16* packed, int* ids, int* sample, const bf16* E, int I, bf16* erows) {
     const Spec sp = c_spec[S];
     int b = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, lane = threadIdx.x & 31;
     if (b >= B) return;
@@ -161,7 +165,12 @@ __global__ void scatter_rows(const float* input, Gather g, int B, const int* off
             const float* src = row + (r0 + __ffs(valid) - 1) * sp.width;
             bf16* out = packed + (long)dst * sp.kpad;
             for (int k = lane; k < sp.kpad; k += 32) out[k] = tobf(k < sp.features ? src[k] : 0.0f);
-            if (lane == 0) { ids[dst] = sp.id_col >= 0 ? embedding_id(src[sp.id_col]) : 0; sample[dst] = b; }
+            int id = sp.id_col >= 0 ? embedding_id(src[sp.id_col]) : 0;
+            if (erows) {
+                const bf16* e = E + (long)id * I; bf16* o = erows + (long)dst * I;
+                for (int k = lane; k < I; k += 32) o[k] = e[k];
+            }
+            if (lane == 0) { ids[dst] = id; sample[dst] = b; }
         }
     }
 }
@@ -202,7 +211,7 @@ __global__ void reduce_partials(const float* partials, int chunks, long per_chun
  * accumulation, D bf16 (activations, ReLU fused in the epilogue) or fp32
  * (weight gradients). M is the fixed capacity so the shape is graph-
  * capturable; rows past the count are kept at zero (zero_tail on the packed
- * input, embed_rows / unpool_rows on the addend and the gradients) so they
+ * input and the embedding addend, zero_tail / unpool_rows on the gradients) so they
  * contribute nothing. a_t / b_t: the operand is stored transposed (K, M) /
  * (N, K). C, when given, is a bf16 (M, N) addend (the gathered embedding
  * rows, beta = 1). Plans (layouts + the heuristic's first algorithm, split-K
@@ -306,18 +315,14 @@ static void lt_gemm(bool a_t, bool b_t, int M, int N, int K, const bf16* A, int 
     float alpha = 1.0f, beta = C ? 1.0f : 0.0f;
     lt_check(cublasLtMatmul(lt, p.op, &alpha, B, p.la, A, p.lb, &beta, C ? (const void*)C : D, p.lc, D, p.ld, &p.algo, g_lt_ws, LT_WS_BYTES, stream), "matmul");
 }
-/* Zero the packed rows [total, cap) so the GEMMs over the capacity see finite zeros. */
-__global__ void zero_tail(bf16* rows, int K, const int* totals, int total_index, int cap) {
-    long n = (long)(cap - totals[total_index]) * K;
-    bf16* tail = rows + (long)totals[total_index] * K;
-    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n; i += (long)gridDim.x * blockDim.x) tail[i] = tobf(0.0f);
-}
-/* rows[m] = E[id[m]] for m < total, 0 past it: the h1 GEMM's addend. */
-__global__ void embed_rows(const bf16* E, int I, const int* ids, const int* totals, int total_index, int cap, bf16* rows) {
-    long i = blockIdx.x * (long)blockDim.x + threadIdx.x;
-    if (i >= (long)cap * I) return;
-    int m = (int)(i / I), n = (int)(i - (long)m * I);
-    rows[i] = m < totals[total_index] ? E[(long)ids[m] * I + n] : tobf(0.0f);
+/* Zero the packed rows [total, cap) of one or two (rows2 nullable) row
+ * matrices so the GEMMs over the capacity see finite zeros. */
+__global__ void zero_tail(bf16* rows, int K, bf16* rows2, int K2, const int* totals, int total_index, int cap) {
+    int total = totals[total_index];
+    long n = (long)(cap - total) * K, n2 = rows2 ? (long)(cap - total) * K2 : 0;
+    bf16* tail = rows + (long)total * K; bf16* tail2 = rows2 + (long)total * K2;
+    for (long i = blockIdx.x * (long)blockDim.x + threadIdx.x; i < n + n2; i += (long)gridDim.x * blockDim.x)
+        (i < n ? tail[i] : tail2[i - n]) = tobf(0.0f);
 }
 /* g[i] = g[i] where act[i] > 0 else 0, in place (rows past the count have act == 0):
  * the ReLU backward for sets whose capacity is below LT_AUX_MIN_ROWS. Above it
@@ -419,55 +424,93 @@ __global__ void relu_grad_from(const float* grad, int ldg, const float* act, int
     int r = i / cols, c = i - r * cols;
     dst[i] = act[(long)r * lda + c] > 0.0f ? grad[(long)r * ldg + c] : 0.0f;
 }
+/* out[r][c] = bf16(grad[r][c] * (act[r][c] > 0)) for a bf16 activation: the
+ * critic block's ReLU backward, written straight into the bf16 GEMM operand. */
+__global__ void relu_grad_bf16(const float* grad, const bf16* act, bf16* out, long n) {
+    long i = blockIdx.x * (long)blockDim.x + threadIdx.x;
+    if (i < n) out[i] = tobf(bf(act[i]) > 0.0f ? grad[i] : 0.0f);
+}
 __global__ void add_into(float* dst, const float* src, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) dst[i] += src[i];
 }
-__global__ void copy_cols(const float* src, int lds, int col0, float* dst, int ldd, int rows, int cols) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= rows * cols) return;
-    int r = i / cols, c = i - r * cols;
-    dst[(long)r * ldd + c] = src[(long)r * lds + col0 + c];
-}
-__device__ __forceinline__ float block_sum(float v, float* scratch) {
+/* ---- LayerNorm: one warp per row, LN_ROWS rows per block, the lanes striding
+ * the columns (W <= LN_MAXW), the row held in registers, the
+ * two moments by warp shuffles (the one-block-per-row form spent its time in
+ * __syncthreads and re-read the row three times). The forward reads the row as
+ * the concatenation [x (H) | tail (P)] (the critic's zin = [y | priv]; P = 0
+ * for a plain input), optionally saving it (xsave: the backward's input) and
+ * writes fp32 and/or bf16 outputs (y16: the GEMM operand a separate to_bf16
+ * pass produced before). The backward writes dx's first `cols` columns with
+ * leading dimension ldx (the critic input LN's gradient to y is its first H
+ * columns, accumulated into g_y directly) and optionally a bf16 copy. */
+constexpr int LN_ROWS = 8, LN_MAXW = 512, LN_PER_LANE = LN_MAXW / 32;
+__device__ __forceinline__ float warp_sum(float v) {
     for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffff, v, o);
-    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    __syncthreads();
-    if (lane == 0) scratch[warp] = v;
-    __syncthreads();
-    float total = 0.0f;
-    for (int w = 0; w < (int)(blockDim.x >> 5); w++) total += scratch[w];
-    return total;
+    return v;
 }
-/* y = (x - mean) * rstd over W columns, one block (256 threads) per row. */
-__global__ void ln_forward(const float* x, float* y, float* mean, float* rstd, int W) {
-    __shared__ float scratch[8];
-    const float* xr = x + (long)blockIdx.x * W; float* yr = y + (long)blockIdx.x * W;
+__global__ void __launch_bounds__(LN_ROWS * 32) ln_forward(const float* x, int H, const float* tail, int P, int B, float* xsave,
+                                                            float* y32, bf16* y16, float* mean, float* rstd) {
+    int W = H + P, lane = threadIdx.x & 31;
+    long row = (long)blockIdx.x * LN_ROWS + (threadIdx.x >> 5);
+    if (row >= B) return;
+    float v[LN_PER_LANE];
     float s = 0.0f;
-    for (int c = threadIdx.x; c < W; c += blockDim.x) s += xr[c];
-    float mu = block_sum(s, scratch) / W;
-    float q = 0.0f;
-    for (int c = threadIdx.x; c < W; c += blockDim.x) { float d = xr[c] - mu; q += d * d; }
-    float var = block_sum(q, scratch) / W;
-    float r = rsqrtf(var + LN_EPS);
-    for (int c = threadIdx.x; c < W; c += blockDim.x) yr[c] = (xr[c] - mu) * r;
-    if (threadIdx.x == 0) { mean[blockIdx.x] = mu; rstd[blockIdx.x] = r; }
-}
-/* dx (+)= rstd * (dy - mean(dy) - xhat * mean(dy * xhat)). */
-__global__ void ln_backward(const float* dy, const float* x, const float* mean, const float* rstd, float* dx, int W, int accumulate) {
-    __shared__ float scratch[8];
-    long row = blockIdx.x;
-    const float* dyr = dy + row * W; const float* xr = x + row * W; float* dxr = dx + row * W;
-    float mu = mean[row], r = rstd[row];
-    float s1 = 0.0f, s2 = 0.0f;
-    for (int c = threadIdx.x; c < W; c += blockDim.x) { float xh = (xr[c] - mu) * r; s1 += dyr[c]; s2 += dyr[c] * xh; }
-    float m1 = block_sum(s1, scratch) / W;
-    float m2 = block_sum(s2, scratch) / W;
-    for (int c = threadIdx.x; c < W; c += blockDim.x) {
-        float xh = (xr[c] - mu) * r;
-        float v = r * (dyr[c] - m1 - xh * m2);
-        dxr[c] = accumulate ? dxr[c] + v : v;
+    #pragma unroll
+    for (int k = 0; k < LN_PER_LANE; k++) {
+        int c = lane + k * 32;
+        v[k] = c < W ? (c < H ? x[row * H + c] : (tail ? tail[row * P + c - H] : 0.0f)) : 0.0f;
+        s += v[k];
     }
+    float mu = warp_sum(s) / W;
+    float q = 0.0f;
+    #pragma unroll
+    for (int k = 0; k < LN_PER_LANE; k++) { int c = lane + k * 32; float d = c < W ? v[k] - mu : 0.0f; q += d * d; }
+    float r = rsqrtf(warp_sum(q) / W + LN_EPS);
+    #pragma unroll
+    for (int k = 0; k < LN_PER_LANE; k++) {
+        int c = lane + k * 32;
+        if (c < W) {
+            float y = (v[k] - mu) * r;
+            if (xsave) xsave[row * W + c] = v[k];
+            if (y32) y32[row * W + c] = y;
+            if (y16) y16[row * W + c] = tobf(y);
+        }
+    }
+    if (lane == 0) { mean[row] = mu; rstd[row] = r; }
+}
+/* dx[:, :cols] (+)= rstd * (dy - mean(dy) - xhat * mean(dy * xhat)) */
+__global__ void __launch_bounds__(LN_ROWS * 32) ln_backward(const float* dy, const float* x, const float* mean, const float* rstd, int W, int B,
+                                                             float* dx, int ldx, int cols, int accumulate, bf16* dx16) {
+    int lane = threadIdx.x & 31;
+    long row = (long)blockIdx.x * LN_ROWS + (threadIdx.x >> 5);
+    if (row >= B) return;
+    float mu = mean[row], r = rstd[row];
+    float g[LN_PER_LANE], xh[LN_PER_LANE];
+    float s1 = 0.0f, s2 = 0.0f;
+    #pragma unroll
+    for (int k = 0; k < LN_PER_LANE; k++) {
+        int c = lane + k * 32;
+        g[k] = c < W ? dy[row * W + c] : 0.0f;
+        xh[k] = c < W ? (x[row * W + c] - mu) * r : 0.0f;
+        s1 += g[k]; s2 += g[k] * xh[k];
+    }
+    float m1 = warp_sum(s1) / W, m2 = warp_sum(s2) / W;
+    #pragma unroll
+    for (int k = 0; k < LN_PER_LANE; k++) {
+        int c = lane + k * 32;
+        if (c < cols) {
+            float v = r * (g[k] - m1 - xh[k] * m2);
+            long i = row * ldx + c;
+            float o = accumulate ? dx[i] + v : v;
+            dx[i] = o;
+            if (dx16) dx16[row * W + c] = tobf(o);
+        }
+    }
+}
+static int ln_grid(int B, int W) {
+    if (W > LN_MAXW) throw std::runtime_error("Bopl v4 LayerNorm: width " + std::to_string(W) + " is above " + std::to_string(LN_MAXW));
+    return (B + LN_ROWS - 1) / LN_ROWS;
 }
 
 /* ---- attention hook ------------------------------------------------------
@@ -519,6 +562,8 @@ struct EncActs {
 static thread_local const float* g_v4_privileged = nullptr;
 static thread_local int g_v4_privileged_rows = 0;
 static IntTensor* g_v4_overflow = nullptr;        /* (SETS) dropped rows of the last training forward */
+static IntTensor* g_v4_totals = nullptr;          /* (SETS) packed rows (clamped to the capacity) of the same forward */
+static int g_v4_train_rows = 0;
 
 static bf16* bfp(IntTensor& t) { return (bf16*)t.data; }
 
@@ -542,21 +587,17 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     /* sets */
     count_rows<<<grid_size(B * SETS), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->counts.data);
     scan_rows<<<SETS, 1024, 0, stream>>>(a->counts.data, B, make_int4(a->cap[0], a->cap[1], a->cap[2], a->cap[3]), a->offsets.data, a->totals.data, a->overflow.data);
-    scatter_rows<0><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[0], bfp(a->xpack[0]), a->ids[0].data, a->sample[0].data);
-    scatter_rows<1><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[1], bfp(a->xpack[1]), a->ids[1].data, a->sample[1].data);
-    scatter_rows<2><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[2], bfp(a->xpack[2]), a->ids[2].data, a->sample[2].data);
-    scatter_rows<3><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[3], bfp(a->xpack[3]), a->ids[3].data, a->sample[3].data);
+    scatter_rows<0><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[0], bfp(a->xpack[0]), a->ids[0].data, a->sample[0].data, bfp(a->embb), I, SPEC[0].id_col >= 0 ? bfp(a->erows[0]) : nullptr);
+    scatter_rows<1><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[1], bfp(a->xpack[1]), a->ids[1].data, a->sample[1].data, bfp(a->embb), I, SPEC[1].id_col >= 0 ? bfp(a->erows[1]) : nullptr);
+    scatter_rows<2><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[2], bfp(a->xpack[2]), a->ids[2].data, a->sample[2].data, bfp(a->embb), I, SPEC[2].id_col >= 0 ? bfp(a->erows[2]) : nullptr);
+    scatter_rows<3><<<grid_size(B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->offsets.data, a->cap[3], bfp(a->xpack[3]), a->ids[3].data, a->sample[3].data, bfp(a->embb), I, SPEC[3].id_col >= 0 ? bfp(a->erows[3]) : nullptr);
     prof_mark("enc.count_scan_scatter", stream);
     for (int s = 0; s < SETS; s++) {
         const int* total = a->totals.data + s;
         int K = SPEC[s].kpad, cap = a->cap[s];
-        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->xpack[s]), K, a->totals.data, s, cap);
-        /* h1 = ReLU(X W1^T + E[id]) over the capacity; W1 stored (I, K), E[id] gathered as the bf16 addend */
-        const bf16* erows = nullptr;
-        if (SPEC[s].id_col >= 0) {
-            erows = bfp(a->erows[s]);
-            embed_rows<<<grid_long((long)cap * I), BLOCK_SIZE, 0, stream>>>(bfp(a->embb), I, a->ids[s].data, a->totals.data, s, cap, bfp(a->erows[s]));
-        }
+        /* h1 = ReLU(X W1^T + E[id]) over the capacity; W1 stored (I, K), E[id] gathered by scatter_rows as the bf16 addend */
+        const bf16* erows = SPEC[s].id_col >= 0 ? bfp(a->erows[s]) : nullptr;
+        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->xpack[s]), K, (bf16*)erows, I, a->totals.data, s, cap);
         void* mask = a->relu_mask[s].data;   /* the backward's DRELU bitmask when registered (training, cap >= LT_AUX_MIN_ROWS) */
         lt_gemm(false, true, cap, I, K, bfp(a->xpack[s]), K, bfp(a->w1b[s]), K, erows, bfp(a->h1[s]), I, true,
                 mask ? CUBLASLT_EPILOGUE_RELU_AUX : CUBLASLT_EPILOGUE_RELU, stream, mask);
@@ -569,7 +610,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
         prof_mark("enc.set_mlp_pool", stream);
     }
     puf_mm(&a->joined, &w->fusion, &a->fused, stream);
-    ln_forward<<<B, 256, 0, stream>>>(a->fused.data, a->out.data, a->ln_mean.data, a->ln_rstd.data, H);
+    ln_forward<<<ln_grid(B, H), LN_ROWS * 32, 0, stream>>>(a->fused.data, H, nullptr, 0, B, nullptr, a->out.data, nullptr, a->ln_mean.data, a->ln_rstd.data);
     prof_mark("enc.fusion_ln", stream);
     return a->out;
 }
@@ -577,7 +618,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
 static void enc_backward(void* weights, void* activations, PrecisionTensor grad, cudaStream_t stream) {
     auto* w = (EncWeights*)weights; auto* a = (EncActs*)activations;
     int B = a->B, H = w->hidden, D = w->D, I = w->I, FD = w->flat_dim, LDJ = FD + SETS * 2 * D;
-    ln_backward<<<B, 256, 0, stream>>>(grad.data, a->fused.data, a->ln_mean.data, a->ln_rstd.data, a->grad_fused.data, H, 0);
+    ln_backward<<<ln_grid(B, H), LN_ROWS * 32, 0, stream>>>(grad.data, a->fused.data, a->ln_mean.data, a->ln_rstd.data, H, B, a->grad_fused.data, H, H, 0, nullptr);
     puf_mm_tn(&a->grad_fused, &a->joined, &a->wgrad_fusion, stream);
     puf_mm_nn(&a->grad_fused, &w->fusion, &a->grad_joined, stream);
     relu_grad_from<<<grid_size(B * FD), BLOCK_SIZE, 0, stream>>>(a->grad_joined.data, LDJ, a->joined.data, LDJ, a->grad_flat.data, B, FD);
@@ -588,7 +629,7 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
         int K = SPEC[s].kpad, cap = a->cap[s];
         unpool_rows<<<B, D, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
                                          a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool);
-        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->dh2[s]), D, a->totals.data, s, cap);
+        zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->dh2[s]), D, nullptr, 0, a->totals.data, s, cap);
         if (g_set_stage.backward)
             g_set_stage.backward(s, bfp(a->h2[s]), bfp(a->dh2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
         prof_mark("bwd.enc.unpool", stream);
@@ -701,7 +742,7 @@ static void enc_reg_train(void* weights, void* activations, Allocator* acts, All
     a->wgrad_embedding = {.shape = {IDS, I}}; alloc_register(grads, &a->wgrad_embedding);
     a->wgrad_flat = {.shape = {FD, FLAT}}; alloc_register(grads, &a->wgrad_flat);
     a->wgrad_fusion = {.shape = {H, FD + SETS * 2 * D}}; alloc_register(grads, &a->wgrad_fusion);
-    g_v4_overflow = &a->overflow;
+    g_v4_overflow = &a->overflow; g_v4_totals = &a->totals; g_v4_train_rows = B;
     memlog("encoder train activations", B, acts, before);
 }
 static void* enc_create(void* self) {
@@ -740,14 +781,14 @@ struct DecActs {
     DecoderActivations base;   /* out, grad_out, saved_input, grad_input, ..., od1_pad: read by the trainer */
     int B, od1;
     PrecisionTensor actor_pad, wgrad_actor_pad;
-    PrecisionTensor ln1, f, y, zin, lnin, z, ln2, bblk, z2, ln3, value;
+    PrecisionTensor ln1, f, y, zin, z, z2, ln3, value;   /* lnin, ln2 and bblk exist only as the bf16 GEMM operands below */
     FloatTensor m1, r1, min_, rin, m2, r2, m3, r3;
     /* bf16 operands of the critic GEMMs (cublasLt, fp32 accumulation): the
      * weights, the forward inputs (reused by the weight gradients) and the
      * output gradients; 2 per int */
     IntTensor cin_b, b1_b, b2_b, lnin_b, ln2_b, bblk_b, g_z_b, g_b_b, g_z2_b;
     /* training */
-    PrecisionTensor g_y, g_f, g_ln1, gv, g_ln3, g_z2, g_b, g_ln2, g_z, g_lnin, g_zin;
+    PrecisionTensor g_y, g_f, g_ln1, gv, g_ln3, g_b, g_ln2, g_z, g_lnin;
     PrecisionTensor wgrad_ffn_in, wgrad_ffn_out, wgrad_actor, wgrad_critic_in, wgrad_b1, wgrad_b2, wgrad_critic_out;
 };
 __global__ void pad_rows(float* dst, const float* src, int rows, int rows_pad, int cols) {
@@ -763,14 +804,6 @@ __global__ void read_column(const float* out, int ld, int col, float* v, int row
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < rows) v[i] = out[(long)i * ld + col];
 }
-/* zin = [y | priv] */
-__global__ void concat_priv(const float* y, int H, const float* priv, int P, float* zin, int rows) {
-    int W = H + P;
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= rows * W) return;
-    int r = i / W, c = i - r * W;
-    zin[i] = c < H ? y[(long)r * H + c] : (priv ? priv[(long)r * P + c - H] : 0.0f);
-}
 static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTensor input, cudaStream_t stream) {
     auto* w = (DecWeights*)weights; auto* a = (DecActs*)activations;
     int B = a->B, H = w->hidden, od1 = a->od1, pad = a->base.od1_pad > 0 ? a->base.od1_pad : od1;
@@ -781,7 +814,7 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
     /* y = h + FFN(LN(h)) */
     PrecisionTensor* y = &a->y;
     if (w->ffn) {
-        ln_forward<<<B, 256, 0, stream>>>(h.data, a->ln1.data, a->m1.data, a->r1.data, H);
+        ln_forward<<<ln_grid(B, H), LN_ROWS * 32, 0, stream>>>(h.data, H, nullptr, 0, B, nullptr, a->ln1.data, nullptr, a->m1.data, a->r1.data);
         puf_mm(&a->ln1, &w->ffn_in, &a->f, stream);
         relu_into<<<grid_size(B * w->ffn), BLOCK_SIZE, 0, stream>>>(a->f.data, a->f.data, B, w->ffn, w->ffn);
         puf_mm(&a->f, &w->ffn_out, &a->y, stream);
@@ -800,23 +833,21 @@ static PrecisionTensor dec_forward(void* weights, void* activations, PrecisionTe
         if (w->privileged && g_v4_privileged_rows != B) throw std::runtime_error("Bopl v4 decoder: privileged rows do not match the batch");
         int P = w->privileged ? PRIV : 0, W = H + P;
         int C = w->cdim;
-        concat_priv<<<grid_size(B * W), BLOCK_SIZE, 0, stream>>>(y->data, H, priv, P, a->zin.data, B);
-        ln_forward<<<B, 256, 0, stream>>>(a->zin.data, a->lnin.data, a->min_.data, a->rin.data, W);
-        /* the critic GEMMs run bf16 on tensor cores (fp32 accumulation, fp32 outputs) */
+        /* zin = [y | priv], saved for the backward; LN(zin) straight to its bf16 GEMM operand.
+         * The critic GEMMs run bf16 on tensor cores (fp32 accumulation, fp32 outputs). */
+        ln_forward<<<ln_grid(B, W), LN_ROWS * 32, 0, stream>>>(y->data, H, priv, P, B, a->zin.data, nullptr, bfp(a->lnin_b), a->min_.data, a->rin.data);
         to_bf16<<<grid_size(C * W), BLOCK_SIZE, 0, stream>>>(w->critic_in.data, bfp(a->cin_b), C * W);
         to_bf16<<<grid_size(C * C), BLOCK_SIZE, 0, stream>>>(w->critic_b1.data, bfp(a->b1_b), C * C);
         to_bf16<<<grid_size(C * C), BLOCK_SIZE, 0, stream>>>(w->critic_b2.data, bfp(a->b2_b), C * C);
-        to_bf16<<<grid_size(B * W), BLOCK_SIZE, 0, stream>>>(a->lnin.data, bfp(a->lnin_b), B * W);
         lt_gemm(false, true, B, C, W, bfp(a->lnin_b), W, bfp(a->cin_b), W, nullptr, a->z.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         prof_mark("dec.critic_in", stream);
-        ln_forward<<<B, 256, 0, stream>>>(a->z.data, a->ln2.data, a->m2.data, a->r2.data, C);
-        to_bf16<<<grid_size(B * C), BLOCK_SIZE, 0, stream>>>(a->ln2.data, bfp(a->ln2_b), B * C);
-        lt_gemm(false, true, B, C, C, bfp(a->ln2_b), C, bfp(a->b1_b), C, nullptr, a->bblk.data, C, false, CUBLASLT_EPILOGUE_RELU, stream);
-        to_bf16<<<grid_size(B * C), BLOCK_SIZE, 0, stream>>>(a->bblk.data, bfp(a->bblk_b), B * C);
+        ln_forward<<<ln_grid(B, C), LN_ROWS * 32, 0, stream>>>(a->z.data, C, nullptr, 0, B, nullptr, nullptr, bfp(a->ln2_b), a->m2.data, a->r2.data);
+        /* bblk = ReLU(ln2 B1^T) written bf16 by the epilogue: the next GEMM's operand and the backward's ReLU mask */
+        lt_gemm(false, true, B, C, C, bfp(a->ln2_b), C, bfp(a->b1_b), C, nullptr, bfp(a->bblk_b), C, true, CUBLASLT_EPILOGUE_RELU, stream);
         lt_gemm(false, true, B, C, C, bfp(a->bblk_b), C, bfp(a->b2_b), C, nullptr, a->z2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         add_into<<<grid_size(B * C), BLOCK_SIZE, 0, stream>>>(a->z2.data, a->z.data, B * C);
         prof_mark("dec.critic_block", stream);
-        ln_forward<<<B, 256, 0, stream>>>(a->z2.data, a->ln3.data, a->m3.data, a->r3.data, w->cdim);
+        ln_forward<<<ln_grid(B, C), LN_ROWS * 32, 0, stream>>>(a->z2.data, C, nullptr, 0, B, nullptr, a->ln3.data, nullptr, a->m3.data, a->r3.data);
         puf_mm(&a->ln3, &vout, &a->value, stream);
         write_column<<<grid_size(B), BLOCK_SIZE, 0, stream>>>(a->base.out.data, pad, w->od, a->value.data, B);
     }
@@ -843,29 +874,23 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
         PrecisionTensor vout = {.data = w->critic_out.data, .shape = {1, C}};
         puf_mm_nn(&a->gv, &vout, &a->g_ln3, stream);
         prof_mark("bwd.dec.value_gemms", stream);
-        ln_backward<<<B, 256, 0, stream>>>(a->g_ln3.data, a->z2.data, a->m3.data, a->r3.data, a->g_z2.data, C, 0);
+        /* g_z2 = LN3 backward, into g_z (the residual: g_z = g_z2 + LN2 backward below) and its bf16 copy for the GEMMs */
+        ln_backward<<<ln_grid(B, C), LN_ROWS * 32, 0, stream>>>(a->g_ln3.data, a->z2.data, a->m3.data, a->r3.data, C, B, a->g_z.data, C, C, 0, bfp(a->g_z2_b));
         prof_mark("bwd.dec.ln3_bwd", stream);
         /* bf16 operands as in the forward: dW = dY^T X, dX = dY W */
-        to_bf16<<<grid_size(B * C), BLOCK_SIZE, 0, stream>>>(a->g_z2.data, bfp(a->g_z2_b), B * C);
         lt_gemm(true, false, C, C, B, bfp(a->g_z2_b), C, bfp(a->bblk_b), C, nullptr, a->wgrad_b2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         lt_gemm(false, false, B, C, C, bfp(a->g_z2_b), C, bfp(a->b2_b), C, nullptr, a->g_b.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
-        relu_grad_from<<<grid_size(B * C), BLOCK_SIZE, 0, stream>>>(a->g_b.data, C, a->bblk.data, C, a->g_b.data, B, C);
-        to_bf16<<<grid_size(B * C), BLOCK_SIZE, 0, stream>>>(a->g_b.data, bfp(a->g_b_b), B * C);
+        relu_grad_bf16<<<grid_long((long)B * C), BLOCK_SIZE, 0, stream>>>(a->g_b.data, bfp(a->bblk_b), bfp(a->g_b_b), (long)B * C);
         lt_gemm(true, false, C, C, B, bfp(a->g_b_b), C, bfp(a->ln2_b), C, nullptr, a->wgrad_b1.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         lt_gemm(false, false, B, C, C, bfp(a->g_b_b), C, bfp(a->b1_b), C, nullptr, a->g_ln2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         prof_mark("bwd.dec.critic_block_gemms", stream);
-        puf_copy(&a->g_z, &a->g_z2, stream);
-        ln_backward<<<B, 256, 0, stream>>>(a->g_ln2.data, a->z.data, a->m2.data, a->r2.data, a->g_z.data, C, 1);
+        ln_backward<<<ln_grid(B, C), LN_ROWS * 32, 0, stream>>>(a->g_ln2.data, a->z.data, a->m2.data, a->r2.data, C, B, a->g_z.data, C, C, 1, bfp(a->g_z_b));
         prof_mark("bwd.dec.ln2_bwd", stream);
-        to_bf16<<<grid_size(B * C), BLOCK_SIZE, 0, stream>>>(a->g_z.data, bfp(a->g_z_b), B * C);
         lt_gemm(true, false, C, W, B, bfp(a->g_z_b), C, bfp(a->lnin_b), W, nullptr, a->wgrad_critic_in.data, W, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         lt_gemm(false, false, B, W, C, bfp(a->g_z_b), C, bfp(a->cin_b), W, nullptr, a->g_lnin.data, W, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
-        ln_backward<<<B, 256, 0, stream>>>(a->g_lnin.data, a->zin.data, a->min_.data, a->rin.data, a->g_zin.data, W, 0);
-        if (!w->detach) {
-            /* g_y += g_zin[:, :H] */
-            copy_cols<<<grid_size(B * H), BLOCK_SIZE, 0, stream>>>(a->g_zin.data, W, 0, a->g_ln1.data, H, B, H);
-            add_into<<<grid_size(B * H), BLOCK_SIZE, 0, stream>>>(a->g_y.data, a->g_ln1.data, B * H);
-        }
+        /* g_y += LN_in backward [:, :H] (the privileged columns' gradient goes nowhere; detached: nothing flows to y) */
+        if (!w->detach)
+            ln_backward<<<ln_grid(B, W), LN_ROWS * 32, 0, stream>>>(a->g_lnin.data, a->zin.data, a->min_.data, a->rin.data, W, B, a->g_y.data, H, H, 1, nullptr);
         prof_mark("bwd.dec.critic_in", stream);
     }
     /* FFN: grad_h = g_y + LN_bwd(W_i^T (ReLU' * W_o^T g_y)) */
@@ -876,7 +901,7 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
         relu_grad_from<<<grid_size(B * w->ffn), BLOCK_SIZE, 0, stream>>>(a->g_f.data, w->ffn, a->f.data, w->ffn, a->g_f.data, B, w->ffn);
         puf_mm_tn(&a->g_f, &a->ln1, &a->wgrad_ffn_in, stream);
         puf_mm_nn(&a->g_f, &w->ffn_in, &a->g_ln1, stream);
-        ln_backward<<<B, 256, 0, stream>>>(a->g_ln1.data, a->base.saved_input.data, a->m1.data, a->r1.data, a->base.grad_input.data, H, 1);
+        ln_backward<<<ln_grid(B, H), LN_ROWS * 32, 0, stream>>>(a->g_ln1.data, a->base.saved_input.data, a->m1.data, a->r1.data, H, B, a->base.grad_input.data, H, H, 1, nullptr);
     }
     (void)grad_logstd;
     prof_mark("bwd.dec.ffn", stream);
@@ -922,9 +947,8 @@ static void dec_reg_forward(DecWeights* w, DecActs* a, Allocator* alloc, int B, 
         a->m1 = {.shape = {B}}; a->r1 = {.shape = {B}}; alloc_register(alloc, &a->m1); alloc_register(alloc, &a->r1);
     }
     if (C) {
-        a->zin = {.shape = {B, W}}; a->lnin = {.shape = {B, W}}; a->z = {.shape = {B, C}}; a->ln2 = {.shape = {B, C}};
-        a->bblk = {.shape = {B, C}}; a->z2 = {.shape = {B, C}}; a->ln3 = {.shape = {B, C}}; a->value = {.shape = {B, 1}};
-        for (auto* t : {&a->zin, &a->lnin, &a->z, &a->ln2, &a->bblk, &a->z2, &a->ln3, &a->value}) alloc_register(alloc, t);
+        a->zin = {.shape = {B, W}}; a->z = {.shape = {B, C}}; a->z2 = {.shape = {B, C}}; a->ln3 = {.shape = {B, C}}; a->value = {.shape = {B, 1}};
+        for (auto* t : {&a->zin, &a->z, &a->z2, &a->ln3, &a->value}) alloc_register(alloc, t);
         for (auto* t : {&a->min_, &a->rin, &a->m2, &a->r2, &a->m3, &a->r3}) { *t = {.shape = {B}}; alloc_register(alloc, t); }
         if (W % 8 || C % 8) throw std::runtime_error("Bopl v4: the critic widths must be multiples of 8 (bf16 GEMM operands)");
         a->cin_b = {.shape = {C, W / 2}}; a->b1_b = {.shape = {C, C / 2}}; a->b2_b = {.shape = {C, C / 2}};
@@ -948,9 +972,9 @@ static void dec_reg_train(void* weights, void* activations, Allocator* acts, All
     for (auto* t : {&a->base.grad_out, &a->base.saved_input, &a->base.grad_input, &a->wgrad_actor_pad, &a->g_y, &a->g_ln1}) alloc_register(acts, t);
     if (w->ffn) { a->g_f = {.shape = {B, w->ffn}}; alloc_register(acts, &a->g_f); }
     if (C) {
-        a->gv = {.shape = {B, 1}}; a->g_ln3 = {.shape = {B, C}}; a->g_z2 = {.shape = {B, C}}; a->g_b = {.shape = {B, C}};
-        a->g_ln2 = {.shape = {B, C}}; a->g_z = {.shape = {B, C}}; a->g_lnin = {.shape = {B, W}}; a->g_zin = {.shape = {B, W}};
-        for (auto* t : {&a->gv, &a->g_ln3, &a->g_z2, &a->g_b, &a->g_ln2, &a->g_z, &a->g_lnin, &a->g_zin}) alloc_register(acts, t);
+        a->gv = {.shape = {B, 1}}; a->g_ln3 = {.shape = {B, C}}; a->g_b = {.shape = {B, C}};
+        a->g_ln2 = {.shape = {B, C}}; a->g_z = {.shape = {B, C}}; a->g_lnin = {.shape = {B, W}};
+        for (auto* t : {&a->gv, &a->g_ln3, &a->g_b, &a->g_ln2, &a->g_z, &a->g_lnin}) alloc_register(acts, t);
         a->g_z_b = {.shape = {B, C / 2}}; a->g_b_b = {.shape = {B, C / 2}}; a->g_z2_b = {.shape = {B, C / 2}};
         for (auto* t : {&a->g_z_b, &a->g_b_b, &a->g_z2_b}) alloc_register(acts, t);
     }
@@ -1006,10 +1030,15 @@ static bool bopl_is_v4_encoder(const Encoder& e) { return e.forward == v4::enc_f
 static void bopl_v4_bind_gather(void* activations, const precision_t* rollout_obs, const int* idx, int T, int B_total) {
     v4::enc_bind_gather(activations, rollout_obs, idx, T, B_total);
 }
-/* Dropped rows of the last training forward (per set), for the trainer's log. */
+/* The last training forward's packing, for the trainer's log: out[0..3] the
+ * dropped rows per set, out[4..7] the rows packed per set (clamped to the
+ * capacity: with no drops, the batch's actual rows, so packed / batch rows is
+ * the row budget the batch needed), out[8] the batch rows. */
 int bopl_v4_overflow(int* out) {
     if (!v4::g_v4_overflow || !v4::g_v4_overflow->data) return -1;
     cudaMemcpy(out, v4::g_v4_overflow->data, v4::SETS * sizeof(int), cudaMemcpyDeviceToHost);
-    return v4::SETS;
+    cudaMemcpy(out + v4::SETS, v4::g_v4_totals->data, v4::SETS * sizeof(int), cudaMemcpyDeviceToHost);
+    out[2 * v4::SETS] = v4::g_v4_train_rows;
+    return 2 * v4::SETS + 1;
 }
 #endif

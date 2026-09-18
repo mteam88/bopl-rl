@@ -111,6 +111,8 @@ if ab_env:
     out['ab_env'] = ab_env
 if rows[-1].get('set_overflow') is not None:   # policy v4: rows the packed set buffers dropped (players, slots, entities, slimes)
     out['set_overflow_max'] = [max(r['set_overflow'][i] for r in rows if r.get('set_overflow')) for i in range(4)]
+if rows[-1].get('set_rows') is not None:   # rows packed per batch row: the row budget the batches needed (max over updates)
+    out['set_rows_max'] = [max(r['set_rows'][i] for r in rows if r.get('set_rows')) for i in range(4)]
 for k in ('explained_variance', 'entropy', 'kl', 'gradient_norm'):
     if k in rows[-1]:
         out[k] = round(rows[-1][k], 4)

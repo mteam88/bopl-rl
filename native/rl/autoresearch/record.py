@@ -74,7 +74,7 @@ def shape_row(a):
         detail=(f"{r['encoder']} w{r['workers']} b{r['buffers']} p{r['passes']}, {r['updates']} updates: learner_sps {r['learner_sps']}, sps {r['sps']}, rollout_s {r['rollout_s']}, train_s {r['train_s']}, wall_s {r['wall_s']},"
                 f" per buffer-step ms rollout {ms.get('rollout')} eval_gpu {ms.get('eval_gpu')} eval_env {ms.get('eval_env')}"
                 +(f", env_pool {r['env_pool']}" if r.get('env_pool') else '')+(f", gpu_step {r['gpu_step']}" if r.get('gpu_step') else '')
-                +(f", c_step {r['c_step']}" if r.get('c_step') else '')+(f", set_overflow_max {r['set_overflow_max']}" if r.get('set_overflow_max') is not None else '')
+                +(f", c_step {r['c_step']}" if r.get('c_step') else '')+(f", set_overflow_max {r['set_overflow_max']}" if r.get('set_overflow_max') is not None else '')+(f", set_rows_max {r['set_rows_max']}" if r.get('set_rows_max') is not None else '')
                 +f", cuda_mb {r.get('cuda_mb')}, load1 {r.get('load1')}")
         score,active,wall=r['learner_sps'],r['sps'],r['wall_s']
     row=[stamp,commit,a.experiment,a.workload,f'{score:.0f}',a.status,
