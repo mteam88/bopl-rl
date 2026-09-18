@@ -481,8 +481,13 @@ build); it defaults to `v4-aim` on a tie because the more-maps runs and the
 Mac shim are built on it. Shape ablations stop here: `25 v4-no-relational`
 and `27 v4-critic-shared` are single-seed input / head ablations that
 cannot resolve below ~75; proposed to park them with `sym-critic` /
-`rays16` / `maxpool` (still in gpu-queue/ behind 19f as of 22:20; the
-parent moves job files). Rays cost no
+`rays16` / `maxpool`; parked by the parent at 22:30 together with `28
+seeds-rest` (the v3 seed floor is no longer the question). Queue at 22:30:
+`19c v4-aim-only-s75` (running) -> `19d v4-aim-maps` -> `19e
+v4-no-rays-maps` -> `19f v4-aim-maps-r2` -> `19g v4-aim-maps-s74` -> `19h
+v4-no-rays-maps-s74` (second seeds of 19d/19e, seed line only; 19f waits
+for its first result, it is the newest sim build). Every run from here is
+two seeds from the start. Rays cost no
 sps (`v4-no-rays`, bit 2, runs the same 163k), the evidence on them is flat
 not negative, and the more-maps run below is the test where the egocentric
 geometry channel is the point. Queue (gpu-queue/, lexical order): `13zz
@@ -494,6 +499,23 @@ sort first) -> `28 seeds-rest` (v3, was 20). Parked, not deleted:
 effects above ~30 points). The more-maps runs (7d) went in behind 19c once
 their gates passed: `19d v4-aim-maps`, `19e v4-no-rays-maps` (claim 3 is the
 point of keeping rays, so its control gets the slot).
+
+### 7c'. Pool v8 (CPU-only, after the tournament reports)
+
+Pool v7 saturates: v4 candidates win ~0.9 of their games against its bots,
+so 217-game evals give +-25-point bands and the same-shape seed spread
+(~50-75) dominates every comparison. Pool v8 puts the candidates
+mid-scale: members = the six finished v4 checkpoints and the v4 seed
+replicates (the tournament's cross-family games, played on the per-player
+ablation build), bridges = the pool v7 bots and the v3b anchors so the
+scale stays pinned to random = 0 the same way. Written as
+`sweeps/anchors/pool-v8/pool.json` in this rift; every finished v4 run's
+last three checkpoints are rated on it offline, a v8 column next to v7 for
+the whole wave. Pool v7 stays the pre-registered primary for 19d-19h and
+the in-run hook is not changed mid-wave; v8 is reported alongside and
+becomes primary for the next wave (opponent distribution: stronger and more
+varied members, a self-play fraction; two seeds each; design after v8
+exists, nothing on the GPU until 19h is queued and the parent says go).
 
 ### 7d. More maps: the 31-level catalogue (`native/data/map-set.json`)
 
