@@ -106,28 +106,9 @@ __device__ __forceinline__ float bf(bf16 v) { return __bfloat162float(v); }
 __device__ __forceinline__ bf16 tobf(float v) { return __float2bfloat16(v); }
 
 /* ---- packing ---------------------------------------------------------- */
-/* Valid rows (column 0 != 0) of each set per sample: one warp per sample,
- * the lanes over the set's slots (110 per sample in v4-aim), a ballot per 32
- * slots. (The thread-per-(set, sample) form walked up to 48 slots in turn,
- * each a 32-byte sector 19 KB from the previous thread's: latency-bound at
- * ~200 us per pass.) */
+/* Valid rows (column 0 != 0) of each set per sample. (A warp-per-sample form
+ * with ballots measured +0.2%, inside the noise: notes-v4.md.) */
 __global__ void count_rows(const float* input, Gather g, int B, int* counts /* (SETS, B) */) {
-    int b = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, lane = threadIdx.x & 31;
-    if (b >= B) return;
-    const float* row = row_ptr(input, g, b);
-    #pragma unroll
-    for (int s = 0; s < SETS; s++) {
-        const Spec sp = c_spec[s];
-        int n = 0;
-        for (int r0 = 0; r0 < sp.rows; r0 += 32) {
-            int r = r0 + lane;
-            bool v = r < sp.rows && row[sp.offset + r * sp.width] != 0.0f;
-            n += __popc(__ballot_sync(0xffffffffu, v));
-        }
-        if (lane == 0) counts[(long)s * B + b] = n;
-    }
-}
-__global__ void count_rows_serial(const float* input, Gather g, int B, int* counts /* (SETS, B) */) {   // TEMP: the old form for the A/B
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= B * SETS) return;
     int s = i / B, b = i - s * B;
@@ -712,9 +693,7 @@ static int active_granule(int cap) { int g = (cap / ACTIVE_BUCKETS + TILE - 1) /
 __global__ void publish_totals(const int* totals, int* host) { if (threadIdx.x < SETS) host[threadIdx.x] = totals[threadIdx.x]; }
 static void count_and_scan(EncActs* a, PrecisionTensor input, cudaStream_t stream) {
     int B = a->B;
-    static int count_serial = getenv("BOPL_COUNT_SERIAL") ? atoi(getenv("BOPL_COUNT_SERIAL")) : 0;   // TEMP A/B toggle
-    if (count_serial) count_rows_serial<<<grid_size(B * SETS), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->counts.data);
-    else count_rows<<<grid_long((long)B * 32), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->counts.data);
+    count_rows<<<grid_size(B * SETS), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->counts.data);
     scan_rows<<<SETS, 1024, 0, stream>>>(a->counts.data, B, make_int4(a->cap[0], a->cap[1], a->cap[2], a->cap[3]), a->offsets.data, a->totals.data, a->overflow.data);
 }
 /* Returns the graph key (>= 1) of the coming forward, 0 when the feature is off

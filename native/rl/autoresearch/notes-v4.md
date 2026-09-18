@@ -483,3 +483,12 @@ temporary toggle, removed): 246.1k vs 245.1k (+0.4%), 245.9k vs 244.8k
 (+0.44%), train 0.0989 vs 0.0993. Like the LN: these passes were already
 near the bandwidth; the remaining cost is the traffic itself (the winner
 int32 per (sample, column), unpool's re-read of h2 for the ReLU mask).
+
+### Train pass: count_rows as a warp per sample, discard
+
+`count_rows` (the prepass, 1.7 ms per update: one thread per (set,
+sample) walking up to 48 slots at a 19 KB stride, latency-bound) as one
+warp per sample with a ballot per 32 slots. Counts identical (check_v4's
+overflow numbers unchanged, pass_all). A/B 2x2 twice (cand = the old
+kernel): 247.2k vs 246.7k (+0.2%, repeats overlapping), 247.0k vs 246.5k
+(+0.2%). Inside the noise; reverted to the old kernel.
