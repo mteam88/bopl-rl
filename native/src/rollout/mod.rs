@@ -3860,7 +3860,10 @@ impl RolloutWorld {
         };
         let mut height = self.ability_pickups[index].position.y - floor;
         let mut platform_height = None;
-        let bottom = Vec2::new(center.x, center.y - height);
+        // DynamicAbilityPickup casts ten million units, not merely to the
+        // water/space fallback plane. A hit beyond that plane still replaces
+        // the fallback distance, so the broad phase must cover the full ray.
+        let bottom = center - Vec2::UP * Fix::from_int(10_000_000);
         let lo = Vec2::new(center.x, center.y.min(bottom.y));
         let hi = Vec2::new(center.x, center.y.max(bottom.y));
         let mut candidates = self.bounds.candidates(lo, hi);
