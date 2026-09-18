@@ -432,8 +432,39 @@ def elo_curve_logged(runs, steps):
         print(f"  {step * ratio / 1e6:8.0f}M  " + "  ".join(cells) + diff)
 
 
+def map_list(maps):
+    """[0, 1, 2, 5, 7] -> '0-2,5,7'."""
+    maps = sorted(set(int(m) for m in maps or ()))
+    out, i = [], 0
+    while i < len(maps):
+        j = i
+        while j + 1 < len(maps) and maps[j + 1] == maps[j] + 1:
+            j += 1
+        out.append(str(maps[i]) if j == i else f"{maps[i]}-{maps[j]}")
+        i = j + 1
+    return ",".join(out) or "-"
+
+
+def map_split(run):
+    """(trained maps the diagnostics play on, held-out maps) from the run's config or its last diagnostic."""
+    c = run.config
+    last = run.diagnostics[max(run.diagnostics)] if run.diagnostics else {}
+    trained = c.get("evaluation_maps") or last.get("evaluation_maps") or c.get("training_maps") or [0, 1, 2]
+    heldout = c.get("heldout_maps") or last.get("heldout_maps") or [3, 4]
+    return trained, heldout, c.get("training_maps") or last.get("training_maps") or trained
+
+
 def win_rates(runs, steps, by_opponent=False):
-    section("3. Win rate, training maps (0-2) vs held-out maps (3-4), all opponents pooled")
+    splits = [map_split(r) for r in runs]
+    if all(sp == splits[0] for sp in splits):
+        trained, heldout, training = splits[0]
+        extra = f" ({len(trained)} of the {len(training)} training maps)" if set(trained) != set(training) else ""
+        section(f"3. Win rate, training maps ({map_list(trained)}{extra}) vs held-out maps ({map_list(heldout)}), all opponents pooled")
+    else:
+        section("3. Win rate, training maps vs held-out maps (the runs' own splits), all opponents pooled")
+        for r, (trained, heldout, training) in zip(runs, splits):
+            extra = f" ({len(trained)} of the {len(training)} training maps)" if set(trained) != set(training) else ""
+            print(f"  {r.name}: trained {map_list(trained)}{extra}, held-out {map_list(heldout)}")
     ratio = runs[0].learner_ratio()
     print(f"  {'learner':>9}  " + "  ".join(f"{r.name:>26}" for r in runs))
     print(f"  {'':>9}  " + "  ".join(f"{'trained  heldout   gap':>26}" for _ in runs))
