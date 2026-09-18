@@ -356,3 +356,23 @@ train 0.1068 vs 0.1080, rollout 0.091 vs 0.084). Real but small, and it is
 the same trade as the priority experiments (fewer, longer rollout blocks
 leave SMs to the train pass while the rollout takes longer). Knob kept,
 default 1; decide after the chain's own work shrinks (L11 next).
+
+### L11: the rollout chain's critic on learner rows only (commit below), keep
+
+The v4 chain ran its critic (3 GEMMs at N = 512: cin over K = W + 12,
+b1, b2 over K = 512, plus 2 row kernels) over all 64 rows of a buffer:
+the learner's 48 rows in 3 row tiles and one 4-of-16 tile per frozen bank
+(4 banks), 7 tiles, of which the banks' 4 are 57% of the blocks for 6% of
+the useful rows. Nobody reads a frozen row's value: its advantages are
+zeroed (`zero_frozen_advantages_cuda`), the minibatch sampler and the
+advantage / value statistics take learner rows only. Now the three GEMMs
+launch with the plan's group count set to 1 (grid.x = the learner's row
+tiles; `br_gemm` does not read gridDim, so the learner's tiles run the
+same blocks with the same arguments: bit-identical logits and values) and
+the two row kernels over `g.end[1]` rows. The banks' value column keeps
+the zero A.dec was allocated with; `BOPL_BR_CHECK` skips it for v4.
+A/B 2x2, twice, at load 6.0-6.2 (cand = the old all-rows critic behind a
+temporary toggle, since removed): 236.0-236.1k vs 223.4-224.3k and
+236.5-236.7k vs 223.8-225.1k: **+5.4%**. Rollout unchanged (0.0837 s), train
+0.103 vs 0.1085: the saved rollout GPU work goes to the train pass.
+`check_v4 --build` pass_all, `check_dump --only v4` ok.

@@ -400,9 +400,8 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         // column stays the zero A.dec was allocated with. The banks' rows are
         // 4 of 16 per tile, so this is 4 of the 7 tiles of the three widest
         // GEMMs (K, N = 512) and the two LNs.
-        static int critic_all = br_env_int("BOPL_BR_CRITIC_ALL", 0);   // TEMP A/B toggle
-        BrPlan pl = p; int crows = rows;
-        if (!critic_all) { pl.g.n = 1; crows = p.g.end[1]; }
+        BrPlan pl = p; pl.g.n = 1;
+        const int crows = p.g.end[1];
         br_gemm_launch(pl, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
         ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_LN; ra.W = q.C; ra.x = A.z; ra.ldx = q.C; ra.out = A.lnc; ra.ldout = q.C;
@@ -484,7 +483,7 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
                 double o = ours[(size_t)(off + r) * p.ld_dec + c], e = theirs[(size_t)r * od1 + c];
                 dl = std::max(dl, std::fabs(o - e)); scale = std::max(scale, std::fabs(e));
             }
-            if (g == 0 || !p.v4)   /* v4: the banks' value column is not computed (critic on learner rows only) */
+            if (g == 0 || !p.v4)   /* v4: the banks' value column is not computed (the critic runs on learner rows only) */
                 dv = std::max(dv, std::fabs((double)ours[(size_t)(off + r) * p.ld_dec + p.dec_cols] - theirs[(size_t)r * od1 + p.dec_cols]));
         }
         fprintf(stderr, "bopl batched forward check: buffer %d step %d group %d (%d rows): logits max|diff| %.3g (max|logit| %.3g), value max|diff| %.3g\n",
