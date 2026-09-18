@@ -536,6 +536,45 @@ becomes primary for the next wave (opponent distribution: stronger and more
 varied members, a self-play fraction; two seeds each; design after v8
 exists, nothing on the GPU until 19h is queued and the parent says go).
 
+Built 2026-09-18 03:35 (`reference_pool.py build-from-games`, commit
+03a8a1f): 34 members, pool sha `151fedb0`. The three pool-v7 band
+checkpoints (2133M/2240M/2313M) of `v4-full`, `v4-no-rays`, `v4-aim`,
+`v4-aim-only`, `v4-full-s74` and of `v4-lite` (its 2313M was not in the
+tournament roster; 1920M stands in), plus random, the seven pool-v7 bots
+and the eight v3b anchors; 13,464 of the tournament's 68,400 games (24 per
+pair, side-swapped fixed seeds on maps 0-2) fitted by the same
+Bradley-Terry with random = 0. Scale: v4 members 567-665, search bots
+522-528, v3b finals 429-520, the other bots 244-341. Every finished v4
+run's last three checkpoints rated on it 03:36-05:40 (240 games each, the
+worktree's per-player evaluator, sim sha differs from the tournament's
+build so `game_mismatch` is set; maps 0-2 are bit-identical across the two
+builds):
+
+| run | v7 bands | v7 IQM | v8 bands | v8 IQM | v8-v7 |
+|---|---|---|---|---|---|
+| v4-aim-only | 772/763/732 | 756 [722,792] | 611/620/616 | 616 [581,653] | -140 |
+| v4-aim-only-s75 | 726/715/696 | 712 [681,747] | 590/596/607 | 598 [563,635] | -115 |
+| v4-full | 680/707/712 | 699 [669,734] | 636/630/598 | 621 [591,656] | -78 |
+| v4-no-rays | 697/694/689 | 693 [661,729] | 584/581/644 | 603 [568,640] | -90 |
+| v4-aim | 675/748/690 | 704 [671,740] | 588/613/638 | 613 [576,653] | -92 |
+| v4-aim-only-s74 | 685/667/695 | 682 [650,716] | 549/582/601 | 577 [542,613] | -105 |
+| v4-lite | 681/680/656 | 672 [640,706] | 607/612/632 | 617 [581,655] | -55 |
+| v4-full-s74 | 674/674/687 | 678 [647,712] | 601/576/617 | 598 [562,635] | -80 |
+| v4-aim-s74 | 669/630/648 | 649 [617,684] | 585/570/573 | 576 [538,613] | -73 |
+
+Reading: the nine runs span 106 points on v7 and 45 on v8 (576-621, all
+inside one another's intervals; Spearman 0.33 between the columns). The
+same-shape seed pairs are 37 / 23 / 38 / 18 points apart on v8 (55 / 21 /
+73 / 43 on v7); aim-only's three-seed mean is 597 against aim's two-seed
+594: the +40 v7 gap is +2 on v8, the tournament's tie again. So v8 does
+not rank the v4 shapes either; it confirms they are one cluster, and it
+pins the scale the next wave must move on: a real improvement shows as a
+v8 gain beyond ~40 (the widest same-shape pair) with the v7 IQM flat. The
+240-game bands give +-37; the next wave's v8 bands go to 480 games. Same
+principle as v7's replacement of v5: the pool is rebuilt when the
+candidates saturate it, and rebuilt from games already played when a
+tournament has them.
+
 ### 7d. More maps: the 31-level catalogue (`native/data/map-set.json`)
 
 The five-map runs test map invariance on two held-out levels that share the
@@ -653,7 +692,8 @@ opponent-distribution problem.
 Runs (all `v4-aim`, the production shape, 024's recipe, 1.73B steps, two
 seeds each, 73 and 74; scored on pool v8 primary, v7 alongside, plus a
 fixed head-to-head band against the tournament's five v4-aim / v4-aim-only
-finals, 48 games each, the cheapest direct measure of the target):
+finals, 48 games each, the cheapest direct measure of the target; v8 bands
+at 480 games, +-26 instead of +-37):
 
 1. `v4-aim-league` (the main bet): a fourth kind of opponent, other runs.
    The self-play pool starts pinned with the finals of `v4-aim` s73/s74
@@ -677,9 +717,8 @@ finals, 48 games each, the cheapest direct measure of the target):
    below 120k sps it is dropped from the wave, not slowed.
 
 Pre-registered claims. (1) `v4-aim-league` beats the `v4-aim` two-seed mean
-on pool v8 by more than the v8 same-shape spread (measured on the v8 column
-of this wave's seeds before the run starts, 7c') and wins more than 55% of
-the head-to-head band; (2) `v4-aim-pfsp` does not: the externals, not the
+on pool v8 (594; 613 / 576) by more than 40, the widest same-shape seed
+pair on v8 (7c'), and wins more than 55% of the head-to-head band; (2) `v4-aim-pfsp` does not: the externals, not the
 sampler, are the effect; (3) the trained-minus-held-out scripted-bot gap
 does not widen (no overfit to the pinned opponents). A league win with the
 pool-v7 IQM unchanged is the expected shape of the result: v7 cannot see
