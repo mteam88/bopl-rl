@@ -271,7 +271,7 @@ def pair_tasks(a,b,maps,games_per_map,seed_base):
     return tasks
 
 
-def play_games(by_name,tasks,limit,workers,seed_base,delay=9):
+def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None):
     """Play tasks (dicts a, b, map, seed, side) between participants keyed by name.
 
     Each participant provides start(task, side, rng) -> act(observation, mask)
@@ -300,8 +300,11 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9):
                 timeout=bool(final['flags']&2)
                 a_won=bool(final['players'][task['side']]['flags']&2) and not timeout
                 b_won=bool(final['players'][1-task['side']]['flags']&2) and not timeout
-                results.append(dict(task,ticks=final['t'],
-                                    outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b')))
+                result=dict(task,ticks=final['t'],
+                            outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b'))
+                if on_result:
+                    on_result(result)
+                results.append(result)
         return results
     if not tasks: return []
     buckets=[tasks[i::workers] for i in range(min(workers,len(tasks)))]
