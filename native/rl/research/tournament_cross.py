@@ -140,9 +140,14 @@ def run(args):
         key = tuple(sorted((base.writer_ablation(by_name[task['a']]),
                             base.writer_ablation(by_name[task['b']]))))
         grouped.setdefault(key, []).append(task)
-    shards = [[] for _ in range(args.workers)]
-    for index, key in enumerate(sorted(grouped)):
-        shards[index % args.workers].extend(grouped[key])
+    allocations = {key: 1 for key in grouped}
+    for _ in range(max(0, args.workers - len(grouped))):
+        key = max(grouped, key=lambda item: len(grouped[item]) / allocations[item])
+        allocations[key] += 1
+    shards = []
+    for key in sorted(grouped):
+        count = allocations[key]
+        shards.extend(grouped[key][offset::count] for offset in range(count))
     processes = []
     for worker, shard in enumerate(shards):
         used = {task[name] for task in shard for name in ('a', 'b')}
