@@ -96,12 +96,19 @@ if args.device == "cuda":
           "-l:libcuda.so.1",
           "-lm", "-lpthread"], target)
 else:
+    # binding.c includes the shared vecenv implementation, whose GPU entrypoints
+    # leave CUDA runtime references in the object even when the CPU backend never
+    # calls them. Link the pinned runtime so the CPU extension can be imported.
+    cuda_runtime = (Path(sysconfig.get_path("purelib")) / "nvidia/cu13/lib/libcudart.so.13").resolve()
+    if not cuda_runtime.exists():
+        raise SystemExit(f"CPU binding requires the pinned CUDA runtime at {cuda_runtime}")
     subprocess.run(["c++", "-O3", "-std=c++17", "-fPIC", "-fopenmp", "-DPRECISION_FLOAT", "-DENV_NAME=bopl",
                 "-DOBS_TENSOR_T=FloatTensor", "-I" + str(overlay), "-I" + str(source / "src"),
                 "-I" + sysconfig.get_path("include"), "-I" + pybind11.get_include(),
                     "-c", str(source / "src/bindings_cpu.cpp"), "-o", str(out / "puffer_cpu.o")], check=True)
     link(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cpu.o"),
-          str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), "-lm", "-lpthread"], target)
+          str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), str(cuda_runtime),
+          "-Wl,-rpath," + str(cuda_runtime.parent), "-lm", "-lpthread"], target)
 link(["cc", "-O3", "-std=c11", "-fPIC", "-shared", "-I" + str(HERE.parent),
       str(HERE / "eval_binding.c"), str(HERE.parent / "bopl_rl.c"), "-lm"], out / "libbopl_research.so")
 # policy_eval.c is the CPU forward pass evaluate.py / the pool rater load through
