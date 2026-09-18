@@ -1,6 +1,6 @@
-diff -ruN a/bindings.cu b/bindings.cu
---- a/bindings.cu
-+++ b/bindings.cu
+diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
+--- pristine-src/bindings.cu	2026-09-16 18:31:54.835509749 -0400
++++ puffer-overlay/bindings.cu	2026-09-17 12:10:27.932210708 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -40,6 +40,15 @@ diff -ruN a/bindings.cu b/bindings.cu
      result["loss"] = losses_dict;
  
      // Profile
+@@ -109,7 +131,7 @@
+     pybind11::dict env_dict;
+     // Capacity 64 to fit chess's per-bank hist_score_bank/hist_n_bank entries
+     // (16 keys across 8 banks) on top of base env-log fields.
+-    Dict* env_out = create_dict(64);
++    Dict* env_out = create_dict(128);   // bopl: up to 64 map_<i>_fraction keys (BOPL_COUNTER_MAPS)
+     static_vec_eval_log(pufferl.vec, env_out);
+     for (int i = 0; i < env_out->size; i++) {
+         env_dict[env_out->items[i].key] = env_out->items[i].value;
 @@ -132,34 +154,29 @@
      static_vec_render(pufferl.vec, env_id);
  }
@@ -94,7 +103,7 @@ diff -ruN a/bindings.cu b/bindings.cu
  }
  
  pybind11::dict train(pybind11::object pufferl_obj) {
-@@ -167,11 +184,22 @@
+@@ -167,16 +184,67 @@
      {
          pybind11::gil_scoped_release no_gil;
          train_impl(pufferl);
@@ -117,7 +126,52 @@ diff -ruN a/bindings.cu b/bindings.cu
  void puf_close(pybind11::object pufferl_obj) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
      close_impl(pufferl);
-@@ -188,6 +216,23 @@
+ }
+ 
++// Bopl: the learner's own decoder rows (logits then value) for the first
++// `count` learner rows of buffer 0 at rollout step t of the slot last
++// collected, recomputed from a zero recurrent state with policy_forward (the
++// per-bank chain the trainer trains against), together with the observations
++// they were computed from. puffer/check_dump.py holds the CPU evaluator and
++// the torch reference to these rows on a checkpoint the trainer wrote, so a
++// reader that walks the dump in another order than create_params registers
++// it (encoder, decoder, recurrent core) fails a test instead of an evaluation.
++// t = 0 right after the first rollout is the only step whose state is zero.
++pybind11::tuple bopl_policy_rows(pybind11::object pufferl_obj, int t, int count) {
++    PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
++    HypersT& hypers = pufferl.hypers;
++    RolloutBuf rollouts = rollout_slot_view(pufferl.rollouts, pufferl.ready_slot, hypers.horizon);
++    int apb = pufferl.vec->total_agents / hypers.num_buffers, frozen_total = 0;
++    for (int b = 0; b < pufferl.num_frozen_banks; b++) frozen_total += pufferl.frozen_banks[b].slice_size;
++    int primary = pufferl.primary_rows > 0 ? pufferl.primary_rows : apb - frozen_total;
++    if (t < 0 || t >= hypers.horizon || count < 1) throw std::runtime_error("bopl_policy_rows: step or count out of range");
++    if (count > primary) count = primary;
++    cudaStream_t stream = 0;
++    PrecisionTensor obs = puf_slice(rollouts.observations, t, 0, count);
++    // The state keeps the buffer state's full row count (the rollout
++    // activations' next_state is sized for it); the observations, as in the
++    // per-bank rollout loop, cover the learner's rows only.
++    PrecisionTensor* s0 = &pufferl.buffer_states[0];
++    long layers = s0->shape[0], H = s0->shape[2];
++    PrecisionTensor state = {.shape = {layers, s0->shape[1], H}};
++    size_t state_bytes = (size_t)numel(state.shape) * sizeof(float);
++    if (cudaMalloc((void**)&state.data, state_bytes) != cudaSuccess)
++        throw std::runtime_error("bopl_policy_rows: state allocation failed");
++    cudaMemset(state.data, 0, state_bytes);
++    PrecisionTensor dec = policy_forward(&pufferl.policy, pufferl.weights, pufferl.buffer_activations[0], obs, state, stream);
++    cudaStreamSynchronize(stream);
++    long F = obs.shape[1], od1 = dec.shape[1];
++    pybind11::array_t<float> obs_out({(long)count, F}), dec_out({(long)count, od1});
++    cudaMemcpy(obs_out.mutable_data(), obs.data, (size_t)count * F * sizeof(float), cudaMemcpyDeviceToHost);
++    cudaMemcpy(dec_out.mutable_data(), dec.data, (size_t)count * od1 * sizeof(float), cudaMemcpyDeviceToHost);
++    cudaFree(state.data);
++    return pybind11::make_tuple(obs_out, dec_out);
++}
++
+ void save_weights(pybind11::object pufferl_obj, const std::string& path) {
+     PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
+     int64_t nbytes = numel(pufferl.master_weights.shape) * sizeof(float);
+@@ -188,6 +256,23 @@
      fclose(f);
  }
  
@@ -141,7 +195,7 @@ diff -ruN a/bindings.cu b/bindings.cu
  void load_weights(pybind11::object pufferl_obj, const std::string& path) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
      int64_t nbytes = numel(pufferl.master_weights.shape) * sizeof(float);
-@@ -209,12 +254,15 @@
+@@ -209,12 +294,15 @@
          throw std::runtime_error("Failed to read weight file");
      }
      fclose(f);
@@ -157,7 +211,7 @@ diff -ruN a/bindings.cu b/bindings.cu
  }
  
  int py_add_frozen_bank(py::object pufferl_obj, int slice_size,
-@@ -225,6 +273,9 @@
+@@ -225,6 +313,9 @@
  
  void py_load_frozen_bank(py::object pufferl_obj, int bank_idx, const std::string& path) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
@@ -167,7 +221,7 @@ diff -ruN a/bindings.cu b/bindings.cu
      pufferl_load_frozen_bank(&pufferl, bank_idx, path.c_str());
  }
  
-@@ -517,10 +568,15 @@
+@@ -517,10 +608,23 @@
      m.def("eval_log", &puf_eval_log);
      m.def("render", &render);
      m.def("rollouts", &rollouts);
@@ -178,12 +232,20 @@ diff -ruN a/bindings.cu b/bindings.cu
      m.def("train", &train);
      m.def("close", &puf_close);
      m.def("save_weights", &save_weights);
++    m.def("bopl_policy_rows", &bopl_policy_rows);
++    // Bopl policy v4: rows the packed set buffers dropped in the last training forward
++    // (players, slots, entities, slimes); empty before the first update or for other encoders.
++    m.def("bopl_v4_overflow", []() {
++        std::vector<int> out(4);
++        if (bopl_v4_overflow(out.data()) < 0) out.clear();
++        return out;
++    });
      m.def("load_weights", &load_weights);
 +    m.def("set_ent_head_scale", &set_ent_head_scale);
      m.def("add_frozen_bank", &py_add_frozen_bank);
      m.def("load_frozen_bank", &py_load_frozen_bank);
      m.def("set_agent_perm", &py_set_agent_perm);
-@@ -626,7 +682,7 @@
+@@ -626,7 +730,7 @@
          .def_readwrite("hypers", &PuffeRL::hypers)
          .def_readwrite("rollouts", &PuffeRL::rollouts)
          .def_readonly("epoch", &PuffeRL::epoch)
@@ -192,9 +254,9 @@ diff -ruN a/bindings.cu b/bindings.cu
          .def_readonly("last_log_time", &PuffeRL::last_log_time)
          .def("num_params", [](PuffeRL& self) -> int64_t {
              return numel(self.master_weights.shape);
-diff -ruN a/kernels.cu b/kernels.cu
---- a/kernels.cu
-+++ b/kernels.cu
+diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
+--- pristine-src/kernels.cu	2026-09-16 18:31:54.835509749 -0400
++++ puffer-overlay/kernels.cu	2026-09-16 23:40:30.197645103 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -219,7 +281,7 @@ diff -ruN a/kernels.cu b/kernels.cu
      for (int i = threadIdx.x; i < row_bytes; i += blockDim.x) {
          d[i] = s[i];
      }
-@@ -248,17 +258,171 @@
+@@ -248,17 +258,185 @@
  // Strides derived from M, N, K assuming tightly packed row-major storage.
  static const size_t CUBLAS_WS_BYTES = 32 * 1024 * 1024;
  
@@ -230,7 +292,6 @@ diff -ruN a/kernels.cu b/kernels.cu
 -        void* ws = nullptr;
 -        cudaMalloc(&ws, CUBLAS_WS_BYTES);
 -        cublasSetWorkspace(handle, ws, CUBLAS_WS_BYTES);
--    }
 +// Bopl: one handle (and so one workspace) per stream a thread issues GEMMs
 +// on. The per-bank rollout branches run concurrently on side streams, and a
 +// cuBLAS workspace must not be shared by concurrently running GEMMs; a graph
@@ -244,9 +305,23 @@ diff -ruN a/kernels.cu b/kernels.cu
 +    for (int i = 0; i < count; i++) if (streams[i] == stream) return handles[i];
 +    assert(count < CUBLAS_HANDLES_PER_THREAD && "too many distinct cuBLAS streams on one thread");
 +    cublasHandle_t handle;
-+    cublasCreate(&handle);
++    cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
++    cudaStreamIsCapturing(stream, &capture);
++    if (capture != cudaStreamCaptureStatusNone) {
++        // Creating a handle (and its workspace) inside a capture invalidates the
++        // graph; every stream must see one eager GEMM before it is captured.
++        fprintf(stderr, "cuBLAS handle requested for a stream that is being captured\n");
++        abort();
++    }
++    cublasStatus_t cs = cublasCreate(&handle);
 +    void* ws = nullptr;
-+    cudaMalloc(&ws, CUBLAS_WS_BYTES);
++    cudaError_t err = cs == CUBLAS_STATUS_SUCCESS ? cudaMalloc(&ws, CUBLAS_WS_BYTES) : cudaErrorMemoryAllocation;
++    if (cs != CUBLAS_STATUS_SUCCESS || err != cudaSuccess) {
++        size_t free_b = 0, total_b = 0; cudaMemGetInfo(&free_b, &total_b);
++        fprintf(stderr, "cuBLAS handle/workspace creation failed (cublas %d, cuda %s), %.1f MB free of %.1f MB\n",
++                (int)cs, cudaGetErrorString(err), free_b / 1048576.0, total_b / 1048576.0);
++        abort();
+     }
 +    cublasSetWorkspace(handle, ws, CUBLAS_WS_BYTES);
 +    streams[count] = stream; handles[count] = handle; count++;
      return handle;
@@ -399,7 +474,7 @@ diff -ruN a/kernels.cu b/kernels.cu
  static inline void cublasGemmExDense(
          cublasOperation_t op_a, cublasOperation_t op_b,
          int M, int N, int K, void* A, void* B, void* C,
-@@ -266,11 +430,10 @@
+@@ -266,11 +444,10 @@
      int lda = (op_a == CUBLAS_OP_N) ? K : M;
      int ldb = (op_b == CUBLAS_OP_N) ? N : K;
  
@@ -414,9 +489,33 @@ diff -ruN a/kernels.cu b/kernels.cu
  }
  
  // out(...,N) = a(...,K) @ b(N,K)^T  — leading dims folded into M
-diff -ruN a/models.cu b/models.cu
---- a/models.cu
-+++ b/models.cu
+@@ -446,8 +623,22 @@
+ 
+ cudaError_t alloc_create(Allocator* alloc) {
+     if (alloc->total_bytes == 0) return cudaSuccess;
++    // Bopl: BOPL_V4_MEMLOG=1 prints every device allocation (and the free memory
++    // it found) so an out-of-memory startup is a number, not a segfault.
++    static int memlog = -1;
++    if (memlog < 0) { const char* f = getenv("BOPL_V4_MEMLOG"); memlog = f && atoi(f) ? 1 : 0; }
++    if (memlog) {
++        size_t free_b = 0, total_b = 0; cudaMemGetInfo(&free_b, &total_b);
++        fprintf(stderr, "bopl device allocation: %.1f MB in %d tensors (largest %.1f MB), %.1f MB free before\n",
++                alloc->total_bytes / 1048576.0, alloc->num_regs,
++                [&]{ long m = 0; for (int i = 0; i < alloc->num_regs; i++) m = std::max(m, (long)numel(alloc->regs[i].shape) * alloc->regs[i].elem_size); return m / 1048576.0; }(),
++                free_b / 1048576.0);
++    }
+     cudaError_t err = cudaMalloc(&alloc->mem, alloc->total_bytes);
+-    if (err != cudaSuccess) return err;
++    if (err != cudaSuccess) {
++        fprintf(stderr, "bopl device allocation of %.1f MB failed: %s\n", alloc->total_bytes / 1048576.0, cudaGetErrorString(err));
++        return err;
++    }
+     cudaMemset(alloc->mem, 0, alloc->total_bytes);
+     long offset = 0;
+     for (int i = 0; i < alloc->num_regs; i++) {
+diff -ruN pristine-src/models.cu puffer-overlay/models.cu
+--- pristine-src/models.cu	2026-09-16 18:31:54.835509749 -0400
++++ puffer-overlay/models.cu	2026-09-16 23:40:30.198171065 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -747,9 +846,9 @@ diff -ruN a/models.cu b/models.cu
          mingru_scan_forward<<<grid_size(B*m->hidden), BLOCK_SIZE, 0, stream>>>(a->scan_bufs[i]);
          x = a->scan_bufs[i].out;
      }
-diff -ruN a/muon.cu b/muon.cu
---- a/muon.cu
-+++ b/muon.cu
+diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
+--- pristine-src/muon.cu	2026-09-16 18:31:54.835563921 -0400
++++ puffer-overlay/muon.cu	2026-09-16 23:40:30.198764624 -0400
 @@ -83,6 +83,68 @@
      {2.8366, -3.0525, 1.2012},
  };
@@ -1089,19 +1188,20 @@ diff -ruN a/muon.cu b/muon.cu
      muon_clip_norm<<<grid_size(numel(grads.shape)), BLOCK_SIZE, 0, stream>>>(
          grads.data, m->grad_norm_ptr, max_grad_norm, 1e-6f, numel(grads.shape));
  
-diff -ruN a/ocean.cu b/ocean.cu
---- a/ocean.cu
-+++ b/ocean.cu
-@@ -3,6 +3,8 @@
+diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
+--- pristine-src/ocean.cu	2026-09-16 18:31:54.835563921 -0400
++++ puffer-overlay/ocean.cu	2026-09-16 23:40:30.199264347 -0400
+@@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
  #include "nethack.cu"
 +#include "bopl_set_encoder.cu"
++#include "bopl_v4.cu"
 +#include <cstdlib>
  
  // ---- NMMO3 constants ----
  
-@@ -589,6 +591,16 @@
+@@ -589,9 +592,24 @@
          };
      } else if (env_name == "nethack") {
          create_nethack_encoder(enc);
@@ -1113,14 +1213,22 @@ diff -ruN a/ocean.cu b/ocean.cu
 +        const char* choice = std::getenv("BOPL_NATIVE_ENCODER");
 +        std::string encoder = choice ? choice : "linear";
 +        if (encoder == "set") bopl_create_set_encoder(enc);
++        else if (encoder == "v4") bopl_create_v4_encoder(enc);   /* policy v4 (bopl_v4.cu); its decoder follows below */
 +        else if (encoder != "linear")
-+            throw std::runtime_error("BOPL_NATIVE_ENCODER must be 'linear' or 'set', got '" + encoder + "'");
++            throw std::runtime_error("BOPL_NATIVE_ENCODER must be 'linear', 'set' or 'v4', got '" + encoder + "'");
      }
  }
  
-diff -ruN a/pufferlib.cu b/pufferlib.cu
---- a/pufferlib.cu
-+++ b/pufferlib.cu
+ static void create_custom_decoder(const std::string& env_name, Decoder* dec) {
+     if (env_name == "nethack") create_nethack_decoder(dec);
++    if (env_name == "bopl") {
++        const char* choice = std::getenv("BOPL_NATIVE_ENCODER");
++        if (choice && std::string(choice) == "v4") bopl_create_v4_decoder(dec);
++    }
+ }
+diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
+--- pristine-src/pufferlib.cu	2026-09-16 18:31:54.835563921 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-17 12:10:27.932851398 -0400
 @@ -1,3 +1,4 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -1364,7 +1472,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      cudaGraphExec_t* fused_rollout_cudagraphs;  // [horizon][num_buffers]
      cudaGraphExec_t train_cudagraph;
      cudaStream_t* streams;  // per-buffer raw CUDA streams
-@@ -388,7 +556,156 @@
+@@ -388,12 +556,161 @@
      // worker thread only writes inside its own physical chunk.
      // Bank 0 = primary (learner). NULL = no layout set (primary owns full chunk).
      int* bank_layout;
@@ -1516,11 +1624,17 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
 +// place from the rollout buffer; the transposed observation copies are then
 +// dead and train_impl skips producing them.
 +static bool bopl_encoder_gathers(PuffeRL& pufferl) {
-+    return pufferl.policy.encoder.forward == bs_forward;
++    return pufferl.policy.encoder.forward == bs_forward || bopl_is_v4_encoder(pufferl.policy.encoder);
 +}
  
  Dict* log_environments_impl(PuffeRL& pufferl) {
      // Capacity raised from 32 to 64 to accommodate chess's per-bank
+     // hist_score_bank_<b> / hist_n_bank_<b> entries (16 keys for 8 banks).
+-    Dict* out = create_dict(64);
++    Dict* out = create_dict(128);   // bopl: up to 64 map_<i>_fraction keys (BOPL_COUNTER_MAPS)
+     static_vec_log(pufferl.vec, out);
+     return out;
+ }
 @@ -415,6 +732,44 @@
      tl_stream = pufferl->streams[buf];
  }
@@ -2456,7 +2570,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      RolloutBuf& rollouts = pufferl.train_rollouts;
      PrecisionTensor& advantages_puf = pufferl.advantages_puf;
  
-@@ -1561,8 +2434,19 @@
+@@ -1561,8 +2434,21 @@
      int obs_size = (ndim(src.observations.shape) >= 3) ? src.observations.shape[2] : 1;
      int num_atns = (ndim(src.actions.shape) >= 3) ? src.actions.shape[2] : 1;
  
@@ -2469,7 +2583,9 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
 +    // and get baked into the captured train graph like everything else.
 +    bool obs_gather = bopl_encoder_gathers(pufferl);
 +    if (obs_gather) {
-+        bs_bind_gather(pufferl.train_activations.encoder, src.observations.data,
++        if (bopl_is_v4_encoder(pufferl.policy.encoder))
++            bopl_v4_bind_gather(pufferl.train_activations.encoder, src.observations.data, pufferl.prio_bufs.idx.data, T, B);
++        else bs_bind_gather(pufferl.train_activations.encoder, src.observations.data,
 +                       pufferl.prio_bufs.idx.data, T, B);
 +    } else {
 +        transpose_102<<<grid_size(T*B*obs_size), BLOCK_SIZE, 0, train_stream>>>(
@@ -2478,7 +2594,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      transpose_102<<<grid_size(T*B*num_atns), BLOCK_SIZE, 0, train_stream>>>(
          rollouts.actions.data, src.actions.data, T, B, num_atns);
      transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
-@@ -1575,15 +2459,23 @@
+@@ -1575,15 +2461,23 @@
          rollouts.ratio.data, src.ratio.data, T, B, 1);
      transpose_102<<<grid_size(T*B), BLOCK_SIZE, 0, train_stream>>>(
          rollouts.values.data, src.values.data, T, B, 1);
@@ -2506,7 +2622,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      // Set importance weights to 1.0
      fill_precision_kernel<<<grid_size(numel(rollouts.ratio.shape)), BLOCK_SIZE, 0, train_stream>>>(
-@@ -1600,10 +2492,14 @@
+@@ -1600,10 +2494,14 @@
  
      Muon* muon = &pufferl.muon;
      int total_epochs = hypers.total_timesteps / batch_size;
@@ -2522,7 +2638,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      }
  
      // Annealed entropy coefficient — same cosine shape as lr. With PG signal
-@@ -1617,17 +2513,25 @@
+@@ -1617,17 +2515,25 @@
                                              current_epoch, total_epochs);
      }
      // copy ent_coef to the device buffer read by the loss kernel
@@ -2552,7 +2668,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
          puf_zero(&advantages_puf, train_stream);
  
          profile_begin("compute_advantage", hypers.profile);
-@@ -1639,6 +2543,13 @@
+@@ -1639,6 +2545,13 @@
              zero_frozen_advantages_cuda(advantages_puf, apb,
                  pufferl.bank_layout[1], train_stream);
          }
@@ -2566,7 +2682,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
          profile_end(hypers.profile);
  
          profile_begin("compute_prio", hypers.profile);
-@@ -1646,28 +2557,44 @@
+@@ -1646,28 +2559,44 @@
          long* train_rng_offset = pufferl.rng_offset_puf.data + hypers.num_buffers;
          prio_replay_cuda(advantages_puf, prio_alpha, minibatch_segments,
              hypers.total_agents, anneal_beta,
@@ -2621,7 +2737,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
              if (capturing) {
                  assert(cudaStreamBeginCapture(train_stream, cudaStreamCaptureModeGlobal) == cudaSuccess
                          && "cudaStreamBeginCapture failed");
-@@ -1683,11 +2610,18 @@
+@@ -1683,11 +2612,18 @@
                  p_logstd = dw_train->logstd;
              }
  
@@ -2641,7 +2757,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
              FloatTensor grad_logits_puf = pufferl.ppo_bufs_puf.grad_logits;
              FloatTensor grad_logstd_puf = pufferl.is_continuous ? pufferl.ppo_bufs_puf.grad_logstd : FloatTensor();
-@@ -1696,6 +2630,8 @@
+@@ -1696,6 +2632,8 @@
                  grad_logits_puf, grad_logstd_puf, grad_values_puf, stream);
  
              muon_step(&pufferl.muon, pufferl.master_weights, pufferl.grad_puf, hypers.max_grad_norm, stream);
@@ -2650,7 +2766,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
              if (USE_BF16) {
                  int n = numel(pufferl.param_puf.shape);
                  cast<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(
-@@ -1705,10 +2641,11 @@
+@@ -1705,10 +2643,11 @@
                  cudaGraph_t _graph;
                  assert(cudaStreamEndCapture(train_stream, &_graph) == cudaSuccess
                          && "cudaStreamEndCapture failed");
@@ -2663,7 +2779,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
                  pufferl.train_captured = true;
              }
              pufferl.train_warmup++;
-@@ -1720,22 +2657,31 @@
+@@ -1720,22 +2659,31 @@
          {
              int num_idx = numel(pufferl.prio_bufs.idx.shape);
              int row_bytes = (numel(graph.mb_ratio.shape) / graph.mb_ratio.shape[0]) * sizeof(precision_t);
@@ -2699,7 +2815,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      if (total_minibatches > 0) {
          float ms;
-@@ -1819,7 +2765,7 @@
+@@ -1819,7 +2767,7 @@
      int* raw_act_sizes = get_act_sizes();
      int act_n = 0;
      for (int i = 0; i < num_action_heads; i++) act_n += raw_act_sizes[i];
@@ -2708,7 +2824,23 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      bank->policy = build_policy(pufferl->env_name.c_str(), input_size, hidden_size,
          num_layers, decoder_output_size, act_n, pufferl->is_continuous, pufferl->hypers.horizon);
      bank->hidden_size = hidden_size;
-@@ -1889,14 +2835,15 @@
+@@ -1838,8 +2786,13 @@
+         alloc_register(acts, &bank->buffer_states[i]);
+     }
+ 
+-    alloc_create(params);
+-    alloc_create(acts);
++    // Bopl: a failed bank allocation used to leave null tensors behind and die
++    // later in a graph capture; fail here with the size that did not fit.
++    if (alloc_create(params) != cudaSuccess || alloc_create(acts) != cudaSuccess) {
++        fprintf(stderr, "bopl bank allocation failed (params %.1f MB, activations %.1f MB)\n",
++                params->total_bytes / 1048576.0, acts->total_bytes / 1048576.0);
++        abort();
++    }
+ 
+     bank->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
+     if (USE_BF16) {
+@@ -1889,14 +2842,15 @@
      for (int b = 0; b < pufferl->num_frozen_banks; b++) {
          frozen_total += pufferl->frozen_banks[b].slice_size;
      }
@@ -2728,7 +2860,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      int cumul = pufferl->bank_layout[1];
      for (int b = 0; b < pufferl->num_frozen_banks; b++) {
          cumul += pufferl->frozen_banks[b].slice_size;
-@@ -1993,6 +2940,21 @@
+@@ -1993,6 +2947,21 @@
      pufferl->env_name = env_name;
  
      cudaSetDevice(hypers.gpu_id);
@@ -2750,7 +2882,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      // Multi-GPU: initialize NCCL
      if (hypers.world_size > 1) {
-@@ -2050,7 +3012,7 @@
+@@ -2050,7 +3019,7 @@
      int hidden_size = hypers.hidden_size;
      int num_layers = hypers.num_layers;
      bool is_continuous = pufferl->is_continuous;
@@ -2759,7 +2891,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      int minibatch_segments = hypers.minibatch_size / hypers.horizon;
      int inf_batch = vec->total_agents / hypers.num_buffers;
      int B_TT = minibatch_segments * hypers.horizon;
-@@ -2081,13 +3043,27 @@
+@@ -2081,13 +3050,27 @@
          alloc_register(acts, &pufferl->buffer_states[i]);
      }
      int mask_size = pufferl->vec->action_mask_size;
@@ -2790,7 +2922,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      register_ppo_buffers(pufferl->ppo_bufs_puf,
          acts, minibatch_segments, hypers.horizon, decoder_output_size, is_continuous);
      register_prio_buffers(pufferl->prio_bufs,
-@@ -2106,6 +3082,14 @@
+@@ -2106,6 +3089,14 @@
      pufferl->advantages_puf = {.shape = {total_agents, horizon}};
      alloc_register(acts, &pufferl->advantages_puf);
  
@@ -2805,7 +2937,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      muon_init(&pufferl->muon, params, hypers.lr, hypers.beta1, hypers.eps, 0.0, acts);
      pufferl->muon.nccl_comm = pufferl->nccl_comm;
      pufferl->muon.world_size = hypers.world_size;
-@@ -2122,6 +3106,82 @@
+@@ -2122,6 +3113,82 @@
      }
  
      pufferl->grad_puf = {.data = (precision_t*)grads->mem, .shape = {grads->total_elems}};
@@ -2888,7 +3020,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      pufferl->param_puf = {.data = (precision_t*)params->mem, .shape = {params->total_elems}};
  
      ulong init_seed = hypers.seed;
-@@ -2159,6 +3219,8 @@
+@@ -2159,6 +3226,8 @@
      DictItem* fbp_item = dict_get_unsafe(vec_kwargs, "frozen_bank_pct");
      DictItem* fbh_item = dict_get_unsafe(vec_kwargs, "frozen_bank_hidden_size");
      DictItem* fbl_item = dict_get_unsafe(vec_kwargs, "frozen_bank_num_layers");
@@ -2897,7 +3029,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      int num_frozen = nb_item ? (int)nb_item->value : 0;
      float frozen_pct = fbp_item ? (float)fbp_item->value : 0.0f;
      int frozen_hidden = fbh_item ? (int)fbh_item->value : hidden_size;
-@@ -2167,10 +3229,11 @@
+@@ -2167,10 +3236,11 @@
          int agents_per_buffer = total_agents / num_buffers;
          int frozen_size = (int)((float)agents_per_buffer * frozen_pct);  // truncates = floor for positive
          int frozen_total = num_frozen * frozen_size;
@@ -2912,7 +3044,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
              return nullptr;
          }
          // add_frozen_bank auto-builds the sequential bank_layout.
-@@ -2178,10 +3241,12 @@
+@@ -2178,10 +3248,12 @@
              pufferl_add_frozen_bank(pufferl.get(), frozen_size, frozen_hidden, frozen_layers);
          }
      }
@@ -2926,7 +3058,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
          pufferl->train_warmup = 0;
  
          // Snapshot weights + optimizer state before init-time capture
-@@ -2193,40 +3258,41 @@
+@@ -2193,40 +3265,41 @@
          cudaMalloc(&saved_momentum, wb_bytes);
          cudaMemcpy(saved_momentum, pufferl->muon.mb_puf.data, wb_bytes, cudaMemcpyDeviceToDevice);
  
@@ -2989,7 +3121,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
          // Restore weights + optimizer state corrupted by warmup/capture
          cudaMemcpy(pufferl->master_weights.data, saved_weights, wb_bytes, cudaMemcpyDeviceToDevice);
-@@ -2250,15 +3316,6 @@
+@@ -2250,15 +3323,6 @@
          pufferl->global_step = 0;
      }
  
@@ -3005,7 +3137,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      create_static_threads(vec, hypers.num_threads, horizon, pufferl.get(),
          net_callback_wrapper, thread_init_wrapper);
      static_vec_reset(vec);
-@@ -2276,21 +3333,107 @@
+@@ -2276,21 +3340,107 @@
      return pufferl;
  }
  
@@ -3115,7 +3247,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      policy_activations_free(&pufferl.policy, pufferl.train_activations);
      for (int buf = 0; buf < pufferl.hypers.num_buffers; buf++) {
          policy_activations_free(&pufferl.policy, pufferl.buffer_activations[buf]);
-@@ -2315,6 +3458,8 @@
+@@ -2315,6 +3465,8 @@
      for (int i = 0; i < NUM_TRAIN_EVENTS; i++) {
          cudaEventDestroy(pufferl.profile.events[i]);
      }
@@ -3124,7 +3256,7 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
      nvmlShutdown();
  
      static_vec_close(pufferl.vec);
-@@ -2329,6 +3474,7 @@
+@@ -2329,6 +3481,7 @@
      }
      free(pufferl.frozen_banks);
      free(pufferl.bank_layout);
@@ -3132,9 +3264,9 @@ diff -ruN a/pufferlib.cu b/pufferlib.cu
  
      if (pufferl.nccl_comm != nullptr) {
          ncclCommDestroy(pufferl.nccl_comm);
-diff -ruN a/vecenv.h b/vecenv.h
---- a/vecenv.h
-+++ b/vecenv.h
+diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
+--- pristine-src/vecenv.h	2026-09-16 18:31:54.835563921 -0400
++++ puffer-overlay/vecenv.h	2026-09-16 23:40:30.201806322 -0400
 @@ -97,6 +97,30 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
@@ -3211,7 +3343,7 @@ diff -ruN a/vecenv.h b/vecenv.h
  
  #define OMP_WAITING 5
  #define OMP_RUNNING 6
-@@ -217,13 +256,156 @@
+@@ -217,13 +256,163 @@
  #endif
  
  
@@ -3228,6 +3360,9 @@ diff -ruN a/vecenv.h b/vecenv.h
 +//     with one fetch_add (dynamic scheduling, no straggler partition);
 +//   - the buffer thread publishes its job, steps envs itself, and can step other
 +//     buffers' envs while its own GPU forward runs (BOPL_ENV_STEAL=1);
++//   - workers and thieves claim from the earliest-published open job
++//     (BOPL_ENV_OLDEST=1, see bopl_pool_oldest) so the buffers pipeline
++//     through the GPU instead of stepping in lockstep; 0 = round-robin;
 +//   - claim order per step is longest-last-step first (BOPL_ENV_LPT=1): the
 +//     scripted-bot envs (lookahead rollouts) are the stragglers otherwise;
 +//   - BOPL_ENV_DRIVER=k (default 0) instead runs k threads that each drive
@@ -3306,6 +3441,7 @@ diff -ruN a/vecenv.h b/vecenv.h
 +    atomic_uint* claimed; // affinity mode: per env offset, generation of its last claim
 +    _Alignas(64) atomic_uint gen;  // affinity mode: publish generation (claimable while claimed[e] == gen - 1)
 +    int64_t* last_ns;    // per env offset: duration of its last c_step (LPT input)
++    _Alignas(64) atomic_llong seq;  // publish order (BOPL_ENV_OLDEST: claim the earliest-published open job first)
 +    int64_t t_launch;    // driver mode: forward launched (eval_gpu start)
 +    int64_t t_publish;   // driver mode: job published (eval_env start)
 +    int t;               // driver mode: step index within the rollout
@@ -3327,6 +3463,9 @@ diff -ruN a/vecenv.h b/vecenv.h
 +    BoplEnvJob* jobs;
 +    _Alignas(64) atomic_int work_seq;   // bumped on every publish; the workers' futex word
 +    _Alignas(64) atomic_int sleepers;   // workers parked in futex_wait
++    _Alignas(64) atomic_llong publish_seq;  // BOPL_ENV_OLDEST: next job sequence number
++    int oldest;          // BOPL_ENV_OLDEST: workers and thieves claim from the earliest-published open job (default 1)
++    int straggle_steal;  // BOPL_ENV_STRAGGLE_STEAL: the buffer thread steps other buffers' envs while waiting for its stragglers
 +    int num_workers;
 +    pthread_t* workers;
 +    int spin_ns;
@@ -3369,7 +3508,7 @@ diff -ruN a/vecenv.h b/vecenv.h
  };
  
  typedef struct StaticOMPArg {
-@@ -235,7 +417,262 @@
+@@ -235,7 +424,311 @@
      thread_init_fn thread_init;
  } StaticOMPArg;
  
@@ -3476,10 +3615,47 @@ diff -ruN a/vecenv.h b/vecenv.h
 +    return 1;
 +}
 +
++// Does job `buf` still have unclaimed envs (both claim modes)?
++static inline int bopl_pool_open(StaticThreading* th, int buf) {
++    BoplEnvJob* job = &th->jobs[buf];
++    if (th->affinity) return atomic_load_explicit(&job->gen, memory_order_acquire) != 0
++        && atomic_load_explicit(&job->done, memory_order_relaxed) < job->env_count;
++    return atomic_load_explicit(&job->next, memory_order_acquire) < job->env_count;
++}
++
++// The open job published earliest (BOPL_ENV_OLDEST=1), or -1. With several
++// buffers in their env phase at once, every thread converging on the oldest
++// job finishes it (and launches its forward) soonest, so the buffers spread
++// out in phase and one buffer's GPU forward overlaps the others' env steps.
++// Round-robin claiming (BOPL_ENV_OLDEST=0, the previous order) advances the
++// buffers together, and with a forward longer than an env phase (policy v4:
++// 340 us forward vs 170 us of 8-thread stepping per buffer) they fall into
++// lockstep: all four wait on the GPU while the CPU idles, then all four step
++// while the GPU idles, so the rollout costs forward + env instead of the
++// larger of the two. Which thread steps an env does not affect what it
++// computes, so the schedule changes nothing numerically.
++static inline int bopl_pool_oldest(StaticThreading* th, int exclude) {
++    int nb = th->num_buffers, best = -1;
++    int64_t best_seq = INT64_MAX;
++    for (int b = 0; b < nb; b++) {
++        if (b == exclude || !bopl_pool_open(th, b)) continue;
++        int64_t seq = atomic_load_explicit(&th->jobs[b].seq, memory_order_relaxed);
++        if (seq < best_seq) { best_seq = seq; best = b; }
++    }
++    return best;
++}
++
 +// Step one env of any buffer other than `self` (buffer threads while their GPU
 +// forward runs).
 +static inline int bopl_pool_steal(StaticThreading* th, Env* envs, int self, int participant) {
 +    int nb = th->num_buffers;
++    if (th->oldest) {
++        for (;;) {
++            int b = bopl_pool_oldest(th, self);
++            if (b < 0) return 0;
++            if (bopl_pool_try(th, envs, b, 2, participant)) return 1;
++        }
++    }
 +    for (int k = 1; k <= nb; k++) {
 +        int b = (self + k) % nb;
 +        if (b == self) continue;
@@ -3490,6 +3666,10 @@ diff -ruN a/vecenv.h b/vecenv.h
 +
 +static void bopl_pool_publish(StaticThreading* th, int buf) {
 +    BoplEnvJob* job = &th->jobs[buf];
++    // Publish order for the oldest-first claim; stored before the job opens
++    // (the release below), so a claimer that sees the job open sees its seq.
++    atomic_store_explicit(&job->seq, (int64_t)atomic_fetch_add_explicit(&th->publish_seq, 1, memory_order_relaxed),
++                          memory_order_relaxed);
 +    if (th->lpt) {
 +        // Longest-processing-time first: insertion sort of <= a few dozen
 +        // offsets by last step's duration (the scripted-bot envs, which run
@@ -3529,9 +3709,17 @@ diff -ruN a/vecenv.h b/vecenv.h
 +    while (!atomic_load_explicit(&th->shutdown, memory_order_relaxed)) {
 +        int seen = atomic_load_explicit(&th->work_seq, memory_order_acquire);
 +        int did = 0;
-+        for (int k = 0; k < nb; k++) {
-+            int b = (rr + k) % nb;
-+            while (bopl_pool_try(th, envs, b, 1, nb + index)) did++;
++        if (th->oldest) {
++            for (;;) {
++                int b = bopl_pool_oldest(th, -1);
++                if (b < 0) break;
++                if (bopl_pool_try(th, envs, b, 1, nb + index)) did++;
++            }
++        } else {
++            for (int k = 0; k < nb; k++) {
++                int b = (rr + k) % nb;
++                while (bopl_pool_try(th, envs, b, 1, nb + index)) did++;
++            }
 +        }
 +        if (did) continue;
 +        // Nothing to do: spin on work_seq for spin_ns, then park.
@@ -3633,7 +3821,7 @@ diff -ruN a/vecenv.h b/vecenv.h
  static void* static_omp_threadmanager(void* arg) {
      StaticOMPArg* worker_arg = (StaticOMPArg*)arg;
      StaticVec* vec = worker_arg->vec;
-@@ -246,98 +683,259 @@
+@@ -246,98 +739,264 @@
      net_callback_fn net_callback = worker_arg->net_callback;
      thread_init_fn thread_init = worker_arg->thread_init;
  
@@ -3652,6 +3840,7 @@ diff -ruN a/vecenv.h b/vecenv.h
 +    BoplEnvJob* job = &threading->jobs[buf];
 +    int env_count = job->env_count;
 +    int steal = threading->steal;
++    int straggle_steal = steal && threading->straggle_steal;
 +    int gpu_wait = threading->gpu_wait;
 +    int poll_pause = threading->poll_pause;
 +    int prof = threading->prof;
@@ -3735,19 +3924,10 @@ diff -ruN a/vecenv.h b/vecenv.h
 -            #pragma omp parallel for schedule(static) num_threads(num_workers)
 -            for (int i = env_start; i < env_start + env_count; i++) {
 -                c_step(&envs[i]);
-+            bopl_pool_publish(threading, buf);
-+            while (bopl_pool_try(threading, envs, buf, 0, buf)) {}
-+            // Stragglers: at most one env step of latency.
-+            int64_t ts = prof ? bopl_now_ns() : 0;
-+            while (atomic_load_explicit(&job->done, memory_order_acquire) < env_count) {
-+                bopl_cpu_relax();
-             }
+-            }
 -            clock_gettime(CLOCK_MONOTONIC, &t1);
 -            my_accum[EVAL_ENV_STEP] += (t1.tv_sec - t0.tv_sec) * 1000.0f + (t1.tv_nsec - t0.tv_nsec) / 1e6f;
-+            int64_t t2 = bopl_now_ns();
-+            if (prof) atomic_fetch_add_explicit(&threading->stat_straggler_ns, t2 - ts, memory_order_relaxed);
-+            my_accum[EVAL_ENV_STEP] += (float)(t2 - t1) / 1e6f;
- 
+-
 -            cudaMemcpyAsync(
 -                (char*)vec->gpu_observations + agent_start * OBS_SIZE * obs_element_size(),
 -                (char*)vec->observations + agent_start * OBS_SIZE * obs_element_size(),
@@ -3770,6 +3950,21 @@ diff -ruN a/vecenv.h b/vecenv.h
 -                agents_per_buffer * MY_ACTION_MASK * sizeof(unsigned char),
 -                cudaMemcpyHostToDevice, stream);
 -#endif
++            bopl_pool_publish(threading, buf);
++            while (bopl_pool_try(threading, envs, buf, 0, buf)) {}
++            // Stragglers: at most one env step of latency. With
++            // BOPL_ENV_STRAGGLE_STEAL=1 the wait steps other buffers' envs
++            // (one more c_step of latency at worst, ~40 us against a ~100 us
++            // wait) instead of spinning.
++            int64_t ts = prof ? bopl_now_ns() : 0;
++            while (atomic_load_explicit(&job->done, memory_order_acquire) < env_count) {
++                if (straggle_steal && bopl_pool_steal(threading, envs, buf, buf)) continue;
++                bopl_cpu_relax();
++            }
++            int64_t t2 = bopl_now_ns();
++            if (prof) atomic_fetch_add_explicit(&threading->stat_straggler_ns, t2 - ts, memory_order_relaxed);
++            my_accum[EVAL_ENV_STEP] += (float)(t2 - t1) / 1e6f;
++
 +            if (gpu_prof) cudaEventRecord(ev[0], stream);
 +            bopl_upload(vec, buf, stream);
          }
@@ -3902,32 +4097,32 @@ diff -ruN a/vecenv.h b/vecenv.h
      for (int buf = 0; buf < vec->buffers; buf++) {
 -        atomic_store(&threading->buffer_states[buf], OMP_RUNNING);
 +        atomic_store_explicit(&threading->buffer_states[buf], OMP_RUNNING, memory_order_seq_cst);
-+    }
-+    for (int buf = 0; buf < vec->buffers; buf++) {
+     }
+     for (int buf = 0; buf < vec->buffers; buf++) {
+-        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
 +        bopl_futex_wake(&threading->buffer_states[buf], INT_MAX);
      }
-+}
-+
+ }
+ 
 +double static_vec_omp_wait(StaticVec* vec) {
 +    StaticThreading* threading = vec->threading;
 +    double last = 0.0;
-     for (int buf = 0; buf < vec->buffers; buf++) {
--        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
++    for (int buf = 0; buf < vec->buffers; buf++) {
 +        for (;;) {
 +            int s = atomic_load_explicit(&threading->buffer_states[buf], memory_order_acquire);
 +            if (s == OMP_WAITING) break;
 +            bopl_futex_wait(&threading->buffer_states[buf], s);
 +        }
 +        if (threading->done_at[buf] > last) last = threading->done_at[buf];
-     }
++    }
 +    return last;
 +}
 +
 +void static_vec_omp_step(StaticVec* vec) {
 +    static_vec_omp_start(vec);
 +    static_vec_omp_wait(vec);
- }
- 
++}
++
  void static_vec_seq_step(StaticVec* vec) {
      StaticThreading* threading = vec->threading;
      for (int buf = 0; buf < vec->buffers; buf++) {
@@ -3943,7 +4138,7 @@ diff -ruN a/vecenv.h b/vecenv.h
      }
  }
  
-@@ -418,11 +1016,17 @@
+@@ -418,11 +1077,17 @@
      vec->size = num_envs;
  
      size_t obs_elem_size = obs_element_size();
@@ -3965,7 +4160,7 @@ diff -ruN a/vecenv.h b/vecenv.h
  
          cudaMalloc((void**)&vec->gpu_observations, total_agents * OBS_SIZE * obs_elem_size);
          cudaMalloc((void**)&vec->gpu_actions, total_agents * NUM_ATNS * sizeof(float));
-@@ -449,9 +1053,11 @@
+@@ -449,9 +1114,11 @@
      vec->action_mask_size = MY_ACTION_MASK;
      size_t mask_bytes = (size_t)total_agents * MY_ACTION_MASK * sizeof(unsigned char);
      if (gpu) {
@@ -3978,7 +4173,7 @@ diff -ruN a/vecenv.h b/vecenv.h
      } else {
          vec->action_mask = (unsigned char*)calloc(total_agents * MY_ACTION_MASK, sizeof(unsigned char));
          vec->gpu_action_mask = vec->action_mask;
-@@ -576,6 +1182,7 @@
+@@ -576,6 +1243,7 @@
              (size_t)vec->total_agents * MY_ACTION_MASK * sizeof(unsigned char),
              cudaMemcpyHostToDevice);
  #endif
@@ -3986,7 +4181,7 @@ diff -ruN a/vecenv.h b/vecenv.h
          cudaDeviceSynchronize();
      } else {
          memset(vec->rewards, 0, vec->total_agents * sizeof(float));
-@@ -591,6 +1198,84 @@
+@@ -591,6 +1259,88 @@
      vec->threading->buffer_states = (atomic_int*)calloc(vec->buffers, sizeof(atomic_int));
      vec->threading->threads = (pthread_t*)calloc(vec->buffers, sizeof(pthread_t));
      vec->threading->accum = (float*)calloc(vec->buffers * NUM_EVAL_PROF, sizeof(float));
@@ -4013,6 +4208,8 @@ diff -ruN a/vecenv.h b/vecenv.h
 +    th->num_workers = total_stepping - gpu_threads;
 +    th->spin_ns = bopl_env_int("BOPL_ENV_SPIN_US", 100) * 1000;
 +    th->steal = bopl_env_int("BOPL_ENV_STEAL", 1);
++    th->oldest = bopl_env_int("BOPL_ENV_OLDEST", 1);
++    th->straggle_steal = bopl_env_int("BOPL_ENV_STRAGGLE_STEAL", 1);
 +    {
 +        const char* spec = getenv("BOPL_GPU_WAIT");
 +        th->gpu_wait = (spec && strcmp(spec, "sync") == 0) ? 0 : 1;
@@ -4056,10 +4253,12 @@ diff -ruN a/vecenv.h b/vecenv.h
 +        atomic_store(&th->jobs[b].gen, 0);  // idle: nothing claimable until the first publish
 +        atomic_store(&th->jobs[b].next, th->jobs[b].env_count);  // idle: nothing claimable
 +        atomic_store(&th->jobs[b].done, th->jobs[b].env_count);
++        atomic_store(&th->jobs[b].seq, INT64_MAX);
 +    }
++    atomic_store(&th->publish_seq, 0);
 +    th->participants = gpu_threads + th->num_workers;
-+    fprintf(stderr, "bopl env pool: %d %s + %d workers (%d CPUs), spin %d us, steal %d, gpu_wait %s, lpt %d, affinity %d, pin %d\n",
-+        gpu_threads, th->driver ? "driver threads" : "buffer threads", th->num_workers, ncpu, th->spin_ns / 1000, th->steal,
++    fprintf(stderr, "bopl env pool: %d %s + %d workers (%d CPUs), spin %d us, steal %d, oldest %d, straggle_steal %d, gpu_wait %s, lpt %d, affinity %d, pin %d\n",
++        gpu_threads, th->driver ? "driver threads" : "buffer threads", th->num_workers, ncpu, th->spin_ns / 1000, th->steal, th->oldest, th->straggle_steal,
 +        th->gpu_wait ? "poll" : "sync", th->lpt, th->affinity, th->pin);
 +    th->workers = (pthread_t*)calloc(th->num_workers > 0 ? th->num_workers : 1, sizeof(pthread_t));
 +    BoplWorkerArg* wargs = (BoplWorkerArg*)calloc(th->num_workers > 0 ? th->num_workers : 1, sizeof(BoplWorkerArg));
@@ -4071,7 +4270,7 @@ diff -ruN a/vecenv.h b/vecenv.h
  
      // Streams are now created by pufferlib.cu (PyTorch-managed streams)
      // Do NOT create streams here - they've already been set up
-@@ -603,7 +1288,11 @@
+@@ -603,7 +1353,11 @@
          args[i].ctx = ctx;
          args[i].net_callback = net_callback;
          args[i].thread_init = thread_init;
@@ -4084,7 +4283,7 @@ diff -ruN a/vecenv.h b/vecenv.h
      }
  }
  
-@@ -611,10 +1300,21 @@
+@@ -611,10 +1365,21 @@
      Env* envs = (Env*)vec->envs;
  
      if (vec->threading != NULL) {
@@ -4095,12 +4294,12 @@ diff -ruN a/vecenv.h b/vecenv.h
 -            pthread_join(vec->threading->threads[i], NULL);
 +            bopl_futex_wake(&th->buffer_states[i], INT_MAX);
 +            if (!th->driver || i < th->driver) pthread_join(th->threads[i], NULL);
-+        }
+         }
 +        atomic_fetch_add(&th->work_seq, 1);
 +        bopl_futex_wake(&th->work_seq, INT_MAX);
 +        for (int i = 0; i < th->num_workers; i++) {
 +            pthread_join(th->workers[i], NULL);
-         }
++        }
 +        free(th->workers);
 +        for (int b = 0; b < vec->buffers; b++) { free(th->jobs[b].order); free(th->jobs[b].last_ns); free(th->jobs[b].claimed); }
 +        free(th->jobs);
@@ -4108,7 +4307,7 @@ diff -ruN a/vecenv.h b/vecenv.h
      }
  
      for (int i = 0; i < vec->size; i++) {
-@@ -628,6 +1328,7 @@
+@@ -628,6 +1393,7 @@
          free(vec->threading->buffer_states);
          free(vec->threading->threads);
          free(vec->threading->accum);
@@ -4116,7 +4315,7 @@ diff -ruN a/vecenv.h b/vecenv.h
          free(vec->threading);
      }
      free(vec->buffer_env_starts);
-@@ -723,6 +1424,48 @@
+@@ -723,6 +1489,48 @@
      for (int i = 0; i < NUM_EVAL_PROF; i++) {
          out[i] /= threading->num_buffers;
      }

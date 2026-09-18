@@ -13,6 +13,8 @@
 /* policy_eval.c (no header of its own) */
 void *bopl_policy_eval_create_aim(const float *data, size_t count, int batch, int observations, int hidden, int layers,
                                   int use_set, int aim_fourier, int aim_ar);
+void *bopl_policy_eval_create_v4(const float *data, size_t count, int batch, int hidden, int layers,
+                                 int aim_fourier, int aim_ar, const int *shape);
 int bopl_policy_eval_width(void *handle);
 void bopl_policy_eval_step_raw(void *handle, float *observations, const float *state, float *rows, float *next_state);
 void bopl_policy_eval_game_logits(void *handle, const float *rows, const int *buttons, float *out);
@@ -32,6 +34,8 @@ struct BoplAgent {
     int players, player;
     /* policy */
     void *policy; int hidden, layers, is_policy, aim_fourier, aim_ar;
+    int layout;              /* the policy's observation layout, 3 or BOPL4_LAYOUT_VERSION (bopl_layout_v4.h) */
+    int ablate;              /* the checkpoint's v4 writer bits, -1 = process default (v3, scripted) */
     float *rstate, *rnext, *decoder, *row;  /* decoder: BOPL_LOGITS game logits + value; row: the raw decoder row */
     uint64_t rng;
     int decision[3], decisions;
@@ -50,6 +54,10 @@ struct BoplAgent {
 
 uint32_t bopl_agent_abi_version(void) { return BOPL_AGENT_ABI; }
 int bopl_agent_obs_size(void) { return BOPL_OBS_SIZE; }
+int bopl_agent_observation_size(const BoplAgent *a) {
+    while (a && a->members) a=a->members[a->current];
+    return !a?-1:a->layout==BOPL4_LAYOUT_VERSION?BOPL4_OBS_SIZE:BOPL_OBS_SIZE;
+}
 int bopl_agent_logits_size(void) { return BOPL_LOGITS; }
 
 static void bopl_agent_error(char *error, size_t capacity, const char *format, ...) {
@@ -153,13 +161,17 @@ static int bopl_agent_env_alloc(BoplAgent *a) {
     bopl_rl_default_config(&env->config, (uint32_t)n);
     env->config.stocks=0; env->config.max_episode_ticks=(uint32_t)a->limit; env->config.warmup_ticks=(uint32_t)a->warmup;
     for (int i=0; i<n; i++) for (int s=0; s<3; s++) env->config.player[i].abilities[s]=(uint32_t)a->ability[s];
-    env->observations=calloc((size_t)n*BOPL_OBS_SIZE, sizeof(float));
+    /* Row memory is BOPL_OBS_STRIDE (the larger layout); the policy's player is
+     * encoded in its checkpoint's layout, every other row stays v3 (unread). */
+    env->layout[a->player]=a->layout;
+    bopl_set_ablate_of(env, a->player, a->ablate);
+    env->observations=calloc((size_t)n*BOPL_OBS_STRIDE, sizeof(float));
     env->actions=calloc((size_t)n*BOPL_NUM_ATNS, sizeof(float));
     env->rewards=calloc((size_t)n, sizeof(float)); env->terminals=calloc((size_t)n, sizeof(float));
     env->action_mask=calloc((size_t)n*BOPL_LOGITS, 1);
     if (!env->observations || !env->actions || !env->rewards || !env->terminals || !env->action_mask) return -1;
     for (int s=0; s<n; s++) {
-        env->obs_ptr[s]=env->observations+(size_t)s*BOPL_OBS_SIZE; env->action_ptr[s]=env->actions+BOPL_NUM_ATNS*s;
+        env->obs_ptr[s]=env->observations+(size_t)s*BOPL_OBS_STRIDE; env->action_ptr[s]=env->actions+BOPL_NUM_ATNS*s;
         env->reward_ptr[s]=env->rewards+s; env->terminal_ptr[s]=env->terminals+s;
         env->mask_ptr[s]=env->action_mask+(size_t)s*BOPL_LOGITS;
     }
@@ -184,12 +196,29 @@ static int bopl_agent_open_policy(BoplAgent *a, const char *path, char *error, s
     if (bopl_json_string(j, "precision", precision, sizeof(precision)) && strcmp(precision, "float32")) {
         free(data); free(json); bopl_agent_error(error, capacity, "sidecar precision %s (float32 expected)", precision); return -1;
     }
-    if (obs!=BOPL_OBS_SIZE || sizes[0]!=BOPL_ACT_AIM || sizes[1]!=BOPL_ACT_BUTTONS || sizes[2]!=BOPL_ACT_HOLD) {
+    int set=!strcmp(architecture, BOPL_ARCHITECTURE), linear=!strcmp(architecture, "puffernet-mingru"),
+        v4=!strcmp(architecture, BOPL4_ARCHITECTURE);
+    if (!set && !linear && !v4) { free(data); free(json); bopl_agent_error(error, capacity, "unknown architecture %s", architecture); return -1; }
+    a->layout=v4?BOPL4_LAYOUT_VERSION:3;
+    long obs_expected=v4?BOPL4_OBS_SIZE:BOPL_OBS_SIZE;
+    if (obs!=obs_expected || sizes[0]!=BOPL_ACT_AIM || sizes[1]!=BOPL_ACT_BUTTONS || sizes[2]!=BOPL_ACT_HOLD) {
         free(data); free(json);
-        bopl_agent_error(error, capacity, "checkpoint layout obs %ld heads %ld/%ld/%ld; this library is obs %d heads %d/%d/%d",
-                         obs, sizes[0], sizes[1], sizes[2], BOPL_OBS_SIZE, BOPL_ACT_AIM, BOPL_ACT_BUTTONS, BOPL_ACT_HOLD);
+        bopl_agent_error(error, capacity, "checkpoint layout obs %ld heads %ld/%ld/%ld; this library is obs %ld heads %d/%d/%d for %s",
+                         obs, sizes[0], sizes[1], sizes[2], obs_expected, BOPL_ACT_AIM, BOPL_ACT_BUTTONS, BOPL_ACT_HOLD, architecture);
         return -1;
     }
+    /* Policy v4's encoder shape (bopl_v4_eval.h), the sidecar's v4_shape object in
+     * bopl_policy_eval_create_v4's order; its keys are unique in the sidecar. */
+    static const char *shape_keys[8]={"set_dim", "set_inner", "flat_dim", "ffn_dim", "critic_dim", "critic_privileged", "critic_detach", "mean_pool"};
+    int shape[8]={0};
+    if (v4) for (int k=0; k<8; k++) {
+        if (!bopl_json_int(j, shape_keys[k], &value)) { free(data); free(json); bopl_agent_error(error, capacity, "sidecar %s lacks v4_shape.%s", sidecar, shape_keys[k]); return -1; }
+        shape[k]=(int)value;
+    }
+    /* The writer bits the checkpoint trained under (v4_shape.ablate: the
+     * ablations and layout v4.1's aim rays), applied to this agent's row only
+     * (bopl_agent_env_alloc), so agents of different families share a process. */
+    a->ablate=v4?(bopl_json_int(j, "ablate", &value)?(int)value:0):-1;
     char actual[65]; bopl_sha256_hex(data, length, actual);
     if (strcmp(actual, sha)) { free(data); free(json); bopl_agent_error(error, capacity, "weights sha256 %s does not match sidecar %s", actual, sha); return -1; }
     if (length%sizeof(float)) { free(data); free(json); bopl_agent_error(error, capacity, "checkpoint size %zu is not float32", length); return -1; }
@@ -209,9 +238,8 @@ static int bopl_agent_open_policy(BoplAgent *a, const char *path, char *error, s
         free(data); bopl_agent_error(error, capacity, "unsupported aim_fourier %d / aim_ar %d", a->aim_fourier, a->aim_ar); return -1;
     }
     if (a->delay!=0 && (a->delay!=9 || a->repeat!=4)) { free(data); bopl_agent_error(error, capacity, "unsupported observation delay %d / repeat %d", a->delay, a->repeat); return -1; }
-    int set=!strcmp(architecture, BOPL_ARCHITECTURE), linear=!strcmp(architecture, "puffernet-mingru");
-    if (!set && !linear) { free(data); bopl_agent_error(error, capacity, "unknown architecture %s", architecture); return -1; }
-    a->policy=bopl_policy_eval_create_aim((const float*)data, length/sizeof(float), 1, BOPL_OBS_SIZE, (int)hidden, (int)layers, set, a->aim_fourier, a->aim_ar);
+    a->policy=v4?bopl_policy_eval_create_v4((const float*)data, length/sizeof(float), 1, (int)hidden, (int)layers, a->aim_fourier, a->aim_ar, shape)
+                :bopl_policy_eval_create_aim((const float*)data, length/sizeof(float), 1, BOPL_OBS_SIZE, (int)hidden, (int)layers, set, a->aim_fourier, a->aim_ar);
     free(data);
     if (!a->policy) { bopl_agent_error(error, capacity, "weights (%zu floats) do not fit %s hidden %ld layers %ld aim_fourier %d aim_ar %d", length/sizeof(float), architecture, hidden, layers, a->aim_fourier, a->aim_ar); return -1; }
     a->hidden=(int)hidden; a->layers=(int)layers; a->is_policy=1;
@@ -232,7 +260,7 @@ static int bopl_agent_open_bot(BoplAgent *a, const char *spec, char *error, size
             bopl_agent_error(error, capacity, "the search bot plans by forking the in-process simulator every decision; it cannot follow a game it does not step. Pick a checkpoint or one of the scripted kinds (archer|pursuer|evasive|mixed[-v2]-easy|medium|hard).");
             return -1;
         }
-        a->kind=kind; a->level=level;
+        a->kind=kind; a->level=level; a->layout=3; a->ablate=-1;
         snprintf(a->id, sizeof(a->id), "bot:%s", name);
         return 0;
     }
@@ -386,11 +414,41 @@ static int bopl_sample_head(const float *logits, const unsigned char *mask, int 
     return last;
 }
 
+/* The action mask of the shim's player from the game's state. bopl_write_mask
+ * (bopl_puffer.h) reads the bow slot of the controlling slime from
+ * bopl_rl_state(env->world); the shim has no world (the game is the world), so
+ * that rule silently never applied here: re-pressing the bow while it is held
+ * (hold_run) was allowed, unlike training and the evaluator. Same rules, the
+ * state passed in. */
+static void bopl_agent_write_mask(BoplAgent *a, const BoplRlState *state) {
+    BoplPuffer *env=&a->env;
+    int player=a->player;
+    unsigned char *mask=env->mask_ptr[player];
+    memset(mask, 1, BOPL_LOGITS);
+    if (env->hold_left[player]>0) {
+        memset(mask+BOPL_ACT_AIM, 0, BOPL_ACT_BUTTONS+BOPL_ACT_HOLD);
+        mask[BOPL_ACT_AIM+env->held[player]]=1;
+        mask[BOPL_ACT_AIM+BOPL_ACT_BUTTONS]=1;
+        return;
+    }
+    if (!state || player>=(int)state->header.player_count) return;
+    const BoplRlPlayer *self=&state->players[player];
+    const BoplRlSlime *controller=bopl_controlling_slime(state, self->id, bopl_fix(self->x), bopl_fix(self->y));
+    if (!controller) return;
+    for (int slot=0; slot<3; slot++) {
+        if (!((controller->ability_flags[slot]&1) && controller->abilities[slot]==4)) continue;
+        int bow=slot+1;
+        if (env->hold_run[player][bow]>0)
+            for (int b=0; b<BOPL_ACT_BUTTONS; b++) if (b&(1<<bow)) mask[BOPL_ACT_AIM+b]=0;
+        return;
+    }
+}
+
 static void bopl_agent_decide(BoplAgent *a, const BoplRlState *before) {
     BoplPuffer *env=&a->env;
     memset(env->actions, 0, (size_t)a->players*BOPL_NUM_ATNS*sizeof(float));
     if (a->is_policy) {
-        float *obs=env->observations+(size_t)a->player*BOPL_OBS_SIZE;
+        float *obs=env->observations+(size_t)a->player*BOPL_OBS_STRIDE;
         const unsigned char *mask=env->action_mask+(size_t)a->player*BOPL_LOGITS;
         bopl_policy_eval_step_raw(a->policy, obs, a->rstate, a->row, a->rnext);
         float *swap=a->rstate; a->rstate=a->rnext; a->rnext=swap;
@@ -439,6 +497,7 @@ int bopl_agent_tick(BoplAgent *a, const BoplRlState *state, BoplRlAction *out) {
         for (int i=0; i<a->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=state->players[i].kills; }
         memset(env->last_telemetry, 0, sizeof(env->last_telemetry));
         bopl_reset_observations(env, state);
+        bopl_agent_write_mask(a, state);
         a->primed=1;
     }
     if (e!=a->expected) return -1;
@@ -449,6 +508,7 @@ int bopl_agent_tick(BoplAgent *a, const BoplRlState *state, BoplRlAction *out) {
         if (a->tick>=env->repeat || terminal) {
             if (env->observation_delay && !a->sampled) return -1;
             bopl_step_finish_from(env, &a->phase, state);
+            bopl_agent_write_mask(a, state);
             a->open=0;
         }
     }
@@ -490,7 +550,7 @@ int bopl_agent_observation_delay(const BoplAgent *a) { return a?a->delay:-1; }
 int bopl_agent_max_episode_ticks(const BoplAgent *a) { return a?a->limit:-1; }
 const char *bopl_agent_id(const BoplAgent *a) { return a?a->id:""; }  /* a roster reports "roster:<name>"; the round's member is in the roster log */
 int bopl_agent_is_policy(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->is_policy:0; }
-const float *bopl_agent_observation(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->env.observations+(size_t)a->player*BOPL_OBS_SIZE:NULL; }
+const float *bopl_agent_observation(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->env.observations+(size_t)a->player*BOPL_OBS_STRIDE:NULL; }
 const unsigned char *bopl_agent_mask(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->env.action_mask+(size_t)a->player*BOPL_LOGITS:NULL; }
 const float *bopl_agent_logits(const BoplAgent *a) { a=BOPL_MEMBER(a); return a?a->decoder:NULL; }
 void bopl_agent_decision(const BoplAgent *a, int out[3]) { a=BOPL_MEMBER(a); if (a && out) memcpy(out, a->decision, sizeof(a->decision)); else if (out) memset(out, 0, 3*sizeof(int)); }

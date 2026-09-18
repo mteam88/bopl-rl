@@ -48,7 +48,11 @@ from evaluation_protocol import checkpoint_identity, opponents, scripted_names  
 
 SCHEMA = 1
 RUST_SIM = ROOT / 'native/target/release/libbopl_sim.so'
-DEFAULT_POOL = ROOT / 'native/artifacts/rl/sweeps/anchors/pool-v5/pool.json'
+# The pool evaluate.py rates in-run evaluations on when --pool is not given.
+# Pool v7 since 2026-09-16 (v4-lite onwards); runs before that (024, the
+# seed-024-s7x floor, v4-full) logged pool v5 (sha8 ec5bd5ae): research/
+# readout.py refits their stored games on v7 so curves stay comparable.
+DEFAULT_POOL = ROOT / 'native/artifacts/rl/sweeps/anchors/pool-v7/pool.json'
 DEFAULT_HUMAN = ROOT / 'native/artifacts/rl/human/mac'
 CANDIDATE = 'candidate'
 
@@ -80,7 +84,7 @@ def game_library(game=None):
 def configure_games(workspace, game):
     """Point the research C environment at the sim (environment.configure)."""
     game = Path(game)
-    if game.resolve() == RUST_SIM.resolve():
+    if game.name == RUST_SIM.name:   # the tree's build or a staged one
         # As train.py: the Rust sim needs no spare world and hosts every world in one runtime.
         os.environ.setdefault('BOPL_RL_INPROC_SPARE', '0')
         os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', str(1 << 20))
@@ -469,8 +473,13 @@ def plan_round(rating, ratings, remaining_games, band, round_games):
 
 def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, band=(.15, .85),
                     round_games=48, workers=4, seed_base=70001, maps=None, library=None,
-                    game=None, bootstrap=1000, name=CANDIDATE, log=None):
-    """Rate one checkpoint against the frozen pool; cached under out or the run's sha8 dir."""
+                    game=None, bootstrap=1000, name=CANDIDATE, log=None, source='band'):
+    """Rate one checkpoint against the frozen pool; cached under out or the run's sha8 dir.
+
+    source labels the record: 'band' for the scorer's full budget, 'in-run' for
+    the eval hook's smaller budget on every evaluation checkpoint (train.py);
+    cache_hit lets a fuller rating replace a smaller one, so the scorer's band
+    rating overwrites the in-run point of the checkpoints it rates."""
     checkpoint = Path(checkpoint).resolve()
     identity = checkpoint_identity(checkpoint)
     maps = list(maps or pool['maps'])
@@ -536,7 +545,7 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
         game_mismatch=game_sha256 != pool.get('game', {}).get('sha256'),
         rating=rating, interval=interval, bootstrap=bootstrap, games=len(all_games),
         draws=sum(1 for g in all_games if g['outcome'] == 'draw'),
-        source='band', records=rating_records(records, rating, ratings),
+        source=source, records=rating_records(records, rating, ratings),
         rounds=rounds, elapsed=time.monotonic() - started,
         note='Bradley-Terry MLE vs fixed pool ratings; timeouts = draws; one virtual draw per member; '
              '95% percentile bootstrap over side-swapped seed pairs')
@@ -706,17 +715,28 @@ def load_human_rows(directory):
     return rows
 
 
-def rate_human(pool, directory, excluded=None, bootstrap=1000, seed=0):
+def rate_human(pool, directory, excluded=None, bootstrap=1000, seed=0, map_role=None):
     """Matthew's Elo vs pool members with ratings held fixed.
 
     agent_won means the bot won; games.jsonl outcome 'a' is a human win (a=human).
     Games against non-members are dropped. Maps 0-123 vs the pool's 0-2.
+    map_role keeps only rounds on Unity levels of that role in the sim catalogue
+    (native/data/map-set.json: 'training' | 'held-out' | 'unported'), so a fair
+    human test and a generalisation test are rated apart.
     """
     directory = Path(directory)
     skip = excluded_rounds(directory / 'excluded.json' if excluded is None else excluded)
-    games, maps, skipped = [], [], 0
+    roles = None
+    if map_role:
+        import map_set
+        catalogue = map_set.load()
+        roles = lambda level: map_set.role_of_level(level, catalogue)
+    games, maps, skipped, off_role = [], [], 0, 0
     for row in load_human_rows(directory):
         if (row.get('session'), row.get('round')) in skip:
+            continue
+        if roles and roles(int(row.get('level', row.get('map', 0)) or 0)) != map_role:
+            off_role += 1
             continue
         member = resolve_member(row, pool)
         if not member:
@@ -743,13 +763,14 @@ def rate_human(pool, directory, excluded=None, bootstrap=1000, seed=0):
     return dict(
         schema=SCHEMA, source='human', name='human', pool=pool['path'], pool_sha256=pool['pool_sha256'],
         budget=len(games), maps=sorted(set(maps)), map_min=min(maps), map_max=max(maps),
-        skipped_unknown=skipped, excluded=len(skip),
+        skipped_unknown=skipped, excluded=len(skip), map_role=map_role, off_role=off_role,
         game_mismatch=True,  # Unity, maps 0-123
         pool_game_sha256=pool_sha, rating=rating, interval=interval, bootstrap=bootstrap,
         games=len(games), draws=sum(1 for g in games if g['outcome'] == 'draw'),
         records=rating_records(records, rating, ratings),
         caveats=['The game rotates maps 0-123 while the pool plays 0-2.',
-                 f'n={len(games)} games after exclusions.'],
+                 f'n={len(games)} games after exclusions.']
+                + ([f'{map_role} maps only ({off_role} rounds on other levels dropped).'] if map_role else []),
         note='Matthew vs pool members; agent_won = bot won; maps rotate 0-123 while the pool plays 0-2; n is small')
 
 
@@ -858,6 +879,8 @@ def main():
     rate.add_argument('--seed-base', type=int, default=70001)
     rate.add_argument('--library', type=Path, default=None)
     rate.add_argument('--game', type=Path, default=None)
+    rate.add_argument('--source', choices=('band', 'in-run'), default='band',
+                      help="label of the record: 'in-run' for the eval hook's per-checkpoint points")
     runs = commands.add_parser('rate-runs', help='Rate run directories into <run>/reference/<pool_sha8>/')
     runs.add_argument('--pool', type=Path, required=True)
     runs.add_argument('--run', action='append', default=[], type=Path, help='Run directory (repeatable)')
@@ -873,6 +896,8 @@ def main():
     human.add_argument('--pool', type=Path, required=True)
     human.add_argument('--dir', type=Path, default=DEFAULT_HUMAN)
     human.add_argument('--excluded', type=Path, default=None)
+    human.add_argument('--map-role', choices=('training', 'held-out', 'unported'), default=None,
+                       help='rate only rounds on levels of this role in native/data/map-set.json')
     args = parser.parse_args()
     log = lambda message: print(f'[reference {time.strftime("%H:%M:%S")}] {message}', flush=True)
 
@@ -913,7 +938,7 @@ def main():
         print(format_run_table(rows, last_k=args.last_k))
     elif args.command == 'human':
         pool = load_pool(args.pool)
-        result = rate_human(pool, args.dir, excluded=args.excluded)
+        result = rate_human(pool, args.dir, excluded=args.excluded, map_role=args.map_role)
         print(f"{result['rating']:.1f} Elo  95% CI [{result['interval'][0]:.1f}, {result['interval'][1]:.1f}]  "
               f"{result['games']} games ({result['draws']} draws)")
         for line in result['caveats']:
@@ -925,7 +950,8 @@ def main():
         lo, hi = _band(args.band)
         result = rate_checkpoint(args.checkpoint, pool, args.out, games=args.games,
                                  first_pass_games=args.first_pass_games, band=(lo, hi), workers=args.workers,
-                                 seed_base=args.seed_base, library=args.library, game=args.game, log=log)
+                                 seed_base=args.seed_base, library=args.library, game=args.game, log=log,
+                                 source=args.source)
         print(f"{result['rating']:.1f} Elo  95% CI [{result['interval'][0]:.1f}, {result['interval'][1]:.1f}]  "
               f"{result['games']} games ({result['draws']} draws)"
               + (f" in {result['elapsed']:.0f}s" if 'elapsed' in result else ''))

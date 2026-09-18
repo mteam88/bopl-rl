@@ -71,17 +71,33 @@ def check_sim(args):
                 rng = np.random.default_rng(seed)
                 status, packet = agent.tick(env.state)      # decision 0 from S0
                 decisions = 0; ticks = 0; mismatches = []
-                obs_ok = np.array_equal(agent.observation, env.obs[1]); mask_ok = np.array_equal(agent.mask, env.mask[1])
-                if not (obs_ok and mask_ok): mismatches.append(('reset', obs_ok, mask_ok))
-                logits_checked = 0
+                # The environment writes the shim's side in the checkpoint's layout (v3 or v4,
+                # layout.py), like evaluate.py; set_layout re-encodes the reset row so the
+                # comparison below starts at the same S0 row the shim primes from.
                 policy = None
                 if agent.is_policy:
-                    import torch, native_policy
+                    import native_policy
                     policy, _ = native_policy.load(spec)
+                    env.set_layout(1, layout.layout_of(policy.architecture), ablate=native_policy.writer_ablation(policy))
+                # Layout v4's tail (V4_PRIVILEGED floats from V4_PRIVILEGED_OFFSET) is the
+                # critic's privileged block, which encodes the opponent's applied action:
+                # the shim never sees the human's inputs and the actor never reads it
+                # (bopl_v4_eval.h feeds it to the value head only), so compare the actor's
+                # input, the row up to that offset; the logits check covers the rest.
+                width = layout.V4_PRIVILEGED_OFFSET if env.layout_of(1) == layout.V4_LAYOUT_VERSION else layout.OBS_SIZE
+                row = lambda: env.obs_row(1)[:width]
+                if agent.observation.shape[0] != env.obs_row(1).shape[0]:
+                    raise RuntimeError(f'shim row {agent.observation.shape} vs environment row {env.obs_row(1).shape} for {spec}')
+                actor = lambda: agent.observation[:width]
+                obs_ok = np.array_equal(actor(), row()); mask_ok = np.array_equal(agent.mask, env.mask[1])
+                if not (obs_ok and mask_ok): mismatches.append(('reset', obs_ok, mask_ok))
+                logits_checked = 0
+                if policy is not None:
+                    import torch
                     state = policy.initial(1)
                 while not env.ended and ticks < limit + 8:
                     if policy is not None:
-                        rows, state = policy.step_raw(torch.from_numpy(env.obs[1:2].copy()), state)
+                        rows, state = policy.step_raw(torch.from_numpy(env.obs_row(1)[None].copy()), state)
                         # The shim's logits are the game logits of the button combo it sampled (aim_ar).
                         logits, value = policy.game_logits(rows, np.array([agent.decision[1]], dtype=np.int32))
                         if not np.array_equal(logits.numpy()[0], agent.logits[:layout.LOGITS]): mismatches.append(('logits', decisions))
@@ -99,7 +115,7 @@ def check_sim(args):
                     # own-action tail (bopl_previous_action) encodes the action it actually applied.
                     if len(set(applied)) != 1: mismatches.append(('packet-varies', decisions, applied))
                     if not env.ended:
-                        obs_ok = np.array_equal(agent.observation, env.obs[1]); mask_ok = np.array_equal(agent.mask, env.mask[1])
+                        obs_ok = np.array_equal(actor(), row()); mask_ok = np.array_equal(agent.mask, env.mask[1])
                         if not (obs_ok and mask_ok): mismatches.append(('decision', decisions, obs_ok, mask_ok))
                         if len(mismatches) > 5: break
                 total_decisions += decisions; total_ticks += ticks

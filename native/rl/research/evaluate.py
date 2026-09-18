@@ -10,7 +10,7 @@ import time
 import numpy as np
 import torch
 from environment import Environment,configure
-from native_policy import load,masked,sample,decide
+from native_policy import load,masked,sample,decide,writer_ablation
 from common import atomic_json
 import decision_dump
 import layout
@@ -42,7 +42,10 @@ def main():
     parser.add_argument('--scripted-opponents',type=scripted_names,default=DEFAULT_EVAL_SCRIPTED,
                         help='Comma-separated scripted bot names (kind-level, e.g. mixed-hard,archer-medium); empty disables')
     parser.add_argument('--pool',type=Path,default=None,
-                        help='Reference pool.json for in-run Elo (default: pool-v5 if present)')
+                        help='Reference pool.json for in-run Elo (default: reference_pool.DEFAULT_POOL, pool v7, if present)')
+    parser.add_argument('--no-pool-record',action='store_true',
+                        help="print the pool Elo line but do not write the bots-only 'evaluation' record into "
+                             "<run>/reference/<sha8>/ (train.py passes this when its in-run pool rating covers the checkpoint)")
     parser.add_argument('--seed-base',type=int,default=10001)
     parser.add_argument('--heldout-seed-base',type=int,default=20001)
     parser.add_argument('--selfplay-seed',type=int,default=30001)
@@ -63,8 +66,8 @@ def main():
     models={'initial':initial}
     for item in frozen:
         models[item['name']]=load(Path(item['path']))[0]
-    if any(model.obs_size!=policy.obs_size for model in models.values()):
-        raise ValueError('Frozen opponent observation contract differs')
+    # Every participant reads its own observation layout (v3 or v4, layout.py); the
+    # environment writes each side's row in its checkpoint's layout below.
     step=checkpoint['step']; config=checkpoint['config']
     observation_delay=config.get('observation_delay_ticks',9)
     if set(args.heldout_maps)&set(config['training_maps']):
@@ -92,6 +95,14 @@ def main():
     # Each thread owns its game and its sampling generator; the model weights
     # are immutable. Reuse each game process across tasks to avoid startup cost.
     buckets=[tasks[i::args.workers] for i in range(min(args.workers,len(tasks)))]
+    def rows_for(model,rows,layouts):
+        # A model reads both rows at its own width; a row the environment wrote in another
+        # checkpoint's layout (v3 versus v4, layout.py) is zeroed: its actions are never used.
+        batch=rows[:,:model.obs_size].copy()
+        mine=layout.layout_of(model.architecture)
+        for p in range(2):
+            if layouts[p]!=mine: batch[p]=0
+        return torch.from_numpy(batch)
     def work(bucket):
         results=[]
         with Environment(seed=90001+tasks.index(bucket[0]),limit=config['episode_ticks'],delay=observation_delay, reward=config.get('reward')) as env:
@@ -106,6 +117,12 @@ def main():
                 scripted=scripted_opponent(task['opponent'])
                 env.bot(0,0); env.bot(1,0)
                 if scripted is not None: env.bot(1-task['side'],*scripted)
+                # Each side's row in its checkpoint's observation layout (a scripted or random
+                # opponent's row stays v3).
+                env.set_layout(task['side'],layout.layout_of(policy.architecture),ablate=writer_ablation(policy))
+                env.set_layout(1-task['side'],layout.layout_of(opponent.architecture) if opponent is not None else 3,
+                               ablate=writer_ablation(opponent) if opponent is not None else -1)
+                layouts=[env.layout_of(0),env.layout_of(1)]
                 generator=torch.Generator().manual_seed(task['seed']*7+task['side'])
                 rng=np.random.default_rng(task['seed']*11+task['side'])
                 frames=[env.frame()] if task['save'] else []
@@ -113,15 +130,15 @@ def main():
                 button_counts=np.zeros(4,dtype=np.int64); hold_counts=np.zeros(layout.ACT_HOLD,dtype=np.int64)
                 latched_decisions=0; decisions=0; events=[]
                 while not env.ended:
-                    observation=torch.from_numpy(env.obs.copy())
+                    rows=env.rows.copy()
                     mask=env.mask.copy()
                     with torch.no_grad():
                         # native_policy.decide samples as the trainer does (buttons before aim when the aim head
                         # is autoregressive); the logits are those the actions were sampled from.
-                        logits,values,actions,state=decide(policy,observation,mask,state,generator)
+                        logits,values,actions,state=decide(policy,rows_for(policy,rows,layouts),mask,state,generator)
                         other=1-task['side']
                         if opponent is not None:
-                            _,_,old_actions,other_state=decide(opponent,observation,mask,other_state,generator)
+                            _,_,old_actions,other_state=decide(opponent,rows_for(opponent,rows,layouts),mask,other_state,generator)
                             actions[other]=old_actions[other]
                         elif task['opponent']=='random':
                             actions[other]=random_action(rng)
@@ -198,8 +215,11 @@ def emit_elo(args, report):
     if not pool_path:
         return
     pool = reference_pool.load_pool(pool_path)
-    rating = reference_pool.write_evaluation_rating(
-        args.run, report, pool, args.checkpoint, game=args.game)
+    if args.no_pool_record:
+        rating = reference_pool.rating_from_evaluation(report, pool, args.checkpoint, game=args.game)
+    else:
+        rating = reference_pool.write_evaluation_rating(
+            args.run, report, pool, args.checkpoint, game=args.game)
     if rating:
         print(json.dumps(dict(elo=rating['rating'], interval=rating['interval'],
                               games=rating['games'], source=rating.get('source'),

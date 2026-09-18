@@ -9,11 +9,15 @@
 #include <initializer_list>
 #include <stdexcept>
 #include "bopl_layout.h"
+#include "bopl_layout_v4.h"
 
 static_assert(!USE_BF16, "bopl_set_encoder.cu requires PRECISION_FLOAT");
 
 static constexpr int BS_E=64;
-static constexpr int BS_OBS=BOPL_OBS_SIZE;
+/* Row stride of every observation buffer: the larger of the layouts
+ * (bopl_layout_v4.h); the v3 columns this encoder reads are the first
+ * BOPL_OBS_SIZE of each row. */
+static constexpr int BS_OBS=BOPL_OBS_STRIDE;
 static constexpr int BS_PREFIX=BOPL_OBS_PREFIX;
 static constexpr int BS_SELF=BOPL_SELF_FEATURES;
 static constexpr int BS_PREVIOUS=BOPL_PREVIOUS_FEATURES;
@@ -351,7 +355,7 @@ static void bs_bind_gather(void* activations, const precision_t* rollout_obs,
 static void* bs_create(void* self) {
     auto* encoder=(Encoder*)self;
     if(encoder->in_dim!=BS_OBS)
-        throw std::runtime_error("Bopl SET expects "+std::to_string(BS_OBS)+" observation features (layout v3)");
+        throw std::runtime_error("Bopl SET expects "+std::to_string(BS_OBS)+" observation features per row (layout v3 in a BOPL_OBS_STRIDE row)");
     auto* weights=(BoplSetWeights*)calloc(1,sizeof(BoplSetWeights));
     weights->hidden=encoder->out_dim;
     return weights;

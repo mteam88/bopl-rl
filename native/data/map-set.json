@@ -1,0 +1,442 @@
+{
+"maps": [
+{
+"rl": 0,
+"level": 0,
+"scene": "Assets/Scenes/FFA/Level1.unity",
+"platforms": 6,
+"role": "training"
+},
+{
+"rl": 1,
+"level": 1,
+"scene": "Assets/Scenes/FFA/Level2.unity",
+"platforms": 4,
+"role": "training"
+},
+{
+"rl": 2,
+"level": 2,
+"scene": "Assets/Scenes/FFA/Level3.unity",
+"platforms": 9,
+"role": "training"
+},
+{
+"rl": 3,
+"level": 3,
+"scene": "Assets/Scenes/FFA/Level4.unity",
+"platforms": 8,
+"role": "held-out"
+},
+{
+"rl": 4,
+"level": 4,
+"scene": "Assets/Scenes/FFA/Level5.unity",
+"platforms": 6,
+"role": "held-out"
+},
+{
+"rl": 5,
+"level": 5,
+"scene": "Assets/Scenes/FFA/Level6.unity",
+"platforms": 10,
+"role": "training"
+},
+{
+"rl": 6,
+"level": 6,
+"scene": "Assets/Scenes/FFA/Level7.unity",
+"platforms": 15,
+"role": "training"
+},
+{
+"rl": 7,
+"level": 8,
+"scene": "Assets/Scenes/FFA/Level9.unity",
+"platforms": 12,
+"role": "training"
+},
+{
+"rl": 8,
+"level": 10,
+"scene": "Assets/Scenes/FFA/Level11.unity",
+"platforms": 11,
+"role": "held-out"
+},
+{
+"rl": 9,
+"level": 13,
+"scene": "Assets/Scenes/FFA/Level14.unity",
+"platforms": 6,
+"role": "training"
+},
+{
+"rl": 10,
+"level": 14,
+"scene": "Assets/Scenes/FFA/Level15.unity",
+"platforms": 9,
+"role": "held-out"
+},
+{
+"rl": 11,
+"level": 15,
+"scene": "Assets/Scenes/FFA/Level16.unity",
+"platforms": 10,
+"role": "training"
+},
+{
+"rl": 12,
+"level": 19,
+"scene": "Assets/Scenes/FFA/Level20.unity",
+"platforms": 11,
+"role": "training"
+},
+{
+"rl": 13,
+"level": 20,
+"scene": "Assets/Scenes/FFA/Level21.unity",
+"platforms": 7,
+"role": "training"
+},
+{
+"rl": 14,
+"level": 42,
+"scene": "Assets/Scenes/FFA/Level43.unity",
+"platforms": 9,
+"role": "training"
+},
+{
+"rl": 15,
+"level": 45,
+"scene": "Assets/Scenes/FFA/Level46.unity",
+"platforms": 4,
+"role": "training"
+},
+{
+"rl": 16,
+"level": 46,
+"scene": "Assets/Scenes/FFA/Level47.unity",
+"platforms": 10,
+"role": "training"
+},
+{
+"rl": 17,
+"level": 49,
+"scene": "Assets/Scenes/FFA/Level50.unity",
+"platforms": 10,
+"role": "held-out"
+},
+{
+"rl": 18,
+"level": 65,
+"scene": "Assets/Scenes/FFA/Level66.unity",
+"platforms": 4,
+"role": "training"
+},
+{
+"rl": 19,
+"level": 68,
+"scene": "Assets/Scenes/FFA/Level69.unity",
+"platforms": 6,
+"role": "held-out"
+},
+{
+"rl": 20,
+"level": 69,
+"scene": "Assets/Scenes/FFA/Level70.unity",
+"platforms": 5,
+"role": "training"
+},
+{
+"rl": 21,
+"level": 71,
+"scene": "Assets/Scenes/FFA/Level72.unity",
+"platforms": 9,
+"role": "training"
+},
+{
+"rl": 22,
+"level": 72,
+"scene": "Assets/Scenes/FFA/Level73.unity",
+"platforms": 7,
+"role": "training"
+},
+{
+"rl": 23,
+"level": 73,
+"scene": "Assets/Scenes/FFA/Level74.unity",
+"platforms": 7,
+"role": "held-out"
+},
+{
+"rl": 24,
+"level": 76,
+"scene": "Assets/Scenes/FFA/Level77.unity",
+"platforms": 7,
+"role": "training"
+},
+{
+"rl": 25,
+"level": 77,
+"scene": "Assets/Scenes/FFA/Level78.unity",
+"platforms": 8,
+"role": "training"
+},
+{
+"rl": 26,
+"level": 79,
+"scene": "Assets/Scenes/FFA/Level80.unity",
+"platforms": 9,
+"role": "training"
+},
+{
+"rl": 27,
+"level": 84,
+"scene": "Assets/Scenes/FFA/Level85.unity",
+"platforms": 8,
+"role": "training"
+},
+{
+"rl": 28,
+"level": 86,
+"scene": "Assets/Scenes/FFA/Level87.unity",
+"platforms": 6,
+"role": "training"
+},
+{
+"rl": 29,
+"level": 90,
+"scene": "Assets/Scenes/FFA/Level91.unity",
+"platforms": 7,
+"role": "held-out"
+},
+{
+"rl": 30,
+"level": 93,
+"scene": "Assets/Scenes/FFA/Level94.unity",
+"platforms": 7,
+"role": "training"
+},
+{
+"rl": 31,
+"level": 7,
+"scene": "Assets/Scenes/FFA/Level8.unity",
+"platforms": 11,
+"role": "training"
+},
+{
+"rl": 32,
+"level": 9,
+"scene": "Assets/Scenes/FFA/Level10.unity",
+"platforms": 10,
+"role": "training"
+},
+{
+"rl": 33,
+"level": 18,
+"scene": "Assets/Scenes/FFA/Level19.unity",
+"platforms": 15,
+"role": "training"
+},
+{
+"rl": 34,
+"level": 39,
+"scene": "Assets/Scenes/FFA/Level40.unity",
+"platforms": 9,
+"role": "training"
+},
+{
+"rl": 35,
+"level": 40,
+"scene": "Assets/Scenes/FFA/Level41.unity",
+"platforms": 8,
+"role": "training"
+},
+{
+"rl": 36,
+"level": 41,
+"scene": "Assets/Scenes/FFA/Level42.unity",
+"platforms": 9,
+"role": "held-out"
+},
+{
+"rl": 37,
+"level": 43,
+"scene": "Assets/Scenes/FFA/Level44.unity",
+"platforms": 9,
+"role": "training"
+},
+{
+"rl": 38,
+"level": 44,
+"scene": "Assets/Scenes/FFA/Level45.unity",
+"platforms": 14,
+"role": "training"
+},
+{
+"rl": 39,
+"level": 47,
+"scene": "Assets/Scenes/FFA/Level48.unity",
+"platforms": 13,
+"role": "held-out"
+},
+{
+"rl": 40,
+"level": 48,
+"scene": "Assets/Scenes/FFA/Level49.unity",
+"platforms": 9,
+"role": "training"
+},
+{
+"rl": 41,
+"level": 64,
+"scene": "Assets/Scenes/FFA/Level65.unity",
+"platforms": 7,
+"role": "training"
+},
+{
+"rl": 42,
+"level": 66,
+"scene": "Assets/Scenes/FFA/Level67.unity",
+"platforms": 4,
+"role": "held-out"
+},
+{
+"rl": 43,
+"level": 70,
+"scene": "Assets/Scenes/FFA/Level71.unity",
+"platforms": 8,
+"role": "training"
+},
+{
+"rl": 44,
+"level": 74,
+"scene": "Assets/Scenes/FFA/Level75.unity",
+"platforms": 8,
+"role": "held-out"
+},
+{
+"rl": 45,
+"level": 78,
+"scene": "Assets/Scenes/FFA/Level79.unity",
+"platforms": 7,
+"role": "training"
+},
+{
+"rl": 46,
+"level": 81,
+"scene": "Assets/Scenes/FFA/Level82.unity",
+"platforms": 8,
+"role": "training"
+},
+{
+"rl": 47,
+"level": 83,
+"scene": "Assets/Scenes/FFA/Level84.unity",
+"platforms": 8,
+"role": "training"
+},
+{
+"rl": 48,
+"level": 85,
+"scene": "Assets/Scenes/FFA/Level86.unity",
+"platforms": 7,
+"role": "training"
+},
+{
+"rl": 49,
+"level": 87,
+"scene": "Assets/Scenes/FFA/Level88.unity",
+"platforms": 6,
+"role": "training"
+},
+{
+"rl": 50,
+"level": 88,
+"scene": "Assets/Scenes/FFA/Level89.unity",
+"platforms": 7,
+"role": "training"
+},
+{
+"rl": 51,
+"level": 89,
+"scene": "Assets/Scenes/FFA/Level90.unity",
+"platforms": 9,
+"role": "training"
+},
+{
+"rl": 52,
+"level": 91,
+"scene": "Assets/Scenes/FFA/Level92.unity",
+"platforms": 9,
+"role": "training"
+},
+{
+"rl": 53,
+"level": 92,
+"scene": "Assets/Scenes/FFA/Level93.unity",
+"platforms": 8,
+"role": "held-out"
+}
+],
+"split": {
+"training": [
+0,
+1,
+2,
+5,
+6,
+7,
+9,
+11,
+12,
+13,
+14,
+15,
+16,
+18,
+20,
+21,
+22,
+24,
+25,
+26,
+27,
+28,
+30,
+31,
+32,
+33,
+34,
+35,
+37,
+38,
+40,
+41,
+43,
+45,
+46,
+47,
+48,
+49,
+50,
+51,
+52
+],
+"held_out": [
+3,
+4,
+8,
+10,
+17,
+19,
+23,
+29,
+36,
+39,
+42,
+44,
+53
+]
+}
+}

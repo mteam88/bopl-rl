@@ -11,13 +11,15 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[3]
-sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
+sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools'), str(ROOT / 'native/rl/sweep')]
 from common import atomic_json
+import counters
 from evaluation_protocol import SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents, DEFAULT_EVAL_SCRIPTED
 from native_checkpoint import write_checkpoint
 import layout
 from native_metrics import empty_counters, update
 import native_selfplay
+from reference_pool import DEFAULT_POOL
 from native_vector import NativeVector
 import reference
 import scripted_roster
@@ -28,8 +30,8 @@ def maps(value):
         result = [int(x) for x in value.split(',')]
     except ValueError as error:
         raise argparse.ArgumentTypeError('Expected comma-separated map IDs') from error
-    if not result or len(set(result)) != len(result) or any(x < 0 or x > 30 for x in result):
-        raise argparse.ArgumentTypeError('Expected distinct map IDs in 0..30')
+    if not result or len(set(result)) != len(result) or any(x < 0 or x >= 62 for x in result):
+        raise argparse.ArgumentTypeError('Expected distinct map IDs in 0..61')
     return result
 
 
@@ -104,7 +106,14 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
                  'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
-                 'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar')
+                 'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape')
+# Policy v4 (POLICY_V4_PLAN.md, puffer/bopl_v4.cu) network shape: flag name -> (env var the
+# CUDA module reads, layout.V4_DEFAULTS key). Recorded in config.json / the checkpoint sidecar.
+V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNER', 'set_inner'),
+                flat_dim=('BOPL4_FLAT_DIM', 'flat_dim'), ffn_dim=('BOPL4_FFN_DIM', 'ffn_dim'),
+                critic_dim=('BOPL4_CRITIC_DIM', 'critic_dim'), critic_privileged=('BOPL4_CRITIC_PRIVILEGED', 'critic_privileged'),
+                critic_detach=('BOPL4_CRITIC_DETACH', 'critic_detach'), mean_pool=('BOPL4_MEAN_POOL', 'mean_pool'),
+                ablate=('BOPL4_ABLATE', 'ablate'))   # writer bitmask: 1 relational, 2 terrain + rays, 4 rays16 (ablations), 8 layout v4.1 aim / line-of-sight rays
 COUNTER_KEYS = ('learner_steps', 'game_steps', 'matches', 'opponent_game_decisions', 'kills')
 # Heads the environment masks while a latch is in force (bopl_write_mask):
 # buttons and hold. Aim is live every decision.
@@ -144,7 +153,8 @@ def recorded_hypers(config):
                 scripted_share_min=config.get('scripted_share_min', 0.0),
                 scripted_share_max=config.get('scripted_share_max', 1.0),
                 n_scripted=config.get('scripted_banks', len(config.get('scripted_bots', [])) or (1 if config.get('scripted_roster') else 0)),
-                aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0))
+                aim_fourier=config.get('aim_fourier', 0), aim_ar=config.get('aim_ar', 0),
+                v4_shape=config.get('v4_shape'))
 
 
 def offset_counters(counts, base):
@@ -188,7 +198,19 @@ def arguments():
                         'at 128 workers on the f64 sim (2026-09-10): GPU sync of one buffer overlaps env stepping of the others')
     p.add_argument('--banks', type=int, choices=range(2, 9), default=4)
     p.add_argument('--seed', type=int, default=73)
-    p.add_argument('--encoder', choices=('linear', 'set'), default='linear')
+    p.add_argument('--encoder', choices=('linear', 'set', 'v4'), default='linear',
+                   help='v4: observation layout 4 and the policy v4 encoder/decoder (POLICY_V4_PLAN.md, puffer/bopl_v4.cu)')
+    for name, (_, key) in V4_SHAPE.items():
+        p.add_argument('--v4-' + name.replace('_', '-'), type=int, default=layout.V4_DEFAULTS[key], dest='v4_' + name,
+                       help=f'policy v4 shape (encoder v4 only; default {layout.V4_DEFAULTS[key]})')
+    p.add_argument('--dump-rows', type=Path, default=None, metavar='NPZ',
+                   help='after the first rollout, save the observations and the trainer\'s own decoder rows for '
+                        '64 learner rows of buffer 0 at step 0 (zero recurrent state; _C.bopl_policy_rows) next to '
+                        'the initial checkpoint and stop: the fixture puffer/check_dump.py holds the CPU evaluator '
+                        'and the torch reference to')
+    p.add_argument('--v4-row-budget', default=None, metavar='P,S,E,L',
+                   help='policy v4: packed rows per sample the set MLPs hold for players, slots, entities, slimes '
+                        '(bopl_v4.cu DEFAULT_BUDGET 6,12,20,8); rows past the budget are dropped and counted (set_overflow)')
     p.add_argument('--hidden', type=int, default=128)
     p.add_argument('--layers', type=int, default=1)
     p.add_argument('--horizon', type=int, default=128)
@@ -265,6 +287,13 @@ def arguments():
     p.add_argument('--heldout-games', type=int, default=4)
     p.add_argument('--frozen-games', type=int, default=16)
     p.add_argument('--evaluation-workers', type=int, default=2)
+    p.add_argument('--no-in-run-pool', action='store_true',
+                   help='do not rate every evaluation checkpoint against the pool in-run (reference_pool.py rate, '
+                        'nice 19, 2 workers, CPU only, non-blocking; skipped while the previous one runs)')
+    p.add_argument('--in-run-pool-games', type=int, default=160, help='games of each in-run pool rating')
+    p.add_argument('--evaluation-pool', type=Path, default=None,
+                   help='reference pool.json the eval hook rates in-run evaluations on (evaluate.py --pool; '
+                        'default reference_pool.DEFAULT_POOL, pool v7). The sweep driver passes [scoring].pool.')
     a = p.parse_args()
     for name in ('steps', 'workers', 'horizon', 'layers', 'learner_passes', 'episode_ticks',
                  'checkpoint_every', 'eval_every', 'evaluation_workers', 'entropy_half_life',
@@ -315,7 +344,7 @@ def arguments():
         p.error(f'entropy-head-scale must be {layout.NUM_ATNS} finite values in 0..100')
     a.head_scale = head_scale
     a.evaluation_maps = a.evaluation_maps or a.training_maps
-    a.heldout_maps = a.heldout_maps or [m for m in range(31) if m not in a.training_maps][:2]
+    a.heldout_maps = a.heldout_maps or [m for m in range(counters.MAPS) if m not in a.training_maps][:2]
     if not a.no_eval:
         if not a.heldout_maps or set(a.heldout_maps) & set(a.training_maps + a.evaluation_maps):
             p.error('heldout maps must be disjoint from training and evaluation maps')
@@ -333,8 +362,11 @@ def main():
     # built by `cargo build --release`); anything else keeps the .NET/Unity
     # game resolution. The Rust backend needs no spare world (resets are
     # microseconds) and hosts every world in one runtime.
+    # An explicit --game names a staged build of the sim (a map-catalogue
+    # round the live queue's library does not carry yet); the default is the
+    # tree's own build.
     if os.environ.get('BOPL_RL_BACKEND', '').lower() == 'rust':
-        game = (ROOT/'native/target/release/libbopl_sim.so').resolve()
+        game = (a.game or ROOT/'native/target/release/libbopl_sim.so').resolve()
         if not game.exists():
             raise SystemExit(f'BOPL_RL_BACKEND=rust: {game} is missing; run cargo build --release in native/')
         os.environ.setdefault('BOPL_RL_INPROC_SPARE', '0')
@@ -345,6 +377,7 @@ def main():
     # player_binary entry exists for it, the Unity-specific files do not.
     runtime = {key: hashlib.sha256(path.read_bytes()).hexdigest()
                for key, path in reference.player_sources(game).items() if path.exists()}
+    a.v4_shape = {key: getattr(a, 'v4_' + name) for name, (_, key) in V4_SHAPE.items()} if a.encoder == 'v4' else None
     resume = None
     if a.resume:
         resume = json.loads((output/'pool/state.json').read_text())
@@ -402,6 +435,20 @@ def main():
         os.environ[key] = str(value)
     (output/'game-logs').mkdir(exist_ok=True)
     os.environ['BOPL_NATIVE_ENCODER'] = a.encoder
+    # Policy v4 wants the whole GPU shared on stream priority: its training
+    # pass and its rollout chain are both several times v3's, and on the 24/24
+    # green-context split of 'auto' each is SM-bound (v4-lite, w128 b4: train
+    # 0.107 -> 0.090 s, rollout 0.120 -> 0.114 s, +5% sps when shared; 32/16
+    # and 16/32 are worse either way). v3 keeps the measured 'auto'
+    # (THROUGHPUT.md 3.B). Scheduling only: the numbers do not change.
+    os.environ.setdefault('BOPL_GPU_SPLIT', '0' if a.encoder == 'v4' else 'auto')
+    v4_shape = a.v4_shape
+    if a.encoder == 'v4':
+        for name, (variable, key) in V4_SHAPE.items():
+            os.environ[variable] = str(v4_shape[key])
+        if a.v4_row_budget:
+            os.environ['BOPL4_ROW_BUDGET'] = a.v4_row_budget
+        layout.policy_v4_weights(a.hidden, a.layers, aim_fourier=a.aim_fourier, aim_ar=a.aim_ar, **v4_shape)  # rejects unaligned shapes
     os.environ['BOPL_ENT_HEAD_SCALE'] = ','.join(repr(s) for s in a.head_scale)
     os.environ['BOPL_AIM_FOURIER'] = str(a.aim_fourier)  # read once by the trainer (bopl_aim_config)
     os.environ['BOPL_AIM_AR'] = str(a.aim_ar)
@@ -417,7 +464,8 @@ def main():
         raise RuntimeError(f'pufferlib._C resolves to {binding}, outside {ROOT}: fix the venv editable finder and rebuild')
     puffer_dir = ROOT/'native/rl/puffer'
     sources = [puffer_dir/name for name in ('bopl_puffer.h', 'binding.c', 'bopl_rollout.cu', 'bopl_set_encoder.cu',
-                                           'bopl_aim.h', 'bopl_layout.h')] + [ROOT/'native/rl/bopl_rl.c']
+                                           'bopl_aim.h', 'bopl_layout.h', 'bopl_v4.cu', 'bopl_obs_v4.h', 'bopl_layout_v4.h',
+                                           'pufferlib-bopl.patch')] + [ROOT/'native/rl/bopl_rl.c']
     stale = [path.name for path in sources if path.exists() and path.stat().st_mtime > binding.stat().st_mtime]
     if stale:
         raise RuntimeError(f'pufferlib._C ({binding}) is older than {stale}; run native/rl/puffer/build.py --device cuda')
@@ -469,9 +517,12 @@ def main():
         scripted_kinds |= SCRIPTED_KINDS[kind_name] << 4 * (scripted_first_bank + i)
     args['env'].update(players=2, banks=a.banks, historical_every=2, seed=a.seed,
                        action_repeat=4, observation_delay=9, map=a.training_maps[0],
-                       training_map_mask=sum(1 << m for m in a.training_maps),
+                       # two 31-bit halves: the binding's options travel as doubles
+                       training_map_mask=sum(1 << m for m in a.training_maps if m < 31),
+                       training_map_mask_hi=sum(1 << (m - 31) for m in a.training_maps if m >= 31),
                        max_episode_ticks=a.episode_ticks, stocks=a.stocks, reward_kill_milli=round(a.reward_kill*1000), reward_timeout_milli=round(a.reward_timeout*1000),
-                       scripted_kinds=scripted_kinds, scripted_level=SCRIPTED_LEVELS[a.scripted_level])
+                       scripted_kinds=scripted_kinds, scripted_level=SCRIPTED_LEVELS[a.scripted_level],
+                       obs_layout=layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3)
     pufferl.validate_config(args)
     target_physical = math.ceil(a.steps * 4 / 3)
     # PufferLib's pool counts native agent steps (padded rows included);
@@ -482,6 +533,9 @@ def main():
                     snapshot_interval=a.snapshot_interval, opponent_timeout=a.opponent_timeout,
                     elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed, step_unit='learner_decisions',
                     native_steps_per_learner_decision=native_per_learner, mid_match_swaps='counted in neither bank statistic')
+    obs_layout_version = layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3
+    obs_size = layout.obs_size_of(obs_layout_version)
+    architecture = {'set': layout.ARCHITECTURE, 'v4': layout.V4_ARCHITECTURE}.get(a.encoder, 'puffernet-mingru')
     config = dict(schema=1, algorithm='recurrent PPO', backend='pufferlib-native',
                   step_unit='physical_player_decisions', steps=target_physical, learner_steps=a.steps,
                   seed=a.seed, workers=a.workers, banks=a.banks, encoder=a.encoder, hidden=a.hidden, layers=a.layers,
@@ -494,9 +548,9 @@ def main():
                   reward=dict(win=1, loss=-1, timeout=a.reward_timeout, kill=a.reward_kill, death=-a.reward_kill),
                   entropy=a.entropy, entropy_floor=a.entropy_floor, entropy_head_scale=a.head_scale,
                   entropy_free_rows=a.entropy_free_rows,
-                  aim_fourier=a.aim_fourier, aim_ar=a.aim_ar,
+                  aim_fourier=a.aim_fourier, aim_ar=a.aim_ar, v4_shape=v4_shape,
                   entropy_schedule='exponential', entropy_half_life=a.entropy_half_life,
-                  layout=dict(version=3, obs_size=layout.OBS_SIZE, action_sizes=layout.ACTION_SIZES,
+                  layout=dict(version=obs_layout_version, obs_size=obs_size, action_sizes=layout.ACTION_SIZES,
                               hold_lengths=layout.HOLD_LENGTHS),
                   learning_rate_schedule='cosine' if a.anneal_lr else 'constant', learner_passes=a.learner_passes,
                   selfplay=pool_config,
@@ -515,6 +569,7 @@ def main():
     counts = offset_counters(empty_counters(), resume['counts'] if resume else None)
     trainer = None
     pending = []  # background evaluation (process, log) pairs
+    rating = []   # background in-run pool rating, at most one (process, log)
     stop = False
     def request_stop(signum, frame):
         nonlocal stop
@@ -556,10 +611,10 @@ def main():
             step = counts['game_steps']
             if step not in saved:
                 path = output/'checkpoints'/f'policy-{step:09d}.bin'
-                write_checkpoint(path, lambda name: _C.save_weights(trainer, name), obs_size=layout.OBS_SIZE,
-                                 hidden=a.hidden, num_layers=a.layers, architecture=layout.ARCHITECTURE if a.encoder == 'set' else 'puffernet-mingru',
+                write_checkpoint(path, lambda name: _C.save_weights(trainer, name), obs_size=obs_size,
+                                 hidden=a.hidden, num_layers=a.layers, architecture=architecture,
                                  game_steps=step, learner_steps=counts['learner_steps'], config=config,
-                                 aim_fourier=a.aim_fourier, aim_ar=a.aim_ar)
+                                 aim_fourier=a.aim_fourier, aim_ar=a.aim_ar, v4_shape=v4_shape)
                 saved[step] = path
             if pool is not None:
                 # Everything --resume needs besides the weights, written with
@@ -644,9 +699,46 @@ def main():
                        '--scripted-opponents', a.scripted_opponents]
             if frozen_manifest:
                 command += ['--opponents', str(frozen_manifest)]
+            if a.evaluation_pool:
+                command += ['--pool', str(a.evaluation_pool)]
+            if not a.no_in_run_pool:
+                # The run's pool dir then only ever holds in-run and band rows
+                # (never the bots-only 'evaluation' fit, which would otherwise
+                # stand in for a skipped in-run rating and mix sources in the
+                # dashboard's last-3 IQM); the Elo line is still printed.
+                command.append('--no-pool-record')
             log = (output/'evaluation.log').open('a')
             pending.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
             evaluated_steps.add(counts['game_steps'])
+            rate_in_run(checkpoint)
+        # In-run pool curve: every evaluation checkpoint also plays the
+        # reference pool through the scorer's own path (reference_pool.py rate,
+        # source 'in-run', 160 games on 2 workers at nice 19, CPU only) into
+        # <run>/reference/<pool_sha8>/, where the dashboard and readout.py read
+        # per-checkpoint points; the scorer's 480-game band rating of the last
+        # checkpoints overwrites theirs. Non-blocking; skipped while the
+        # previous one still runs.
+        def rate_in_run(checkpoint):
+            if a.no_in_run_pool:
+                return
+            if rating and rating[0][0].poll() is None:
+                print(f'in-run pool rating of {checkpoint.name} skipped: the previous one is still running', flush=True)
+                return
+            for process, log in rating:
+                log.close()
+            rating.clear()
+            command = ['nice', '-n', '19', sys.executable, str(ROOT/'native/rl/sweep/reference_pool.py'), 'rate',
+                       '--pool', str(a.evaluation_pool or DEFAULT_POOL), '--checkpoint', str(checkpoint),
+                       '--games', str(a.in_run_pool_games), '--first-pass-games', '10', '--workers', '2',
+                       '--game', str(game), '--source', 'in-run']
+            log = (output/'reference.log').open('a')
+            rating.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
+        def finish_rating():
+            for process, log in rating:
+                if process.wait():
+                    print(f'in-run pool rating exited {process.returncode} (see reference.log)', flush=True)
+                log.close()
+            rating.clear()
         next_checkpoint = (counts['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every
         next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
         previous, previous_elapsed = counts, elapsed_before
@@ -666,9 +758,25 @@ def main():
         # not counted, and every update still accounts for exactly one batch.
         overlap = _C.num_rollout_slots(trainer) > 1
         more, ready, rollout_seconds = False, None, None
+        def dump_rows():
+            # The trainer's own decoder rows on its first observations, from
+            # the weights the initial checkpoint holds (nothing has trained yet).
+            nonlocal stop
+            if a.dump_rows is None or stop:
+                return
+            if resume or 0 not in saved:
+                raise RuntimeError('--dump-rows needs a fresh run with the initial checkpoint saved')
+            import numpy as np
+            observations, rows = _C.bopl_policy_rows(trainer, 0, 64)
+            a.dump_rows.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(a.dump_rows, observations=observations, rows=rows, checkpoint=str(saved[0].resolve()),
+                     obs_size=obs_size, architecture=architecture)
+            print(f'wrote {a.dump_rows}: {rows.shape[0]} rows of {rows.shape[1]} from {saved[0].name}', flush=True)
+            stop = True
         if overlap:
             rollout_seconds = _C.rollouts(trainer)  # bootstrap: the first slot before the loop
             ready = offset_counters(vector.snapshot(), base_counts)
+            dump_rows()
         training_started = time.monotonic()
         with (output/'metrics.jsonl').open('a') as metrics, (output/'pool.jsonl').open('a') as events:
             while counts['learner_steps'] < a.steps and not stop:
@@ -683,6 +791,7 @@ def main():
                         _C.rollouts_start(trainer)
                 else:
                     rollout_seconds = _C.rollouts(trainer)
+                    dump_rows()
                 rolled = time.monotonic()
                 # Configure the native loss before training. Native train_impl
                 # copies this scalar into a device buffer each update, so CUDA
@@ -762,6 +871,9 @@ def main():
                 # over buffers): eval_gpu = inference graph + action copy-back,
                 # eval_env = OpenMP game stepping, rollout = whole barrier.
                 record['native_perf'] = {key: native['perf'].get(key) for key in ('rollout', 'eval_gpu', 'eval_env')}
+                if a.encoder == 'v4':
+                    # Rows the packed set buffers dropped in the last training forward (players, slots, entities, slimes).
+                    record['set_overflow'] = list(_C.bopl_v4_overflow())
                 metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
                 for event in native_selfplay.events(before_pool, after_pool, ledger, counts['learner_steps']):
                     events.write(json.dumps(event, allow_nan=False)+'\n')
@@ -787,9 +899,10 @@ def main():
             if not a.no_eval and not stop and counts['game_steps'] not in evaluated_steps:
                 evaluate(final)
             finish_evaluation()
+            finish_rating()
         status('stopped' if stop else 'complete', checkpoint=str(final))
     except BaseException as error:
-        for process, log in pending:
+        for process, log in pending + rating:
             process.terminate()
             log.close()
         status('failed', failure=f'{type(error).__name__}: {error}')

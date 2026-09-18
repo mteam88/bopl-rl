@@ -7,8 +7,8 @@ import re
 
 def map_ids(value):
     maps=[int(item) for item in value.split(',')]
-    if not maps or len(set(maps))!=len(maps) or any(m<0 or m>30 for m in maps):
-        raise ValueError('Distinct map IDs between 0 and 30 required')
+    if not maps or len(set(maps))!=len(maps) or any(m<0 or m>61 for m in maps):
+        raise ValueError('Distinct map IDs between 0 and 61 required')
     return maps
 
 

@@ -30,15 +30,13 @@ class State(C.Structure):
 
 LIB = C.CDLL(os.environ.get('BOPL_RESEARCH_LIBRARY') or str(ROOT/'native/artifacts/rl/libbopl_research.so'))
 LIB.research_obs_size.restype = C.c_int
-HAS_LAYOUT_V4 = all(hasattr(LIB, name) for name in
-                    ('research_obs_stride', 'research_obs_size_of', 'research_layout_v4',
-                     'research_set_layout', 'research_get_layout'))
-if HAS_LAYOUT_V4:
-    LIB.research_obs_stride.restype = C.c_int
-    LIB.research_obs_size_of.argtypes = [C.c_int]; LIB.research_obs_size_of.restype = C.c_int
-    LIB.research_layout_v4.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout_v4.restype = C.c_int
-    LIB.research_set_layout.argtypes = [C.c_void_p,C.c_int,C.c_int]; LIB.research_set_layout.restype = C.c_int
-    LIB.research_get_layout.argtypes = [C.c_void_p,C.c_int]; LIB.research_get_layout.restype = C.c_int
+LIB.research_obs_stride.restype = C.c_int
+LIB.research_obs_size_of.argtypes = [C.c_int]; LIB.research_obs_size_of.restype = C.c_int
+LIB.research_layout_v4.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout_v4.restype = C.c_int
+LIB.research_set_layout.argtypes = [C.c_void_p,C.c_int,C.c_int]; LIB.research_set_layout.restype = C.c_int
+LIB.research_get_layout.argtypes = [C.c_void_p,C.c_int]; LIB.research_get_layout.restype = C.c_int
+LIB.research_set_ablation.argtypes = [C.c_void_p,C.c_int,C.c_int]; LIB.research_set_ablation.restype = C.c_int
+LIB.research_get_ablation.argtypes = [C.c_void_p,C.c_int]; LIB.research_get_ablation.restype = C.c_int
 LIB.research_telemetry_size.restype = C.c_int
 LIB.research_num_atns.restype = C.c_int
 LIB.research_layout.argtypes = [C.POINTER(C.c_int),C.c_int]; LIB.research_layout.restype = C.c_int
@@ -50,11 +48,10 @@ _fields = (C.c_int*len(layout.LAYOUT_FIELDS))()
 if (LIB.research_layout(_fields,len(_fields))!=len(layout.LAYOUT_FIELDS) or tuple(_fields)!=layout.LAYOUT_FIELDS
         or LIB.research_num_atns()!=NUM_ATNS or LIB.research_obs_size()!=layout.OBS_SIZE):
     raise RuntimeError(f'Research library layout {tuple(_fields)} differs from research/layout.py {layout.LAYOUT_FIELDS}; rebuild it')
-if HAS_LAYOUT_V4:
-    _fields4 = (C.c_int*len(layout.V4_LAYOUT_FIELDS))()
-    if (LIB.research_layout_v4(_fields4,len(_fields4))!=len(layout.V4_LAYOUT_FIELDS) or tuple(_fields4)!=layout.V4_LAYOUT_FIELDS
-            or LIB.research_obs_stride()!=layout.OBS_STRIDE):
-        raise RuntimeError(f'Research library layout v4 {tuple(_fields4)} differs from research/layout.py {layout.V4_LAYOUT_FIELDS}; rebuild it')
+_fields4 = (C.c_int*len(layout.V4_LAYOUT_FIELDS))()
+if (LIB.research_layout_v4(_fields4,len(_fields4))!=len(layout.V4_LAYOUT_FIELDS) or tuple(_fields4)!=layout.V4_LAYOUT_FIELDS
+        or LIB.research_obs_stride()!=layout.OBS_STRIDE):
+    raise RuntimeError(f'Research library layout v4 {tuple(_fields4)} differs from research/layout.py {layout.V4_LAYOUT_FIELDS}; rebuild it')
 LIB.research_open.argtypes = [C.c_uint32,C.c_uint32,C.c_uint32,C.c_int]
 LIB.research_open.restype = C.c_void_p
 LIB.research_reset.argtypes = [C.c_void_p,C.c_uint32,C.c_uint32]
@@ -73,8 +70,8 @@ LIB.research_forks.argtypes = [C.c_void_p]; LIB.research_forks.restype = C.c_int
 LIB.research_mask.argtypes = [C.c_void_p]; LIB.research_mask.restype = C.POINTER(C.c_ubyte)
 LIB.research_mask_size.restype = C.c_int
 if LIB.research_mask_size()!=layout.LOGITS: raise RuntimeError('Research library action mask width differs from layout.LOGITS')
-OBS_SIZE = LIB.research_obs_size()
-OBS_STRIDE = LIB.research_obs_stride() if HAS_LAYOUT_V4 else OBS_SIZE
+OBS_SIZE = LIB.research_obs_size()      # the layout-v3 row width (the default layout)
+OBS_STRIDE = LIB.research_obs_stride()  # row memory: fits layout v4 too
 
 def selected_game():
     """The player the C environment will actually launch (explicit > BOPL_RL_GAME > IL2CPP default)."""
@@ -130,6 +127,11 @@ class Environment:
         if setter is not None and setter(self.handle, kill, timeout):
             self.close()
             raise ValueError('Evaluation reward values are outside native float range')
+        # Observation rows of both players in one strided buffer. `obs` is the
+        # (2, width) view over the widest layout in use (v3's 3690 columns by
+        # default, so v3 callers see exactly the rows they always did); a v4
+        # player's row is 4498 wide (set_layout). Slice obs[:, :policy.obs_size]
+        # to feed a checkpoint, or take obs_row(player).
         self._rows=np.ctypeslib.as_array(LIB.research_obs(self.handle),shape=(2*OBS_STRIDE,)).reshape(2,OBS_STRIDE)
         self._layouts=[3,3]
         self._view()
@@ -143,16 +145,28 @@ class Environment:
     def _view(self):
         width=max(layout.obs_size_of(v) for v in self._layouts)
         self.obs=self._rows[:,:width]
-    def set_layout(self,player,version):
-        if not HAS_LAYOUT_V4:
-            if int(version) != 3: raise RuntimeError('Research library does not support observation layout v4')
-            return
+    def set_layout(self,player,version,ablate=None):
+        """Encode player's row in observation layout `version` (3 or 4, layout.py) and, for
+        v4, with writer ablation bits `ablate` (the checkpoint's v4_shape.ablate,
+        native_policy.writer_ablation; None keeps the player's current bits, which start
+        at the process default BOPL4_ABLATE). Call
+        after reset, like bot(); persists across resets. Selected per checkpoint via
+        layout.layout_of(architecture) so v3 and v4 policies can share a game."""
+        if ablate is not None and LIB.research_set_ablation(self.handle,player,int(ablate)): raise ValueError('Bad writer ablation selection')
         if LIB.research_set_layout(self.handle,player,int(version)): raise ValueError('Bad observation layout selection')
         self._layouts[player]=int(version); self._view()
-    def layout_of(self,player): return LIB.research_get_layout(self.handle,player) if HAS_LAYOUT_V4 else 3
+    def ablation_of(self,player):
+        """Player's v4 writer bits; -1 = the process default (BOPL4_ABLATE)."""
+        return LIB.research_get_ablation(self.handle,player)
+    def layout_of(self,player): return LIB.research_get_layout(self.handle,player)
     @property
-    def rows(self): return self._rows
-    def obs_row(self,player): return self._rows[player,:layout.obs_size_of(self._layouts[player])]
+    def rows(self):
+        """Both players' observation rows at the padded stride (players x OBS_STRIDE), each in
+        its own layout; slice row p to layout.obs_size_of(self.layout_of(p))."""
+        return self._rows
+    def obs_row(self,player):
+        """Player's observation row in its own layout's width."""
+        return self._rows[player,:layout.obs_size_of(self._layouts[player])]
     def check(self):
         if LIB.research_check(self.handle): raise RuntimeError('Game error during evaluation')
     @property

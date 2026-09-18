@@ -32,9 +32,14 @@ class Model:
         self.policy,self.meta=load(self.path,**(dict(library=library) if library else {}))
         self.sha256=hashlib.sha256(self.path.read_bytes()).hexdigest()
         self.layout=layout.layout_of(self.meta.get('architecture'))
+        from native_policy import writer_ablation
+        self.ablate=writer_ablation(self.policy)
 
     def attach(self,env,side):
-        env.set_layout(side,self.layout)
+        # The environment writes this player's row in the checkpoint's observation layout
+        # (v3 or v4, layout.py) and v4 writer family (v4_shape.ablate), so v3 pool members
+        # and v4 candidates of different families share a game.
+        env.set_layout(side,self.layout,ablate=self.ablate)
 
     def start(self,task,side,rng):
         import torch
@@ -46,6 +51,8 @@ class Model:
             return rng.choice(len(part),p=weights)
         def act(observation,mask):
             nonlocal state
+            # observation: both rows at the padded stride; only this side's row is in this
+            # checkpoint's layout (the other row is zero here, its state is never read).
             batch=np.zeros((2,policy.obs_size),dtype=np.float32)
             batch[side]=observation[side,:policy.obs_size]
             with torch.no_grad():
@@ -264,7 +271,7 @@ def pair_tasks(a,b,maps,games_per_map,seed_base):
     return tasks
 
 
-def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None):
+def play_games(by_name,tasks,limit,workers,seed_base,delay=9):
     """Play tasks (dicts a, b, map, seed, side) between participants keyed by name.
 
     Each participant provides start(task, side, rng) -> act(observation, mask)
@@ -293,11 +300,8 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None):
                 timeout=bool(final['flags']&2)
                 a_won=bool(final['players'][task['side']]['flags']&2) and not timeout
                 b_won=bool(final['players'][1-task['side']]['flags']&2) and not timeout
-                result=dict(task,ticks=final['t'],
-                            outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b'))
-                if on_result:
-                    on_result(result)
-                results.append(result)
+                results.append(dict(task,ticks=final['t'],
+                                    outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b')))
         return results
     if not tasks: return []
     buckets=[tasks[i::workers] for i in range(min(workers,len(tasks)))]

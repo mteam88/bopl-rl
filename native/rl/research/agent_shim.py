@@ -37,6 +37,7 @@ def library():
     lib.bopl_agent_logits.argtypes = [C.c_void_p]; lib.bopl_agent_logits.restype = C.POINTER(C.c_float)
     lib.bopl_agent_decision.argtypes = [C.c_void_p, C.POINTER(C.c_int)]
     lib.bopl_agent_obs_size.restype = C.c_int; lib.bopl_agent_logits_size.restype = C.c_int
+    lib.bopl_agent_observation_size.argtypes = [C.c_void_p]; lib.bopl_agent_observation_size.restype = C.c_int
     if lib.bopl_agent_abi_version() != 1: raise RuntimeError('agent shim ABI')
     if lib.bopl_agent_obs_size() != layout.OBS_SIZE or lib.bopl_agent_logits_size() != layout.LOGITS:
         raise RuntimeError('agent shim layout differs from research/layout.py; rebuild it')
@@ -61,7 +62,8 @@ class Agent:
         self.handle = lib.bopl_agent_open(os.fsencode(str(spec)), players, player, error, len(error))
         if not self.handle: raise ValueError(error.value.decode())
         self.lib = lib; self.players = players; self.player = player
-        self.observation = np.ctypeslib.as_array(lib.bopl_agent_observation(self.handle), shape=(layout.OBS_SIZE,))
+        # The row is in the checkpoint's layout (v3 or v4, layout.py); the shim reports its width.
+        self.observation = np.ctypeslib.as_array(lib.bopl_agent_observation(self.handle), shape=(lib.bopl_agent_observation_size(self.handle),))
         self.mask = np.ctypeslib.as_array(lib.bopl_agent_mask(self.handle), shape=(layout.LOGITS,))
         logits = lib.bopl_agent_logits(self.handle)
         self.logits = np.ctypeslib.as_array(logits, shape=(layout.DECODER,)) if logits else None
