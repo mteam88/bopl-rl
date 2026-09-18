@@ -211,12 +211,15 @@ int main(int argc, char **argv) {
                 if (entity->layer == 16) lethal_nodes++;
             }
             if (entity->kind == 1 && entity->layer == 18 && entity->owner == 1) {
-                if (entity->flags == 10) saw_loading_line = 1;
-                if (entity->flags == 11) {
+                if (entity->flags == (10 | BOPL_ENTITY_EXPLOSIVE))
+                    saw_loading_line = 1;
+                if (entity->flags == (11 | BOPL_ENTITY_EXPLOSIVE)) {
                     if (saw_flicker) saw_reenable = 1;
                     saw_active_line = 1;
                 }
-                if (saw_active_line && entity->flags == 9) saw_flicker = 1;
+                if (saw_active_line &&
+                    entity->flags == (9 | BOPL_ENTITY_EXPLOSIVE))
+                    saw_flicker = 1;
             }
             if (entity->kind == 1 && entity->layer == 18 &&
                 entity->owner == 0 && entity->flags == 12)
