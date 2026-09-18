@@ -468,3 +468,18 @@ toggle, removed): 244.8k vs 244.0k (+0.3%), 245.1k vs 243.6k (+0.65%),
 train 0.0993 vs 0.0997. Every cand below every inc in both, but ~0.4 ms of
 the 10.8: the kernels were already close to the bandwidth. Kept as the
 simpler code path forward; not a lever.
+
+### Train pass: pool / unpool with 4 columns per thread, keep (marginal)
+
+`pool_rows` / `unpool_rows` (8.9 ms per update) ran one thread per column
+with 2-byte bf16 loads (64 bytes per warp instruction). `pool_rows4` /
+`unpool_rows4` give each thread 4 columns (8-byte loads, float4 / int4
+stores for the joined row and the winner), a warp per sample at D = 128, 4
+samples per 128-thread block; the per-column scan over the rows is the
+same sequence, so max / sum / winner are bit-identical (the scalar
+kernels stay for D not a multiple of 4). `check_v4 --build` pass_all,
+`check_dump --only v4` ok. A/B 2x2 twice (cand = scalar behind a
+temporary toggle, removed): 246.1k vs 245.1k (+0.4%), 245.9k vs 244.8k
+(+0.44%), train 0.0989 vs 0.0993. Like the LN: these passes were already
+near the bandwidth; the remaining cost is the traffic itself (the winner
+int32 per (sample, column), unpool's re-read of h2 for the ReLU mask).
