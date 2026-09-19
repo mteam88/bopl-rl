@@ -381,7 +381,14 @@ def main():
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     library_path = args.output / "check_v4.so"
-    if args.build or args.build_only:
+    # The harness is rebuilt when any source it compiles in is newer than it:
+    # a stale harness passed pass_all for two commits whose kernels the
+    # trainer build never launched (notes-v4.md, the fused set kernels).
+    sources = [HERE / name for name in ("check_v4.cu", "bopl_v4.cu", "bopl_layout_v4.h", "bopl_layout.h", "bopl_aim.h")]
+    stale = library_path.exists() and any(p.exists() and p.stat().st_mtime > library_path.stat().st_mtime for p in sources)
+    if args.build or args.build_only or stale or not library_path.exists():
+        if stale and not (args.build or args.build_only):
+            print("check_v4.so is older than its sources; rebuilding", file=sys.stderr)
         build(library_path, args.puffer, args.cuda_host_compiler)
     if args.build_only:
         print(library_path)

@@ -880,6 +880,15 @@ static int enc_prepass(void* activations, PrecisionTensor input, cudaStream_t st
     return key + 1;
 }
 
+/* Every custom launch in the encoder is checked once per pass: a kernel
+ * whose launch fails (invalid device function, resources) otherwise skips
+ * its work silently and the pass keeps going on stale activations (the
+ * fused set kernels of 698cd3d7 ran zero times; notes-v4.md). One host call
+ * per forward / backward; never under the trainer's graph capture failing. */
+static void launch_check(const char* what) {
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) throw std::runtime_error(std::string("Bopl v4 ") + what + ": " + cudaGetErrorString(e));
+}
 static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTensor input, cudaStream_t stream) {
     auto* w = (EncWeights*)weights; auto* a = (EncActs*)activations;
     int B = a->B, H = w->hidden, D = w->D, I = w->I, FD = w->flat_dim, LDJ = FD + SETS * 2 * D;
@@ -937,6 +946,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     puf_mm(&a->joined, &w->fusion, &a->fused, stream);
     ln_fwd(a->fused.data, H, nullptr, 0, B, nullptr, a->out.data, nullptr, a->ln_mean.data, a->ln_rstd.data, stream);
     prof_mark("enc.fusion_ln", stream);
+    launch_check("encoder forward launch");
     return a->out;
 }
 
@@ -983,6 +993,7 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
             prof_mark("bwd.enc.embedding", stream);
         }
     }
+    launch_check("encoder backward launch");
 }
 
 static void enc_init(void* weights, ulong* seed, cudaStream_t stream) {

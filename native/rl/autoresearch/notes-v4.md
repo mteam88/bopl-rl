@@ -1634,3 +1634,43 @@ to two turns of work for an uncertain gain; parked.
 Lesson recorded in program terms: every kernel launch on a kept path must
 be error-checked, and check_dump (which exercises the trainer's own build)
 runs after every train-side change, not only check_v4.
+
+### Rollout chain: programmatic dependent launch, KEEP +2.3% (71c58d5a)
+
+Candidate (1) was already in place (the per-step chain is a CUDA graph per
+horizon step and buffer). Candidate (2), PDL: every chain kernel (br4_sets,
+br_gemm x7, br4_rows x4, br_gate, br_sample; bopl4_unpack_rows releases
+but is launched after a memcpy) is launched with
+cudaLaunchAttributeProgrammaticStreamSerialization (cudaLaunchKernelEx,
+captured into the graph as programmatic edges) and executes
+griddepcontrol.wait before its first read; every PDL-launched kernel waits
+unconditionally so completion stays transitive. check_dump ok with the
+incumbent's exact numbers (the values do not change).
+
+Two release placements, A/B vs 3f921308 at w128 b4 p2, 3x3 each:
+  entry release (3819ddc8): eval_gpu 265 -> 215 us/step (-50 us, -19%),
+    rollout_s 0.0529 -> 0.0460, but train_s 0.0404 -> 0.0550 (+36%):
+    the released dependents sit in the wait holding SM slots (a br_gemm
+    block holds 32 KB of shared) for the whole predecessor, and the
+    overlapped training pass loses them. 439.8k vs 457.8k, -3.9%.
+  late release (71c58d5a): br_gemm releases after its last K loop, br4_sets
+    before its pool reduction, the short kernels at entry: eval_gpu 264 ->
+    249 us (-16 us), rollout_s 0.0528 -> 0.0517, train_s 0.0400 -> 0.0442
+    (+10%: partly a denser rollout stream against the overlapped pass,
+    partly the short holds). 468.8k vs 458.3k (+2.3%, all three above).
+Kept as the code. Incumbent 468.8k.
+
+The 50 us the entry form takes off the chain is the real size of the
+launch-latency lever; what caps it is the train-side cost of parked
+dependents. Two follow-ups if it is worth more: release later still in
+br4_sets (it is the longest primary; its dependent br_gemm flat holds
+7 x 32 KB), and weight prefetch before the wait in br_gemm (the B operand
+does not depend on the predecessor), which recovers latency without
+parking anything.
+
+Also this turn, closing the gap that let 698cd3d7 pass: check_v4.py
+rebuilds its harness when any source it compiles is newer than
+check_v4.so (the pass_all at 698cd3d7 / db66854f came from a harness
+built at eae698f8, whose kernels did launch), and the trainer's encoder
+forward / backward end with a cudaGetLastError check that throws, so a
+custom launch that fails can no longer skip its work silently.
