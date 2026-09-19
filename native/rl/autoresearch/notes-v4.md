@@ -800,3 +800,39 @@ shape's 250.7k), train 0.072 (from 0.097), rollout 0.0767 -> rollout-bound
 already; GPU forward 297 us per step (contended), env 0.26 ms; 5.9 GB.
 Gate lite-aim-3d4bd503 launched 02:58 UTC (reference v4-aim/000, same
 layout; readout also against v4-lite/000).
+
+### Gate lite-aim-3d4bd503 (v4-lite-aim, 4 passes): PASS
+
+Run 160M in 579 s of trainer time (299k learner_sps in the sanity recipe
+with evaluations; the bench says 317k). Against v4-aim/000 (same layout):
+80M refit 490 [390, 588] vs 379; 160M 574 [443, 770] vs 646, floor 571
+(pass, at the floor); band 496.5 [455, 542] vs 523.5, floor 448.5 (pass).
+Metrics at 160M: EV 0.371 vs 0.299, entropy 4.37 vs 3.97, kl 0.0010 vs
+0.0034 (all flagged as drift by the 10% rule: the smaller model moves less
+per update). Against v4-lite/000 (same shape, old layout): 80M 490 vs 421,
+160M 574 vs 574 (identical), band 496.5 vs 456.4 [412, 499]. So lite-aim
+sits on the lite reference's curve and within the spread of the full
+shape's. Reference for the lite shape from here: the shape comparison is
+v4-lite/000; the wall-clock and layout comparison is v4-aim/000 (the
+production trainer's recipe, 160M in 955 s), which is what the passes
+table reads against. Both are the same recipe otherwise (config diff:
+v4_shape only).
+
+### Recipe: learner passes on lite-aim (bench, 3d4bd503 build)
+
+  passes  learner_sps   sps     rollout_s  train_s  GPU fwd us  env ms/step
+  4       316.7k        422k    0.0767     0.0721   297         0.260
+  2       355.6k        474k    0.0683     0.0372   216         0.276
+  1       376.0k        501k    0.0646     0.0197   177         0.287
+
+Rollout-bound at every pass count: the buffer step is 0.50-0.60 ms of
+which the GPU forward is 0.18-0.30 (isolated ~0.09: still contended by
+the train stream and the other buffers) and the env CPU 0.26-0.29. Passes
+1 -> 4 costs only 16% of throughput now; the rollout is the wall.
+
+Equal-wall-clock gate (WALL_SECONDS=955, v4-aim/000's trainer time to
+160M): each candidate runs STEPS past 955 s at its own rate, the
+evaluation nearest 955 s is read out (refit Elo + band rating) next to the
+reference's 160M numbers (646 refit / 523.5 band), and the 160M readings
+give the sample-efficiency cost at equal steps. Launched:
+lite-aim-p2-3d4bd503 (STEPS=360M).
