@@ -211,3 +211,105 @@ under 3% of the row); the privileged block (0.1 us).
   is still preempted by a co-tenant's threads at load 6-7 on 12 CPUs;
   the sim swung 386k-580k ticks/s between runs minutes apart. Every JSON
   row carries `load1`; compare rows only at similar load, or interleave.
+
+## 6. Campaign 3 wrap (2026-09-18 20:00 -> 2026-09-19, throughput-v4 Rift) — DRAFT
+
+Metric: `learner_sps` on `bench_shape.sh` (`BOPL_BENCH_ENCODER=v4`, 300
+updates, 3x3 A/Bs, load1 on every row); learning gate `sanity_v4.sh`
+against `sweeps/v4-aim/000`, equal wall-clock (band rating of the
+checkpoint nearest 955 s, 240 games) for recipe changes. Full record:
+`autoresearch/notes-v4.md` and `results.tsv`.
+
+### What landed
+
+    stage                                            learner_sps   step
+    v4-aim baseline, post-merge, 12-thread box           166.7k
+    exact kernels, wave 1 (br4_sets bf16 registers,
+      one-hot embedding in the set GEMM, active-row
+      graphs, Lt epilogues, L11 critic on learner rows,
+      Muon D!=C + side streams, LN float4, pool4,
+      br_gemm float4 A, relu_grad x4)                    248.4k   +49%
+    row cache (packed learner rows once per update)      250.7k
+    shape: v4-lite-aim (set inner 64, FFN off, critic
+      384; Matthew)                                       316.7k   +26%  gate ok
+    writer: march refill lanes + axis-aligned walls
+      (exact), then layout bits 10 = aim ray + LOS only
+      (learning-gated: 475.7 vs 523.5 band at 160M, ok)   338.3k   +7%
+    recipe: learner passes 4 -> 2 (equal-wall winner)    448.3k   +33%  gate ok
+    packed obs transport (6 KB slots, unpack into the
+      rollout tensor), PDL on the chain, br_gemm B
+      prefetch                                            471.7k   +5%
+    recipe: w256 b4, learner_passes 1 x minibatch_div 2
+      (replay 1.0), LR x sqrt2 (b4; seeds 73/74 band
+      612.0 / 579.2 at 955 s vs p2 572.8, ref 523.5)      626k     +33%  gate ok x2
+    env pool: 11 stepping threads (CPUs - 1)             645.2k   +3%
+                                                        ------
+                                                        x3.9 over the baseline; the same policy family, lite shape
+
+Discarded with a number (all reverted, none left behind a toggle): bf16
+GEMM operands (+3.7%, -27 Elo: fail), fast transcendentals + row budget
+default (0), fused dh1 (-0.5%), Muon grouped prefetch (-1.6%), br_sample
+fused into the decoder (-2.1%), br4_sets header counts (-0.3%) /
+occupancy 2 (-0.3%) / staged smem (+0.3%, forward unchanged), fused
+set-MLP forward+backward (-4.1% once its launch failure was caught; -1.5%
+staged walk; -0.8% forward alone), flat-layout 948 -> 648 (sized +2%,
+not built: Matthew), set D 128 -> 64 (Matthew: keep), buffers 2/8 at
+w128 and 8 at w256 (-9..+0.5%), w512 (OOM at 12 GB), thread placement
+(6 pinned / 6 / trainer core / trainer core + home mask: -4..-22%),
+SM split 32/16 and 36/12 (-14% / -23%), writer to GPU (sized: +0..5%
+for 8-10 turns, not built).
+
+### The measured ceiling at this geometry: ~700k
+
+Two floors, both measured, agree:
+
+- Writer-free bound: with the observation writer skipped entirely
+  (throwaway build) c_step 20.6 -> 13.7 us and learner_sps 645k -> 688k
+  only; the buffer step becomes GPU-chain-bound (eval_gpu 0.336 vs
+  eval_env 0.206 ms per step; forward 272 -> 308 us under the denser
+  train overlap).
+- Contention-free bound: with the rollout streams on 36 SMs the forward
+  drops to 239 us and the rollout to 71.3 ms per update (from 75.3):
+  ~4 ms is all the train stream costs the rollout. The train pass itself
+  is 24.8 ms alone, 57-60 under the rollout: it fits three times over.
+
+Per buffer step (128 rows): env CPU 0.26 ms + chain 0.29 ms, serial
+within the buffer, four buffers co-running imperfectly: ~0.55 ms floor
+x 128 steps = 70 ms per update = ~700k learner_sps at 49152 rows per
+update. The chain's 0.29 is 170 us of isolated forward (19 launches,
+latency-bound, PDL already; 90 us at 64 rows) plus launch tail and
+HtoD; the env's 0.26 is 64 envs x 21 us of c_step over the pool's
+share of 11 threads, of which the sim is 10 us (4 ticks at 1 us
+isolated, x2.3 SMT) and the aim-only writer 8 (4.1 isolated).
+
+### What 1M would take (this reading)
+
+Per update at 1M: 49 ms for 49152 rows, i.e. a 0.38 ms buffer step at
+128 rows, or the same 0.55 ms step at 180 rows. Neither half of the
+step gets there alone:
+
+- Hardware: the box is 6 cores / 12 threads; the env CPU is 626 ms of
+  c_step per update over 11 threads. A 16-core part at the same per-core
+  speed takes the env half to ~0.13 ms per buffer step and the wall to
+  the chain's 0.29 (+ the env's remainder): ~800-850k. More SMs do not
+  help the chain (latency-bound) but a newer GPU with lower launch
+  latency and faster L2 shortens the 170 us; 16 cores + that is the
+  hardware road to 1M with the present architecture.
+- Architecture, same box: (i) the chain per row: rows per chain up
+  (w512 needs the training buffers to shrink: bf16 rollout storage or
+  fewer frozen banks resident; 12 GB is the cap) or the 19-launch chain
+  collapsed into 3-4 persistent-kernel stages (a megakernel: sets +
+  flat GEMM + GRU + heads in one launch per step, ~40-60 us instead of
+  170; a rewrite of bopl_rollout_v4.cu's chain, not exact-gated by
+  construction but bit-identical in principle); (ii) the CPU per
+  decision: the writer to the GPU (+0..5% alone, worth it only after
+  (i)), the sim's per-tick cost (platforms 22%, entity export 17%:
+  exact housekeeping worth ~3%); (iii) both together: with (i) at 60 us
+  the step is env-bound again at ~0.26 -> 128 x 0.3 = 38 ms -> ~1.2M
+  before the writer even moves. So the architecture road is the
+  megakernel chain first (the only lever sized above 20%), then the
+  writer.
+- Not the road: recipe (replay 1.0 is the PufferLib default already;
+  further passes/batch changes trade Elo), SM partition, thread
+  placement, more buffers, kernel-level work on the chain's individual
+  kernels (each read ~0 against the contention and launch floor).
