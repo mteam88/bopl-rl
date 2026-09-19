@@ -82,7 +82,7 @@ run)
   systemd-run --user --scope --collect --quiet -p MemoryMax=10G --unit "bopl-sanity-$(echo "$LABEL" | tr -c 'a-zA-Z0-9\n' '-')-$$" -- \
     nice -n 5 "$PY" native/rl/puffer/train.py --output "$DIR" \
     --aim-fourier 4 --banks 4 --buffers 4 --checkpoint-every 20000000 --cudagraphs 1 \
-    --encoder v4 --hidden 256 --layers 1 --v4-ablate 8 \
+    --encoder v4 --hidden 256 --layers 1 --v4-ablate 10 \
     --entropy 0.01532588085540654 --entropy-floor 0.001 --entropy-free-rows 1 --entropy-half-life 718611646 \
     --entropy-head-scale 0.028821467398601395,1.5,1 --episode-ticks 7200 \
     --eval-every "$EVAL_EVERY" --evaluation-games 8 --evaluation-maps 0,1,2 --evaluation-pool "$POOL" --evaluation-workers 4 \

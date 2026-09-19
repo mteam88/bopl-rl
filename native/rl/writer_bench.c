@@ -7,8 +7,8 @@
  * Phase 2 replays the recorded states through the writers, interleaving the
  * variants per repeat so a drifting host load hits them alike:
  *   v3            layout 3 (bopl_encode_v3_row)
- *   v4-aim        layout 4, writer bits 8 (production: fan + terrain + aim/LOS casts)
- *   v4-aim-only   bits 10 (aim/LOS casts, no fan, no terrain block)
+ *   v4-aim        layout 4, writer bits 8 (fan + terrain + aim/LOS casts; production until 2026-09-19)
+ *   v4-aim-only   bits 10 (aim/LOS casts, no fan, no terrain block: production, v4-lite-aim.toml)
  *   v4-no-rays    bits 2  (no geometry channel at all)
  *   v4-priv       bopl4_privileged, the critic block written once more per step from the undelayed state
  * so geometry = v4-aim - v4-aim-only, casts = v4-aim-only - v4-no-rays, and

@@ -977,3 +977,16 @@ rollout side is now 0.48 ms per buffer step of which the GPU forward is
 would show in full; the pass count is Matthew's. Gate launched:
 lite-aim-only-b4caf432 (seed 73, 160M), read against v4-aim/000 and the
 two lite-aim p4 runs (496.5 / 472.7 band at 160M).
+
+#### lite-aim-only-b4caf432: pass on the band; bits 10 is the layout
+
+160M (489 s): band 475.7 [436, 516] vs floor 448.5 (reference 523.5; the
+two lite-aim p4 runs 496.5 and 472.7, so aim-only sits inside their
+run-to-run pair). Refit Elo 466 [353, 617] misses the 571 refit floor,
+as the p4 rerun did at 544 (the bots-only fit; the band is the headline,
+program-v4.md). 80M refit 574 vs 379. Drift flags EV 0.43 vs 0.30 and KL
+0.33x: the same statistics every lite run shows. In-run 336.5k
+learner_sps against 299k for lite-aim p4 in the same recipe. Kept: writer
+bits 10 is the production layout (v4-lite-aim.toml v4_ablate = 10,
+sanity_v4.sh and bench_shape.sh defaults). Per row 2.0 us (from 7.2),
+c_step 17.3 us (from 30.6).

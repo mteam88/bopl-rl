@@ -55,7 +55,7 @@ PUF=$(ls -d "$R"/native/artifacts/rl/dependencies/PufferLib-* | sort | tail -1)
 ulimit -c 0
 case "$ENCODER" in
   set) ENCODER_ARGS=(--encoder set --hidden "${BOPL_BENCH_HIDDEN:-128}") ;;
-  v4)  ENCODER_ARGS=(--encoder v4 --hidden "${BOPL_BENCH_HIDDEN:-256}" --v4-ablate "${BOPL_BENCH_V4_ABLATE:-8}" --aim-fourier 4) ;;
+  v4)  ENCODER_ARGS=(--encoder v4 --hidden "${BOPL_BENCH_HIDDEN:-256}" --v4-ablate "${BOPL_BENCH_V4_ABLATE:-10}" --aim-fourier 4) ;;
   *) echo "BOPL_BENCH_ENCODER must be set or v4" >&2; exit 2 ;;
 esac
 PROF_ENV=()

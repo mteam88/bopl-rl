@@ -1,7 +1,11 @@
 # Policy v4 production shape (Matthew, 2026-09-18 22:51): v4-lite-aim
 #   the v4-lite shape (set inner 64, no FFN, critic 384, still privileged) on
 #   the v4.1 aim layout (writer bit 8: aim ray and line of sight to the
-#   opponent in the two duplicate down-ray slots). v4-lite.toml + v4_ablate = 8;
+#   opponent in the two duplicate down-ray slots) with the geometry channel
+#   off (bit 2: no fan, no terrain block; the two casts alone, v4_ablate = 10,
+#   the v4-aim-only ablation, which sat inside or above v4-aim's seed spread
+#   at 1.7B on seeds 73/74/75 and passed the campaign's band gate on the lite
+#   shape: notes-v4.md, 2026-09-19). v4-lite.toml + v4_ablate = 10;
 #   the recipe is otherwise overnight-9 024's / v4-aim's verbatim (pool v7 625,
 #   seed 73). References: sweeps/v4-lite/000 (shape) and sweeps/v4-aim/000
 #   (layout); the throughput campaign's learning gate (puffer/sanity_v4.sh)
@@ -53,7 +57,7 @@ layers = 1
 v4_set_inner = 64
 v4_ffn_dim = 0
 v4_critic_dim = 384
-v4_ablate = 8
+v4_ablate = 10
 # overnight-9 024, verbatim
 steps = 1734936776
 workers = 128
