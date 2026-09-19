@@ -539,3 +539,26 @@ schedulers = ~0.2 ms, which is the forward's time. Cheaper math (__logf /
 __expf intrinsics, or the fast-math variants) is not exact-class; the
 grouped loads bought the 5-10% that was latency. Nothing left here
 without a numerics decision.
+
+### Rollout chain: br_gemm's A tile as float4 loads (commit 6028e9ca), keep
+
+A microbenchmark of `br_gemm` alone (the chain's shapes at M = 64, /tmp,
+not kept) put the learner's three 16-row tiles at ~3x the cost of a
+bank's 4-row tile per launch: the A loads, not the weights. The A chunk
+(16 rows x 64 k) was loaded as float2 with the lanes along the rows: 16
+instructions per chunk, each touching 16 lines for 8 bytes. Now float4,
+8 instructions per chunk, lanes still along the rows (the fragment
+layout's row stride is 16 floats, so lanes along k would turn the smem
+stores 8-way bank-conflicted; this keeps them 4-way as before). Same
+values into the same smem slots: bit-identical (the microbench compared
+the two paths word for word over 8 shapes x 4 row layouts, 32 cases, 0
+differences; `check_dump --only v4` ok). Isolated per launch: fusion
+15.1 -> 11.4 us, gru 7.65 -> 6.25, actor 4.5 -> 3.9, cin 6.8 -> 6.4,
+b1/b2 8.7 -> 8.2 (the launch floor is ~4 us). A/B 2x2 twice (cand = the
+float2 form behind a temporary template flag, removed): 249.2k vs 246.5k
+(+1.1%), 250.0k vs 246.3k (+1.5%); train 0.0974 vs 0.0988, rollout
+0.086 vs 0.088. `br_gemm_launch` now aborts on a row stride or base not
+16-byte aligned (every chain input is a cudaMalloc'd buffer or the
+4812-float observation row).
+
+Running total: 169.0k -> ~249.5k (**+48%**, exact-class only).
