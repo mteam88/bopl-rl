@@ -489,32 +489,12 @@ static size_t set_fwd_smem(int I, int D) { return (size_t)SF_ROWS * ((I + SF_PAD
 static bool set_fwd_ok(int I, int D, int ldj, int col0) {
     return I % 16 == 0 && I <= 128 && D % SF_THREADS == 0 && D <= 4 * SF_THREADS && ldj % 4 == 0 && col0 % 4 == 0;
 }
-template<int NCOLS> __global__ void set_fwd(const bf16*, int, const bf16*, int, const bf16*, int, const int*, const int*, const int*, int, int,
-                                            bf16*, bf16*, float*, int, int, int*, int);
-template<int NCOLS> __global__ void set_bwd(const bf16*, const bf16*, const bf16*, int, int, const int*, const int*, const int*, int, int,
-                                            const float*, int, int, const int*, int, bf16*, bf16*);
 /* bf16 transpose of a (rows, cols) fp32 matrix into (cols, rows): W2^T for set_bwd's B operand. */
 __global__ void to_bf16_t(const float* src, bf16* dst, int rows, int cols) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= rows * cols) return;
     int r = i / cols, c = i - r * cols;
     dst[(long)c * rows + r] = tobf(src[i]);
-}
-template<typename... A> static void set_bwd_launch(int ncols, int grid, size_t smem, cudaStream_t stream, A... args) {
-    switch (ncols) {
-        case 1: set_bwd<1><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-        case 2: set_bwd<2><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-        case 3: set_bwd<3><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-        default: set_bwd<4><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-    }
-}
-template<typename... A> static void set_fwd_launch(int ncols, int grid, size_t smem, cudaStream_t stream, A... args) {
-    switch (ncols) {
-        case 1: set_fwd<1><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-        case 2: set_fwd<2><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-        case 3: set_fwd<3><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-        default: set_fwd<4><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-    }
 }
 template<int NCOLS>   /* columns per thread in the pool = D / SF_THREADS */
 __global__ void __launch_bounds__(SF_THREADS) set_fwd(const bf16* __restrict__ xpack, int K, const bf16* __restrict__ w1b, int I,
@@ -721,6 +701,30 @@ __global__ void __launch_bounds__(SF_THREADS) set_bwd(const bf16* __restrict__ h
         }
         __syncthreads();
     }
+}
+/* The launchers follow both definitions: a template declared without the
+ * definition's __restrict__ qualifiers mangles to another device symbol, and
+ * the launch then fails with "invalid device function" without running
+ * (found by check_dump; the error is checked here so it can never pass silently). */
+template<typename... A> static void set_bwd_launch(int ncols, int grid, size_t smem, cudaStream_t stream, A... args) {
+    switch (ncols) {
+        case 1: set_bwd<1><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+        case 2: set_bwd<2><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+        case 3: set_bwd<3><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+        default: set_bwd<4><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+    }
+}
+template<typename... A> static void set_fwd_launch(int ncols, int grid, size_t smem, cudaStream_t stream, A... args) {
+    switch (ncols) {
+        case 1: set_fwd<1><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+        case 2: set_fwd<2><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+        case 3: set_fwd<3><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+        default: set_fwd<4><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+    }
+}
+static void set_launch_check(const char* what) {
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) throw std::runtime_error(std::string("Bopl v4 ") + what + " launch: " + cudaGetErrorString(e));
 }
 /* ---- elementwise and LayerNorm ------------------------------------------ */
 __global__ void relu_into(const float* src, float* dst, int rows, int cols, int ldd) {
@@ -1189,6 +1193,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
             set_fwd_launch(D / SF_THREADS, (B + SF_SAMPLES - 1) / SF_SAMPLES, set_fwd_smem(I, D), stream,
                 bfp(a->xpack[s]), K, bfp(a->w1b[s]), I, bfp(a->w2b[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
                 a->totals.data, s, B, bfp(a->h1[s]), bfp(a->h2[s]), a->joined.data, LDJ, col0, a->winner[s].data, w->mean_pool);
+            set_launch_check("set_fwd");
             if (g_set_stage.forward)
                 g_set_stage.forward(s, bfp(a->h2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
             prof_mark("enc.set_mlp_pool", stream);
@@ -1250,6 +1255,7 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
             set_bwd_launch(D / SF_THREADS, (B + SF_SAMPLES - 1) / SF_SAMPLES, set_bwd_smem(I, D), stream,
                 bfp(a->h1[s]), bfp(a->h2[s]), bfp(a->w2tb[s]), I, D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
                 a->totals.data, s, B, a->grad_joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool, bfp(a->dh2[s]), bfp(a->dh1[s]));
+            set_launch_check("set_bwd");
             if (g_set_stage.backward)
                 g_set_stage.backward(s, bfp(a->h2[s]), bfp(a->dh2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
             prof_mark("bwd.enc.unpool_dh1", stream);
