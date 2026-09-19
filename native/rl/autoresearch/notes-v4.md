@@ -1705,3 +1705,33 @@ from shared, and write dh2 from the shared tile with 16-byte stores.
 Expected set_bwd ~886 -> ~500 us per launch, the fused set path ~7.7 ms
 against the Lt path's ~9.4 (-1.7 ms of train, ~+1-2% learner_sps at
 w128 b4 through the interference channel). Next step.
+
+### set_bwd staged-tile walk: DISCARD, -1.5% (bff508d8); set_fwd alone: DISCARD, -0.8% (17d4b009)
+
+The one-turn fix from the profile above, on 8f5eab63's fused set path:
+set_bwd stages the h2 tile into shared with 16-byte row loads, walks the
+dh2 rows in place over shared (thread = column, its own element only),
+and stores dh2 to global from the shared tile with 16-byte stores; the
+tile GEMM then reads the same shared A operand as before. check_dump ok,
+check_v4 pass_all at both shapes (grad q99 1.5e-3 / 2.4e-3, as the Lt
+path). A/B vs 986cd25f 3x3: 464.8k vs 472.3k (-1.5%, all cand below),
+train_s 44.2 -> 44.7 ms, rollout_s 51.3 -> 52.1 ms. Then set_fwd alone
+with the Lt backward (17d4b009, the profile's independent -1.4 ms):
+464.5k vs 467.7k (-0.8%, all cand below), train_s 43.9 -> 44.1 ms,
+unchanged.
+
+Reading. The profile's per-kernel savings are serialized kernel time
+under CUPTI; train_s is the pipelined pass overlapped with the rollout
+chain, and there the Lt GEMMs it replaced cost less than their profile
+time: 8 x 64-row tile blocks per set launch (one block per 8 samples,
+grid ~B/8 = 512 blocks of 128 threads, 32 KB shared each) hold SM slots
+the co-running rollout chain wants, while the Lt kernels use tensor-core
+tiles at higher occupancy and finish sooner in wall terms. The
+interference channel runs both ways: the fused kernels' longer residency
+also cost the rollout forward (eval_gpu 245 -> 249 us). The fused
+set-MLP path is closed: set_fwd and set_bwd both removed, bopl_v4.cu back
+at 986cd25f. What stays from the episode: launch_check per pass and the
+check_v4 harness rebuild rule.
+
+Incumbent stays 986cd25f (471.7k). Next: re-profile the incumbent and
+the ranked remaining exact-class list.
