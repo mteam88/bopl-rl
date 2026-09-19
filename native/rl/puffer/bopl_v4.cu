@@ -37,6 +37,7 @@
 #ifndef BOPL_V4_CU
 #define BOPL_V4_CU
 #include <cuda_bf16.h>
+#include <mma.h>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -360,6 +361,65 @@ __global__ void mask_rows(bf16* g, const bf16* act, long n) {
     if (i < n && !(bf(act[i]) > 0.0f)) g[i] = tobf(0.0f);
 }
 static int grid_long(long n) { return (int)((n + BLOCK_SIZE - 1) / BLOCK_SIZE); }
+/* The set MLP's dh1 = (dh2 W2) * ReLU'(h1) as one kernel for the shape the Lt
+ * DRELU epilogue cannot take (I = 64: its bitmask rows must be 128 bits):
+ * a bf16 tensor-core GEMM, M rows x N = 64 of K = 128, fp32 accumulation,
+ * the ReLU' from h1 applied in the epilogue, bf16 out. One block computes
+ * 64 rows: W2 (K x N, 16 KB) and the 64 x K rows of dh2 staged in shared
+ * memory, 4 warps x (16 rows x 64 columns) of mma.sync fragments, the
+ * accumulators staged back through the A buffer for the coalesced masked
+ * store. Replaces the Lt GEMM plus the mask_rows pass (which re-read dh1
+ * and h1 over act x I). Rows >= M are neither read nor written. */
+namespace dh1k {
+constexpr int N = 64, K = 128, ROWS = 64, THREADS = 128;
+constexpr int LDA = K + 8, LDB = N + 8, LDC = N + 4;   /* padded shared leading dims (multiples of 16 bytes) */
+}
+__global__ void __launch_bounds__(dh1k::THREADS) dh1_relu_grad_gemm(const bf16* __restrict__ dh2, const bf16* __restrict__ w2b,
+                                                                     const bf16* __restrict__ h1, bf16* __restrict__ dh1, int M) {
+    using namespace nvcuda;
+    using namespace dh1k;
+    __shared__ __align__(32) bf16 As[ROWS * LDA];   /* 64 x 136 bf16 = 17408 bytes, reused as fp32 C (64 x 68 = 17408) */
+    __shared__ __align__(32) bf16 Bs[K * LDB];      /* 128 x 72 */
+    const int row0 = blockIdx.x * ROWS, tid = threadIdx.x, warp = tid >> 5;
+    /* W2 (K x N): 128 rows of 8 chunks of 8 bf16; the dh2 tile: 64 rows of 16 chunks. */
+    for (int c = tid; c < K * (N / 8); c += THREADS) {
+        int r = c >> 3, q = c & 7;
+        *(int4*)&Bs[r * LDB + q * 8] = *(const int4*)&w2b[r * N + q * 8];
+    }
+    for (int c = tid; c < ROWS * (K / 8); c += THREADS) {
+        int r = c >> 4, q = c & 15;
+        int4 v = make_int4(0, 0, 0, 0);
+        if (row0 + r < M) v = *(const int4*)&dh2[(long)(row0 + r) * K + q * 8];
+        *(int4*)&As[r * LDA + q * 8] = v;
+    }
+    __syncthreads();
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[N / 16];
+    for (int j = 0; j < N / 16; j++) wmma::fill_fragment(acc[j], 0.0f);
+    for (int kk = 0; kk < K; kk += 16) {
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, bf16, wmma::row_major> a;
+        wmma::load_matrix_sync(a, &As[warp * 16 * LDA + kk], LDA);
+        for (int j = 0; j < N / 16; j++) {
+            wmma::fragment<wmma::matrix_b, 16, 16, 16, bf16, wmma::row_major> b;
+            wmma::load_matrix_sync(b, &Bs[kk * LDB + j * 16], LDB);
+            wmma::mma_sync(acc[j], a, b, acc[j]);
+        }
+    }
+    __syncthreads();   /* every warp is done with As before it becomes C */
+    float* Cs = (float*)As;
+    for (int j = 0; j < N / 16; j++) wmma::store_matrix_sync(&Cs[warp * 16 * LDC + j * 16], acc[j], LDC, wmma::mem_row_major);
+    __syncthreads();
+    /* 64 rows x 8 chunks of 8 columns: the mask from h1, bf16 out, 16-byte stores. */
+    for (int c = tid; c < ROWS * (N / 8); c += THREADS) {
+        int r = c >> 3, q = c & 7, m = row0 + r;
+        if (m >= M) continue;
+        const long at = (long)m * N + q * 8;
+        int4 hv = *(const int4*)&h1[at];
+        const bf16* hb = (const bf16*)&hv;
+        __align__(16) bf16 out[8];
+        for (int e = 0; e < 8; e++) out[e] = tobf(bf(hb[e]) > 0.0f ? Cs[r * LDC + q * 8 + e] : 0.0f);
+        *(int4*)&dh1[at] = *(const int4*)out;
+    }
+}
 
 /* ---- pooling -------------------------------------------------------------- */
 /* joined[b][col0 + s*2D + c] = max, [.. + D + c] = mean over the sample's rows. */
@@ -970,9 +1030,14 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
         /* dh1 = (dh2 W2) * ReLU'(h1), written over h2 (no longer needed) */
         bf16* dh1 = bfp(a->h2[s]);
         void* mask = act >= LT_AUX_MIN_ROWS ? a->relu_mask[s].data : nullptr;   /* as the forward decided */
-        lt_gemm(false, false, act, I, D, bfp(a->dh2[s]), D, bfp(a->w2b[s]), I, nullptr, dh1, I, true,
-                mask ? CUBLASLT_EPILOGUE_DRELU : CUBLASLT_EPILOGUE_DEFAULT, stream, mask);
-        if (!mask) mask_rows<<<grid_long((long)act * I), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I);
+        if (mask) {
+            lt_gemm(false, false, act, I, D, bfp(a->dh2[s]), D, bfp(a->w2b[s]), I, nullptr, dh1, I, true, CUBLASLT_EPILOGUE_DRELU, stream, mask);
+        } else if (I == dh1k::N && D == dh1k::K) {   /* the production set MLP: GEMM and ReLU' in one kernel */
+            dh1_relu_grad_gemm<<<(act + dh1k::ROWS - 1) / dh1k::ROWS, dh1k::THREADS, 0, stream>>>(bfp(a->dh2[s]), bfp(a->w2b[s]), bfp(a->h1[s]), dh1, act);
+        } else {
+            lt_gemm(false, false, act, I, D, bfp(a->dh2[s]), D, bfp(a->w2b[s]), I, nullptr, dh1, I, true, CUBLASLT_EPILOGUE_DEFAULT, stream);
+            mask_rows<<<grid_long((long)act * I), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I);
+        }
         prof_mark("bwd.enc.dh1", stream);
         /* dW1 (I, K) = dh1^T X into the scratch, then keep the first `features` of the padded K */
         lt_gemm(true, false, I, K, act, dh1, I, bfp(a->xpack[s]), K, nullptr, a->acc.data, K, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
