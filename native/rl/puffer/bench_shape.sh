@@ -12,8 +12,9 @@
 # (h2d / forward / d2h). Steady state = the updates after the first 20.
 #
 # Usage: bench_shape.sh <label> [updates=300] [-- extra train.py args...]
-#   BOPL_BENCH_WORKERS=128 BOPL_BENCH_BUFFERS=4 BOPL_BENCH_PASSES=2 override the shape
-#     (passes 2 = the campaign recipe since 2026-09-19, the equal-wall winner).
+#   BOPL_BENCH_WORKERS=256 BOPL_BENCH_BUFFERS=4 BOPL_BENCH_PASSES=1 BOPL_BENCH_MINIBATCH_DIV=2
+#     override the recipe (the defaults are the b4 recipe of 2026-09-19: w256 b4,
+#     two gradient steps of half the learner rows per update; notes-v4.md).
 #   BOPL_BENCH_ENCODER=set|v4 (default set = the v3 set encoder at hidden 128).
 #     v4 is policy v4 at the production shape (sweep/configs/v4-lite-aim.toml:
 #     hidden 256, set inner 64, no FFN, critic 384, writer bits
@@ -45,9 +46,10 @@ R=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$R"
 OUT=${OUT:-$R/native/artifacts/rl/bench-shape}
 mkdir -p "$OUT"
-WORKERS=${BOPL_BENCH_WORKERS:-128}
+WORKERS=${BOPL_BENCH_WORKERS:-256}
 BUFFERS=${BOPL_BENCH_BUFFERS:-4}
-PASSES=${BOPL_BENCH_PASSES:-2}
+PASSES=${BOPL_BENCH_PASSES:-1}
+MINIBATCH_DIV=${BOPL_BENCH_MINIBATCH_DIV:-2}
 ENCODER=${BOPL_BENCH_ENCODER:-set}
 PROF=${BOPL_BENCH_PROF:-1}
 HORIZON=128
@@ -74,7 +76,7 @@ run_one() {
   echo "$(date -u '+%F %T UTC') $label: waiting for GPU bench lock" >&2
   exec 9>/tmp/bopl-gpu-bench.lock
   flock 9
-  echo "$(date -u '+%F %T UTC') $label: running $UPDATES updates ($ENCODER w$WORKERS b$BUFFERS p$PASSES${ab_env:+, $ab_env}), load $(cut -d' ' -f1-3 /proc/loadavg)" >&2
+  echo "$(date -u '+%F %T UTC') $label: running $UPDATES updates ($ENCODER w$WORKERS b$BUFFERS p$PASSES d$MINIBATCH_DIV${ab_env:+, $ab_env}), load $(cut -d' ' -f1-3 /proc/loadavg)" >&2
   set +e
   # shellcheck disable=SC2086
   env BOPL_RL_BACKEND=rust PYTHONPATH="$PUF" \
@@ -84,7 +86,7 @@ run_one() {
     --output "$dir" --banks 4 --buffers "$BUFFERS" --checkpoint-every 1000000000 --cudagraphs 1 \
     "${ENCODER_ARGS[@]}" --entropy 0.008 --entropy-floor 0.001 --entropy-free-rows 1 \
     --entropy-half-life 200000000 --entropy-head-scale 0.15,1.5,1 --episode-ticks 7200 \
-    --no-eval --horizon "$HORIZON" --layers 1 --learner-passes "$PASSES" \
+    --no-eval --horizon "$HORIZON" --layers 1 --learner-passes "$PASSES" --minibatch-div "$MINIBATCH_DIV" \
     --learning-rate 0.00125 --reward-kill 0.27 --reward-timeout -1 \
     --scripted-bots evasive-v2 --scripted-level hard \
     --scripted-opponents mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard \

@@ -4,6 +4,9 @@
  * benchmark.c convention: 4-tick decisions, new inputs every few decisions,
  * episodes reset at the terminal), timing bopl_rl_step alone -> ticks/s, and
  * records every k-th decision's state (bopl_state_copy) until `states` are held.
+ * Between the phases N = 1 / 16 / 64 worlds are stepped round-robin on the
+ * one core, sim + aim-only writer per decision (the "worlds" lines): the
+ * per-decision cost of walking many envs' working sets, without SMT.
  * Phase 2 replays the recorded states through the writers, interleaving the
  * variants per repeat so a drifting host load hits them alike:
  *   v3            layout 3 (bopl_encode_v3_row)
@@ -50,6 +53,52 @@ static void quantiles(int *v, int n, int *p50, int *p90, int *max) {
 typedef struct { const char *name; int layout, ablate; } Variant;
 static const Variant VARIANTS[]={{"v3", 3, -1}, {"v4-aim", 4, 8}, {"v4-aim-only", 4, 10}, {"v4-no-rays", 4, 2}};
 enum { N_VARIANTS=sizeof(VARIANTS)/sizeof(*VARIANTS), PLAYERS=2, TICKS_PER_DECISION=4 };
+
+/* N worlds stepped round-robin on one core, each decision followed by the
+ * aim-only writer into that world's own rows (the trainer's c_step minus
+ * its bookkeeping): the per-decision time against N separates the cache
+ * cost of walking many envs (the trainer's threads touch 16-32 envs of ~130
+ * KB each per step) from the box's SMT sharing, which this single thread
+ * does not see. */
+static int worlds_bench(const char *lib, const BoplRlConfig *base, int n, uint64_t decisions_each, uint32_t seed) {
+    char error[512]; BoplRl **worlds=calloc((size_t)n, sizeof(*worlds));
+    float *obs=calloc((size_t)n*PLAYERS*BOPL_OBS_STRIDE, sizeof(float));
+    if (!worlds || !obs) return 1;
+    uint32_t rng=seed^0xA5A5A5A5u;
+    for (int w=0; w<n; w++) {
+        char log[64]; snprintf(log, sizeof(log), "/tmp/writer-bench-%d-%d.log", (int)getpid(), w);
+        worlds[w]=bopl_rl_open(lib, "/dev/null", log, 30000, error, sizeof(error));
+        if (!worlds[w]) { fprintf(stderr, "open failed: %s\n", error); return 1; }
+        BoplRlConfig config=*base; config.seed=random_u32(&rng); config.map=(uint32_t)(w%3);
+        if (bopl_rl_reset(worlds[w], &config)!=BOPL_RL_OK) { fprintf(stderr, "reset failed: %s\n", bopl_rl_error(worlds[w])); return 1; }
+    }
+    BoplPuffer env={0}; env.config=*base; env.players=PLAYERS; env.num_agents=PLAYERS;
+    for (int i=0; i<PLAYERS; i++) { env.layout[i]=BOPL4_LAYOUT_VERSION; bopl_set_ablate_of(&env, i, 10); env.applied[i].angle=(uint8_t)(64+61*i); }
+    BoplRlAction actions[PLAYERS]={{0}};
+    /* warm: every world a few decisions in, so the first steps' allocations are behind us */
+    for (int w=0; w<n; w++) for (int k=0; k<8; k++) bopl_rl_step(worlds[w], actions, PLAYERS, TICKS_PER_DECISION);
+    double t=seconds(); uint64_t done=0;
+    for (uint64_t d=0; d<decisions_each; d++) {
+        if (d%4==0) for (int i=0; i<PLAYERS; i++) { uint32_t r=random_u32(&rng); actions[i].angle=(uint8_t)(1+(r>>16)%255); actions[i].buttons=(uint16_t)((r&15)|((r>>4)&(64|128|256|512))); }
+        for (int w=0; w<n; w++) {
+            BoplRl *world=worlds[w];
+            if (bopl_rl_state(world)->header.flags&BOPL_RL_TERMINAL) {
+                BoplRlConfig config=*base; config.seed=random_u32(&rng); config.map=(uint32_t)(w%3);
+                if (bopl_rl_reset(world, &config)!=BOPL_RL_OK) return 1;
+            }
+            if (bopl_rl_step(world, actions, PLAYERS, TICKS_PER_DECISION)!=BOPL_RL_OK) { fprintf(stderr, "step failed: %s\n", bopl_rl_error(world)); return 1; }
+            env.scratch=obs+(size_t)w*PLAYERS*BOPL_OBS_STRIDE; bopl_written_forget(&env);
+            compute_observations_from(&env, bopl_rl_state(world));
+            done++;
+        }
+    }
+    double us=(seconds()-t)*1e6/(double)done;
+    printf("{\"bench\": \"worlds\", \"worlds\": %d, \"decisions\": %"PRIu64", \"us_per_decision\": %.2f, \"load1\": %.2f}\n", n, done, us, load1());
+    fflush(stdout);
+    for (int w=0; w<n; w++) bopl_rl_close(worlds[w]);
+    free(worlds); free(obs);
+    return 0;
+}
 
 int main(int argc, char **argv) {
     if (argc<2 || argc>7) { fprintf(stderr, "writer_bench <libbopl_sim.so> [ticks] [default|random] [repeats] [states] [seed]\n"); return 2; }
@@ -109,6 +158,14 @@ int main(int argc, char **argv) {
            loadout, PLAYERS, ticks, decisions, resets, ticks/step_seconds, ticks/(step_seconds+reset_seconds), step_seconds*1e6/decisions,
            max_entities, max_slimes, recorded, load1());
     fflush(stdout);
+    /* ---- the many-worlds curve: 1, 16, 64 worlds round-robin, sim + aim-only writer ---- */
+    {
+        BoplRlConfig base=config; base.seed=seed;
+        for (int i=0; i<PLAYERS; i++) { base.player[i].abilities[0]=2; base.player[i].abilities[1]=4; base.player[i].abilities[2]=14; }
+        static const int NW[]={1, 16, 64};
+        for (int k=0; k<3; k++) if (worlds_bench(argv[1], &base, NW[k], 24000/(uint64_t)NW[k]*2, seed)) return 1;
+    }
+
     /* ---- phase 2: the writers over the recorded states ---- */
     static float scratch[BOPL_MAX_PLAYERS*BOPL_OBS_STRIDE];
     BoplPuffer env={0};

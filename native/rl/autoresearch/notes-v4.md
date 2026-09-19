@@ -2087,3 +2087,66 @@ recipe track carried 471.7k -> 629.8k (+33.5%) today; 1M from here needs
 the env CPU to halve (item 1's cache question) plus the GPU forward
 near isolated (train-stream contention: items 4 and the recipe's
 train_s), or more cores.
+
+## 2026-09-19 16:05 b4 seed-74 repeat: holds; b4 is the default recipe (Matthew: adopt)
+
+Gate `b4-w256b4-p1div2-lrsqrt2-s74-12cc2877` (seed 74, 800M, w256 b4,
+learner_passes 1, minibatch_div 2, LR 4.852e-4), read at WALL_SECONDS=955:
+
+    recipe                          seed  at 955 s        band (240 games)     refit
+    reference v4-aim/000 (p4 w128)   73   160M/955 s      523.5 [482, 565]     646 [504, 898]
+    p2 aim-only                      73   ~350M           572.8 [529, 617]
+    b4 (this recipe)                 73   440M/965 s      612.0 [564, 661]     646 [529, 847]
+    b4                               74   440M/965 s      579.2 [539, 623]     646 [529, 847]
+
+Seed spread of the b4 pair: 33 band (inside the 75 the plan allows a
+seed); s74 sits inside s73's interval and above p2 and the reference.
+80M refit 421 vs the reference's 379; EV 0.44, entropy 4.58, KL 0.0016,
+run rate 553k learner_sps (the gate's eval hooks included). Holds ->
+adopted as the default in `sweep/configs/v4-lite-aim.toml` (workers
+256, learner_passes 1, minibatch_div 2, learning_rate 4.852e-4;
+`sweep_config.py` now passes `minibatch_div` through as a train flag),
+`sanity_v4.sh` (run recipe; the pre-b4 p2 recipe stays reachable as
+`-- --learner-passes 2 --minibatch-div 1 --workers 128 --learning-rate
+3.431e-4`), and `bench_shape.sh` (defaults w256 b4 p1 d2; the label now
+prints `d$MINIBATCH_DIV`).
+
+Gate plumbing fixed alongside: a w256 run's updates are 65536 physical
+steps, so its evaluations land one update off the reference's (213385216
+vs 213352448) and the equal-steps 160M reading came out `missing` for
+b2/b4. `readout.py refit_curve` now takes the nearest evaluation within
+1% of the asked step (keyed by the asked step), and `sanity_v4.sh` rates
+the checkpoint nearest 160M for the band and reads the band file the same
+way. The b2/b4 equal-steps readings can be re-read with `report` (the
+160M band takes ~4 CPU minutes each; not re-run here).
+
+New incumbent bench at the default (`incumbent-b4-default`, 300 updates,
+12cc2877): **623.9k learner_sps** (831.8k sps), rollout 77.8 / train 56.8
+/ wall 78.8 ms per update, GPU forward 264.5 us/step, env CPU 1.22 ms per
+buffer step, c_step 19.1 us (sim 9.9, finish 7.8), set_overflow 0.
+Two repeats queued for the 3x mean the next A/B compares against.
+
+### a1 sizing: 1 / 16 / 64 worlds round-robin on one core (writer_bench)
+
+`writer_bench` now steps N worlds round-robin on one core between its
+phases, sim + aim-only writer per decision (the trainer's c_step minus
+its bookkeeping), printing `{"bench": "worlds", ...}` lines:
+
+    worlds   us per decision (sim 4 ticks + 2 aim-only rows)
+       1     8.12
+      16     8.00
+      64     7.95
+
+Flat: 64 worlds x ~130 KB of sim state + rows is 8 MB, past the core's
+L2 (1 MB) but inside the 96 MB L3, and the walk costs nothing extra.
+So the cache factor of walking many envs is nil; the trainer's c_step
+of 19.1 us against 8.1 isolated (2.35x) is SMT sharing (12 threads on 8
+cores x 2, two sim threads per core each at half the core) plus the
+pool's per-step bookkeeping (claim, telemetry, delayed copies: the
+`begin`/`sample` phases, ~1 us). Consequence for the CPU track: there
+is no per-step working-set lever; only less work per c_step (writer and
+sim items, at ~1.75x their isolated saving) or fewer threads per core
+(6 sim threads pinned one per core would each run near 8 us but the
+pool would have half the threads: 6 x 1/8.1 vs 12 x 1/19.1 decisions
+per us = 0.74 vs 0.63: +17% env throughput on paper, an exact
+scheduling change worth one bench: `a3`).

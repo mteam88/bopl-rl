@@ -354,7 +354,13 @@ def refit_curve(runs, steps, pool, bootstrap=200):
         for step in steps:
             report = r.diagnostics.get(step)
             if not report:
-                continue
+                # A run of another batch geometry evaluates one update off the
+                # step asked for (w256: 65536 physical steps): its nearest
+                # evaluation within 1% stands in, keyed by the asked step.
+                near = min(r.diagnostics, key=lambda s: abs(s - step), default=None)
+                if near is None or abs(near - step) > 0.01 * step:
+                    continue
+                report = r.diagnostics[near]
             rating = reference_pool.rating_from_evaluation(report, pool, report.get("checkpoint", ""), bootstrap=bootstrap)
             if rating:
                 out[r.name][step] = rating

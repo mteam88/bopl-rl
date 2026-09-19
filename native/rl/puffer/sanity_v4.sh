@@ -3,8 +3,10 @@
 # v4 counterpart of the 150M sanity run in THROUGHPUT.md section 4: the
 # v4-lite-aim recipe (sweep/configs/v4-lite-aim.toml [fixed], the production
 # shape the campaign optimises: encoder v4, hidden 256, set inner 64, no FFN,
-# critic 384, writer bits 10, aim Fourier 4, 128 workers x 4 buffers, 2
-# learner passes, 4 banks with 3 scripted, seed 73) run verbatim for
+# critic 384, writer bits 10, aim Fourier 4, 256 workers x 4 buffers, the b4
+# recipe of 2026-09-19 (learner_passes 1, minibatch_div 2: two gradient steps
+# of 24576 prio-drawn rows per 49152-row update; LR 4.852e-4 = 3.431e-4 x
+# sqrt 2), 4 banks with 3 scripted, seed 73) run verbatim for
 # its first 160M learner decisions with the in-run evaluation on pool v7, then
 # read against the reference run sweeps/v4-aim/000 (thread policy-v4, 2026-09-16,
 # the same recipe at 1.73B) at the evaluation steps both share.
@@ -41,9 +43,12 @@
 #   REFERENCE=<sweep run dir> REF_NAME=<readout name> read against another
 #   reference of the same recipe (sweeps/v4-lite/000 for the v4-lite shape).
 #   Shape / recipe flags go after -- and override the defaults (e.g.
-#   -- --learner-passes 4 for the p4 recipe, --workers 256 for w256).
+#   -- --learner-passes 2 --minibatch-div 1 --workers 128 --learning-rate 0.0003431012662975937 for the pre-b4 p2 recipe).
 #   WALL_SECONDS=<s> (report): the equal-wall-clock comparison for recipe
-#   changes (learner passes): the run's evaluation whose trainer elapsed is
+#   changes (the campaign's recipe gate: band rating at 955 s against the
+#   aim-only p2 run's 572.8 [529, 617] and the b4 pair's 612.0 / 579.2; the
+#   run needs STEPS >= 520M to pass 955 s at the b4 rate): the run's
+#   evaluation whose trainer elapsed is
 #   nearest that many seconds (v4-aim/000 reached 160M learner steps in 955 s)
 #   is read out (refit Elo, band rating of its checkpoint into band/wall) next
 #   to the reference's 160M numbers; a run must have been given enough STEPS
@@ -87,11 +92,11 @@ run)
     --entropy 0.01532588085540654 --entropy-floor 0.001 --entropy-free-rows 1 --entropy-half-life 718611646 \
     --entropy-head-scale 0.028821467398601395,1.5,1 --episode-ticks 7200 \
     --eval-every "$EVAL_EVERY" --evaluation-games 8 --evaluation-maps 0,1,2 --evaluation-pool "$POOL" --evaluation-workers 4 \
-    --heldout-games 4 --heldout-maps 3,4 --horizon 128 --learner-passes 2 \
-    --learning-rate 0.0003431012662975937 --reward-kill 0.2883693237829292 --reward-timeout -1 \
+    --heldout-games 4 --heldout-maps 3,4 --horizon 128 --learner-passes 1 --minibatch-div 2 \
+    --learning-rate 0.0004852184640654399 --reward-kill 0.2883693237829292 --reward-timeout -1 \
     --scripted-banks 3 --scripted-opponents mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard \
     --scripted-roster default --scripted-share-max 1 --scripted-share-min 0.11048204896277423 \
-    --seed "$SEED" --steps "$STEPS" --training-maps 0,1,2 --workers 128 "$@" > "$DIR.log" 2>&1
+    --seed "$SEED" --steps "$STEPS" --training-maps 0,1,2 --workers 256 "$@" > "$DIR.log" 2>&1
   rc=$?
   set -e
   echo "exit $rc" >> "$DIR.log"
@@ -108,8 +113,14 @@ report)
   if [ "${BAND_GAMES:-240}" -gt 0 ]; then
     for side in run reference; do
       case $side in run) src=$DIR;; reference) src=$REFERENCE;; esac
-      ck="$src/checkpoints/policy-213352448.bin"
-      if [ -f "$ck" ] && [ ! -f "$DIR/band/$side/policy-213352448.json" ]; then
+      # the 160M checkpoint, or the run's nearest within 1% (a w256 run's updates are 65536 physical steps and land one update off)
+      ck=$(ls "$src"/checkpoints/policy-*.bin 2>/dev/null | python3 -c '
+import sys, re
+files = [p.strip() for p in sys.stdin if p.strip()]
+step = lambda p: int(re.search(r"policy-(\d+)", p).group(1))
+best = min(files, key=lambda p: abs(step(p) - 213352448), default="")
+print(best if best and abs(step(best) - 213352448) <= 2133524 else "")')
+      if [ -n "$ck" ] && [ -f "$ck" ] && ! ls "$DIR/band/$side"/*.json >/dev/null 2>&1; then
         mkdir -p "$DIR/band/$side"
         BOPL_RL_BACKEND=rust "$PY" native/rl/sweep/reference_pool.py rate --pool "$POOL" --checkpoint "$ck" \
           --out "$DIR/band/$side" --games "${BAND_GAMES:-240}" --workers "${BAND_WORKERS:-3}" > "$DIR/band/$side.log" 2>&1 || echo "band rating of $side failed: $(tail -1 "$DIR/band/$side.log")" >&2
@@ -137,16 +148,20 @@ PY
     fi
   fi
   python3 - "$DIR" "$LABEL" "$REFERENCE" "$REF_NAME" "${WALL_SECONDS:-}" <<'PY' | tee -a "$OUT/results.jsonl"
-import glob, json, os, sys
+import glob, json, os, re, sys
 d, label, reference, ref_name, wall_seconds = sys.argv[1:]
 SPREAD = 75            # same-shape pool-v7 seed spread, POLICY_V4_PLAN.md 7c
 # The evaluation steps the gate reads, in the trainer's physical step count
 # (checkpoint names): 80M and 160M learner decisions of the v4-aim recipe.
 GATE_STEPS = {80_000_000: 106_692_608, 160_000_000: 213_352_448}
 def band(side, step=213352448):
-    files = glob.glob(os.path.join(d, 'band', side, '*policy-%09d*.json' % step))
+    # the rating stored for `step`, or for the nearest rated checkpoint within 1% of it
+    files = glob.glob(os.path.join(d, 'band', side, '*policy-*.json'))
+    def step_of(f):
+        m = re.search(r'policy-(\d+)', os.path.basename(f)); return int(m.group(1)) if m else -1
+    files = [f for f in files if abs(step_of(f) - step) <= 0.01 * step]
     if not files: return None
-    r = json.load(open(files[0]))
+    r = json.load(open(min(files, key=lambda f: abs(step_of(f) - step))))
     return dict(rating=round(r['rating'], 1), interval=[round(x, 1) for x in r['interval']] if r.get('interval') else None, games=r.get('games'))
 def refit_elo(name):
     """physical step -> (rating, interval): readout.py's pool-v7 refit of the
