@@ -1973,3 +1973,34 @@ Bench on the incumbent: 629.8k (+33.5% over w128 p2), rollout-bound
 again (rollout 77.0 vs train 57.1 ms; eval_gpu 294 us + env 301 us per
 128-row buffer step; 8.6 GB). Gate b4-w256b4-p1div2-lrsqrt2-12cc2877
 launched 14:51 EDT, STEPS=800M (in-run ~600k -> 955 s at ~570M).
+
+#### a1: perf profile of the aim-only writer (writer_bench, -O3 -fno-inline -g copy, core 11, under the b4 gate's load)
+
+Shares of the no-inline build's samples (its row runs 4.1 us against the
+production build's 2.0, so shares, not times): bopl4_relation 16.5%
+(+ atan2 3%), bopl_encode_v4_row body 15.8%, the two casts 20.7%
+(bopl4_march_avx512 12.1, bopl4_ray_other 4.0, bot_wall_sdf 3.0,
+sdf_lanes / cast_group 1.6), bopl_clip + bopl_fix 11.7% (inlined away in
+production), bopl4_terrain_fill 3.3% (the per-row wall list the casts
+need: an entity scan with a sqrt per wall), bopl_player_features 1.7,
+bopl_surface_distance 1.7, sincosf 0.8, bopl_nearest 0.7, note_entity_rows
+0.8; the sim phase ~5%. Inside bopl4_relation ~30% of the samples sit
+in the ballistic loop (30 sqrt per projectile call, 176 ns against 43
+for a plain call in the relation microbench; ~24 relation calls per row:
+opponent, 2 players, ~10 entities x 2 (self and versus the enemy), 2
+slimes).
+
+Per production row (2.0 us), roughly: casts 0.4, relation 0.35, the row
+body (sets, features, stores) 0.3-0.4, terrain fill 0.07, libm 0.1, the
+rest scattered. No dominant piece: the exact items are (1) the ballistic
+loop with a squared-distance prefilter (sqrt only when the candidate can
+beat the running minimum; exact by construction since the original
+compare runs on the survivors): -0.1 us/row; (2) a scalar two-ray cast
+for the aim + LOS pair instead of the 16-lane march at 2/16 occupancy:
+uncertain, the zmm ops are double-pumped on Zen 4 so two scalar rays cost
+about the same; (3) terrain fill once per state instead of per row (both
+players' rows share the wall list): -0.05. Together ~-0.2 us/row, -0.4
+us per c_step isolated (-5% of 8.3), ~-0.7 us in the trainer. At w128 b4
+that is -0.5% of env, at w256 b4 (env 301 of the 602 us step, 1:1 into
+the wall) about -1.5% of wall. Not built: the a-track's yield is small
+next to the recipe track (b4 bench +33.5%); recorded as the a1 sizing.
