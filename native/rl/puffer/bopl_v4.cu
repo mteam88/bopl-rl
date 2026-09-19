@@ -77,13 +77,14 @@ constexpr int DEFAULT_BUDGET[SETS] = {6, 12, 20, 8};   /* average valid rows per
 constexpr int TILE = 64;                               /* packed capacities are rounded up to this many rows */
 constexpr float LN_EPS = 1e-5f;
 
-/* Stage timing for the harness (check_v4.cu): when enabled, an event per
- * mark() on the stream; never under graph capture. */
+/* The shape variables train.py exports (BOPL4_SET_DIM, ...) and the memory log. */
 static int env_int(const char* name, int fallback) {
     const char* v = std::getenv(name);
     return v && *v ? std::atoi(v) : fallback;
 }
 
+/* Stage timing for the harness (check_v4.cu): when enabled, an event per
+ * mark() on the stream; never under graph capture. */
 struct Prof { bool on = false; int n = 0; const char* name[64]; cudaEvent_t ev[64]; };
 static Prof g_prof;
 static void prof_mark(const char* name, cudaStream_t stream) {
@@ -295,8 +296,7 @@ static const LtPlan& lt_plan(cublasLtHandle_t lt, const LtKey& k, const void* A,
     int best = 0;
     cudaStreamCaptureStatus capturing = cudaStreamCaptureStatusNone;
     cudaStreamIsCapturing(stream, &capturing);
-    static int tune = env_int("BOPL4_LT_TUNE", 1);
-    if (tune && found > 1 && A && capturing == cudaStreamCaptureStatusNone) {
+    if (found > 1 && A && capturing == cudaStreamCaptureStatusNone) {   /* time the candidates once per shape (never under capture) */
         float alpha = 1.0f, beta = C ? 1.0f : 0.0f;
         cudaEvent_t t0, t1; cudaEventCreate(&t0); cudaEventCreate(&t1);
         float best_ms = 1e30f;
@@ -847,12 +847,11 @@ static void count_and_scan(EncActs* a, PrecisionTensor input, cudaStream_t strea
     else count_rows<<<grid_size(B * SETS), BLOCK_SIZE, 0, stream>>>(input.data, a->gather, B, a->counts.data);
     scan_rows<<<SETS, 1024, 0, stream>>>(a->counts.data, B, make_int4(a->cap[0], a->cap[1], a->cap[2], a->cap[3]), a->offsets.data, a->totals.data, a->overflow.data);
 }
-/* Returns the graph key (>= 1) of the coming forward, 0 when the feature is off
- * (act = cap, count / scan run inside the forward). Not for use under capture. */
+/* Returns the graph key (>= 1) of the coming forward. A forward without a
+ * prepass (the harness) runs at act = cap with count / scan inside it. Not
+ * for use under capture. */
 static int enc_prepass(void* activations, PrecisionTensor input, cudaStream_t stream) {
     auto* a = (EncActs*)activations;
-    static int on = env_int("BOPL4_ACTIVE_ROWS", 1);
-    if (!on) return 0;
     if (!a->host_totals) {
         if (cudaHostAlloc((void**)&a->host_totals, SETS * sizeof(int), cudaHostAllocMapped) != cudaSuccess
             || cudaHostGetDevicePointer((void**)&a->host_totals_dev, a->host_totals, 0) != cudaSuccess)
@@ -1052,7 +1051,7 @@ static void enc_reg_train(void* weights, void* activations, Allocator* acts, All
     long acc = 0;   /* dW1's fp32 (I, kpad) */
     for (int s = 0; s < SETS; s++) {
         a->dh2[s] = {.shape = {a->cap[s], D / 2}}; alloc_register(acts, &a->dh2[s]);
-        if (I % 128 == 0 && a->cap[s] >= LT_AUX_MIN_ROWS && env_int("BOPL4_DRELU", 1)) {
+        if (I % 128 == 0 && a->cap[s] >= LT_AUX_MIN_ROWS) {
             a->relu_mask[s] = {.shape = {a->cap[s], I / 32}}; alloc_register(acts, &a->relu_mask[s]);
         }
         acc = std::max(acc, (long)I * SPEC[s].kpad);
