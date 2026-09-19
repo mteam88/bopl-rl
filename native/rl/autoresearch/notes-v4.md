@@ -758,3 +758,22 @@ against the 1.5 ms they replace), rollout unchanged. Memory +470 MB (the
 slabs hold the worst case, 48 entity / 32 slime / 24 slot / 6 player rows per
 learner row, so no drop can happen before the pass's cap). New incumbent
 build: inc-2c51f2dd.so.
+
+### Epilogue fusions (flat / FFN DRELU, Lt-tuned weight gradients, LN rows): discard
+
+Measured in the check_v4 timing harness (B = 24576, one encoder + decoder
+pass isolated, 16.63 ms at the incumbent):
+- ReLU bitmask from the flat and FFN-in GEMMs (fp32 RELU_AUX) and the
+  ReLU' applied by the DRELU epilogue of the fusion dgrad (split into the
+  flat and set column ranges) and the g_f dgrad, dropping relu_grad_from4:
+  check_v4 5/5, but the fp32 AUX epilogue kernels are slower than RELU
+  (enc.flat_gemm 0.35 -> 0.46, dec.ffn 0.80 -> 1.14) while DRELU saves
+  ~0.1 ms of relu_grad: pass 17.04 ms, net worse.
+- The long-K weight gradients (fusion, flat, FFN in / out; K = B) through
+  lt_gemm32 with lt_plan's candidate timing instead of cublasGemmEx:
+  bwd.enc.fusion_flat 1.87 -> 2.96, bwd.dec.ffn 1.56 -> 2.35. cublasGemmEx's
+  choice is the better one here.
+- LN_ROWS 8 -> 16: identical (ln3_bwd 0.303, ln2_bwd 0.360 ms: ~580 GB/s,
+  within 1.5x of bandwidth; the LN headroom is ~0.1 ms per pass).
+Nothing kept; bopl_v4.cu unchanged. Unpool cannot fold into the set dgrad
+GEMM (the max-pool half is a per-column winner scatter, row-inseparable).
