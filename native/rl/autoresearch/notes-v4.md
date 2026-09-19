@@ -1597,3 +1597,40 @@ fused_rollout_cudagraphs[horizon][num_buffers], captured once, replayed):
 graph replay is the incumbent. Candidate (2), programmatic dependent
 launch inside the captured chain, is the next sizing (microbench, with
 and without cudaLaunchAttributeProgrammaticStreamSerialization).
+
+### CORRECTION: the fused set kernels never ran; honest A/B -4.1%, DISCARD (8f5eab63 -> reverted)
+
+check_dump failed at 698cd3d7 and db66854f (logits rel 6.5e-1) while
+check_v4 passed. Bisected to the template forward declaration added in
+698cd3d7: declared without the definition's `__restrict__` qualifiers, the
+template mangles to a different device symbol, the host stub finds none,
+and the launch fails with "invalid device function" without running
+(reproduced standalone: cudaGetLastError after the launch; the kernel's
+outputs were the memset). The trainer build checks no launch errors, so
+set_fwd and set_bwd were silently skipped: the "+3.2%" and "+1.75%" above
+measured skipping the set forward and the dh1 / unpool backward, not the
+kernels. check_v4's harness build happened to link consistently, so it
+ran the kernels and passed. Both results.tsv rows are marked invalid.
+
+Fixed (launchers after both definitions, no forward declarations, and a
+cudaGetLastError check after each fused launch that throws), check_dump
+ok, check_v4 pass_all both shapes, then the honest A/B of the full fused
+set path (forward + backward) vs 3f921308 at w128 b4 p2, 3x3: 440.3k vs
+459.1k (-4.1%), train_s 0.0399 -> 0.0428 (+2.9 ms). The first, spilling
+forward-only build had already said -5.4%; the kernels as written (4
+warps, one 64-row tile in flight per block, B fragments re-read from L1
+per mma, serial h1 -> h2 -> pool phases) lose to cublasLt's tuned GEMMs
+plus the pool kernels even with half the traffic. Reverted to 3f921308's
+set path. Incumbent stays 458-459k (3f921308 numbers: 459.1k this run).
+
+What the sizing got wrong: it priced the set path by traffic (-52%), but
+the Lt path is not bandwidth-bound (1.9 GB per update is ~2 ms at the
+card's bandwidth against ~17 ms measured), it is tile-efficiency bound
+(N, K of 64-128 against M of 100-300k rows). A fused kernel that beats it
+needs GEMM engineering (weights via ldmatrix from shared, cp.async
+double-buffered A tiles, 8+ warps or two tiles in flight per block), one
+to two turns of work for an uncertain gain; parked.
+
+Lesson recorded in program terms: every kernel launch on a kept path must
+be error-checked, and check_dump (which exercises the trainer's own build)
+runs after every train-side change, not only check_v4.
