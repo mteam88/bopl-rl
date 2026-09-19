@@ -924,10 +924,15 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         size_t bytes = (size_t)rows * slot_bytes + (vec->pack_in_tail ? (size_t)vec->pack_bytes : 0);
         cudaMemcpyAsync((char*)vec->packed_dev + off, (const char*)vec->packed_host + off, bytes, cudaMemcpyHostToDevice, stream);
         if (!vec->pack_in_tail) cudaMemcpyAsync(vec->pack_dev[buf], vec->pack_host[buf], vec->pack_bytes, cudaMemcpyHostToDevice, stream);
+        // The dense row is rebuilt straight into the rollout tensor's rows for
+        // this step (the trainer reads them there) and the chain reads it from
+        // there too: no device copy of the observation row (br4_sets used to
+        // copy gpu_observations -> rollout_obs, 19 KB per row per step).
         const float* host_rows = (const float*)vec->dev_observations + (long)start * BOPL_OBS_STRIDE;
-        float* dense = (float*)vec->gpu_observations + (long)start * BOPL_OBS_STRIDE;
+        float* dense = puf_slice(rollouts.observations, t, start, rows).data;
         bopl4_unpack_rows<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(vec->packed_dev + (long)start * BOPL4_PACK_P, host_rows, dense, rows);
         if (p.transport_check) bopl4_transport_check<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(dense, host_rows, rows, vec->transport_mismatch);
+        obs = dense;
     } else if (p.graph_copies) {
         size_t row_bytes = (size_t)BS_OBS * sizeof(float), off = (size_t)start * row_bytes;
         size_t bytes = (size_t)rows * row_bytes + (vec->pack_in_tail ? (size_t)vec->pack_bytes : 0);

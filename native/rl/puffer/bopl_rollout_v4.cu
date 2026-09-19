@@ -75,10 +75,13 @@ __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
     const float* obs = a.obs + (long)row * BOPL_OBS_STRIDE;
     if (s == 0) {  // the row's copy into the rollout tensors (the old cast kernels)
         if (tid == 0) { a.rollout_rewards[row] = a.rewards[row]; a.rollout_terminals[row] = a.terminals[row]; }
-        // rows are 8-byte aligned (BOPL_OBS_STRIDE is even), not 16
-        const float2* src = (const float2*)obs; float2* dst = (float2*)(a.rollout_obs + (long)row * BOPL_OBS_STRIDE);
-        for (int i = tid; i < BOPL_OBS_STRIDE / 2; i += BR4_SET_THREADS) dst[i] = src[i];
-        if (BOPL_OBS_STRIDE & 1) if (tid == 0) a.rollout_obs[(long)row * BOPL_OBS_STRIDE + BOPL_OBS_STRIDE - 1] = obs[BOPL_OBS_STRIDE - 1];
+        // The packed transport unpacks straight into the rollout rows (obs ==
+        // rollout_obs); the dense paths still copy. Rows are 8-byte aligned.
+        if (a.obs != a.rollout_obs) {
+            const float2* src = (const float2*)obs; float2* dst = (float2*)(a.rollout_obs + (long)row * BOPL_OBS_STRIDE);
+            for (int i = tid; i < BOPL_OBS_STRIDE / 2; i += BR4_SET_THREADS) dst[i] = src[i];
+            if (BOPL_OBS_STRIDE & 1) if (tid == 0) a.rollout_obs[(long)row * BOPL_OBS_STRIDE + BOPL_OBS_STRIDE - 1] = obs[BOPL_OBS_STRIDE - 1];
+        }
     }
     // valid rows of the set (first feature nonzero), in order: warp 0, the
     // rows' flags by ballot (two loads per lane in flight, where one thread
