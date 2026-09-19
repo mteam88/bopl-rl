@@ -1372,3 +1372,36 @@ L2 reads per block) and the h1 loop's dependent FMA chains, and neither
 is sized by the counts: the grid cannot follow a device-side count, and
 fewer blocks per row means longer per-block chains (the sampler lesson).
 Incumbent stays 458.7k (3f921308).
+
+### Sizing the aim-only native flat layout (throwaway build, not committed)
+
+Premise check first. The flat block is BOPL4_FLAT = 492 floats (global 66,
+self 44, opponent 56, previous 26, terrain 12, rays 36 x 8 = 288); with
+writer bits 10 the terrain block and 34 of the 36 ray slots are zero, 284
+floats, leaving 208 live. The fusion GEMM's K = 1280 is q.JW = flat_dim
+256 + pooled 4 sets x 2 x 128: the flat Linear's output plus the set
+pools, no raw flat columns, so it does not shrink. What shrinks: the
+rollout flat br_gemm (K 492 -> 208), the trainer's flat GEMM forward and
+weight gradient (same K), cache_flat / pack_flat traffic, and the packed
+slot's fixed part (540 -> 256 floats, the row 6 KB -> ~5 KB).
+
+Upper bound measured with a two-line hack (v4::FLAT = 208 in bopl_v4.cu
+and the flat tensor width in research/layout.py; the chain and trainer
+read the first 208 columns, wrong logits but the same cost; the slot
+shrink is not in it): 468.7k [467.6, 469.8] vs the incumbent 458.9k
+[457.9, 459.0] at w128 p2 (+2.1%), rollout_s 0.0528 -> 0.0516, train_s
+0.0405 -> 0.0382 (-5.5%), GPU forward 264.9 -> 256.7 us. The train side
+gains more than the flat GEMM's share of the fusion family suggested
+(~20% of 17 ms at p4); the K = 492 flat GEMMs (fwd + wgrad over the
+minibatch) and the cache passes are worth ~2.2 ms of the 40.5.
+
+The real change is a layout: BOPL4_TERRAIN 0, BOPL4_RAYS 2 (aim, line of
+sight), BOPL4_OBS_SIZE 4812 -> 4528, and with it bopl_obs_v4.h (the fan
+and terrain writers and ablation bits 2 / 4 go; bit 8 keeps selecting the
+two casts), writer_bench, bopl_obs_pack.h (slot 1280), the CPU evaluator
+and research/layout.py (both derive from the constants), check_v4's
+torch reference, the sidecar's obs_size, and a one-time converter that
+drops the 284 flat weight rows from bits-10 checkpoints of the 4812
+layout (bits-8 checkpoints, whose fan columns were live, cannot be
+converted and become unloadable). The gate's pool-v7 anchors are v3
+checkpoints and scripted bots, so the ladder is unaffected.
