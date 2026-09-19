@@ -1455,3 +1455,72 @@ h1 kept for the backward, and the backward's unpool -> dh2 -> mask ->
 dh1 in one pass; the two weight gradients per set stay GEMMs over the
 packed rows) removes the h1 / h2 round trips and the four glue kernels;
 sizing to follow before building.
+
+### w128 b8 at p2 (3f921308, 3x3 interleaved with b4; geo2-* rows)
+
+  geometry  rows/launch  learner_sps            rollout_s  train_s  period = fwd + env (ms)  forward_us (GPU)  GPU fwd occupancy b*fwd/period  b*env/period  env CPU ms/buffer step  workers / owner / stolen %  sleeps / polls
+  w128 b4   64           458.3k [457.8, 458.5]  0.0529     0.0400   0.413 = 0.265 + 0.142    240.6             2.56                            1.37          0.57                    56 / 21 / 23                0.7 / 186
+  w128 b8   32           415.8k [415.6, 416.1]  0.0583     0.0423   0.456 = 0.363 + 0.088    218.4             6.38                            1.55          0.29                    11 / 22 / 67                0.08 / 209
+
+--buffers accepts 1, 2, 4, 8 only (256 rows at w128 do not split six
+ways), so no b6. b8 is -9.3%: the forward's GPU time barely drops with
+half the rows (218 vs 241 us, the launch chain), but the owner's wait
+for it grows to 363 us because eight chains queue on the GPU (b x fwd /
+period = 6.4: the chains no longer co-run, they serialize behind each
+other and the train stream), and the env side collapses into the owner
+(workers 11%, stolen 67%: 32-row steps are too short for the pool to
+pick up). Rollout stays above train (58 vs 42 ms). The w128 geometry
+curve is b2 396k, b4 458k, b8 416k: b4 stays. The buffer axis is
+exhausted at this batch; the forward chain's floor (~90 us isolated
+against 241 contended) is train-stream interference, which is the next
+target's second payoff.
+
+### Sizing the fused set-MLP path (not built)
+
+Today per set per pass (bopl_v4.cu enc_forward / enc_backward): forward
+cache_copy_rows (slab -> xpack bf16), zero_tail, W1 GEMM (relu -> h1),
+W2 GEMM (relu -> h2), pool_rows4 (max + mean + winner -> joined);
+backward unpool_rows4 (winner, relu'(h2) -> dh2), zero_tail, W2 wgrad,
+W2 dgrad (-> dh1), mask_rows (relu'(h1)), W1 wgrad + reduce_partials,
+embedding grad: 12 launches, 96 per update at p2 (4 sets x 2 passes),
+~17 ms of the 41 ms train stream (bf16 GEMMs 9.7, unpool 2.0, mask 1.3,
+pool 1.0, cache / scatter / copies 3.0). B = 24576 agent rows per pass,
+~13 set rows per agent row on average (2 / 6 / 11 / 2 max), so ~320k
+set rows per pass, ~640k per update; the path is memory-bound on the
+intermediates: per set row today ~2.9 KB of traffic (xpack written and
+read, h1 written and read three times, h2 written and read twice, dh2
+written and read twice, dh1 written, read, masked, read), ~1.9 GB per
+update, plus 96 launch tails of 64x64-tile cutlass kernels at K = 48 /
+64 (100-250 us each).
+
+Fused form. Forward, one kernel per set: a block owns ~32 agent rows =
+one contiguous range of the packed slab (offsets are prefix sums, so
+segments never straddle blocks), W1 (kpad x 64 bf16, 6 KB) and W2 (128
+x 64, 16 KB) in shared once per block, then 64-row tiles: h1 tile by
+mma.sync bf16 (kept in smem and written to global for the backward), h2
+tile by mma, relu, bf16 round, segmented max / mean / winner per agent
+in shared, joined written once. Backward, one kernel per set: the same
+tiles: read h1, recompute h2 (one 64 x 128 x 64 mma per tile: the
+compute is ~27k MAC per set row for both kernels, ~17 GMAC per update,
+under 1 ms on tensor cores), dh2 = winner / mean terms with relu'(h2),
+written for the W2 weight gradient, dh1 = dh2 W2 masked by relu'(h1) in
+the same tile, written for the W1 weight gradient. The two weight
+gradients per set stay Lt GEMMs over the packed rows (dh2^T h1, dh1^T
+xpack; reductions across all rows do not fuse). Traffic per set row
+~1.4 KB (-52%), launches 12 -> 5 per set per pass. Numerics: the same
+bf16 roundings at the same points (h1, h2, dh2, dh1 stored bf16), fp32
+accumulation in a different order (the tile GEMM against cutlass), so
+check_v4's tolerance gate, as for every GEMM change so far; pool and
+winner are bit-identical by construction (same sequential scan order).
+
+Expected: the path from ~17 to ~7-9 ms per update, -8 to -10 ms on a
+41 ms train stream (-20 to -25%). At w128 b4 p2 the train pass runs
+under the rollout (40 vs 53 ms), so the learner_sps gain arrives only as
+interference relief on the rollout forward (241 us contended against
+~90 isolated: the train stream's share of the SMs); taking 20-25% of the
+train stream's SM time out should give back a proportional slice of the
+150 us, roughly -25 to -35 us on a 414 us period: +6-9%. At w256 b4 p2
+(train = rollout = 89 ms) the same cut converts directly: +10-15%.
+Cost: two tile kernels with segmented pooling (~500 lines, the br_gemm /
+br4_sets and the discarded dh1 kernel are the templates), check_v4 at
+both shapes, one A/B; two to three turns.
