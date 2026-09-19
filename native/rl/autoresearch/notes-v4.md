@@ -1193,3 +1193,27 @@ already zeroes only the slots it wrote last time (bopl_written), so
 there is no memset to save on the env side. Effort: writer output
 format (C), transport in bopl_rollout.cu, an unpack kernel; medium.
 Worth it once the rollout side is the wall again (w256 p2 is balanced).
+
+#### lite-aim-only-w256-p2-04322d89: the recipe table (aim-only layout, seed 73, 240-game bands)
+
+In-run 443k learner/s average over 1175 s (489k between evaluations);
+520M learner steps. The equal-steps 160M eval falls at run step
+213385216 (w256's batch granularity) against the reference's 213352448,
+so the readout's automatic band was skipped; the 160M-learner checkpoint
+was rated by hand (band/run160). 80M refit 300.8 vs floor 304.1.
+
+  recipe (aim-only)   rate      @160M band          @955 s: learner steps   band              refit
+  reference v4-aim    169k      523.5 [478, 568]    160M (955 s)            523.5             646
+  w128 p4             336k      475.7 / 472.7       320M (983 s)            549.4 [507, 594]  691
+  w128 p2             399k      415.9 [374, 459]    400M (1003 s)           572.8 [529, 617]  747
+  w256 p2             443k      389.8 [346, 433]    440M (992 s)            532.6 [495, 576]  574
+
+Reading: at equal samples each halving of optimizer steps per sample
+costs ~60 band (p4 -> p2: 475 -> 416; p2 w128 -> w256: 416 -> 390);
+at equal wall the extra samples pay it back for w128 p2 (572.8) but not
+for w256 p2 (532.6, 10% more samples than w128 p2 and 40 lower: about
+1.5x the one-seed noise of ~24). Every row is above the reference at
+955 s. If wall time is the objective the order is w128 p2 > w128 p4 ~
+w256 p2 > reference; the batch doubling buys throughput (524k bench)
+that the recipe does not convert into Elo at this horizon. Matthew's
+call; the sample-efficiency cost of w256 is the honest caveat.
