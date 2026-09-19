@@ -2234,3 +2234,29 @@ block, and the scan and the h1 loop read shared. Same FMA order:
 bit-identical (check_v4 pass_all x5, check_dump v4 ok, 0 transport
 mismatches); 153 regs, 21.7 KB dynamic smem. A/B `ab-br4sets-staged`
 3x3 vs ecd35837 running; sized -15..-25 us/step -> -2..-3 ms wall.
+
+## 2026-09-19 17:13 br4_sets staged: discard (+0.3%, forward unchanged); a3c built
+
+`ab-br4sets-staged` 3x3 vs ecd35837: learner_sps 620.6k vs 618.5k median
+(+0.3%), rollout_s -0.5%, **forward_us 267 vs 264: unchanged**. The
+staged loads did not shorten the kernel, so br4_sets' 52 us is neither
+load latency nor occupancy. What is left: v4 runs with BOPL_GPU_SPLIT=0
+(no green-context partition), so the chain's blocks queue for SM slots
+behind the train stream's cutlass tiles; that is the 1.8x contention
+factor on the whole chain, and br4_sets with 512 blocks per step pays
+it most. Reverted (76adb5e7 reverted in 7d579201's successor). The
+br4_sets line is closed at the kernel level; it moves with the
+contention channel (train-side ms, or the SM split, which the earlier
+split benches at v3 sized as a loss for v4's shape).
+
+a3c built as the default (`901c0cac`, vecenv.h via pufferlib-bopl.patch):
+the trainer thread pins itself to the highest CPU of the process mask
+plus its SMT siblings (sysfs thread_siblings_list), and every pool
+thread (buffer/GPU-poll threads and workers) floats over the remaining
+CPUs (a home mask, not one CPU each, which is what broke a3b's
+rollout). Needs >= 6 CPUs and enough home CPUs for the stepping threads;
+BOPL_ENV_PIN=1 (the pre-existing explicit pin) takes precedence. On the
+12-CPU box: trainer on CPUs 5+11, 9 stepping threads over 0-4, 6-10.
+A/B `ab-a3c-trainer-core` 3x3 vs ecd35837 running. Sized +3..+7%: the
+train pass -13 ms and the forward -45 us/step from the a3 runs, minus
+whatever the sim loses from 10 instead of 12 slots (it used ~9 of 12).
