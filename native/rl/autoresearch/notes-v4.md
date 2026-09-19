@@ -936,6 +936,12 @@ Timing, interleaved on core 11 under the gate's load: geometry 5.15-5.47
 vs 7.9: -12-15% geometry, -8-10% per row, ~-1.3 us of the 32 us c_step
 (the writer runs twice per step). Rollout A/B after the p1 gate.
 
+Build A/B (`BOPL_BENCH_AB_SO`, the 3d4bd503 extension vs 2333ea99, lite-aim
+p4, 3x3): learner_sps 326.8k vs 318.9k (+2.5%, repeats 326.2-327.4k vs
+318.0-319.5k), c_step 30.6 vs 32.5 us, finish 19.5 vs 21.3, env
+0.235 vs 0.255 ms per buffer step, GPU forward unchanged (~300 us). Kept:
+exact and the predicted -1.9 us of c_step. New incumbent 326.8k (lite-aim).
+
 What it cannot do: the remaining cost is steps x walls x 20 ops, and an
 exact march cannot take fewer steps or skip a wall that might be the
 minimum (L1 found nothing to cull at 6.3 walls). Merging the fan with the
