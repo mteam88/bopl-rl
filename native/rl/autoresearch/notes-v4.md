@@ -2004,3 +2004,86 @@ us per c_step isolated (-5% of 8.3), ~-0.7 us in the trainer. At w128 b4
 that is -0.5% of env, at w256 b4 (env 301 of the 602 us step, 1:1 into
 the wall) about -1.5% of wall. Not built: the a-track's yield is small
 next to the recipe track (b4 bench +33.5%); recorded as the a1 sizing.
+
+#### b4-w256b4-p1div2-lrsqrt2-12cc2877 read (seed 73, 800M in ~1600 s; in-run 526.7k)
+
+  reading                                       refit Elo          band rating (240 games)
+  reference v4-aim/000 @160M / 955 s            646                523.5 [478, 568]
+  aim-only p2 (w128) @955 s (400M)              747                572.8 [529, 617]
+  b3 p1 div2 (w128) @955 s (989 s, 440M)        543.9              590.5 [547, 634]
+  b2 w256 b4 p2 LR sqrt2 @955 s (921 s, 400M)   607.7              585.6 [545, 631]
+  b4 w256 b4 p1 div2 LR sqrt2 @955 s (980 s, 440M)  691.2 [544, 962]  612.0 [564, 661]
+
+PASS, the best of the four at equal wall (+39 band over p2, +21 over
+b3, above the p2 interval's centre by more than the pair spread). The
+160M equal-steps reading is missing (w256 cadence). In-run 526.7k
+against the bench's 629.8k: the in-run rate carries the evaluation
+hook's workers plus a bb host-daemon file watcher (node, ~1 core) that
+ran through every gate today; b2 / b3 ran in-run at 519k so the b4
+recipe's rate advantage is mostly eaten by the box in the gate setting,
+yet it still reached 440M by 955 s and rated highest. Recommendation to
+Matthew: b4 = w256 b4, learner_passes 1, minibatch_div 2, LR 4.852e-4.
+A seed-74 run of the same (b4-...-s74) launched 15:31 EDT to firm it.
+
+### Re-profile at the b4 recipe (CUPTI, 12cc2877 code, w256 b4 p1 div2; /tmp/prof-b4.txt)
+
+Bench under CUPTI 624.5k; wall 78.7 ms per 49152-row update = rollout
+77.9 (122 buffer-steps x 608 us: eval_gpu 304 + eval_env 294) with
+train 57.5 hidden under it (73% of the wall). Rollout-bound at 128 rows
+per chain, and the env CPU is now half the step.
+
+Rollout stream per 128-row step: kernel sum 218 us (busy 195) inside
+the 304 us eval_gpu (86 us of gaps):
+  br_gemm x7 76.0 (10.9 avg; 67.5 at 64 rows)   br4_sets 57.5 (35.1 at 64 rows: this one scales with rows)
+  HtoD packed rows 28.4 (16.0 at 64)             br_sample 25.0 (flat)   br4_rows x4 16.4   unpack 10.4   gate 3.6
+Env CPU per step: 64 envs x 18.9 us c_step = 1.21 ms of thread time in
+294 us of wall = 4.1 effective threads; 4 buffers x 1.21 / 0.608 = 8
+hardware threads in c_step continuously on the 12-thread / 6-core box.
+
+Train stream 54.4 ms kernel time per update, 434 launches: bf16 set
+GEMMs 14.6 (144 launches), fp32 GEMMs 12.9, set glue 6.2, row cache
+5.7 (once per update, now 49152 rows), Muon 4.5, LN 4.4, PPO 2.1, GRU
+scan 2.0, copies 1.5.
+
+Ceiling arithmetic at this recipe: with the GPU forward at its isolated
+cost (~120 us for 128 rows) and the env as it is, the step is ~414 us
+-> 49152 / (122 x 0.414 ms) = 970k. So the env CPU (294 of 608 us) is
+the binding half from here, and every us of c_step is 1:1 on the wall:
+c_step -1 us (-5%) = env -15.5 us = wall -2.5%.
+
+#### Ranked exact-class list at b4 (ms per 78.7 ms update; the wall is the rollout)
+
+  1  c_step CPU (env 294 us/step = 36 ms of the 78 ms update). Isolated
+     c_step is 8.3 us (sim 3.9 + finish 4.2), in the trainer 18.9: the
+     2.3x is SMT (8 threads on 6 cores) and per-env cache misses (each
+     thread walks ~16 envs x 130 KB working set per step: L2 is 1 MB per
+     core, so every c_step pulls its env from L3). Which of the two
+     dominates decides the lever: if cache, shrinking the per-step
+     touched bytes (state copies, obs rows, the sim world) pays
+     directly; if SMT, only less work per c_step helps. Sizing step
+     (CPU track, no GPU): writer_bench stepping N worlds round-robin
+     (1 / 16 / 64) on one core: the us-per-decision curve separates the
+     cache factor from the SMT one. Then the writer items (-0.2 us/row
+     -> -0.4 us c_step isolated, ~-0.7 in the trainer: -1.8% wall) and
+     the sim items (a2) at the same rate.
+  2  br4_sets 57.5 us/step (7 ms of rollout stream time per update, the
+     largest single kernel now that rows doubled): it scales with rows,
+     so it is SM work, not latency; block sizing to the present rows
+     from the packed header (the 64-row attempt was -0.3%: latency-bound
+     there) is worth re-testing at 128 rows: -20 us/step -> -2.4 ms wall
+     (-3%) if it converts.
+  3  HtoD 28.4 us/step (3.5 ms): the packed rows' upload doubled with
+     the rows; a tighter pack (drop the per-row header padding, pack the
+     flat block's zero runs) is exact: maybe -10 us/step -> -1.2 ms.
+  4  train-stream exact (grouped set GEMMs -2, mask_rows -> DRELU -1,
+     Muon copies -0.5; the row cache 5.7 once per update is memory-bound
+     gathers over 49152 rows): -3.5 ms train -> ~-1.4 ms wall via the
+     contention channel (the forward runs 1.8x its isolated time under
+     the 73%-busy train stream).
+  5  br_gemm 76 / sample 25 / rows 16 / unpack 10: latency chain, PDL
+     already; the b1/b2 pair merge (0..-1 ms) is what is left.
+Sum of 1-5 at their sized values: ~-8 ms of 78 (-10%) -> ~690k. The
+recipe track carried 471.7k -> 629.8k (+33.5%) today; 1M from here needs
+the env CPU to halve (item 1's cache question) plus the GPU forward
+near isolated (train-stream contention: items 4 and the recipe's
+train_s), or more cores.
