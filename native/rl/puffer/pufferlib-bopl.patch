@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 --- pristine-src/bindings.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/bindings.cu	2026-09-19 03:36:45.993505175 -0400
++++ puffer-overlay/bindings.cu	2026-09-19 17:36:21.609344306 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -272,7 +272,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 --- pristine-src/kernels.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/kernels.cu	2026-09-19 03:36:45.993889099 -0400
++++ puffer-overlay/kernels.cu	2026-09-19 17:36:21.610440353 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -564,7 +564,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
 --- pristine-src/models.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/models.cu	2026-09-19 03:36:45.994294574 -0400
++++ puffer-overlay/models.cu	2026-09-19 17:36:21.610809880 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -897,7 +897,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 --- pristine-src/muon.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/muon.cu	2026-09-19 03:36:45.994733422 -0400
++++ puffer-overlay/muon.cu	2026-09-19 17:36:21.611218972 -0400
 @@ -1,4 +1,5 @@
  #include <nccl.h>
 +#include <algorithm>
@@ -1404,7 +1404,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  }
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 --- pristine-src/ocean.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/ocean.cu	2026-09-19 03:36:45.995011617 -0400
++++ puffer-overlay/ocean.cu	2026-09-19 17:36:21.611607615 -0400
 @@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
@@ -1442,7 +1442,7 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 --- pristine-src/pufferlib.cu	2026-09-18 16:41:04.173539658 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-19 03:37:17.289446601 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-19 17:36:21.611962234 -0400
 @@ -1,15 +1,73 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -3526,7 +3526,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 --- pristine-src/vecenv.h	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/vecenv.h	2026-09-19 03:37:17.288446588 -0400
++++ puffer-overlay/vecenv.h	2026-09-19 18:05:56.316346489 -0400
 @@ -97,6 +97,36 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
@@ -4453,7 +4453,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          cudaDeviceSynchronize();
      } else {
          memset(vec->rewards, 0, vec->total_agents * sizeof(float));
-@@ -591,6 +1271,88 @@
+@@ -591,6 +1271,90 @@
      vec->threading->buffer_states = (atomic_int*)calloc(vec->buffers, sizeof(atomic_int));
      vec->threading->threads = (pthread_t*)calloc(vec->buffers, sizeof(pthread_t));
      vec->threading->accum = (float*)calloc(vec->buffers * NUM_EVAL_PROF, sizeof(float));
@@ -4467,11 +4467,13 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    if (sched_getaffinity(0, sizeof(mask), &mask) == 0) ncpu = CPU_COUNT(&mask);
 +    if (ncpu <= 0) ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
 +    if (ncpu <= 0) ncpu = vec->buffers;
-+    // Default CPUs - 4: on the 12-thread box 8-11 stepping threads were within
-+    // noise (292-297k sps at w128 b4) and 8 inflated c_step least (17 vs 21 us
-+    // at 12, SMT contention); the trainer thread and the GPU pollers' SMT
-+    // siblings take the rest.
-+    int total_stepping = bopl_env_int("BOPL_ENV_THREADS", ncpu - 3);
++    // Default CPUs - 1: every CPU but the trainer thread's. At w256 b4 (the
++    // 2026-09-19 recipe) the rollout is CPU-throughput-bound on c_step x
++    // threads (626 ms of c_step per update over the pool), and on the 12-CPU
++    // box 11 stepping threads beat 9 by 4.0% and 10 by 0.7% (3x3 A/Bs, c_step
++    // 19.1 -> 21.0 us from SMT sharing, still a net gain). The earlier
++    // CPUs - 3 default came from w128 b4 (8-11 within noise there).
++    int total_stepping = bopl_env_int("BOPL_ENV_THREADS", ncpu - 1);
 +    // Stepping threads = workers + the GPU-side threads (1 driver, or one per buffer).
 +    int drivers = bopl_env_int("BOPL_ENV_DRIVER", 0);
 +    if (drivers > vec->buffers) drivers = vec->buffers;
@@ -4542,7 +4544,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
      // Streams are now created by pufferlib.cu (PyTorch-managed streams)
      // Do NOT create streams here - they've already been set up
-@@ -603,7 +1365,11 @@
+@@ -603,7 +1367,11 @@
          args[i].ctx = ctx;
          args[i].net_callback = net_callback;
          args[i].thread_init = thread_init;
@@ -4555,7 +4557,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -611,10 +1377,21 @@
+@@ -611,10 +1379,21 @@
      Env* envs = (Env*)vec->envs;
  
      if (vec->threading != NULL) {
@@ -4579,7 +4581,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  
      for (int i = 0; i < vec->size; i++) {
-@@ -628,6 +1405,7 @@
+@@ -628,6 +1407,7 @@
          free(vec->threading->buffer_states);
          free(vec->threading->threads);
          free(vec->threading->accum);
@@ -4587,7 +4589,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          free(vec->threading);
      }
      free(vec->buffer_env_starts);
-@@ -723,6 +1501,48 @@
+@@ -723,6 +1503,48 @@
      for (int i = 0; i < NUM_EVAL_PROF; i++) {
          out[i] /= threading->num_buffers;
      }

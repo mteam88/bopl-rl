@@ -447,9 +447,10 @@ def main():
     os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', '4')
     # The rollout steps games on vecenv.h's own env pool (THROUGHPUT.md 3.D), not
     # OpenMP: BOPL_ENV_THREADS stepping threads in total (buffer threads
-    # included; default CPUs - 3, i.e. 9 on the 12-thread box: 8-10 tie at
-    # 128 workers, 10 is +3% at 256, 12+ oversubscribes and stalls on preempted
-    # workers), BOPL_ENV_LPT=1 slowest-first claim order, BOPL_ENV_STEAL=1
+    # included; default CPUs - 1, i.e. 11 on the 12-thread box: at w256 b4 the
+    # rollout is CPU-bound on c_step x threads and 11 beat 9 by 4% (2026-09-19);
+    # 12+ oversubscribes and stalls on preempted workers), BOPL_ENV_LPT=1
+    # slowest-first claim order, BOPL_ENV_STEAL=1
     # buffer threads step other buffers' games while their own forward runs,
     # BOPL_ENV_SPIN_US=100 idle spin before a futex park, BOPL_GPU_WAIT=poll|sync,
     # BOPL_ENV_PIN=1 to pin threads, BOPL_ENV_PROF=1|2 pool statistics and the
