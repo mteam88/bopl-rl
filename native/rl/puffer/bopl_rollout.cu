@@ -180,7 +180,7 @@ struct BrGemmArgs {
     const float* in; int ld_in;
     float* out; int ld_out;
     int K, N, ldb, relu;  // ldb: fp32 = row stride of the (K, ldb) transposed weights; tf32 = n-tiles (ceil(N/8))
-    int units;            // column-subtile rounds per block (BOPL_BR_UNITS): a block covers units * (8 / sub) subtiles
+    int units;            // column-subtile rounds per block: a block covers units * (8 / sub) subtiles
     BrGroups g;
     BrLinear wt;  // per-group weights: fp32 (K, ldb) transposed; tf32 fragment order (see br_frag_index)
     int tiles[BR_MAX_GROUPS + 1];
@@ -248,12 +248,18 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     // 4-way conflicts (lanes along k would make them 8-way). K is even; the
     // tail quad past K is masked per pair.
     float4 av[BR_TK / 8];
+    // float4 row loads when the rows are 16-byte aligned (every v4 input; v3's
+    // flat block has a stride of 98), scalar loads otherwise: the same values.
+    // (An alignment abort here instead broke v3; check_dump caught it.)
+    const bool a4 = (a.ld_in & 3) == 0 && (((size_t)a.in) & 15) == 0;
     auto load_a = [&](int k0) {
         #pragma unroll
         for (int j = 0; j < BR_TK / 8; j++) {
             int i = c + j * 32, r = i & 15, k = k0 + ((i >> 4) << 2);
-            if (row0 + r < row_end && k + 3 < K) av[j] = *(const float4*)(a.in + (long)(row0 + r) * a.ld_in + k);
-            else if (row0 + r < row_end && k < K) { float2 v = *(const float2*)(a.in + (long)(row0 + r) * a.ld_in + k); av[j] = make_float4(v.x, v.y, 0.f, 0.f); }
+            const float* src = a.in + (long)(row0 + r) * a.ld_in + k;
+            if (row0 + r < row_end && k + 3 < K && a4) av[j] = *(const float4*)src;
+            else if (row0 + r < row_end && k < K)
+                av[j] = make_float4(src[0], k + 1 < K ? src[1] : 0.f, k + 2 < K ? src[2] : 0.f, k + 3 < K ? src[3] : 0.f);
             else av[j] = make_float4(0.f, 0.f, 0.f, 0.f);
         }
     };
@@ -375,13 +381,10 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
 }
 
 // Column-tile count of br_gemm's grid for a GEMM of depth K over N columns,
-// and the rounds per block (BOPL_BR_UNITS, default 1: one subtile set per
-// block; u: up to u sets per block, the grid shrinks u-fold).
-static int br_gemm_units() {
-    static int u = -1;
-    if (u < 0) { const char* e = getenv("BOPL_BR_UNITS"); u = e && atoi(e) > 0 ? atoi(e) : 1; }
-    return u;
-}
+// and the rounds per block: 1, one subtile set per block (more rounds per
+// block shrink the grid u-fold and were measured a wash: +1% wall, +5%
+// rollout time; kept as a parameter of the kernel, fixed here).
+static int br_gemm_units() { return 1; }
 static int br_gemm_col_tiles(int K, int N, int* units) {
     int nchunks = (K + BR_TK - 1) / BR_TK, sub = 1;
     while (sub < nchunks && sub < BR_KG) sub <<= 1;
@@ -493,12 +496,6 @@ static int br_tiles(BrGroups& g, int* tiles) {
 static void br_gemm_launch(const BrPlan& p, const float* in, int ld_in, float* out, int ld_out,
         int K, int N, int ldb, int relu, const BrLinear& wt, cudaStream_t stream) {
     BrGemmArgs a = {};
-    // The A loads are float4: 16-byte aligned rows (every chain input is a
-    // cudaMalloc'd buffer or the observation row with a stride of 4812).
-    if ((ld_in & 3) != 0 || (((size_t)in) & 15) != 0) {
-        printf("br_gemm: input rows must be 16-byte aligned (ld_in %d, ptr %p)\n", ld_in, (const void*)in);
-        abort();
-    }
     a.in = in; a.ld_in = ld_in; a.out = out; a.ld_out = ld_out; a.K = K; a.N = N; a.ldb = ldb; a.relu = relu;
     if (p.tf32) a.ldb = (N + 7) / 8;  // n-tiles of the fragment layout
     a.g = p.g; a.wt = wt;

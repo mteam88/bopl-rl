@@ -31,6 +31,10 @@
 #   prints one summary line: per arm the median and [min, max] of sps,
 #   learner_sps, rollout_s, train_s, wall_s over the repeats, and the
 #   candidate/incumbent ratio of the medians. Load1 travels with every row.
+#   Build A/B (no runtime switches in the code): BOPL_BENCH_AB_SO=<incumbent
+#   pufferlib _C .so, built from the incumbent commit and copied aside> runs
+#   the inc arm with that extension installed and the cand arm with the
+#   checkout's current build (saved first, restored at exit).
 set -euo pipefail
 LABEL=${1:?label}; shift
 UPDATES=${1:-300}; [ $# -gt 0 ] && shift
@@ -141,10 +145,20 @@ PY
 }
 
 EXTRA_ARGS=("$@")
-if [ -z "${BOPL_BENCH_AB:-}" ]; then
+if [ -z "${BOPL_BENCH_AB:-}" ] && [ -z "${BOPL_BENCH_AB_SO:-}" ]; then
   run_one "$LABEL" ""
   exit
 fi
+
+# ---- build A/B: swap the pufferlib extension per arm ----
+SO_LIVE=$(ls "$PUF"/pufferlib/_C.cpython-*.so)
+SO_CAND=""
+if [ -n "${BOPL_BENCH_AB_SO:-}" ]; then
+  [ -f "$BOPL_BENCH_AB_SO" ] || { echo "BOPL_BENCH_AB_SO $BOPL_BENCH_AB_SO missing" >&2; exit 2; }
+  SO_CAND=$(mktemp "$OUT/cand-XXXX.so"); cp "$SO_LIVE" "$SO_CAND"
+  trap 'cp "$SO_CAND" "$SO_LIVE"; rm -f "$SO_CAND"' EXIT
+fi
+install_so() { [ -n "$SO_CAND" ] && cp "$1" "$SO_LIVE" && touch "$SO_LIVE"; true; }
 
 # ---- A/B: interleaved incumbent / candidate repeats ----
 REPEATS=${BOPL_BENCH_REPEATS:-3}
@@ -154,11 +168,11 @@ ROWS=$(mktemp)
 for i in $(seq 1 "$REPEATS"); do
   order="inc cand"; [ $((i % 2)) -eq 0 ] && order="cand inc"
   for arm in $order; do
-    if [ "$arm" = inc ]; then run_one "$LABEL-inc-$i" "" >> "$ROWS" || true
-    else run_one "$LABEL-cand-$i" "$BOPL_BENCH_AB" "${AB_ARGS[@]}" >> "$ROWS" || true; fi
+    if [ "$arm" = inc ]; then install_so "${BOPL_BENCH_AB_SO:-}"; run_one "$LABEL-inc-$i" "" >> "$ROWS" || true
+    else install_so "$SO_CAND"; run_one "$LABEL-cand-$i" "${BOPL_BENCH_AB:-}" "${AB_ARGS[@]}" >> "$ROWS" || true; fi
   done
 done
-python3 - "$ROWS" "$LABEL" "$BOPL_BENCH_AB" "${BOPL_BENCH_AB_ARGS:-}" <<'PY' | tee -a "$OUT/results.jsonl"
+python3 - "$ROWS" "$LABEL" "${BOPL_BENCH_AB:-}${BOPL_BENCH_AB_SO:+ so=$(basename "$BOPL_BENCH_AB_SO")}" "${BOPL_BENCH_AB_ARGS:-}" <<'PY' | tee -a "$OUT/results.jsonl"
 import json, statistics as st, sys, os
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 label, ab_env, ab_args = sys.argv[2:5]
