@@ -700,3 +700,42 @@ The __expf / __logf / __fdividef scans are inside the noise (the scans are
 3.5 ms of an 87 ms train pass). No throughput value in either, so no gate
 for a numerics / drop-semantics change: reverted. `--v4-row-budget` stays
 the way to trade 470 MB for a tighter drop threshold, Matthew's call.
+
+### Re-profile at the incumbent (5fb70ec9-equivalent build) and the path to 1M
+
+Wall per update 98 ms (24576 learner steps -> ~250k learner_sps; 1M needs
+24.6 ms). CUPTI, 120 updates, w128 b4 p4:
+
+Train stream: busy 89.4 ms per update (4 passes x 22 ms), span 105.
+TF32 GEMMs 30.0 (wgrad 128x256 tn 9.9 over 20 launches, fusion/FFN dgrad
+nn 7.0, fwd nt 4.5, ...), bf16 GEMMs 26.7 (set MLPs, critic block),
+LayerNorm 8.8, prepass 6.2 (count / scatter / pack_flat: re-read of the
+observations every pass, 4x per update), pool / unpool 6.0, MinGRU scans
+3.3, ppo 2.3, other 4.4, memcpy 1.1. Muon on its lanes: ~1 ms critical.
+
+Rollout, per buffer stream: 30 ms busy per update under contention
+(br_gemm 13.0 at avg 11.2 us vs 3.5 isolated, br4_sets 7.1 at 55 vs 5.8,
+HtoD 3.6, br_sample 3.2, br4_rows 2.8). Per buffer step 0.69 ms wall:
+eval_gpu 0.41 (forward 381 us contended; ~80-100 isolated) + eval_env
+0.27. CPU: c_step 33 us per env-step = sim 10 + finish 21.5 (the v4-aim
+observation writer: rays + terrain probes), 2 decisions per env-step;
+1.06 ms CPU per buffer-step; at 333k sps the sim uses ~5.5 of the 12
+hardware threads (6 cores).
+
+Upper bounds (shape, Matthew's call): --learner-passes 2: 315.4k (+27%),
+rollout 0.077 now the bound (GPU forward 304 us still contended by a 54
+ms train), train 0.054. --learner-passes 1 hits a pre-existing train.py
+bug (KeyError 'entropy_coefficient': the entropy schedule with one pass).
+
+Ceilings on this box at the current per-step costs: CPU 12 threads / 33
+us x 2 decisions ~ 730k sps = 545k learner_sps with the GPU free; the GPU
+side needs train <= 25 ms per update (3.6x) and an uncontended rollout
+forward. 1M learner_sps needs all three: (1) passes <= 2 (recipe), (2)
+train GPU work per pass down ~3x, of which the exact / fusion levers left
+are worth ~1.3x (prepass once per update -4.6 ms, fused bf16 emission
+backward-only -4 ms gated, LN / pool / relu_grad into GEMM epilogues -3
+ms; the rest is the fusion GEMM's K = 1280 joined width and the set MLPs:
+shape), (3) the writer's geometry off the CPU per-step cost (21.5 of 33
+us: per-map precomputed terrain / ray fields, or the observation writer
+on the GPU), the largest single rollout lever and a native/ (Rust) change.
+Kernel-level work alone tops out around 280-300k.
