@@ -1103,3 +1103,19 @@ wall is what matters p2 is at worst equal at 1.2x the rate (bench 1.33x).
   latency-bound: load, sync, compute, sync at 16 k per step). Exact: the
   per-thread k order is sequential as before, split-K bounds still round
   to 16, lanes past k_end add fmaf(0, 0, acc).
+
+### w256 b4 at p2 on aim-only (bench, 04322d89 build)
+
+  shape            learner_sps  sps    rollout_s  train_s  wall_s  buffer step ms (gpu / env)  cuda GB
+  w128 b4 p2       448.3k       598k   0.0541     0.0414   0.0548  0.42 (0.25 / 0.14)          5.9
+  w256 b4 p2       524.2k       699k   0.0926     0.0923   0.0938  0.72 (0.44 / 0.27)          10.8
+
++17% from twice the rows per round trip: the GPU forward costs 3.2 us per
+row at 128 rows against 3.9 at 64, the env side scales linearly (c_step
+17.4 us both; workers 56%, owner 21%, stolen 22%, 0.8 futex sleeps and
+271 polls per buffer step), set_overflow 0 at rows_max 2 / 6 / 11.2 / 2.
+Train and rollout are now equal (92 ms per update of 2x the samples), so
+the next gain needs both sides. Memory 10.8 of 12.2 GB: w256 leaves ~1.4
+GB, no room for w512. Doubling the batch is a recipe change (B = 49152
+per pass, same passes): benched, not defaulted; Matthew's call together
+with the pass count.
