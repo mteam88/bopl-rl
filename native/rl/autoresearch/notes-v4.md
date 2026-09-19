@@ -1271,3 +1271,19 @@ M = 64 (br_gemm 7 launches per step, latency-bound, avg 10 us), or more
 rows per launch without changing the recipe: --buffers 2 at w128 (128
 rows per launch, same samples per update, less env/GPU overlap). Bench
 next.
+
+Buffers at w128 p2 (2bcd3980), same samples per update:
+
+  buffers  rows/launch  learner_sps  buffer step ms (gpu fwd us / env)
+  2        128          396.2k       0.478 (266 / 0.188)
+  4        64           450.9k       0.420 (245 / 0.144)
+  8        32           408.0k       0.464 (222 / 0.089)
+
+b4 is the optimum: at b2 the env half (1.13 ms of CPU per step across 8
+workers) stops hiding under the GPU, at b8 the forward is launch-bound
+(222 us for 32 rows). Not kept; the default stays. With the recipe fixed
+at w128 p2 b4 and the GPU saturated (~120 ms of stream time in a 54 ms
+wall), what is left in the exact class is stream time: the rollout
+forward's kernels at M = 64 (7 br_gemm launches per step, avg 10 us,
+latency-bound; br4_sets 38 us; sample 23 us) and the train pass's
+memory-bound passes (~1.1 ms per update at p2). Anything larger is shape.
