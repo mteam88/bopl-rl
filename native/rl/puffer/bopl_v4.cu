@@ -457,6 +457,146 @@ __global__ void __launch_bounds__(POOL_THREADS) unpool_rows4(const bf16* h2, bf1
 }
 static bool pool4_ok(int D, int ldj, int col0) { return D % 4 == 0 && POOL_THREADS % (D / 4) == 0 && ldj % 4 == 0 && col0 % 4 == 0; }
 static int pool4_grid(int D, int B) { int per = POOL_THREADS / (D / 4); return (B + per - 1) / per; }
+
+/* ---- fused set forward: h1 = ReLU(X W1^T), h2 = ReLU(h1 W2^T), pool ---------
+ * One kernel per set replaces the two Lt GEMMs and pool_rows: a block owns
+ * SF_SAMPLES consecutive samples, i.e. one contiguous range of the packed
+ * rows (offsets are prefix sums, so a sample's rows never straddle blocks),
+ * and walks it in 64-row tiles: the h1 tile by bf16 mma.sync (m16n8k16, fp32
+ * accumulate, ReLU, bf16 round: the same rounding points as the Lt RELU
+ * epilogue), kept in shared for the h2 tile by the same path, both tiles
+ * written to global from shared with 16-byte stores (h1 for the backward's
+ * dW2 and ReLU' mask, h2 for unpool). The pool is the sequential scan of
+ * pool_rows over the tile in shared: thread = column, rows in order, strict
+ * max with the first winner, fp32 sum in row order, so max / winner / mean
+ * are bit-identical to pool_rows on the same h2. What differs from the Lt
+ * path is the GEMMs' fp32 summation order (the check_v4 class). Rows past a
+ * sample's clamped count, [total, act), are not touched here: zero_tail
+ * zeroes h1's tail with xpack's for the dW2 GEMM over the active rows. */
+constexpr int SF_THREADS = 128, SF_WARPS = SF_THREADS / 32, SF_ROWS = 64, SF_SAMPLES = 16, SF_PAD = 8;
+__device__ __forceinline__ void mma_bf16_16816(float* c, const unsigned* a, unsigned b0, unsigned b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+        : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
+        : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+__device__ __forceinline__ unsigned bf2_pack_relu(float x, float y) {
+    __nv_bfloat162 v = __floats2bfloat162_rn(fmaxf(x, 0.0f), fmaxf(y, 0.0f));
+    return *reinterpret_cast<unsigned*>(&v);
+}
+static size_t set_fwd_smem(int I, int D) { return (size_t)SF_ROWS * ((I + SF_PAD) + (D + SF_PAD)) * sizeof(bf16); }
+/* The tile kernel's shape coverage (the shipped shapes: I 64 / 128, D 128);
+ * other shapes take the Lt GEMMs + pool_rows. */
+static bool set_fwd_ok(int I, int D, int ldj, int col0) {
+    return I % 16 == 0 && I <= 128 && D % SF_THREADS == 0 && D <= 512 && ldj % 4 == 0 && col0 % 4 == 0;
+}
+__global__ void __launch_bounds__(SF_THREADS) set_fwd(const bf16* __restrict__ xpack, int K, const bf16* __restrict__ w1b, int I,
+                                                       const bf16* __restrict__ w2b, int D, const int* __restrict__ offsets,
+                                                       const int* __restrict__ counts, const int* __restrict__ totals, int s, int B,
+                                                       bf16* __restrict__ h1, bf16* __restrict__ h2, float* __restrict__ joined, int ldj,
+                                                       int col0, int* __restrict__ winner, int mean_pool) {
+    extern __shared__ __align__(16) unsigned char sf_smem[];
+    bf16* h1s = (bf16*)sf_smem;                       /* [SF_ROWS][I + SF_PAD] */
+    bf16* h2s = h1s + SF_ROWS * (I + SF_PAD);         /* [SF_ROWS][D + SF_PAD] */
+    const int L1 = I + SF_PAD, L2 = D + SF_PAD;
+    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, gid = lane >> 2, tid4 = lane & 3;
+    const int b0 = blockIdx.x * SF_SAMPLES, b1 = min(b0 + SF_SAMPLES, B);
+    const int total = totals[s];
+    const int row0 = min(offsets[b0], total);
+    const int row1 = min(b1 < B ? offsets[b1] : total, total);
+    /* pool state: thread = column c (and c + SF_THREADS ... when D > SF_THREADS) of the current sample */
+    constexpr int MAXC = 4;   /* D <= 512 */
+    float best[MAXC], sum[MAXC]; int win[MAXC];
+    const int ncols = D / SF_THREADS;
+    int b = b0, off = offsets[b0], n = max(0, min(counts[b0], total - offsets[b0]));
+    #pragma unroll
+    for (int q = 0; q < MAXC; q++) { best[q] = 0.0f; sum[q] = 0.0f; win[q] = -1; }
+    auto flush = [&]() {
+        for (int q = 0; q < ncols; q++) {
+            int c = tid + q * SF_THREADS;
+            joined[(long)b * ldj + col0 + c] = best[q];
+            joined[(long)b * ldj + col0 + D + c] = (mean_pool && n > 0) ? sum[q] / n : 0.0f;
+            winner[(long)b * D + c] = win[q];
+            best[q] = 0.0f; sum[q] = 0.0f; win[q] = -1;
+        }
+        b++;
+        if (b < b1) { off = offsets[b]; n = max(0, min(counts[b], total - off)); }
+    };
+    float acc[16][4];   /* 16 n-tiles of 8 columns: h1 (I <= 128) or one 128-column chunk of h2 */
+    for (int tile0 = row0; tile0 < row1; tile0 += SF_ROWS) {
+        const int wrow = tile0 + warp * 16;   /* this warp's 16 rows */
+        /* h1 tile: acc[nt] = X[wrow.., :] W1[nt*8.., :]^T */
+        const int nt1 = I / 8;
+        #pragma unroll
+        for (int t = 0; t < 16; t++) { acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.0f; }
+        const int ra = wrow + gid, rb = wrow + gid + 8;
+        const bf16* xa = xpack + (long)ra * K; const bf16* xb = xpack + (long)rb * K;
+        for (int k0 = 0; k0 < K; k0 += 16) {
+            unsigned a[4];
+            const int ka = k0 + tid4 * 2;
+            a[0] = ra < row1 ? *(const unsigned*)(xa + ka) : 0u;
+            a[1] = rb < row1 ? *(const unsigned*)(xb + ka) : 0u;
+            a[2] = ra < row1 ? *(const unsigned*)(xa + ka + 8) : 0u;
+            a[3] = rb < row1 ? *(const unsigned*)(xb + ka + 8) : 0u;
+            #pragma unroll
+            for (int t = 0; t < 16; t++) if (t < nt1) {
+                const bf16* wr = w1b + (long)(t * 8 + gid) * K + ka;
+                mma_bf16_16816(acc[t], a, *(const unsigned*)wr, *(const unsigned*)(wr + 8));
+            }
+        }
+        #pragma unroll
+        for (int t = 0; t < 16; t++) if (t < nt1) {
+            *(unsigned*)(h1s + (warp * 16 + gid) * L1 + t * 8 + tid4 * 2) = bf2_pack_relu(acc[t][0], acc[t][1]);
+            *(unsigned*)(h1s + (warp * 16 + gid + 8) * L1 + t * 8 + tid4 * 2) = bf2_pack_relu(acc[t][2], acc[t][3]);
+        }
+        __syncthreads();
+        /* h2 tile in 128-column chunks: acc[nt] = h1s[wrow.., :] W2[c0 + nt*8.., :]^T */
+        for (int c0 = 0; c0 < D; c0 += 128) {
+            const int nt2 = min(D - c0, 128) / 8;
+            #pragma unroll
+            for (int t = 0; t < 16; t++) { acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.0f; }
+            const bf16* ha = h1s + (warp * 16 + gid) * L1; const bf16* hb = ha + 8 * L1;
+            for (int k0 = 0; k0 < I; k0 += 16) {
+                unsigned a[4];
+                const int ka = k0 + tid4 * 2;
+                a[0] = *(const unsigned*)(ha + ka); a[1] = *(const unsigned*)(hb + ka);
+                a[2] = *(const unsigned*)(ha + ka + 8); a[3] = *(const unsigned*)(hb + ka + 8);
+                #pragma unroll
+                for (int t = 0; t < 16; t++) if (t < nt2) {
+                    const bf16* wr = w2b + (long)(c0 + t * 8 + gid) * I + ka;
+                    mma_bf16_16816(acc[t], a, *(const unsigned*)wr, *(const unsigned*)(wr + 8));
+                }
+            }
+            #pragma unroll
+            for (int t = 0; t < 16; t++) if (t < nt2) {
+                *(unsigned*)(h2s + (warp * 16 + gid) * L2 + c0 + t * 8 + tid4 * 2) = bf2_pack_relu(acc[t][0], acc[t][1]);
+                *(unsigned*)(h2s + (warp * 16 + gid + 8) * L2 + c0 + t * 8 + tid4 * 2) = bf2_pack_relu(acc[t][2], acc[t][3]);
+            }
+        }
+        __syncthreads();
+        /* both tiles to global, 16-byte stores along the rows (rows < row1 only) */
+        const int rows_here = min(SF_ROWS, row1 - tile0);
+        for (int i = tid; i < rows_here * (I / 8); i += SF_THREADS) {
+            int r = i / (I / 8), c8 = (i - r * (I / 8)) * 8;
+            *(uint4*)(h1 + (long)(tile0 + r) * I + c8) = *(const uint4*)(h1s + r * L1 + c8);
+        }
+        for (int i = tid; i < rows_here * (D / 8); i += SF_THREADS) {
+            int r = i / (D / 8), c8 = (i - r * (D / 8)) * 8;
+            *(uint4*)(h2 + (long)(tile0 + r) * D + c8) = *(const uint4*)(h2s + r * L2 + c8);
+        }
+        /* the pool: rows in order, samples advanced as their rows end */
+        for (int r = 0; r < rows_here; r++) {
+            const int row = tile0 + r;
+            while (row >= off + n) flush();   /* empty samples flush zeros */
+            for (int q = 0; q < ncols; q++) {
+                float v = bf(h2s[r * L2 + tid + q * SF_THREADS]);
+                if (v > best[q]) { best[q] = v; win[q] = row - off; }
+                sum[q] += v;
+            }
+        }
+        __syncthreads();   /* the tiles are read before the next tile overwrites them */
+    }
+    while (b < b1) flush();
+}
 /* ---- elementwise and LayerNorm ------------------------------------------ */
 __global__ void relu_into(const float* src, float* dst, int rows, int cols, int ldd) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -916,6 +1056,18 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     for (int s = 0; s < SETS; s++) {
         const int* total = a->totals.data + s;
         int K = SPEC[s].kpad, act = a->act[s];
+        const int col0 = FD + s * 2 * D;
+        if (set_fwd_ok(I, D, LDJ, col0)) {
+            /* the fused tile kernel: h1, h2 and the pool; xpack's and h1's tails zeroed for the dW2 / dW1 GEMMs over the active rows */
+            zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->xpack[s]), K, bfp(a->h1[s]), I, a->totals.data, s, act);
+            set_fwd<<<(B + SF_SAMPLES - 1) / SF_SAMPLES, SF_THREADS, set_fwd_smem(I, D), stream>>>(
+                bfp(a->xpack[s]), K, bfp(a->w1b[s]), I, bfp(a->w2b[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
+                a->totals.data, s, B, bfp(a->h1[s]), bfp(a->h2[s]), a->joined.data, LDJ, col0, a->winner[s].data, w->mean_pool);
+            if (g_set_stage.forward)
+                g_set_stage.forward(s, bfp(a->h2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
+            prof_mark("enc.set_mlp_pool", stream);
+            continue;
+        }
         /* h1 = ReLU([X | 1_id] [W1 | E^T]^T) = ReLU(W1 x + E[id]) over the active rows */
         zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->xpack[s]), K, nullptr, 0, a->totals.data, s, act);
         /* the backward's DRELU bitmask when registered (training) and the pass is wide enough for RELU_AUX to round like RELU */
@@ -969,7 +1121,8 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
         prof_mark("bwd.enc.dW2", stream);
         /* dh1 = (dh2 W2) * ReLU'(h1), written over h2 (no longer needed) */
         bf16* dh1 = bfp(a->h2[s]);
-        void* mask = act >= LT_AUX_MIN_ROWS ? a->relu_mask[s].data : nullptr;   /* as the forward decided */
+        /* as the forward decided: the fused tile kernel writes no bitmask (mask_rows below) */
+        void* mask = (!set_fwd_ok(I, D, LDJ, FD + s * 2 * D) && act >= LT_AUX_MIN_ROWS) ? a->relu_mask[s].data : nullptr;
         lt_gemm(false, false, act, I, D, bfp(a->dh2[s]), D, bfp(a->w2b[s]), I, nullptr, dh1, I, true,
                 mask ? CUBLASLT_EPILOGUE_DRELU : CUBLASLT_EPILOGUE_DEFAULT, stream, mask);
         if (!mask) mask_rows<<<grid_long((long)act * I), BLOCK_SIZE, 0, stream>>>(dh1, bfp(a->h1[s]), (long)act * I);
