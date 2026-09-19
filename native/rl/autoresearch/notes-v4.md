@@ -836,3 +836,26 @@ evaluation nearest 955 s is read out (refit Elo + band rating) next to the
 reference's 160M numbers (646 refit / 523.5 band), and the 160M readings
 give the sample-efficiency cost at equal steps. Launched:
 lite-aim-p2-3d4bd503 (STEPS=360M).
+
+#### lite-aim-p2-3d4bd503 (passes 2, seed 73, 360M learner steps in 1247 s)
+
+In-run rate 310-319k learner_sps (bench 355.6k: the evaluation hook and
+the box's other load take the rest); the p4 lite run did 299k against its
+317k bench, so in the sanity recipe passes 2 buys only +4%.
+
+  reading                         refit Elo        band rating (240 games)
+  reference v4-aim/000 @160M      646              523.5 [478, 568]
+  lite-aim p4 @160M (579 s)       574  (floor 571) 496.5 [455, 542]  pass
+  lite-aim p2 @160M (547 s)       608  (floor 571) 429.5 [389, 467]  FAIL band (floor 448.5)
+  lite-aim p2 @955 s (280M, 970s) 574 [400, 824]   547.8 [510, 586]
+
+Equal steps: passes 2 costs ~70 band points against p4 at 160M (429.5 vs
+496.5, intervals disjoint), the sample-efficiency cost Matthew asked for.
+Equal wall-clock (the reference's 955 s to 160M): p2 reaches 280M learner
+steps and its band rating 547.8 [510, 586] is at/above the reference's
+523.5 [478, 568] (intervals overlap; refit Elo 574 with a wide interval
+vs 646). Drift flags on the equal-steps report (EV 0.43 vs 0.30, entropy
+1.15x, KL 0.4x) are the halved gradient-steps-per-sample showing in the
+statistics, not a fault. Verdict: p2 loses at equal samples, ties or wins
+at equal wall. Matthew's call; the p1 and p4 (extended to 955 s) rows
+follow. Launched lite-aim-p1-3d4bd503 (STEPS=400M).
