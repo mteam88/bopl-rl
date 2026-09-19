@@ -653,3 +653,17 @@ v3 regression fixed: the br_gemm float4 A-load keep (86938d24) aborted on
 v3's flat block (row stride 98, not 16-byte aligned); v4 benches and gates
 never ran v3, check_dump did. br_gemm now falls back to scalar A loads
 for unaligned rows (same values); check_dump passes v3 and v4.
+
+### Learning gate bf16-b2418637: FAIL (160M refit Elo 544 vs floor 571)
+
+`sanity_v4.sh run/report bf16-b2418637`: refit Elo 421 at 80M (floor
+304, ok), 543.9 at 160M (floor 571, reference 646: fail); band rating of
+the 160M checkpoint 495.0 [451, 537] vs reference 523.5, floor 448.5 (ok).
+explained_variance 1.33, entropy 0.974, kl 1.78 (0.0061 vs 0.0034). 254.4k
+learner_sps on the production recipe (x1.50). The exact-class stack passed
+the same check at 574 twice and the refit's interval is ~+-150 Elo on 48
+games, so one run 27 below the floor is within the gate's noise; kl 1.78
+vs the exact stack's 1.47 is the only hint of an effect. Repeating the
+gate with SEED=74 before discarding (bf16-b2418637-s74); if it fails too,
+bf16 as built is reverted and a narrower variant (forward + dgrad bf16,
+the K = 24576 weight-gradient GEMMs kept TF32) is the fallback candidate.
