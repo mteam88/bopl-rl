@@ -1682,3 +1682,26 @@ before griddepcontrol.wait, so their latency overlaps the predecessor's
 tail; A is read after. A/B vs ce2cc341 at w128 b4 p2, 3x3: 471.7k vs
 469.3k (+0.5%; every cand above every inc), eval_gpu 248 -> 245 us,
 train_s unchanged. Marginal, kept as a free ordering. Incumbent 471.7k.
+
+### CUPTI profile of the fused set kernels at 8f5eab63 (80 updates, w128 b4 p2)
+
+Train stream per update (83 updates aggregated; prof-p2.txt is the Lt
+path at the same shape, prof-setmlp.txt the fused build):
+  Lt path:    set GEMMs with RELU epilogue 2.7 (+0.6 critic), pool_rows4
+              1.0, wmma small-set GEMMs 1.4, unpool_rows4 2.0, mask_rows
+              1.3, dh1 GEMM ~1.0; wgrad GEMMs 3.4 (stay in both).
+  fused:      set_fwd 3.73 ms (8 launches, avg 466 us, max 1005),
+              set_bwd 7.09 ms (avg 886 us, max 1783); wgrads 3.9.
+  stream total 40.0 -> 44.8 ms.
+So set_fwd replaces ~5.1 ms with 3.7 (-1.4 ms: a win), set_bwd replaces
+~4.3 ms with 7.1 (+2.8 ms: the loss). set_bwd's GEMM phase is half of
+set_fwd's (one 64x128x64 mma pass per tile against two), so its extra
+~420 us per launch is the dh2 walk: it reads h2 from global per row
+(64 dependent ~0.5 us loads per tile, ~30 us per tile serialized, against
+set_fwd's walk over a shared tile) and stores dh2 per row the same way.
+Walk-bound, not GEMM-bound: the one-turn fix is to stage the h2 tile into
+shared with 16-byte row loads first (as set_fwd stages its outputs), walk
+from shared, and write dh2 from the shared tile with 16-byte stores.
+Expected set_bwd ~886 -> ~500 us per launch, the fused set path ~7.7 ms
+against the Lt path's ~9.4 (-1.7 ms of train, ~+1-2% learner_sps at
+w128 b4 through the interference channel). Next step.
