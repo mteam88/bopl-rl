@@ -66,7 +66,7 @@ __global__ void br4_pack_set_weights(const float* w1, int features, const float*
 }
 __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
     extern __shared__ __align__(16) unsigned char smem[];
-    br_pdl_enter();
+    br_pdl_wait();
     const int row = blockIdx.x, s = blockIdx.y, tid = threadIdx.x, lane = tid & 31;
     const int I = a.I, D = a.D;
     int* valid = (int*)smem;
@@ -143,6 +143,7 @@ __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
         float v = br4_bf(fmaxf(acc, 0.0f));   // the trainer pools bf16-stored h2
         best = fmaxf(best, v); sum += v;
     }
+    br_pdl_release();   // the flat GEMM launches under the reduction
     // reduce the parts through shared
     __shared__ float red_max[BR4_SET_THREADS], red_sum[BR4_SET_THREADS];
     red_max[tid] = best; red_sum[tid] = sum;
@@ -180,7 +181,7 @@ __device__ __forceinline__ float br4_block_sum(float v, float* scratch) {
 __global__ void __launch_bounds__(256) br4_rows(Br4RowsArgs a) {
     __shared__ float scratch[8];
     __shared__ float rowbuf[1024];   // W <= 1024 (hidden + privileged, critic width)
-    br_pdl_enter();
+    br_pdl_wait(); br_pdl_release();
     const int row = blockIdx.x, W = a.W;
     const float* x = a.x + (long)row * a.ldx;
     const float* res = a.res ? a.res + (long)row * a.ldres : nullptr;
@@ -504,7 +505,7 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
 // mapped host buffer. Either way the device row equals the host row bit for
 // bit (bopl4_transport_check counts the floats that differ, dump mode only).
 __global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows) {
-    br_pdl_enter();   /* launched after a memcpy (no PDL edge in); lets br4_sets pre-launch */
+    br_pdl_wait(); br_pdl_release();   /* launched after a memcpy (no PDL edge in); lets br4_sets pre-launch */
     const int r = blockIdx.x;
     if (r >= rows) return;
     const float* slot = packed + (long)r * BOPL4_PACK_P;

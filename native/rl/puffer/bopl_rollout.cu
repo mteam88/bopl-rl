@@ -36,17 +36,20 @@
 #include <mma.h>
 
 // Programmatic dependent launch for the per-step chain (graph-captured: the
-// attribute becomes a programmatic graph edge): every chain kernel signals
-// its dependents at entry and waits for its predecessor's completion (and
-// memory flush) before its first read, so each launch's scheduling and
-// prologue overlap the predecessor's tail. Both are no-ops for a kernel
-// launched without the attribute (eager self-checks, v3). Because the wait
-// is on the immediate predecessor only, every kernel in a PDL-launched
-// chain waits unconditionally, so completion stays transitive.
-__device__ __forceinline__ void br_pdl_enter() {
-    asm volatile("griddepcontrol.launch_dependents;");
-    asm volatile("griddepcontrol.wait;" ::: "memory");
-}
+// attribute becomes a programmatic graph edge): every chain kernel waits for
+// its predecessor's completion (and memory flush) before its first read and
+// releases its dependents (griddepcontrol.launch_dependents) before its
+// epilogue, so the dependent's launch and scheduling overlap the tail. The
+// release sits late, not at entry: released dependents occupy SM slots (a
+// br_gemm block holds 32 KB of shared) spinning in the wait, and with the
+// release at entry the overlapped training pass lost 36% (train_s 40 -> 55
+// ms at w128 b4 p2) for a 13% faster rollout: a net loss. Both are no-ops
+// for a kernel launched without the attribute (eager self-checks, v3).
+// Because the wait is on the immediate predecessor only, every kernel in a
+// PDL-launched chain waits unconditionally, so completion stays transitive.
+// A kernel that exits without releasing counts as released.
+__device__ __forceinline__ void br_pdl_wait() { asm volatile("griddepcontrol.wait;" ::: "memory"); }
+__device__ __forceinline__ void br_pdl_release() { asm volatile("griddepcontrol.launch_dependents;"); }
 template<typename... KArgs, typename... Args>
 static void br_launch_pdl(void (*kernel)(KArgs...), dim3 grid, dim3 block, size_t smem, cudaStream_t stream, Args&&... args) {
     cudaLaunchConfig_t cfg = {};
@@ -237,7 +240,7 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     // fp32 as [k][row] (float4 row reads). The 16 x 32 C tiles alias it after
     // the K loop.
     __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];  // 32 KB
-    br_pdl_enter();
+    br_pdl_wait();
     int rt = blockIdx.x, grp = 0;
     while (grp + 1 < a.g.n && rt >= a.tiles[grp + 1]) grp++;
     const int row0 = a.g.end[grp] + (rt - a.tiles[grp]) * BR_TM;
@@ -389,6 +392,7 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
         for (int r = 0; r < BR_TM; r++) Cw[r * BR_TN + c] = acc[r];
     }
     __syncthreads();
+    if (u == a.units - 1) br_pdl_release();   // the dependent launches under this epilogue
     // Per subtile, sum its warps' partial tiles in warp order and write the valid entries.
     for (int o = tid; o < subtiles * BR_TM * BR_TN; o += BR_THREADS) {
         int st = o / (BR_TM * BR_TN), e = o % (BR_TM * BR_TN), r = e / BR_TN, cc = e % BR_TN;
@@ -462,7 +466,7 @@ struct BrGateArgs {
 };
 
 __global__ void br_gate(BrGateArgs a) {
-    br_pdl_enter();
+    br_pdl_wait(); br_pdl_release();
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= a.rows * a.H) return;
     int row = idx / a.H, h = idx - row * a.H;
@@ -580,7 +584,7 @@ struct BrSampleArgs {
 
 __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs a) {
     __shared__ float s_logits[SAMPLE_WARP_ROWS][SAMPLE_MAX_LOGITS];
-    br_pdl_enter();
+    br_pdl_wait(); br_pdl_release();
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int idx = blockIdx.x * SAMPLE_WARP_ROWS + warp;
     if (idx >= a.rows) return;
