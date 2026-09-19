@@ -2377,3 +2377,61 @@ each: the train pass at 16 SMs should still fit under the ~70 ms wall
 (24.8 x ~2.5), and the chain's blocks stop queueing behind cutlass
 tiles. L12 lost at v3 w128 p4 (train-bound then); the geometry is the
 opposite now.
+
+## 2026-09-19 18:40 SM split: discards; sim per-tick sizing; w256 b8 re-test launched
+
+`ab-split32` (rollout 32 SMs / train 16): **552.4k vs 644.1k (-14%)**;
+forward 359 us (worse than the shared 272: the chain's 512-block kernels
+on 32 SMs run more waves than on 48 shared with priority), train 54.5.
+`ab-split36` (36 / 12): **495.8k vs 641.6k (-23%)**; the rollout did
+improve, 75.3 -> 71.3 ms with the forward at 239 us, but the train pass
+at 12 SMs is 98 ms and the wall. Both discarded (env knob, nothing to
+revert). The split36 rollout puts a number on the contention channel:
+**~4 ms of the 75 (5%)** is all an uncontended chain buys at this
+geometry, the same floor the no-writer bound found (70.6). The buffer
+step's floor is ~0.55 ms = env 0.26 + chain ~0.29 (170 us isolated
+forward + launch/PDL tail + HtoD), serial within a buffer.
+
+### Sim per-tick sizing (perf over writer_bench, libbopl_sim.so = 60% of samples)
+
+Isolated 4.0 us per decision (4 ticks, ~1.0 us per tick); 9.9-10.8 in the
+trainer (SMT). Share of the sim's samples:
+
+    game_tick (dispatch, input, misc)                 14%   0.55 us/decision
+    platforms: platforms_tick 12, updaters 7.5,
+       PlatformBounds::rebuild 2.2 (epoch-gated)      22%   0.9
+    entity export: refresh_actor_entities 10 (per
+       tick, syncs the players' ability-entity slots
+       into the entity array), refresh_entities 2.4,
+       publish_entities 3.5, fill_slimes 1.5           17%   0.7
+    arrows_contacts (bow in the default loadout;
+       active arrows only)                              7%   0.3
+    player: player_tick 4.3, move_grounded 2.4,
+       collision_rays 1.8, sync_collider 1.8, contacts  ~12%  0.5
+    fast_sin 3.8, level_intro_tick 2.1 (warmup only), long tail ~25%
+
+Exact levers in it: refresh_actor_entities per tick is a full resync
+that a dirty flag on the slots would skip most ticks (-0.3..0.4 us per
+decision isolated); PlatformBounds::rebuild is already epoch-gated;
+arrows_contacts already skips inactive arrows; the platforms' 22% is the
+game's physics in Q32 (bit-exact territory, not for this campaign).
+Realistic total -0.5 us per decision isolated = -12% of the sim = ~-1 us
+of the trainer's 20.6 us c_step = -5% env CPU, and with the rollout only
+half CPU-bound now (the chain takes over past ~half the writer's cost),
+**-2..-3% wall**. Same class as the writer items (-1.4 ms). Neither is
+the road to 1M; both are worth doing as exact housekeeping if the chain
+side moves.
+
+Launched `ab-w256b8` (--buffers 8 on the candidate: 32 rows per chain, 8
+chains, same rows per update and recipe, no gate): the buffer axis was
+closed at w128 b4 when the step was env-bound; now that the chain is the
+other half of the floor, more co-running chains of fewer rows is the
+one geometry left to test (fwd(32 rows) should sit near the 90 us
+isolated, and 8 chains hide each other's latency).
+
+Standing summary at 18:55: incumbent 645.2k (w256 b4, p1 div2, 11
+threads). Ceiling of this architecture at this geometry ~700k (measured:
+no writer 688k, no contention ~71 ms rollout). Beyond it needs the chain
+per row cheaper (more chains or more rows per chain: w512 is OOM at 12 GB)
+together with the CPU per decision down (writer to GPU +0..5%, sim -2..3%,
+writer items -2%).
