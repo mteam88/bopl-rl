@@ -885,6 +885,27 @@ the evaluation hook and the box's load the rollout is the wall and the
 pass count barely moves the rate. Launched lite-aim-p4w-3d4bd503
 (STEPS=320M) for the p4 row at 955 s.
 
+#### lite-aim-p4w-3d4bd503 (passes 4 again, seed 73, 320M steps in 1210 s) and the closed table
+
+  reading                         refit Elo        band rating (240 games)
+  reference v4-aim/000 @160M      646              523.5 [478, 568]
+  lite-aim p4 @160M (run 1)       574              496.5 [455, 542]
+  lite-aim p4 @160M (run 2)       544              472.7 [428, 514]
+  lite-aim p2 @160M               608              429.5 [389, 467]
+  lite-aim p1 @160M               574              396.0 [353, 439]
+  lite-aim p4 @955 s (240M, 904s) 608 [517, 770]   526.5 [489, 566]
+  lite-aim p2 @955 s (280M, 970s) 574 [400, 824]   547.8 [510, 586]
+  lite-aim p1 @955 s (280M, 921s) 747 [620, 950]   437.0 [395, 477]
+
+The two p4 runs share the seed and differ by 24 band points at 160M (the
+env pool's timing is not deterministic): that is the run-to-run noise
+floor for one-seed readings. At equal wall p4 ties the reference (526.5
+vs 523.5) and p2's 547.8 is within that noise of it; p1 is out (437).
+At equal samples p2 costs ~50-70 band and p1 ~90-100. Verdict: passes 4
+stays; passes 2 buys nothing the noise can see at equal wall and costs
+sample efficiency; the rollout is the wall at every pass count anyway
+(299k / 313k / 303k in-run). Table closed; Matthew has the numbers.
+
 ### Writer geometry, exact form: refilling lanes + axis-aligned walls
 
 Where the row's time goes (writer_bench, default loadout, maps 0-2, the
