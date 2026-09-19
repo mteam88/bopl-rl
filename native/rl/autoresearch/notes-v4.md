@@ -1231,3 +1231,43 @@ Matthew reviews before merge. The incumbent bench row from here is w128
 p2 on aim-only: 448.3k learner_sps (rollout-bound: rollout 0.0541 s,
 train 0.0414 s per update), so the next lever is the rollout side: the
 packed obs transport (exact, check_dump-gated), then the split.
+
+### Packed observation transport (2bcd3980): kept, +0.5% (marginal)
+
+Design: bopl_obs_pack.h. The v4 row goes up as a 1536-float slot: header
+(mode, four prefix lengths), flat 492 + privileged 48, then each set's
+present rows (the writer fills sets as prefixes and zeroes behind them,
+bopl_written), 6 KB against the 19.2 KB dense row. bopl_step_finish packs
+the env's live rows (both c_step and the profiled step path); the buffer
+step uploads the buffer's slots with one memcpy (the reward / terminal /
+mask pack rides in the slots' idle tail) and bopl4_unpack_rows rebuilds
+the dense device row the chain and the rollout copy already read. A row
+that does not fit or has no writer record goes mode 1: the kernel reads
+the mapped host row (rare; the init state and every reset mark all slots
+dense). Exactness: dump mode (--dump-rows) runs bopl4_transport_check on
+every buffer step; check_dump.py asserts 0 differing floats. 0 at the
+tiny shape and at the production shape (w128 b4, 4 x 128 x 64 uploads).
+
+A/B 3x3 at w128 p2 (the recipe) vs 04322d89: 450.9k [449.0, 451.4] vs
+448.6k [448.6, 448.6] learner_sps, all repeats above; forward_us 248.5 ->
+244.7 (-4 us of the 29 us memcpy), c_step 17.2 -> 17.7 us (the pack),
+train_s 0.0415 -> 0.0409. Kept on the rule (candidate above the incumbent
+on every repeat) but the gain is a tenth of the sizing: the memcpy ran on
+the copy engine while the SMs were the wall, so removing 23 us of copy
+per step shortened the step's latency chain by only 4 us, and the unpack
+kernel costs SM time. The traffic cut (PCIe 7.7 -> 2.6 GB/s sustained,
+1.3 GB less host-side row copying per update) matters more at w256 and if
+the copy engine is ever shared. Incumbent: 450.9k at w128 p2 (2bcd3980).
+
+The split at w128 p2 (2bcd3980): rollout 53.8 ms per update = 128 steps
+x 0.420 ms; buffer step = eval_gpu 0.269 (GPU forward 245 us, isolated
+90) + env 0.144 (env CPU 0.56 ms per step over 8 workers; c_step 17.7
+us, workers 56%, owner 21%, stolen 23%). Train 40.9 ms runs under it.
+Stream time per update: 4 rollout streams x ~19 ms of kernels + train 41
+= ~120 ms in a 54 ms wall: the GPU is saturated and the forward's 155 us
+over its isolated time is queueing behind the train stream and the other
+three buffers. Levers that cut GPU stream time: the rollout kernels at
+M = 64 (br_gemm 7 launches per step, latency-bound, avg 10 us), or more
+rows per launch without changing the recipe: --buffers 2 at w128 (128
+rows per launch, same samples per update, less env/GPU overlap). Bench
+next.
