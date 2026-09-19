@@ -689,3 +689,14 @@ already touch the data (ln_forward already writes a bf16 output for the
 critic path; relu_grad_from reads joined; pool / unpool write joined)
 instead of separate to_bf16 kernels, backward-only: ~+4% for one gate.
 Ranked behind the structural levers in the re-profile below.
+
+### Row budget default 2,6,14,2 + MinGRU scans on hardware transcendentals (fc30bb2a): discard, reverted
+
+Built together for one gate as asked. Build A/B vs e8f13657: 248.7k vs
+248.9k (-0.1%), train 0.0978 vs 0.0977; cuda_mb 5.9 vs 6.4 GB; no drops
+(set_rows_max 2 / 6 / 11.8 / 2 under a 14 entity budget). The budget's
+compute gain was taken by active rows (431a53b4); what is left is memory.
+The __expf / __logf / __fdividef scans are inside the noise (the scans are
+3.5 ms of an 87 ms train pass). No throughput value in either, so no gate
+for a numerics / drop-semantics change: reverted. `--v4-row-budget` stays
+the way to trade 470 MB for a tighter drop threshold, Matthew's call.
