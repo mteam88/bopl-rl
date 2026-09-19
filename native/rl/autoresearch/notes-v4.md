@@ -600,3 +600,25 @@ Exact-class list exhausted at this point. Everything left with real
 weight is gated: bf16 operands on the TF32 GEMMs (44 of the train pass's
 ~63 ms of kernel time), the row budget (~10%), fast transcendentals in the
 MinGRU scans (~3 ms per update). Waiting on Matthew's word for those.
+
+### Learning gate at 5fb70ec9 (the whole exact-class stack): pass
+
+`sanity_v4.sh run/report exact-5fb70ec9`: refit Elo 443 at 80M (floor
+304), 574 at 160M (floor 571; reference 646); band rating of the 160M
+checkpoint 555.6 [511, 599] vs the reference's 523.5 [479, 568] (floor
+448.5). explained_variance ratio 1.28, entropy 1.02, kl 1.47 (0.0051 vs
+0.0034; flagged as drift by the readout, as at ae63d96d). Production
+recipe at 246.4k learner_sps vs the reference's 169.3k (x1.455).
+
+### Campaign re-plan (Matthew, 2026-09-18 21:00)
+
+Target 1M+ learner_sps at the production shape: 4x from here, which has
+to come from less GPU work per learner step, not scheduling. No runtime
+toggles: a kept lever is the code, a discarded one is reverted; A/B by
+building the candidate against the incumbent commit's extension
+(`BOPL_BENCH_AB_SO`, added to bench_shape.sh). The acceptance criterion
+is the learning gate (sanity_v4 within band), not bit-exactness: numerics
+(bf16 operands, fast transcendentals), the row budget default and reduced
+precision through the chain are all allowed if they pass. Shape changes
+(hidden, FFN, critic width, T, passes) stay Matthew's call: bench their
+upper bound and report. Land on throughput-v4, no merge to main.
