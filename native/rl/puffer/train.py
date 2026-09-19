@@ -820,11 +820,17 @@ def main():
                 raise RuntimeError('--dump-rows needs a fresh run with the initial checkpoint saved')
             import numpy as np
             observations, rows = _C.bopl_policy_rows(trainer, 0, 64)
+            # Packed observation transport (bopl_obs_pack.h): floats of any unpacked
+            # device row that differed from its host row over the rollout (-1: dense).
+            transport_mismatches = _C.bopl_transport_mismatches(trainer)
             a.dump_rows.parent.mkdir(parents=True, exist_ok=True)
             np.savez(a.dump_rows, observations=observations, rows=rows, checkpoint=str(saved[0].resolve()),
-                     obs_size=obs_size, architecture=architecture)
-            print(f'wrote {a.dump_rows}: {rows.shape[0]} rows of {rows.shape[1]} from {saved[0].name}', flush=True)
+                     obs_size=obs_size, architecture=architecture, transport_mismatches=transport_mismatches)
+            print(f'wrote {a.dump_rows}: {rows.shape[0]} rows of {rows.shape[1]} from {saved[0].name}; '
+                  f'transport mismatches {transport_mismatches}', flush=True)
             stop = True
+        if a.dump_rows is not None:
+            _C.bopl_transport_check(trainer, True)
         if overlap:
             rollout_seconds = _C.rollouts(trainer)  # bootstrap: the first slot before the loop
             ready = offset_counters(vector.snapshot(), base_counts)

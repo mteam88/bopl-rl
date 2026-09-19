@@ -3,8 +3,10 @@
 #include "bopl_rl.h"
 #include "bopl_layout.h"
 #include "bopl_layout_v4.h"
+#include "bopl_obs_pack.h"
 #include "bopl_bots.h"
 #include <math.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -195,6 +197,11 @@ typedef struct {
      * memory may have been written by anything else (a routing change). */
     struct { float *row; int players, slots, entities, slimes; } written[BOPL_MAX_SLOTS];
     int written_count;
+    /* Packed observation transport (bopl_obs_pack.h): the trainer registers
+     * the shared row buffer, the row range the GPU reads from this env's
+     * buffer and the slot buffer; c_step packs each of its rows in that range
+     * (bopl_pack_rows). NULL pack_out = dense rows as before. */
+    const float *pack_base; float *pack_out; long pack_row_begin, pack_row_end;
     /* Observation layout version of each player's row (3 or 4, bopl_layout_v4.h).
      * Training sets one for every player (obs_layout kwarg); evaluation selects
      * per player from the checkpoint's architecture (research_set_layout). */
@@ -458,6 +465,34 @@ static void bopl_written_forget(BoplPuffer *env) { env->written_count=0; }
 static void bopl_written_forget_row(BoplPuffer *env, const float *row) {
     for (int i=0; i<env->written_count; i++) if (env->written[i].row==row) { env->written[i]=env->written[--env->written_count]; return; }
 }
+/* The row was just zeroed whole: record empty prefixes (the next encode
+ * zeroes nothing, the packed transport sends the header alone). */
+static void bopl_written_zeroed(BoplPuffer *env, float *row) {
+    int w=-1;
+    for (int i=0; i<env->written_count; i++) if (env->written[i].row==row) { w=i; break; }
+    if (w<0) {
+        if (env->written_count==BOPL_MAX_SLOTS) env->written[0]=env->written[--env->written_count];
+        w=env->written_count++; env->written[w].row=row;
+    }
+    env->written[w].players=env->written[w].slots=env->written[w].entities=env->written[w].slimes=0;
+}
+/* Pack this env's v4 rows in the trainer's live range (bopl_obs_pack.h). A
+ * row without a writer record, or a v3 row, goes dense (mode 1). */
+static void bopl_pack_rows(BoplPuffer *env) {
+    for (int a=0; a<env->players; a++) {
+        const float *obs=bopl_obs_row(env, a);
+        if ((uintptr_t)obs<(uintptr_t)env->pack_base) continue;
+        long g=(long)(((uintptr_t)obs-(uintptr_t)env->pack_base)/(BOPL_OBS_STRIDE*sizeof(float)));
+        if (g<env->pack_row_begin || g>=env->pack_row_end) continue;
+        int counts[4]={-1, -1, -1, -1};
+        if (bopl_layout_of(env, a)==4)
+            for (int i=0; i<env->written_count; i++) if (env->written[i].row==obs) {
+                counts[0]=env->written[i].players; counts[1]=env->written[i].slots;
+                counts[2]=env->written[i].entities; counts[3]=env->written[i].slimes; break;
+            }
+        bopl_pack_row(obs, counts, env->pack_out+g*BOPL4_PACK_P);
+    }
+}
 /* Zero slots [count, previous) of a block of `features`-float slots: with a
  * record, the slots from the previous encode's count on are already zero. */
 static void bopl_zero_tail(float *block, int features, int count, int previous, int capacity) {
@@ -719,7 +754,7 @@ static void bopl_encode(BoplPuffer *env, const BoplRlState *state, int count_ove
     for (int a=0; a<env->players; a++) {
         if (!state) {
             float *obs=bopl_obs_row(env, a);
-            memset(obs, 0, bopl_obs_size_of(env, a)*sizeof(float)); bopl_written_forget_row(env, obs);
+            memset(obs, 0, bopl_obs_size_of(env, a)*sizeof(float)); bopl_written_zeroed(env, obs);
         } else if (bopl_layout_of(env, a)==4) bopl_encode_v4_row(env, state, a, count_overflow);
         else bopl_encode_v3_row(env, state, a, count_overflow);
     }
@@ -997,7 +1032,7 @@ static void c_reset(BoplPuffer *env) {
          * trainer's agent permutation was installed (create_pufferl resets
          * under identity routing). */
         for (int bank=0; bank<env->banks; bank++) {
-            memset(env->obs_ptr[1+bank], 0, BOPL_OBS_STRIDE*sizeof(float)); bopl_written_forget_row(env, env->obs_ptr[1+bank]);
+            memset(env->obs_ptr[1+bank], 0, BOPL_OBS_STRIDE*sizeof(float)); bopl_written_zeroed(env, env->obs_ptr[1+bank]);
             if (env->mask_ptr[1+bank]) memset(env->mask_ptr[1+bank], 1, BOPL_LOGITS);
         }
         env->side=(int)(bopl_side_random(env)&1u);
@@ -1206,6 +1241,7 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
 }
 static void bopl_step_finish(BoplPuffer *env, const BoplStepPhase *phase) {
     bopl_step_finish_from(env, phase, bopl_rl_state(env->world));
+    if (env->pack_out) bopl_pack_rows(env);   /* the rows are final for this step */
 }
 static void c_step(BoplPuffer *env) {
     BoplStepPhase phase;

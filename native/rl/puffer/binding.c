@@ -26,6 +26,16 @@
 
 int bopl_puffer_telemetry_size(void) { return BOPL_TELEMETRY_SIZE; }
 
+/* Packed observation transport (bopl_obs_pack.h): the trainer (bopl_rollout.cu,
+ * which does not see the env struct) registers the row buffer, the slot
+ * buffer and the live row range of one buffer with its envs [start, start+count). */
+void bopl_pack_register(void *envs, int start, int count, const float *base, float *out, long row_begin, long row_end) {
+    BoplPuffer *e=(BoplPuffer*)envs;
+    for (int i=start; i<start+count; i++) {
+        e[i].pack_base=base; e[i].pack_out=out; e[i].pack_row_begin=row_begin; e[i].pack_row_end=row_end;
+    }
+}
+
 static int option(Dict *kwargs, const char *name, int fallback) {
     DictItem *item=dict_get_unsafe(kwargs, name);
     return item?(int)item->value:fallback;

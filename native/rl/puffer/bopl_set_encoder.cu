@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include "bopl_layout.h"
 #include "bopl_layout_v4.h"
+#include "bopl_obs_pack.h"
 
 static_assert(!USE_BF16, "bopl_set_encoder.cu requires PRECISION_FLOAT");
 

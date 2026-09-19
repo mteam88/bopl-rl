@@ -491,3 +491,43 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
     }
 }
 #endif  // BR_KERNELS_ONLY
+
+// ---- packed observation transport (bopl_obs_pack.h) ----------------------
+// One block per row. Mode 0: the flat and privileged blocks, then each set's
+// prefix rows followed by zeros to the block's end. Mode 1 (the slot did not
+// fit, or the row has no writer record): the dense row straight from the
+// mapped host buffer. Either way the device row equals the host row bit for
+// bit (bopl4_transport_check counts the floats that differ, dump mode only).
+__global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows) {
+    const int r = blockIdx.x;
+    if (r >= rows) return;
+    const float* slot = packed + (long)r * BOPL4_PACK_P;
+    float* out = dense + (long)r * BOPL_OBS_STRIDE;
+    const unsigned* hdr = (const unsigned*)slot;
+    if (hdr[0] != BOPL4_PACK_MODE_ROWS) {
+        const float4* src = (const float4*)(host_rows + (long)r * BOPL_OBS_STRIDE);
+        float4* dst = (float4*)out;
+        for (int i = threadIdx.x; i < BOPL_OBS_STRIDE / 4; i += blockDim.x) dst[i] = src[i];
+        return;
+    }
+    for (int i = threadIdx.x; i < BOPL4_FLAT; i += blockDim.x) out[i] = slot[BOPL4_PACK_HEADER + i];
+    for (int i = threadIdx.x; i < BOPL4_PRIVILEGED; i += blockDim.x) out[BOPL4_OBS_PRIVILEGED_OFFSET + i] = slot[BOPL4_PACK_HEADER + BOPL4_FLAT + i];
+    const Bopl4PackSet sets[BOPL4_PACK_SETS] = BOPL4_PACK_TABLE;
+    int base = BOPL4_PACK_ROWS_OFFSET;
+    #pragma unroll
+    for (int s = 0; s < BOPL4_PACK_SETS; s++) {
+        const int present = (int)hdr[1 + s] * sets[s].width, block = sets[s].slots * sets[s].width;
+        float* dst = out + sets[s].offset;
+        for (int i = threadIdx.x; i < block; i += blockDim.x) dst[i] = i < present ? slot[base + i] : 0.0f;
+        base += present;
+    }
+}
+__global__ void bopl4_transport_check(const float* __restrict__ dense, const float* __restrict__ host_rows, int rows, int* mismatches) {
+    const int r = blockIdx.x;
+    if (r >= rows) return;
+    const unsigned* a = (const unsigned*)(dense + (long)r * BOPL_OBS_STRIDE);
+    const unsigned* b = (const unsigned*)(host_rows + (long)r * BOPL_OBS_STRIDE);
+    int bad = 0;
+    for (int i = threadIdx.x; i < BOPL_OBS_STRIDE; i += blockDim.x) bad += a[i] != b[i];
+    if (bad) atomicAdd(mismatches, bad);
+}

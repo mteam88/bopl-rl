@@ -472,6 +472,7 @@ struct BrPlan {
     int zero_copy;       // 0 memcpys (obs + packed small inputs), 1 obs memcpy + rest zero-copy, 2 all zero-copy
     int actions_zero_copy;  // sampler writes actions into the mapped host buffer
     int graph_copies;    // H2D / D2H memcpys captured into the forward graph (BOPL_GRAPH_COPIES, default 1)
+    int transport_check; // dump mode (train.py --dump-rows): count device-row floats that differ from the host row
     int tf32;            // tensor-core tf32 GEMMs (BOPL_TF32, default 1) or fp32 FMAs
     int sparse;          // stage only the populated obs slots (BOPL_OBS_SPARSE, default 1)
     int rows;            // live rows per buffer (bank_layout end)
@@ -524,6 +525,13 @@ static void br4_init(PuffeRL* pufferl, BrPlan* p);
 static void br4_prepare(PuffeRL* pufferl, BrPlan& p, cudaStream_t stream);
 static void br4_free(PuffeRL* pufferl, BrPlan* p);
 static const float* br4_dec_rows(BrPlan& p, int buf);
+// Packed observation transport (bopl_obs_pack.h): the unpack of one buffer's
+// slots into its dense device rows, the dump-mode check of those rows against
+// the host rows, and the env-side registration (binding.c: the env struct).
+constexpr int BR4_UNPACK_THREADS = 256;
+__global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows);
+__global__ void bopl4_transport_check(const float* __restrict__ dense, const float* __restrict__ host_rows, int rows, int* mismatches);
+extern "C" void bopl_pack_register(void* envs, int start, int count, const float* base, float* out, long row_begin, long row_end);
 static void br_check_pre(PuffeRL* pufferl, int buf, cudaStream_t stream);
 static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* terminals, const float* dec_rows, cudaStream_t stream);
 static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
@@ -767,7 +775,8 @@ static void br_init(PuffeRL* pufferl) {
         // The idle tail rows of a buffer are never written or read (compact
         // layout), so the pack lives there when it fits: one memcpy per step.
         vec->pack_in_tail = (size_t)(apb - p->rows) * row_bytes >= (size_t)vec->pack_bytes && br_env_int("BOPL_PACK_TAIL", 1);
-        for (int b = 0; b < nb; b++) {
+        const bool packed_obs = is_v4 && p->graph_copies && vec->mapped;   // the block below re-points pack_* into the packed slots
+        for (int b = 0; !packed_obs && b < nb; b++) {
             if (vec->pack_in_tail) {
                 size_t off = ((size_t)b * apb + p->rows) * row_bytes;
                 vec->pack_host[b] = (char*)vec->observations + off;
@@ -776,6 +785,35 @@ static void br_init(PuffeRL* pufferl) {
                 cudaHostAlloc((void**)&vec->pack_host[b], vec->pack_bytes, cudaHostAllocPortable);
                 cudaMalloc((void**)&vec->pack_dev[b], vec->pack_bytes);
             }
+        }
+        // Packed observation transport (bopl_obs_pack.h): policy v4 rows go up
+        // as 6 KB slots instead of 19 KB dense rows; the unpack kernel rebuilds
+        // the dense device row (mode-1 slots from the mapped host row).
+        if (is_v4 && p->graph_copies && vec->mapped) {
+            size_t slot_bytes = (size_t)BOPL4_PACK_P * sizeof(float), n = (size_t)vec->total_agents * slot_bytes;
+            assert(cudaHostAlloc((void**)&vec->packed_host, n, cudaHostAllocPortable) == cudaSuccess);
+            assert(cudaMalloc((void**)&vec->packed_dev, n) == cudaSuccess);
+            assert(cudaMalloc((void**)&vec->transport_mismatch, sizeof(int)) == cudaSuccess);
+            cudaMemset(vec->transport_mismatch, 0, sizeof(int));
+            for (long r = 0; r < vec->total_agents; r++) ((unsigned*)(vec->packed_host + r * BOPL4_PACK_P))[0] = BOPL4_PACK_MODE_DENSE;
+            cudaMemcpy(vec->packed_dev, vec->packed_host, n, cudaMemcpyHostToDevice);
+            // The reward / terminal / mask pack moves to the idle tail of the
+            // buffer's packed slots when it fits there (one memcpy per step).
+            vec->pack_in_tail = (size_t)(apb - p->rows) * slot_bytes >= (size_t)vec->pack_bytes && br_env_int("BOPL_PACK_TAIL", 1);
+            for (int b = 0; b < nb; b++) {
+                if (vec->pack_in_tail) {
+                    size_t off = ((size_t)b * apb + p->rows) * slot_bytes;
+                    vec->pack_host[b] = (char*)vec->packed_host + off;
+                    vec->pack_dev[b] = (char*)vec->packed_dev + off;
+                } else if (!vec->pack_host[b]) {
+                    cudaHostAlloc((void**)&vec->pack_host[b], vec->pack_bytes, cudaHostAllocPortable);
+                    cudaMalloc((void**)&vec->pack_dev[b], vec->pack_bytes);
+                }
+                bopl_pack_register(vec->envs, vec->buffer_env_starts[b], vec->buffer_env_counts[b], (const float*)vec->observations,
+                                   vec->packed_host, (long)b * apb, (long)b * apb + p->rows);
+            }
+            fprintf(stderr, "bopl batched rollout forward: packed observation rows (%d floats per slot, pack %s)\n",
+                    BOPL4_PACK_P, vec->pack_in_tail ? "in the packed tail" : "separate");
         }
         // Reset semantics of the device copies (static_vec_reset): rewards and
         // terminals zero, the mask as the envs left it. bopl_vec_reset refreshes
@@ -845,6 +883,10 @@ static void br_free(PuffeRL* pufferl) {
             for (int b = 0; b < pufferl->hypers.num_buffers; b++) { cudaFreeHost(vec->pack_host[b]); cudaFree(vec->pack_dev[b]); }
         free(vec->pack_host); free(vec->pack_dev); vec->pack_host = vec->pack_dev = nullptr;
     }
+    if (vec && vec->packed_host) {   // the envs are closed before this (their pack pointers die with them)
+        cudaFreeHost(vec->packed_host); cudaFree(vec->packed_dev); cudaFree(vec->transport_mismatch);
+        vec->packed_host = vec->packed_dev = nullptr; vec->transport_mismatch = nullptr;
+    }
     free(p->acts);
     delete p;
     pufferl->br = nullptr;
@@ -875,7 +917,18 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         mask = p.mask_stride ? (const unsigned char*)(pk + 2 * rows * sizeof(float)) : nullptr;
     }
     float* env_actions = (p.actions_zero_copy ? vec->dev_actions : vec->gpu_actions) + (long)start * p.num_atns;
-    if (p.graph_copies) {
+    if (p.graph_copies && vec->packed_host) {
+        // Packed rows: one memcpy of the buffer's slots (+ the pack in their
+        // tail), then the dense device rows rebuilt for the chain.
+        size_t slot_bytes = (size_t)BOPL4_PACK_P * sizeof(float), off = (size_t)start * slot_bytes;
+        size_t bytes = (size_t)rows * slot_bytes + (vec->pack_in_tail ? (size_t)vec->pack_bytes : 0);
+        cudaMemcpyAsync((char*)vec->packed_dev + off, (const char*)vec->packed_host + off, bytes, cudaMemcpyHostToDevice, stream);
+        if (!vec->pack_in_tail) cudaMemcpyAsync(vec->pack_dev[buf], vec->pack_host[buf], vec->pack_bytes, cudaMemcpyHostToDevice, stream);
+        const float* host_rows = (const float*)vec->dev_observations + (long)start * BOPL_OBS_STRIDE;
+        float* dense = (float*)vec->gpu_observations + (long)start * BOPL_OBS_STRIDE;
+        bopl4_unpack_rows<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(vec->packed_dev + (long)start * BOPL4_PACK_P, host_rows, dense, rows);
+        if (p.transport_check) bopl4_transport_check<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(dense, host_rows, rows, vec->transport_mismatch);
+    } else if (p.graph_copies) {
         size_t row_bytes = (size_t)BS_OBS * sizeof(float), off = (size_t)start * row_bytes;
         size_t bytes = (size_t)rows * row_bytes + (vec->pack_in_tail ? (size_t)vec->pack_bytes : 0);
         cudaMemcpyAsync((char*)vec->gpu_observations + off, (const char*)vec->observations + off, bytes, cudaMemcpyHostToDevice, stream);

@@ -100,7 +100,11 @@ def compare(dump, tolerance=2e-2):
         value = (rows[:, -1] - expected[:, -1]).abs().max().item()
         report['readers'][name] = dict(logits_rel_max=logits, value_abs_max=value,
                                        pass_all=logits < tolerance and value < tolerance)
-    report['pass_all'] = all(r['pass_all'] for r in report['readers'].values())
+    # Packed observation transport (bopl_obs_pack.h): every unpacked device row of
+    # the dump's rollout must equal its host row bit for bit (-1 = dense transport).
+    transport = int(data['transport_mismatches']) if 'transport_mismatches' in data else -1
+    report['transport_mismatches'] = transport
+    report['pass_all'] = all(r['pass_all'] for r in report['readers'].values()) and transport <= 0
     return report
 
 
@@ -120,7 +124,8 @@ def main():
         report = compare(dump)
         reports.append(report)
         if not args.json:
-            print(f"{name}: {report['rows']} rows x {report['width']} ({report['architecture']})")
+            print(f"{name}: {report['rows']} rows x {report['width']} ({report['architecture']}), "
+                  f"transport mismatches {report['transport_mismatches']}")
             for reader, r in report['readers'].items():
                 print(f"  {reader:34s} logits rel max {r['logits_rel_max']:.2e}  value abs max {r['value_abs_max']:.2e}"
                       f"  {'ok' if r['pass_all'] else 'FAIL'}")
