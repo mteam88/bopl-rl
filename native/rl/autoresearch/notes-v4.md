@@ -1524,3 +1524,41 @@ train stream's SM time out should give back a proportional slice of the
 Cost: two tile kernels with segmented pooling (~500 lines, the br_gemm /
 br4_sets and the discarded dh1 kernel are the templates), check_v4 at
 both shapes, one A/B; two to three turns.
+
+### Fused set forward (set_fwd): KEEP, +3.2% (698cd3d7)
+
+Built as sized above, forward half only. One kernel per set replaces
+zero_tail-adjacent W1 GEMM (Lt RELU epilogue), W2 GEMM (Lt RELU) and
+pool_rows4: a block of 128 threads owns 16 consecutive samples = one
+contiguous packed-row range, walks it in 64-row tiles; h1 tile = X W1^T
+by mma.sync m16n8k16 bf16 (fp32 acc, ReLU, bf16 round: the Lt epilogue's
+rounding points) into shared, h2 tile = h1 W2^T the same way, both tiles
+to global with 16-byte row stores (h1 for dW2 + the ReLU' mask, h2 for
+unpool), then the pool as pool_rows' sequential scan per column over the
+tile in shared (strict max, first winner, fp32 sum in row order: bit-
+identical pooling on the same h2). Weights are read as B fragments
+straight from global (L1-resident, 6 + 16 KB per set); xpack's and h1's
+tails [total, act) are zeroed by the same zero_tail call so the dW2 GEMM
+over act rows sees finite zeros. Shapes outside the tile kernel
+(I % 16, I <= 128, D % 128 == 0, D <= 512) keep the Lt path; the
+backward's DRELU decision mirrors that (the fused path leaves no bitmask
+-> mask_rows, which is what runs at I = 64 anyway).
+
+First build measured -5.4%: `best/sum/win[q]` indexed by a runtime
+`ncols` went to local memory (272-byte stack frame, 168 registers,
+spills) inside the per-row pool walk. Templated on NCOLS = D / 128:
+0 stack, 128 registers, no spills (ptxas -v via the build.py nvcc line +
+`-Xptxas -v`; there is no cuobjdump in the venv).
+
+check_v4 pass_all at the default shape (I = D = 128: max encoder_rel
+2.8e-4, logits 2.7e-4, grad q99 1.5e-3) and lite (I = 64: 5.0e-4,
+4.8e-4, 2.4e-3), check_dump ok. A/B vs 3f921308 at w128 b4 p2, 3x3:
+469.2k vs 454.6k (+3.2%, all three cand above inc); train_s 0.0402 ->
+0.0360 (-4.2 ms per update = -2.1 ms per pass across 4 sets, in line
+with the sizing's forward half), rollout_s 0.0533 -> 0.0516 (the
+interference relief: eval_gpu 262 -> 257 us, eval_env 149 -> 139 us).
+Incumbent 469.2k.
+
+Next: the backward half (unpool -> dh2 -> mask -> dh1 in one tile kernel
+per set, h2 recomputed from h1 or read back; wgrads stay GEMMs), then the
+PDL / graph sizing of the rollout chain.
