@@ -1133,3 +1133,17 @@ from the memory roofline that a first-cut mma.sync kernel loses more than
 the pass saves. Reverted (41785792). Not profiled per kernel; a CUPTI
 look at the two would say whether a 128-row / cp.async version could win,
 but the ceiling is ~2 ms per update (3%), so it goes to the back.
+
+### Muon grouped GEMM prefetch (7da18ef8): discarded, 0.984x
+
+A/B 3x3 at lite-aim-only w128 p4: 332.3k [332.2, 332.5] vs 337.8k
+[337.7, 338.2]; train_s 0.0730 vs 0.0719 (+1.1 ms per update, i.e. the
+Muon share grew from 5.7 to ~6.8 ms). The 32-deep slab with the next
+slab's 16 loads held in registers (plus the 32 precomputed indices) costs
+more in registers and per-slab smem writes than the hidden latency
+returns at these grids; the sync count halving did not show. Exact by
+construction but slower, so reverted; the incumbent .so restored from the
+saved copy (no rebuild). What is left for Muon in the exact class is a
+different design (a warp-level mma.sync tf32 path is not exact; a
+persistent cooperative kernel over the 15 launches is the launch-gap
+lever, worth ~0.3 ms per step at most) - moved behind the balance work.
