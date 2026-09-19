@@ -1287,3 +1287,44 @@ wall), what is left in the exact class is stream time: the rollout
 forward's kernels at M = 64 (7 br_gemm launches per step, avg 10 us,
 latency-bound; br4_sets 38 us; sample 23 us) and the train pass's
 memory-bound passes (~1.1 ms per update at p2). Anything larger is shape.
+
+### Rollout-stream ranking at w128 p2 (CUPTI, 2bcd3980, 81 updates; /tmp/prof-p2.txt) and the first cut
+
+Per rollout stream, per 64-row buffer step (avg / min us, the min is the
+kernel nearly alone on the SMs, the avg is what it costs queued behind the
+train stream and the other three buffers):
+
+  br_gemm x7      66.9 (9.6 / 3.1 each)
+  br4_sets        33.2 (5.9 min)
+  br_sample       20.4 (8.8 min)
+  memcpy HtoD     15.8 (8.3 min; the 6 KB packed slots)
+  br4_rows x4     14.5 (3.6 / 1.3 each)
+  bopl4_unpack     9.8 (2.7 min)
+  br_gate          3.3 (1.1 min)
+  memcpy DtoH      0.7
+  sum             165 us of stream time per 420 us step; train stream 41 ms/update
+
+Every rollout kernel runs 3-6x its isolated time: the rollout partition is
+oversubscribed, so what pays is SM time removed, not launch count. Top by
+that measure after br_gemm: br4_sets, whose set-0 blocks copied the dense
+row gpu_observations -> rollout_obs (19 KB per row, 1.2 MB read + 1.2 MB
+written per step) on top of the set MLPs. With the packed transport the
+dense row is rebuilt by bopl4_unpack_rows anyway, so it now unpacks
+straight into the rollout tensor's rows for the step and the chain (flat
+GEMM, sets, privileged) reads them there; the copy in br4_sets is skipped
+when obs == rollout_obs (the dense paths still copy). Exact by
+construction: check_dump tiny v4 ok, production shape (w128 b4 lite-aim-
+only p2) transport mismatches 0.
+
+A/B 3x3 at w128 p2 vs 2bcd3980: 458.7k [457.7, 459.2] vs 451.1k [450.7,
+451.5] learner_sps (+1.8%, all repeats above), rollout_s 0.0537 ->
+0.0528, buffer step 0.420 -> 0.412 ms (eval_gpu 0.268 -> 0.265, env 0.144
+-> 0.141), train_s unchanged. Kept: 3f921308, incumbent 458.7k.
+
+Left on the hints: (a) br4_sets sized to present rows from the packed
+header (the ballot scan itself is two warp iterations; the launch is 256
+blocks x 256 threads per step regardless of n, and blocks with n = 0 exit
+after the scan, so the win there is block count, not the scan), (b)
+br_sample 8.8 us isolated for 64 rows: a dependent chain (max, exp, sum,
+prefix, draw) per row, one launch already; folding it into the decoder
+GEMM's consumer needs the whole logit row in one block.
