@@ -37,6 +37,10 @@
 #       gate verdict as one JSON line (also appended to sanity/results.jsonl).
 #   STEPS=160000000 EVAL_EVERY=40000000 SEED=73 override the budget / cadence / seed;
 #   the 80M and 160M evaluations must stay on the cadence for the gate to read.
+#   REFERENCE=<sweep run dir> REF_NAME=<readout name> read against another
+#   reference of the same recipe (sweeps/v4-lite/000 for the v4-lite shape).
+#   Shape / recipe flags go after -- (e.g. -- --v4-set-inner 64 --v4-ffn-dim 0
+#   --v4-critic-dim 384 for v4-lite-aim, sweep/configs/v4-lite-aim.toml).
 set -euo pipefail
 MODE=${1:?run|report}; LABEL=${2:?label}; shift 2
 [ "${1:-}" = "--" ] && shift
@@ -45,6 +49,7 @@ cd "$R"
 OUT=${OUT:-$R/native/artifacts/rl/sanity}
 DIR="$OUT/$LABEL"
 REFERENCE=${REFERENCE:-$R/native/artifacts/rl/sweeps/v4-aim/000}
+REF_NAME=${REF_NAME:-v4-aim}
 POOL=${POOL:-$R/native/artifacts/rl/sweeps/anchors/pool-v7/pool.json}
 STEPS=${STEPS:-160000000}
 EVAL_EVERY=${EVAL_EVERY:-40000000}
@@ -87,7 +92,7 @@ run)
   ;;
 report)
   [ -d "$DIR" ] || { echo "no run at $DIR" >&2; exit 1; }
-  BOPL_RL_BACKEND=rust "$PY" native/rl/research/readout.py "$DIR" --name "$LABEL" --baseline "v4-aim=$REFERENCE" --json "$DIR/readout.json" || true
+  BOPL_RL_BACKEND=rust "$PY" native/rl/research/readout.py "$DIR" --name "$LABEL" --baseline "$REF_NAME=$REFERENCE" --json "$DIR/readout.json" || true
   # Band rating of the 160M checkpoints (the sweep scorer's rater: 240 games
   # on 15-85% matchups, CPU only, ~10 min per checkpoint at 3 workers) for the
   # run and, once, for the reference; the in-run 48-game refit's interval is
@@ -103,9 +108,9 @@ report)
       fi
     done
   fi
-  python3 - "$DIR" "$LABEL" "$REFERENCE" <<'PY' | tee -a "$OUT/results.jsonl"
+  python3 - "$DIR" "$LABEL" "$REFERENCE" "$REF_NAME" <<'PY' | tee -a "$OUT/results.jsonl"
 import glob, json, os, sys
-d, label, reference = sys.argv[1:]
+d, label, reference, ref_name = sys.argv[1:]
 SPREAD = 75            # same-shape pool-v7 seed spread, POLICY_V4_PLAN.md 7c
 # The evaluation steps the gate reads, in the trainer's physical step count
 # (checkpoint names): 80M and 160M learner decisions of the v4-aim recipe.
@@ -133,7 +138,7 @@ def metrics_at(run, learner_step):
 def nearest(curve, step, tolerance=0.1):
     hits = [s for s in curve if abs(s - step) <= tolerance * step]
     return min(hits, key=lambda s: abs(s - step)) if hits else None
-run_elo, ref_elo = refit_elo(label), refit_elo('v4-aim')
+run_elo, ref_elo = refit_elo(label), refit_elo(ref_name)
 out = dict(label=label, reference=os.path.relpath(reference, os.path.dirname(os.path.dirname(d))), spread=SPREAD, gate={}, passed=True)
 for learner, step in GATE_STEPS.items():
     rs, fs = nearest(run_elo, step), nearest(ref_elo, step)
