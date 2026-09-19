@@ -1071,3 +1071,35 @@ exports (BOPL4_SET_DIM, ...) and BOPL_V4_MEMLOG's allocation log (both
 pre-campaign). bopl_rollout.cu's campaign-2 knobs (BOPL_BATCHED_FWD,
 BOPL_ZERO_COPY*, BOPL_GRAPH_COPIES, BOPL_TF32, BOPL_OBS_SPARSE,
 BOPL_PACK_TAIL) are not mine and were left; say if they should go too.
+
+#### lite-aim-only-p4w-04322d89 and the aim-only passes table (seed 73, 240-game bands)
+
+  reading                              refit Elo        band rating
+  reference v4-aim/000 @160M           646              523.5 [478, 568]
+  aim-only p4 @160M (run 1 / run 2)    466 / 516        475.7 [436, 516] / 472.7 [428, 521]
+  aim-only p2 @160M                    516              415.9 [374, 459]
+  aim-only p4 @955 s (320M, 983 s)     691 [502, 972]   549.4 [507, 594]
+  aim-only p2 @955 s (400M, 1003 s)    747 [633, 950]   572.8 [529, 617]
+
+In-run rates 336.5k / 325k (p4, the second under ~35 s of my nvcc runs)
+vs 399k (p2): p2 reaches 400M learner steps by 955 s against p4's 320M.
+At equal wall p2 is +23 band over p4 (both above the reference); the two
+p4 runs at 160M differ by 3 and the lite p4 pair by 24, so +23 is at the
+one-seed noise floor: p2 does not lose at equal wall, and does not
+clearly win. At equal samples p2 costs ~57 band. Matthew picks; if the
+wall is what matters p2 is at worst equal at 1.2x the rate (bench 1.33x).
+
+### Candidates written while the gate ran (A/B pending, GPU-free next)
+
+- 7e91f1b5 `dh1_relu_grad_gemm`: the set MLP's dh1 = (dh2 W2) * ReLU'(h1)
+  as one bf16 mma.sync kernel (M x 64 of K = 128, 64-row blocks, W2 and
+  the dh2 tile in shared memory, fp32 accumulators staged back for the
+  masked bf16 store). Replaces the Lt GEMM + mask_rows (2.3 ms per update
+  of re-reading dh1 and h1). Not bit-identical to Lt (summation order);
+  check_v4 tolerance + the learning gate decide. Dispatch: I = 64 and
+  D = 128 without an Lt bitmask; other shapes keep their paths.
+- 7da18ef8 muon_grouped_gemm: 32-deep k slabs with the next slab's loads
+  issued into registers during the current slab's FMAs (the loop was
+  latency-bound: load, sync, compute, sync at 16 k per step). Exact: the
+  per-thread k order is sequential as before, split-K bounds still round
+  to 16, lanes past k_end add fmaf(0, 0, acc).
