@@ -208,17 +208,16 @@ __device__ __forceinline__ void br_mma(float* c, const unsigned* a, unsigned b0,
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
-// The block's work: its 16-row tile (row0, row_end returned for a consumer)
-// over a.units column subtile rounds. As: the per-warp A tiles (16 x 64):
-// TF32 in A-fragment order [kstep][lane][4], fp32 as [k][row] (float4 row
-// reads). The 16 x 32 C tiles alias it after the K loop. Ends with the block
-// synchronised and As free.
 template <bool TF32>
-__device__ __forceinline__ void br_gemm_body(const BrGemmArgs& a, float (*As)[BR_TM * BR_TK], int& row0, int& row_end) {
+__global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
+    // Per-warp A tile (16 x 64): TF32 in A-fragment order [kstep][lane][4],
+    // fp32 as [k][row] (float4 row reads). The 16 x 32 C tiles alias it after
+    // the K loop.
+    __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];  // 32 KB
     int rt = blockIdx.x, grp = 0;
     while (grp + 1 < a.g.n && rt >= a.tiles[grp + 1]) grp++;
-    row0 = a.g.end[grp] + (rt - a.tiles[grp]) * BR_TM;
-    row_end = a.g.end[grp + 1];
+    const int row0 = a.g.end[grp] + (rt - a.tiles[grp]) * BR_TM;
+    const int row_end = a.g.end[grp + 1];
     const int K = a.K, N = a.N, ldb = a.ldb;
     const int nchunks = (K + BR_TK - 1) / BR_TK;
     // sub = warps per column subtile (power of two >= nchunks, <= BR_KG).
@@ -380,12 +379,6 @@ __device__ __forceinline__ void br_gemm_body(const BrGemmArgs& a, float (*As)[BR
     __syncthreads();  // the C tiles are read before the next round's A tiles overwrite them
     }
 }
-template <bool TF32>
-__global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
-    __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];  // 32 KB
-    int row0, row_end;
-    br_gemm_body<TF32>(a, As, row0, row_end);
-}
 
 // Column-tile count of br_gemm's grid for a GEMM of depth K over N columns,
 // and the rounds per block: 1, one subtile set per block (more rounds per
@@ -539,11 +532,10 @@ constexpr int BR4_UNPACK_THREADS = 256;
 __global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows);
 __global__ void bopl4_transport_check(const float* __restrict__ dense, const float* __restrict__ host_rows, int rows, int* mismatches);
 extern "C" void bopl_pack_register(void* envs, int start, int count, const float* base, float* out, long row_begin, long row_end);
-struct BrSampleArgs;
 static void br_check_pre(PuffeRL* pufferl, int buf, cudaStream_t stream);
 static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* terminals, const float* dec_rows, cudaStream_t stream);
 static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
-                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, const BrSampleArgs& smp, cudaStream_t stream);
+                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream);
 // ---------------------------------------------------------------------------
 // Sampler: sample_logits_warp with the env's byte mask as input and the
 // actions written to both the env buffer (float) and the rollout.
@@ -561,11 +553,15 @@ struct BrSampleArgs {
     int rows;
 };
 
-// One warp samples row idx; row: SAMPLE_MAX_LOGITS floats of shared scratch.
-__device__ __forceinline__ void br_sample_row(const BrSampleArgs& a, int idx, float* row, int lane) {
+__global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs a) {
+    __shared__ float s_logits[SAMPLE_WARP_ROWS][SAMPLE_MAX_LOGITS];
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int idx = blockIdx.x * SAMPLE_WARP_ROWS + warp;
+    if (idx >= a.rows) return;
     const int A_total = a.A_total;
     const float* logits = a.dec + (long)idx * a.ld_dec;
     const unsigned char* mask = a.env_mask ? a.env_mask + (long)idx * a.mask_stride : nullptr;
+    float* row = s_logits[warp];
     // The mask may live in host memory: issue every lane's loads before the first use.
     constexpr int MASK_ITERS = (SAMPLE_MAX_LOGITS + 31) / 32;
     unsigned char mv[MASK_ITERS];
@@ -674,39 +670,6 @@ __device__ __forceinline__ void br_sample_row(const BrSampleArgs& a, int idx, fl
         a.values[idx] = logits[a.dec_cols];
         a.rng[idx] = state;
     }
-}
-// The decoder GEMM with the sampler as its consumer: one block owns its 16
-// rows' whole logit rows (grid.y = 1, a.units = every column tile), then its
-// 8 warps sample two rows each from the rows just written (visible after the
-// block barrier), the per-warp logit scratch aliasing the GEMM's tiles. Same
-// math as br_gemm + a separate sampler launch; one launch and one queue slot
-// on the oversubscribed rollout streams instead of two. The value column is
-// read from the decoder rows, so the critic (v4) runs before this.
-template <bool TF32>
-__global__ void __launch_bounds__(BR_THREADS, 2) br_gemm_sample(BrGemmArgs a, BrSampleArgs s) {
-    __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];
-    static_assert(BR_KG * SAMPLE_MAX_LOGITS <= BR_KG * BR_TM * BR_TK, "sampler scratch fits the GEMM tiles");
-    int row0, row_end;
-    br_gemm_body<TF32>(a, As, row0, row_end);
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    float* row = &As[0][0] + warp * SAMPLE_MAX_LOGITS;
-    for (int r = warp; r < BR_TM; r += BR_KG) {
-        const int idx = row0 + r;
-        if (idx < row_end) br_sample_row(s, idx, row, lane);
-    }
-}
-static void br_gemm_sample_launch(const BrPlan& p, const float* in, int ld_in, float* out, int ld_out,
-        int K, int N, int ldb, const BrLinear& wt, const BrSampleArgs& s, cudaStream_t stream) {
-    BrGemmArgs a = {};
-    a.in = in; a.ld_in = ld_in; a.out = out; a.ld_out = ld_out; a.K = K; a.N = N; a.ldb = ldb; a.relu = 0;
-    if (p.tf32) a.ldb = (N + 7) / 8;
-    a.g = p.g; a.wt = wt;
-    memcpy(a.tiles, p.tiles, sizeof(a.tiles));
-    int units;
-    a.units = br_gemm_col_tiles(K, N, &units) * units;  // every column tile in one block
-    dim3 grid(p.tiles[p.g.n], 1);
-    if (p.tf32) br_gemm_sample<true><<<grid, BR_THREADS, 0, stream>>>(a, s);
-    else br_gemm_sample<false><<<grid, BR_THREADS, 0, stream>>>(a, s);
 }
 
 // Decide whether the batched chain applies and allocate its per-buffer
@@ -986,21 +949,10 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     PrecisionTensor mask_dst = {};
     if (p.mask_stride) mask_dst = puf_slice(rollouts.action_mask, t, start, rows);
     const float* dec_rows = A.dec;
-    if (p.v4) dec_rows = br4_dec_rows(p, buf);
-    int hc_stride = 0;
-    const signed char* hc_dev = get_head_consume_dev(&hc_stride);
-    BrSampleArgs smp = {};
-    smp.dec = dec_rows; smp.ld_dec = p.ld_dec; smp.A_total = p.A_total;
-    smp.dec_cols = p.dec_cols; smp.aim_fourier = p.aim_fourier; smp.aim_ar = p.aim_ar;
-    smp.act_sizes = pufferl->act_sizes_puf.data; smp.num_atns = p.num_atns;
-    smp.env_mask = mask; smp.mask_stride = p.mask_stride; smp.rollout_mask = mask_dst.data;
-    smp.env_actions = env_actions; smp.rollout_actions = act_dst.data;
-    smp.logprobs = lp_dst.data; smp.values = val_dst.data;
-    smp.rng = pufferl->rng_states[buf];
-    smp.head_consume = hc_dev; smp.hc_stride = hc_stride; smp.rows = rows;
     br_check_pre(pufferl, buf, stream);
     if (p.v4) {
-        br4_chain(pufferl, p, buf, obs, rewards, terminals, obs_dst.data, rew_dst.data, term_dst.data, smp, stream);
+        br4_chain(pufferl, p, buf, obs, rewards, terminals, obs_dst.data, rew_dst.data, term_dst.data, stream);
+        dec_rows = br4_dec_rows(p, buf);
     } else {
     // Per-group weights (set-encoder MLPs as stored, GEMM weights transposed by
     // br_prepare) and recurrent state (group 0 = learner snapshot).
@@ -1040,9 +992,22 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         br_gate<<<grid_size(rows * H), BLOCK_SIZE, 0, stream>>>(gate);
         x = A.gru[l & 1];
     }
-    br_gemm_sample_launch(p, x, H, A.dec, p.ld_dec, H, p.dec_cols + 1, p.ld_dec, w_dec, smp, stream);
+    br_gemm_launch(p, x, H, A.dec, p.ld_dec, H, p.dec_cols + 1, p.ld_dec, 0, w_dec, stream);
     }  // v3 chain
     br_check_post(pufferl, buf, t, terminals, dec_rows, stream);
+
+    int hc_stride = 0;
+    const signed char* hc_dev = get_head_consume_dev(&hc_stride);
+    BrSampleArgs smp = {};
+    smp.dec = dec_rows; smp.ld_dec = p.ld_dec; smp.A_total = p.A_total;
+    smp.dec_cols = p.dec_cols; smp.aim_fourier = p.aim_fourier; smp.aim_ar = p.aim_ar;
+    smp.act_sizes = pufferl->act_sizes_puf.data; smp.num_atns = p.num_atns;
+    smp.env_mask = mask; smp.mask_stride = p.mask_stride; smp.rollout_mask = mask_dst.data;
+    smp.env_actions = env_actions; smp.rollout_actions = act_dst.data;
+    smp.logprobs = lp_dst.data; smp.values = val_dst.data;
+    smp.rng = pufferl->rng_states[buf];
+    smp.head_consume = hc_dev; smp.hc_stride = hc_stride; smp.rows = rows;
+    br_sample<<<(rows + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS, SAMPLE_WARP_ROWS * 32, 0, stream>>>(smp);
     if (p.graph_copies && !p.actions_zero_copy)
         cudaMemcpyAsync(vec->actions + (long)start * p.num_atns, vec->gpu_actions + (long)start * p.num_atns,
                         (size_t)rows * p.num_atns * sizeof(float), cudaMemcpyDeviceToHost, stream);
