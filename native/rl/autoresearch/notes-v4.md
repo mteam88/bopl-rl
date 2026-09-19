@@ -1147,3 +1147,49 @@ saved copy (no rebuild). What is left for Muon in the exact class is a
 different design (a warp-level mma.sync tf32 path is not exact; a
 persistent cooperative kernel over the 15 launches is the launch-gap
 lever, worth ~0.3 ms per step at most) - moved behind the balance work.
+
+### Code-only look while the w256 p2 gate runs: memory-bound passes and the H2D
+
+Memory-bound train passes (per pass B = 24576, D = 128, packed rows per
+set ~49k / 147k / 295k / 49k = 540k rows x 256 B = 138 MB of h2):
+- pool_rows4: reads h2 138 MB, writes joined 4 x 25 MB (fp32, 2D per
+  set) + winners 4 x 12.6 MB (int32): ~290 MB per pass = 0.48 ms at
+  600 GB/s against 2.1 / 4 = 0.53 ms measured: ~90% of bandwidth. int8
+  winners take 37 MB off (-0.25 ms per update).
+- unpool_rows4: reads h2 138 + winners 50 + grad_joined 100, writes dh2
+  138 MB: 426 MB = 0.71 ms ideal vs 0.88 measured (80%). int8 winners
+  -37 MB (-0.3 ms per update).
+- zero_tail: bytes are the active-rows granule (<= 3072 rows x 256 B),
+  launch cost only, 8 launches per pass: fusing into unpool / the pack
+  saves ~0.2 ms per update.
+- ln_backward 255 us per launch, 4 per pass: at width 1280 fp32 the
+  x + dy read and dx write are 378 MB = 0.63 ms ideal per pass vs 1.0
+  measured (63%); a two-pass-in-one restructure is worth <= 1.5 ms per
+  update, the largest of the four and the most work.
+Sum if everything lands: ~2.2 ms of 70 (3%). The fp32 joined activation
+(B x 1280 x 4 B = 126 MB written by pool + the flat GEMM, read by LN and
+the fusion GEMM) is the traffic; halving it means bf16 operands into the
+fusion GEMM, which is the change that failed the gate. Ranked behind the
+recipe decision.
+
+H2D: the obs row is still BOPL_OBS_STRIDE = 4812 fp32 dense, 19.2 KB,
+uploaded whole per live row (one graph memcpy per buffer step, 64 rows
+= 1.23 MB, 29 us measured at w128 = 3.7 ms per update per rollout
+stream; w256: 128 rows, ~58 us of the 412 us forward). The geometry the
+aim-only layout zeroes is 300 floats (terrain 12 + rays 36 x 8) = 6% of
+the row: a compact row for bits 10 alone is worth ~2 us per step. The
+row's bulk is empty set slots: players 6 x 32, slots 24 x 18, entities
+48 x 48, slimes 32 x 42 = 4272 floats of capacity against at most
+2 / 6 / 11 / 2 present rows (set_rows_max) = 784 floats, ~3 KB per row
+typical. A packed transport (writer emits counts + present rows into
+the pinned buffer, one memcpy of the packed bytes, a device unpack into
+the same dense row the chain and the rollout buffer already read) is
+exact by construction (1:1, check_dump on the unpacked rows) and cuts
+the upload 4-6x: 29 -> ~6 us per step at w128, 58 -> ~12 at w256, i.e.
+-3 ms of the 23 ms rollout-stream time per update and -45 us of the
+0.72 ms w256 buffer step (6%) if the copy sits on the step's critical
+path (it does: memcpy then kernels in the same graph). The writer
+already zeroes only the slots it wrote last time (bopl_written), so
+there is no memset to save on the env side. Effort: writer output
+format (C), transport in bopl_rollout.cu, an unpack kernel; medium.
+Worth it once the rollout side is the wall again (w256 p2 is balanced).
