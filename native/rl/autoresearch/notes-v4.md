@@ -1830,3 +1830,44 @@ smaller rows). Or more rows per period (b2's 128-row chains at 695 us =
 the same 5.4 us per row as today's 64-row at 411 -> only pays with a
 recipe that converts them). No single class gets there; (a) buys ~20%,
 (b)+(c) the rest.
+
+### Track (b): recipe gates at equal wall, decided here (parent 2026-09-19 05:50)
+
+Pass rule: band rating at 955 s inside the p2 reference's run-to-run
+spread: the aim-only p2 run rates 572.8 [529, 617] at 955 s (400M) and
+the same-recipe pairs differ by 3-24 band, so pass = band >= ~549 with
+the interval overlapping [529, 617]; the v4-aim/000 reference (523.5 at
+160M / 955 s) is the floor. Bench on the incumbent code next to the Elo.
+
+b3, replay ratio 1.0. What the recipe is today: train.py sets the native
+replay_ratio so that total_minibatches = learner_passes x minibatch_div
+and minibatch = learner_batch / minibatch_div; each minibatch draws its
+segments from the learner rows with priority, with replacement. p2 (div
+1) is two gradient steps per update, each over 24576 prio-drawn rows: 2
+rows trained per row collected (the "1.71" in THROUGHPUT.md was the old
+padded-row figure). Replay 1.0 at the same optimizer-step count is
+--learner-passes 1 --minibatch-div 2: two gradient steps per update of
+12288 rows each (config.json: learner_passes 1, minibatch_size 12288,
+replay_ratio 0.4286 = 2 x 12288 / 57344 native rows). p1 (one step of
+24576) failed equal wall earlier (437 vs 523.5); p1 div2 keeps p2's
+optimizer steps with half the rows per step. LR unchanged (Muon's
+orthogonalised update is not batch-scaled).
+
+Bench on 12cc2877: 542.9k vs 471.7k (+15.1%), train_s 43.9 -> 25.7 ms,
+rollout_s 51.3 -> 44.5 (eval_gpu 245 -> 206 us/step: the interference
+relief the coupling predicted, 0.38 ms of wall per ms of train), env
+149 -> 134 us/step. Gate b3-p1div2-12cc2877 running (STEPS=520M,
+WALL_SECONDS=955 readout).
+
+### Track (a1): the finish phase of c_step (writer_bench, 12cc2877)
+
+writer_bench (core 11, nice 19, box at load 1.0, default loadout, maps
+0-2, 4096 states): v3 0.61 us/row, v4-aim 7.18, v4-aim-only 2.05 (casts
+0.74 + v4 rows over v3 0.70 + v3 base 0.61), v4-no-rays 1.31, privileged
+0.05, relation 43 ns per call. The production writer (aim-only) is 2.05
+us x 2 rows = 4.1 us of the 7.3 us finish; the other ~3.2 us is
+bopl_step_finish's bookkeeping (telemetry deltas, rewards, counters),
+bopl_previous_action / bopl4_previous_history, bopl_write_mask, the
+delayed-state swap and bopl_pack_rows (the packed transport's per-row
+pack). Next: time those pieces (extend writer_bench with a finish-phase
+replay) before touching any of them.
