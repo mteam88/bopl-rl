@@ -27,7 +27,7 @@ import policy_v4  # noqa: E402
 REVISION = "42f70d6932c30ac977736f861006809c50168ba9"
 OD = layout.decoder_logits(4, 0)
 SHAPE = dict(layout.V4_DEFAULTS)
-DEFAULT_BUDGET = (6, 12, 20, 8)   # bopl_v4.cu DEFAULT_BUDGET: packed rows per sample per set
+DEFAULT_BUDGET = (2, 6, 14, 2)   # bopl_v4.cu DEFAULT_BUDGET: packed rows per sample per set
 
 
 def budget_in_effect():

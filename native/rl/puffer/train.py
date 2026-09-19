@@ -239,7 +239,7 @@ def arguments():
                         'and the torch reference to')
     p.add_argument('--v4-row-budget', default=None, metavar='P,S,E,L',
                    help='policy v4: packed rows per sample the set MLPs hold for players, slots, entities, slimes '
-                        '(bopl_v4.cu DEFAULT_BUDGET 6,12,20,8); rows past the budget are dropped and counted (set_overflow)')
+                        '(bopl_v4.cu DEFAULT_BUDGET 2,6,14,2); rows past the budget are dropped and counted (set_overflow)')
     p.add_argument('--hidden', type=int, default=128)
     p.add_argument('--layers', type=int, default=1)
     p.add_argument('--horizon', type=int, default=128)
