@@ -777,3 +777,26 @@ pass isolated, 16.63 ms at the incumbent):
   within 1.5x of bandwidth; the LN headroom is ~0.1 ms per pass).
 Nothing kept; bopl_v4.cu unchanged. Unpool cannot fold into the set dgrad
 GEMM (the max-pool half is a per-column winner scatter, row-inseparable).
+
+### Direction change (Matthew 22:51): v4-lite-aim is the production shape; recipe passes are the wall
+
+v4-lite shape (set inner 64, FFN off, critic 384) on the v4.1 aim layout
+(writer bit 8): sweep/configs/v4-lite-aim.toml. PufferLib 5.0's recipe is
+async=1, replay_ratio=1.0 (each sample trained on about once); ours is 4
+learner passes x 1.71 replay (THROUGHPUT.md line 584). The train-side wall
+is the pass count, not the kernels. Plan: (1) lite-aim bench + gate, (2)
+passes 4 -> 2 -> 1 on the lite shape, gated at equal wall-clock (Elo at the
+GPU minutes the reference took for 160M), (3) re-measure the split, then
+the writer geometry precompute, then w256.
+
+Also landed first: 3d4bd503 runs the minibatch whose work was just captured
+into a new train graph (it was skipped: one pass short per capture update;
+with one learner pass the update trained nothing and the empty loss dict
+raised train.py's KeyError entropy_coefficient). --learner-passes 1 works:
+full shape 349.2k, rollout-bound at 0.0696 s per update (train 0.028).
+
+Bench, lite-aim p4 (3d4bd503 build): 316.7k learner_sps (+26% over the full
+shape's 250.7k), train 0.072 (from 0.097), rollout 0.0767 -> rollout-bound
+already; GPU forward 297 us per step (contended), env 0.26 ms; 5.9 GB.
+Gate lite-aim-3d4bd503 launched 02:58 UTC (reference v4-aim/000, same
+layout; readout also against v4-lite/000).
