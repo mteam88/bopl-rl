@@ -73,12 +73,7 @@ constexpr Spec SPEC[SETS] = BOPL4_SPEC_TABLE;
 __constant__ Spec c_spec[SETS] = BOPL4_SPEC_TABLE;
 constexpr int MAX_KPAD = 96;
 static_assert(SPEC[0].kpad <= MAX_KPAD && SPEC[1].kpad <= MAX_KPAD && SPEC[2].kpad <= MAX_KPAD && SPEC[3].kpad <= MAX_KPAD, "kpad");
-/* Average valid rows per sample the packed buffers hold. The v4-aim recipe
- * packs at most 2 / 6 / 11.9 / 2 rows per sample (bench set_rows_max over
- * 300 updates; players and slots and slimes are fixed counts): the entity
- * budget keeps ~17% headroom, the others are exact. Rows past the budget
- * are dropped and counted (set_overflow). Was 6 / 12 / 20 / 8. */
-constexpr int DEFAULT_BUDGET[SETS] = {2, 6, 14, 2};
+constexpr int DEFAULT_BUDGET[SETS] = {6, 12, 20, 8};   /* average valid rows per sample the packed buffers hold */
 constexpr int TILE = 64;                               /* packed capacities are rounded up to this many rows */
 constexpr float LN_EPS = 1e-5f;
 
