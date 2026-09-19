@@ -2260,3 +2260,48 @@ BOPL_ENV_PIN=1 (the pre-existing explicit pin) takes precedence. On the
 A/B `ab-a3c-trainer-core` 3x3 vs ecd35837 running. Sized +3..+7%: the
 train pass -13 ms and the forward -45 us/step from the a3 runs, minus
 whatever the sim loses from 10 instead of 12 slots (it used ~9 of 12).
+
+## 2026-09-19 17:35 a3c discard; serial split at the b4 default; where the wall is
+
+`ab-a3c-trainer-core` 3x3 vs ecd35837: **591.3k vs 617.1k (-4.2%)**.
+train_s 56.3 -> 54.0 (not a3b's 43), forward 262 -> 256 (not 218),
+c_step 19.3 -> 20.6 (the sim lost 2 of its 12 slots). So the a3b train
+drop did not come from the trainer thread's own core; a3b had the whole
+process confined to 5,11 by taskset (CUDA's event-handler and torch's
+helper threads with it) and the pool's pollers pinned one per slot. The
+thread-placement class is closed: every variant lost, the default 9
+floating threads is the best of six. Reverted (168adf7c), rebuilt.
+
+Serial split at the default (`serial-b4-168adf7c`, BOPL_ASYNC=0):
+
+                       alone      overlapped (async default)
+    rollout            72.0 ms    77.8-78.8
+    train              24.8 ms    56.8            (2.3x under the chain)
+    wall               97.9       78.8
+    buffer step        0.562 ms   0.608           = env 0.361 + fwd 0.196 alone: serial, not max()
+    GPU forward        170 us     264             (128 rows)
+
+The train pass fits under the rollout three times over; what it costs
+the rollout is the forward's 170 -> 264 (+94 us x 128 steps x ~0.5
+exposed = ~6 ms of the 78.8). The rollout itself is the env CPU:
+per update 512 buffer-steps x 64 envs x 19.1 us = 626 ms of c_step over
+9 threads = 69.5 ms, against 72.0 measured alone. **The rollout is
+CPU-throughput-bound on c_step x threads**, which is why every GPU-chain
+lever since the recipe change read ~0 and every thread variant lost.
+
+Ranked from here (ms per 78.8 ms update):
+  (a) exact CPU: c_step 19.1 us = sim 9.9 + finish 7.7 (writer) + 1.5
+      pool. Isolated they are 4.0 + 4.1: the 2.3x is SMT (two threads
+      per core), so each us cut isolated is ~2 us in the trainer.
+      -1 us isolated on the writer or the sim = -10% of the env CPU =
+      ~-7 ms wall. The sized writer items (-0.2 us/row) are worth -1.4
+      ms now, not -0.4; the sim's per-tick cost (a2: 4 ticks per
+      decision at ~1 us each) is the bigger half and untouched.
+  (a) thread count: default 9 stepping threads (CPUs - 3) was tuned at
+      w128; at w256 b4 the pool's worker utilisation is 59%: `ab-t10` /
+      `ab-t11` running (env knob, 3x3 each).
+  (a) GPU contention on the forward: ~6 ms exposed; the train pass at
+      24.8 ms alone could be squeezed into fewer, denser launches but
+      the chain is what pays, and the SM split loses (L12).
+  (b) recipe: nothing new; b4 adopted.
+  (c) shape: declined (c1); no others.
