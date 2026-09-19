@@ -2305,3 +2305,75 @@ Ranked from here (ms per 78.8 ms update):
       the chain is what pays, and the SM split loses (L12).
   (b) recipe: nothing new; b4 adopted.
   (c) shape: declined (c1); no others.
+
+## 2026-09-19 18:05 thread count: 11 kept (+4.0%); GPU-writer sizing; the writer upper bound
+
+`ab-t10` 640.3k vs 619.6k (+3.3%), `ab-t11` 647.2k vs 622.4k (+4.0%),
+every repeat above the incumbent's; 11 kept as the code default
+(vecenv.h `BOPL_ENV_THREADS` default CPUs - 1, was CPUs - 3; 2596360f).
+c_step 19.1 -> 21.0 us (SMT), straggler 23 -> 41 us, worker 58 -> 66%;
+still a net gain because the rollout is c_step x threads. Incumbent at
+11 threads: **645.2k** (rollout 75.3 / train 59.8, fwd 272 us).
+
+### Sizing: the observation writer on the GPU (asked 18:05; not built)
+
+Upper bound measured first (`ub-no-writer`, a throwaway build with the
+writer call skipped, rows stale; reverted): c_step 20.6 -> 13.7 us
+(finish 7.7 -> 1.6), env 1.30 -> 0.875 ms per buffer step, and
+learner_sps **645k -> 688k (+6.6%)**, rollout 75.3 -> 70.6 ms. With the
+writer gone the buffer step is GPU-chain-bound: eval_gpu 0.336 ms vs
+eval_env 0.206 per step, the forward 272 -> 308 us (the train stream
+overlaps a denser rollout). So "CPU-throughput-bound on c_step" holds
+for about half the writer's cost and then hands over to the contended
+chain. A GPU writer adds a kernel and a state upload to that chain, so
+its net is +6.6% minus the writer kernel's chain time: **+0..+5% at the
+present geometry**, for 8-10 turns of work. The sizing details, for the
+record:
+ (1) bytes per env-step: the sim state is 48 B header + 2 players x 72
+     + entities x 136 (avg ~11, cap 48) + 2 slimes x 136 = ~2.0 KB avg,
+     7.2 KB worst, against 2 x 6 KB packed slots today (12 KB); HtoD 28
+     -> ~5 us per 128-row step. The delayed rows (observation_delay: the
+     state two decisions old) come from a device-side ring of uploaded
+     states, no extra bytes; map walls (BotView, ~100 SDF walls per map)
+     preloaded once per map; previous-action history and the action mask
+     derive from the actions already on device + the ability catalog.
+ (2) writer work per row: bits 10 keeps two casts (aim ray, line of
+     sight) marching the analytic wall SDFs (bot_wall_sdf first-minimum
+     rule, ~50 dependent steps x wall_count), plus ~90 relations
+     (entities, slimes, players, slots) in double with atan2/hypot, the
+     privileged block and the pack. On device: one block per row, lanes
+     over walls/entities; the march is a ~50-step dependent chain of
+     block reductions (~20-40 us latency per row, all rows in parallel),
+     so a writer kernel of ~40-60 us on the chain. Bit-identity: the
+     doubles reproduce only with --fmad=false and identical operation
+     order, and atan2/hypot come from libdevice not glibc: last-ulp
+     differences that can flip a march step at a boundary. Row-for-row
+     within ~1e-6 is achievable; bit-exact is not; the learning gate
+     would decide, and the CPU writer (evaluators, in-game agent)
+     stays as the reference, so two writers to keep in agreement.
+ (3) c_step -> sim 10.8 + ~2.5 (pack of state, mask, history) = ~13.5
+     us; env CPU floor 512 x 64 x 13.5 / 11 = 40 ms per update, but the
+     buffer step becomes GPU: fwd 308 contended + writer ~50 + HtoD 5 =
+     ~360 us x 128 = 46 ms per buffer chain and the chains co-run
+     imperfectly: the measured no-writer wall was 70.6 ms with nothing
+     added to the chain. Expected wall with the writer on the chain:
+     70-75 ms -> 655-700k.
+ (4) build: state upload + device ring (1 turn), the writer port of
+     bopl_obs_v4.h + the v3 helpers it uses (~1200 lines of C in
+     double; 3-4 turns), history/mask/privileged on device (1), dense
+     rows written straight into the chain's tensor (the packed transport
+     retires) (1), a row-for-row harness on recorded states (1), A/B +
+     learning gate (1): 8-10 turns.
+Recommendation: no at this geometry. The chain's contention is the wall
+the moment the writer is cheaper; that is the lever to take first, and
+it is also what would make a GPU writer pay later.
+
+### The contention channel, benched now (env knob, GPU unit)
+
+Train alone 24.8 ms is stretched to 60 under the rollout and stretches
+the forward 170 -> 272-308 us in return. `ab-split32` (BOPL_GPU_SPLIT=32:
+rollout streams on 32 SMs, train on 16) and `ab-split36` (36 / 12), 3x3
+each: the train pass at 16 SMs should still fit under the ~70 ms wall
+(24.8 x ~2.5), and the chain's blocks stop queueing behind cutlass
+tiles. L12 lost at v3 w128 p4 (train-bound then); the geometry is the
+opposite now.
