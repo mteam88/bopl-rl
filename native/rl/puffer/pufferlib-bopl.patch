@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
---- pristine-src/bindings.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/bindings.cu	2026-09-19 02:22:04.394040067 -0400
+--- pristine-src/bindings.cu	2026-09-18 22:53:29.640986636 -0400
++++ puffer-overlay/bindings.cu	2026-09-18 22:53:29.644986683 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -256,8 +256,8 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
          .def("num_params", [](PuffeRL& self) -> int64_t {
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
---- pristine-src/kernels.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/kernels.cu	2026-09-19 02:22:04.394450321 -0400
+--- pristine-src/kernels.cu	2026-09-18 22:53:29.640986636 -0400
++++ puffer-overlay/kernels.cu	2026-09-18 22:53:29.644986683 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -548,8 +548,8 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      long offset = 0;
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
---- pristine-src/models.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/models.cu	2026-09-19 02:22:04.394873750 -0400
+--- pristine-src/models.cu	2026-09-18 22:53:29.640986636 -0400
++++ puffer-overlay/models.cu	2026-09-18 22:53:29.644986683 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -881,8 +881,8 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
          x = a->scan_bufs[i].out;
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
---- pristine-src/muon.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/muon.cu	2026-09-19 02:39:49.520537671 -0400
+--- pristine-src/muon.cu	2026-09-18 22:53:29.640986636 -0400
++++ puffer-overlay/muon.cu	2026-09-18 22:53:29.644986683 -0400
 @@ -1,4 +1,5 @@
  #include <nccl.h>
 +#include <algorithm>
@@ -926,7 +926,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +    return s < 1 ? 1 : (s > MUON_MAX_SPLITK ? MUON_MAX_SPLITK : s);
 +}
 +#define MUON_TILE 64
-+#define MUON_BK 32
++#define MUON_BK 16
 +#define MUON_THREADS 256
 +#define MUON_SMEM_STRIDE 68  // 64 + 4: k-major staging without 16-way bank conflicts, float4-aligned rows
 +struct MuonGemm {
@@ -964,7 +964,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  struct Muon {
      double momentum, weight_decay, eps;
      float lr_val_init;
-@@ -98,8 +167,222 @@
+@@ -98,8 +167,205 @@
      Allocator* param_alloc;  // params allocator — shapes used by muon_step
      ncclComm_t nccl_comm;
      int world_size;
@@ -990,14 +990,6 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  };
  
 +// One 64 x 64 output tile of one problem per block; 4 x 4 outputs per thread.
-+// The k loop is latency-bound at these grids (a few hundred blocks, K up to
-+// 1280): each 32-deep slab's global loads are issued into registers while
-+// the previous slab is multiplied, and the slab is twice the old 16, so two
-+// __syncthreads per 32 k instead of four. The per-thread accumulation order
-+// over k is unchanged (sequential, tile by tile), the split-K slice bounds
-+// still round to 16, and a slab's lanes past k_end contribute fmaf(0, 0, acc):
-+// the same bits as before.
-+#define MUON_LOADS ((MUON_TILE * MUON_BK) / MUON_THREADS)
 +__global__ void __launch_bounds__(MUON_THREADS) muon_grouped_gemm(MuonGroup grp) {
 +    __shared__ __align__(16) float As[MUON_BK][MUON_SMEM_STRIDE];
 +    __shared__ __align__(16) float Bs[MUON_BK][MUON_SMEM_STRIDE];
@@ -1010,7 +1002,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +    const int tm = tile / g.tiles_n, tn = tile - tm * g.tiles_n;
 +    int k_begin = 0, k_end = g.K;
 +    if (g.ksplit > 1) {
-+        int kc = ((g.K + g.ksplit - 1) / g.ksplit + 15) / 16 * 16;
++        int kc = ((g.K + g.ksplit - 1) / g.ksplit + MUON_BK - 1) / MUON_BK * MUON_BK;
 +        k_begin = slice * kc; k_end = min(g.K, k_begin + kc);
 +    }
 +    const int row0 = tm * MUON_TILE, col0 = tn * MUON_TILE;
@@ -1022,29 +1014,20 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +        for (int j = 0; j < 4; j++) acc[i][j] = 0.0f;
 +    // Load mapping: the contiguous operand dimension goes to consecutive threads.
 +    const bool a_kfast = g.sa_k == 1, b_jfast = g.sb_j == 1;
-+    int ai[MUON_LOADS], ak[MUON_LOADS], bj[MUON_LOADS], bk[MUON_LOADS];
-+    #pragma unroll
-+    for (int r = 0; r < MUON_LOADS; r++) {
-+        int e = tid + r * MUON_THREADS;
-+        if (a_kfast) { ai[r] = e / MUON_BK; ak[r] = e - ai[r] * MUON_BK; } else { ak[r] = e / MUON_TILE; ai[r] = e - ak[r] * MUON_TILE; }
-+        if (b_jfast) { bk[r] = e / MUON_TILE; bj[r] = e - bk[r] * MUON_TILE; } else { bj[r] = e / MUON_BK; bk[r] = e - bj[r] * MUON_BK; }
-+    }
-+    float pa[MUON_LOADS], pb[MUON_LOADS];
-+    auto fetch = [&](int k0) {
-+        #pragma unroll
-+        for (int r = 0; r < MUON_LOADS; r++) {
-+            int gi = row0 + ai[r], gk = k0 + ak[r];
-+            pa[r] = (gi < g.M && gk < k_end) ? g.A[(long)gi * g.sa_i + (long)gk * g.sa_k] : 0.0f;
-+            int gj = col0 + bj[r], gkb = k0 + bk[r];
-+            pb[r] = (gj < g.N && gkb < k_end) ? g.B[(long)gkb * g.sb_k + (long)gj * g.sb_j] : 0.0f;
-+        }
-+    };
-+    if (k_begin < k_end) fetch(k_begin);
 +    for (int k0 = k_begin; k0 < k_end; k0 += MUON_BK) {
 +        #pragma unroll
-+        for (int r = 0; r < MUON_LOADS; r++) { As[ak[r]][ai[r]] = pa[r]; Bs[bk[r]][bj[r]] = pb[r]; }
++        for (int r = 0; r < (MUON_TILE * MUON_BK) / MUON_THREADS; r++) {
++            int e = tid + r * MUON_THREADS;
++            int i, k;
++            if (a_kfast) { i = e / MUON_BK; k = e - i * MUON_BK; } else { k = e / MUON_TILE; i = e - k * MUON_TILE; }
++            int gi = row0 + i, gk = k0 + k;
++            As[k][i] = (gi < g.M && gk < g.K) ? g.A[(long)gi * g.sa_i + (long)gk * g.sa_k] : 0.0f;
++            int j, kb;
++            if (b_jfast) { kb = e / MUON_TILE; j = e - kb * MUON_TILE; } else { j = e / MUON_BK; kb = e - j * MUON_BK; }
++            int gj = col0 + j, gkb = k0 + kb;
++            Bs[kb][j] = (gj < g.N && gkb < g.K) ? g.B[(long)gkb * g.sb_k + (long)gj * g.sb_j] : 0.0f;
++        }
 +        __syncthreads();
-+        if (k0 + MUON_BK < k_end) fetch(k0 + MUON_BK);   /* the next slab's loads fly during this slab's FMAs */
 +        #pragma unroll
 +        for (int k = 0; k < MUON_BK; k++) {
 +            float4 a = *(const float4*)&As[k][ty * 4];
@@ -1187,7 +1170,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  void muon_init(Muon* m, Allocator* param_alloc, double lr_val,
          double momentum, double eps, double weight_decay,
          Allocator* alloc) {
-@@ -144,6 +427,86 @@
+@@ -144,6 +410,86 @@
          alloc_register(alloc, &m->x_buf);
          alloc_register(alloc, &m->ns_norm_puf);
      }
@@ -1274,7 +1257,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  }
  
  void muon_post_create(Muon* m) {
-@@ -151,6 +514,9 @@
+@@ -151,6 +497,9 @@
      m->lr_derived_ptr = m->lr_derived_puf.data;
      m->grad_norm_ptr = m->grad_norm_puf.data;
      if (m->ns_norm_puf.data) m->norm_ptr = m->ns_norm_puf.data;
@@ -1284,7 +1267,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
      cudaMemcpy(m->lr_ptr, &m->lr_val_init, sizeof(float), cudaMemcpyHostToDevice);
      cudaMemset(m->lr_derived_ptr, 0, 2 * sizeof(float));
      cudaMemset(m->mb_puf.data, 0, numel(m->mb_puf.shape) * sizeof(float));
-@@ -168,6 +534,21 @@
+@@ -168,6 +517,21 @@
      muon_norm_partials<<<clip_blocks, 256, 0, stream>>>(
          m->norm_partials.data, grads.data, numel(grads.shape));
      muon_norm_reduce<<<1, 256, 0, stream>>>(m->grad_norm_ptr, m->norm_partials.data, clip_blocks);
@@ -1306,7 +1289,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
      muon_clip_norm<<<grid_size(numel(grads.shape)), BLOCK_SIZE, 0, stream>>>(
          grads.data, m->grad_norm_ptr, max_grad_norm, 1e-6f, numel(grads.shape));
  
-@@ -175,6 +556,23 @@
+@@ -175,6 +539,23 @@
      muon_nesterov<<<grid_size(numel(m->mb_puf.shape)), BLOCK_SIZE, 0, stream>>>(
          m->mb_puf.data, grads.data, (float)m->momentum, numel(m->mb_puf.shape));
  
@@ -1330,7 +1313,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
      long offset = 0;
      for (int _i = 0; _i < m->param_alloc->num_regs; _i++) {
          AllocEntry& e = m->param_alloc->regs[_i];
-@@ -183,45 +581,61 @@
+@@ -183,45 +564,61 @@
          long ne = numel(e.shape);
          const precision_t* update_ptr = gc_ptr;
          float scale = 1.0f;
@@ -1405,8 +1388,8 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +    }
  }
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
---- pristine-src/ocean.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/ocean.cu	2026-09-19 02:22:04.395606803 -0400
+--- pristine-src/ocean.cu	2026-09-18 22:53:29.640986636 -0400
++++ puffer-overlay/ocean.cu	2026-09-18 22:53:29.644986683 -0400
 @@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
@@ -1443,8 +1426,8 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 +    }
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
---- pristine-src/pufferlib.cu	2026-09-18 16:41:04.173539658 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-19 02:22:04.396591991 -0400
+--- pristine-src/pufferlib.cu	2026-09-18 22:53:29.642986660 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-18 22:53:29.644986683 -0400
 @@ -1,15 +1,72 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -3526,8 +3509,8 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      if (pufferl.nccl_comm != nullptr) {
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
---- pristine-src/vecenv.h	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/vecenv.h	2026-09-19 02:22:04.397649697 -0400
+--- pristine-src/vecenv.h	2026-09-18 22:53:29.641986648 -0400
++++ puffer-overlay/vecenv.h	2026-09-18 22:53:29.644986683 -0400
 @@ -97,6 +97,30 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
