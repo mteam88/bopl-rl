@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Learning gate for the policy v4 throughput campaign (THROUGHPUT_V4.md), the
 # v4 counterpart of the 150M sanity run in THROUGHPUT.md section 4: the
-# v4-aim recipe (sweep/configs/v4-aim.toml [fixed], the production shape the
-# campaign optimises: encoder v4, hidden 256, writer bits 8, aim Fourier 4,
-# 128 workers x 4 buffers, 4 banks with 3 scripted, seed 73) run verbatim for
+# v4-lite-aim recipe (sweep/configs/v4-lite-aim.toml [fixed], the production
+# shape the campaign optimises: encoder v4, hidden 256, set inner 64, no FFN,
+# critic 384, writer bits 10, aim Fourier 4, 128 workers x 4 buffers, 2
+# learner passes, 4 banks with 3 scripted, seed 73) run verbatim for
 # its first 160M learner decisions with the in-run evaluation on pool v7, then
 # read against the reference run sweeps/v4-aim/000 (thread policy-v4, 2026-09-16,
 # the same recipe at 1.73B) at the evaluation steps both share.
@@ -39,8 +40,8 @@
 #   the 80M and 160M evaluations must stay on the cadence for the gate to read.
 #   REFERENCE=<sweep run dir> REF_NAME=<readout name> read against another
 #   reference of the same recipe (sweeps/v4-lite/000 for the v4-lite shape).
-#   Shape / recipe flags go after -- (e.g. -- --v4-set-inner 64 --v4-ffn-dim 0
-#   --v4-critic-dim 384 for v4-lite-aim, sweep/configs/v4-lite-aim.toml).
+#   Shape / recipe flags go after -- and override the defaults (e.g.
+#   -- --learner-passes 4 for the p4 recipe, --workers 256 for w256).
 #   WALL_SECONDS=<s> (report): the equal-wall-clock comparison for recipe
 #   changes (learner passes): the run's evaluation whose trainer elapsed is
 #   nearest that many seconds (v4-aim/000 reached 160M learner steps in 955 s)
@@ -75,18 +76,18 @@ run)
   flock 9
   echo "$(date -u '+%F %T UTC') $LABEL: v4-aim recipe to $STEPS learner steps, eval every $EVAL_EVERY, seed $SEED, load $(cut -d' ' -f1-3 /proc/loadavg)" >&2
   set +e
-  # sweep/configs/v4-aim.toml [fixed], verbatim except steps / eval_every / seed
+  # sweep/configs/v4-lite-aim.toml [fixed], verbatim except steps / eval_every / seed
   # (the driver passes the toml keys as flags; evaluation_pool = [scoring].pool).
   env BOPL_RL_BACKEND=rust PYTHONPATH="$PUF" \
     BOPL_OMP_THREADS=${BOPL_OMP_THREADS:-12} OMP_WAIT_POLICY=${OMP_WAIT_POLICY:-passive} BOPL_ENV_THREADS=${BOPL_ENV_THREADS:-8} \
   systemd-run --user --scope --collect --quiet -p MemoryMax=10G --unit "bopl-sanity-$(echo "$LABEL" | tr -c 'a-zA-Z0-9\n' '-')-$$" -- \
     nice -n 5 "$PY" native/rl/puffer/train.py --output "$DIR" \
     --aim-fourier 4 --banks 4 --buffers 4 --checkpoint-every 20000000 --cudagraphs 1 \
-    --encoder v4 --hidden 256 --layers 1 --v4-ablate 10 \
+    --encoder v4 --hidden 256 --layers 1 --v4-ablate 10 --v4-set-inner 64 --v4-ffn-dim 0 --v4-critic-dim 384 \
     --entropy 0.01532588085540654 --entropy-floor 0.001 --entropy-free-rows 1 --entropy-half-life 718611646 \
     --entropy-head-scale 0.028821467398601395,1.5,1 --episode-ticks 7200 \
     --eval-every "$EVAL_EVERY" --evaluation-games 8 --evaluation-maps 0,1,2 --evaluation-pool "$POOL" --evaluation-workers 4 \
-    --heldout-games 4 --heldout-maps 3,4 --horizon 128 --learner-passes 4 \
+    --heldout-games 4 --heldout-maps 3,4 --horizon 128 --learner-passes 2 \
     --learning-rate 0.0003431012662975937 --reward-kill 0.2883693237829292 --reward-timeout -1 \
     --scripted-banks 3 --scripted-opponents mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard \
     --scripted-roster default --scripted-share-max 1 --scripted-share-min 0.11048204896277423 \

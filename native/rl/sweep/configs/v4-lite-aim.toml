@@ -7,7 +7,9 @@
 #   at 1.7B on seeds 73/74/75 and passed the campaign's band gate on the lite
 #   shape: notes-v4.md, 2026-09-19). v4-lite.toml + v4_ablate = 10;
 #   the recipe is otherwise overnight-9 024's / v4-aim's verbatim (pool v7 625,
-#   seed 73). References: sweeps/v4-lite/000 (shape) and sweeps/v4-aim/000
+#   seed 73) except learner_passes = 2: at equal wall-clock (955 s) p2 rated
+#   572.8 against p4's 549.4 and the reference's 523.5 (notes-v4.md, the
+#   recipe table); at equal samples it costs ~60 band. Matthew reviews before merge. References: sweeps/v4-lite/000 (shape) and sweeps/v4-aim/000
 #   (layout); the throughput campaign's learning gate (puffer/sanity_v4.sh)
 #   reads the first 160M learner decisions against them.
 # Flags not listed are layout.V4_DEFAULTS.
@@ -65,7 +67,7 @@ buffers = 4
 banks = 4
 seed = 73
 horizon = 128
-learner_passes = 4
+learner_passes = 2                 # campaign recipe (2026-09-19 03:22): the equal-wall winner on this layout; notes-v4.md recipe table
 aim_fourier = 4
 learning_rate = 0.0003431012662975937
 entropy = 0.01532588085540654

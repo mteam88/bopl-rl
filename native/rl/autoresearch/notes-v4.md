@@ -1217,3 +1217,17 @@ for w256 p2 (532.6, 10% more samples than w128 p2 and 40 lower: about
 w256 p2 > reference; the batch doubling buys throughput (524k bench)
 that the recipe does not convert into Elo at this horizon. Matthew's
 call; the sample-efficiency cost of w256 is the honest caveat.
+
+### Recipe decision (parent, 03:22): w128 p2 is the campaign recipe
+
+The equal-wall winner on the aim-only layout (572.8 at 955 s vs p4's
+549.4 and the reference's 523.5; ~60 band cost at equal samples).
+learner_passes = 2 in sweep/configs/v4-lite-aim.toml, bench_shape.sh
+(BOPL_BENCH_PASSES default 2) and sanity_v4.sh (--learner-passes 2);
+both scripts now also carry the lite shape flags by default (set inner
+64, FFN 0, critic 384), so the bench and the gate run the production
+config without -- args. w256 stays a bench row (524k), not a default.
+Matthew reviews before merge. The incumbent bench row from here is w128
+p2 on aim-only: 448.3k learner_sps (rollout-bound: rollout 0.0541 s,
+train 0.0414 s per update), so the next lever is the rollout side: the
+packed obs transport (exact, check_dump-gated), then the split.

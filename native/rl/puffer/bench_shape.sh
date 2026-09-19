@@ -12,11 +12,13 @@
 # (h2d / forward / d2h). Steady state = the updates after the first 20.
 #
 # Usage: bench_shape.sh <label> [updates=300] [-- extra train.py args...]
-#   BOPL_BENCH_WORKERS=128 BOPL_BENCH_BUFFERS=4 BOPL_BENCH_PASSES=4 override the shape.
+#   BOPL_BENCH_WORKERS=128 BOPL_BENCH_BUFFERS=4 BOPL_BENCH_PASSES=2 override the shape
+#     (passes 2 = the campaign recipe since 2026-09-19, the equal-wall winner).
 #   BOPL_BENCH_ENCODER=set|v4 (default set = the v3 set encoder at hidden 128).
-#     v4 is policy v4 at the production shape (sweep/configs/v4-aim.toml:
-#     hidden 256, layout.V4_DEFAULTS, writer bits BOPL_BENCH_V4_ABLATE=8,
-#     aim Fourier 4); BOPL_BENCH_HIDDEN overrides the width of either arm.
+#     v4 is policy v4 at the production shape (sweep/configs/v4-lite-aim.toml:
+#     hidden 256, set inner 64, no FFN, critic 384, writer bits
+#     BOPL_BENCH_V4_ABLATE=10, aim Fourier 4); BOPL_BENCH_HIDDEN overrides the
+#     width of either arm, later -- args override the shape flags.
 #   BOPL_BENCH_PROF=1 sets BOPL_ENV_PROF=2 BOPL_GPU_PROF=1 for the run (both
 #     arms of an A/B share it; 0 for rows comparable to THROUGHPUT.md's tables).
 #   OUT=<dir> (default native/artifacts/rl/bench-shape in this checkout).
@@ -45,7 +47,7 @@ OUT=${OUT:-$R/native/artifacts/rl/bench-shape}
 mkdir -p "$OUT"
 WORKERS=${BOPL_BENCH_WORKERS:-128}
 BUFFERS=${BOPL_BENCH_BUFFERS:-4}
-PASSES=${BOPL_BENCH_PASSES:-4}
+PASSES=${BOPL_BENCH_PASSES:-2}
 ENCODER=${BOPL_BENCH_ENCODER:-set}
 PROF=${BOPL_BENCH_PROF:-1}
 HORIZON=128
@@ -55,7 +57,8 @@ PUF=$(ls -d "$R"/native/artifacts/rl/dependencies/PufferLib-* | sort | tail -1)
 ulimit -c 0
 case "$ENCODER" in
   set) ENCODER_ARGS=(--encoder set --hidden "${BOPL_BENCH_HIDDEN:-128}") ;;
-  v4)  ENCODER_ARGS=(--encoder v4 --hidden "${BOPL_BENCH_HIDDEN:-256}" --v4-ablate "${BOPL_BENCH_V4_ABLATE:-10}" --aim-fourier 4) ;;
+  v4)  ENCODER_ARGS=(--encoder v4 --hidden "${BOPL_BENCH_HIDDEN:-256}" --v4-ablate "${BOPL_BENCH_V4_ABLATE:-10}" --aim-fourier 4
+            --v4-set-inner 64 --v4-ffn-dim 0 --v4-critic-dim 384) ;;
   *) echo "BOPL_BENCH_ENCODER must be set or v4" >&2; exit 2 ;;
 esac
 PROF_ENV=()
