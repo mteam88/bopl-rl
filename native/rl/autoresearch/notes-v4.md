@@ -2140,13 +2140,43 @@ its bookkeeping), printing `{"bench": "worlds", ...}` lines:
 Flat: 64 worlds x ~130 KB of sim state + rows is 8 MB, past the core's
 L2 (1 MB) but inside the 96 MB L3, and the walk costs nothing extra.
 So the cache factor of walking many envs is nil; the trainer's c_step
-of 19.1 us against 8.1 isolated (2.35x) is SMT sharing (12 threads on 8
-cores x 2, two sim threads per core each at half the core) plus the
+of 19.1 us against 8.1 isolated (2.35x) is SMT sharing (the box is 6
+cores x 2 SMT = 12 CPUs; the pool's 9 stepping threads + the trainer
+thread put two threads on most cores, each at half the core) plus the
 pool's per-step bookkeeping (claim, telemetry, delayed copies: the
 `begin`/`sample` phases, ~1 us). Consequence for the CPU track: there
 is no per-step working-set lever; only less work per c_step (writer and
 sim items, at ~1.75x their isolated saving) or fewer threads per core
-(6 sim threads pinned one per core would each run near 8 us but the
-pool would have half the threads: 6 x 1/8.1 vs 12 x 1/19.1 decisions
-per us = 0.74 vs 0.63: +17% env throughput on paper, an exact
-scheduling change worth one bench: `a3`).
+(6 stepping threads pinned one per core, CPUs 0-5, would each run near
+8 us where the default 9 unpinned run at 19: 6/8.1 vs 9/19.1 decisions
+per us = 0.74 vs 0.47 on paper, before the trainer thread's own core
+share; an exact scheduling change worth one bench: `a3`, the pool's
+existing BOPL_ENV_THREADS / BOPL_ENV_PIN / BOPL_ENV_PIN_CPUS knobs).
+
+## 2026-09-19 16:35 br4_sets occupancy (discard); a3 thread benches launched
+
+`br4_sets` compiles to 154 registers x 256 threads: one block per SM, so
+its 512 blocks at 128 rows run in ~11 waves, which is why it is the one
+chain kernel that scaled with rows (35 -> 57.5 us). Candidate
+`__launch_bounds__(256, 2)` (128 regs, 104 B spill; caps of 3 and 4
+blocks spilled 470 / 580 B): 2 blocks/SM, ~5 waves, register allocation
+only (check_v4 pass_all). 3x3 build A/B vs ecd35837 at the default
+recipe: learner_sps **615.7k vs 617.5k median (-0.3%)**, rollout_s
++0.4%, train_s -0.4%. Discarded and reverted: occupancy is not the
+limiter, so the kernel's per-block time is the chain of dependent loads
+in the h1 loop (48 features x n rows, one W1t + one x load per FMA) and
+the ballot scan, and the waves are short. A real cut needs the h1 loop
+restructured (rows across lanes, features across the loop with the
+loads hoisted 4-8 deep) — parked behind the a3 bench; sized at
+-10..-20 us/step (-1.5..-2.5 ms wall) if it converts.
+
+Incumbent at the default (3 runs + the 3 inc arms): 615.8-629.8k, mean
+~624k; the A/B's inc median 617.5k is the number the next A/B reads
+against (load1 was 10.8 during the run: a stray node process at 100%
+of one CPU, gone by 16:35).
+
+a3 launched (GPU unit, runtime knobs the pool already has, no code):
+`ab-a3-t6-pin` (BOPL_ENV_THREADS=6 BOPL_ENV_PIN=1 PIN_CPUS=0-5: one
+stepping thread per physical core, the trainer thread floats on the
+SMT siblings) and `ab-a3-t6` (6 threads unpinned), each 3x3 vs the
+default 9 unpinned.
