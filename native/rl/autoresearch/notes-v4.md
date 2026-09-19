@@ -990,3 +990,66 @@ learner_sps against 299k for lite-aim p4 in the same recipe. Kept: writer
 bits 10 is the production layout (v4-lite-aim.toml v4_ablate = 10,
 sanity_v4.sh and bench_shape.sh defaults). Per row 2.0 us (from 7.2),
 c_step 17.3 us (from 30.6).
+
+### Passes reopened on aim-only: bench p2, equal-wall gate launched
+
+With the geometry channel off the env CPU is 0.14 ms per buffer step and
+the pass count moves the rate again: lite-aim-only p4 338.3k (train-bound,
+train 0.0717 s vs rollout 0.0615), p2 448.3k (+33%, rollout-bound:
+rollout 0.0541 vs train 0.0414; buffer step 0.42 ms = GPU forward 0.25
+under train contention + env 0.14). The earlier equal-wall table was
+taken at 313k vs 299k (p2 vs p4 in the sanity recipe), so p2 tied on Elo
+with ~5% more samples; here it should have ~1.4x. Launched
+lite-aim-only-p2-a2c9aa7e (seed 73, STEPS=440M, WALL_SECONDS=955 readout
+against the aim-only p4 run, which needs its own 955 s extension: the p4
+aim-only gate stopped at 160M / 489 s). Matthew picks.
+
+### Train pass re-profile on the lite shape (CUPTI, a2c9aa7e, w128 b4 p4, 83 updates; prof-lite-aim-only-a2c9aa7e.txt)
+
+Train stream busy 69.7 ms per update (bench train_s 0.0729), B = 24576
+rows per pass, 4 passes. Per update:
+
+  fp32 TF32 GEMMs (cutlass s1688)             16.9 ms  24%   128x256 tn 6.3 (12/upd, avg 517 us, min 199: the fusion GEMM family, K = 1280 joined), 128x128 nt 4.1, 256x128 nn 3.4, 128x256 nn 2.1, 256x64 nt 1.1
+  bf16 set-MLP GEMMs (s16816, 8 per pass)     14.4 ms  21%   relu 128x256 3.0, 64x128 nt 2.3, 64x64 tn 1.9, relu 64x64 nn 1.8, 64x64 nn 1.7, relu 64x64 tn 1.5, 64x64 nt 1.2, drelu 128x128 1.0
+  LayerNorm fwd + bwd                          5.7 ms   8%   ln_backward 4.1 (16/upd, avg 255 us), ln_forward 1.7
+  Muon (grouped gemm + reduce)                 5.7 ms   8%   60 grouped GEMM launches of avg 80 us + 20 reduces, on the train stream
+  pool / unpool                                5.6 ms   8%   unpool_rows 3.5, pool_rows 2.1
+  MinGRU scans                                 3.3 ms   5%   backward 2.2, forward 1.1
+  mask_rows (ReLU' for the set MLPs)           2.3 ms   3%   16/upd: set inner 64 is not a multiple of 128 bits, so the Lt DRELU bitmask is off and dh1 is masked by a pass over act x I
+  cache_flat + cache_copy_rows                 1.8 ms   3%   the once-per-update prepass + per-pass gathers
+  ppo_loss                                     1.7 ms   2%
+  memcpy                                       1.2 ms   2%
+  the rest (zero_tail, relu_grad, reduce_partials, embed, ...)  ~11 ms 16%
+
+Rollout, per buffer stream (4): 23 ms per update each: br_gemm 9.1 (874
+launches = 7 per step now that the FFN is off; avg 10.4 us, min 3.3),
+br4_sets 4.8 (avg 38, min 5.7), H2D memcpy 3.7 (29 us per step: the
+observation upload), br_sample 3.0, br4_rows 2.1. The avg/min ratios of
+3-7x are the train stream's occupancy: the GPU is saturated (70 ms train
++ 4 x 23 ms rollout of stream time in a 73 ms update), so at p4 nothing
+on the rollout side moves the wall.
+
+Exact-class levers left on the train pass, ranked:
+1. Muon 5.7 ms on the critical stream: the grouped path runs 60 launches
+   per update at 80 us; with the lite matrices more of them are small.
+   Fusing the Newton-Schulz iteration's GEMMs per group, or pushing the
+   per-matrix Lt path to the side lanes: maybe -2-3 ms (3-4%).
+2. mask_rows 2.3 ms: the Lt DRELU aux needs 128-bit rows (I = 64 is 64
+   bits). Options: a custom bf16 K=128, N=64 GEMM with the ReLU' fused
+   (br_gemm-shaped), or a bitmask written in the forward and a masking
+   dW1 read. -2 ms (3%), medium effort.
+3. Memory-bound passes (LN 5.7, pool/unpool 5.6, cache 1.8, zero_tail /
+   relu_grad in the rest): ~16 ms at 50-60% of bandwidth. Narrower pool
+   winners (int32 -> int8), unpool's h2 re-read, fusing zero_tail into
+   unpool: each 0.3-1 ms.
+4. The fp32 GEMMs (16.9 ms) have no exact lever left: TF32 already, bf16
+   failed the gate twice. The K = 1280 joined width (flat 948 + pooled
+   4 x 2 x D) is a shape question (flat_dim / a flat pre-projection):
+   Matthew's.
+5. The bf16 set GEMMs (14.4 ms) run 8 launches per pass with per-set M
+   (players 49k rows, entities 295k); their tiles are 64x64 at I = 64.
+   One grouped launch over the four sets would need a custom kernel.
+Sum of 1-3 if all land: ~-6 ms of 70 (-9%). The pass count (p2: train
+41 ms) moves more than all of them, which is why (a) is the gate running.
+Also noticed: `env_int("BOPL4_DRELU", 1)` in bopl_v4.cu is a leftover
+toggle (removal rule); to drop with the next bopl_v4.cu edit.
