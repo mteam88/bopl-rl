@@ -859,3 +859,41 @@ vs 646). Drift flags on the equal-steps report (EV 0.43 vs 0.30, entropy
 statistics, not a fault. Verdict: p2 loses at equal samples, ties or wins
 at equal wall. Matthew's call; the p1 and p4 (extended to 955 s) rows
 follow. Launched lite-aim-p1-3d4bd503 (STEPS=400M).
+
+### Writer geometry, exact form: refilling lanes + axis-aligned walls
+
+Where the row's time goes (writer_bench, default loadout, maps 0-2, the
+box under the p1 gate so absolute numbers run 10-20% high): v4-aim 7.9
+us/row, of which geometry 5.8, aim/LOS casts + v4 rows 2.1, v3 0.6. A
+debug build counted the march: per row 4.7 march calls, 63.5 rays, 80.6
+vector steps, 380 lane-steps (6 steps per ray, lanes 59% occupied), 505
+vector wall-SDF evaluations over 6.3 walls (2.4 axis-aligned, 3.9
+rotated). So the geometry is ~500 x (20 zmm ops + a sqrt) plus the
+per-step control: the algorithm's steps x walls, as THROUGHPUT_V4.md said.
+
+What an exact form can still do:
+1. Refilling lanes (the parked variant from prep, `BOPL4_MARCH` 40): a
+   lane whose ray ended takes the next ray, so the fan's 36 rays march in
+   one call with full lanes instead of 5 groups draining separately.
+2. Axis-aligned walls skip the frame rotation: for right = (+-1, 0), up =
+   (0, +-1) (or the 90-degree turn with the extents swapped) the IEEE
+   value of rpx*(+-1) + rpy*0 is +-rpx, and the abs that follows kills the
+   sign, so |lx| = |rpx| exactly: 6 of the 20 ops per wall gone on 38% of
+   the walls. `Bopl4Terrain` carries the two wall lists; the min over the
+   walls is order-independent (the same +0/-0 argument as the lane march).
+Both bit-identical: writer_bench's march-check (vector vs scalar march,
+8192 rows) 0 mismatches, and its new `rows_hash` (FNV-1a over every
+production row of the recorded states) equal between the 3d4bd503 build
+and the candidate on both loadouts (059772146b5e1a80 / 7e1f0b96aa258525).
+Timing, interleaved on core 11 under the gate's load: geometry 5.15-5.47
+(refill) and 5.10-5.17 (refill + axis) vs 5.84-6.51 base, v4-aim row 7.2
+vs 7.9: -12-15% geometry, -8-10% per row, ~-1.3 us of the 32 us c_step
+(the writer runs twice per step). Rollout A/B after the p1 gate.
+
+What it cannot do: the remaining cost is steps x walls x 20 ops, and an
+exact march cannot take fewer steps or skip a wall that might be the
+minimum (L1 found nothing to cull at 6.3 walls). Merging the fan with the
+drop/ceiling and aim casts into one 40-ray call (per-lane max) would lift
+lane occupancy from 59% for maybe another -5%; not done. Beyond that only
+the learning-gated forms move the geometry: L7 (8 dash landings, 3-unit
+edge steps), L8 rays16, L9 16 march steps.

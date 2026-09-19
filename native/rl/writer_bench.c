@@ -120,6 +120,7 @@ int main(int argc, char **argv) {
     {
         static float reference[BOPL_MAX_PLAYERS*BOPL_OBS_STRIDE];
         long mismatches=0, rows=0;
+        uint64_t hash=1469598103934665603ull;   /* FNV-1a over the production rows: the same states and seed give the same hash across builds, the writer's exact gate */
         for (int i=0; i<PLAYERS; i++) { env.layout[i]=BOPL4_LAYOUT_VERSION; bopl_set_ablate_of(&env, i, 8); }
         for (int s=0; s<recorded; s++) {
             const BoplRlState *state=bopl_state_copy_get(&states[s]);
@@ -129,9 +130,11 @@ int main(int argc, char **argv) {
             for (int i=0; i<PLAYERS; i++) {
                 rows++;
                 if (memcmp(reference+(size_t)i*BOPL_OBS_STRIDE, scratch+(size_t)i*BOPL_OBS_STRIDE, sizeof(float)*BOPL4_OBS_SIZE)) mismatches++;
+                const unsigned char *row=(const unsigned char*)(scratch+(size_t)i*BOPL_OBS_STRIDE);
+                for (size_t b=0; b<sizeof(float)*BOPL4_OBS_SIZE; b++) { hash^=row[b]; hash*=1099511628211ull; }
             }
         }
-        printf("{\"bench\": \"march-check\", \"loadout\": \"%s\", \"rows\": %ld, \"mismatches\": %ld, \"load1\": %.2f}\n", loadout, rows, mismatches, load1());
+        printf("{\"bench\": \"march-check\", \"loadout\": \"%s\", \"rows\": %ld, \"mismatches\": %ld, \"rows_hash\": \"%016"PRIx64"\", \"load1\": %.2f}\n", loadout, rows, mismatches, hash, load1());
         fflush(stdout);
         if (mismatches) { fprintf(stderr, "vector march changed %ld of %ld rows\n", mismatches, rows); return 1; }
     }
