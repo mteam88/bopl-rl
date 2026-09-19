@@ -562,3 +562,25 @@ float2 form behind a temporary template flag, removed): 249.2k vs 246.5k
 4812-float observation row).
 
 Running total: 169.0k -> ~249.5k (**+48%**, exact-class only).
+
+### Rollout chain: br_gemm with the learner's row tiles sharing the weight loads, discard
+
+After the float4 A loads the microbench's cost per byte moved was the same
+for bank tiles and learner tiles, so I read `br_gemm` as traffic-bound and
+built the traffic lever: one block per group covering all its row tiles
+(RT <= 3), the weight chunk loaded once per block instead of once per row
+tile (the learner's 48 rows re-read every matrix 3x: 3.9 of the 5.9 MB a
+fusion launch moves), the A fragments gathered straight from global memory
+(no smem staging), the k order / chunk -> warp assignment / reduction
+order kept: bit-identical (32 of 32 microbench cases, 0 words differ).
+Isolated it is slower, learner-only 7.95 -> 16.0 us (128 registers with
+spills; the learner block's mma chain is 3x longer): at M = 64 the kernel
+is latency-bound per block, and the traffic is not the wall. A/B 2x2 once
+(cand = the old kernel behind a temporary toggle): 250.1k vs 250.0k;
+rollout 0.097 vs 0.087 (+12%, now equal to the train pass), train 0.0967
+vs 0.0973 (-0.6%: the freed L2 traffic is worth that much to the train
+pass). No gain and the rollout's headroom gone: discarded, code reverted.
+
+The transposed-mma bank tiles (halving the banks' tensor work) is the same
+story: the bank tiles' cost is their weight bytes and the per-block
+latency, neither of which that formulation changes. Not built.
