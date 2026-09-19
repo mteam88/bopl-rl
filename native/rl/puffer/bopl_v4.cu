@@ -472,11 +472,36 @@ __global__ void relu_grad_from(const float* grad, int ldg, const float* act, int
     int r = i / cols, c = i - r * cols;
     dst[i] = act[(long)r * lda + c] > 0.0f ? grad[(long)r * ldg + c] : 0.0f;
 }
+/* Four columns per thread (cols, ldg, lda multiples of 4): float4 loads and
+ * stores, the same elementwise values. */
+__global__ void relu_grad_from4(const float* grad, int ldg, const float* act, int lda, float* dst, int rows, int cols) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int c4 = cols >> 2;
+    if (i >= rows * c4) return;
+    int r = i / c4, c = (i - r * c4) << 2;
+    float4 g = *(const float4*)(grad + (long)r * ldg + c), a = *(const float4*)(act + (long)r * lda + c);
+    float4 o = make_float4(a.x > 0.0f ? g.x : 0.0f, a.y > 0.0f ? g.y : 0.0f, a.z > 0.0f ? g.z : 0.0f, a.w > 0.0f ? g.w : 0.0f);
+    *(float4*)(dst + (long)r * cols + c) = o;
+}
 /* out[r][c] = bf16(grad[r][c] * (act[r][c] > 0)) for a bf16 activation: the
  * critic block's ReLU backward, written straight into the bf16 GEMM operand. */
 __global__ void relu_grad_bf16(const float* grad, const bf16* act, bf16* out, long n) {
     long i = blockIdx.x * (long)blockDim.x + threadIdx.x;
     if (i < n) out[i] = tobf(bf(act[i]) > 0.0f ? grad[i] : 0.0f);
+}
+/* Four elements per thread (n a multiple of 4). */
+__global__ void relu_grad_bf16x4(const float* grad, const bf16* act, bf16* out, long n4) {
+    long i = blockIdx.x * (long)blockDim.x + threadIdx.x;
+    if (i >= n4) return;
+    float4 g = *(const float4*)(grad + i * 4);
+    uint2 av = *(const uint2*)(act + i * 4);
+    const bf16* a = (const bf16*)&av;
+    bf16 o[4] = {tobf(bf(a[0]) > 0.0f ? g.x : 0.0f), tobf(bf(a[1]) > 0.0f ? g.y : 0.0f), tobf(bf(a[2]) > 0.0f ? g.z : 0.0f), tobf(bf(a[3]) > 0.0f ? g.w : 0.0f)};
+    *(uint2*)(out + i * 4) = *(const uint2*)o;
+}
+static bool ew4_ok(int cols, int ldg, int lda, const void* g, const void* a, const void* d) {
+    static int scalar = getenv("BOPL_EW_SCALAR") ? atoi(getenv("BOPL_EW_SCALAR")) : 0;   // TEMP A/B toggle
+    return !scalar && cols % 4 == 0 && ldg % 4 == 0 && lda % 4 == 0 && ((size_t)g & 15) == 0 && ((size_t)a & 15) == 0 && ((size_t)d & 15) == 0;
 }
 __global__ void add_into(float* dst, const float* src, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -787,7 +812,9 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
     ln_bwd(grad.data, a->fused.data, a->ln_mean.data, a->ln_rstd.data, H, B, a->grad_fused.data, H, H, 0, nullptr, stream);
     puf_mm_tn(&a->grad_fused, &a->joined, &a->wgrad_fusion, stream);
     puf_mm_nn(&a->grad_fused, &w->fusion, &a->grad_joined, stream);
-    relu_grad_from<<<grid_size(B * FD), BLOCK_SIZE, 0, stream>>>(a->grad_joined.data, LDJ, a->joined.data, LDJ, a->grad_flat.data, B, FD);
+    if (ew4_ok(FD, LDJ, LDJ, a->grad_joined.data, a->joined.data, a->grad_flat.data))
+        relu_grad_from4<<<grid_size(B * FD / 4), BLOCK_SIZE, 0, stream>>>(a->grad_joined.data, LDJ, a->joined.data, LDJ, a->grad_flat.data, B, FD);
+    else relu_grad_from<<<grid_size(B * FD), BLOCK_SIZE, 0, stream>>>(a->grad_joined.data, LDJ, a->joined.data, LDJ, a->grad_flat.data, B, FD);
     puf_mm_tn(&a->grad_flat, &a->flat_input, &a->wgrad_flat, stream);
     prof_mark("bwd.enc.fusion_flat", stream);
     for (int s = SETS - 1; s >= 0; s--) {
@@ -1055,7 +1082,9 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
             lt_gemm(false, false, B, C, C, bfp(a->g_z2_b), C, bfp(a->b2_b), C, nullptr, bfp(a->g_b_b), C, true, CUBLASLT_EPILOGUE_DRELU, stream, a->b1_mask.data);
         else {
             lt_gemm(false, false, B, C, C, bfp(a->g_z2_b), C, bfp(a->b2_b), C, nullptr, a->g_b.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
-            relu_grad_bf16<<<grid_long((long)B * C), BLOCK_SIZE, 0, stream>>>(a->g_b.data, bfp(a->bblk_b), bfp(a->g_b_b), (long)B * C);
+            if (ew4_ok(C, C, C, a->g_b.data, bfp(a->bblk_b), bfp(a->g_b_b)))
+                relu_grad_bf16x4<<<grid_long((long)B * C / 4), BLOCK_SIZE, 0, stream>>>(a->g_b.data, bfp(a->bblk_b), bfp(a->g_b_b), (long)B * C / 4);
+            else relu_grad_bf16<<<grid_long((long)B * C), BLOCK_SIZE, 0, stream>>>(a->g_b.data, bfp(a->bblk_b), bfp(a->g_b_b), (long)B * C);
         }
         lt_gemm(true, false, C, C, B, bfp(a->g_b_b), C, bfp(a->ln2_b), C, nullptr, a->wgrad_b1.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
         lt_gemm(false, false, B, C, C, bfp(a->g_b_b), C, bfp(a->b1_b), C, nullptr, a->g_ln2.data, C, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
@@ -1075,7 +1104,9 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
         int F = w->ffn;
         puf_mm_tn(&a->g_y, &a->f, &a->wgrad_ffn_out, stream);
         puf_mm_nn(&a->g_y, &w->ffn_out, &a->g_f, stream);
-        relu_grad_from<<<grid_size(B * F), BLOCK_SIZE, 0, stream>>>(a->g_f.data, F, a->f.data, F, a->g_f.data, B, F);
+        if (ew4_ok(F, F, F, a->g_f.data, a->f.data, a->g_f.data))
+            relu_grad_from4<<<grid_size(B * F / 4), BLOCK_SIZE, 0, stream>>>(a->g_f.data, F, a->f.data, F, a->g_f.data, B, F);
+        else relu_grad_from<<<grid_size(B * F), BLOCK_SIZE, 0, stream>>>(a->g_f.data, F, a->f.data, F, a->g_f.data, B, F);
         puf_mm_tn(&a->g_f, &a->ln1, &a->wgrad_ffn_in, stream);
         puf_mm_nn(&a->g_f, &w->ffn_in, &a->g_ln1, stream);
         ln_bwd(a->g_ln1.data, a->base.saved_input.data, a->m1.data, a->r1.data, H, B, a->base.grad_input.data, H, H, 1, nullptr, stream);
