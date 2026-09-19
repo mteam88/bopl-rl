@@ -2435,3 +2435,32 @@ no writer 688k, no contention ~71 ms rollout). Beyond it needs the chain
 per row cheaper (more chains or more rows per chain: w512 is OOM at 12 GB)
 together with the CPU per decision down (writer to GPU +0..5%, sim -2..3%,
 writer items -2%).
+
+## 2026-09-19 19:10 w256 b8 discard; refresh_actor_entities read; closing gate launched; wrap drafted
+
+`ab-w256b8` (--buffers 8 on the candidate): 631.3k vs 628.4k (+0.5%,
+noise); rollout -0.5%, train_s 57.8 -> 72.0 (+25%: eight chains contend
+the train pass harder, it nearly becomes the wall). Discarded; the
+buffer axis is closed at w256 as at w128.
+
+`refresh_actor_entities` (10% of the sim, per tick): read the function.
+It is the game's DetPhysics sync mirrored: each tick it writes the body
+row's position/axes from the synced collider (the body moves every
+tick, so this part is not skippable) and then, for each of 26 ability
+entity kinds, updates the row only if that entity exists for the
+loadout and is active or was active. With the default loadout most of
+the 26 blocks are a null check; the cost is the body sync plus the
+checks, ~50 ns per player-tick. A dirty flag would skip only the
+ability blocks' checks: -0.05..0.1 us per decision isolated, not the
+-0.35 sized from the perf share. Not built (a Rust change against the
+22 gates for <0.5% wall). Sim-side exact levers are closed at this
+depth; the platforms' 22% is the game's Q32 physics.
+
+Closing GPU unit: `final-default-70c68d66`, the learning gate run with
+the shipped defaults exactly as `sanity_v4.sh run` invokes them (w256
+b4, learner_passes 1, minibatch_div 2, LR 4.852e-4, 11 threads, PDL +
+prefetch kernels), STEPS=560M for the 955 s read. Confirms the shipped
+state learns as the b4 gates did and exercises the tolerant 160M read.
+
+Campaign wrap drafted in THROUGHPUT_V4.md section 6 (what landed x3.9,
+the ~700k ceiling with both floors, the 1M reading).
