@@ -1940,3 +1940,36 @@ Sizing the exact CPU levers from this:
   memmove / libm, THROUGHPUT.md's profile) is the same size class.
   Neither moves the 0.5x factor; that needs fewer threads doing the same
   work (only possible by making each c_step cheaper) or more cores.
+
+#### b2-w256b4-lrsqrt2-12cc2877 read (w256 b4 p2, LR 4.852e-4; seed 73, 560M in ~1230 s)
+
+  reading                                   refit Elo          band rating (240 games)
+  reference v4-aim/000 @160M / 955 s        646                523.5 [478, 568]
+  aim-only p2 (w128) @955 s (400M)          747 [633, 950]     572.8 [529, 617]
+  b3 p1 div2 (w128) @955 s (989 s, 440M)    543.9 [427, 708]   590.5 [547, 634]
+  w256 b4 p2, plain LR (04322d89) @955 s    (notes 03:1x)      532.6
+  b2 w256 b4 p2, LR x sqrt2 @955 s (921 s, 400M)  607.7 [494, 754]  585.6 [545, 631]
+
+PASS: +13 band over p2 at equal wall, inside the spread, tied with b3
+(590.5; b2's nearest evaluation is 34 s short of 955, b3's 34 s past).
+The LR scaling is worth ~50 band against the plain-LR w256 run: the
+doubled batch wanted the sqrt(2). The 160M equal-steps reading is
+missing (the w256 evaluation cadence, 49152-row updates, does not land
+on the reference's physical step); informational only. In-run 519.4k
+(the same as b3's 518.6k; p2 399k). Bench on the incumbent code 536.4k
+(+13.7% over w128 p2), train-bound at w256 p2 (train 90.6 vs rollout
+80.9 ms).
+
+The first launch of this gate died at 4M steps: the parent's interrupt
+of my shell killed the `( ... & )` subshell and with it the systemd
+scope (systemd-run --scope runs in the caller's session). Relaunched
+under setsid + disown; gate launches are detached that way from here.
+
+#### b4 = b2 + b3: w256 b4, learner_passes 1, minibatch_div 2, LR x sqrt2
+
+Two gradient steps of 24576 prio-drawn rows per 49152-row update
+(replay 1.0 at the doubled batch, the same rows per step as today's p2).
+Bench on the incumbent: 629.8k (+33.5% over w128 p2), rollout-bound
+again (rollout 77.0 vs train 57.1 ms; eval_gpu 294 us + env 301 us per
+128-row buffer step; 8.6 GB). Gate b4-w256b4-p1div2-lrsqrt2-12cc2877
+launched 14:51 EDT, STEPS=800M (in-run ~600k -> 955 s at ~570M).
