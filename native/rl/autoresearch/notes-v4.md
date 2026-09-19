@@ -1674,3 +1674,11 @@ check_v4.so (the pass_all at 698cd3d7 / db66854f came from a harness
 built at eae698f8, whose kernels did launch), and the trainer's encoder
 forward / backward end with a cudaGetLastError check that throws, so a
 custom launch that fails can no longer skip its work silently.
+
+### br_gemm B prefetch before the PDL wait: KEEP, +0.5% (986cd25f)
+
+The first chunk's B loads (weights, predecessor-independent) are issued
+before griddepcontrol.wait, so their latency overlaps the predecessor's
+tail; A is read after. A/B vs ce2cc341 at w128 b4 p2, 3x3: 471.7k vs
+469.3k (+0.5%; every cand above every inc), eval_gpu 248 -> 245 us,
+train_s unchanged. Marginal, kept as a free ordering. Incumbent 471.7k.
