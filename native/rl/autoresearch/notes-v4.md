@@ -1351,3 +1351,24 @@ length, not the SM budget, so on this axis latency still wins. Reverted
 the block that finishes a row tile last samples it) would keep the GEMM's
 parallelism but still puts 16 rows on 8 warps; not worth a slot.
 Incumbent stays 458.7k (3f921308).
+
+### br4_sets row counts from the packed header (b1df12ed, discarded)
+
+Every written set row has feature 0 = 1 over a zeroed tail (players,
+slots, entities, slimes alike), so the packed slot's header count is
+exactly the nonzero-first-feature count the trainer's count_rows and the
+chain's ballot use, and the valid rows are 0..count-1. br4_sets took the
+count from the header (one load) and kept the ballot only for dense rows
+(no slot, or a slot in dense mode). Exact: check_dump tiny and production
+shape ok, transport mismatches 0.
+
+A/B 3x3 at w128 p2 vs 3f921308: 456.5k [454.9, 457.6] vs 458.1k [456.4,
+459.5] learner_sps (-0.3%, inside the spread, not above), GPU forward
+264.8 -> 265.7 us. The ballot was two warp iterations over L2-hot rows,
+not the kernel's cost; the header load is the same dependent-load latency
+in a different place. Reverted. What br4_sets costs is its launch shape
+(rows x 4 blocks of 256 threads, each loading its W2 row slice, 32 KB of
+L2 reads per block) and the h1 loop's dependent FMA chains, and neither
+is sized by the counts: the grid cannot follow a device-side count, and
+fewer blocks per row means longer per-block chains (the sampler lesson).
+Incumbent stays 458.7k (3f921308).
