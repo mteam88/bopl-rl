@@ -860,6 +860,31 @@ statistics, not a fault. Verdict: p2 loses at equal samples, ties or wins
 at equal wall. Matthew's call; the p1 and p4 (extended to 955 s) rows
 follow. Launched lite-aim-p1-3d4bd503 (STEPS=400M).
 
+#### lite-aim-p1-3d4bd503 (passes 1, seed 73, 400M learner steps in 1335 s)
+
+In-run 303k learner_sps (bench 376k). About 30 s of writer_bench runs on
+core 11 landed inside this run (the rate dipped to 247k for those
+updates), so its wall reading is a few percent pessimistic: not enough
+to change the verdict.
+
+  reading                         refit Elo        band rating (240 games)
+  reference v4-aim/000 @160M      646              523.5 [478, 568]
+  lite-aim p4 @160M (579 s)       574  (floor 571) 496.5 [455, 542]  pass
+  lite-aim p2 @160M (547 s)       608               429.5 [389, 467]  FAIL band
+  lite-aim p1 @160M (~530 s)      574               396.0 [353, 439]  FAIL band
+  lite-aim p2 @955 s (280M, 970s) 574 [400, 824]    547.8 [510, 586]
+  lite-aim p1 @955 s (280M, 921s) 747 [620, 950]    437.0 [395, 477]
+
+Passes 1 loses at equal samples (-100 band vs p4) and at equal wall
+(437 vs the reference's 523.5, intervals disjoint; its refit Elo of 747
+is the bots-only fit, the band is the headline). At the same 280M steps
+p2 rates 548 and p1 437, both seed 73: one gradient step per sample costs
+more than the samples it buys at this shape. In the sanity recipe the
+three pass counts run 299k / 313k / 303k learner_sps (p4 / p2 / p1): with
+the evaluation hook and the box's load the rollout is the wall and the
+pass count barely moves the rate. Launched lite-aim-p4w-3d4bd503
+(STEPS=320M) for the p4 row at 955 s.
+
 ### Writer geometry, exact form: refilling lanes + axis-aligned walls
 
 Where the row's time goes (writer_bench, default loadout, maps 0-2, the
