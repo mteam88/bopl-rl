@@ -48,26 +48,13 @@ static_assert(BOPL4_PLAYERS <= BR4_MAX_SET_ROWS && BOPL4_SLOTS <= BR4_MAX_SET_RO
 
 __device__ __forceinline__ float br4_bf(float v) { return __bfloat162float(__float2bfloat16(v)); }
 
-// Dynamic shared: valid[48] ints, h1 (n <= 48, I) bf16, the set's rows of the
-// observation (rows x width fp32, staged by the whole block in one coalesced
-// pass) and W1^T (features x I bf16, likewise). The h1 loop and the valid-row
-// scan then read shared memory: before, each of their loads was a global
-// round trip (L2, under the train stream's traffic) in a dependent chain of
-// ~50 per thread, and the kernel ran ~4.7 us per block at one block per SM
-// (154 registers), 52 us per 128-row step. (W2 used to be staged here as
-// bf16 pairs by every block: 64 KB of fp32 reads and 16k conversions per
-// (row, set) block; it is now packed once per rollout by br4_prepare and
-// each thread holds its W2 row in registers.)
-#define BR4_MAX_SET_WORDS (BOPL4_ENTITIES * BOPL4_ENTITY_FEATURES)   // the largest set block, in floats
-#define BR4_MAX_SET_FEATURES 48
-static_assert(BOPL4_PLAYERS * BOPL4_PLAYER_FEATURES <= BR4_MAX_SET_WORDS && BOPL4_SLOTS * BOPL4_SLOT_FEATURES <= BR4_MAX_SET_WORDS
-              && BOPL4_SLIMES * BOPL4_SLIME_FEATURES <= BR4_MAX_SET_WORDS, "set block");
-static_assert(BOPL4_PLAYER_FEATURES <= BR4_MAX_SET_FEATURES && BOPL4_SLOT_FEATURES <= BR4_MAX_SET_FEATURES
-              && BOPL4_ENTITY_FEATURES <= BR4_MAX_SET_FEATURES && BOPL4_SLIME_FEATURES <= BR4_MAX_SET_FEATURES, "set features");
+// Dynamic shared: valid[48] ints, h1 (n <= 48, I) bf16. (W2 used to be staged
+// here as bf16 pairs by every block: 64 KB of fp32 reads and 16k conversions
+// per (row, set) block, 256 blocks per buffer step; it is now packed once per
+// rollout by br4_prepare and each thread holds its W2 row in registers.)
 static size_t br4_sets_smem(int D, int I) {
     (void)D;
-    return BR4_MAX_SET_ROWS * sizeof(int) + (size_t)BR4_MAX_SET_ROWS * I * sizeof(__nv_bfloat16)
-         + (size_t)BR4_MAX_SET_WORDS * sizeof(float) + (size_t)BR4_MAX_SET_FEATURES * I * sizeof(__nv_bfloat16);
+    return BR4_MAX_SET_ROWS * sizeof(int) + (size_t)BR4_MAX_SET_ROWS * I * sizeof(__nv_bfloat16);
 }
 // One group's set weights into the chain's layout: W1 transposed to (features, I)
 // bf16 (thread i of the h1 loop reads column i: coalesced), W2 (D, I) bf16.
@@ -84,20 +71,9 @@ __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
     const int I = a.I, D = a.D;
     int* valid = (int*)smem;
     __nv_bfloat16* h1 = (__nv_bfloat16*)(valid + BR4_MAX_SET_ROWS);
-    float* xs = (float*)(h1 + BR4_MAX_SET_ROWS * a.I);                 // the set's rows, as in the observation
-    __nv_bfloat16* w1s = (__nv_bfloat16*)(xs + BR4_MAX_SET_WORDS);     // W1^T (features, I)
     const int grp = br_group_of(a.g, row);
     const v4::Spec sp = v4::c_spec[s];
     const float* obs = a.obs + (long)row * BOPL_OBS_STRIDE;
-    {   // stage the set block and W1^T: every load independent, one round trip for the block
-        const float* src = obs + sp.offset;
-        const int words = sp.rows * sp.width;
-        for (int k = tid; k < words; k += BR4_SET_THREADS) xs[k] = src[k];
-        const unsigned* w1src = (const unsigned*)a.w.w1t[grp][s];
-        unsigned* w1dst = (unsigned*)w1s;
-        const int w1words = sp.features * I / 2;
-        for (int k = tid; k < w1words; k += BR4_SET_THREADS) w1dst[k] = w1src[k];
-    }
     if (s == 0) {  // the row's copy into the rollout tensors (the old cast kernels)
         if (tid == 0) { a.rollout_rewards[row] = a.rewards[row]; a.rollout_terminals[row] = a.terminals[row]; }
         // The packed transport unpacks straight into the rollout rows (obs ==
@@ -112,12 +88,11 @@ __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
     // rows' flags by ballot (two loads per lane in flight, where one thread
     // walking the 48 rows was a chain of dependent loads)
     __shared__ int n_valid;
-    __syncthreads();   // the staged rows
     if (tid < 32) {
         int n = 0;
         for (int r0 = 0; r0 < sp.rows; r0 += 32) {
             int r = r0 + lane;
-            unsigned m = __ballot_sync(0xffffffffu, r < sp.rows && xs[r * sp.width] != 0.0f);
+            unsigned m = __ballot_sync(0xffffffffu, r < sp.rows && obs[sp.offset + r * sp.width] != 0.0f);
             if (m & (1u << lane)) valid[n + __popc(m & ((1u << lane) - 1u))] = r;
             n += __popc(m);
         }
@@ -131,11 +106,11 @@ __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
         return;
     }
     // h1[j][i] = relu(sum_f bf(W1[i][f]) bf(x[j][f]) + E[id_j][i]) (bf16 stored, like the trainer's packed rows)
-    const __nv_bfloat16* W1t = w1s;
+    const __nv_bfloat16* W1t = a.w.w1t[grp][s];
     const float* E = a.w.emb[grp];
     for (int e = tid; e < n * I; e += BR4_SET_THREADS) {
         int j = e / I, i = e - j * I;
-        const float* x = xs + valid[j] * sp.width;
+        const float* x = obs + sp.offset + valid[j] * sp.width;
         float acc = 0.0f;
         for (int f = 0; f < sp.features; f++) acc = fmaf(__bfloat162float(W1t[f * I + i]), br4_bf(x[f]), acc);
         if (sp.id_col >= 0) acc += br4_bf(E[(long)v4::embedding_id(x[sp.id_col]) * I + i]);
