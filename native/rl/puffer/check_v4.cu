@@ -115,8 +115,11 @@ extern "C" int bopl_v4_check_run(void* context, const float* weights, const floa
         else checked(cudaMemcpyAsync(c->obs.data, obs, numel(c->obs.shape) * sizeof(float), cudaMemcpyHostToDevice, c->stream));
         checked(cudaMemcpyAsync(c->grad_logits.data, grad_logits, numel(c->grad_logits.shape) * sizeof(float), cudaMemcpyHostToDevice, c->stream));
         checked(cudaMemcpyAsync(c->grad_value.data, grad_value, numel(c->grad_value.shape) * sizeof(float), cudaMemcpyHostToDevice, c->stream));
-        // As the trainer: the prepass sizes the set GEMMs to this batch's rows
-        // and keys the captured graph (a batch with another bucket recaptures).
+        // As the trainer: in gather mode the row cache is packed once per
+        // "update" (every agent a learner), the prepass sizes the set GEMMs to
+        // this batch's rows and keys the captured graph (a batch with another
+        // bucket recaptures).
+        if (c->gather_T > 0) v4::enc_precompute(c->ea, c->gather_B, c->gather_B, c->stream);
         int key = v4::enc_prepass(c->ea, c->obs, c->stream);
         if (graph && c->executable && key != c->graph_key) c->reset_graph();
         if (graph && !c->executable) {
