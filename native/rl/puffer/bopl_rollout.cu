@@ -34,7 +34,6 @@
 // The chain has no atomics; runs are bit-identical.
 #pragma once
 #include <mma.h>
-#include <type_traits>
 
 #define BR_MAX_GROUPS 9   // learner + up to 8 frozen banks
 #define BR_MAX_LAYERS 4
@@ -209,7 +208,7 @@ __device__ __forceinline__ void br_mma(float* c, const unsigned* a, unsigned b0,
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
-template <bool TF32, bool A4 = true>   // TEMP: A4 = false is the float2 A load for the A/B (BOPL_BR_A2=1)
+template <bool TF32>
 __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     // Per-warp A tile (16 x 64): TF32 in A-fragment order [kstep][lane][4],
     // fp32 as [k][row] (float4 row reads). The 16 x 32 C tiles alias it after
@@ -242,53 +241,37 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     // floats, so lanes spanning rows and k-halves keep the smem stores at
     // 4-way conflicts (lanes along k would make them 8-way). K is even; the
     // tail quad past K is masked per pair.
-    // (TEMP) the A loads: A4 = the float4 form below, else the float2 form.
-    using AVec = std::conditional_t<A4, float4, float2>;
-    AVec av[A4 ? BR_TK / 8 : BR_TK / 4];
+    // A chunk: 16 rows x 64 k = 256 float4 over the warp (element i: row i%16,
+    // k-quad i/16), 8 instructions per chunk (the float2 form took 16). The
+    // lanes stay along the rows: the fragment layout's row stride is 16
+    // floats, so lanes spanning rows and k-halves keep the smem stores at
+    // 4-way conflicts (lanes along k would make them 8-way). K is even; the
+    // tail quad past K is masked per pair.
+    float4 av[BR_TK / 8];
     auto load_a = [&](int k0) {
-        if constexpr (A4) {
-            #pragma unroll
-            for (int j = 0; j < BR_TK / 8; j++) {
-                int i = c + j * 32, r = i & 15, k = k0 + ((i >> 4) << 2);
-                if (row0 + r < row_end && k + 3 < K) av[j] = *(const float4*)(a.in + (long)(row0 + r) * a.ld_in + k);
-                else if (row0 + r < row_end && k < K) { float2 v = *(const float2*)(a.in + (long)(row0 + r) * a.ld_in + k); av[j] = make_float4(v.x, v.y, 0.f, 0.f); }
-                else av[j] = make_float4(0.f, 0.f, 0.f, 0.f);
-            }
-        } else {
-            #pragma unroll
-            for (int j = 0; j < BR_TK / 4; j++) {
-                int i = c + j * 32, r = i & 15, k = k0 + ((i >> 4) << 1);
-                av[j] = (row0 + r < row_end && k < K) ? *(const float2*)(a.in + (long)(row0 + r) * a.ld_in + k) : make_float2(0.f, 0.f);
-            }
+        #pragma unroll
+        for (int j = 0; j < BR_TK / 8; j++) {
+            int i = c + j * 32, r = i & 15, k = k0 + ((i >> 4) << 2);
+            if (row0 + r < row_end && k + 3 < K) av[j] = *(const float4*)(a.in + (long)(row0 + r) * a.ld_in + k);
+            else if (row0 + r < row_end && k < K) { float2 v = *(const float2*)(a.in + (long)(row0 + r) * a.ld_in + k); av[j] = make_float4(v.x, v.y, 0.f, 0.f); }
+            else av[j] = make_float4(0.f, 0.f, 0.f, 0.f);
         }
     };
+    // TF32 layout: A fragment order [kstep][lane][4] (a0 = A[gid][tid4], a1 = A[gid+8][tid4],
+    // a2 = A[gid][tid4+4], a3 = A[gid+8][tid4+4]) so a lane's k-step operand is one float4.
     auto store_a = [&]() {
-        if constexpr (A4) {
+        #pragma unroll
+        for (int j = 0; j < BR_TK / 8; j++) {
+            int i = c + j * 32, r = i & 15, k = (i >> 4) << 2;
+            const float v[4] = {av[j].x, av[j].y, av[j].z, av[j].w};
             #pragma unroll
-            for (int j = 0; j < BR_TK / 8; j++) {
-                int i = c + j * 32, r = i & 15, k = (i >> 4) << 2;
-                const float v[4] = {av[j].x, av[j].y, av[j].z, av[j].w};
-                #pragma unroll
-                for (int q = 0; q < 4; q++) {
-                    int kq = k + q;
-                    if (TF32) {
-                        int kstep = kq >> 3, kk = kq & 7, lane = (r & 7) * 4 + (kk & 3), slot = (r >> 3) + 2 * (kk >> 2);
-                        Aw[(kstep * 32 + lane) * 4 + slot] = v[q];
-                    } else {
-                        Aw[kq * BR_TM + r] = v[q];
-                    }
-                }
-            }
-        } else {
-            #pragma unroll
-            for (int j = 0; j < BR_TK / 4; j++) {
-                int i = c + j * 32, r = i & 15, k = (i >> 4) << 1;
+            for (int q = 0; q < 4; q++) {
+                int kq = k + q;
                 if (TF32) {
-                    int kstep = k >> 3, kk = k & 7, lane = (r & 7) * 4 + (kk & 3), slot = (r >> 3) + 2 * (kk >> 2);
-                    Aw[(kstep * 32 + lane) * 4 + slot] = av[j].x;
-                    Aw[(kstep * 32 + lane + 1) * 4 + slot] = av[j].y;
+                    int kstep = kq >> 3, kk = kq & 7, lane = (r & 7) * 4 + (kk & 3), slot = (r >> 3) + 2 * (kk >> 2);
+                    Aw[(kstep * 32 + lane) * 4 + slot] = v[q];
                 } else {
-                    Aw[k * BR_TM + r] = av[j].x; Aw[(k + 1) * BR_TM + r] = av[j].y;
+                    Aw[kq * BR_TM + r] = v[q];
                 }
             }
         }
@@ -521,9 +504,8 @@ static void br_gemm_launch(const BrPlan& p, const float* in, int ld_in, float* o
     a.g = p.g; a.wt = wt;
     memcpy(a.tiles, p.tiles, sizeof(a.tiles));
     dim3 grid(p.tiles[p.g.n], br_gemm_col_tiles(K, N, &a.units));
-    static int a2 = getenv("BOPL_BR_A2") ? atoi(getenv("BOPL_BR_A2")) : 0;   // TEMP A/B toggle
-    if (p.tf32) { if (a2) br_gemm<true, false><<<grid, BR_THREADS, 0, stream>>>(a); else br_gemm<true><<<grid, BR_THREADS, 0, stream>>>(a); }
-    else { if (a2) br_gemm<false, false><<<grid, BR_THREADS, 0, stream>>>(a); else br_gemm<false><<<grid, BR_THREADS, 0, stream>>>(a); }
+    if (p.tf32) br_gemm<true><<<grid, BR_THREADS, 0, stream>>>(a);
+    else br_gemm<false><<<grid, BR_THREADS, 0, stream>>>(a);
 }
 
 // dst[g] = the GEMM-side layout of src[g] (N, K) for groups 0..n-1: tf32 fragment
