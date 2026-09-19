@@ -1735,3 +1735,98 @@ check_v4 harness rebuild rule.
 
 Incumbent stays 986cd25f (471.7k). Next: re-profile the incumbent and
 the ranked remaining exact-class list.
+
+### Incumbent re-profile (a3ec72fa = 986cd25f code, CUPTI, 80 updates, w128 b4 p2; /tmp/prof-inc2.txt)
+
+Bench under CUPTI: learner_sps 459.9k (471.7k without the profiler),
+rollout_s 52.6 ms, train_s 44.0, wall 53.4; per buffer-step 411 us =
+eval_gpu 255 + eval_env 147 (+ handshake). 125 buffer-steps per update.
+
+Train stream (legacy default), 42.4 ms of kernel time per update, 413
+launches:
+  11.0 ms  125 launches  bf16 set-MLP GEMMs (W1 relu, W2 relu, dgrads, wgrads; incl. 38 splitK reduces 0.6 ms)
+  10.6 ms   31           fp32/TF32 GEMMs: fusion (K 1280), flat, GRU, actor, critic; fwd + dgrad + wgrad
+   5.2 ms   42           set glue: unpool_rows4 2.0, mask_rows 1.4, pool_rows4 1.3, relu_grad 0.4, zero_tail / to_bf16 0.2
+   4.1 ms   50           Muon (grouped NS GEMMs 3.0, reduce 0.4, normalize 0.4, update 0.2)
+   3.5 ms   16           LayerNorm fwd 0.9 / bwd 2.6 (325 us per bwd on 24576 rows: near memory-bound)
+   3.2 ms   16           row cache / packing once per update (count, scatter, cache_copy, cache_flat, pack_flat)
+   1.7 ms    4           minGRU scan fwd / bwd
+   1.6 ms   12           PPO loss / advantage
+   1.3 ms   37           copies: DtoD 0.7 (22 per update), br_transpose_frag weight export 0.6
+Rollout stream (each of the 4 buffer streams), per 64-row step: kernel
+sum 171 us, busy 151, in a 255 us eval_gpu:
+  67.5 us  br_gemm x7 (9.6 avg)   35.1 br4_sets   24.6 br_sample   16.0 HtoD (packed rows)
+  15.5 us  br4_rows x4            8.2 unpack_rows   3.3 br_gate    0.7 DtoH
+Isolated the chain is ~90 us (microbench); under the train stream the
+kernels themselves run 1.9x longer (171 vs 90) and 84 us of gaps appear
+(SM slots held by the train GEMMs). 4 x 151 us of forward per 411 us
+period: the forwards alone occupy 1.5 streams' worth of the GPU, the
+train stream 83% of wall on top.
+
+Coupling used for the sizes below: the PDL entry-release A/B moved
+train_s +15 ms and the forward -50 us/step (-6.3 ms of rollout), late
+release +4 ms / -16 us: ~0.4 ms of wall per ms of train-stream time while
+the rollout is the wall.
+
+Env CPU per step: 32 envs x 17.6 us c_step = 563 us of thread time in a
+147 us wall (3.8 effective of 9 stepping threads; 5.3 hardware threads
+in c_step continuously across the 4 buffers). c_step: sim 9.2 us (52%),
+finish (obs writer + reward) 7.3 (41%), begin/sample 0.9. The pool
+itself was tuned in campaigns 1-2 (THROUGHPUT.md: LPT, steal, poll,
+thread count) and is at its floor; the lever left is c_step itself.
+
+#### Ranked remaining levers (ms per update; the wall is the rollout at 52 ms)
+
+(a) exact class (check_dump / check_v4 / lockstep), what is left:
+  a1  c_step finish phase (writer + reward, 7.3 of 17.6 us per env step
+      = 41% of env CPU = ~60 us of the 147 us step = 7.5 ms/update on
+      the wall). Halving the writer's remaining per-row work (post
+      aim-only; writer_bench first): -3.7 ms wall (+7%). CPU side, days.
+  a2  c_step sim phase (9.2 us: memmove / obs encode / libm per
+      THROUGHPUT.md's profile): -20% -> -1.8 ms wall (+3.5%). Rust/C,
+      lockstep-exact.
+  a3  train-stream exact: set GEMMs of the 4 sets grouped into one
+      launch per GEMM kind (125 -> ~40 launches, tails of the two small
+      sets; -1.5..2 ms train), mask_rows -> DRELU epilogue for every
+      set (-1 ms train, only where RELU_AUX rounds like RELU), Muon
+      Lt D != C to drop the DtoD copies (-0.5 train), splitK tails.
+      ~3.5 ms train -> -1.5 ms wall (+3%). One day.
+  a4  rollout chain: b1/b2 br_gemm pair merge (-1 of 7 launches; the
+      two previous latency merges lost: 0..-1 ms), HtoD 16 us/step
+      against a ~8 us PCIe floor (0..-1 ms), br_sample multi-block
+      (0..-1.5, low confidence).
+  Sum of (a): -7..-10 ms of 52 -> ~560-580k. The exact class alone does
+  not reach 1M at this geometry.
+
+(b) recipe / geometry, equal-wall gate:
+  b1  passes 2 -> 1: train 44 -> ~26 ms (8 ms once-per-update + one
+      pass 18) -> interference relief ~-7.5 ms wall -> ~550k. Gated on
+      lite-aim already: p1 437 vs reference 523.5 at 955 s, disjoint
+      (notes 2026-09-19 01:xx); aim-only does not change that argument.
+  b2  w256 b4 (128 rows per chain): benched 544.5k (+19%), equal-wall
+      532.6 vs w128 p2's 572.8 at 955 s: benched, not defaulted. With
+      the LR / batch scaling untested (batch doubles per update): a gate.
+  b3  replay ratio 1.71 -> 1.0 (learner rows per update -40%): train
+      -40% -> -7 ms wall (+15%); the PufferLib 5.0 recipe point; gate.
+  b4  w256 b4 + p1: the ceiling geometry (~700k by extrapolation);
+      sample efficiency hit twice.
+
+(c) shape / layout, Matthew:
+  c1  set D 128 -> 64: bf16 set path 16.2 -> ~9 ms train, fusion K
+      1280 -> 768 (-40% of the fusion GEMMs, ~-2 ms train), br4_sets
+      35 -> ~20 us/step (-1.9 ms wall): ~-6 ms wall (+12%). Learning
+      gate; new config, v4-aim/000 stays loadable only through a
+      converter (it does not: D changes every set weight).
+  c2  hidden H -25%: fp32 GEMMs 10.6 + LN 3.5 + GRU 1.7 scale ~linearly
+      -> -4 ms train -> -1.7 ms wall (+3%); rollout chain unchanged
+      (latency-bound).
+  c3  flat layout without the 300 geometry columns: +2.1%, rejected.
+  c4  critic 384 -> 256, T: < 1%.
+
+Path to 1M (24.6 ms per update at 24576 rows): the buffer-step must fall
+from 411 to ~200 us, i.e. the forward to ~110 (the train stream mostly
+absent: b1 / b3 / c1 together) and the env CPU to ~90 (a1 + a2 + c1's
+smaller rows). Or more rows per period (b2's 128-row chains at 695 us =
+the same 5.4 us per row as today's 64-row at 411 -> only pays with a
+recipe that converts them). No single class gets there; (a) buys ~20%,
+(b)+(c) the rest.
