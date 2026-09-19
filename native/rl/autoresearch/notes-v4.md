@@ -739,3 +739,22 @@ shape), (3) the writer's geometry off the CPU per-step cost (21.5 of 33
 us: per-map precomputed terrain / ray fields, or the observation writer
 on the GPU), the largest single rollout lever and a native/ (Rust) change.
 Kernel-level work alone tops out around 280-300k.
+
+### Row cache: the observation-side packing once per update (2c51f2dd): KEEP, +1.1%
+
+Premise correction: the passes cannot share a prepass, every pass resamples
+its minibatch (prio_replay draws segments with replacement). What is fixed
+for the update is the slot's set of learner rows, so enc_precompute packs
+those once per update with the existing kernels (count_rows, scatter_rows
+into a slab of rows[s] slots per row, pack_flat) and the passes gather from
+the cache: cache_counts (4 ints per row), cache_copy_rows (int4 copies of
+the packed bf16 rows, the pass's scan / cap deciding the drops exactly as
+before), cache_flat (float4 rows). Bit-identical: check_v4's gather case
+(assert_array_equal on encoder, decoder, gradients) runs through the cache.
+Trainer hook before the minibatch loop (pufferlib.cu), harness hook in
+check_v4.cu. Build A/B vs e8f13657: 250.7k vs 247.9k (+1.1%), train 0.0970
+vs 0.0982 (-1.2 ms of the estimated -2.5: the per-pass gathers cost ~0.5 ms
+against the 1.5 ms they replace), rollout unchanged. Memory +470 MB (the
+slabs hold the worst case, 48 entity / 32 slime / 24 slot / 6 player rows per
+learner row, so no drop can happen before the pass's cap). New incumbent
+build: inc-2c51f2dd.so.
