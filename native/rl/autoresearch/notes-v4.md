@@ -949,3 +949,31 @@ drop/ceiling and aim casts into one 40-ray call (per-lane max) would lift
 lane occupancy from 59% for maybe another -5%; not done. Beyond that only
 the learning-gated forms move the geometry: L7 (8 dash landings, 3-unit
 edge steps), L8 rays16, L9 16 march steps.
+
+### Geometry, learning-gated form: aim-only layout (writer bits 10) on lite-aim
+
+Evidence first (readout of the existing ablation sweeps, IQM-style last
+three band ratings at 1735M learner steps, full shape, lr 3.43e-4):
+
+  v4-aim (bits 8)      s73 675/712/705   s74 669/650/649   maps s73 709/706/718, r2 702/699/702, s74 678/689/689
+  v4-aim-only (bits 10) s73 772/767/756   s74 685/676/682   s75 726/721/713
+  v4-no-rays (bits 2)  s73 697/695/693   maps s73 689/656/663
+  v4-rays16 (bits 12)  never ran
+
+The v4-aim seed spread is ~650-718; aim-only sits inside or above it on
+all three seeds (the geometry channel, fan + terrain block, was not
+earning its 5 us per row at 1.7B on the full shape). No-rays is inside
+the spread too but drops the aim/LOS casts (0.7 us) that aim-only keeps
+and scores below it. rays16 has no evidence. So the largest cut with
+evidence is aim-only: the whole geometry channel off, the two casts on.
+
+Bench (b4caf432 writer, lite-aim p4, `--v4-ablate 10`): writer row 2.0-2.1
+us vs 7.2 (writer_bench v4-aim-only vs v4-aim); c_step 17.3 vs 30.6 us,
+finish 7.1 vs 19.6, env 0.157 vs 0.235 ms per buffer step; learner_sps
+338.3k vs 326.8k (+3.5%) only, because with the env CPU cut the update is
+train-bound at p4 (train 0.0717 s vs rollout 0.0615 s: wall = train). The
+rollout side is now 0.48 ms per buffer step of which the GPU forward is
+0.32 (contended by the train stream; isolated ~0.09). At passes 2 the cut
+would show in full; the pass count is Matthew's. Gate launched:
+lite-aim-only-b4caf432 (seed 73, 160M), read against v4-aim/000 and the
+two lite-aim p4 runs (496.5 / 472.7 band at 160M).
