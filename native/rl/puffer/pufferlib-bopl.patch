@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 --- pristine-src/bindings.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/bindings.cu	2026-09-19 16:56:24.407885974 -0400
++++ puffer-overlay/bindings.cu	2026-09-19 03:36:45.993505175 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -272,7 +272,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
 --- pristine-src/kernels.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/kernels.cu	2026-09-19 16:56:24.408306438 -0400
++++ puffer-overlay/kernels.cu	2026-09-19 03:36:45.993889099 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -564,7 +564,7 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
 --- pristine-src/models.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/models.cu	2026-09-19 16:56:24.408743573 -0400
++++ puffer-overlay/models.cu	2026-09-19 03:36:45.994294574 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -897,7 +897,7 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 --- pristine-src/muon.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/muon.cu	2026-09-19 16:56:24.409172712 -0400
++++ puffer-overlay/muon.cu	2026-09-19 03:36:45.994733422 -0400
 @@ -1,4 +1,5 @@
  #include <nccl.h>
 +#include <algorithm>
@@ -1404,7 +1404,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
  }
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 --- pristine-src/ocean.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/ocean.cu	2026-09-19 16:56:24.409575863 -0400
++++ puffer-overlay/ocean.cu	2026-09-19 03:36:45.995011617 -0400
 @@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
@@ -1442,7 +1442,7 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 --- pristine-src/pufferlib.cu	2026-09-18 16:41:04.173539658 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-19 16:56:24.409918089 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-19 03:37:17.289446601 -0400
 @@ -1,15 +1,73 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -3526,7 +3526,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 --- pristine-src/vecenv.h	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/vecenv.h	2026-09-19 17:15:16.439427349 -0400
++++ puffer-overlay/vecenv.h	2026-09-19 03:37:17.288446588 -0400
 @@ -97,6 +97,36 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
@@ -3609,7 +3609,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
  #define OMP_WAITING 5
  #define OMP_RUNNING 6
-@@ -217,13 +262,165 @@
+@@ -217,13 +262,163 @@
  #endif
  
  
@@ -3746,8 +3746,6 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +    int pin;
 +    int* pin_cpus;
 +    int pin_count;
-+    int home_set;        // the pool's threads float over `home`: the process mask minus the trainer thread's core
-+    cpu_set_t home;
 +    int prof;
 +    // BOPL_ENV_PROF=1 counters (relaxed atomics, printed from read_profile)
 +    _Alignas(64) atomic_llong stat_env_ns;
@@ -3776,7 +3774,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  };
  
  typedef struct StaticOMPArg {
-@@ -235,7 +432,318 @@
+@@ -235,7 +430,317 @@
      thread_init_fn thread_init;
  } StaticOMPArg;
  
@@ -3787,7 +3785,6 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +} BoplWorkerArg;
 +
 +static void bopl_pool_pin_self(StaticThreading* th, int participant) {
-+    if (th->home_set) { pthread_setaffinity_np(pthread_self(), sizeof(th->home), &th->home); return; }
 +    if (!th->pin || th->pin_count <= 0) return;
 +    int cpu = th->pin_cpus[participant % th->pin_count];
 +    cpu_set_t set;
@@ -4096,7 +4093,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  static void* static_omp_threadmanager(void* arg) {
      StaticOMPArg* worker_arg = (StaticOMPArg*)arg;
      StaticVec* vec = worker_arg->vec;
-@@ -246,98 +754,264 @@
+@@ -246,98 +751,264 @@
      net_callback_fn net_callback = worker_arg->net_callback;
      thread_init_fn thread_init = worker_arg->thread_init;
  
@@ -4372,32 +4369,32 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      for (int buf = 0; buf < vec->buffers; buf++) {
 -        atomic_store(&threading->buffer_states[buf], OMP_RUNNING);
 +        atomic_store_explicit(&threading->buffer_states[buf], OMP_RUNNING, memory_order_seq_cst);
-+    }
-+    for (int buf = 0; buf < vec->buffers; buf++) {
+     }
+     for (int buf = 0; buf < vec->buffers; buf++) {
+-        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
 +        bopl_futex_wake(&threading->buffer_states[buf], INT_MAX);
      }
-+}
-+
+ }
+ 
 +double static_vec_omp_wait(StaticVec* vec) {
 +    StaticThreading* threading = vec->threading;
 +    double last = 0.0;
-     for (int buf = 0; buf < vec->buffers; buf++) {
--        while (atomic_load(&threading->buffer_states[buf]) != OMP_WAITING) {}
++    for (int buf = 0; buf < vec->buffers; buf++) {
 +        for (;;) {
 +            int s = atomic_load_explicit(&threading->buffer_states[buf], memory_order_acquire);
 +            if (s == OMP_WAITING) break;
 +            bopl_futex_wait(&threading->buffer_states[buf], s);
 +        }
 +        if (threading->done_at[buf] > last) last = threading->done_at[buf];
-     }
++    }
 +    return last;
 +}
 +
 +void static_vec_omp_step(StaticVec* vec) {
 +    static_vec_omp_start(vec);
 +    static_vec_omp_wait(vec);
- }
- 
++}
++
  void static_vec_seq_step(StaticVec* vec) {
      StaticThreading* threading = vec->threading;
      for (int buf = 0; buf < vec->buffers; buf++) {
@@ -4413,7 +4410,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -418,11 +1092,17 @@
+@@ -418,11 +1089,17 @@
      vec->size = num_envs;
  
      size_t obs_elem_size = obs_element_size();
@@ -4435,7 +4432,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
          cudaMalloc((void**)&vec->gpu_observations, total_agents * OBS_SIZE * obs_elem_size);
          cudaMalloc((void**)&vec->gpu_actions, total_agents * NUM_ATNS * sizeof(float));
-@@ -449,9 +1129,11 @@
+@@ -449,9 +1126,11 @@
      vec->action_mask_size = MY_ACTION_MASK;
      size_t mask_bytes = (size_t)total_agents * MY_ACTION_MASK * sizeof(unsigned char);
      if (gpu) {
@@ -4448,7 +4445,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      } else {
          vec->action_mask = (unsigned char*)calloc(total_agents * MY_ACTION_MASK, sizeof(unsigned char));
          vec->gpu_action_mask = vec->action_mask;
-@@ -576,6 +1258,7 @@
+@@ -576,6 +1255,7 @@
              (size_t)vec->total_agents * MY_ACTION_MASK * sizeof(unsigned char),
              cudaMemcpyHostToDevice);
  #endif
@@ -4456,7 +4453,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          cudaDeviceSynchronize();
      } else {
          memset(vec->rewards, 0, vec->total_agents * sizeof(float));
-@@ -591,6 +1274,126 @@
+@@ -591,6 +1271,88 @@
      vec->threading->buffer_states = (atomic_int*)calloc(vec->buffers, sizeof(atomic_int));
      vec->threading->threads = (pthread_t*)calloc(vec->buffers, sizeof(pthread_t));
      vec->threading->accum = (float*)calloc(vec->buffers * NUM_EVAL_PROF, sizeof(float));
@@ -4516,44 +4513,6 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
 +            }
 +        }
 +    }
-+    // The trainer thread (the caller) gets a physical core of its own, SMT
-+    // sibling included, and the pool's threads float over the other cores.
-+    // With CPUs - 3 stepping threads the trainer thread shared a core with a
-+    // sim thread and its launch work stretched: with a core to itself the
-+    // train pass took 43 instead of 56 ms per update and the rollout forward
-+    // 218 instead of 264 us per step (12-CPU box, w256 b4, 2026-09-19). The
-+    // highest CPU of the process mask and its siblings (sysfs topology) are
-+    // the trainer's; skipped when the mask is small or BOPL_ENV_PIN is set.
-+    th->home_set = 0;
-+    if (!th->pin && ncpu >= 6) {
-+        int top = -1;
-+        for (int c = CPU_SETSIZE - 1; c >= 0; c--) if (CPU_ISSET(c, &mask)) { top = c; break; }
-+        cpu_set_t trainer;
-+        CPU_ZERO(&trainer);
-+        CPU_SET(top, &trainer);
-+        char path[128];
-+        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/thread_siblings_list", top);
-+        FILE* f = fopen(path, "r");
-+        if (f) {
-+            char buf[256];
-+            if (fgets(buf, sizeof(buf), f)) {
-+                for (char* p = buf; *p;) {   // "5,11" or "4-5": the siblings of `top`
-+                    int a = (int)strtol(p, &p, 10), b = a;
-+                    if (*p == '-') b = (int)strtol(p + 1, &p, 10);
-+                    for (int c = a; c <= b && c < CPU_SETSIZE; c++) if (c >= 0 && CPU_ISSET(c, &mask)) CPU_SET(c, &trainer);
-+                    if (*p != ',') break;
-+                    p++;
-+                }
-+            }
-+            fclose(f);
-+        }
-+        th->home = mask;
-+        for (int c = 0; c < CPU_SETSIZE; c++) if (CPU_ISSET(c, &trainer)) CPU_CLR(c, &th->home);
-+        if (CPU_COUNT(&th->home) >= total_stepping) {
-+            th->home_set = 1;
-+            pthread_setaffinity_np(pthread_self(), sizeof(trainer), &trainer);
-+        }
-+    }
 +    th->jobs = (BoplEnvJob*)aligned_alloc(64, vec->buffers * sizeof(BoplEnvJob));
 +    memset(th->jobs, 0, vec->buffers * sizeof(BoplEnvJob));
 +    for (int b = 0; b < vec->buffers; b++) {
@@ -4583,7 +4542,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  
      // Streams are now created by pufferlib.cu (PyTorch-managed streams)
      // Do NOT create streams here - they've already been set up
-@@ -603,7 +1406,11 @@
+@@ -603,7 +1365,11 @@
          args[i].ctx = ctx;
          args[i].net_callback = net_callback;
          args[i].thread_init = thread_init;
@@ -4596,7 +4555,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  }
  
-@@ -611,10 +1418,21 @@
+@@ -611,10 +1377,21 @@
      Env* envs = (Env*)vec->envs;
  
      if (vec->threading != NULL) {
@@ -4620,7 +4579,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      }
  
      for (int i = 0; i < vec->size; i++) {
-@@ -628,6 +1446,7 @@
+@@ -628,6 +1405,7 @@
          free(vec->threading->buffer_states);
          free(vec->threading->threads);
          free(vec->threading->accum);
@@ -4628,7 +4587,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
          free(vec->threading);
      }
      free(vec->buffer_env_starts);
-@@ -723,6 +1542,48 @@
+@@ -723,6 +1501,48 @@
      for (int i = 0; i < NUM_EVAL_PROF; i++) {
          out[i] /= threading->num_buffers;
      }
