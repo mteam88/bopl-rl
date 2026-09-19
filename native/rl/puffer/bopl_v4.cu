@@ -489,13 +489,6 @@ static size_t set_fwd_smem(int I, int D) { return (size_t)SF_ROWS * ((I + SF_PAD
 static bool set_fwd_ok(int I, int D, int ldj, int col0) {
     return I % 16 == 0 && I <= 128 && D % SF_THREADS == 0 && D <= 4 * SF_THREADS && ldj % 4 == 0 && col0 % 4 == 0;
 }
-/* bf16 transpose of a (rows, cols) fp32 matrix into (cols, rows): W2^T for set_bwd's B operand. */
-__global__ void to_bf16_t(const float* src, bf16* dst, int rows, int cols) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i >= rows * cols) return;
-    int r = i / cols, c = i - r * cols;
-    dst[(long)c * rows + r] = tobf(src[i]);
-}
 template<int NCOLS>   /* columns per thread in the pool = D / SF_THREADS */
 __global__ void __launch_bounds__(SF_THREADS) set_fwd(const bf16* __restrict__ xpack, int K, const bf16* __restrict__ w1b, int I,
                                                        const bf16* __restrict__ w2b, int D, const int* __restrict__ offsets,
@@ -605,122 +598,10 @@ __global__ void __launch_bounds__(SF_THREADS) set_fwd(const bf16* __restrict__ x
     }
     while (b < b1) flush();
 }
-/* The backward of the same tiles: dh2 = ReLU'(h2) * (winner term + mean
- * term) as unpool_rows (thread = column, rows in order, the sample's
- * winner / gmax / gmean loaded as its rows begin), written to global for the
- * dW2 GEMM and kept in shared as the A operand of dh1 = dh2 W2 (B = W2^T
- * (I, D) bf16, fp32 accumulate, bf16 round: the Lt dh1 GEMM's rounding
- * points), masked by ReLU'(h1) in a coalesced pass into its own rows (the
- * Lt path wrote dh1 over h2, whose (cap, D) rows a fused kernel's other
- * blocks are still reading: dh1 (cap, I) here). Replaces unpool_rows4 + the
- * dh1 Lt GEMM + mask_rows; zero_tail zeroes dh2's and dh1's tails
- * [total, act) for the weight GEMMs. */
-static size_t set_bwd_smem(int I, int D) { return set_fwd_smem(I, D); }
-template<int NCOLS>
-__global__ void __launch_bounds__(SF_THREADS) set_bwd(const bf16* __restrict__ h1, const bf16* __restrict__ h2, const bf16* __restrict__ w2tb,
-                                                       int I, int D, const int* __restrict__ offsets, const int* __restrict__ counts,
-                                                       const int* __restrict__ totals, int s, int B, const float* __restrict__ grad_joined,
-                                                       int ldj, int col0, const int* __restrict__ winner, int mean_pool,
-                                                       bf16* __restrict__ dh2, bf16* __restrict__ dh1) {
-    extern __shared__ __align__(16) unsigned char sf_smem[];
-    bf16* dh1s = (bf16*)sf_smem;                      /* [SF_ROWS][I + SF_PAD] */
-    bf16* dh2s = dh1s + SF_ROWS * (I + SF_PAD);       /* [SF_ROWS][D + SF_PAD] */
-    const int L1 = I + SF_PAD, L2 = D + SF_PAD;
-    const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31, gid = lane >> 2, tid4 = lane & 3;
-    const int b0 = blockIdx.x * SF_SAMPLES, b1 = min(b0 + SF_SAMPLES, B);
-    const int total = totals[s];
-    const int row0 = min(offsets[b0], total);
-    const int row1 = min(b1 < B ? offsets[b1] : total, total);
-    float gmax[NCOLS], gmean[NCOLS]; int win[NCOLS];
-    int b = b0, off = offsets[b0], n = max(0, min(counts[b0], total - offsets[b0]));
-    auto load_sample = [&]() {
-        #pragma unroll
-        for (int q = 0; q < NCOLS; q++) {
-            int c = tid + q * SF_THREADS;
-            win[q] = winner[(long)b * D + c];
-            gmax[q] = grad_joined[(long)b * ldj + col0 + c];
-            gmean[q] = (mean_pool && n > 0) ? grad_joined[(long)b * ldj + col0 + D + c] / n : 0.0f;
-        }
-    };
-    auto next_sample = [&]() { b++; if (b < b1) { off = offsets[b]; n = max(0, min(counts[b], total - off)); load_sample(); } };
-    if (row0 < row1) load_sample();
-    float acc[16][4];
-    for (int tile0 = row0; tile0 < row1; tile0 += SF_ROWS) {
-        const int rows_here = min(SF_ROWS, row1 - tile0);
-        /* the h2 tile into shared with 16-byte row loads (the per-row walk
-         * below then reads shared: reading h2 from global per row cost ~30 us
-         * of dependent latency per tile, 886 us per launch: notes-v4.md);
-         * rows of the tile past row1 are zeroed, they are multiplied but not stored */
-        for (int i = tid; i < SF_ROWS * (D / 8); i += SF_THREADS) {
-            int r = i / (D / 8), c8 = (i - r * (D / 8)) * 8;
-            *(uint4*)(dh2s + r * L2 + c8) = r < rows_here ? *(const uint4*)(h2 + (long)(tile0 + r) * D + c8) : make_uint4(0u, 0u, 0u, 0u);
-        }
-        __syncthreads();
-        /* dh2 rows in place: thread = column, rows in order */
-        for (int r = 0; r < rows_here; r++) {
-            const int row = tile0 + r;
-            while (row >= off + n) next_sample();
-            #pragma unroll
-            for (int q = 0; q < NCOLS; q++) {
-                int c = tid + q * SF_THREADS;
-                float v = bf(dh2s[r * L2 + c]);
-                float g = gmean[q] + (win[q] == row - off ? gmax[q] : 0.0f);
-                dh2s[r * L2 + c] = tobf(v > 0.0f ? g : 0.0f);
-            }
-        }
-        __syncthreads();
-        /* dh2 to global for the dW2 GEMM, 16 bytes per thread along the rows */
-        for (int i = tid; i < rows_here * (D / 8); i += SF_THREADS) {
-            int r = i / (D / 8), c8 = (i - r * (D / 8)) * 8;
-            *(uint4*)(dh2 + (long)(tile0 + r) * D + c8) = *(const uint4*)(dh2s + r * L2 + c8);
-        }
-        /* dh1 tile: acc[nt] = dh2s[wrow.., :] W2^T[nt*8.., :]^T, i.e. dh2 W2 */
-        const int nt1 = I / 8;
-        #pragma unroll
-        for (int t = 0; t < 16; t++) { acc[t][0] = acc[t][1] = acc[t][2] = acc[t][3] = 0.0f; }
-        const bf16* ga = dh2s + (warp * 16 + gid) * L2; const bf16* gb = ga + 8 * L2;
-        for (int k0 = 0; k0 < D; k0 += 16) {
-            unsigned a[4];
-            const int ka = k0 + tid4 * 2;
-            a[0] = *(const unsigned*)(ga + ka); a[1] = *(const unsigned*)(gb + ka);
-            a[2] = *(const unsigned*)(ga + ka + 8); a[3] = *(const unsigned*)(gb + ka + 8);
-            #pragma unroll
-            for (int t = 0; t < 16; t++) if (t < nt1) {
-                const bf16* wr = w2tb + (long)(t * 8 + gid) * D + ka;
-                mma_bf16_16816(acc[t], a, *(const unsigned*)wr, *(const unsigned*)(wr + 8));
-            }
-        }
-        #pragma unroll
-        for (int t = 0; t < 16; t++) if (t < nt1) {
-            __nv_bfloat162 lo = __floats2bfloat162_rn(acc[t][0], acc[t][1]), hi = __floats2bfloat162_rn(acc[t][2], acc[t][3]);
-            *(__nv_bfloat162*)(dh1s + (warp * 16 + gid) * L1 + t * 8 + tid4 * 2) = lo;
-            *(__nv_bfloat162*)(dh1s + (warp * 16 + gid + 8) * L1 + t * 8 + tid4 * 2) = hi;
-        }
-        __syncthreads();
-        /* dh1 = dh1 * ReLU'(h1) to global, 16 bytes per thread along the rows */
-        for (int i = tid; i < rows_here * (I / 8); i += SF_THREADS) {
-            int r = i / (I / 8), c8 = (i - r * (I / 8)) * 8;
-            uint4 hv = *(const uint4*)(h1 + (long)(tile0 + r) * I + c8), gv = *(const uint4*)(dh1s + r * L1 + c8);
-            const bf16* hp = (const bf16*)&hv; bf16* gp = (bf16*)&gv;
-            #pragma unroll
-            for (int j = 0; j < 8; j++) if (!(bf(hp[j]) > 0.0f)) gp[j] = tobf(0.0f);
-            *(uint4*)(dh1 + (long)(tile0 + r) * I + c8) = gv;
-        }
-        __syncthreads();
-    }
-}
-/* The launchers follow both definitions: a template declared without the
+/* The launcher follows the definition: a template declared without the
  * definition's __restrict__ qualifiers mangles to another device symbol, and
  * the launch then fails with "invalid device function" without running
  * (found by check_dump; the error is checked here so it can never pass silently). */
-template<typename... A> static void set_bwd_launch(int ncols, int grid, size_t smem, cudaStream_t stream, A... args) {
-    switch (ncols) {
-        case 1: set_bwd<1><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-        case 2: set_bwd<2><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-        case 3: set_bwd<3><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-        default: set_bwd<4><<<grid, SF_THREADS, smem, stream>>>(args...); break;
-    }
-}
 template<typename... A> static void set_fwd_launch(int ncols, int grid, size_t smem, cudaStream_t stream, A... args) {
     switch (ncols) {
         case 1: set_fwd<1><<<grid, SF_THREADS, smem, stream>>>(args...); break;
@@ -729,9 +610,14 @@ template<typename... A> static void set_fwd_launch(int ncols, int grid, size_t s
         default: set_fwd<4><<<grid, SF_THREADS, smem, stream>>>(args...); break;
     }
 }
-static void set_launch_check(const char* what) {
+/* Every custom launch in the encoder is checked once per pass: a kernel
+ * whose launch fails (invalid device function, resources) otherwise skips
+ * its work silently and the pass keeps going on stale activations (the
+ * fused set kernels of 698cd3d7 ran zero times; notes-v4.md). One host call
+ * per forward / backward; never under the trainer's graph capture failing. */
+static void launch_check(const char* what) {
     cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) throw std::runtime_error(std::string("Bopl v4 ") + what + " launch: " + cudaGetErrorString(e));
+    if (e != cudaSuccess) throw std::runtime_error(std::string("Bopl v4 ") + what + ": " + cudaGetErrorString(e));
 }
 /* ---- elementwise and LayerNorm ------------------------------------------ */
 __global__ void relu_into(const float* src, float* dst, int rows, int cols, int ldd) {
@@ -984,7 +870,6 @@ struct EncActs {
     /* training */
     PrecisionTensor grad_fused, grad_joined, grad_flat, acc;
     IntTensor dh2[SETS];
-    IntTensor dh1[SETS], w2tb[SETS];   /* set_bwd's dh1 (cap, I) and W2^T (I, D) bf16, 2 per int */
     IntTensor relu_mask[SETS];   /* h1's ReLU bitmask (cap, I/32) for the DRELU epilogue; unset in rollout, at small caps, or when I % 128 != 0 */
     PrecisionTensor wgrad_w1[SETS], wgrad_w2[SETS], wgrad_embedding, wgrad_flat, wgrad_fusion;
 };
@@ -1200,7 +1085,6 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
             set_fwd_launch(D / SF_THREADS, (B + SF_SAMPLES - 1) / SF_SAMPLES, set_fwd_smem(I, D), stream,
                 bfp(a->xpack[s]), K, bfp(a->w1b[s]), I, bfp(a->w2b[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
                 a->totals.data, s, B, bfp(a->h1[s]), bfp(a->h2[s]), a->joined.data, LDJ, col0, a->winner[s].data, w->mean_pool);
-            set_launch_check("set_fwd");
             if (g_set_stage.forward)
                 g_set_stage.forward(s, bfp(a->h2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
             prof_mark("enc.set_mlp_pool", stream);
@@ -1227,6 +1111,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     puf_mm(&a->joined, &w->fusion, &a->fused, stream);
     ln_fwd(a->fused.data, H, nullptr, 0, B, nullptr, a->out.data, nullptr, a->ln_mean.data, a->ln_rstd.data, stream);
     prof_mark("enc.fusion_ln", stream);
+    launch_check("encoder forward launch");
     return a->out;
 }
 
@@ -1256,23 +1141,6 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
     for (int s = SETS - 1; s >= 0; s--) {
         const int* total = a->totals.data + s;
         int K = SPEC[s].kpad, act = a->act[s];
-        if (set_fwd_ok(I, D, LDJ, FD + s * 2 * D)) {
-            to_bf16_t<<<grid_size(D * I), BLOCK_SIZE, 0, stream>>>(w->w2[s].data, bfp(a->w2tb[s]), D, I);
-            zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->dh2[s]), D, bfp(a->dh1[s]), I, a->totals.data, s, act);
-            set_bwd_launch(D / SF_THREADS, (B + SF_SAMPLES - 1) / SF_SAMPLES, set_bwd_smem(I, D), stream,
-                bfp(a->h1[s]), bfp(a->h2[s]), bfp(a->w2tb[s]), I, D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
-                a->totals.data, s, B, a->grad_joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool, bfp(a->dh2[s]), bfp(a->dh1[s]));
-            set_launch_check("set_bwd");
-            if (g_set_stage.backward)
-                g_set_stage.backward(s, bfp(a->h2[s]), bfp(a->dh2[s]), a->sample[s].data, a->offsets.data + (long)s * B, a->counts.data + (long)s * B, total, B, D, stream);
-            prof_mark("bwd.enc.unpool_dh1", stream);
-            bf16* dh1 = bfp(a->dh1[s]);
-            /* dW2 (D, I) = dh2^T h1 over the active rows (zero rows past the count) */
-            lt_gemm(true, false, D, I, act, bfp(a->dh2[s]), D, bfp(a->h1[s]), I, nullptr, a->wgrad_w2[s].data, I, false, CUBLASLT_EPILOGUE_DEFAULT, stream);
-            prof_mark("bwd.enc.dW2", stream);
-            set_wgrad_w1(a, s, dh1, K, act, I, stream);
-            continue;
-        }
         if (pool4_ok(D, LDJ, FD + s * 2 * D))
             unpool_rows4<<<pool4_grid(D, B), POOL_THREADS, 0, stream>>>(bfp(a->h2[s]), bfp(a->dh2[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
                                                                        a->totals.data, s, a->grad_joined.data, LDJ, FD + s * 2 * D, a->winner[s].data, w->mean_pool, B);
@@ -1296,6 +1164,7 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
         prof_mark("bwd.enc.dh1", stream);
         set_wgrad_w1(a, s, dh1, K, act, I, stream);
     }
+    launch_check("encoder backward launch");
 }
 
 static void enc_init(void* weights, ulong* seed, cudaStream_t stream) {
@@ -1364,10 +1233,6 @@ static void enc_reg_train(void* weights, void* activations, Allocator* acts, All
     long acc = 0;   /* dW1's fp32 (I, kpad) */
     for (int s = 0; s < SETS; s++) {
         a->dh2[s] = {.shape = {a->cap[s], D / 2}}; alloc_register(acts, &a->dh2[s]);
-        if (set_fwd_ok(I, D, FD + SETS * 2 * D, FD + s * 2 * D)) {
-            a->dh1[s] = {.shape = {a->cap[s], I / 2}}; alloc_register(acts, &a->dh1[s]);
-            a->w2tb[s] = {.shape = {I, D / 2}}; alloc_register(acts, &a->w2tb[s]);
-        }
         if (I % 128 == 0 && a->cap[s] >= LT_AUX_MIN_ROWS) {
             a->relu_mask[s] = {.shape = {a->cap[s], I / 32}}; alloc_register(acts, &a->relu_mask[s]);
         }
