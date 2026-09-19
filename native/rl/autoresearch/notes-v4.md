@@ -1053,3 +1053,21 @@ Sum of 1-3 if all land: ~-6 ms of 70 (-9%). The pass count (p2: train
 41 ms) moves more than all of them, which is why (a) is the gate running.
 Also noticed: `env_int("BOPL4_DRELU", 1)` in bopl_v4.cu is a leftover
 toggle (removal rule); to drop with the next bopl_v4.cu edit.
+
+#### lite-aim-only-p2-a2c9aa7e (passes 2 on aim-only, seed 73, 440M in 1103 s)
+
+In-run 399k learner_sps (p4 aim-only 336.5k: 1.19x in the sanity recipe,
+1.33x in the bench). 160M (394 s): band 415.9 [374, 459], refit 516: the
+equal-steps cost again (p4 aim-only 475.7). At 955 s the nearest
+evaluation is 400M learner steps (1003 s): band 572.8 [529, 617], refit
+747 [633, 950]; the reference's 160M band is 523.5 [478, 568] and lite
+p4's 955 s reading was 526.5. The p4 aim-only run stopped at 160M, so its
+955 s row is being taken now (lite-aim-only-p4w-04322d89, STEPS=360M).
+
+### Toggles: BOPL4_DRELU, BOPL4_LT_TUNE, BOPL4_ACTIVE_ROWS removed (04322d89)
+
+Fixed on; the env_int reader stays for the shape variables train.py
+exports (BOPL4_SET_DIM, ...) and BOPL_V4_MEMLOG's allocation log (both
+pre-campaign). bopl_rollout.cu's campaign-2 knobs (BOPL_BATCHED_FWD,
+BOPL_ZERO_COPY*, BOPL_GRAPH_COPIES, BOPL_TF32, BOPL_OBS_SPARSE,
+BOPL_PACK_TAIL) are not mine and were left; say if they should go too.
