@@ -500,8 +500,7 @@ __global__ void relu_grad_bf16x4(const float* grad, const bf16* act, bf16* out, 
     *(uint2*)(out + i * 4) = *(const uint2*)o;
 }
 static bool ew4_ok(int cols, int ldg, int lda, const void* g, const void* a, const void* d) {
-    static int scalar = getenv("BOPL_EW_SCALAR") ? atoi(getenv("BOPL_EW_SCALAR")) : 0;   // TEMP A/B toggle
-    return !scalar && cols % 4 == 0 && ldg % 4 == 0 && lda % 4 == 0 && ((size_t)g & 15) == 0 && ((size_t)a & 15) == 0 && ((size_t)d & 15) == 0;
+    return cols % 4 == 0 && ldg % 4 == 0 && lda % 4 == 0 && ((size_t)g & 15) == 0 && ((size_t)a & 15) == 0 && ((size_t)d & 15) == 0;
 }
 __global__ void add_into(float* dst, const float* src, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;

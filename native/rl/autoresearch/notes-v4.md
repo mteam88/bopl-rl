@@ -584,3 +584,19 @@ pass). No gain and the rollout's headroom gone: discarded, code reverted.
 The transposed-mma bank tiles (halving the banks' tensor work) is the same
 story: the bank tiles' cost is their weight bytes and the per-block
 latency, neither of which that formulation changes. Not built.
+
+### Train pass: relu_grad_from / relu_grad_bf16 four elements per thread, keep (marginal)
+
+The last scalar elementwise kernels in the train pass (two ReLU backward
+launches on B x 256 / B x 512 fp32, one B x 512 into the bf16 critic
+operand) now do four columns per thread with float4 / uint2 accesses when
+the widths and pointers allow (they always do for the shipped shapes; the
+scalar kernels stay as the fallback). Elementwise, so bit-identical;
+check_v4 5/5. A/B 2x2 twice against the scalar kernels behind a temporary
+toggle: 250.7k vs 249.4k, 250.1k vs 248.4k (+0.5%, +0.7%); train 0.0970
+vs 0.0975. Kept. Incumbent ~250.5k.
+
+Exact-class list exhausted at this point. Everything left with real
+weight is gated: bf16 operands on the TF32 GEMMs (44 of the train pass's
+~63 ms of kernel time), the row budget (~10%), fast transcendentals in the
+MinGRU scans (~3 ms per update). Waiting on Matthew's word for those.
