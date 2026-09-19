@@ -534,7 +534,7 @@ __global__ void bopl4_transport_check(const float* __restrict__ dense, const flo
 extern "C" void bopl_pack_register(void* envs, int start, int count, const float* base, float* out, long row_begin, long row_end);
 static void br_check_pre(PuffeRL* pufferl, int buf, cudaStream_t stream);
 static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* terminals, const float* dec_rows, cudaStream_t stream);
-static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* packed, const float* rewards, const float* terminals,
+static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
                       float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream);
 // ---------------------------------------------------------------------------
 // Sampler: sample_logits_warp with the env's byte mask as input and the
@@ -917,7 +917,6 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         mask = p.mask_stride ? (const unsigned char*)(pk + 2 * rows * sizeof(float)) : nullptr;
     }
     float* env_actions = (p.actions_zero_copy ? vec->dev_actions : vec->gpu_actions) + (long)start * p.num_atns;
-    const float* packed = nullptr;  // this buffer's packed slots (their headers feed br4_sets)
     if (p.graph_copies && vec->packed_host) {
         // Packed rows: one memcpy of the buffer's slots (+ the pack in their
         // tail), then the dense device rows rebuilt for the chain.
@@ -934,7 +933,6 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         bopl4_unpack_rows<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(vec->packed_dev + (long)start * BOPL4_PACK_P, host_rows, dense, rows);
         if (p.transport_check) bopl4_transport_check<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(dense, host_rows, rows, vec->transport_mismatch);
         obs = dense;
-        packed = vec->packed_dev + (long)start * BOPL4_PACK_P;
     } else if (p.graph_copies) {
         size_t row_bytes = (size_t)BS_OBS * sizeof(float), off = (size_t)start * row_bytes;
         size_t bytes = (size_t)rows * row_bytes + (vec->pack_in_tail ? (size_t)vec->pack_bytes : 0);
@@ -953,7 +951,7 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     const float* dec_rows = A.dec;
     br_check_pre(pufferl, buf, stream);
     if (p.v4) {
-        br4_chain(pufferl, p, buf, obs, packed, rewards, terminals, obs_dst.data, rew_dst.data, term_dst.data, stream);
+        br4_chain(pufferl, p, buf, obs, rewards, terminals, obs_dst.data, rew_dst.data, term_dst.data, stream);
         dec_rows = br4_dec_rows(p, buf);
     } else {
     // Per-group weights (set-encoder MLPs as stored, GEMM weights transposed by
