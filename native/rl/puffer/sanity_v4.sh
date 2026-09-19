@@ -41,6 +41,13 @@
 #   reference of the same recipe (sweeps/v4-lite/000 for the v4-lite shape).
 #   Shape / recipe flags go after -- (e.g. -- --v4-set-inner 64 --v4-ffn-dim 0
 #   --v4-critic-dim 384 for v4-lite-aim, sweep/configs/v4-lite-aim.toml).
+#   WALL_SECONDS=<s> (report): the equal-wall-clock comparison for recipe
+#   changes (learner passes): the run's evaluation whose trainer elapsed is
+#   nearest that many seconds (v4-aim/000 reached 160M learner steps in 955 s)
+#   is read out (refit Elo, band rating of its checkpoint into band/wall) next
+#   to the reference's 160M numbers; a run must have been given enough STEPS
+#   (a multiple of EVAL_EVERY) to pass that wall time. Informational: the
+#   pass/fail verdict stays the equal-steps gate.
 set -euo pipefail
 MODE=${1:?run|report}; LABEL=${2:?label}; shift 2
 [ "${1:-}" = "--" ] && shift
@@ -108,15 +115,35 @@ report)
       fi
     done
   fi
-  python3 - "$DIR" "$LABEL" "$REFERENCE" "$REF_NAME" <<'PY' | tee -a "$OUT/results.jsonl"
+  # Equal wall-clock: rate the checkpoint of the evaluation nearest WALL_SECONDS.
+  if [ -n "${WALL_SECONDS:-}" ]; then
+    wall_step=$(python3 - "$DIR" "$WALL_SECONDS" <<'PY'
+import json, sys, glob, os
+d, wall = sys.argv[1], float(sys.argv[2])
+evals = {int(os.path.basename(p)) for p in glob.glob(os.path.join(d, 'evaluations', '*')) if os.path.basename(p).isdigit()}
+best = None
+for line in open(os.path.join(d, 'metrics.jsonl')):
+    r = json.loads(line)
+    if r['step'] in evals and (best is None or abs(r['elapsed'] - wall) < abs(best[1] - wall)): best = (r['step'], r['elapsed'])
+print(best[0] if best else '')
+PY
+)
+    ck="$DIR/checkpoints/policy-$(printf '%09d' "${wall_step:-0}").bin"
+    if [ -n "$wall_step" ] && [ -f "$ck" ] && [ "${BAND_GAMES:-240}" -gt 0 ] && ! ls "$DIR"/band/wall/*.json >/dev/null 2>&1; then
+      mkdir -p "$DIR/band/wall"
+      BOPL_RL_BACKEND=rust "$PY" native/rl/sweep/reference_pool.py rate --pool "$POOL" --checkpoint "$ck" \
+        --out "$DIR/band/wall" --games "${BAND_GAMES:-240}" --workers "${BAND_WORKERS:-3}" > "$DIR/band/wall.log" 2>&1 || echo "band rating of the wall checkpoint failed: $(tail -1 "$DIR/band/wall.log")" >&2
+    fi
+  fi
+  python3 - "$DIR" "$LABEL" "$REFERENCE" "$REF_NAME" "${WALL_SECONDS:-}" <<'PY' | tee -a "$OUT/results.jsonl"
 import glob, json, os, sys
-d, label, reference, ref_name = sys.argv[1:]
+d, label, reference, ref_name, wall_seconds = sys.argv[1:]
 SPREAD = 75            # same-shape pool-v7 seed spread, POLICY_V4_PLAN.md 7c
 # The evaluation steps the gate reads, in the trainer's physical step count
 # (checkpoint names): 80M and 160M learner decisions of the v4-aim recipe.
 GATE_STEPS = {80_000_000: 106_692_608, 160_000_000: 213_352_448}
-def band(side):
-    files = glob.glob(os.path.join(d, 'band', side, '*policy-213352448*.json'))
+def band(side, step=213352448):
+    files = glob.glob(os.path.join(d, 'band', side, '*policy-%09d*.json' % step))
     if not files: return None
     r = json.load(open(files[0]))
     return dict(rating=round(r['rating'], 1), interval=[round(x, 1) for x in r['interval']] if r.get('interval') else None, games=r.get('games'))
@@ -163,6 +190,16 @@ for k in ('explained_variance', 'entropy', 'kl', 'learner_sps', 'sps'):
         out[k] = dict(run=round(m[k], 4), reference=round(ref_m[k], 4), ratio=round(m[k] / ref_m[k], 3) if ref_m[k] else None)
         if k in ('explained_variance', 'entropy', 'kl') and ref_m[k] and abs(m[k] / ref_m[k] - 1) > 0.10:
             out.setdefault('drift', []).append(k)
+if wall_seconds:
+    wall = float(wall_seconds)
+    evals = {int(os.path.basename(p)) for p in glob.glob(os.path.join(d, 'evaluations', '*')) if os.path.basename(p).isdigit()}
+    rows = [json.loads(l) for l in open(os.path.join(d, 'metrics.jsonl'))]
+    at = min((r for r in rows if r['step'] in evals), key=lambda r: abs(r['elapsed'] - wall), default=None)
+    if at:
+        elo = run_elo.get(at['step'])
+        out['wall'] = dict(target_s=wall, run_step=at['step'], learner_steps=at['learner_steps'], elapsed_s=round(at['elapsed']),
+                           elo=round(elo[0], 1) if elo else None, interval=[round(x, 1) for x in elo[1]] if elo and elo[1] else None,
+                           band=band('wall', at['step']), reference_160M=dict(elo=out['gate'].get('160000000', {}).get('reference_elo'), band=ref_band))
 out['load1'] = round(os.getloadavg()[0], 1)
 print(json.dumps(out))
 PY
