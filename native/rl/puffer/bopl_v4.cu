@@ -44,7 +44,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <unordered_map>
 #include "bopl_layout_v4.h"
 
 namespace v4 {
@@ -231,7 +230,7 @@ __global__ void reduce_partials(const float* partials, int chunks, long per_chun
  * concurrently. The workspace is allocated once at enc_create. */
 struct LtKey {
     int a_t, b_t, M, N, K, lda, ldb, ldd, d_bf16, has_c, epi;
-    int ab_f32;        /* A, B fp32 (the forward flat / FFN GEMMs: TF32 tensor cores per BOPL_TF32, as puf_mm) instead of bf16 */
+    int ab_f32;        /* A, B fp32 (the flat / FFN GEMMs: TF32 tensor cores per BOPL_TF32, as puf_mm) instead of bf16 */
     const void* aux;   /* RELU_AUX / DRELU bitmask, part of the plan (a descriptor attribute) */
     bool operator==(const LtKey& o) const {
         return a_t == o.a_t && b_t == o.b_t && M == o.M && N == o.N && K == o.K && lda == o.lda && ldb == o.ldb && ldd == o.ldd
@@ -333,66 +332,10 @@ static void lt_gemm(bool a_t, bool b_t, int M, int N, int K, const bf16* A, int 
                     const void* C, void* D, int ldd, bool d_bf16, cublasLtEpilogue_t epi, cudaStream_t stream, void* aux = nullptr) {
     lt_matmul({a_t, b_t, M, N, K, lda, ldb, ldd, d_bf16, C != nullptr, (int)epi, 0, aux}, A, B, C, D, stream);
 }
-/* fp32 operands and output (the compute type follows BOPL_TF32 like puf_mm): the forward GEMMs. */
+/* fp32 operands and output (the compute type follows BOPL_TF32 like puf_mm). */
 static void lt_gemm32(bool a_t, bool b_t, int M, int N, int K, const float* A, int lda, const float* B, int ldb,
                       const float* C, float* D, int ldd, cublasLtEpilogue_t epi, cudaStream_t stream, void* aux = nullptr) {
     lt_matmul({a_t, b_t, M, N, K, lda, ldb, ldd, 0, C != nullptr, (int)epi, 1, aux}, A, B, C, D, stream);
-}
-/* ---- bf16 operands for the trainer's backward fp32 GEMMs (the weight and
- * data gradients of flat / fusion / FFN / actor; the set MLPs and the critic
- * block were bf16 already). The forward GEMMs stay TF32: with bf16 forwards
- * too (b2418637) the learning gate failed twice (160M refit Elo 544 and 490
- * vs floor 571, entropy falling), the train-side logprobs disagreeing with
- * the TF32 rollout chain's by ~3e-3 relative. Each fp32 operand is rounded to
- * bf16 into a per-source scratch buffer once per pass (the first use records
- * the conversion, later uses share it), the GEMM accumulates in fp32 and
- * writes fp32. Eager passes precede every capture, so the scratch is
- * allocated eagerly and the conversions are baked into the graphs. */
-static int grid_long(long n);
-__global__ void to_bf16x4(const float* src, bf16* dst, long n4) {
-    long i = blockIdx.x * (long)blockDim.x + threadIdx.x;
-    if (i >= n4) return;
-    float4 v = *(const float4*)(src + i * 4);
-    bf16 o[4] = {tobf(v.x), tobf(v.y), tobf(v.z), tobf(v.w)};
-    *(uint2*)(dst + i * 4) = *(const uint2*)o;
-}
-struct BfConv { bf16* d = nullptr; long cap = 0; unsigned epoch = 0; };
-static std::unordered_map<const void*, BfConv> g_bfconv;
-static unsigned g_bf_epoch = 1;
-static void bf16_new_pass() { g_bf_epoch++; }
-static const bf16* bf16_of(const float* src, long n, cudaStream_t stream) {
-    BfConv& c = g_bfconv[src];
-    if (c.cap < n) {
-        cudaStreamCaptureStatus cs = cudaStreamCaptureStatusNone;
-        cudaStreamIsCapturing(stream, &cs);
-        if (cs != cudaStreamCaptureStatusNone) throw std::runtime_error("Bopl v4 bf16 GEMM: operand scratch grown under capture");
-        if (c.d) cudaFree(c.d);
-        if (cudaMalloc(&c.d, n * sizeof(bf16)) != cudaSuccess) throw std::runtime_error("Bopl v4 bf16 GEMM: scratch allocation failed");
-        c.cap = n; c.epoch = 0;
-    }
-    if (c.epoch != g_bf_epoch) {
-        if (n % 4 == 0 && ((size_t)src & 15) == 0) to_bf16x4<<<grid_long(n / 4), BLOCK_SIZE, 0, stream>>>(src, c.d, n / 4);
-        else to_bf16<<<grid_long(n), BLOCK_SIZE, 0, stream>>>(src, c.d, (int)n);
-        c.epoch = g_bf_epoch;
-    }
-    return c.d;
-}
-/* fp32 in / fp32 out GEMM on bf16 operands (fp32 accumulation, cublasLt epilogue): the backward GEMMs. */
-static void v4_gemm_bwd(bool a_t, bool b_t, int M, int N, int K, const float* A, int lda, const float* B, int ldb,
-                      const float* C, float* D, int ldd, cublasLtEpilogue_t epi, cudaStream_t stream) {
-    long an = a_t ? (long)K * lda : (long)M * lda, bn = b_t ? (long)N * ldb : (long)K * ldb;
-    const bf16* Ab = bf16_of(A, an, stream);
-    const bf16* Bb = bf16_of(B, bn, stream);
-    lt_gemm(a_t, b_t, M, N, K, Ab, lda, Bb, ldb, C, D, ldd, false, epi, stream);
-}
-/* puf_mm_tn / puf_mm_nn shapes on the bf16 path (the backward's). */
-static void v4_mm_tn(PrecisionTensor* a, PrecisionTensor* b, PrecisionTensor* out, cudaStream_t stream) {
-    int M = a->shape[ndim(a->shape) - 1], K = batch_size(a->shape) * a->shape[ndim(a->shape) - 2], N = b->shape[ndim(b->shape) - 1];
-    v4_gemm_bwd(true, false, M, N, K, a->data, M, b->data, N, nullptr, out->data, N, CUBLASLT_EPILOGUE_DEFAULT, stream);
-}
-static void v4_mm_nn(PrecisionTensor* a, PrecisionTensor* b, PrecisionTensor* out, cudaStream_t stream) {
-    int M = batch_size(a->shape) * a->shape[ndim(a->shape) - 2], K = a->shape[ndim(a->shape) - 1], N = b->shape[ndim(b->shape) - 1];
-    v4_gemm_bwd(false, false, M, N, K, a->data, K, b->data, N, nullptr, out->data, N, CUBLASLT_EPILOGUE_DEFAULT, stream);
 }
 /* Zero the packed rows [total, cap) of one or two (rows2 nullable) row
  * matrices so the GEMMs over the capacity see finite zeros. */
@@ -825,7 +768,6 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
     g_v4_privileged = a->priv.data; g_v4_privileged_rows = B;
     prof_mark("enc.pack_flat", stream);
     /* joined[:, :FD] = ReLU(flat_input W_flat^T): the ReLU in the epilogue, written at the joined stride */
-    bf16_new_pass();
     lt_gemm32(false, true, B, FD, FLAT, a->flat_input.data, FLAT, w->flat.data, FLAT, nullptr, a->joined.data, LDJ, CUBLASLT_EPILOGUE_RELU, stream);
     prof_mark("enc.flat_gemm", stream);
     /* sets */
@@ -867,12 +809,12 @@ static void enc_backward(void* weights, void* activations, PrecisionTensor grad,
     auto* w = (EncWeights*)weights; auto* a = (EncActs*)activations;
     int B = a->B, H = w->hidden, D = w->D, I = w->I, FD = w->flat_dim, LDJ = FD + SETS * 2 * D;
     ln_bwd(grad.data, a->fused.data, a->ln_mean.data, a->ln_rstd.data, H, B, a->grad_fused.data, H, H, 0, nullptr, stream);
-    v4_mm_tn(&a->grad_fused, &a->joined, &a->wgrad_fusion, stream);
-    v4_mm_nn(&a->grad_fused, &w->fusion, &a->grad_joined, stream);
+    puf_mm_tn(&a->grad_fused, &a->joined, &a->wgrad_fusion, stream);
+    puf_mm_nn(&a->grad_fused, &w->fusion, &a->grad_joined, stream);
     if (ew4_ok(FD, LDJ, LDJ, a->grad_joined.data, a->joined.data, a->grad_flat.data))
         relu_grad_from4<<<grid_size(B * FD / 4), BLOCK_SIZE, 0, stream>>>(a->grad_joined.data, LDJ, a->joined.data, LDJ, a->grad_flat.data, B, FD);
     else relu_grad_from<<<grid_size(B * FD), BLOCK_SIZE, 0, stream>>>(a->grad_joined.data, LDJ, a->joined.data, LDJ, a->grad_flat.data, B, FD);
-    v4_mm_tn(&a->grad_flat, &a->flat_input, &a->wgrad_flat, stream);
+    puf_mm_tn(&a->grad_flat, &a->flat_input, &a->wgrad_flat, stream);
     prof_mark("bwd.enc.fusion_flat", stream);
     for (int s = SETS - 1; s >= 0; s--) {
         const int* total = a->totals.data + s;
@@ -1118,9 +1060,9 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
         assemble_decoder_grad<<<grid_size(B * pad), BLOCK_SIZE, 0, stream>>>(a->base.grad_out.data, grad_logits.data, grad_value.data, B, od, pad);
     prof_mark("bwd.dec.start", stream);
     /* actor */
-    v4_mm_tn(&a->base.grad_out, &a->y, &a->wgrad_actor_pad, stream);
+    puf_mm_tn(&a->base.grad_out, &a->y, &a->wgrad_actor_pad, stream);
     cudaMemcpyAsync(a->wgrad_actor.data, a->wgrad_actor_pad.data, (size_t)w->arows * H * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-    v4_mm_nn(&a->base.grad_out, &a->actor_pad, &a->g_y, stream);   /* rows >= arows of actor_pad are zero */
+    puf_mm_nn(&a->base.grad_out, &a->actor_pad, &a->g_y, stream);   /* rows >= arows of actor_pad are zero */
     prof_mark("bwd.dec.actor", stream);
     /* critic */
     if (w->cdim) {
@@ -1159,13 +1101,13 @@ static PrecisionTensor dec_backward(void* weights, void* activations, FloatTenso
     puf_copy(&a->base.grad_input, &a->g_y, stream);
     if (w->ffn) {
         int F = w->ffn;
-        v4_mm_tn(&a->g_y, &a->f, &a->wgrad_ffn_out, stream);
-        v4_mm_nn(&a->g_y, &w->ffn_out, &a->g_f, stream);
+        puf_mm_tn(&a->g_y, &a->f, &a->wgrad_ffn_out, stream);
+        puf_mm_nn(&a->g_y, &w->ffn_out, &a->g_f, stream);
         if (ew4_ok(F, F, F, a->g_f.data, a->f.data, a->g_f.data))
             relu_grad_from4<<<grid_size(B * F / 4), BLOCK_SIZE, 0, stream>>>(a->g_f.data, F, a->f.data, F, a->g_f.data, B, F);
         else relu_grad_from<<<grid_size(B * F), BLOCK_SIZE, 0, stream>>>(a->g_f.data, F, a->f.data, F, a->g_f.data, B, F);
-        v4_mm_tn(&a->g_f, &a->ln1, &a->wgrad_ffn_in, stream);
-        v4_mm_nn(&a->g_f, &w->ffn_in, &a->g_ln1, stream);
+        puf_mm_tn(&a->g_f, &a->ln1, &a->wgrad_ffn_in, stream);
+        puf_mm_nn(&a->g_f, &w->ffn_in, &a->g_ln1, stream);
         ln_bwd(a->g_ln1.data, a->base.saved_input.data, a->m1.data, a->r1.data, H, B, a->base.grad_input.data, H, H, 1, nullptr, stream);
     }
     (void)grad_logstd;

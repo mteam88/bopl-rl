@@ -667,3 +667,25 @@ vs the exact stack's 1.47 is the only hint of an effect. Repeating the
 gate with SEED=74 before discarding (bf16-b2418637-s74); if it fails too,
 bf16 as built is reverted and a narrower variant (forward + dgrad bf16,
 the K = 24576 weight-gradient GEMMs kept TF32) is the fallback candidate.
+
+### Learning gate bf16-b2418637-s74: FAIL; backward-only bf16 +0.8%; bf16 discarded
+
+Seed 74 repeat: refit Elo 443 at 80M (ok), 490 [365, 692] at 160M (floor
+571: fail); band 468.3 [428, 509] vs floor 448.5 (ok); explained_variance
+1.65, entropy 0.916, kl 1.19; 255.0k learner_sps. Two fails: bf16 on the
+forward GEMMs is out. The signature (entropy falling in both runs) points
+at the forward / PPO-ratio path: the train-side logprobs disagree with
+the TF32 rollout chain's by ~3e-3 relative, a systematic ratio bias.
+
+Backward-only variant (9c294026: weight- and data-gradient GEMMs on bf16
+operands, every forward GEMM TF32 as before; check_v4 5/5): build A/B vs
+5fb70ec9 251.8k vs 249.9k (+0.8%), train 0.0966 vs 0.0973. The operand
+conversions (~5 ms per update) eat most of what the backward GEMMs save.
+Not worth a gate at +0.8% for a numerics change: discarded, bopl_v4.cu
+reverted to 5fb70ec9's (the toggle removals and the v3 br_gemm fix stay).
+
+What would make bf16 pay later: emit the bf16 copies inside passes that
+already touch the data (ln_forward already writes a bf16 output for the
+critic path; relu_grad_from reads joined; pool / unpool write joined)
+instead of separate to_bf16 kernels, backward-only: ~+4% for one gate.
+Ranked behind the structural levers in the re-profile below.
