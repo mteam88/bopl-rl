@@ -11,6 +11,8 @@
  *   v4-aim-only   bits 10 (aim/LOS casts, no fan, no terrain block: production, v4-lite-aim.toml)
  *   v4-no-rays    bits 2  (no geometry channel at all)
  *   v4-priv       bopl4_privileged, the critic block written once more per step from the undelayed state
+ *   v4-pack       bopl_pack_rows, the packed transport's per-row pack of the aim-only rows
+ *   v4-tail       the per-player finish tail: previous action, v4 history, action mask
  * so geometry = v4-aim - v4-aim-only, casts = v4-aim-only - v4-no-rays, and
  * the v4 global/self/opponent/set rows with their relational columns =
  * v4-no-rays - v3. bopl4_relation is timed on its own (relational bit 1 zeroes
@@ -107,13 +109,19 @@ int main(int argc, char **argv) {
            loadout, PLAYERS, ticks, decisions, resets, ticks/step_seconds, ticks/(step_seconds+reset_seconds), step_seconds*1e6/decisions,
            max_entities, max_slimes, recorded, load1());
     fflush(stdout);
-    bopl_rl_close(world);
-
     /* ---- phase 2: the writers over the recorded states ---- */
     static float scratch[BOPL_MAX_PLAYERS*BOPL_OBS_STRIDE];
     BoplPuffer env={0};
-    env.config=config; env.players=PLAYERS; env.num_agents=PLAYERS; env.scratch=scratch;
+    env.config=config; env.players=PLAYERS; env.num_agents=PLAYERS; env.scratch=scratch; env.world=world;
     for (int i=0; i<PLAYERS; i++) env.applied[i].angle=(uint8_t)(64+61*i);   /* an aimed decision, so the aim ray is cast (98% of real rows) */
+    /* The rest of bopl_step_finish's per-row work (the trainer's finish phase
+     * = the writer + these): the packed transport's row pack over the rows the
+     * writer just left (pack_out at the trainer's live range), and the
+     * per-player tail (previous action + v4 history + the action mask). */
+    static float pack_out[PLAYERS*BOPL4_PACK_P];
+    static unsigned char masks[PLAYERS][BOPL_LOGITS];
+    env.pack_base=scratch; env.pack_out=pack_out; env.pack_row_begin=0; env.pack_row_end=PLAYERS;
+    for (int i=0; i<PLAYERS; i++) env.mask_ptr[i]=masks[i];
     /* The vector march (bopl4_march_avx512) against the scalar one
      * (bopl4_march_scalar: bot_raycast's steps): every production row (bits
      * 8) of every recorded state, both players, bit for bit. */
@@ -138,29 +146,45 @@ int main(int argc, char **argv) {
         fflush(stdout);
         if (mismatches) { fprintf(stderr, "vector march changed %ld of %ld rows\n", mismatches, rows); return 1; }
     }
-    double us[N_VARIANTS+1][64]; if (repeats>64) repeats=64;
+    enum { V_PRIV=N_VARIANTS, V_PACK, V_TAIL, N_TIMED };
+    static const char *EXTRA_NAMES[]={"v4-priv", "v4-pack", "v4-tail"};
+    double us[N_TIMED][64]; if (repeats>64) repeats=64;
     for (int r=0; r<repeats; r++) {
-        for (int k=0; k<=N_VARIANTS; k++) {
-            int v=(k+r)%(N_VARIANTS+1);   /* rotate the order per repeat */
+        for (int k=0; k<N_TIMED; k++) {
+            int v=(k+r)%N_TIMED;   /* rotate the order per repeat */
             double t=seconds();
             if (v<N_VARIANTS) {
                 for (int i=0; i<PLAYERS; i++) { env.layout[i]=VARIANTS[v].layout==4?BOPL4_LAYOUT_VERSION:3; bopl_set_ablate_of(&env, i, VARIANTS[v].ablate); }
                 bopl_written_forget(&env);
                 for (int s=0; s<recorded; s++) compute_observations_from(&env, bopl_state_copy_get(&states[s]));
-            } else {
+            } else if (v==V_PRIV) {
                 for (int i=0; i<PLAYERS; i++) env.layout[i]=BOPL4_LAYOUT_VERSION;
                 for (int s=0; s<recorded; s++) bopl_encode_privileged(&env, bopl_state_copy_get(&states[s]), NULL);
+            } else if (v==V_PACK) {
+                /* the production rows (aim-only) encoded once, then packed per state as the trainer does after each encode */
+                for (int i=0; i<PLAYERS; i++) { env.layout[i]=BOPL4_LAYOUT_VERSION; bopl_set_ablate_of(&env, i, 10); }
+                bopl_written_forget(&env); compute_observations_from(&env, bopl_state_copy_get(&states[0]));
+                t=seconds();
+                for (int s=0; s<recorded; s++) bopl_pack_rows(&env);
+            } else {
+                for (int i=0; i<PLAYERS; i++) env.layout[i]=BOPL4_LAYOUT_VERSION;
+                for (int s=0; s<recorded; s++) for (int i=0; i<PLAYERS; i++) {
+                    float *previous=bopl_obs_row(&env, i)+bopl_previous_offset(&env, i);
+                    bopl_previous_action(previous, env.applied[i], env.hold_left[i], env.hold_run[i]);
+                    bopl4_previous_history(previous, env.action_history[i], env.applied[i]);
+                    bopl_write_mask(&env, i);
+                }
             }
             us[v][r]=(seconds()-t)*1e6/((double)recorded*PLAYERS);
         }
     }
-    double med[N_VARIANTS+1];
-    for (int v=0; v<=N_VARIANTS; v++) {
+    double med[N_TIMED];
+    for (int v=0; v<N_TIMED; v++) {
         double lo=us[v][0], hi=us[v][0];
         for (int r=1; r<repeats; r++) { if (us[v][r]<lo) lo=us[v][r]; if (us[v][r]>hi) hi=us[v][r]; }
         med[v]=median(us[v], repeats);
         printf("{\"bench\": \"writer\", \"loadout\": \"%s\", \"variant\": \"%s\", \"layout\": %d, \"ablate\": %d, \"us_per_row\": %.3f, \"min\": %.3f, \"max\": %.3f, \"repeats\": %d, \"states\": %d, \"load1\": %.2f}\n",
-               loadout, v<N_VARIANTS?VARIANTS[v].name:"v4-priv", v<N_VARIANTS?VARIANTS[v].layout:4, v<N_VARIANTS?VARIANTS[v].ablate:8, med[v], lo, hi, repeats, recorded, load1());
+               loadout, v<N_VARIANTS?VARIANTS[v].name:EXTRA_NAMES[v-N_VARIANTS], v<N_VARIANTS?VARIANTS[v].layout:4, v<N_VARIANTS?VARIANTS[v].ablate:(v==V_PRIV?8:10), med[v], lo, hi, repeats, recorded, load1());
     }
     /* bopl4_relation alone: the 12 relational columns of one row, plain and ballistic. */
     {
@@ -196,8 +220,9 @@ int main(int argc, char **argv) {
         }
         free(counts);
     }
-    printf("{\"bench\": \"summary\", \"loadout\": \"%s\", \"v3_us\": %.3f, \"v4_aim_us\": %.3f, \"v4_over_v3\": %.2f, \"geometry_us\": %.3f, \"casts_us\": %.3f, \"v4_rows_over_v3_us\": %.3f, \"privileged_us\": %.3f, \"load1\": %.2f}\n",
-           loadout, med[0], med[1], med[1]/med[0], med[1]-med[2], med[2]-med[3], med[3]-med[0], med[4], load1());
+    printf("{\"bench\": \"summary\", \"loadout\": \"%s\", \"v3_us\": %.3f, \"v4_aim_us\": %.3f, \"v4_over_v3\": %.2f, \"geometry_us\": %.3f, \"casts_us\": %.3f, \"v4_rows_over_v3_us\": %.3f, \"privileged_us\": %.3f, \"pack_us\": %.3f, \"tail_us\": %.3f, \"finish_us_per_env\": %.3f, \"load1\": %.2f}\n",
+           loadout, med[0], med[1], med[1]/med[0], med[1]-med[2], med[2]-med[3], med[3]-med[0], med[V_PRIV], med[V_PACK], med[V_TAIL], PLAYERS*(med[2]+med[V_PRIV]+med[V_PACK]+med[V_TAIL]), load1());
+    bopl_rl_close(world);
     for (int s=0; s<recorded; s++) bopl_state_copy_free(&states[s]);
     free(states);
     return 0;

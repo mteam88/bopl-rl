@@ -1905,3 +1905,38 @@ for the doubled 49152-row batch), everything else the campaign recipe;
 STEPS=560M for an evaluation past 955 s; in-run ~480k at the start.
 Bench of the same on the incumbent code after the gate (the earlier
 w256 b4 p2 bench on 04322d89: 544.5k; LR does not move the rate).
+
+#### a1: the finish phase located (writer_bench v4-pack / v4-tail, 8769de37+)
+
+writer_bench now times the rest of bopl_step_finish's per-row work next
+to the writers (core 11, nice 19, load 1.5, 4096 states, default
+loadout): aim-only writer 1.99 us/row, privileged 0.044, pack_rows 0.050
+(the packed transport's per-row pack, hot row), tail (previous action +
+v4 history + action mask) 0.017. Replica finish per env (2 rows):
+4.20 us, of which the writer is 3.98 (95%); pack + tail + priv 0.22. The
+bookkeeping in bopl_step_finish_from (telemetry deltas, rewards,
+counters) is a few hundred ns. So the finish phase is the writer.
+
+The trainer measures finish 7.3 us and sim 9.2 us per c_step; isolated
+they are 4.2 and 3.9 (writer_bench's sim phase: 3.88 us per decision).
+Both phases run at ~0.5x in the trainer, the same factor, so the 3 us
+gap is not a finish-phase cost: it is the box. 7600X3D, 6 cores / 12
+threads (siblings 0-6, 1-7, ...): 9 stepping threads + the trainer's
+Python thread + the CUDA driver threads share 6 cores, so every c_step
+runs against an SMT sibling (THROUGHPUT.md measured c_step 12.2 us at 5
+threads -> 21 at 14 for the same reason), and each thread walks 16-32
+envs' 130 KB working sets per step (cold L2). 5.3 hardware threads in
+c_step continuously = the CPU is the env side's ceiling on this box, at
+~half speed per thread.
+
+Sizing the exact CPU levers from this:
+  writer (3.98 of the 8.3 us isolated c_step): casts 0.73 us/row (the
+  aim + LOS rays through the 16-lane march with 2 lanes occupied), v3
+  base 0.585 (nearest-entity scan, distances, the v3 row), v4 rows over
+  v3 0.675 (four sets + relational columns). A scalar / two-lane cast
+  for the two rays and a cheaper entity scan: maybe -0.5 us/row = -1 us
+  per c_step isolated (-12% c_step) -> env 147 -> ~130 us/step -> -2 ms
+  of wall (+4%) at w128 b4 p2. a2 (sim 3.9 us isolated: physics +
+  memmove / libm, THROUGHPUT.md's profile) is the same size class.
+  Neither moves the 0.5x factor; that needs fewer threads doing the same
+  work (only possible by making each c_step cheaper) or more cores.
