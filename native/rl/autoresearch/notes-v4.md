@@ -515,3 +515,27 @@ the amplification of the GEMMs' summation order through the five
 Newton-Schulz steps (slope 4.08 at zero: ~1e3 on the smallest singular
 directions), the same class as the tuner's algorithm choice the branch
 already had; a race would show as O(1). No systematic difference.
+
+### MinGRU scans: operands loaded in groups, discard (and what the scans are bound by)
+
+`mingru_scan_forward` / `_backward` (0.25 + 0.46 ms per pass, min = avg:
+not stretched by contention) read like latency-bound loops: one thread
+per (sequence, unit), 128 dependent steps, one load per operand per step.
+Rewritten with the operands loaded SCAN_P = 4 observations at a time
+(forward: the next group issued before this group's recurrence; backward:
+the chunk's 27 loads up front), the arithmetic sequence untouched:
+bit-identical (a temporary device compare against the old kernels over 8
+eager passes each: 0 of 25.4M / 25.2M words differ). Kernel time (CUPTI,
+same build, toggle): forward 243 vs 248 us min, backward 432 vs 483. A/B
+2x2 twice: 246.9k vs 246.4k (+0.2%), 246.6k vs 246.3k (+0.1%): noise.
+Discarded (the experiment's three commits reset away; tip stays
+bd540952 = ae63d96d's source).
+
+Why: the scans are instruction-bound, not latency-bound. Per step the
+log-space recurrence is ~5 accurate transcendentals (expf, log1pf, logf,
+the softplus pair, logaddexp) plus a sigmoid: ~400 dependent instructions;
+1536 warps x 128 steps x 400 = 79M warp-instructions over 48 SMs x 4
+schedulers = ~0.2 ms, which is the forward's time. Cheaper math (__logf /
+__expf intrinsics, or the fast-math variants) is not exact-class; the
+grouped loads bought the 5-10% that was latency. Nothing left here
+without a numerics decision.
