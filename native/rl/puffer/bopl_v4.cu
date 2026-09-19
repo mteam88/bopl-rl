@@ -487,8 +487,19 @@ static size_t set_fwd_smem(int I, int D) { return (size_t)SF_ROWS * ((I + SF_PAD
 /* The tile kernel's shape coverage (the shipped shapes: I 64 / 128, D 128);
  * other shapes take the Lt GEMMs + pool_rows. */
 static bool set_fwd_ok(int I, int D, int ldj, int col0) {
-    return I % 16 == 0 && I <= 128 && D % SF_THREADS == 0 && D <= 512 && ldj % 4 == 0 && col0 % 4 == 0;
+    return I % 16 == 0 && I <= 128 && D % SF_THREADS == 0 && D <= 4 * SF_THREADS && ldj % 4 == 0 && col0 % 4 == 0;
 }
+template<int NCOLS> __global__ void set_fwd(const bf16*, int, const bf16*, int, const bf16*, int, const int*, const int*, const int*, int, int,
+                                            bf16*, bf16*, float*, int, int, int*, int);
+template<typename... A> static void set_fwd_launch(int ncols, int grid, size_t smem, cudaStream_t stream, A... args) {
+    switch (ncols) {
+        case 1: set_fwd<1><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+        case 2: set_fwd<2><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+        case 3: set_fwd<3><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+        default: set_fwd<4><<<grid, SF_THREADS, smem, stream>>>(args...); break;
+    }
+}
+template<int NCOLS>   /* columns per thread in the pool = D / SF_THREADS */
 __global__ void __launch_bounds__(SF_THREADS) set_fwd(const bf16* __restrict__ xpack, int K, const bf16* __restrict__ w1b, int I,
                                                        const bf16* __restrict__ w2b, int D, const int* __restrict__ offsets,
                                                        const int* __restrict__ counts, const int* __restrict__ totals, int s, int B,
@@ -504,14 +515,13 @@ __global__ void __launch_bounds__(SF_THREADS) set_fwd(const bf16* __restrict__ x
     const int row0 = min(offsets[b0], total);
     const int row1 = min(b1 < B ? offsets[b1] : total, total);
     /* pool state: thread = column c (and c + SF_THREADS ... when D > SF_THREADS) of the current sample */
-    constexpr int MAXC = 4;   /* D <= 512 */
-    float best[MAXC], sum[MAXC]; int win[MAXC];
-    const int ncols = D / SF_THREADS;
+    float best[NCOLS], sum[NCOLS]; int win[NCOLS];
     int b = b0, off = offsets[b0], n = max(0, min(counts[b0], total - offsets[b0]));
     #pragma unroll
-    for (int q = 0; q < MAXC; q++) { best[q] = 0.0f; sum[q] = 0.0f; win[q] = -1; }
+    for (int q = 0; q < NCOLS; q++) { best[q] = 0.0f; sum[q] = 0.0f; win[q] = -1; }
     auto flush = [&]() {
-        for (int q = 0; q < ncols; q++) {
+        #pragma unroll
+        for (int q = 0; q < NCOLS; q++) {
             int c = tid + q * SF_THREADS;
             joined[(long)b * ldj + col0 + c] = best[q];
             joined[(long)b * ldj + col0 + D + c] = (mean_pool && n > 0) ? sum[q] / n : 0.0f;
@@ -587,7 +597,8 @@ __global__ void __launch_bounds__(SF_THREADS) set_fwd(const bf16* __restrict__ x
         for (int r = 0; r < rows_here; r++) {
             const int row = tile0 + r;
             while (row >= off + n) flush();   /* empty samples flush zeros */
-            for (int q = 0; q < ncols; q++) {
+            #pragma unroll
+            for (int q = 0; q < NCOLS; q++) {
                 float v = bf(h2s[r * L2 + tid + q * SF_THREADS]);
                 if (v > best[q]) { best[q] = v; win[q] = row - off; }
                 sum[q] += v;
@@ -1060,7 +1071,7 @@ static PrecisionTensor enc_forward(void* weights, void* activations, PrecisionTe
         if (set_fwd_ok(I, D, LDJ, col0)) {
             /* the fused tile kernel: h1, h2 and the pool; xpack's and h1's tails zeroed for the dW2 / dW1 GEMMs over the active rows */
             zero_tail<<<256, BLOCK_SIZE, 0, stream>>>(bfp(a->xpack[s]), K, bfp(a->h1[s]), I, a->totals.data, s, act);
-            set_fwd<<<(B + SF_SAMPLES - 1) / SF_SAMPLES, SF_THREADS, set_fwd_smem(I, D), stream>>>(
+            set_fwd_launch(D / SF_THREADS, (B + SF_SAMPLES - 1) / SF_SAMPLES, set_fwd_smem(I, D), stream,
                 bfp(a->xpack[s]), K, bfp(a->w1b[s]), I, bfp(a->w2b[s]), D, a->offsets.data + (long)s * B, a->counts.data + (long)s * B,
                 a->totals.data, s, B, bfp(a->h1[s]), bfp(a->h2[s]), a->joined.data, LDJ, col0, a->winner[s].data, w->mean_pool);
             if (g_set_stage.forward)
