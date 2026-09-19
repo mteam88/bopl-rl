@@ -1405,3 +1405,53 @@ drops the 284 flat weight rows from bits-10 checkpoints of the 4812
 layout (bits-8 checkpoints, whose fan columns were live, cannot be
 converted and become unloadable). The gate's pool-v7 anchors are v3
 checkpoints and scripted bots, so the ladder is unaffected.
+
+### Buffer geometry at p2 (3f921308, 3 repeats each, interleaved; geo-* rows)
+
+  geometry  rows/launch  learner_sps            rollout_s  train_s  t-period ms = fwd + env   GPU fwd us (isolated-ish forward_us / owner wait)  env CPU ms per buffer step  pool workers / owner / stolen %  cuda GB
+  w128 b4   64           457.5k [456.8, 458.0]  0.0530     0.0405   0.414 = 0.265 + 0.142     241 / 263                                          0.57                        56 / 21 / 23                     5.9
+  w256 b2   256          479.0k [477.8, 480.7]  0.1017     0.0714   0.795 = 0.452 + 0.336     428 / 454                                          2.31                        78 / 14 /  8                     10.7
+  w256 b4   128          544.5k [543.8, 545.8]  0.0889     0.0891   0.695 = 0.416 + 0.266     392 / 422                                          1.15                        57 / 20 / 23                     10.8
+  w512 b2   256          OOM: "bopl device allocation of 18011 MB failed" (training buffers), 12.2 GB card
+
+w256 rows are twice the samples per update (49152 learner rows against
+24576): (a) is not the same batch as w128 b4, only w128 b2 is (benched
+earlier: 396.2k). set_overflow 0 everywhere, rows_max 2 / 6 / 11.3 / 2.
+
+Overlap: the per-t time is the per-buffer chain, forward(R) + env(R),
+at every geometry (0.414 = 0.265 + 0.142; 0.795 = 0.452 + 0.336; 0.695
+= 0.416 + 0.266): a buffer's env step waits for its forward and its next
+forward for its env step, so within a buffer the two never overlap; the
+overlap is across buffers, and it holds at b2 as at b4 (the GPU runs
+2 x 0.452 ms of forward inside a 0.795 ms period at b2, 4 x 0.416 inside
+0.695 at b4). So the step is neither max(env, fwd) nor a degraded sum:
+it is the sum by construction, and throughput is b x R / (fwd(R) +
+env(R)). fwd(R) is 241 / 392 / 428 us at R = 64 / 128 / 256 (contended:
+1.6x for 2x rows, 1.8x for 4x), env(R) is linear in R and the pool
+absorbs it (workers 56% at 128 rows per launch, 78% at 256; 12 threads).
+That is why w256 b4 beats w256 b2 by 14%: four 128-row chains of 0.695
+against two 256-row chains of 0.795. More buffers at 64 rows (w256 b8)
+would need the GPU to serve 8 forwards per period; it is saturated
+already (4 x 0.416 = 1.66 ms of forward-wall in 0.695).
+
+Per sample: rollout 2.16 us (w128 b4) -> 1.81 (w256 b4) -> 2.07 (w256
+b2); train 1.65 -> 1.81 -> 1.45 (train_s is the phase's wall beside the
+rollout: at w256 b4 both are 89 ms and share the GPU). Train alone at p2
+bounds learner_sps at 24576 / 0.0405 = 607k (w128) or 49152 / 0.0891 =
+552k (w256 b4, contended).
+
+Recipe status: w256 b4 p2 is +19% on the bench but its equal-wall gate
+(532.6 at 955 s against w128 p2's 572.8, notes 2026-09-19 03:1x) did not
+convert the samples; benched, not defaulted, Matthew's call as before.
+w512 does not fit the card.
+
+Next target (parent): the set-MLP path in the train pass. From the p2
+profile (/tmp/prof-p2.txt, 81 updates, per update): bf16 set GEMMs (all
+cutlass bf16 lines: W1 relu, W2, dgrads, wgrads) 9.7 ms, mask_rows 1.3,
+unpool_rows 2.0, pool_rows 1.0, row cache + gathers (count / scatter /
+cache_copy / pack_flat / cache_flat) 3.0, zero_tail 0.1: ~17 ms of the
+41 ms train stream. A fused set kernel (forward h1 -> h2 -> pool with
+h1 kept for the backward, and the backward's unpool -> dh2 -> mask ->
+dh1 in one pass; the two weight gradients per set stay GEMMs over the
+packed rows) removes the h1 / h2 round trips and the four glue kernels;
+sizing to follow before building.
