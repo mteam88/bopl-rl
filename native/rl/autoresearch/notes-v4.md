@@ -1562,3 +1562,38 @@ Incumbent 469.2k.
 Next: the backward half (unpool -> dh2 -> mask -> dh1 in one tile kernel
 per set, h2 recomputed from h1 or read back; wgrads stay GEMMs), then the
 PDL / graph sizing of the rollout chain.
+
+### Fused set backward (set_bwd): KEEP, +1.75% (db66854f)
+
+The backward half of the same tiles, one kernel per set: dh2 as
+unpool_rows (thread = column, rows in order, the sample's winner / gmax /
+gmean loaded as its rows begin; ReLU'(h2) from h2 read coalesced), written
+to global for the dW2 GEMM and kept in shared as the A operand of
+dh1 = dh2 W2 (B = W2^T (I, D) bf16, transposed per backward by to_bf16_t;
+fp32 accumulate, bf16 round as the Lt dh1 GEMM), then masked by ReLU'(h1)
+in a coalesced 16-byte pass. Replaces unpool_rows4 + zero_tail + the dh1
+Lt GEMM + mask_rows (4 launches -> 2, zero_tail kept for the tails).
+One correctness point: the Lt path wrote dh1 over h2's buffer, safe
+because the unpool kernel had finished; in a fused kernel dh1 rows
+(stride I) land on h2 rows (stride D) another block is still reading, so
+dh1 has its own (cap, I) buffer (+~145 MB at B = 24576, 5.9 -> 6.1 GB).
+
+check_v4 pass_all at both shapes with the same error maxima as the
+forward-only build (default 2.8e-4 / 1.5e-3, lite 5.0e-4 / 2.4e-3).
+A/B vs 698cd3d7 at w128 b4 p2, 3x3: 481.9k vs 473.6k (+1.75%, all three
+above); train_s 0.0361 -> 0.0324 (-3.7 ms per update). Incumbent 481.9k.
+
+Set-MLP fusion in total (3f921308 -> db66854f): train 0.0402 -> 0.0324
+(-7.8 ms, -19%: the sizing said -8 to -10 ms), learner_sps 454.6k ->
+481.9k (+6.0%: the sizing said +6-9% at w128 b4 via interference relief).
+Rollout eval_gpu 262 -> 254 us, eval_env 149 -> 132 us. The set path
+per pass is now zero_tail + set_fwd forward, to_bf16_t + zero_tail +
+set_bwd + dW2 + dW1 (+ reduce, embedding) backward; the wgrad GEMMs are
+the remaining set-path Lt calls.
+
+Rollout chain, candidate (1) of the parent's two: the per-step chain is
+already a CUDA graph per (horizon step, buffer) (pufferlib.cu
+fused_rollout_cudagraphs[horizon][num_buffers], captured once, replayed):
+graph replay is the incumbent. Candidate (2), programmatic dependent
+launch inside the captured chain, is the next sizing (microbench, with
+and without cudaLaunchAttributeProgrammaticStreamSerialization).
