@@ -622,3 +622,34 @@ is the learning gate (sanity_v4 within band), not bit-exactness: numerics
 precision through the chain are all allowed if they pass. Shape changes
 (hidden, FFN, critic width, T, passes) stay Matthew's call: bench their
 upper bound and report. Land on throughput-v4, no merge to main.
+
+### Train pass: bf16 operands on the flat / fusion / FFN / actor GEMMs (b2418637), A/B +3.7%, gate pending
+
+The trainer's remaining fp32 (TF32) GEMMs in bopl_v4.cu now run on bf16
+operands: each fp32 operand is rounded to bf16 into a per-source scratch
+once per pass (first use converts, later uses share it), fp32
+accumulation and output, cublasLt epilogues as before. No fp32 path left
+(lt_gemm32 removed). The MinGRU layer's three GEMMs (models.cu, puf_mm)
+and the critic head gemv are still TF32. Build A/B against the 5fb70ec9
+extension (`BOPL_BENCH_AB_SO`, bench_shape.sh): 259.0k vs 249.7k
+(+3.7%), train 0.0938 vs 0.0973, rollout 0.0835 vs 0.0881.
+
+CUPTI, train stream per update, 5fb70ec9 -> b2418637: TF32 GEMMs 30.0 ->
+9.0 ms, bf16 GEMMs 26.7 -> 38.4, to_bf16x4 conversions 0.1 -> 5.4 (the
+joined operand is 24576 x 1280 fp32 per pass), train busy 89.4 -> 86.6.
+So the bf16 GEMMs run at ~1.8x the TF32 ones and the conversions eat a
+third of the gain. Next, numerics-neutral: produce bf16 at the source
+(d_bf16 epilogues for the flat / ffn_in outputs, LN's bf16 copy,
+unpool_rows writing bf16) ~5 ms; MinGRU GEMMs to bf16 (9 ms TF32).
+
+check_v4 vs the fp32 oracle: encoder 3.3e-3, logits 2.7e-3, value 4.4e-3
+relative; grads q99 5-8e-3 (tolerances 2e-2 / 3e-2 hold; one per-tensor
+max over 0.25: bf16 on the smallest gradient entries). Learning gate
+`sanity_v4.sh run bf16-b2418637` decides.
+
+Also in b2418637: the campaign's env toggles are gone (BOPL_BR_UNITS ->
+1, BOPL_MUON_STREAMS -> 8 lanes, BOPL_TRAIN_PRIO -> rollout ahead), and a
+v3 regression fixed: the br_gemm float4 A-load keep (86938d24) aborted on
+v3's flat block (row stride 98, not 16-byte aligned); v4 benches and gates
+never ran v3, check_dump did. br_gemm now falls back to scalar A loads
+for unaligned rows (same values); check_dump passes v3 and v4.
