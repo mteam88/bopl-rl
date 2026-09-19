@@ -1119,3 +1119,17 @@ the next gain needs both sides. Memory 10.8 of 12.2 GB: w256 leaves ~1.4
 GB, no room for w512. Doubling the batch is a recipe change (B = 49152
 per pass, same passes): benched, not defaulted; Matthew's call together
 with the pass count.
+
+### dh1 fused bf16 GEMM (7e91f1b5): discarded, 0.995x
+
+A/B 3x3 at lite-aim-only w128 p4: learner_sps 337.2k [336.2, 337.5] vs
+339.0k [338.0, 339.4]; train_s 0.0720 vs 0.0716. check_v4 at the lite
+shape passed (set-MLP grads 1.3e-3 rel, the incumbent's bf16 level). The
+hand kernel (64-row blocks, 4 warps of mma.sync m16n16k16, W2 + dh2 tile
+through shared memory, fp32 staged back for the masked store) is slower
+than cuBLASLt's bf16 GEMM plus the separate mask_rows pass, so the 2.3 ms
+of mask_rows is not the cost it looked like: the Lt kernel is far enough
+from the memory roofline that a first-cut mma.sync kernel loses more than
+the pass saves. Reverted (41785792). Not profiled per kernel; a CUPTI
+look at the two would say whether a 128-row / cp.async version could win,
+but the ceiling is ~2 ms per update (3%), so it goes to the back.
