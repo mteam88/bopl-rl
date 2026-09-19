@@ -34,6 +34,7 @@ struct Br4SetWeights {   // per group g and set s: W1^T bf16 (features, I), W2 b
 };
 struct Br4SetsArgs {
     const float* obs;          // (rows, STRIDE) live rows of this buffer
+    const float* packed;       // this buffer's packed slots (bopl_obs_pack.h): the per-set row counts; nullptr on the dense paths
     const float* rewards; const float* terminals;
     float* rollout_obs; float* rollout_rewards; float* rollout_terminals;
     float* joined; int ldj, col0;   // pooled channels at joined[row, col0 + 2 D s + {0, D}]
@@ -83,17 +84,28 @@ __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
             if (BOPL_OBS_STRIDE & 1) if (tid == 0) a.rollout_obs[(long)row * BOPL_OBS_STRIDE + BOPL_OBS_STRIDE - 1] = obs[BOPL_OBS_STRIDE - 1];
         }
     }
-    // valid rows of the set (first feature nonzero), in order: warp 0, the
-    // rows' flags by ballot (two loads per lane in flight, where one thread
-    // walking the 48 rows was a chain of dependent loads)
+    // valid rows of the set (first feature nonzero), in order. The packed
+    // slot's header carries the writer's count per set, and every written row
+    // has feature 0 = 1 over a zeroed tail, so for a packed row the valid rows
+    // are exactly 0..count-1 (one header load). Dense rows (no slot, or a
+    // slot in dense mode): warp 0 scans the flags by ballot.
     __shared__ int n_valid;
     if (tid < 32) {
-        int n = 0;
-        for (int r0 = 0; r0 < sp.rows; r0 += 32) {
-            int r = r0 + lane;
-            unsigned m = __ballot_sync(0xffffffffu, r < sp.rows && obs[sp.offset + r * sp.width] != 0.0f);
-            if (m & (1u << lane)) valid[n + __popc(m & ((1u << lane) - 1u))] = r;
-            n += __popc(m);
+        int n = -1;
+        if (a.packed) {
+            const unsigned* hdr = (const unsigned*)(a.packed + (long)row * BOPL4_PACK_P);
+            if (hdr[0] == BOPL4_PACK_MODE_ROWS) n = (int)hdr[1 + s];
+        }
+        if (n >= 0) {
+            for (int r = lane; r < n; r += 32) valid[r] = r;
+        } else {
+            n = 0;
+            for (int r0 = 0; r0 < sp.rows; r0 += 32) {
+                int r = r0 + lane;
+                unsigned m = __ballot_sync(0xffffffffu, r < sp.rows && obs[sp.offset + r * sp.width] != 0.0f);
+                if (m & (1u << lane)) valid[n + __popc(m & ((1u << lane) - 1u))] = r;
+                n += __popc(m);
+            }
         }
         if (lane == 0) n_valid = n;
     }
@@ -342,12 +354,12 @@ static void br4_free(PuffeRL* pufferl, BrPlan* p) {
 
 // The v4 chain from the live obs rows to the decoder rows A.dec (logits, value
 // at column dec_cols), rollout copies included. The caller samples.
-static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
+static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* packed, const float* rewards, const float* terminals,
                       float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream) {
     Br4Plan& q = *p.v4; Br4Acts& A = q.acts[buf];
     int rows = p.rows, H = p.H;
     Br4SetsArgs sa = {};
-    sa.obs = obs; sa.rewards = rewards; sa.terminals = terminals;
+    sa.obs = obs; sa.packed = packed; sa.rewards = rewards; sa.terminals = terminals;
     sa.rollout_obs = rollout_obs; sa.rollout_rewards = rollout_rewards; sa.rollout_terminals = rollout_terminals;
     sa.joined = A.joined; sa.ldj = q.JW; sa.col0 = q.FD; sa.D = q.D; sa.I = q.I; sa.mean_pool = q.mean_pool; sa.rows = rows; sa.g = p.g;
     BrLinear w_flat = {}, w_fus = {}, w_fi = {}, w_fo = {}, w_act = {}, w_cin = {}, w_b1 = {}, w_b2 = {}, w_cout = {}, w_gru[BR_MAX_LAYERS] = {};
