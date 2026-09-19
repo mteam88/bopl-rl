@@ -35,6 +35,29 @@
 #pragma once
 #include <mma.h>
 
+// Programmatic dependent launch for the per-step chain (graph-captured: the
+// attribute becomes a programmatic graph edge): every chain kernel signals
+// its dependents at entry and waits for its predecessor's completion (and
+// memory flush) before its first read, so each launch's scheduling and
+// prologue overlap the predecessor's tail. Both are no-ops for a kernel
+// launched without the attribute (eager self-checks, v3). Because the wait
+// is on the immediate predecessor only, every kernel in a PDL-launched
+// chain waits unconditionally, so completion stays transitive.
+__device__ __forceinline__ void br_pdl_enter() {
+    asm volatile("griddepcontrol.launch_dependents;");
+    asm volatile("griddepcontrol.wait;" ::: "memory");
+}
+template<typename... KArgs, typename... Args>
+static void br_launch_pdl(void (*kernel)(KArgs...), dim3 grid, dim3 block, size_t smem, cudaStream_t stream, Args&&... args) {
+    cudaLaunchConfig_t cfg = {};
+    cfg.gridDim = grid; cfg.blockDim = block; cfg.dynamicSmemBytes = smem; cfg.stream = stream;
+    cudaLaunchAttribute attr = {};
+    attr.id = cudaLaunchAttributeProgrammaticStreamSerialization; attr.val.programmaticStreamSerializationAllowed = 1;
+    cfg.attrs = &attr; cfg.numAttrs = 1;
+    cudaError_t e = cudaLaunchKernelEx(&cfg, kernel, std::forward<Args>(args)...);
+    if (e != cudaSuccess) { fprintf(stderr, "br_launch_pdl: %s\n", cudaGetErrorString(e)); abort(); }
+}
+
 #define BR_MAX_GROUPS 9   // learner + up to 8 frozen banks
 #define BR_MAX_LAYERS 4
 
@@ -214,6 +237,7 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     // fp32 as [k][row] (float4 row reads). The 16 x 32 C tiles alias it after
     // the K loop.
     __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];  // 32 KB
+    br_pdl_enter();
     int rt = blockIdx.x, grp = 0;
     while (grp + 1 < a.g.n && rt >= a.tiles[grp + 1]) grp++;
     const int row0 = a.g.end[grp] + (rt - a.tiles[grp]) * BR_TM;
@@ -438,6 +462,7 @@ struct BrGateArgs {
 };
 
 __global__ void br_gate(BrGateArgs a) {
+    br_pdl_enter();
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= a.rows * a.H) return;
     int row = idx / a.H, h = idx - row * a.H;
@@ -502,8 +527,8 @@ static void br_gemm_launch(const BrPlan& p, const float* in, int ld_in, float* o
     a.g = p.g; a.wt = wt;
     memcpy(a.tiles, p.tiles, sizeof(a.tiles));
     dim3 grid(p.tiles[p.g.n], br_gemm_col_tiles(K, N, &a.units));
-    if (p.tf32) br_gemm<true><<<grid, BR_THREADS, 0, stream>>>(a);
-    else br_gemm<false><<<grid, BR_THREADS, 0, stream>>>(a);
+    if (p.tf32) br_launch_pdl(br_gemm<true>, grid, dim3(BR_THREADS), 0, stream, a);
+    else br_launch_pdl(br_gemm<false>, grid, dim3(BR_THREADS), 0, stream, a);
 }
 
 // dst[g] = the GEMM-side layout of src[g] (N, K) for groups 0..n-1: tf32 fragment
@@ -555,6 +580,7 @@ struct BrSampleArgs {
 
 __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs a) {
     __shared__ float s_logits[SAMPLE_WARP_ROWS][SAMPLE_MAX_LOGITS];
+    br_pdl_enter();
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int idx = blockIdx.x * SAMPLE_WARP_ROWS + warp;
     if (idx >= a.rows) return;
@@ -1007,7 +1033,7 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     smp.logprobs = lp_dst.data; smp.values = val_dst.data;
     smp.rng = pufferl->rng_states[buf];
     smp.head_consume = hc_dev; smp.hc_stride = hc_stride; smp.rows = rows;
-    br_sample<<<(rows + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS, SAMPLE_WARP_ROWS * 32, 0, stream>>>(smp);
+    br_launch_pdl(br_sample, dim3((rows + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS), dim3(SAMPLE_WARP_ROWS * 32), 0, stream, smp);
     if (p.graph_copies && !p.actions_zero_copy)
         cudaMemcpyAsync(vec->actions + (long)start * p.num_atns, vec->gpu_actions + (long)start * p.num_atns,
                         (size_t)rows * p.num_atns * sizeof(float), cudaMemcpyDeviceToHost, stream);

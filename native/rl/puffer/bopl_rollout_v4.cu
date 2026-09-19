@@ -66,6 +66,7 @@ __global__ void br4_pack_set_weights(const float* w1, int features, const float*
 }
 __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
     extern __shared__ __align__(16) unsigned char smem[];
+    br_pdl_enter();
     const int row = blockIdx.x, s = blockIdx.y, tid = threadIdx.x, lane = tid & 31;
     const int I = a.I, D = a.D;
     int* valid = (int*)smem;
@@ -179,6 +180,7 @@ __device__ __forceinline__ float br4_block_sum(float v, float* scratch) {
 __global__ void __launch_bounds__(256) br4_rows(Br4RowsArgs a) {
     __shared__ float scratch[8];
     __shared__ float rowbuf[1024];   // W <= 1024 (hidden + privileged, critic width)
+    br_pdl_enter();
     const int row = blockIdx.x, W = a.W;
     const float* x = a.x + (long)row * a.ldx;
     const float* res = a.res ? a.res + (long)row * a.ldres : nullptr;
@@ -365,19 +367,19 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         gate.state[g] = s->data; gate.state_rows[g] = (int)s->shape[1];
     }
     // encoder
-    br4_sets<<<dim3(rows, 4), BR4_SET_THREADS, br4_sets_smem(q.D, q.I), stream>>>(sa);
+    br_launch_pdl(br4_sets, dim3(rows, 4), dim3(BR4_SET_THREADS), br4_sets_smem(q.D, q.I), stream, sa);
     br_gemm_launch(p, obs, BOPL_OBS_STRIDE, A.joined, q.JW, v4::FLAT, q.FD, q.FD, 1, w_flat, stream);
     br_gemm_launch(p, A.joined, q.JW, A.ln, q.LNW, q.JW, H, H, 0, w_fus, stream);
     Br4RowsArgs ra = {}; ra.rows = rows; ra.g = p.g;
     ra.mode = BR4_LN; ra.W = H; ra.x = A.ln; ra.ldx = q.LNW; ra.out = A.enc; ra.ldout = H;
-    br4_rows<<<rows, 256, 0, stream>>>(ra);
+    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
     // MinGRU
     const float* x = A.enc;
     for (int l = 0; l < p.layers; l++) {
         br_gemm_launch(p, x, H, A.comb, 3 * H, H, 3 * H, 3 * H, 0, w_gru[l], stream);
         gate.combined = A.comb; gate.x = x; gate.terminals = terminals;
         gate.out = A.gru[l & 1]; gate.layer = l; gate.H = H; gate.rows = rows; gate.g = p.g;
-        br_gate<<<grid_size(rows * H), BLOCK_SIZE, 0, stream>>>(gate);
+        br_launch_pdl(br_gate, dim3(grid_size(rows * H)), dim3(BLOCK_SIZE), 0, stream, gate);
         x = A.gru[l & 1];
     }
     // decoder: y = h + FFN(LN(h)); then LN([y, priv]) for the critic
@@ -385,7 +387,7 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
     ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
     if (q.F) {
         ra.mode = BR4_LN; ra.W = H; ra.x = x; ra.ldx = H; ra.out = A.ln; ra.ldout = q.LNW;
-        br4_rows<<<rows, 256, 0, stream>>>(ra);
+        br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
         br_gemm_launch(p, A.ln, q.LNW, A.f, q.F, H, q.F, q.F, 1, w_fi, stream);
         br_gemm_launch(p, A.f, q.F, A.y, H, q.F, H, H, 0, w_fo, stream);
         ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
@@ -394,7 +396,7 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         ra.mode = BR4_RESIDUAL_LN_PRIV; ra.W = q.W; ra.x = x; ra.ldx = H;
     }
     ra.y = A.y; ra.ldy = H; ra.out = A.ln; ra.ldout = q.LNW; ra.priv = priv; ra.ldpriv = BOPL_OBS_STRIDE; ra.P = q.P;
-    br4_rows<<<rows, 256, 0, stream>>>(ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
+    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
     br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
     if (q.C) {
         // The critic runs over the learner's rows only (group 0, its own row
@@ -408,13 +410,13 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         br_gemm_launch(pl, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
         ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_LN; ra.W = q.C; ra.x = A.z; ra.ldx = q.C; ra.out = A.lnc; ra.ldout = q.C;
-        br4_rows<<<crows, 256, 0, stream>>>(ra);
+        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
         br_gemm_launch(pl, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, stream);
         br_gemm_launch(pl, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, stream);
         ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_CRITIC_OUT; ra.W = q.C; ra.x = A.z2; ra.ldx = q.C; ra.res = A.z; ra.ldres = q.C;
         ra.out = A.dec; ra.ldout = p.ld_dec; ra.vcol = p.dec_cols; ra.cout = w_cout;
-        br4_rows<<<crows, 256, 0, stream>>>(ra);
+        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
     }
 }
 
@@ -502,6 +504,7 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
 // mapped host buffer. Either way the device row equals the host row bit for
 // bit (bopl4_transport_check counts the floats that differ, dump mode only).
 __global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows) {
+    br_pdl_enter();   /* launched after a memcpy (no PDL edge in); lets br4_sets pre-launch */
     const int r = blockIdx.x;
     if (r >= rows) return;
     const float* slot = packed + (long)r * BOPL4_PACK_P;
