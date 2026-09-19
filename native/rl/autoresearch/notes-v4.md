@@ -1328,3 +1328,26 @@ after the scan, so the win there is block count, not the scan), (b)
 br_sample 8.8 us isolated for 64 rows: a dependent chain (max, exp, sum,
 prefix, draw) per row, one launch already; folding it into the decoder
 GEMM's consumer needs the whole logit row in one block.
+
+### Sampler fused into the decoder GEMM (b5b3b4aa, discarded)
+
+br_gemm_sample: the actor GEMM launched with grid.y = 1 and units = every
+column tile, so one block owns its 16 rows' whole logit rows; after the
+last round's barrier its 8 warps sample two rows each (br_sample_row, the
+old kernel's body, scratch aliasing the GEMM tiles). Same math, one launch
+instead of two, the critic moved ahead of it (the sampler reads the value
+column from the decoder rows). check_dump: identical logits/values.
+
+A/B 3x3 at w128 p2 vs 3f921308: 448.7k [448.1, 449.4] vs 458.4k [457.6,
+459.3] learner_sps (-2.1%), rollout_s 0.0529 -> 0.0540, GPU forward 264.5
+-> 273.5 us per buffer step, train_s 0.0404 -> 0.0394. Reading: the
+rollout forward is a latency chain; the decoder's 20 parallel blocks
+became 4 blocks of 5 sequential rounds plus two sampling rows per warp
+(16 rows on 8 warps, where the standalone sampler ran one row per warp
+in 8 blocks), and that added ~9 us to the chain. SM time did fall (the
+train pass beside it got 2.5% faster), but the step's wall is the chain
+length, not the SM budget, so on this axis latency still wins. Reverted
+(b5b3b4aa -> revert). A last-block-per-row-tile variant (GEMM grid kept,
+the block that finishes a row tile last samples it) would keep the GEMM's
+parallelism but still puts 16 rows on 8 warps; not worth a slot.
+Incumbent stays 458.7k (3f921308).
