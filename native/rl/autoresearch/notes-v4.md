@@ -2180,3 +2180,57 @@ a3 launched (GPU unit, runtime knobs the pool already has, no code):
 stepping thread per physical core, the trainer thread floats on the
 SMT siblings) and `ab-a3-t6` (6 threads unpinned), each 3x3 vs the
 default 9 unpinned.
+
+## 2026-09-19 16:50 a3 thread benches: discards, with a real finding
+
+3x3 A/Bs at the default recipe (inc medians 617.6k / 628.8k):
+
+    variant                                    learner_sps  rollout_s  train_s  c_step  env ms/bstep  fwd us
+    default: 9 stepping threads, unpinned         617.6k      78.6       56.1    19.0      1.22        264
+    t6-pin: 6 threads, one per core (0-5)         560.5k      86.8       49.9    14.7      0.94        240   -9.3%
+    t6: 6 threads unpinned                        534.8k      91.0       47.5     -         -           -    -15%
+    a3b: trainer on core 5 (taskset 5,11),        479k        101        43.1    14.5      0.93        218   -22%
+         9 threads pinned one per slot 0-4,6-9    (3 plain runs: 479 / 484 / 462k)
+
+All discarded (env knobs only, nothing to revert). Two facts came out:
+
+1. Fewer sim threads lose even with a faster c_step: 6 x 1/14.7 = 0.41
+   decisions/us < 9 x 1/19.0 = 0.47. SMT gets c_step from 19 to 14.7,
+   not to the 8.1 of the isolated bench; the remaining 14.7 vs 8.1 is
+   the pool's per-step cost (claim, the bots' begin phase, telemetry) and
+   cross-core traffic, not SMT.
+2. **The trainer thread is SMT-starved by the sim threads.** Every
+   variant that gave the python/trainer thread a core of its own cut
+   train_s from 56 to 43-50 ms per update and the GPU forward from 264
+   to 218-240 us/step: ~13 ms of the train pass is CPU launch time that
+   the default schedule stretches, and the rollout chain's launches too.
+   a3b lost anyway because pinning the buffer (GPU poller) threads one
+   per slot broke the rollout (78 -> 101 ms; the pollers cannot move off
+   a slot whose sibling is mid-c_step). Lever `a3c` (code, default, no
+   knob): the trainer thread on its own core (both SMT slots, e.g. core
+   5 = CPUs 5, 11) and the pool's threads on a home *mask* of the other
+   cores (0-4, 6-10; 9 threads floating over 10 slots) instead of one
+   CPU each. Sized from a3b's train side alone: the wall is the rollout
+   (78.8 vs 56.8), so -13 ms of train lands only through the contention
+   channel (forward 264 -> ~220 us x 128 steps = -5.6 ms per update on
+   the rollout stream if the chain is the buffer step's wall, -7%),
+   unless the trainer's core costs the sim one slot (-1/10 of env
+   throughput, +8 ms). Net expected +3..+7%; one bench after the
+   br4_sets A/B.
+
+## 2026-09-19 16:55 br4_sets staged (candidate, A/B running)
+
+Trace at the b4 default (`prof-b4d`, BOPL_CUPTI_TRACE): br4_sets ends
+52.0 us after bopl4_unpack_rows ends (recorded duration 56.8, of which
+5.2 is the PDL early start), so the kernel really is ~52 us per 128-row
+step, ~4.7 us per block at one block per SM. Its global loads are a
+dependent chain (ballot scan over the rows' first feature, then the h1
+loop's W1^T + x load per FMA, ~50 per thread), each a full L2 round
+trip under the train stream's traffic; doubling occupancy did not help
+(the -0.3% above), so the fix is fewer round trips: `76adb5e7` stages
+the set's block (rows x width fp32, <= 9 KB) and W1^T (features x I
+bf16, <= 6 KB) in shared memory in one coalesced pass by the whole
+block, and the scan and the h1 loop read shared. Same FMA order:
+bit-identical (check_v4 pass_all x5, check_dump v4 ok, 0 transport
+mismatches); 153 regs, 21.7 KB dynamic smem. A/B `ab-br4sets-staged`
+3x3 vs ecd35837 running; sized -15..-25 us/step -> -2..-3 ms wall.
