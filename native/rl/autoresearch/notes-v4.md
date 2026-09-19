@@ -1871,3 +1871,37 @@ bopl_previous_action / bopl4_previous_history, bopl_write_mask, the
 delayed-state swap and bopl_pack_rows (the packed transport's per-row
 pack). Next: time those pieces (extend writer_bench with a finish-phase
 replay) before touching any of them.
+
+#### b3-p1div2-12cc2877 read (seed 73, 520M in 1160 s; in-run 518.6k learner_sps)
+
+  reading                                refit Elo          band rating (240 games)
+  reference v4-aim/000 @160M / 955 s     646                523.5 [478, 568]
+  aim-only p2 @160M                      516                415.9 [374, 459]
+  aim-only p2 @955 s (400M)              747 [633, 950]     572.8 [529, 617]
+  b3 p1 div2 @160M                       607.7 [516, 770]   418.9 [377, 459]
+  b3 p1 div2 @955 s (989 s, 440M)        543.9 [427, 708]   590.5 [547, 634]
+
+Equal wall: 590.5 against p2's 572.8, +18 band, inside the run-to-run
+spread, intervals overlapping, above the pass line (549) and the
+reference floor: PASS. Equal samples (160M): 418.9 vs p2's 415.9: replay
+1.0 costs nothing against replay 2.0 at this layout; the equal-steps
+gate against the reference fails as p2's did (the band floor 448.5 is
+p4's sample efficiency). Drift flags as for p2 (EV 0.42 vs 0.30, entropy
+1.19x, KL 0.32x). Rate: 518.6k in-run vs 399k for p2 (1.30x); bench
+542.9k vs 471.7k. Verdict: b3 (learner_passes 1, minibatch_div 2) is
+the equal-wall winner over p2; it goes to Matthew with p2's caveat (one
+seed each). Not defaulted until he picks; the campaign bench stays at
+p2 so the exact-class A/Bs remain comparable, with b3 rows next to them.
+
+#### c1 (set D 128 -> 64): declined by Matthew (2026-09-19 14:08)
+
+Keep the per-entity width. The shape class (c) is dropped from the plan:
+the road is (b) recipe gates + (a) CPU / exact work.
+
+#### b2 launched: w256 b4 p2, LR x sqrt(2) (b2-w256b4-lrsqrt2-12cc2877)
+
+--workers 256 --learning-rate 0.0004852184640654399 (3.431e-4 x 1.4142
+for the doubled 49152-row batch), everything else the campaign recipe;
+STEPS=560M for an evaluation past 955 s; in-run ~480k at the start.
+Bench of the same on the incumbent code after the gate (the earlier
+w256 b4 p2 bench on 04322d89: 544.5k; LR does not move the rate).

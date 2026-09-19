@@ -72,3 +72,16 @@ the box.
 - Anything outside the Rift: write down the command and ask.
 - You are a subagent: no `memo`. Report candidate memories in your final
   message.
+
+## Plan update 2026-09-19 (Matthew, via the parent)
+
+- Shape / layout levers (set D, hidden, flat layout, critic width) are
+  closed: c1 (set D 128 -> 64) declined; keep the per-entity width. Shape
+  is not on the plan any more.
+- The road is (b) recipe levers gated at equal wall-clock (955 s, band
+  rating inside the p2 aim-only run's run-to-run spread, v4-aim/000 as
+  the floor), decided by the campaign and reported per gate, and (a)
+  exact-class CPU / kernel work (check_dump / check_v4 / lockstep +
+  throughput A/B).
+- Two tracks: a CPU-track step runs inside the same turn as a GPU gate;
+  a turn that launches a gate ends by saying when to poke.
