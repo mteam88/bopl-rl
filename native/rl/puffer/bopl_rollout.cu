@@ -240,7 +240,11 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     // fp32 as [k][row] (float4 row reads). The 16 x 32 C tiles alias it after
     // the K loop.
     __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];  // 32 KB
-    br_pdl_wait();
+    // PDL: the B operand (weights) does not depend on the predecessor, so
+    // the first chunk's B loads are issued before griddepcontrol.wait and
+    // their latency overlaps the predecessor's tail; A (the predecessor's
+    // output) is read after it. A warp with no chunk waits after the loop.
+    bool waited = false;
     int rt = blockIdx.x, grp = 0;
     while (grp + 1 < a.g.n && rt >= a.tiles[grp + 1]) grp++;
     const int row0 = a.g.end[grp] + (rt - a.tiles[grp]) * BR_TM;
@@ -334,7 +338,9 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
                 }
         };
         for (int ch = kg; ch < nchunks; ch += sub) {
-            load_a(ch * BR_TK); load_b(ch * BR_TK);
+            load_b(ch * BR_TK);
+            if (!waited) { br_pdl_wait(); waited = true; }
+            load_a(ch * BR_TK);
             __syncwarp();
             store_a();
             __syncwarp();
@@ -371,7 +377,9 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
             for (int j = 0; j < BR_TK; j++) { int k = k0 + j; b[j] = k < K ? Wc[(long)k * ldb] : 0.f; }
         };
         for (int ch = kg; ch < nchunks; ch += sub) {
-            load_a(ch * BR_TK); load_b(ch * BR_TK);
+            load_b(ch * BR_TK);
+            if (!waited) { br_pdl_wait(); waited = true; }
+            load_a(ch * BR_TK);
             __syncwarp();
             store_a();
             __syncwarp();
@@ -391,6 +399,7 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
         #pragma unroll
         for (int r = 0; r < BR_TM; r++) Cw[r * BR_TN + c] = acc[r];
     }
+    if (!waited) { br_pdl_wait(); waited = true; }
     __syncthreads();
     if (u == a.units - 1) br_pdl_release();   // the dependent launches under this epilogue
     // Per subtile, sum its warps' partial tiles in warp order and write the valid entries.
