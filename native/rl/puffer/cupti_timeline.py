@@ -54,7 +54,7 @@ def main():
     def is_end(r, nxt=None):
         if r[3] == 'D':
             return True
-        return r[3] == 'K' and 'br_sample' in r[4] and not (nxt is not None and nxt[3] == 'D')
+        return r[3] == 'K' and 'br_gemm_sample' in r[4] and not (nxt is not None and nxt[3] == 'D')
     def ends(rs):
         return [is_end(r, rs[i + 1] if i + 1 < len(rs) else None) for i, r in enumerate(rs)]
     d2h = {st: sum(ends(rs)) for st, rs in by_stream.items()}

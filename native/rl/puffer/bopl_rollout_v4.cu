@@ -343,7 +343,7 @@ static void br4_free(PuffeRL* pufferl, BrPlan* p) {
 // The v4 chain from the live obs rows to the decoder rows A.dec (logits, value
 // at column dec_cols), rollout copies included. The caller samples.
 static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
-                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream) {
+                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, const BrSampleArgs& smp, cudaStream_t stream) {
     Br4Plan& q = *p.v4; Br4Acts& A = q.acts[buf];
     int rows = p.rows, H = p.H;
     Br4SetsArgs sa = {};
@@ -395,7 +395,6 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
     }
     ra.y = A.y; ra.ldy = H; ra.out = A.ln; ra.ldout = q.LNW; ra.priv = priv; ra.ldpriv = BOPL_OBS_STRIDE; ra.P = q.P;
     br4_rows<<<rows, 256, 0, stream>>>(ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
-    br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
     if (q.C) {
         // The critic runs over the learner's rows only (group 0, its own row
         // tiles): the frozen banks' values are never read (their advantages
@@ -416,6 +415,9 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         ra.out = A.dec; ra.ldout = p.ld_dec; ra.vcol = p.dec_cols; ra.cout = w_cout;
         br4_rows<<<crows, 256, 0, stream>>>(ra);
     }
+    // actor GEMM with the sampler as its consumer (after the critic: the
+    // sampler reads the value column from the decoder rows)
+    br_gemm_sample_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, w_act, smp, stream);
 }
 
 // ---------------------------------------------------------------------------
