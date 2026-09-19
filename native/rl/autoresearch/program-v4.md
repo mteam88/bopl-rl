@@ -1,9 +1,12 @@
 # Bopl throughput research, campaign 3: policy v4
 
-Make training with the v4 policy much faster without changing the policy.
-v3 reached 1.36M learner sps at w256; v4-aim, the production shape, runs at
-~165k. Same v4-aim policy, a multiple of that rate. Measure, hypothesise,
-change, gate, keep or discard, record, repeat until Matthew stops you.
+Make training with the v4 policy much faster. v3 reached 1.36M learner sps
+at w256; v4-aim, the production shape, started at ~165k. Target: **1M+
+learner sps at the production shape** (Matthew, 2026-09-18). 250k is a
+waypoint. From the serial split (rollout ~72 ms + train ~63 ms of GPU work
+per update) 4x has to come from much less GPU work per learner step, not
+from scheduling. Measure, hypothesise, change, gate, keep or discard,
+record, repeat until Matthew stops you.
 
 Read first: `native/rl/THROUGHPUT.md` (how campaign 2 worked, v3 numbers),
 `native/rl/THROUGHPUT_V4.md` (what is known about v4, hypotheses H1-H6,
@@ -31,28 +34,39 @@ fields (`env_pool`, `c_step.*`, `gpu_step.*`, `rollout_s`, `train_s`,
    the wall split down before changing code.
 2. Follow THROUGHPUT_V4.md section 4, re-ranking as the split says.
 
-Use `BOPL_BENCH_AB` with repeats for candidates; keep a change only when the
-gain is clear over the repeats' noise. Compare rows at similar load.
+A/B by build, not by runtime switch: build the incumbent commit's extension,
+copy it aside, and run `BOPL_BENCH_AB_SO=<that .so>` with repeats (the inc
+arm runs the incumbent extension, the cand arm the checkout's build).
+`BOPL_BENCH_AB` (env / flags) is only for train.py flags that already
+exist. Keep a change only when the gain is clear over the repeats' noise.
+Compare rows at similar load.
 
 Every experiment: an entry in `native/rl/autoresearch/notes-v4.md`
 (hypothesis, change, commit, numbers, gate, decision) and a `results.tsv`
 line via `record.py`.
 
-Gates:
+Gates. The acceptance criterion is the learning gate: `puffer/sanity_v4.sh
+run <label>` then `report`, against `sweeps/v4-aim/000`, within band.
+Anything that passes it is allowed: numerics (bf16 operands, fast
+transcendentals, reduced precision through the chain), the row budget
+default, dropped or reordered work. The exact gates (`puffer/check_dump.py`,
+`puffer/check_v4.py`, `set_overflow_max` 0) stay as the fast pre-check where
+they apply (kernel / writer / transport / scheduling changes that should be
+bit-identical); a lever that is exact needs only those plus the A/B.
 
-- exact, for kernel/writer/transport/scheduling changes: `puffer/check_dump.py`
-  and `puffer/check_v4.py`; `set_overflow_max` stays 0.
-- learning, for anything that changes a row, a sample, the loss or the
-  schedule: `puffer/sanity_v4.sh run <label>` then `report`, against
-  `sweeps/v4-aim/000`. Say so before starting one.
+Shape changes (hidden, FFN, critic width, horizon T, learner passes) are
+Matthew's call: bench their upper bound, report the numbers, do not make
+them default.
 
-Not a speedup: omitted rows or work, a smaller shape, a measurement taken
-while another job held the box.
+Not a speedup: a smaller shape, a measurement taken while another job held
+the box.
 
 ## Rules
 
-- Same policy, same semantics. Learning-gated changes need Matthew's word.
-- A kept lever becomes the default; its A/B toggle goes away.
+- No runtime toggles or experiment flags. A kept lever is the code, a
+  discarded one is reverted; fixed defaults in code. Diagnostic env knobs
+  that only switch scheduling or precision paths go too.
+- Land on `throughput-v4`; do not merge to main.
 - Keep `notes-v4.md` current. Updates to Matthew: best verified gain, what
   the split says, next lever. Brief.
 - Anything outside the Rift: write down the command and ask.
