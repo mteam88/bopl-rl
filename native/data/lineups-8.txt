@@ -1,0 +1,19 @@
+# Eight canonical mirror lineups for the multi-ability feasibility trio
+# (thread "generalized bots" thr_bam5xbkv6z, 2026-09-18: specialists -> league
+# -> generalist; 2026-09-19: the trio). One shared three-slot loadout per line
+# (both players receive it: --mirror-share 1), ability IDs from
+# native/data/rollout.json. Picked to cover the movement/attack archetypes with
+# every ability fully ported (12 Time stop and 15 Revival, the two partials in
+# ABILITY_PORT_GAPS.md, are left out; 1 Random is a spawn-time replacement,
+# not a play style). Held out on purpose for later generalisation checks:
+# 5 Engine, 7 Gust, 8 Growth ray, 11 Spike, 17 Shrink ray, 19 Invisibility,
+# 20 Meteor, 22 Push, 31 Rewind, 33 Poke ball, 34 Gold mushroom, 35 Tack,
+# 38 Portal gun.
+2,4,14     # Dash, Bow, Platform          the production loadout; pools v7/v8 and every scripted bot live here
+2,10,14    # Dash, Missile, Platform      the same movement with a guided projectile instead of an aimed one
+16,3,13    # Roll, Grenade, Smoke         thrown/bouncing damage plus cover; the near-side brawl
+27,28,9    # Grappling hook, Beam, Rock   rope movement with a hitscan and a dropped boulder
+25,24,23   # Teleport, Mine, Tesla coil   zone control: traps and a ground-only turret behind blinks
+32,37,36   # Web swing, Mjolnir, Freeze   rope movement with a thrown-and-recalled hammer and a crowd-control ray
+29,6,18    # Duplicator, Blink gun, Black hole   clones, a ray that displaces, and a pull that reshapes the fight
+26,21,30   # Drill, Throw, Magnet gun     melee/pickup play: ground throw, a dig, and a pull-in
