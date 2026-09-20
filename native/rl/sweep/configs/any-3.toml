@@ -17,7 +17,8 @@
 #   whatever loadout the episode drew, so under lineups/random they are weak
 #   opponents for most episodes. The in-run behaviour flags (no-offense reads
 #   arrows_per_game) will fire on the non-bow lineups; flags never enter the score.
-# THIS RUN: multi-random, every fully ported ability (all = 1..38 minus 12 Time stop and 15 Revival), duplicates legal, half the games mirrored.
+# THIS RUN: any-3 (was multi-random; that run aborted at 214M steps on the
+#   jump panic fixed in add141ed and is disregarded). Every fully ported ability (all = 1..38 minus 12 Time stop and 15 Revival), duplicates legal, half the games mirrored.
 # Flags not listed are layout.V4_DEFAULTS.
 
 [sweep]
