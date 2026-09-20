@@ -447,9 +447,10 @@ def main():
     os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', '4')
     # The rollout steps games on vecenv.h's own env pool (THROUGHPUT.md 3.D), not
     # OpenMP: BOPL_ENV_THREADS stepping threads in total (buffer threads
-    # included; default CPUs - 3, i.e. 9 on the 12-thread box: 8-10 tie at
-    # 128 workers, 10 is +3% at 256, 12+ oversubscribes and stalls on preempted
-    # workers), BOPL_ENV_LPT=1 slowest-first claim order, BOPL_ENV_STEAL=1
+    # included; default CPUs - 1, i.e. 11 on the 12-thread box: at w256 b4 the
+    # rollout is CPU-bound on c_step x threads and 11 beat 9 by 4% (2026-09-19);
+    # 12+ oversubscribes and stalls on preempted workers), BOPL_ENV_LPT=1
+    # slowest-first claim order, BOPL_ENV_STEAL=1
     # buffer threads step other buffers' games while their own forward runs,
     # BOPL_ENV_SPIN_US=100 idle spin before a futex park, BOPL_GPU_WAIT=poll|sync,
     # BOPL_ENV_PIN=1 to pin threads, BOPL_ENV_PROF=1|2 pool statistics and the
@@ -820,11 +821,17 @@ def main():
                 raise RuntimeError('--dump-rows needs a fresh run with the initial checkpoint saved')
             import numpy as np
             observations, rows = _C.bopl_policy_rows(trainer, 0, 64)
+            # Packed observation transport (bopl_obs_pack.h): floats of any unpacked
+            # device row that differed from its host row over the rollout (-1: dense).
+            transport_mismatches = _C.bopl_transport_mismatches(trainer)
             a.dump_rows.parent.mkdir(parents=True, exist_ok=True)
             np.savez(a.dump_rows, observations=observations, rows=rows, checkpoint=str(saved[0].resolve()),
-                     obs_size=obs_size, architecture=architecture)
-            print(f'wrote {a.dump_rows}: {rows.shape[0]} rows of {rows.shape[1]} from {saved[0].name}', flush=True)
+                     obs_size=obs_size, architecture=architecture, transport_mismatches=transport_mismatches)
+            print(f'wrote {a.dump_rows}: {rows.shape[0]} rows of {rows.shape[1]} from {saved[0].name}; '
+                  f'transport mismatches {transport_mismatches}', flush=True)
             stop = True
+        if a.dump_rows is not None:
+            _C.bopl_transport_check(trainer, True)
         if overlap:
             rollout_seconds = _C.rollouts(trainer)  # bootstrap: the first slot before the loop
             ready = offset_counters(vector.snapshot(), base_counts)
@@ -924,8 +931,12 @@ def main():
                 # eval_env = OpenMP game stepping, rollout = whole barrier.
                 record['native_perf'] = {key: native['perf'].get(key) for key in ('rollout', 'eval_gpu', 'eval_env')}
                 if a.encoder == 'v4':
-                    # Rows the packed set buffers dropped in the last training forward (players, slots, entities, slimes).
-                    record['set_overflow'] = list(_C.bopl_v4_overflow())
+                    # The last training forward's packing (players, slots, entities, slimes): rows the packed set
+                    # buffers dropped, and the rows packed per batch row (the row budget the batch needed).
+                    packing = list(_C.bopl_v4_overflow())
+                    record['set_overflow'] = packing[:4]
+                    if len(packing) == 9 and packing[8]:
+                        record['set_rows'] = [round(n / packing[8], 3) for n in packing[4:8]]
                 metrics.write(json.dumps(record, allow_nan=False)+'\n'); metrics.flush()
                 for event in native_selfplay.events(before_pool, after_pool, ledger, counts['learner_steps']):
                     events.write(json.dumps(event, allow_nan=False)+'\n')

@@ -113,6 +113,18 @@ typedef struct {
     double cx[BOPL4_ENTITIES+BOPL4_SLIMES], cy[BOPL4_ENTITIES+BOPL4_SLIMES], cr[BOPL4_ENTITIES+BOPL4_SLIMES];
     double cvx[BOPL4_ENTITIES+BOPL4_SLIMES], cvy[BOPL4_ENTITIES+BOPL4_SLIMES];
     int cclass[BOPL4_ENTITIES+BOPL4_SLIMES];
+    /* The walls again for the vector march, split by frame: the axis-aligned
+     * ones (right = (+-1, 0), up = (0, +-1), or the 90-degree turn of that
+     * with the extents swapped) and the rotated rest. For an aligned wall the
+     * frame rotation rpx*rx + rpy*ry is rpx*+-1 + rpy*0, whose IEEE value is
+     * +-rpx (+-0 added to a double leaves it, and a +0/-0 difference dies in
+     * the abs that follows), so |lx| = |rpx| and |ly| = |rpy| exactly without
+     * the four products: the same per-wall distance as bot_wall_sdf's. The
+     * min over the walls is taken in a different order (aligned first), which
+     * does not change a minimum of doubles (the +0/-0 tie caveat above). */
+    int axis_count, rot_count;
+    double axis_cx[48], axis_cy[48], axis_ex[48], axis_ey[48], axis_radius[48];
+    double rot_cx[48], rot_cy[48], rot_rx[48], rot_ry[48], rot_ux[48], rot_uy[48], rot_ex[48], rot_ey[48], rot_radius[48];
 } Bopl4Terrain;
 static void bopl4_terrain_fill(Bopl4Terrain *t, const BoplRlState *state, const uint32_t *nearest, int count,
                                const uint32_t *nearby_slimes, int slime_count, const BoplRlPlayer *self) {
@@ -123,7 +135,7 @@ static void bopl4_terrain_fill(Bopl4Terrain *t, const BoplRlState *state, const 
      * without one) otherwise marches the scalar SDF. */
     if (bot_cpu_avx512<0) bot_cpu_avx512=__builtin_cpu_supports("avx512f")?1:0;
 #endif
-    view->wall_count=0; t->has_water=0; t->water_top=-1e9; t->circle_count=0;
+    view->wall_count=0; t->has_water=0; t->water_top=-1e9; t->circle_count=0; t->axis_count=0; t->rot_count=0;
     for (uint32_t i=0; i<state->header.entity_count; i++) {
         const BoplRlEntity *e=&state->entities[i];
         if (!(e->flags&1) || (e->flags&4)) continue;
@@ -150,6 +162,17 @@ static void bopl4_terrain_fill(Bopl4Terrain *t, const BoplRlState *state, const 
             view->soa.cx[k]=w->cx; view->soa.cy[k]=w->cy; view->soa.rx[k]=w->rx; view->soa.ry[k]=w->ry;
             view->soa.ux[k]=w->ux; view->soa.uy[k]=w->uy; view->soa.ex[k]=w->ex; view->soa.ey[k]=w->ey;
             view->soa.radius[k]=w->radius; view->soa.top[k]=w->top;
+            int straight=(w->rx==1||w->rx==-1) && w->ry==0 && w->ux==0 && (w->uy==1||w->uy==-1);
+            int turned=w->rx==0 && (w->ry==1||w->ry==-1) && (w->ux==1||w->ux==-1) && w->uy==0;
+            if (straight||turned) {
+                int a=t->axis_count++;
+                t->axis_cx[a]=w->cx; t->axis_cy[a]=w->cy; t->axis_radius[a]=w->radius;
+                t->axis_ex[a]=straight?w->ex:w->ey; t->axis_ey[a]=straight?w->ey:w->ex;
+            } else {
+                int r=t->rot_count++;
+                t->rot_cx[r]=w->cx; t->rot_cy[r]=w->cy; t->rot_rx[r]=w->rx; t->rot_ry[r]=w->ry;
+                t->rot_ux[r]=w->ux; t->rot_uy[r]=w->uy; t->rot_ex[r]=w->ex; t->rot_ey[r]=w->ey; t->rot_radius[r]=w->radius;
+            }
         }
     }
     /* The observed (visible, nearest) dynamic bodies, as circles. */
@@ -235,63 +258,125 @@ static double bot_raycast_below(const BotView *view, double x, double y, double 
 }
 /* bot_raycast_below for up to BOPL4_MARCH rays (own origins), marched
  * together: each ray's steps are exactly bot_raycast's (the same SDF calls on
- * the same points, in the same order per ray), interleaved across rays so the
- * core overlaps their independent chains (one step of one ray is a dependent
- * chain: point, SDF over the walls, sqrt, horizontal min, compare, add;
- * ~80 cycles of latency for ~25 cycles of work). */
-#define BOPL4_MARCH 6
+ * the same points, in the same order per ray). The scalar body interleaves
+ * the rays so the core overlaps their independent chains; the AVX-512 march
+ * below keeps 8 rays in the lanes and refills a lane when its ray ends. */
+#define BOPL4_MARCH 40
 #define BOPL4_MARCH_BODY(SDF) \
     double t[BOPL4_MARCH]; \
-    int live=0; \
-    for (int i=0; i<n; i++) { t[i]=0; out[i]=max; live|=1<<i; } \
+    uint64_t live=0; \
+    for (int i=0; i<n; i++) { t[i]=0; out[i]=max; live|=1ull<<i; } \
     for (int iter=0; iter<32 && live; iter++) { \
         for (int i=0; i<n; i++) { \
-            if (!(live&(1<<i))) continue; \
-            if (!(t[i]<max)) { live&=~(1<<i); continue; }               /* the loop condition t < max: out stays max */ \
-            if (t[i]>=limit[i]) { out[i]=limit[i]; live&=~(1<<i); continue; } \
+            if (!(live&(1ull<<i))) continue; \
+            if (!(t[i]<max)) { live&=~(1ull<<i); continue; }               /* the loop condition t < max: out stays max */ \
+            if (t[i]>=limit[i]) { out[i]=limit[i]; live&=~(1ull<<i); continue; } \
             double d=SDF(view, ox[i]+dx[i]*t[i], oy[i]+dy[i]*t[i]); \
-            if (d<0.05) { out[i]=t[i]; live&=~(1<<i); continue; } \
+            if (d<0.05) { out[i]=t[i]; live&=~(1ull<<i); continue; } \
             t[i]+=d; \
         } \
     } \
     /* Rays still live after 32 steps: bot_raycast returns max (out[i] already is). */
 #if BOT_SDF_AVX512
-/* Same march, compiled for AVX-512 and with the SDF's own optimisation
- * options, so bot_sdf_avx512 inlines into the loop (a target("avx512f")
- * function cannot inline into a plain caller, nor across differing optimize
- * attributes). fp-contract=off also keeps x+dx*t from becoming an FMA now
- * that the target has one, so the sample points stay bot_raycast's. */
+/* Compiled with the SDF's own optimisation options: fp-contract=off keeps
+ * x+dx*t and the SDF's sums from becoming FMAs now that the target has one,
+ * so the sample points and distances stay bot_raycast's. */
 #if defined(__clang__)
 #pragma clang fp contract(off)
 #elif defined(__GNUC__)
 #pragma GCC push_options
 #pragma GCC optimize("fp-contract=off")
 #endif
-/* bot_sdf_avx512, spelled again so it can be forced inline here (the original
- * must stay callable from the plain bot_sdf dispatcher). */
-__attribute__((target("avx512f"), always_inline)) static inline double bopl4_sdf_avx512(const BotView *view, double x, double y) {
-    __m512d best=_mm512_set1_pd(1e9), vx=_mm512_set1_pd(x), vy=_mm512_set1_pd(y);
-    for (int k=0; k<view->wall_count; k+=8) {
-        int n=view->wall_count-k;
-        __mmask8 m=n>=8?(__mmask8)0xFF:(__mmask8)((1u<<n)-1u);
-        best=_mm512_mask_min_pd(best, m, best, bot_sdf_lanes(view, k, m, vx, vy));
-    }
-    return _mm512_reduce_min_pd(best);
-}
-__attribute__((target("avx512f"))) static void bopl4_march_avx512(const BotView *view, const double *ox, const double *oy, int n,
+/* The same march with rays in the lanes and the walls in the loop: one step
+ * of 8 rays is wall_count evaluations of bot_sdf_lanes' arithmetic (the same
+ * IEEE operations on the same operands per (ray, wall), so the same per-wall
+ * distance) and an elementwise min over the walls (the minimum of a set of
+ * doubles does not depend on the order it is taken in; a tie between +0 and
+ * -0 can only change the sign of a d that is a hit either way, and t + -0 ==
+ * t + +0 for the t >= +0 here). Each lane runs the scalar body's control
+ * flow for its ray, in the same order: the 32-step cap, t < max, t >= limit,
+ * the hit test, t += d. A lane whose ray has ended takes the next ray, so
+ * the lanes stay full while rays of very different lengths (a ray grazing
+ * the floor takes all 32 steps, one into the sky 5) march side by side;
+ * the sample points of a ray do not depend on which lane it runs in. */
+__attribute__((target("avx512f"))) static void bopl4_march_avx512(const Bopl4Terrain *tr, const double *ox, const double *oy, int n,
         const double *dx, const double *dy, double max, const double *limit, double *out) {
-    BOPL4_MARCH_BODY(bopl4_sdf_avx512)
+    __m512d vmax=_mm512_set1_pd(max), zero=_mm512_setzero_pd(), hit_at=_mm512_set1_pd(0.05), far=_mm512_set1_pd(1e9);
+    __m512d vox=zero, voy=zero, vdx=zero, vdy=zero, vlimit=zero, t=zero, vout=vmax;
+    __m512i steps=_mm512_setzero_si512(), cap=_mm512_set1_epi64(32), one=_mm512_set1_epi64(1);
+    int slot[8], next=0;
+    __mmask8 live=0;
+    for (;;) {
+        /* Free lanes take the next rays. */
+        for (unsigned free=(unsigned)(~live&0xFFu); free && next<n; free&=free-1u, next++) {
+            int l=__builtin_ctz(free); __mmask8 m=(__mmask8)(1u<<l);
+            slot[l]=next;
+            vox=_mm512_mask_mov_pd(vox, m, _mm512_set1_pd(ox[next])); voy=_mm512_mask_mov_pd(voy, m, _mm512_set1_pd(oy[next]));
+            vdx=_mm512_mask_mov_pd(vdx, m, _mm512_set1_pd(dx[next])); vdy=_mm512_mask_mov_pd(vdy, m, _mm512_set1_pd(dy[next]));
+            vlimit=_mm512_mask_mov_pd(vlimit, m, _mm512_set1_pd(limit[next]));
+            t=_mm512_mask_mov_pd(t, m, zero); vout=_mm512_mask_mov_pd(vout, m, vmax);
+            steps=_mm512_mask_mov_epi64(steps, m, _mm512_setzero_si512());
+            live|=m;
+        }
+        if (!live) break;
+        __mmask8 before=live;
+        live=_mm512_mask_cmp_epi64_mask(live, steps, cap, _MM_CMPINT_LT);       /* the 32-step cap: out stays max */
+        live=_mm512_mask_cmp_pd_mask(live, t, vmax, _CMP_LT_OQ);                /* !(t<max): out stays max */
+        __mmask8 reach=_mm512_mask_cmp_pd_mask(live, t, vlimit, _CMP_GE_OQ);    /* t>=limit: out=limit */
+        vout=_mm512_mask_mov_pd(vout, reach, vlimit); live=(__mmask8)(live&~reach);
+        if (live) {
+            __m512d px=_mm512_add_pd(vox, _mm512_mul_pd(vdx, t)), py=_mm512_add_pd(voy, _mm512_mul_pd(vdy, t));
+            __m512d d=far;
+            for (int k=0; k<tr->axis_count; k++) {   /* aligned: |lx| = |rpx|, |ly| = |rpy| (Bopl4Terrain) */
+                __m512d qx=_mm512_sub_pd(_mm512_abs_pd(_mm512_sub_pd(px, _mm512_set1_pd(tr->axis_cx[k]))), _mm512_set1_pd(tr->axis_ex[k]));
+                __m512d qy=_mm512_sub_pd(_mm512_abs_pd(_mm512_sub_pd(py, _mm512_set1_pd(tr->axis_cy[k]))), _mm512_set1_pd(tr->axis_ey[k]));
+                __m512d o_x=_mm512_max_pd(qx, zero), o_y=_mm512_max_pd(qy, zero);
+                __m512d outside=_mm512_sqrt_pd(_mm512_add_pd(_mm512_mul_pd(o_x, o_x), _mm512_mul_pd(o_y, o_y)));
+                __m512d inside=_mm512_min_pd(_mm512_max_pd(qx, qy), zero);
+                d=_mm512_min_pd(d, _mm512_sub_pd(_mm512_add_pd(outside, inside), _mm512_set1_pd(tr->axis_radius[k])));
+            }
+            for (int k=0; k<tr->rot_count; k++) {
+                __m512d rpx=_mm512_sub_pd(px, _mm512_set1_pd(tr->rot_cx[k])), rpy=_mm512_sub_pd(py, _mm512_set1_pd(tr->rot_cy[k]));
+                __m512d lx=_mm512_add_pd(_mm512_mul_pd(rpx, _mm512_set1_pd(tr->rot_rx[k])), _mm512_mul_pd(rpy, _mm512_set1_pd(tr->rot_ry[k])));
+                __m512d ly=_mm512_add_pd(_mm512_mul_pd(rpx, _mm512_set1_pd(tr->rot_ux[k])), _mm512_mul_pd(rpy, _mm512_set1_pd(tr->rot_uy[k])));
+                __m512d qx=_mm512_sub_pd(_mm512_abs_pd(lx), _mm512_set1_pd(tr->rot_ex[k]));
+                __m512d qy=_mm512_sub_pd(_mm512_abs_pd(ly), _mm512_set1_pd(tr->rot_ey[k]));
+                __m512d o_x=_mm512_max_pd(qx, zero), o_y=_mm512_max_pd(qy, zero);
+                __m512d outside=_mm512_sqrt_pd(_mm512_add_pd(_mm512_mul_pd(o_x, o_x), _mm512_mul_pd(o_y, o_y)));
+                __m512d inside=_mm512_min_pd(_mm512_max_pd(qx, qy), zero);
+                d=_mm512_min_pd(d, _mm512_sub_pd(_mm512_add_pd(outside, inside), _mm512_set1_pd(tr->rot_radius[k])));
+            }
+            __mmask8 hit=_mm512_mask_cmp_pd_mask(live, d, hit_at, _CMP_LT_OQ);   /* d<0.05: out=t */
+            vout=_mm512_mask_mov_pd(vout, hit, t); live=(__mmask8)(live&~hit);
+            t=_mm512_mask_add_pd(t, live, t, d);
+            steps=_mm512_mask_add_epi64(steps, live, steps, one);
+        }
+        /* Rays that ended this step: their results, then (top of the loop) new rays. */
+        unsigned ended=(unsigned)(before&~live);
+        if (ended) {
+            double res[8]; _mm512_storeu_pd(res, vout);
+            for (; ended; ended&=ended-1u) { int l=__builtin_ctz(ended); out[slot[l]]=res[l]; }
+        }
+    }
 }
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC pop_options
 #endif
 #endif
-static void bopl4_march(const BotView *view, const double *ox, const double *oy, int n, const double *dx, const double *dy,
+/* The scalar march: bot_raycast's steps, one ray after another (the CPUs
+ * without AVX-512, and the reference writer_bench checks the vector march
+ * against, row for row, through bopl4_march_scalar_only). */
+static void bopl4_march_scalar(const BotView *view, const double *ox, const double *oy, int n, const double *dx, const double *dy,
+                               double max, const double *limit, double *out) {
+    BOPL4_MARCH_BODY(bot_sdf_scalar)
+}
+static __thread int bopl4_march_scalar_only=0;
+static void bopl4_march(const Bopl4Terrain *t, const double *ox, const double *oy, int n, const double *dx, const double *dy,
                         double max, const double *limit, double *out) {
 #if BOT_SDF_AVX512
-    if (bot_cpu_avx512>0) { bopl4_march_avx512(view, ox, oy, n, dx, dy, max, limit, out); return; }
+    if (bot_cpu_avx512>0 && !bopl4_march_scalar_only) { bopl4_march_avx512(t, ox, oy, n, dx, dy, max, limit, out); return; }
 #endif
-    BOPL4_MARCH_BODY(bot_sdf_scalar)
+    bopl4_march_scalar(&t->view, ox, oy, n, dx, dy, max, limit, out);
 }
 /* Classes: 0 wall, 1 lethal wall, 2 water / blast plane, 3 hostile projectile
  * or object, 4 opponent body, 5 own object; out[7] the hit's closing speed
@@ -347,7 +432,7 @@ static void bopl4_cast_group(const Bopl4Terrain *t, double x, double y, double s
         limit[i]=best[i]+1.0;
         wall[i]=BOPL4_RAY_LENGTH;
     }
-    if (t->view.wall_count) bopl4_march(&t->view, ox, oy, n, dx, dy, BOPL4_RAY_LENGTH, limit, wall);
+    if (t->view.wall_count) bopl4_march(t, ox, oy, n, dx, dy, BOPL4_RAY_LENGTH, limit, wall);
     for (int i=0; i<n; i++) bopl4_ray_finish(t, x, y, dx[i], dy[i], best[i], class[i], closing[i], wall[i], out[i]);
 }
 /* `count` rays of the fan (indices k[]) from (x, y), in groups of BOPL4_MARCH. */
@@ -420,7 +505,7 @@ static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out)
     double drop=32.0, ceiling=32.0;
     if (view->wall_count) {
         double ox[2]={x, x}, oy[2]={y, y}, dx[2]={0, 0}, dy[2]={-1, 1}, limit[2]={32.0, 32.0}, d[2];
-        bopl4_march(view, ox, oy, 2, dx, dy, 32.0, limit, d);
+        bopl4_march(t, ox, oy, 2, dx, dy, 32.0, limit, d);
         drop=d[0]; ceiling=d[1];
     }
     if (t->has_water && y>t->water_top && y-t->water_top<drop) drop=y-t->water_top;
@@ -450,14 +535,14 @@ static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out)
                 for (int k=1; k<first_wall[side]; k++) {
                     ox[n]=x+sign*1.5*k; oy[n]=y; dx[n]=0; dy[n]=-1; limit[n]=above; side_of[n]=side; k_of[n]=k; n++;
                     if (n==BOPL4_MARCH || (side==1 && k==first_wall[1]-1)) {
-                        bopl4_march(view, ox, oy, n, dx, dy, 32.0, limit, d);
+                        bopl4_march(t, ox, oy, n, dx, dy, 32.0, limit, d);
                         for (int i=0; i<n; i++) if (d[i]>threshold && k_of[i]<first_drop[side_of[i]]) first_drop[side_of[i]]=k_of[i];
                         n=0;
                     }
                 }
             }
             if (n) {
-                bopl4_march(view, ox, oy, n, dx, dy, 32.0, limit, d);
+                bopl4_march(t, ox, oy, n, dx, dy, 32.0, limit, d);
                 for (int i=0; i<n; i++) if (d[i]>threshold && k_of[i]<first_drop[side_of[i]]) first_drop[side_of[i]]=k_of[i];
             }
         }
@@ -481,7 +566,7 @@ static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out)
         int n=16-start<BOPL4_MARCH?16-start:BOPL4_MARCH;
         double ox[BOPL4_MARCH], oy[BOPL4_MARCH], dx[BOPL4_MARCH], dy[BOPL4_MARCH], limit[BOPL4_MARCH], d[BOPL4_MARCH];
         for (int i=0; i<n; i++) { bopl4_dash_direction(start+i, &dx[i], &dy[i]); ox[i]=x; oy[i]=y; limit[i]=BOPL4_DASH_LENGTH; d[i]=BOPL4_DASH_LENGTH; }
-        if (view->wall_count) bopl4_march(view, ox, oy, n, dx, dy, BOPL4_DASH_LENGTH, limit, d);
+        if (view->wall_count) bopl4_march(t, ox, oy, n, dx, dy, BOPL4_DASH_LENGTH, limit, d);
         double ex[BOPL4_MARCH], ey[BOPL4_MARCH], zero[BOPL4_MARCH], down[BOPL4_MARCH], above[BOPL4_MARCH], fall[BOPL4_MARCH];
         int m=0;
         for (int i=0; i<n; i++) {
@@ -492,7 +577,7 @@ static void bopl4_terrain(const Bopl4Terrain *t, double x, double y, float *out)
             ex[m]=px; ey[m]=py; zero[m]=0; down[m]=-1; above[m]=nextafter(4.0, HUGE_VAL); m++;
         }
         if (m && !landing) {
-            bopl4_march(view, ex, ey, m, zero, down, 8.0, above, fall);
+            bopl4_march(t, ex, ey, m, zero, down, 8.0, above, fall);
             for (int i=0; i<m; i++) if (!(fall[i]>4.0)) landing=1;
         }
     }

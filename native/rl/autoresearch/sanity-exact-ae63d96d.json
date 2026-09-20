@@ -1,0 +1,2434 @@
+{
+ "exact-ae63d96d": {
+  "path": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/throughput-v4/native/artifacts/rl/sanity/exact-ae63d96d",
+  "status": {
+   "status": "complete",
+   "pid": 1102830,
+   "step": 213352448,
+   "learner_steps": 160014336,
+   "matches": 303811,
+   "elapsed": 760.2148639860097,
+   "target_steps": 213333334,
+   "target_learner_steps": 160000000,
+   "checkpoint": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/throughput-v4/native/artifacts/rl/sanity/exact-ae63d96d/checkpoints/policy-213352448.bin",
+   "map_catalogue": "identity-124"
+  },
+  "config": {
+   "schema": 1,
+   "algorithm": "recurrent PPO",
+   "backend": "pufferlib-native",
+   "map_catalogue": "identity-124",
+   "step_unit": "physical_player_decisions",
+   "steps": 213333334,
+   "learner_steps": 160000000,
+   "seed": 73,
+   "workers": 128,
+   "banks": 4,
+   "encoder": "v4",
+   "hidden": 256,
+   "layers": 1,
+   "scripted_bots": [],
+   "scripted_level": "hard",
+   "scripted_roster": [
+    "archer-v2-easy",
+    "archer-v2-medium",
+    "archer-v2-hard",
+    "pursuer-v2-easy",
+    "pursuer-v2-medium",
+    "pursuer-v2-hard",
+    "evasive-v2-easy",
+    "evasive-v2-medium",
+    "evasive-v2-hard",
+    "mixed-v2-easy",
+    "mixed-v2-medium",
+    "mixed-v2-hard"
+   ],
+   "scripted_share_min": 0.11048204896277423,
+   "scripted_share_max": 1.0,
+   "scripted_banks": 3,
+   "training_maps": [
+    0,
+    1,
+    2
+   ],
+   "evaluation_maps": [
+    0,
+    1,
+    2
+   ],
+   "heldout_maps": [
+    3,
+    4
+   ],
+   "episode_ticks": 7200,
+   "stocks": 0,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ],
+    "pool": [],
+    "lineups": [],
+    "set_file": null,
+    "no_dup": false,
+    "mirror_share": 0.0
+   },
+   "observation_delay_ticks": 9,
+   "telemetry_schema": 1,
+   "reward": {
+    "win": 1,
+    "loss": -1,
+    "timeout": -1.0,
+    "kill": 0.2883693237829292,
+    "death": -0.2883693237829292
+   },
+   "entropy": 0.01532588085540654,
+   "entropy_floor": 0.001,
+   "entropy_head_scale": [
+    0.028821467398601395,
+    1.5,
+    1.0
+   ],
+   "entropy_free_rows": 1,
+   "aim_fourier": 4,
+   "aim_ar": 0,
+   "v4_shape": {
+    "set_dim": 128,
+    "set_inner": 128,
+    "flat_dim": 256,
+    "ffn_dim": 512,
+    "critic_dim": 512,
+    "critic_privileged": 1,
+    "critic_detach": 0,
+    "mean_pool": 1,
+    "ablate": 8
+   },
+   "entropy_schedule": "exponential",
+   "entropy_half_life": 718611646,
+   "layout": {
+    "version": 4,
+    "obs_size": 4812,
+    "action_sizes": [
+     256,
+     16,
+     5
+    ],
+    "hold_lengths": [
+     1,
+     2,
+     4,
+     8,
+     16
+    ]
+   },
+   "learning_rate_schedule": "constant",
+   "learner_passes": 4,
+   "selfplay": {
+    "backend": "pufferlib.selfplay",
+    "banks": 4,
+    "historical_games_per_bank": 16,
+    "max_size": 16,
+    "swap_winrate": 0.6,
+    "min_games": 256,
+    "snapshot_interval": 10000000,
+    "opponent_timeout": 50000000,
+    "elo_init": 0.0,
+    "elo_k": 16.0,
+    "seed": 73,
+    "step_unit": "learner_decisions",
+    "native_steps_per_learner_decision": 2.3333333333333335,
+    "mid_match_swaps": "counted in neither bank statistic"
+   },
+   "frozen_opponents": [],
+   "evaluation_baseline_identity": {
+    "sha256": "3b458d4ad551f1fcdd2624337a95e270316f5e078845bb0a6100eab3c7b7f24e",
+    "metadata_sha256": "15ecdb2176fbc662e95026ae2bda9c720487a5041bfff5cb54f3898b40076640"
+   },
+   "evaluation_baseline": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/throughput-v4/native/artifacts/rl/sanity/exact-ae63d96d/checkpoints/policy-000000000.bin",
+   "game": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/throughput-v4/native/target/release/libbopl_sim.so",
+   "runtime": {
+    "player_binary_sha256": "199aedac767721a2d2f65c659b966405f92d19f7bfc0d7a7ccb069779ae6c603"
+   },
+   "native": {
+    "load_model_path": null,
+    "load_enemy_model_path": null,
+    "num_games": 4096,
+    "enemy_hidden_size": null,
+    "enemy_num_layers": null,
+    "load_id": null,
+    "render_mode": "auto",
+    "wandb": false,
+    "wandb_project": "puffer4",
+    "wandb_group": "debug",
+    "tag": null,
+    "slowly": false,
+    "save_frames": 0,
+    "gif_path": "eval.gif",
+    "fps": 15,
+    "env_name": "bopl",
+    "rank": 0,
+    "world_size": 1,
+    "gpu_id": 0,
+    "nccl_id": "None",
+    "profile": false,
+    "checkpoint_dir": "checkpoints",
+    "log_dir": "logs",
+    "checkpoint_interval": 20,
+    "eval_episodes": 10000,
+    "cudagraphs": 1,
+    "seed": 73,
+    "reset_state": false,
+    "vec": {
+     "total_agents": 448,
+     "num_buffers": 4,
+     "num_threads": 128,
+     "num_frozen_banks": 4,
+     "frozen_bank_pct": 0.03571429464285714,
+     "primary_rows": 48
+    },
+    "selfplay": {
+     "enabled": 0,
+     "max_size": 16,
+     "swap_winrate": 0.8,
+     "min_games": 2048,
+     "elo_init": 0.0,
+     "elo_k": 16.0,
+     "seed": 42,
+     "snapshot_interval": 1000000000,
+     "opp_timeout_steps": 500000000
+    },
+    "env": {
+     "players": 2,
+     "action_repeat": 4,
+     "observation_delay": 9,
+     "map": 0,
+     "slots": 3,
+     "stocks": 0,
+     "mode": 0,
+     "ability1": 2,
+     "ability2": 4,
+     "ability3": 14,
+     "warmup_ticks": 240,
+     "max_episode_ticks": 7200,
+     "random_maps": 0,
+     "random_loadouts": 0,
+     "banks": 4,
+     "historical_every": 2,
+     "seed": 73,
+     "training_map_mask": 7,
+     "training_map_mask_hi": 0,
+     "training_map_mask_2": 0,
+     "training_map_mask_3": 0,
+     "loadout_pool": 0,
+     "loadout_pool_hi": 0,
+     "loadout_no_dup": 0,
+     "mirror_share_ppm": 0,
+     "reward_kill_milli": 288,
+     "reward_timeout_milli": -1000,
+     "scripted_kinds": 26208,
+     "scripted_level": 2,
+     "obs_layout": 4
+    },
+    "policy": {
+     "hidden_size": 256,
+     "num_layers": 1,
+     "expansion_factor": 1
+    },
+    "torch": {
+     "network": "MinGRU",
+     "encoder": "DefaultEncoder",
+     "decoder": "DefaultDecoder"
+    },
+    "train": {
+     "gpus": 1,
+     "seed": 73,
+     "total_timesteps": 373366784,
+     "learning_rate": 0.0003431012662975937,
+     "anneal_lr": 0,
+     "min_lr_ratio": 0.0,
+     "gamma": 0.995,
+     "gae_lambda": 0.9,
+     "replay_ratio": 1.7142858505249023,
+     "clip_coef": 0.2,
+     "vf_coef": 2.0,
+     "vf_clip_coef": 0.2,
+     "max_grad_norm": 1.5,
+     "ent_coef": 0.01532588085540654,
+     "anneal_ent_coef": 0,
+     "min_ent_coef_ratio": 0.065249104402846,
+     "beta1": 0.95,
+     "beta2": 0.999,
+     "eps": 1e-12,
+     "minibatch_size": 24576,
+     "horizon": 128,
+     "vtrace_rho_clip": 1.0,
+     "vtrace_c_clip": 1.0,
+     "prio_alpha": 0.8,
+     "prio_beta0": 0.2
+    },
+    "sweep": {
+     "method": "Protein",
+     "metric": "score",
+     "metric_distribution": "linear",
+     "goal": "maximize",
+     "max_suggestion_cost": 3600,
+     "max_runs": 1200,
+     "gpus": 0,
+     "downsample": 5,
+     "use_gpu": true,
+     "prune_pareto": true,
+     "early_stop_quantile": 0.3,
+     "match_enemy_model_path": "",
+     "match_num_games": 1024,
+     "match_enemy_hidden_size": 0,
+     "match_enemy_num_layers": 0,
+     "train": {
+      "total_timesteps": {
+       "distribution": "log_normal",
+       "min": 30000000.0,
+       "max": 100000000000.0,
+       "scale": "time"
+      },
+      "horizon": {
+       "distribution": "uniform_pow2",
+       "min": 8,
+       "max": 1024,
+       "scale": "auto"
+      },
+      "learning_rate": {
+       "distribution": "log_normal",
+       "min": 1e-05,
+       "max": 0.1,
+       "scale": 0.5
+      },
+      "ent_coef": {
+       "distribution": "log_normal",
+       "min": 1e-05,
+       "max": 0.2,
+       "scale": "auto"
+      },
+      "gamma": {
+       "distribution": "logit_normal",
+       "min": 0.8,
+       "max": 0.9999,
+       "scale": "auto"
+      },
+      "gae_lambda": {
+       "distribution": "logit_normal",
+       "min": 0.2,
+       "max": 0.995,
+       "scale": "auto"
+      },
+      "vtrace_rho_clip": {
+       "distribution": "uniform",
+       "min": 0.1,
+       "max": 5.0,
+       "scale": "auto"
+      },
+      "vtrace_c_clip": {
+       "distribution": "uniform",
+       "min": 0.1,
+       "max": 5.0,
+       "scale": "auto"
+      },
+      "replay_ratio": {
+       "distribution": "uniform",
+       "min": 0.25,
+       "max": 4.0,
+       "scale": "auto"
+      },
+      "clip_coef": {
+       "distribution": "uniform",
+       "min": 0.01,
+       "max": 1.0,
+       "scale": "auto"
+      },
+      "vf_clip_coef": {
+       "distribution": "uniform",
+       "min": 0.01,
+       "max": 5.0,
+       "scale": "auto"
+      },
+      "vf_coef": {
+       "distribution": "uniform",
+       "min": 0.1,
+       "max": 5.0,
+       "scale": "auto"
+      },
+      "max_grad_norm": {
+       "distribution": "uniform",
+       "min": 0.1,
+       "max": 5.0,
+       "scale": "auto"
+      },
+      "beta1": {
+       "distribution": "logit_normal",
+       "min": 0.5,
+       "max": 0.999,
+       "scale": "auto"
+      },
+      "beta2": {
+       "distribution": "logit_normal",
+       "min": 0.9,
+       "max": 0.99999,
+       "scale": "auto"
+      },
+      "eps": {
+       "distribution": "log_normal",
+       "min": 1e-14,
+       "max": 0.0001,
+       "scale": "auto"
+      },
+      "prio_alpha": {
+       "distribution": "uniform",
+       "min": 0.0,
+       "max": 1.0,
+       "scale": "auto"
+      },
+      "prio_beta0": {
+       "distribution": "uniform",
+       "min": 0.0,
+       "max": 1.0,
+       "scale": "auto"
+      }
+     },
+     "policy": {
+      "hidden_size": {
+       "distribution": "uniform_pow2",
+       "min": 32,
+       "max": 1024,
+       "scale": "auto"
+      },
+      "num_layers": {
+       "distribution": "uniform",
+       "min": 1,
+       "max": 8,
+       "scale": "auto"
+      }
+     },
+     "vec": {
+      "num_buffers": {
+       "distribution": "uniform",
+       "min": 1,
+       "max": 8,
+       "scale": "auto"
+      }
+     }
+    },
+    "base": {},
+    "sweep.train.total_timesteps": {},
+    "sweep.policy.hidden_size": {},
+    "sweep.policy.num_layers": {},
+    "sweep.vec.num_buffers": {},
+    "sweep.train.horizon": {},
+    "sweep.train.learning_rate": {},
+    "sweep.train.ent_coef": {},
+    "sweep.train.gamma": {},
+    "sweep.train.gae_lambda": {},
+    "sweep.train.vtrace_rho_clip": {},
+    "sweep.train.vtrace_c_clip": {},
+    "sweep.train.replay_ratio": {},
+    "sweep.train.clip_coef": {},
+    "sweep.train.vf_clip_coef": {},
+    "sweep.train.vf_coef": {},
+    "sweep.train.max_grad_norm": {},
+    "sweep.train.beta1": {},
+    "sweep.train.beta2": {},
+    "sweep.train.eps": {},
+    "sweep.train.prio_alpha": {},
+    "sweep.train.prio_beta0": {}
+   },
+   "native_binding_sha256": "3756f6e1cbe3f3e07fdaea0804c310205962e9409b3317859c4e7bcf8656036f"
+  },
+  "band_scores": {
+   "pool-v7": {
+    "53346304": {
+     "rating": 359.30527916338013,
+     "interval": [
+      306.0127599148605,
+      410.7736114776233
+     ],
+     "games": 160
+    },
+    "106692608": {
+     "rating": 423.8903426125997,
+     "interval": [
+      366.9459495815035,
+      479.24939644611453
+     ],
+     "games": 160
+    },
+    "160006144": {
+     "rating": 423.8903426125997,
+     "interval": [
+      375.61681988549986,
+      470.8097230837708
+     ],
+     "games": 160
+    },
+    "213352448": {
+     "rating": 477.270779852866,
+     "interval": [
+      433.8051503548107,
+      525.3348547198141
+     ],
+     "games": 160
+    }
+   }
+  },
+  "elo": {
+   "53346304": {
+    "elo": 399.77722507656455,
+    "interval": [
+     302.2969021157435,
+     506.4814461043346
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "106692608": {
+    "elo": 516.1698525097443,
+    "interval": [
+     399.77722507656455,
+     678.5039994106872
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "160006144": {
+    "elo": 490.4078428669747,
+    "interval": [
+     425.96534765691956,
+     579.9767316599016
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "213352448": {
+    "elo": 574.0942273561673,
+    "interval": [
+     459.7385966987821,
+     714.4353724022496
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   }
+  },
+  "elo_refit": {
+   "53346304": {
+    "rating": 399.77722507656455,
+    "interval": [
+     304.04783080850166,
+     529.7778565211638
+    ],
+    "games": 48,
+    "pool": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"
+   },
+   "106692608": {
+    "rating": 516.1698525097443,
+    "interval": [
+     405.44144417161834,
+     678.552474112698
+    ],
+    "games": 48,
+    "pool": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"
+   },
+   "160006144": {
+    "rating": 490.4078428669747,
+    "interval": [
+     429.67173053019025,
+     577.863812420845
+    ],
+    "games": 48,
+    "pool": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"
+   },
+   "213352448": {
+    "rating": 574.0942273561673,
+    "interval": [
+     466.0714890696167,
+     725.0200450988774
+    ],
+    "games": 48,
+    "pool": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"
+   }
+  },
+  "win_rates": {
+   "53346304": {
+    "trained": [
+     80,
+     168
+    ],
+    "heldout": [
+     25,
+     48
+    ],
+    "timeouts": 0
+   },
+   "106692608": {
+    "trained": [
+     90,
+     168
+    ],
+    "heldout": [
+     21,
+     48
+    ],
+    "timeouts": 0
+   },
+   "160006144": {
+    "trained": [
+     95,
+     168
+    ],
+    "heldout": [
+     29,
+     48
+    ],
+    "timeouts": 1
+   },
+   "213352448": {
+    "trained": [
+     118,
+     168
+    ],
+    "heldout": [
+     23,
+     48
+    ],
+    "timeouts": 3
+   }
+  },
+  "value": {
+   "53346304": null,
+   "106692608": {
+    "ev": 0.10030893175868572,
+    "n": 5850,
+    "games": 34,
+    "value_std": 0.1632902129598334,
+    "return_std": 0.7175214272777969,
+    "value_mean": -0.04053444099564525,
+    "return_mean": -0.15821038357514056
+   },
+   "160006144": {
+    "ev": 0.09443467177260345,
+    "n": 7347,
+    "games": 34,
+    "value_std": 0.14776041549589214,
+    "return_std": 0.6879446932342279,
+    "value_mean": -0.004593881419277671,
+    "return_mean": -0.0027336592390486327
+   },
+   "213352448": {
+    "ev": 0.1158420690155757,
+    "n": 7169,
+    "games": 34,
+    "value_std": 0.13022286730510804,
+    "return_std": 0.6413026915439616,
+    "value_mean": 0.0551157349925676,
+    "return_mean": 0.1065212461902011
+   }
+  },
+  "deaths": {
+   "53346304": {
+    "learner": {
+     "opp arrow": 86,
+     "squish": 13,
+     "fall": 1,
+     "own arrow": 11
+    },
+    "kills": {
+     "accident": 43,
+     "squish": 27,
+     "arrow": 36,
+     "other": 11
+    },
+    "games": 217
+   },
+   "106692608": {
+    "learner": {
+     "opp arrow": 79,
+     "fall": 11,
+     "squish": 12,
+     "own arrow": 4
+    },
+    "kills": {
+     "arrow": 50,
+     "accident": 39,
+     "squish": 23,
+     "other": 4
+    },
+    "games": 217
+   },
+   "160006144": {
+    "learner": {
+     "opp arrow": 67,
+     "own arrow": 7,
+     "squish": 11,
+     "fall": 6,
+     "timeout": 1
+    },
+    "kills": {
+     "arrow": 55,
+     "accident": 48,
+     "squish": 22,
+     "other": 7
+    },
+    "games": 217
+   },
+   "213352448": {
+    "learner": {
+     "opp arrow": 58,
+     "fall": 4,
+     "own arrow": 2,
+     "squish": 8,
+     "timeout": 3
+    },
+    "kills": {
+     "arrow": 76,
+     "accident": 42,
+     "squish": 24,
+     "other": 2
+    },
+    "games": 217
+   }
+  },
+  "in_run_ev": {
+   "53346304": 0.41906543672084806,
+   "106692608": 0.4114694118499756,
+   "160006144": 0.36895147860050204,
+   "213352448": 0.35123351216316223
+  }
+ },
+ "v4-aim": {
+  "path": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/throughput-v4/native/artifacts/rl/sweeps/v4-aim/000",
+  "status": {
+   "status": "complete",
+   "pid": 2547917,
+   "step": 2313256960,
+   "learner_steps": 1734942720,
+   "matches": 1961093,
+   "elapsed": 10385.823397204003,
+   "target_steps": 2313249035,
+   "target_learner_steps": 1734936776,
+   "checkpoint": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/sweeps/v4-aim/000/checkpoints/policy-2313256960.bin",
+   "flags": [],
+   "flag_metrics": {
+    "games": 168,
+    "arrows_per_game": 1.6904761904761905,
+    "arrow_hits_per_game": 0.6904761904761905,
+    "arrow_hit_rate": 0.4084507042253521,
+    "platforms_per_game": 0.02976190476190476,
+    "dashes_per_game": 0.75,
+    "bows_per_game": 1.6904761904761905,
+    "kills_per_game": 0.6904761904761905,
+    "deaths_per_game": 0.041666666666666664,
+    "timeout_rate": 0.0,
+    "win_rate": 0.9583333333333334,
+    "mean_duration_seconds": 9.228968253968256
+   },
+   "flag_rules": {
+    "no-offense": "arrows_per_game < 0.05",
+    "platform-spam": "platforms_per_game > 8",
+    "stalemate": "timeout_rate > 0.5"
+   },
+   "flags_by_evaluation": {
+    "106692608": [],
+    "213352448": [],
+    "320012288": [],
+    "426672128": [],
+    "533364736": [],
+    "640024576": [],
+    "746684416": [],
+    "853344256": [],
+    "960004096": [],
+    "1066696704": [],
+    "1173356544": [],
+    "1280016384": [],
+    "1386676224": [],
+    "1493336064": [],
+    "1600028672": [],
+    "1706688512": [],
+    "1813348352": [],
+    "1920008192": [],
+    "2026668032": [],
+    "2133360640": [],
+    "2240020480": [],
+    "2313256960": []
+   },
+   "map_catalogue": "identity-124"
+  },
+  "config": {
+   "schema": 1,
+   "algorithm": "recurrent PPO",
+   "backend": "pufferlib-native",
+   "step_unit": "physical_player_decisions",
+   "steps": 2313249035,
+   "learner_steps": 1734936776,
+   "seed": 73,
+   "workers": 128,
+   "banks": 4,
+   "encoder": "v4",
+   "hidden": 256,
+   "layers": 1,
+   "scripted_bots": [],
+   "scripted_level": "hard",
+   "scripted_roster": [
+    "archer-v2-easy",
+    "archer-v2-medium",
+    "archer-v2-hard",
+    "pursuer-v2-easy",
+    "pursuer-v2-medium",
+    "pursuer-v2-hard",
+    "evasive-v2-easy",
+    "evasive-v2-medium",
+    "evasive-v2-hard",
+    "mixed-v2-easy",
+    "mixed-v2-medium",
+    "mixed-v2-hard"
+   ],
+   "scripted_share_min": 0.11048204896277423,
+   "scripted_share_max": 1.0,
+   "scripted_banks": 3,
+   "training_maps": [
+    0,
+    1,
+    2
+   ],
+   "evaluation_maps": [
+    0,
+    1,
+    2
+   ],
+   "heldout_maps": [
+    3,
+    4
+   ],
+   "episode_ticks": 7200,
+   "stocks": 0,
+   "observation_delay_ticks": 9,
+   "telemetry_schema": 1,
+   "reward": {
+    "win": 1,
+    "loss": -1,
+    "timeout": -1.0,
+    "kill": 0.2883693237829292,
+    "death": -0.2883693237829292
+   },
+   "entropy": 0.01532588085540654,
+   "entropy_floor": 0.001,
+   "entropy_head_scale": [
+    0.028821467398601395,
+    1.5,
+    1.0
+   ],
+   "entropy_free_rows": 1,
+   "aim_fourier": 4,
+   "aim_ar": 0,
+   "v4_shape": {
+    "set_dim": 128,
+    "set_inner": 128,
+    "flat_dim": 256,
+    "ffn_dim": 512,
+    "critic_dim": 512,
+    "critic_privileged": 1,
+    "critic_detach": 0,
+    "mean_pool": 1,
+    "ablate": 8
+   },
+   "entropy_schedule": "exponential",
+   "entropy_half_life": 718611646,
+   "layout": {
+    "version": 4,
+    "obs_size": 4812,
+    "action_sizes": [
+     256,
+     16,
+     5
+    ],
+    "hold_lengths": [
+     1,
+     2,
+     4,
+     8,
+     16
+    ]
+   },
+   "learning_rate_schedule": "constant",
+   "learner_passes": 4,
+   "selfplay": {
+    "backend": "pufferlib.selfplay",
+    "banks": 4,
+    "historical_games_per_bank": 16,
+    "max_size": 16,
+    "swap_winrate": 0.6,
+    "min_games": 256,
+    "snapshot_interval": 10000000,
+    "opponent_timeout": 50000000,
+    "elo_init": 0.0,
+    "elo_k": 16.0,
+    "seed": 73,
+    "step_unit": "learner_decisions",
+    "native_steps_per_learner_decision": 2.3333333333333335,
+    "mid_match_swaps": "counted in neither bank statistic"
+   },
+   "frozen_opponents": [],
+   "evaluation_baseline_identity": {
+    "sha256": "3b458d4ad551f1fcdd2624337a95e270316f5e078845bb0a6100eab3c7b7f24e",
+    "metadata_sha256": "d3e0cb49a9c7cbd51019d9eea02d1081ee07d2a9275f84004ce111e321bf0283"
+   },
+   "evaluation_baseline": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/sweeps/v4-aim/000/checkpoints/policy-000000000.bin",
+   "game": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/policy-v4/native/target/release/libbopl_sim.so",
+   "runtime": {
+    "player_binary_sha256": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004"
+   },
+   "native": {
+    "load_model_path": null,
+    "load_enemy_model_path": null,
+    "num_games": 4096,
+    "enemy_hidden_size": null,
+    "enemy_num_layers": null,
+    "load_id": null,
+    "render_mode": "auto",
+    "wandb": false,
+    "wandb_project": "puffer4",
+    "wandb_group": "debug",
+    "tag": null,
+    "slowly": false,
+    "save_frames": 0,
+    "gif_path": "eval.gif",
+    "fps": 15,
+    "env_name": "bopl",
+    "rank": 0,
+    "world_size": 1,
+    "gpu_id": 0,
+    "nccl_id": "None",
+    "profile": false,
+    "checkpoint_dir": "checkpoints",
+    "log_dir": "logs",
+    "checkpoint_interval": 20,
+    "eval_episodes": 10000,
+    "cudagraphs": 1,
+    "seed": 73,
+    "reset_state": false,
+    "vec": {
+     "total_agents": 448,
+     "num_buffers": 4,
+     "num_threads": 128,
+     "num_frozen_banks": 4,
+     "frozen_bank_pct": 0.03571429464285714,
+     "primary_rows": 48
+    },
+    "selfplay": {
+     "enabled": 0,
+     "max_size": 16,
+     "swap_winrate": 0.8,
+     "min_games": 2048,
+     "elo_init": 0.0,
+     "elo_k": 16.0,
+     "seed": 42,
+     "snapshot_interval": 1000000000,
+     "opp_timeout_steps": 500000000
+    },
+    "env": {
+     "players": 2,
+     "action_repeat": 4,
+     "observation_delay": 9,
+     "map": 0,
+     "slots": 3,
+     "stocks": 0,
+     "mode": 0,
+     "ability1": 2,
+     "ability2": 4,
+     "ability3": 14,
+     "warmup_ticks": 240,
+     "max_episode_ticks": 7200,
+     "random_maps": 0,
+     "random_loadouts": 0,
+     "banks": 4,
+     "historical_every": 2,
+     "seed": 73,
+     "training_map_mask": 7,
+     "reward_kill_milli": 288,
+     "reward_timeout_milli": -1000,
+     "scripted_kinds": 26208,
+     "scripted_level": 2,
+     "obs_layout": 4
+    },
+    "policy": {
+     "hidden_size": 256,
+     "num_layers": 1,
+     "expansion_factor": 1
+    },
+    "torch": {
+     "network": "MinGRU",
+     "encoder": "DefaultEncoder",
+     "decoder": "DefaultDecoder"
+    },
+    "train": {
+     "gpus": 1,
+     "seed": 73,
+     "total_timesteps": 4048199680,
+     "learning_rate": 0.0003431012662975937,
+     "anneal_lr": 0,
+     "min_lr_ratio": 0.0,
+     "gamma": 0.995,
+     "gae_lambda": 0.9,
+     "replay_ratio": 1.7142858505249023,
+     "clip_coef": 0.2,
+     "vf_coef": 2.0,
+     "vf_clip_coef": 0.2,
+     "max_grad_norm": 1.5,
+     "ent_coef": 0.01532588085540654,
+     "anneal_ent_coef": 0,
+     "min_ent_coef_ratio": 0.065249104402846,
+     "beta1": 0.95,
+     "beta2": 0.999,
+     "eps": 1e-12,
+     "minibatch_size": 24576,
+     "horizon": 128,
+     "vtrace_rho_clip": 1.0,
+     "vtrace_c_clip": 1.0,
+     "prio_alpha": 0.8,
+     "prio_beta0": 0.2
+    },
+    "sweep": {
+     "method": "Protein",
+     "metric": "score",
+     "metric_distribution": "linear",
+     "goal": "maximize",
+     "max_suggestion_cost": 3600,
+     "max_runs": 1200,
+     "gpus": 0,
+     "downsample": 5,
+     "use_gpu": true,
+     "prune_pareto": true,
+     "early_stop_quantile": 0.3,
+     "match_enemy_model_path": "",
+     "match_num_games": 1024,
+     "match_enemy_hidden_size": 0,
+     "match_enemy_num_layers": 0,
+     "train": {
+      "total_timesteps": {
+       "distribution": "log_normal",
+       "min": 30000000.0,
+       "max": 100000000000.0,
+       "scale": "time"
+      },
+      "horizon": {
+       "distribution": "uniform_pow2",
+       "min": 8,
+       "max": 1024,
+       "scale": "auto"
+      },
+      "learning_rate": {
+       "distribution": "log_normal",
+       "min": 1e-05,
+       "max": 0.1,
+       "scale": 0.5
+      },
+      "ent_coef": {
+       "distribution": "log_normal",
+       "min": 1e-05,
+       "max": 0.2,
+       "scale": "auto"
+      },
+      "gamma": {
+       "distribution": "logit_normal",
+       "min": 0.8,
+       "max": 0.9999,
+       "scale": "auto"
+      },
+      "gae_lambda": {
+       "distribution": "logit_normal",
+       "min": 0.2,
+       "max": 0.995,
+       "scale": "auto"
+      },
+      "vtrace_rho_clip": {
+       "distribution": "uniform",
+       "min": 0.1,
+       "max": 5.0,
+       "scale": "auto"
+      },
+      "vtrace_c_clip": {
+       "distribution": "uniform",
+       "min": 0.1,
+       "max": 5.0,
+       "scale": "auto"
+      },
+      "replay_ratio": {
+       "distribution": "uniform",
+       "min": 0.25,
+       "max": 4.0,
+       "scale": "auto"
+      },
+      "clip_coef": {
+       "distribution": "uniform",
+       "min": 0.01,
+       "max": 1.0,
+       "scale": "auto"
+      },
+      "vf_clip_coef": {
+       "distribution": "uniform",
+       "min": 0.01,
+       "max": 5.0,
+       "scale": "auto"
+      },
+      "vf_coef": {
+       "distribution": "uniform",
+       "min": 0.1,
+       "max": 5.0,
+       "scale": "auto"
+      },
+      "max_grad_norm": {
+       "distribution": "uniform",
+       "min": 0.1,
+       "max": 5.0,
+       "scale": "auto"
+      },
+      "beta1": {
+       "distribution": "logit_normal",
+       "min": 0.5,
+       "max": 0.999,
+       "scale": "auto"
+      },
+      "beta2": {
+       "distribution": "logit_normal",
+       "min": 0.9,
+       "max": 0.99999,
+       "scale": "auto"
+      },
+      "eps": {
+       "distribution": "log_normal",
+       "min": 1e-14,
+       "max": 0.0001,
+       "scale": "auto"
+      },
+      "prio_alpha": {
+       "distribution": "uniform",
+       "min": 0.0,
+       "max": 1.0,
+       "scale": "auto"
+      },
+      "prio_beta0": {
+       "distribution": "uniform",
+       "min": 0.0,
+       "max": 1.0,
+       "scale": "auto"
+      }
+     },
+     "policy": {
+      "hidden_size": {
+       "distribution": "uniform_pow2",
+       "min": 32,
+       "max": 1024,
+       "scale": "auto"
+      },
+      "num_layers": {
+       "distribution": "uniform",
+       "min": 1,
+       "max": 8,
+       "scale": "auto"
+      }
+     },
+     "vec": {
+      "num_buffers": {
+       "distribution": "uniform",
+       "min": 1,
+       "max": 8,
+       "scale": "auto"
+      }
+     }
+    },
+    "base": {},
+    "sweep.train.total_timesteps": {},
+    "sweep.policy.hidden_size": {},
+    "sweep.policy.num_layers": {},
+    "sweep.vec.num_buffers": {},
+    "sweep.train.horizon": {},
+    "sweep.train.learning_rate": {},
+    "sweep.train.ent_coef": {},
+    "sweep.train.gamma": {},
+    "sweep.train.gae_lambda": {},
+    "sweep.train.vtrace_rho_clip": {},
+    "sweep.train.vtrace_c_clip": {},
+    "sweep.train.replay_ratio": {},
+    "sweep.train.clip_coef": {},
+    "sweep.train.vf_clip_coef": {},
+    "sweep.train.vf_coef": {},
+    "sweep.train.max_grad_norm": {},
+    "sweep.train.beta1": {},
+    "sweep.train.beta2": {},
+    "sweep.train.eps": {},
+    "sweep.train.prio_alpha": {},
+    "sweep.train.prio_beta0": {}
+   },
+   "native_binding_sha256": "21efa0a05f5321ac2b598e5b1b8b011a3c3ca80c18f0fbae46c1b5470945e730",
+   "map_catalogue": "identity-124"
+  },
+  "band_scores": {
+   "pool-v7": {
+    "106692608": {
+     "rating": 398.9833317355686,
+     "interval": [
+      352.3989748253967,
+      446.7469755219535
+     ],
+     "games": 160
+    },
+    "213352448": {
+     "rating": 570.3030300142348,
+     "interval": [
+      527.944210104807,
+      610.6529773053492
+     ],
+     "games": 160
+    },
+    "320012288": {
+     "rating": 535.5022590073639,
+     "interval": [
+      484.38628639396285,
+      588.8304613327639
+     ],
+     "games": 160
+    },
+    "426672128": {
+     "rating": 599.3096772292425,
+     "interval": [
+      553.2983755509915,
+      649.0969824116114
+     ],
+     "games": 160
+    },
+    "533364736": {
+     "rating": 606.7753907178458,
+     "interval": [
+      558.9844824683341,
+      656.6290282467505
+     ],
+     "games": 160
+    },
+    "640024576": {
+     "rating": 589.4982244799576,
+     "interval": [
+      537.304866230724,
+      639.4638332736581
+     ],
+     "games": 160
+    },
+    "746684416": {
+     "rating": 659.5529233874635,
+     "interval": [
+      613.8060617313747,
+      705.9983250403138
+     ],
+     "games": 160
+    },
+    "853344256": {
+     "rating": 648.5043276163775,
+     "interval": [
+      598.3952428514614,
+      706.3394751994371
+     ],
+     "games": 160
+    },
+    "960004096": {
+     "rating": 629.8086523111378,
+     "interval": [
+      579.9754085803745,
+      683.9085287393697
+     ],
+     "games": 160
+    },
+    "1066696704": {
+     "rating": 673.794757194217,
+     "interval": [
+      612.3097384881077,
+      737.5643846914528
+     ],
+     "games": 160
+    },
+    "1173356544": {
+     "rating": 622.0162465551253,
+     "interval": [
+      569.5238820471072,
+      677.184865523257
+     ],
+     "games": 160
+    },
+    "1280016384": {
+     "rating": 710.360121148373,
+     "interval": [
+      657.8438019673376,
+      765.557169678858
+     ],
+     "games": 160
+    },
+    "1386676224": {
+     "rating": 673.794757194217,
+     "interval": [
+      626.3087514573361,
+      730.8995749164682
+     ],
+     "games": 160
+    },
+    "1493336064": {
+     "rating": 710.360121148373,
+     "interval": [
+      658.215974173688,
+      771.7778640293553
+     ],
+     "games": 160
+    },
+    "1600028672": {
+     "rating": 645.7859095920453,
+     "interval": [
+      596.2557117775964,
+      695.7970453573737
+     ],
+     "games": 160
+    },
+    "1706688512": {
+     "rating": 682.5964400911766,
+     "interval": [
+      631.7627109037783,
+      744.8137031366283
+     ],
+     "games": 160
+    },
+    "1813348352": {
+     "rating": 700.8587385650428,
+     "interval": [
+      637.4013270085593,
+      770.0610331007179
+     ],
+     "games": 160
+    },
+    "1920008192": {
+     "rating": 662.3612242046408,
+     "interval": [
+      615.9303253151405,
+      719.9099022172361
+     ],
+     "games": 160
+    },
+    "2026668032": {
+     "rating": 691.6113517760291,
+     "interval": [
+      638.9977562961644,
+      755.3985232955794
+     ],
+     "games": 160
+    },
+    "2133360640": {
+     "rating": 675.0963430289427,
+     "interval": [
+      643.5109299876514,
+      707.9237871261528
+     ],
+     "games": 480
+    },
+    "2240020480": {
+     "rating": 748.2051902169217,
+     "interval": [
+      714.3135708422699,
+      787.7216017963557
+     ],
+     "games": 480
+    },
+    "2313256960": {
+     "rating": 690.1755705872274,
+     "interval": [
+      654.6769156452347,
+      724.2377445221166
+     ],
+     "games": 480
+    }
+   },
+   "pool-v8": {
+    "2133360640": {
+     "rating": 588.3939572593257,
+     "interval": [
+      551.7655464558059,
+      630.1288300871852
+     ],
+     "games": 240
+    },
+    "2240020480": {
+     "rating": 612.5795341099508,
+     "interval": [
+      577.981056129612,
+      652.161123099726
+     ],
+     "games": 240
+    },
+    "2313256960": {
+     "rating": 637.7197098723561,
+     "interval": [
+      599.0856900348174,
+      676.9787995760366
+     ],
+     "games": 240
+    }
+   }
+  },
+  "elo": {
+   "106692608": {
+    "elo": 379.1282417695181,
+    "interval": [
+     247.14137339079892,
+     514.6846958753825
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "213352448": {
+    "elo": 645.994982962252,
+    "interval": [
+     493.7676243135191,
+     925.9711354585974
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "320012288": {
+    "elo": 823.9472408592364,
+    "interval": [
+     678.5039994106872,
+     981.4112461104828
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "426672128": {
+    "elo": 574.0942273561673,
+    "interval": [
+     462.4440534030611,
+     735.0651291774307
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "533364736": {
+    "elo": 691.1966383283859,
+    "interval": [
+     547.8634389673977,
+     938.5401639167003
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "640024576": {
+    "elo": 691.1966383283859,
+    "interval": [
+     529.9244387451188,
+     950.2746576783173
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "746684416": {
+    "elo": 823.9472408592364,
+    "interval": [
+     678.5039994106872,
+     981.4112461104828
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "853344256": {
+    "elo": 607.6959724221657,
+    "interval": [
+     475.4274569256489,
+     798.9969876363814
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "960004096": {
+    "elo": 645.994982962252,
+    "interval": [
+     516.1327235938852,
+     823.9472408592364
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "1066696704": {
+    "elo": 691.1966383283859,
+    "interval": [
+     570.102132149684,
+     912.4425726392576
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "1173356544": {
+    "elo": 691.1966383283859,
+    "interval": [
+     574.0942273561673,
+     898.1660114822633
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "1280016384": {
+    "elo": 645.994982962252,
+    "interval": [
+     486.24225770702907,
+     938.5401639167003
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "1386676224": {
+    "elo": 950.2746576783173,
+    "interval": [
+     881.8494635897083,
+     999.4725914842759
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "1493336064": {
+    "elo": 747.4284385127506,
+    "interval": [
+     587.6953514219058,
+     971.632199372404
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "1600028672": {
+    "elo": 823.9472408592364,
+    "interval": [
+     678.5039994106872,
+     981.4112461104828
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "1706688512": {
+    "elo": 747.4284385127506,
+    "interval": [
+     594.3171059773667,
+     971.632199372404
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "1813348352": {
+    "elo": 950.2746576783173,
+    "interval": [
+     881.8494635897083,
+     999.4725914842759
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "1920008192": {
+    "elo": 747.4284385127506,
+    "interval": [
+     618.9922368007533,
+     961.2770377386033
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "2026668032": {
+    "elo": 823.9472408592364,
+    "interval": [
+     678.5039994106872,
+     981.4112461104828
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "2133360640": {
+    "elo": 747.4284385127506,
+    "interval": [
+     603.9568917782747,
+     961.2770377386033
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "2240020480": {
+    "elo": 747.4284385127506,
+    "interval": [
+     594.3171059773667,
+     971.632199372404
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   },
+   "2313256960": {
+    "elo": 747.4284385127506,
+    "interval": [
+     607.6024954060686,
+     961.2770377386033
+    ],
+    "games": 48,
+    "source": "evaluation",
+    "pool_sha8": "d48f4b64",
+    "map_catalogue": "identity-124"
+   }
+  },
+  "elo_refit": {
+   "106692608": {
+    "rating": 379.1282417695181,
+    "interval": [
+     244.57910535796398,
+     516.1698525097443
+    ],
+    "games": 48,
+    "pool": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"
+   },
+   "213352448": {
+    "rating": 645.994982962252,
+    "interval": [
+     504.17182973295814,
+     898.1660114822638
+    ],
+    "games": 48,
+    "pool": "/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"
+   }
+  },
+  "win_rates": {
+   "106692608": {
+    "trained": [
+     89,
+     168
+    ],
+    "heldout": [
+     24,
+     48
+    ],
+    "timeouts": 0
+   },
+   "213352448": {
+    "trained": [
+     120,
+     168
+    ],
+    "heldout": [
+     24,
+     48
+    ],
+    "timeouts": 0
+   },
+   "320012288": {
+    "trained": [
+     128,
+     168
+    ],
+    "heldout": [
+     35,
+     48
+    ],
+    "timeouts": 1
+   },
+   "426672128": {
+    "trained": [
+     125,
+     168
+    ],
+    "heldout": [
+     33,
+     48
+    ],
+    "timeouts": 1
+   },
+   "533364736": {
+    "trained": [
+     133,
+     168
+    ],
+    "heldout": [
+     32,
+     48
+    ],
+    "timeouts": 2
+   },
+   "640024576": {
+    "trained": [
+     140,
+     168
+    ],
+    "heldout": [
+     35,
+     48
+    ],
+    "timeouts": 1
+   },
+   "746684416": {
+    "trained": [
+     148,
+     168
+    ],
+    "heldout": [
+     32,
+     48
+    ],
+    "timeouts": 0
+   },
+   "853344256": {
+    "trained": [
+     142,
+     168
+    ],
+    "heldout": [
+     35,
+     48
+    ],
+    "timeouts": 1
+   },
+   "960004096": {
+    "trained": [
+     150,
+     168
+    ],
+    "heldout": [
+     38,
+     48
+    ],
+    "timeouts": 0
+   },
+   "1066696704": {
+    "trained": [
+     149,
+     168
+    ],
+    "heldout": [
+     38,
+     48
+    ],
+    "timeouts": 1
+   },
+   "1173356544": {
+    "trained": [
+     155,
+     168
+    ],
+    "heldout": [
+     43,
+     48
+    ],
+    "timeouts": 0
+   },
+   "1280016384": {
+    "trained": [
+     155,
+     168
+    ],
+    "heldout": [
+     40,
+     48
+    ],
+    "timeouts": 1
+   },
+   "1386676224": {
+    "trained": [
+     157,
+     168
+    ],
+    "heldout": [
+     36,
+     48
+    ],
+    "timeouts": 3
+   },
+   "1493336064": {
+    "trained": [
+     159,
+     168
+    ],
+    "heldout": [
+     37,
+     48
+    ],
+    "timeouts": 3
+   },
+   "1600028672": {
+    "trained": [
+     158,
+     168
+    ],
+    "heldout": [
+     40,
+     48
+    ],
+    "timeouts": 0
+   },
+   "1706688512": {
+    "trained": [
+     156,
+     168
+    ],
+    "heldout": [
+     41,
+     48
+    ],
+    "timeouts": 1
+   },
+   "1813348352": {
+    "trained": [
+     154,
+     168
+    ],
+    "heldout": [
+     40,
+     48
+    ],
+    "timeouts": 2
+   },
+   "1920008192": {
+    "trained": [
+     155,
+     168
+    ],
+    "heldout": [
+     37,
+     48
+    ],
+    "timeouts": 4
+   },
+   "2026668032": {
+    "trained": [
+     160,
+     168
+    ],
+    "heldout": [
+     40,
+     48
+    ],
+    "timeouts": 1
+   },
+   "2133360640": {
+    "trained": [
+     156,
+     168
+    ],
+    "heldout": [
+     28,
+     48
+    ],
+    "timeouts": 12
+   },
+   "2240020480": {
+    "trained": [
+     161,
+     168
+    ],
+    "heldout": [
+     44,
+     48
+    ],
+    "timeouts": 1
+   },
+   "2313256960": {
+    "trained": [
+     161,
+     168
+    ],
+    "heldout": [
+     41,
+     48
+    ],
+    "timeouts": 2
+   }
+  },
+  "value": {
+   "106692608": {
+    "ev": 0.0858652379322733,
+    "n": 7307,
+    "games": 34,
+    "value_std": 0.18889140264335327,
+    "return_std": 0.6684568942353337,
+    "value_mean": -0.07145341386186686,
+    "return_mean": 0.024680089550992174
+   },
+   "213352448": {
+    "ev": 0.07557242138155551,
+    "n": 8089,
+    "games": 34,
+    "value_std": 0.12646860483174233,
+    "return_std": 0.6582296016430251,
+    "value_mean": 0.026253767949101267,
+    "return_mean": 0.04835620944735799
+   },
+   "320012288": {
+    "ev": -0.06428195115588475,
+    "n": 7930,
+    "games": 34,
+    "value_std": 0.11890818256338337,
+    "return_std": 0.6093759214971973,
+    "value_mean": 0.0795399805177696,
+    "return_mean": 0.30173135869484086
+   },
+   "426672128": {
+    "ev": 0.058030831309031305,
+    "n": 6669,
+    "games": 34,
+    "value_std": 0.14138453260020575,
+    "return_std": 0.7235392968565122,
+    "value_mean": 0.11244229554384556,
+    "return_mean": 0.13573703740466
+   },
+   "533364736": {
+    "ev": 0.014561558804691788,
+    "n": 5305,
+    "games": 34,
+    "value_std": 0.13675980460022394,
+    "return_std": 0.7535848924762921,
+    "value_mean": 0.14575501714822547,
+    "return_mean": 0.2191503111945248
+   },
+   "640024576": {
+    "ev": -0.09055443286541331,
+    "n": 6561,
+    "games": 34,
+    "value_std": 0.1777858756373584,
+    "return_std": 0.5971751281123028,
+    "value_mean": 0.18103499021961708,
+    "return_mean": 0.4184457047338632
+   },
+   "746684416": {
+    "ev": -0.011443031751271704,
+    "n": 8067,
+    "games": 34,
+    "value_std": 0.15524287986836194,
+    "return_std": 0.5685438993232445,
+    "value_mean": 0.14878780076807144,
+    "return_mean": 0.3329891813885116
+   },
+   "853344256": {
+    "ev": -0.04677384884020208,
+    "n": 7399,
+    "games": 34,
+    "value_std": 0.14213826794980516,
+    "return_std": 0.5684280572253138,
+    "value_mean": 0.19968178616244128,
+    "return_mean": 0.34389351364638315
+   },
+   "960004096": {
+    "ev": -0.1617729233702685,
+    "n": 5664,
+    "games": 34,
+    "value_std": 0.13057098577416434,
+    "return_std": 0.5793821578059455,
+    "value_mean": 0.24597411995185053,
+    "return_mean": 0.48981404053937794
+   },
+   "1066696704": {
+    "ev": -0.26486592196843173,
+    "n": 6164,
+    "games": 34,
+    "value_std": 0.15310246319873144,
+    "return_std": 0.5235940997453237,
+    "value_mean": 0.2241669936429094,
+    "return_mean": 0.5051952582145084
+   },
+   "1173356544": {
+    "ev": -0.17155707627355699,
+    "n": 6729,
+    "games": 34,
+    "value_std": 0.13852319542901526,
+    "return_std": 0.5627741213654541,
+    "value_mean": 0.2516969490566161,
+    "return_mean": 0.46401504008473987
+   },
+   "1280016384": {
+    "ev": -0.07348614939425557,
+    "n": 4336,
+    "games": 34,
+    "value_std": 0.18050251399414752,
+    "return_std": 0.6589494982515287,
+    "value_mean": 0.28306698776430167,
+    "return_mean": 0.4931132756561671
+   },
+   "1386676224": {
+    "ev": -0.04421340114330885,
+    "n": 5449,
+    "games": 34,
+    "value_std": 0.162487435123352,
+    "return_std": 0.6512672333085197,
+    "value_mean": 0.2921654791059306,
+    "return_mean": 0.37517108714163716
+   },
+   "1493336064": {
+    "ev": -0.040155060301301226,
+    "n": 7670,
+    "games": 34,
+    "value_std": 0.18278925917764133,
+    "return_std": 0.5283479369520705,
+    "value_mean": 0.2611442023778949,
+    "return_mean": 0.4158974443661578
+   },
+   "1600028672": {
+    "ev": -0.07013860879500267,
+    "n": 4024,
+    "games": 34,
+    "value_std": 0.20487297440998434,
+    "return_std": 0.6258818215496885,
+    "value_mean": 0.29116221389661046,
+    "return_mean": 0.5527855799770439
+   },
+   "1706688512": {
+    "ev": -0.2397702646273867,
+    "n": 4971,
+    "games": 34,
+    "value_std": 0.18867313224773913,
+    "return_std": 0.594831667868157,
+    "value_mean": 0.28242180405926165,
+    "return_mean": 0.5209390300467065
+   },
+   "1813348352": {
+    "ev": -0.004273792471568116,
+    "n": 4596,
+    "games": 34,
+    "value_std": 0.21662252128688278,
+    "return_std": 0.658643843362656,
+    "value_mean": 0.3954344753541127,
+    "return_mean": 0.522808990685829
+   },
+   "1920008192": {
+    "ev": 0.21658074557132867,
+    "n": 5726,
+    "games": 34,
+    "value_std": 0.2716186882941655,
+    "return_std": 0.5993188827188262,
+    "value_mean": 0.2304762981640428,
+    "return_mean": 0.42420336852264384
+   },
+   "2026668032": {
+    "ev": -0.08618242681384314,
+    "n": 5154,
+    "games": 34,
+    "value_std": 0.17383236316618741,
+    "return_std": 0.5525928132897067,
+    "value_mean": 0.42001018143263685,
+    "return_mean": 0.587953128458994
+   },
+   "2133360640": {
+    "ev": 0.4374471381847854,
+    "n": 11853,
+    "games": 34,
+    "value_std": 0.22700766647152262,
+    "return_std": 0.5005725605683459,
+    "value_mean": 0.24955754874488323,
+    "return_mean": 0.20418242246468923
+   },
+   "2240020480": {
+    "ev": 0.0422083297629372,
+    "n": 6971,
+    "games": 34,
+    "value_std": 0.26441185027245834,
+    "return_std": 0.4547002402825434,
+    "value_mean": 0.3947457987390963,
+    "return_mean": 0.5741059154735076
+   },
+   "2313256960": {
+    "ev": 0.29808486564425174,
+    "n": 10170,
+    "games": 34,
+    "value_std": 0.23694035131725186,
+    "return_std": 0.4955672213040985,
+    "value_mean": 0.3151037544853076,
+    "return_mean": 0.32911581602614526
+   }
+  },
+  "deaths": {
+   "106692608": {
+    "learner": {
+     "opp arrow": 91,
+     "own arrow": 2,
+     "squish": 7,
+     "fall": 3
+    },
+    "kills": {
+     "arrow": 51,
+     "accident": 40,
+     "squish": 23
+    },
+    "games": 217
+   },
+   "213352448": {
+    "learner": {
+     "opp arrow": 58,
+     "own arrow": 1,
+     "fall": 7,
+     "squish": 6
+    },
+    "kills": {
+     "arrow": 80,
+     "accident": 41,
+     "squish": 24
+    },
+    "games": 217
+   },
+   "320012288": {
+    "learner": {
+     "opp arrow": 44,
+     "squish": 5,
+     "own arrow": 3,
+     "timeout": 1
+    },
+    "kills": {
+     "accident": 41,
+     "arrow": 98,
+     "squish": 25
+    },
+    "games": 217
+   },
+   "426672128": {
+    "learner": {
+     "squish": 8,
+     "opp arrow": 42,
+     "fall": 5,
+     "own arrow": 2,
+     "timeout": 1
+    },
+    "kills": {
+     "arrow": 98,
+     "accident": 37,
+     "squish": 24
+    },
+    "games": 217
+   },
+   "533364736": {
+    "learner": {
+     "squish": 4,
+     "opp arrow": 39,
+     "timeout": 2,
+     "fall": 4,
+     "own arrow": 2
+    },
+    "kills": {
+     "accident": 35,
+     "squish": 24,
+     "arrow": 107
+    },
+    "games": 217
+   },
+   "640024576": {
+    "learner": {
+     "opp arrow": 32,
+     "squish": 4,
+     "fall": 3,
+     "own arrow": 1,
+     "timeout": 1
+    },
+    "kills": {
+     "arrow": 117,
+     "squish": 30,
+     "accident": 29
+    },
+    "games": 217
+   },
+   "746684416": {
+    "learner": {
+     "opp arrow": 27,
+     "squish": 6,
+     "fall": 3
+    },
+    "kills": {
+     "arrow": 123,
+     "accident": 37,
+     "squish": 21
+    },
+    "games": 217
+   },
+   "853344256": {
+    "learner": {
+     "own arrow": 3,
+     "opp arrow": 21,
+     "fall": 6,
+     "squish": 8,
+     "timeout": 1
+    },
+    "kills": {
+     "accident": 37,
+     "squish": 28,
+     "arrow": 113
+    },
+    "games": 217
+   },
+   "960004096": {
+    "learner": {
+     "opp arrow": 23,
+     "squish": 4,
+     "fall": 1,
+     "own arrow": 1
+    },
+    "kills": {
+     "accident": 33,
+     "squish": 18,
+     "arrow": 138
+    },
+    "games": 217
+   },
+   "1066696704": {
+    "learner": {
+     "opp arrow": 17,
+     "squish": 6,
+     "fall": 4,
+     "timeout": 1,
+     "own arrow": 1
+    },
+    "kills": {
+     "squish": 23,
+     "accident": 29,
+     "arrow": 137
+    },
+    "games": 217
+   },
+   "1173356544": {
+    "learner": {
+     "opp arrow": 14,
+     "squish": 2,
+     "own arrow": 2
+    },
+    "kills": {
+     "arrow": 152,
+     "accident": 30,
+     "squish": 17
+    },
+    "games": 217
+   },
+   "1280016384": {
+    "learner": {
+     "squish": 3,
+     "own arrow": 4,
+     "opp arrow": 13,
+     "timeout": 1
+    },
+    "kills": {
+     "arrow": 138,
+     "accident": 40,
+     "squish": 18
+    },
+    "games": 217
+   },
+   "1386676224": {
+    "learner": {
+     "squish": 2,
+     "own arrow": 1,
+     "opp arrow": 15,
+     "timeout": 3,
+     "fall": 2
+    },
+    "kills": {
+     "squish": 17,
+     "accident": 37,
+     "arrow": 140
+    },
+    "games": 217
+   },
+   "1493336064": {
+    "learner": {
+     "opp arrow": 12,
+     "squish": 4,
+     "own arrow": 1,
+     "timeout": 3
+    },
+    "kills": {
+     "arrow": 153,
+     "accident": 33,
+     "squish": 11
+    },
+    "games": 217
+   },
+   "1600028672": {
+    "learner": {
+     "squish": 2,
+     "own arrow": 1,
+     "opp arrow": 12,
+     "fall": 3
+    },
+    "kills": {
+     "arrow": 148,
+     "accident": 36,
+     "squish": 15
+    },
+    "games": 217
+   },
+   "1706688512": {
+    "learner": {
+     "opp arrow": 15,
+     "squish": 2,
+     "fall": 1,
+     "timeout": 1
+    },
+    "kills": {
+     "arrow": 144,
+     "accident": 43,
+     "squish": 11
+    },
+    "games": 217
+   },
+   "1813348352": {
+    "learner": {
+     "squish": 4,
+     "opp arrow": 13,
+     "timeout": 2,
+     "own arrow": 2,
+     "fall": 1
+    },
+    "kills": {
+     "arrow": 143,
+     "accident": 38,
+     "squish": 14
+    },
+    "games": 217
+   },
+   "1920008192": {
+    "learner": {
+     "opp arrow": 15,
+     "timeout": 4,
+     "own arrow": 2,
+     "squish": 3
+    },
+    "kills": {
+     "arrow": 149,
+     "accident": 32,
+     "squish": 12
+    },
+    "games": 217
+   },
+   "2026668032": {
+    "learner": {
+     "opp arrow": 11,
+     "squish": 4,
+     "timeout": 1
+    },
+    "kills": {
+     "arrow": 156,
+     "accident": 34,
+     "squish": 11
+    },
+    "games": 217
+   },
+   "2133360640": {
+    "learner": {
+     "opp arrow": 11,
+     "timeout": 12,
+     "fall": 4,
+     "squish": 4,
+     "own arrow": 1
+    },
+    "kills": {
+     "arrow": 133,
+     "accident": 40,
+     "squish": 12
+    },
+    "games": 217
+   },
+   "2240020480": {
+    "learner": {
+     "own arrow": 1,
+     "squish": 4,
+     "fall": 2,
+     "opp arrow": 3,
+     "timeout": 1
+    },
+    "kills": {
+     "arrow": 158,
+     "accident": 34,
+     "squish": 14
+    },
+    "games": 217
+   },
+   "2313256960": {
+    "learner": {
+     "fall": 3,
+     "opp arrow": 8,
+     "timeout": 2,
+     "squish": 1
+    },
+    "kills": {
+     "accident": 35,
+     "squish": 16,
+     "arrow": 152
+    },
+    "games": 217
+   }
+  },
+  "in_run_ev": {
+   "106692608": 0.41219893991947176,
+   "213352448": 0.3946836143732071,
+   "320012288": 0.4497333377599716,
+   "426672128": 0.44183442294597625,
+   "533364736": 0.44789008498191835,
+   "640024576": 0.4899904698133469,
+   "746684416": 0.5311529457569122,
+   "853344256": 0.5634034991264343,
+   "960004096": 0.5783345490694046,
+   "1066696704": 0.6059967815876007,
+   "1173356544": 0.6779231190681457,
+   "1280016384": 0.6112012326717376,
+   "1386676224": 0.6928950160741806,
+   "1493336064": 0.6943892806768417,
+   "1600028672": 0.7233395904302597,
+   "1706688512": 0.7033782243728638,
+   "1813348352": 0.789792999625206,
+   "1920008192": 0.7603998243808746,
+   "2026668032": 0.7956209599971771,
+   "2133360640": 0.7810756713151932,
+   "2240020480": 0.8530776768922805,
+   "2313256960": 0.8587099313735962
+  }
+ }
+}

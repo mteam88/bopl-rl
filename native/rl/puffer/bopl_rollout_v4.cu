@@ -11,8 +11,9 @@
 //   br4_sets     grid (rows, 4 sets), block per (sample, set): the set's valid
 //                rows through relu(W1 x + E[id]) -> relu(W2 h1) in bf16-rounded
 //                fp32 (the trainer's WMMA path rounds the same operands to
-//                bf16), max || mean pooled into joined[:, FD + 2Ds ..]. The set
-//                0 block also copies the obs row, reward and terminal into the
+//                bf16; W1, W2 packed to bf16 once per rollout by br4_prepare),
+//                max || mean pooled into joined[:, FD + 2Ds ..]. The set 0
+//                block also copies the obs row, reward and terminal into the
 //                rollout tensors.
 //   br_gemm      flat (obs[:, :FLAT] -> relu -> joined[:, :FD]), fusion,
 //                MinGRU layers, FFN in/out, actor, critic in / b1 / b2.
@@ -26,9 +27,9 @@
 // (the trainer logs set_overflow when it drops any).
 #pragma once
 
-struct Br4SetWeights {   // per group g and set s, as stored: W1 (I, features), W2 (D, I), E (IDS, I)
-    const float* w1[BR_MAX_GROUPS][4];
-    const float* w2[BR_MAX_GROUPS][4];
+struct Br4SetWeights {   // per group g and set s: W1^T bf16 (features, I), W2 bf16 (D, I) packed by br4_prepare, E fp32 (IDS, I) as stored
+    const __nv_bfloat16* w1t[BR_MAX_GROUPS][4];
+    const __nv_bfloat16* w2[BR_MAX_GROUPS][4];
     const float* emb[BR_MAX_GROUPS];
 };
 struct Br4SetsArgs {
@@ -42,44 +43,60 @@ struct Br4SetsArgs {
 };
 #define BR4_SET_THREADS 256
 #define BR4_MAX_SET_ROWS 48   // the largest set
+#define BR4_MAX_I 128         // set inner width the register-held W2 row supports (BOPL4_SET_INNER)
 static_assert(BOPL4_PLAYERS <= BR4_MAX_SET_ROWS && BOPL4_SLOTS <= BR4_MAX_SET_ROWS && BOPL4_ENTITIES <= BR4_MAX_SET_ROWS && BOPL4_SLIMES <= BR4_MAX_SET_ROWS, "set rows");
 
 __device__ __forceinline__ float br4_bf(float v) { return __bfloat162float(__float2bfloat16(v)); }
 
-// Dynamic shared: valid[48] ints, h1 (n <= 48, I) bf16, W2 (D, I/2 + 1) bf162 (padded row: conflict-free column reads).
+// Dynamic shared: valid[48] ints, h1 (n <= 48, I) bf16. (W2 used to be staged
+// here as bf16 pairs by every block: 64 KB of fp32 reads and 16k conversions
+// per (row, set) block, 256 blocks per buffer step; it is now packed once per
+// rollout by br4_prepare and each thread holds its W2 row in registers.)
 static size_t br4_sets_smem(int D, int I) {
-    return BR4_MAX_SET_ROWS * sizeof(int) + (size_t)BR4_MAX_SET_ROWS * I * sizeof(__nv_bfloat16) + (size_t)D * (I / 2 + 1) * sizeof(__nv_bfloat162);
+    (void)D;
+    return BR4_MAX_SET_ROWS * sizeof(int) + (size_t)BR4_MAX_SET_ROWS * I * sizeof(__nv_bfloat16);
+}
+// One group's set weights into the chain's layout: W1 transposed to (features, I)
+// bf16 (thread i of the h1 loop reads column i: coalesced), W2 (D, I) bf16.
+// The values are the bf16 roundings br4_sets applied on the fly before.
+__global__ void br4_pack_set_weights(const float* w1, int features, const float* w2, int D, int I, __nv_bfloat16* w1t, __nv_bfloat16* w2b) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x, n1 = I * features, n2 = D * I;
+    if (i < n1) { int f = i / I, ii = i - f * I; w1t[i] = __float2bfloat16(w1[(long)ii * features + f]); }
+    else if (i < n1 + n2) w2b[i - n1] = __float2bfloat16(w2[i - n1]);
 }
 __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
     extern __shared__ __align__(16) unsigned char smem[];
-    const int row = blockIdx.x, s = blockIdx.y, tid = threadIdx.x;
+    br_pdl_wait();
+    const int row = blockIdx.x, s = blockIdx.y, tid = threadIdx.x, lane = tid & 31;
     const int I = a.I, D = a.D;
     int* valid = (int*)smem;
     __nv_bfloat16* h1 = (__nv_bfloat16*)(valid + BR4_MAX_SET_ROWS);
-    __nv_bfloat162* W2s = (__nv_bfloat162*)(h1 + BR4_MAX_SET_ROWS * I);
-    const int ldw = I / 2 + 1;
     const int grp = br_group_of(a.g, row);
     const v4::Spec sp = v4::c_spec[s];
     const float* obs = a.obs + (long)row * BOPL_OBS_STRIDE;
     if (s == 0) {  // the row's copy into the rollout tensors (the old cast kernels)
         if (tid == 0) { a.rollout_rewards[row] = a.rewards[row]; a.rollout_terminals[row] = a.terminals[row]; }
-        // rows are 8-byte aligned (BOPL_OBS_STRIDE is even), not 16
-        const float2* src = (const float2*)obs; float2* dst = (float2*)(a.rollout_obs + (long)row * BOPL_OBS_STRIDE);
-        for (int i = tid; i < BOPL_OBS_STRIDE / 2; i += BR4_SET_THREADS) dst[i] = src[i];
-        if (BOPL_OBS_STRIDE & 1) if (tid == 0) a.rollout_obs[(long)row * BOPL_OBS_STRIDE + BOPL_OBS_STRIDE - 1] = obs[BOPL_OBS_STRIDE - 1];
+        // The packed transport unpacks straight into the rollout rows (obs ==
+        // rollout_obs); the dense paths still copy. Rows are 8-byte aligned.
+        if (a.obs != a.rollout_obs) {
+            const float2* src = (const float2*)obs; float2* dst = (float2*)(a.rollout_obs + (long)row * BOPL_OBS_STRIDE);
+            for (int i = tid; i < BOPL_OBS_STRIDE / 2; i += BR4_SET_THREADS) dst[i] = src[i];
+            if (BOPL_OBS_STRIDE & 1) if (tid == 0) a.rollout_obs[(long)row * BOPL_OBS_STRIDE + BOPL_OBS_STRIDE - 1] = obs[BOPL_OBS_STRIDE - 1];
+        }
     }
-    // valid rows of the set (first feature nonzero), in order
+    // valid rows of the set (first feature nonzero), in order: warp 0, the
+    // rows' flags by ballot (two loads per lane in flight, where one thread
+    // walking the 48 rows was a chain of dependent loads)
     __shared__ int n_valid;
-    if (tid == 0) {
+    if (tid < 32) {
         int n = 0;
-        for (int r = 0; r < sp.rows; r++) if (obs[sp.offset + r * sp.width] != 0.0f) valid[n++] = r;
-        n_valid = n;
-    }
-    // W2 of this group into shared as bf16 pairs
-    const float* W2 = a.w.w2[grp][s];
-    for (int e = tid; e < D * (I / 2); e += BR4_SET_THREADS) {
-        int d = e / (I / 2), i2 = e - d * (I / 2);
-        W2s[d * ldw + i2] = __floats2bfloat162_rn(W2[(long)d * I + 2 * i2], W2[(long)d * I + 2 * i2 + 1]);
+        for (int r0 = 0; r0 < sp.rows; r0 += 32) {
+            int r = r0 + lane;
+            unsigned m = __ballot_sync(0xffffffffu, r < sp.rows && obs[sp.offset + r * sp.width] != 0.0f);
+            if (m & (1u << lane)) valid[n + __popc(m & ((1u << lane) - 1u))] = r;
+            n += __popc(m);
+        }
+        if (lane == 0) n_valid = n;
     }
     __syncthreads();
     const int n = n_valid;
@@ -89,34 +106,45 @@ __global__ void __launch_bounds__(BR4_SET_THREADS) br4_sets(Br4SetsArgs a) {
         return;
     }
     // h1[j][i] = relu(sum_f bf(W1[i][f]) bf(x[j][f]) + E[id_j][i]) (bf16 stored, like the trainer's packed rows)
-    const float* W1 = a.w.w1[grp][s];
+    const __nv_bfloat16* W1t = a.w.w1t[grp][s];
     const float* E = a.w.emb[grp];
     for (int e = tid; e < n * I; e += BR4_SET_THREADS) {
         int j = e / I, i = e - j * I;
         const float* x = obs + sp.offset + valid[j] * sp.width;
-        const float* w = W1 + (long)i * sp.features;
         float acc = 0.0f;
-        for (int f = 0; f < sp.features; f++) acc = fmaf(br4_bf(w[f]), br4_bf(x[f]), acc);
+        for (int f = 0; f < sp.features; f++) acc = fmaf(__bfloat162float(W1t[f * I + i]), br4_bf(x[f]), acc);
         if (sp.id_col >= 0) acc += br4_bf(E[(long)v4::embedding_id(x[sp.id_col]) * I + i]);
         h1[j * I + i] = __float2bfloat16(fmaxf(acc, 0.0f));
     }
-    __syncthreads();
     // h2[j][d] = relu(sum_i W2[d][i] h1[j][i]); thread (d, part) owns the rows j = part, part + parts, ...
+    // with its W2 row (I bf16) in registers
     const int parts = BR4_SET_THREADS / D, d = tid % D, part = tid / D;
+    uint4 wreg[BR4_MAX_I / 8];
+    const uint4* wrow = (const uint4*)(a.w.w2[grp][s] + (long)d * I);
+    #pragma unroll
+    for (int k = 0; k < BR4_MAX_I / 8; k++) if (k < I / 8) wreg[k] = wrow[k];
+    __syncthreads();
     float best = 0.0f, sum = 0.0f;
-    const __nv_bfloat162* wrow = W2s + d * ldw;
     for (int j = part; j < n; j += parts) {
-        const __nv_bfloat162* hrow = (const __nv_bfloat162*)(h1 + j * I);
+        const uint4* hrow = (const uint4*)(h1 + j * I);
         float acc = 0.0f;
-        #pragma unroll 8
-        for (int i2 = 0; i2 < I / 2; i2++) {
-            float2 w = __bfloat1622float2(wrow[i2]), h = __bfloat1622float2(hrow[i2]);
-            acc = fmaf(w.x, h.x, acc); acc = fmaf(w.y, h.y, acc);
+        #pragma unroll
+        for (int k = 0; k < BR4_MAX_I / 8; k++) {
+            if (k >= I / 8) break;
+            uint4 hv = hrow[k];
+            const __nv_bfloat162* w2 = (const __nv_bfloat162*)&wreg[k];
+            const __nv_bfloat162* h2 = (const __nv_bfloat162*)&hv;
+            #pragma unroll
+            for (int q = 0; q < 4; q++) {
+                float2 w = __bfloat1622float2(w2[q]), h = __bfloat1622float2(h2[q]);
+                acc = fmaf(w.x, h.x, acc); acc = fmaf(w.y, h.y, acc);
+            }
         }
         float v = br4_bf(fmaxf(acc, 0.0f));   // the trainer pools bf16-stored h2
         best = fmaxf(best, v); sum += v;
     }
-    // reduce the parts through shared (reuse the valid[] area is too small: use W2s' tail? h1 is still live; use a dedicated array)
+    br_pdl_release();   // the flat GEMM launches under the reduction
+    // reduce the parts through shared
     __shared__ float red_max[BR4_SET_THREADS], red_sum[BR4_SET_THREADS];
     red_max[tid] = best; red_sum[tid] = sum;
     __syncthreads();
@@ -153,6 +181,7 @@ __device__ __forceinline__ float br4_block_sum(float v, float* scratch) {
 __global__ void __launch_bounds__(256) br4_rows(Br4RowsArgs a) {
     __shared__ float scratch[8];
     __shared__ float rowbuf[1024];   // W <= 1024 (hidden + privileged, critic width)
+    br_pdl_wait(); br_pdl_release();
     const int row = blockIdx.x, W = a.W;
     const float* x = a.x + (long)row * a.ldx;
     const float* res = a.res ? a.res + (long)row * a.ldres : nullptr;
@@ -183,8 +212,9 @@ __global__ void __launch_bounds__(256) br4_rows(Br4RowsArgs a) {
     }
 }
 
-struct Br4Wt {   // one group's GEMM-side weights (br_prepare)
+struct Br4Wt {   // one group's GEMM-side weights (br_prepare) and the set MLPs' bf16 packs (br4_pack_set_weights)
     float *flat, *fusion, *gru[BR_MAX_LAYERS], *ffn_in, *ffn_out, *actor, *cin, *b1, *b2;
+    __nv_bfloat16 *w1t[4], *w2b[4];
 };
 struct Br4Acts {
     float *joined, *enc, *comb, *gru[2], *ln, *f, *y, *z, *lnc, *b, *z2, *dec;
@@ -202,7 +232,7 @@ static void br_group_weights(PuffeRL* pufferl, int g, int buf, PolicyWeights** w
 static const char* br4_check(PuffeRL* pufferl) {
     auto* ew = (v4::EncWeights*)pufferl->weights.encoder;
     auto* dw = (v4::DecWeights*)pufferl->weights.decoder;
-    if (ew->D > BR4_SET_THREADS || BR4_SET_THREADS % ew->D || ew->I % 2) return "v4 set width must divide 256 (inner even)";
+    if (ew->D > BR4_SET_THREADS || BR4_SET_THREADS % ew->D || ew->I % 8 || ew->I > BR4_MAX_I) return "v4 set width must divide 256 (inner a multiple of 8 up to 128)";
     if (ew->hidden + v4::PRIV > 1024 || dw->cdim > 1024 || dw->ffn > 1024) return "v4 widths above 1024 are not supported by the batched chain";
     if (ew->flat_dim % 8 || dw->cdim % 8 || dw->ffn % 8) return "v4 flat / ffn / critic widths must be multiples of 8";
     for (int b = 0; b < pufferl->num_frozen_banks; b++) {
@@ -247,11 +277,15 @@ static void br4_init(PuffeRL* pufferl, BrPlan* p) {
         zalloc(&w.actor, (size_t)br_frag_floats(H, p->ld_dec));
         zalloc(&w.cin, q->C ? (size_t)br_frag_floats(q->W, q->C) : 0);
         zalloc(&w.b1, q->C ? (size_t)br_frag_floats(q->C, q->C) : 0); zalloc(&w.b2, q->C ? (size_t)br_frag_floats(q->C, q->C) : 0);
+        for (int k = 0; k < 4; k++) {
+            assert(cudaMalloc((void**)&w.w1t[k], (size_t)v4::SPEC[k].features * q->I * sizeof(__nv_bfloat16)) == cudaSuccess);
+            assert(cudaMalloc((void**)&w.w2b[k], (size_t)q->D * q->I * sizeof(__nv_bfloat16)) == cudaSuccess);
+        }
     }
     size_t smem = br4_sets_smem(q->D, q->I);
     assert(cudaFuncSetAttribute(br4_sets, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem) == cudaSuccess);
     p->v4 = q;
-    fprintf(stderr, "bopl batched rollout forward: policy v4 chain (set %d/%d, flat %d, ffn %d, critic %d%s), %.1f KB shared per set block\n",
+    fprintf(stderr, "bopl batched rollout forward: policy v4 chain (set %d/%d, flat %d, ffn %d, critic %d%s), %.1f KB shared per set block, W2 rows in registers\n",
             q->D, q->I, q->FD, q->F, q->C, q->P ? " privileged" : "", smem / 1024.0);
 }
 
@@ -272,6 +306,10 @@ static void br4_prepare(PuffeRL* pufferl, BrPlan& p, cudaStream_t stream) {
         s_cin.w[g] = dw->critic_in.data; d_cin.w[g] = q.wt[g].cin;
         s_b1.w[g] = dw->critic_b1.data; d_b1.w[g] = q.wt[g].b1;
         s_b2.w[g] = dw->critic_b2.data; d_b2.w[g] = q.wt[g].b2;
+        for (int k = 0; k < 4; k++) {
+            int n = q.I * v4::SPEC[k].features + q.D * q.I;
+            br4_pack_set_weights<<<grid_size(n), BLOCK_SIZE, 0, stream>>>(ew->w1[k].data, v4::SPEC[k].features, ew->w2[k].data, q.D, q.I, q.wt[g].w1t[k], q.wt[g].w2b[k]);
+        }
     }
     br_transpose_launch(p, s_flat, d_flat, p.g.n, q.FD, v4::FLAT, q.FD, stream);
     br_transpose_launch(p, s_fus, d_fus, p.g.n, H, q.JW, H, stream);
@@ -297,6 +335,7 @@ static void br4_free(PuffeRL* pufferl, BrPlan* p) {
     for (int g = 0; g < p->g.n; g++) {
         Br4Wt& w = q->wt[g];
         for (float* ptr : {w.flat, w.fusion, w.ffn_in, w.ffn_out, w.actor, w.cin, w.b1, w.b2}) cudaFree(ptr);
+        for (int k = 0; k < 4; k++) { cudaFree(w.w1t[k]); cudaFree(w.w2b[k]); }
         for (int l = 0; l < p->layers; l++) cudaFree(w.gru[l]);
     }
     free(q->acts);
@@ -320,7 +359,7 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         PolicyWeights* w; PrecisionTensor* s;
         br_group_weights(pufferl, g, buf, &w, &s);
         auto* ew = (v4::EncWeights*)w->encoder; auto* dw = (v4::DecWeights*)w->decoder;
-        for (int k = 0; k < 4; k++) { sa.w.w1[g][k] = ew->w1[k].data; sa.w.w2[g][k] = ew->w2[k].data; }
+        for (int k = 0; k < 4; k++) { sa.w.w1t[g][k] = q.wt[g].w1t[k]; sa.w.w2[g][k] = q.wt[g].w2b[k]; }
         sa.w.emb[g] = ew->embedding.data;
         w_flat.w[g] = q.wt[g].flat; w_fus.w[g] = q.wt[g].fusion;
         for (int l = 0; l < p.layers; l++) w_gru[l].w[g] = q.wt[g].gru[l];
@@ -329,19 +368,19 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         gate.state[g] = s->data; gate.state_rows[g] = (int)s->shape[1];
     }
     // encoder
-    br4_sets<<<dim3(rows, 4), BR4_SET_THREADS, br4_sets_smem(q.D, q.I), stream>>>(sa);
+    br_launch_pdl(br4_sets, dim3(rows, 4), dim3(BR4_SET_THREADS), br4_sets_smem(q.D, q.I), stream, sa);
     br_gemm_launch(p, obs, BOPL_OBS_STRIDE, A.joined, q.JW, v4::FLAT, q.FD, q.FD, 1, w_flat, stream);
     br_gemm_launch(p, A.joined, q.JW, A.ln, q.LNW, q.JW, H, H, 0, w_fus, stream);
     Br4RowsArgs ra = {}; ra.rows = rows; ra.g = p.g;
     ra.mode = BR4_LN; ra.W = H; ra.x = A.ln; ra.ldx = q.LNW; ra.out = A.enc; ra.ldout = H;
-    br4_rows<<<rows, 256, 0, stream>>>(ra);
+    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
     // MinGRU
     const float* x = A.enc;
     for (int l = 0; l < p.layers; l++) {
         br_gemm_launch(p, x, H, A.comb, 3 * H, H, 3 * H, 3 * H, 0, w_gru[l], stream);
         gate.combined = A.comb; gate.x = x; gate.terminals = terminals;
         gate.out = A.gru[l & 1]; gate.layer = l; gate.H = H; gate.rows = rows; gate.g = p.g;
-        br_gate<<<grid_size(rows * H), BLOCK_SIZE, 0, stream>>>(gate);
+        br_launch_pdl(br_gate, dim3(grid_size(rows * H)), dim3(BLOCK_SIZE), 0, stream, gate);
         x = A.gru[l & 1];
     }
     // decoder: y = h + FFN(LN(h)); then LN([y, priv]) for the critic
@@ -349,7 +388,7 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
     ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
     if (q.F) {
         ra.mode = BR4_LN; ra.W = H; ra.x = x; ra.ldx = H; ra.out = A.ln; ra.ldout = q.LNW;
-        br4_rows<<<rows, 256, 0, stream>>>(ra);
+        br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
         br_gemm_launch(p, A.ln, q.LNW, A.f, q.F, H, q.F, q.F, 1, w_fi, stream);
         br_gemm_launch(p, A.f, q.F, A.y, H, q.F, H, H, 0, w_fo, stream);
         ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
@@ -358,19 +397,27 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         ra.mode = BR4_RESIDUAL_LN_PRIV; ra.W = q.W; ra.x = x; ra.ldx = H;
     }
     ra.y = A.y; ra.ldy = H; ra.out = A.ln; ra.ldout = q.LNW; ra.priv = priv; ra.ldpriv = BOPL_OBS_STRIDE; ra.P = q.P;
-    br4_rows<<<rows, 256, 0, stream>>>(ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
+    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
     br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
     if (q.C) {
-        br_gemm_launch(p, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
-        ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
+        // The critic runs over the learner's rows only (group 0, its own row
+        // tiles): the frozen banks' values are never read (their advantages
+        // are zeroed, the statistics take learner rows), and their value
+        // column stays the zero A.dec was allocated with. The banks' rows are
+        // 4 of 16 per tile, so this is 4 of the 7 tiles of the three widest
+        // GEMMs (K, N = 512) and the two LNs.
+        BrPlan pl = p; pl.g.n = 1;
+        const int crows = p.g.end[1];
+        br_gemm_launch(pl, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
+        ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_LN; ra.W = q.C; ra.x = A.z; ra.ldx = q.C; ra.out = A.lnc; ra.ldout = q.C;
-        br4_rows<<<rows, 256, 0, stream>>>(ra);
-        br_gemm_launch(p, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, stream);
-        br_gemm_launch(p, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, stream);
-        ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
+        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
+        br_gemm_launch(pl, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, stream);
+        br_gemm_launch(pl, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, stream);
+        ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_CRITIC_OUT; ra.W = q.C; ra.x = A.z2; ra.ldx = q.C; ra.res = A.z; ra.ldres = q.C;
         ra.out = A.dec; ra.ldout = p.ld_dec; ra.vcol = p.dec_cols; ra.cout = w_cout;
-        br4_rows<<<rows, 256, 0, stream>>>(ra);
+        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
     }
 }
 
@@ -442,10 +489,52 @@ static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* termina
                 double o = ours[(size_t)(off + r) * p.ld_dec + c], e = theirs[(size_t)r * od1 + c];
                 dl = std::max(dl, std::fabs(o - e)); scale = std::max(scale, std::fabs(e));
             }
-            dv = std::max(dv, std::fabs((double)ours[(size_t)(off + r) * p.ld_dec + p.dec_cols] - theirs[(size_t)r * od1 + p.dec_cols]));
+            if (g == 0 || !p.v4)   /* v4: the banks' value column is not computed (the critic runs on learner rows only) */
+                dv = std::max(dv, std::fabs((double)ours[(size_t)(off + r) * p.ld_dec + p.dec_cols] - theirs[(size_t)r * od1 + p.dec_cols]));
         }
         fprintf(stderr, "bopl batched forward check: buffer %d step %d group %d (%d rows): logits max|diff| %.3g (max|logit| %.3g), value max|diff| %.3g\n",
                 buf, t, g, n, dl, scale, dv);
     }
 }
 #endif  // BR_KERNELS_ONLY
+
+// ---- packed observation transport (bopl_obs_pack.h) ----------------------
+// One block per row. Mode 0: the flat and privileged blocks, then each set's
+// prefix rows followed by zeros to the block's end. Mode 1 (the slot did not
+// fit, or the row has no writer record): the dense row straight from the
+// mapped host buffer. Either way the device row equals the host row bit for
+// bit (bopl4_transport_check counts the floats that differ, dump mode only).
+__global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows) {
+    br_pdl_wait(); br_pdl_release();   /* launched after a memcpy (no PDL edge in); lets br4_sets pre-launch */
+    const int r = blockIdx.x;
+    if (r >= rows) return;
+    const float* slot = packed + (long)r * BOPL4_PACK_P;
+    float* out = dense + (long)r * BOPL_OBS_STRIDE;
+    const unsigned* hdr = (const unsigned*)slot;
+    if (hdr[0] != BOPL4_PACK_MODE_ROWS) {
+        const float4* src = (const float4*)(host_rows + (long)r * BOPL_OBS_STRIDE);
+        float4* dst = (float4*)out;
+        for (int i = threadIdx.x; i < BOPL_OBS_STRIDE / 4; i += blockDim.x) dst[i] = src[i];
+        return;
+    }
+    for (int i = threadIdx.x; i < BOPL4_FLAT; i += blockDim.x) out[i] = slot[BOPL4_PACK_HEADER + i];
+    for (int i = threadIdx.x; i < BOPL4_PRIVILEGED; i += blockDim.x) out[BOPL4_OBS_PRIVILEGED_OFFSET + i] = slot[BOPL4_PACK_HEADER + BOPL4_FLAT + i];
+    const Bopl4PackSet sets[BOPL4_PACK_SETS] = BOPL4_PACK_TABLE;
+    int base = BOPL4_PACK_ROWS_OFFSET;
+    #pragma unroll
+    for (int s = 0; s < BOPL4_PACK_SETS; s++) {
+        const int present = (int)hdr[1 + s] * sets[s].width, block = sets[s].slots * sets[s].width;
+        float* dst = out + sets[s].offset;
+        for (int i = threadIdx.x; i < block; i += blockDim.x) dst[i] = i < present ? slot[base + i] : 0.0f;
+        base += present;
+    }
+}
+__global__ void bopl4_transport_check(const float* __restrict__ dense, const float* __restrict__ host_rows, int rows, int* mismatches) {
+    const int r = blockIdx.x;
+    if (r >= rows) return;
+    const unsigned* a = (const unsigned*)(dense + (long)r * BOPL_OBS_STRIDE);
+    const unsigned* b = (const unsigned*)(host_rows + (long)r * BOPL_OBS_STRIDE);
+    int bad = 0;
+    for (int i = threadIdx.x; i < BOPL_OBS_STRIDE; i += blockDim.x) bad += a[i] != b[i];
+    if (bad) atomicAdd(mismatches, bad);
+}

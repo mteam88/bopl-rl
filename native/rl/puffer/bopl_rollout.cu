@@ -35,6 +35,32 @@
 #pragma once
 #include <mma.h>
 
+// Programmatic dependent launch for the per-step chain (graph-captured: the
+// attribute becomes a programmatic graph edge): every chain kernel waits for
+// its predecessor's completion (and memory flush) before its first read and
+// releases its dependents (griddepcontrol.launch_dependents) before its
+// epilogue, so the dependent's launch and scheduling overlap the tail. The
+// release sits late, not at entry: released dependents occupy SM slots (a
+// br_gemm block holds 32 KB of shared) spinning in the wait, and with the
+// release at entry the overlapped training pass lost 36% (train_s 40 -> 55
+// ms at w128 b4 p2) for a 13% faster rollout: a net loss. Both are no-ops
+// for a kernel launched without the attribute (eager self-checks, v3).
+// Because the wait is on the immediate predecessor only, every kernel in a
+// PDL-launched chain waits unconditionally, so completion stays transitive.
+// A kernel that exits without releasing counts as released.
+__device__ __forceinline__ void br_pdl_wait() { asm volatile("griddepcontrol.wait;" ::: "memory"); }
+__device__ __forceinline__ void br_pdl_release() { asm volatile("griddepcontrol.launch_dependents;"); }
+template<typename... KArgs, typename... Args>
+static void br_launch_pdl(void (*kernel)(KArgs...), dim3 grid, dim3 block, size_t smem, cudaStream_t stream, Args&&... args) {
+    cudaLaunchConfig_t cfg = {};
+    cfg.gridDim = grid; cfg.blockDim = block; cfg.dynamicSmemBytes = smem; cfg.stream = stream;
+    cudaLaunchAttribute attr = {};
+    attr.id = cudaLaunchAttributeProgrammaticStreamSerialization; attr.val.programmaticStreamSerializationAllowed = 1;
+    cfg.attrs = &attr; cfg.numAttrs = 1;
+    cudaError_t e = cudaLaunchKernelEx(&cfg, kernel, std::forward<Args>(args)...);
+    if (e != cudaSuccess) { fprintf(stderr, "br_launch_pdl: %s\n", cudaGetErrorString(e)); abort(); }
+}
+
 #define BR_MAX_GROUPS 9   // learner + up to 8 frozen banks
 #define BR_MAX_LAYERS 4
 
@@ -180,6 +206,7 @@ struct BrGemmArgs {
     const float* in; int ld_in;
     float* out; int ld_out;
     int K, N, ldb, relu;  // ldb: fp32 = row stride of the (K, ldb) transposed weights; tf32 = n-tiles (ceil(N/8))
+    int units;            // column-subtile rounds per block: a block covers units * (8 / sub) subtiles
     BrGroups g;
     BrLinear wt;  // per-group weights: fp32 (K, ldb) transposed; tf32 fragment order (see br_frag_index)
     int tiles[BR_MAX_GROUPS + 1];
@@ -213,6 +240,11 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     // fp32 as [k][row] (float4 row reads). The 16 x 32 C tiles alias it after
     // the K loop.
     __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];  // 32 KB
+    // PDL: the B operand (weights) does not depend on the predecessor, so
+    // the first chunk's B loads are issued before griddepcontrol.wait and
+    // their latency overlaps the predecessor's tail; A (the predecessor's
+    // output) is read after it. A warp with no chunk waits after the loop.
+    bool waited = false;
     int rt = blockIdx.x, grp = 0;
     while (grp + 1 < a.g.n && rt >= a.tiles[grp + 1]) grp++;
     const int row0 = a.g.end[grp] + (rt - a.tiles[grp]) * BR_TM;
@@ -225,35 +257,62 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     const int subtiles = BR_KG / sub;
     const int tid = threadIdx.x, warp = tid / BR_TN, c = tid % BR_TN;
     const int kg = warp % sub;  // this warp's K slot within its subtile
-    const int col0 = (blockIdx.y * subtiles + warp / sub) * BR_TN;
     const float* __restrict__ Wt = a.wt.w[grp];
     float* Aw = As[warp];
+    // Rounds over the block's column subtiles (a.units of them per warp): the
+    // same chunk -> warp assignment and partial-sum order as one round per
+    // block, so the sums are bit-identical for any units; fewer, longer blocks
+    // hold fewer SMs while the training pass runs beside the rollout.
+    for (int u = 0; u < a.units; u++) {
+    const int col0 = ((blockIdx.y * a.units + u) * subtiles + warp / sub) * BR_TN;
 
-    // A chunk: 16 rows x 64 k = 512 float2 over the warp (element i: row i%16, k-pair i/16).
-    float2 av[BR_TK / 4];
+    // A chunk: 16 rows x 64 k = 256 float4 over the warp (element i: row i%16,
+    // k-quad i/16), 8 instructions per chunk (the float2 form took 16). The
+    // lanes stay along the rows: the fragment layout's row stride is 16
+    // floats, so lanes spanning rows and k-halves keep the smem stores at
+    // 4-way conflicts (lanes along k would make them 8-way). K is even; the
+    // tail quad past K is masked per pair.
+    // A chunk: 16 rows x 64 k = 256 float4 over the warp (element i: row i%16,
+    // k-quad i/16), 8 instructions per chunk (the float2 form took 16). The
+    // lanes stay along the rows: the fragment layout's row stride is 16
+    // floats, so lanes spanning rows and k-halves keep the smem stores at
+    // 4-way conflicts (lanes along k would make them 8-way). K is even; the
+    // tail quad past K is masked per pair.
+    float4 av[BR_TK / 8];
+    // float4 row loads when the rows are 16-byte aligned (every v4 input; v3's
+    // flat block has a stride of 98), scalar loads otherwise: the same values.
+    // (An alignment abort here instead broke v3; check_dump caught it.)
+    const bool a4 = (a.ld_in & 3) == 0 && (((size_t)a.in) & 15) == 0;
     auto load_a = [&](int k0) {
         #pragma unroll
-        for (int j = 0; j < BR_TK / 4; j++) {
-            int i = c + j * 32, r = i & 15, k = k0 + ((i >> 4) << 1);
-            av[j] = (row0 + r < row_end && k < K) ? *(const float2*)(a.in + (long)(row0 + r) * a.ld_in + k) : make_float2(0.f, 0.f);
+        for (int j = 0; j < BR_TK / 8; j++) {
+            int i = c + j * 32, r = i & 15, k = k0 + ((i >> 4) << 2);
+            const float* src = a.in + (long)(row0 + r) * a.ld_in + k;
+            if (row0 + r < row_end && k + 3 < K && a4) av[j] = *(const float4*)src;
+            else if (row0 + r < row_end && k < K)
+                av[j] = make_float4(src[0], k + 1 < K ? src[1] : 0.f, k + 2 < K ? src[2] : 0.f, k + 3 < K ? src[3] : 0.f);
+            else av[j] = make_float4(0.f, 0.f, 0.f, 0.f);
         }
     };
     // TF32 layout: A fragment order [kstep][lane][4] (a0 = A[gid][tid4], a1 = A[gid+8][tid4],
     // a2 = A[gid][tid4+4], a3 = A[gid+8][tid4+4]) so a lane's k-step operand is one float4.
     auto store_a = [&]() {
         #pragma unroll
-        for (int j = 0; j < BR_TK / 4; j++) {
-            int i = c + j * 32, r = i & 15, k = (i >> 4) << 1;
-            if (TF32) {
-                int kstep = k >> 3, kk = k & 7, lane = (r & 7) * 4 + (kk & 3), slot = (r >> 3) + 2 * (kk >> 2);
-                Aw[(kstep * 32 + lane) * 4 + slot] = av[j].x;
-                Aw[(kstep * 32 + lane + 1) * 4 + slot] = av[j].y;
-            } else {
-                Aw[k * BR_TM + r] = av[j].x; Aw[(k + 1) * BR_TM + r] = av[j].y;
+        for (int j = 0; j < BR_TK / 8; j++) {
+            int i = c + j * 32, r = i & 15, k = (i >> 4) << 2;
+            const float v[4] = {av[j].x, av[j].y, av[j].z, av[j].w};
+            #pragma unroll
+            for (int q = 0; q < 4; q++) {
+                int kq = k + q;
+                if (TF32) {
+                    int kstep = kq >> 3, kk = kq & 7, lane = (r & 7) * 4 + (kk & 3), slot = (r >> 3) + 2 * (kk >> 2);
+                    Aw[(kstep * 32 + lane) * 4 + slot] = v[q];
+                } else {
+                    Aw[kq * BR_TM + r] = v[q];
+                }
             }
         }
     };
-
     if constexpr (TF32) {
         const int lane = c;
         const int gid = lane >> 2, tid4 = lane & 3;
@@ -279,7 +338,9 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
                 }
         };
         for (int ch = kg; ch < nchunks; ch += sub) {
-            load_a(ch * BR_TK); load_b(ch * BR_TK);
+            load_b(ch * BR_TK);
+            if (!waited) { br_pdl_wait(); waited = true; }
+            load_a(ch * BR_TK);
             __syncwarp();
             store_a();
             __syncwarp();
@@ -316,7 +377,9 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
             for (int j = 0; j < BR_TK; j++) { int k = k0 + j; b[j] = k < K ? Wc[(long)k * ldb] : 0.f; }
         };
         for (int ch = kg; ch < nchunks; ch += sub) {
-            load_a(ch * BR_TK); load_b(ch * BR_TK);
+            load_b(ch * BR_TK);
+            if (!waited) { br_pdl_wait(); waited = true; }
+            load_a(ch * BR_TK);
             __syncwarp();
             store_a();
             __syncwarp();
@@ -336,26 +399,36 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
         #pragma unroll
         for (int r = 0; r < BR_TM; r++) Cw[r * BR_TN + c] = acc[r];
     }
+    if (!waited) { br_pdl_wait(); waited = true; }
     __syncthreads();
+    if (u == a.units - 1) br_pdl_release();   // the dependent launches under this epilogue
     // Per subtile, sum its warps' partial tiles in warp order and write the valid entries.
     for (int o = tid; o < subtiles * BR_TM * BR_TN; o += BR_THREADS) {
         int st = o / (BR_TM * BR_TN), e = o % (BR_TM * BR_TN), r = e / BR_TN, cc = e % BR_TN;
         float v = 0.f;
         for (int w = st * sub; w < (st + 1) * sub; w++) v += As[w][r * BR_TN + cc];
-        int row = row0 + r, cl = (blockIdx.y * subtiles + st) * BR_TN + cc;
+        int row = row0 + r, cl = ((blockIdx.y * a.units + u) * subtiles + st) * BR_TN + cc;
         if (row < row_end && cl < N) {
             if (a.relu) v = fmaxf(0.f, v);
             a.out[(long)row * a.ld_out + cl] = v;
         }
     }
+    __syncthreads();  // the C tiles are read before the next round's A tiles overwrite them
+    }
 }
 
-// Column-tile count of br_gemm's grid for a GEMM of depth K over N columns.
-static int br_gemm_col_tiles(int K, int N) {
+// Column-tile count of br_gemm's grid for a GEMM of depth K over N columns,
+// and the rounds per block: 1, one subtile set per block (more rounds per
+// block shrink the grid u-fold and were measured a wash: +1% wall, +5%
+// rollout time; kept as a parameter of the kernel, fixed here).
+static int br_gemm_units() { return 1; }
+static int br_gemm_col_tiles(int K, int N, int* units) {
     int nchunks = (K + BR_TK - 1) / BR_TK, sub = 1;
     while (sub < nchunks && sub < BR_KG) sub <<= 1;
     int cols = (BR_KG / sub) * BR_TN;
-    return (N + cols - 1) / cols;
+    int tiles = (N + cols - 1) / cols;
+    *units = std::min(br_gemm_units(), tiles);
+    return (tiles + *units - 1) / *units;
 }
 
 // TF32: dst_g = src_g (N, K) in B-fragment order (br_frag_index), zero padded to
@@ -402,6 +475,7 @@ struct BrGateArgs {
 };
 
 __global__ void br_gate(BrGateArgs a) {
+    br_pdl_wait(); br_pdl_release();
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= a.rows * a.H) return;
     int row = idx / a.H, h = idx - row * a.H;
@@ -436,6 +510,7 @@ struct BrPlan {
     int zero_copy;       // 0 memcpys (obs + packed small inputs), 1 obs memcpy + rest zero-copy, 2 all zero-copy
     int actions_zero_copy;  // sampler writes actions into the mapped host buffer
     int graph_copies;    // H2D / D2H memcpys captured into the forward graph (BOPL_GRAPH_COPIES, default 1)
+    int transport_check; // dump mode (train.py --dump-rows): count device-row floats that differ from the host row
     int tf32;            // tensor-core tf32 GEMMs (BOPL_TF32, default 1) or fp32 FMAs
     int sparse;          // stage only the populated obs slots (BOPL_OBS_SPARSE, default 1)
     int rows;            // live rows per buffer (bank_layout end)
@@ -464,9 +539,9 @@ static void br_gemm_launch(const BrPlan& p, const float* in, int ld_in, float* o
     if (p.tf32) a.ldb = (N + 7) / 8;  // n-tiles of the fragment layout
     a.g = p.g; a.wt = wt;
     memcpy(a.tiles, p.tiles, sizeof(a.tiles));
-    dim3 grid(p.tiles[p.g.n], br_gemm_col_tiles(K, N));
-    if (p.tf32) br_gemm<true><<<grid, BR_THREADS, 0, stream>>>(a);
-    else br_gemm<false><<<grid, BR_THREADS, 0, stream>>>(a);
+    dim3 grid(p.tiles[p.g.n], br_gemm_col_tiles(K, N, &a.units));
+    if (p.tf32) br_launch_pdl(br_gemm<true>, grid, dim3(BR_THREADS), 0, stream, a);
+    else br_launch_pdl(br_gemm<false>, grid, dim3(BR_THREADS), 0, stream, a);
 }
 
 // dst[g] = the GEMM-side layout of src[g] (N, K) for groups 0..n-1: tf32 fragment
@@ -488,6 +563,13 @@ static void br4_init(PuffeRL* pufferl, BrPlan* p);
 static void br4_prepare(PuffeRL* pufferl, BrPlan& p, cudaStream_t stream);
 static void br4_free(PuffeRL* pufferl, BrPlan* p);
 static const float* br4_dec_rows(BrPlan& p, int buf);
+// Packed observation transport (bopl_obs_pack.h): the unpack of one buffer's
+// slots into its dense device rows, the dump-mode check of those rows against
+// the host rows, and the env-side registration (binding.c: the env struct).
+constexpr int BR4_UNPACK_THREADS = 256;
+__global__ void bopl4_unpack_rows(const float* __restrict__ packed, const float* __restrict__ host_rows, float* __restrict__ dense, int rows);
+__global__ void bopl4_transport_check(const float* __restrict__ dense, const float* __restrict__ host_rows, int rows, int* mismatches);
+extern "C" void bopl_pack_register(void* envs, int start, int count, const float* base, float* out, long row_begin, long row_end);
 static void br_check_pre(PuffeRL* pufferl, int buf, cudaStream_t stream);
 static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* terminals, const float* dec_rows, cudaStream_t stream);
 static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
@@ -511,6 +593,7 @@ struct BrSampleArgs {
 
 __global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs a) {
     __shared__ float s_logits[SAMPLE_WARP_ROWS][SAMPLE_MAX_LOGITS];
+    br_pdl_wait(); br_pdl_release();
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int idx = blockIdx.x * SAMPLE_WARP_ROWS + warp;
     if (idx >= a.rows) return;
@@ -731,7 +814,8 @@ static void br_init(PuffeRL* pufferl) {
         // The idle tail rows of a buffer are never written or read (compact
         // layout), so the pack lives there when it fits: one memcpy per step.
         vec->pack_in_tail = (size_t)(apb - p->rows) * row_bytes >= (size_t)vec->pack_bytes && br_env_int("BOPL_PACK_TAIL", 1);
-        for (int b = 0; b < nb; b++) {
+        const bool packed_obs = is_v4 && p->graph_copies && vec->mapped;   // the block below re-points pack_* into the packed slots
+        for (int b = 0; !packed_obs && b < nb; b++) {
             if (vec->pack_in_tail) {
                 size_t off = ((size_t)b * apb + p->rows) * row_bytes;
                 vec->pack_host[b] = (char*)vec->observations + off;
@@ -740,6 +824,35 @@ static void br_init(PuffeRL* pufferl) {
                 cudaHostAlloc((void**)&vec->pack_host[b], vec->pack_bytes, cudaHostAllocPortable);
                 cudaMalloc((void**)&vec->pack_dev[b], vec->pack_bytes);
             }
+        }
+        // Packed observation transport (bopl_obs_pack.h): policy v4 rows go up
+        // as 6 KB slots instead of 19 KB dense rows; the unpack kernel rebuilds
+        // the dense device row (mode-1 slots from the mapped host row).
+        if (is_v4 && p->graph_copies && vec->mapped) {
+            size_t slot_bytes = (size_t)BOPL4_PACK_P * sizeof(float), n = (size_t)vec->total_agents * slot_bytes;
+            assert(cudaHostAlloc((void**)&vec->packed_host, n, cudaHostAllocPortable) == cudaSuccess);
+            assert(cudaMalloc((void**)&vec->packed_dev, n) == cudaSuccess);
+            assert(cudaMalloc((void**)&vec->transport_mismatch, sizeof(int)) == cudaSuccess);
+            cudaMemset(vec->transport_mismatch, 0, sizeof(int));
+            for (long r = 0; r < vec->total_agents; r++) ((unsigned*)(vec->packed_host + r * BOPL4_PACK_P))[0] = BOPL4_PACK_MODE_DENSE;
+            cudaMemcpy(vec->packed_dev, vec->packed_host, n, cudaMemcpyHostToDevice);
+            // The reward / terminal / mask pack moves to the idle tail of the
+            // buffer's packed slots when it fits there (one memcpy per step).
+            vec->pack_in_tail = (size_t)(apb - p->rows) * slot_bytes >= (size_t)vec->pack_bytes && br_env_int("BOPL_PACK_TAIL", 1);
+            for (int b = 0; b < nb; b++) {
+                if (vec->pack_in_tail) {
+                    size_t off = ((size_t)b * apb + p->rows) * slot_bytes;
+                    vec->pack_host[b] = (char*)vec->packed_host + off;
+                    vec->pack_dev[b] = (char*)vec->packed_dev + off;
+                } else if (!vec->pack_host[b]) {
+                    cudaHostAlloc((void**)&vec->pack_host[b], vec->pack_bytes, cudaHostAllocPortable);
+                    cudaMalloc((void**)&vec->pack_dev[b], vec->pack_bytes);
+                }
+                bopl_pack_register(vec->envs, vec->buffer_env_starts[b], vec->buffer_env_counts[b], (const float*)vec->observations,
+                                   vec->packed_host, (long)b * apb, (long)b * apb + p->rows);
+            }
+            fprintf(stderr, "bopl batched rollout forward: packed observation rows (%d floats per slot, pack %s)\n",
+                    BOPL4_PACK_P, vec->pack_in_tail ? "in the packed tail" : "separate");
         }
         // Reset semantics of the device copies (static_vec_reset): rewards and
         // terminals zero, the mask as the envs left it. bopl_vec_reset refreshes
@@ -809,6 +922,10 @@ static void br_free(PuffeRL* pufferl) {
             for (int b = 0; b < pufferl->hypers.num_buffers; b++) { cudaFreeHost(vec->pack_host[b]); cudaFree(vec->pack_dev[b]); }
         free(vec->pack_host); free(vec->pack_dev); vec->pack_host = vec->pack_dev = nullptr;
     }
+    if (vec && vec->packed_host) {   // the envs are closed before this (their pack pointers die with them)
+        cudaFreeHost(vec->packed_host); cudaFree(vec->packed_dev); cudaFree(vec->transport_mismatch);
+        vec->packed_host = vec->packed_dev = nullptr; vec->transport_mismatch = nullptr;
+    }
     free(p->acts);
     delete p;
     pufferl->br = nullptr;
@@ -839,7 +956,23 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         mask = p.mask_stride ? (const unsigned char*)(pk + 2 * rows * sizeof(float)) : nullptr;
     }
     float* env_actions = (p.actions_zero_copy ? vec->dev_actions : vec->gpu_actions) + (long)start * p.num_atns;
-    if (p.graph_copies) {
+    if (p.graph_copies && vec->packed_host) {
+        // Packed rows: one memcpy of the buffer's slots (+ the pack in their
+        // tail), then the dense device rows rebuilt for the chain.
+        size_t slot_bytes = (size_t)BOPL4_PACK_P * sizeof(float), off = (size_t)start * slot_bytes;
+        size_t bytes = (size_t)rows * slot_bytes + (vec->pack_in_tail ? (size_t)vec->pack_bytes : 0);
+        cudaMemcpyAsync((char*)vec->packed_dev + off, (const char*)vec->packed_host + off, bytes, cudaMemcpyHostToDevice, stream);
+        if (!vec->pack_in_tail) cudaMemcpyAsync(vec->pack_dev[buf], vec->pack_host[buf], vec->pack_bytes, cudaMemcpyHostToDevice, stream);
+        // The dense row is rebuilt straight into the rollout tensor's rows for
+        // this step (the trainer reads them there) and the chain reads it from
+        // there too: no device copy of the observation row (br4_sets used to
+        // copy gpu_observations -> rollout_obs, 19 KB per row per step).
+        const float* host_rows = (const float*)vec->dev_observations + (long)start * BOPL_OBS_STRIDE;
+        float* dense = puf_slice(rollouts.observations, t, start, rows).data;
+        bopl4_unpack_rows<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(vec->packed_dev + (long)start * BOPL4_PACK_P, host_rows, dense, rows);
+        if (p.transport_check) bopl4_transport_check<<<rows, BR4_UNPACK_THREADS, 0, stream>>>(dense, host_rows, rows, vec->transport_mismatch);
+        obs = dense;
+    } else if (p.graph_copies) {
         size_t row_bytes = (size_t)BS_OBS * sizeof(float), off = (size_t)start * row_bytes;
         size_t bytes = (size_t)rows * row_bytes + (vec->pack_in_tail ? (size_t)vec->pack_bytes : 0);
         cudaMemcpyAsync((char*)vec->gpu_observations + off, (const char*)vec->observations + off, bytes, cudaMemcpyHostToDevice, stream);
@@ -913,7 +1046,7 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     smp.logprobs = lp_dst.data; smp.values = val_dst.data;
     smp.rng = pufferl->rng_states[buf];
     smp.head_consume = hc_dev; smp.hc_stride = hc_stride; smp.rows = rows;
-    br_sample<<<(rows + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS, SAMPLE_WARP_ROWS * 32, 0, stream>>>(smp);
+    br_launch_pdl(br_sample, dim3((rows + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS), dim3(SAMPLE_WARP_ROWS * 32), 0, stream, smp);
     if (p.graph_copies && !p.actions_zero_copy)
         cudaMemcpyAsync(vec->actions + (long)start * p.num_atns, vec->gpu_actions + (long)start * p.num_atns,
                         (size_t)rows * p.num_atns * sizeof(float), cudaMemcpyDeviceToHost, stream);

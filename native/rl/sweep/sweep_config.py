@@ -41,7 +41,7 @@ DISTRIBUTIONS = ('uniform', 'int_uniform', 'uniform_pow2', 'log_normal', 'logit_
 # train.py argparse destinations (native/rl/puffer/train.py arguments()).
 # output/resume are driver-owned; seed is driver-owned when [sweep].seeds != fixed.
 TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder',
-               'hidden', 'layers', 'horizon', 'learner_passes', 'learning_rate',
+               'hidden', 'layers', 'horizon', 'learner_passes', 'minibatch_div', 'learning_rate',
                'anneal_lr', 'min_lr_ratio', 'entropy', 'entropy_floor',
                'entropy_half_life', 'entropy_head_scale', 'entropy_free_rows',
                'episode_ticks', 'reward_kill', 'reward_timeout', 'stocks',
@@ -69,7 +69,7 @@ SCRIPTED_VIRTUAL = ('scripted_banks', 'scripted_level_index')
 HEAD_SCALE = {'head_scale_aim': 0, 'head_scale_buttons': 1, 'head_scale_hold': 2}
 # Parameters that must be integers on the command line even when the space
 # yields floats (log_normal steps, for example).
-ALWAYS_INTEGER = ('steps', 'workers', 'buffers', 'banks', 'hidden', 'layers', 'aim_fourier', 'aim_ar',
+ALWAYS_INTEGER = ('steps', 'workers', 'buffers', 'banks', 'hidden', 'layers', 'learner_passes', 'minibatch_div', 'aim_fourier', 'aim_ar',
                   'v4_set_dim', 'v4_set_inner', 'v4_flat_dim', 'v4_ffn_dim', 'v4_critic_dim',
                   'v4_critic_privileged', 'v4_critic_detach', 'v4_mean_pool', 'v4_ablate',
                   'scripted_banks', 'scripted_level_index',
