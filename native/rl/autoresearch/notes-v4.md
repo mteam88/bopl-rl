@@ -2749,3 +2749,69 @@ critic 512, and the production lite shape) -> **0 of 11904 values
 differ** on both, and the chain rows sit at 1.2-1.5e-04 rel of the
 eager rows as before. The init line confirms the kernel path ("chain
 kernel: 4-block clusters per 16-row tile, 10 resident").
+
+## Megakernel: discard (-5.0% at cluster 4, -15.4% at cluster 8), reverted
+
+A/B 3x3 vs the 6f36c8a0 .so at the default recipe (w256 b4 p1 div2, 11 threads):
+
+| build | learner_sps | rollout_s | train_s | eval_gpu us/step | eval_env us/step |
+|---|---|---|---|---|---|
+| incumbent (19 PDL launches) | 661.5k / 664.2k / 668.9k | 72.6-73.1 | 61.3-61.6 | 311 | 247-250 |
+| br4_mega, cluster 4, 184 regs, 46 KB, PDL | 567.8k (-14.9%) | 65.3 | 85.5 | 332 | 171 |
+| cluster 4, 128 regs (launch bounds 2) | 625.1k (-5.9%) | 69.7 | 77.6 | 335 | 197 |
+| cluster 4, 128 regs, 32 KB aliased, stream-ordered | 628.5k (-5.0%) | 70.1 | 77.0 | 338 | 198 |
+| cluster 8 (portable max) | 565.8k (-15.4%) | 65.3 | 85.8 | 327 | 175 |
+
+Cluster 16 is not schedulable on the 5070 (`cudaOccupancyMaxActiveClusters`
+= 0 with the non-portable attribute). Every variant bit-identical
+(check_dump chain vs the pre-kernel reference: 0 of 11904 values differ,
+both shapes).
+
+What the numbers say:
+
+1. **The kernel is slower than the chain it replaces, isolated.** Stage
+   stamps (`%globaltimer`, tile 0 block 0, one chain alone on the GPU,
+   128 rows, lite shape): cluster 4 = 110 us, cluster 8 = 86 us. The
+   CUPTI timeline of the incumbent under the same serial run: the chain
+   from the first br_gemm start to the sampler end is **76 us** (window
+   169 us with the 27 us HtoD, unpack and br4_sets 58). PDL already
+   made every launch gap negative (-0.5..-1.6 us): there was no launch
+   latency left for the megakernel to remove.
+2. **A GEMM round is SM-port bandwidth, not latency.** Per column group
+   (16 rows x 32 cols, one K loop) a block pays 4-6 us for K = 256..492
+   and 8.6-11 us for K = 1280, alone on the GPU: the TF32 B fragments
+   (64 KB per chunk-round per block: 4 bytes per weight, reused over
+   only 16 rows) stream through one SM's L2 port. The per-GEMM launch
+   spreads a GEMM's 8-12 groups over 64-96 blocks, one round each; the
+   cluster gives each block 2-3 rounds in sequence (cluster 4: 17 rounds
+   on a learner tile = 76 us of the 110; cluster 8: 11 = 48 of the 86).
+   Row stages 1 us per row per block (4 x 4 rows: 17 us at cluster 4),
+   sampler 10 us, cluster barriers 0.3 us each (3 total).
+3. **The train stream pays for residency.** 32-64 blocks x 128 regs x 256
+   threads hold half the register file of 32-48 SMs for the chain's
+   whole duration, and cluster launches wait for whole-GPC slots:
+   train_s +26% (cluster 4) / +40% (cluster 8); the 184-register first
+   build (+38%) shows the same channel. br4_sets slowed 53 -> 81 us in
+   the serial profile for the same reason (its 154-register blocks do
+   not fit beside a mega block).
+4. The one real gain is on the CPU: eval_env -21..-29% (2 launches per
+   step instead of 19 free the launcher thread's slot for the sim
+   threads). Rollout_s fell 4-10% from that; train_s rose more.
+
+Closed: the cluster megakernel over 16-row tiles cannot beat the PDL
+chain on this GPU. The rollout GPU forward's floor is the sum of
+per-GEMM round costs (~50 us) + rows + sampler ~ 76 us, set by B-fragment
+bytes per SM port. Levers that move that floor are not exact: bf16 B
+fragments in the rollout chain (half the bytes; the actor then samples
+from a slightly different distribution than the learner trains; the
+bf16 train-GEMM gate failed twice at -27 Elo, this is a different but
+related risk) or wider row tiles with 8-bit weights. Not proposed.
+
+Kept from the campaign step: `br_gemm_tile` (code motion, bit-identical,
+-0.7% noise A/B), `bopl_chain_rows` + check_dump's chain compare and
+`--chain-reference` (the rollout chain's own exactness gate; the
+per-kernel chain has none otherwise), the `v4-lite` check_dump config.
+The br4_mega kernel and the sampler-in-chain plumbing are reverted; the
+lifted device functions (`br4_row`, `br_gate_elem`, `br_sample_row`)
+stay as the kernels' bodies (no cost, and any future fusion starts from
+them).

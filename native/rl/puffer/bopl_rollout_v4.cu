@@ -248,9 +248,9 @@ struct Br4Plan {
 // line. The critic branch runs on the learner's tiles only (group 0), as the
 // per-GEMM chain did; a bank tile's cluster skips it as a whole. The sampler
 // is the last stage: warp w of block r samples row r * 4 + w of the tile.
-#define BR4_CLUSTER 4
+#define BR4_CLUSTER 8
 #define BR4_TILE_ROWS_PER_BLOCK (BR_TM / BR4_CLUSTER)
-static_assert(BR_TM % BR4_CLUSTER == 0 && BR4_TILE_ROWS_PER_BLOCK <= BR_THREADS / 32, "tile rows per block: one warp each for the sampler");
+static_assert(BR_TM % BR4_CLUSTER == 0 && BR4_TILE_ROWS_PER_BLOCK >= 1 && BR4_TILE_ROWS_PER_BLOCK <= BR_THREADS / 32, "tile rows per block: one warp each for the sampler");
 struct Br4MegaArgs {
     BrGemmArgs flat, fusion, gru[BR_MAX_LAYERS], fi, fo, actor, cin, b1, b2;
     int flat_ct, fusion_ct, gru_ct, fi_ct, fo_ct, actor_ct, cin_ct, b1_ct, b2_ct;   // column-tile groups of each GEMM
@@ -403,7 +403,10 @@ static void br4_init(PuffeRL* pufferl, BrPlan* p) {
     {
         cudaLaunchConfig_t cfg = {};
         cfg.gridDim = dim3(BR4_CLUSTER); cfg.blockDim = dim3(BR_THREADS);
-        cudaError_t e = cudaOccupancyMaxActiveClusters(&clusters, p->tf32 ? (void*)br4_mega<true> : (void*)br4_mega<false>, &cfg);
+        void* kernel = p->tf32 ? (void*)br4_mega<true> : (void*)br4_mega<false>;
+        cudaError_t e = cudaSuccess;
+        if (BR4_CLUSTER > 8) e = cudaFuncSetAttribute(kernel, cudaFuncAttributeNonPortableClusterSizeAllowed, 1);
+        if (e == cudaSuccess) e = cudaOccupancyMaxActiveClusters(&clusters, kernel, &cfg);
         if (e != cudaSuccess || clusters < 1) {
             fprintf(stderr, "bopl batched rollout forward: br4_mega cluster launch unavailable (%s, %d clusters)\n", cudaGetErrorString(e), clusters);
             abort();
