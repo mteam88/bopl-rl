@@ -60,7 +60,7 @@ public static class BuildScript
 		BuildPlayerOptions options = new BuildPlayerOptions
 		{
 			scenes = EditorBuildSettingsScene.GetActiveSceneList(EditorBuildSettings.scenes),
-			locationPathName = "Builds/macOS/BoplBattle.app",
+			locationPathName = System.Environment.GetEnvironmentVariable("BOPL_BUILD_OUTPUT") ?? "Builds/macOS/BoplBattle.app",
 			target = BuildTarget.StandaloneOSX,
 			options = BuildOptions.None
 		};
