@@ -1,6 +1,6 @@
 diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
---- pristine-src/bindings.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/bindings.cu	2026-09-19 17:36:21.609344306 -0400
+--- pristine-src/bindings.cu	2026-09-19 22:00:11.168998834 -0400
++++ puffer-overlay/bindings.cu	2026-09-19 21:59:56.736180935 -0400
 @@ -13,6 +13,8 @@
  // Wrapper functions for Python bindings
  pybind11::dict puf_log(pybind11::object pufferl_obj) {
@@ -103,7 +103,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  }
  
  pybind11::dict train(pybind11::object pufferl_obj) {
-@@ -167,16 +184,67 @@
+@@ -167,16 +184,82 @@
      {
          pybind11::gil_scoped_release no_gil;
          train_impl(pufferl);
@@ -168,10 +168,25 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 +    return pybind11::make_tuple(obs_out, dec_out);
 +}
 +
++// The batched rollout chain's decoder rows on given observations (rows x
++// obs width, the learner's rows of buffer 0, zero recurrent state), from the
++// weights the trainer holds now: bopl_rollout.cu br_chain_rows. check_dump.py
++// compares them to bopl_policy_rows' (the eager path) and, across builds, bit
++// for bit to a reference build's chain on the same observations and weights.
++pybind11::array_t<float> bopl_chain_rows(pybind11::object pufferl_obj, pybind11::array_t<float, pybind11::array::c_style | pybind11::array::forcecast> observations) {
++    PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
++    if (observations.ndim() != 2) throw std::runtime_error("bopl_chain_rows: observations must be (rows, width)");
++    if (!pufferl.br) throw std::runtime_error("bopl_chain_rows: the batched chain is not active");
++    int count = (int)observations.shape(0), width = (int)observations.shape(1), cols = pufferl.br->dec_cols + 1;
++    pybind11::array_t<float> dec({(long)count, (long)cols});
++    br_chain_rows(&pufferl, observations.data(), count, width, dec.mutable_data());
++    return dec;
++}
++
  void save_weights(pybind11::object pufferl_obj, const std::string& path) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
      int64_t nbytes = numel(pufferl.master_weights.shape) * sizeof(float);
-@@ -188,6 +256,23 @@
+@@ -188,6 +271,23 @@
      fclose(f);
  }
  
@@ -195,7 +210,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  void load_weights(pybind11::object pufferl_obj, const std::string& path) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
      int64_t nbytes = numel(pufferl.master_weights.shape) * sizeof(float);
-@@ -209,12 +294,15 @@
+@@ -209,12 +309,15 @@
          throw std::runtime_error("Failed to read weight file");
      }
      fclose(f);
@@ -211,7 +226,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  }
  
  int py_add_frozen_bank(py::object pufferl_obj, int slice_size,
-@@ -225,6 +313,9 @@
+@@ -225,6 +328,9 @@
  
  void py_load_frozen_bank(py::object pufferl_obj, int bank_idx, const std::string& path) {
      PuffeRL& pufferl = pufferl_obj.cast<PuffeRL&>();
@@ -221,7 +236,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
      pufferl_load_frozen_bank(&pufferl, bank_idx, path.c_str());
  }
  
-@@ -517,10 +608,39 @@
+@@ -517,10 +623,40 @@
      m.def("eval_log", &puf_eval_log);
      m.def("render", &render);
      m.def("rollouts", &rollouts);
@@ -233,6 +248,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
      m.def("close", &puf_close);
      m.def("save_weights", &save_weights);
 +    m.def("bopl_policy_rows", &bopl_policy_rows);
++    m.def("bopl_chain_rows", &bopl_chain_rows);
 +    // Bopl packed observation transport (bopl_obs_pack.h): dump mode compares every
 +    // unpacked device row with its host row; the count of differing floats so far.
 +    m.def("bopl_transport_check", [](pybind11::object pufferl_obj, bool on) {
@@ -261,7 +277,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
      m.def("add_frozen_bank", &py_add_frozen_bank);
      m.def("load_frozen_bank", &py_load_frozen_bank);
      m.def("set_agent_perm", &py_set_agent_perm);
-@@ -626,7 +746,7 @@
+@@ -626,7 +762,7 @@
          .def_readwrite("hypers", &PuffeRL::hypers)
          .def_readwrite("rollouts", &PuffeRL::rollouts)
          .def_readonly("epoch", &PuffeRL::epoch)
@@ -271,8 +287,8 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
          .def("num_params", [](PuffeRL& self) -> int64_t {
              return numel(self.master_weights.shape);
 diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
---- pristine-src/kernels.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/kernels.cu	2026-09-19 17:36:21.610440353 -0400
+--- pristine-src/kernels.cu	2026-09-19 22:00:11.168998834 -0400
++++ puffer-overlay/kernels.cu	2026-09-19 21:39:52.836556727 -0400
 @@ -6,6 +6,8 @@
  #include <cstdio>
  #include <cstdint>
@@ -563,8 +579,8 @@ diff -ruN pristine-src/kernels.cu puffer-overlay/kernels.cu
      long offset = 0;
      for (int i = 0; i < alloc->num_regs; i++) {
 diff -ruN pristine-src/models.cu puffer-overlay/models.cu
---- pristine-src/models.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/models.cu	2026-09-19 17:36:21.610809880 -0400
+--- pristine-src/models.cu	2026-09-19 22:00:11.168998834 -0400
++++ puffer-overlay/models.cu	2026-09-19 21:39:52.836962612 -0400
 @@ -147,8 +147,16 @@
      PrecisionTensor out, next_state;
      PrecisionTensor grad_combined, grad_state;
@@ -896,8 +912,8 @@ diff -ruN pristine-src/models.cu puffer-overlay/models.cu
          x = a->scan_bufs[i].out;
      }
 diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
---- pristine-src/muon.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/muon.cu	2026-09-19 17:36:21.611218972 -0400
+--- pristine-src/muon.cu	2026-09-19 22:00:11.168998834 -0400
++++ puffer-overlay/muon.cu	2026-09-19 21:39:52.837430384 -0400
 @@ -1,4 +1,5 @@
  #include <nccl.h>
 +#include <algorithm>
@@ -1403,8 +1419,8 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +    }
  }
 diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
---- pristine-src/ocean.cu	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/ocean.cu	2026-09-19 17:36:21.611607615 -0400
+--- pristine-src/ocean.cu	2026-09-19 22:00:11.168998834 -0400
++++ puffer-overlay/ocean.cu	2026-09-19 21:39:52.837863852 -0400
 @@ -3,6 +3,9 @@
  
  #include "cudnn_conv2d.cu"
@@ -1441,8 +1457,8 @@ diff -ruN pristine-src/ocean.cu puffer-overlay/ocean.cu
 +    }
  }
 diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
---- pristine-src/pufferlib.cu	2026-09-18 16:41:04.173539658 -0400
-+++ puffer-overlay/pufferlib.cu	2026-09-19 17:36:21.611962234 -0400
+--- pristine-src/pufferlib.cu	2026-09-19 22:00:11.172363059 -0400
++++ puffer-overlay/pufferlib.cu	2026-09-19 21:39:52.838271150 -0400
 @@ -1,15 +1,73 @@
 +#include <cuda.h>
  #include <cuda_runtime.h>
@@ -3525,8 +3541,8 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
      if (pufferl.nccl_comm != nullptr) {
          ncclCommDestroy(pufferl.nccl_comm);
 diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
---- pristine-src/vecenv.h	2026-09-18 16:41:04.170703556 -0400
-+++ puffer-overlay/vecenv.h	2026-09-19 18:05:56.316346489 -0400
+--- pristine-src/vecenv.h	2026-09-19 22:00:11.168998834 -0400
++++ puffer-overlay/vecenv.h	2026-09-19 21:39:52.839593874 -0400
 @@ -97,6 +97,36 @@
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.

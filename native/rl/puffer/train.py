@@ -236,7 +236,12 @@ def arguments():
                    help='after the first rollout, save the observations and the trainer\'s own decoder rows for '
                         '64 learner rows of buffer 0 at step 0 (zero recurrent state; _C.bopl_policy_rows) next to '
                         'the initial checkpoint and stop: the fixture puffer/check_dump.py holds the CPU evaluator '
-                        'and the torch reference to')
+                        'and the torch reference to. Also saves the batched rollout chain\'s rows on the same '
+                        'observations (_C.bopl_chain_rows)')
+    p.add_argument('--chain-reference', type=Path, default=None, metavar='NPZ',
+                   help='with --dump-rows: a dump from another build; run this build\'s rollout chain on its '
+                        'observations with its checkpoint loaded and save the rows as chain_rows_reference, for '
+                        'check_dump.py to compare bit for bit')
     p.add_argument('--v4-row-budget', default=None, metavar='P,S,E,L',
                    help='policy v4: packed rows per sample the set MLPs hold for players, slots, entities, slimes '
                         '(bopl_v4.cu DEFAULT_BUDGET 6,12,20,8); rows past the budget are dropped and counted (set_overflow)')
@@ -824,9 +829,26 @@ def main():
             # Packed observation transport (bopl_obs_pack.h): floats of any unpacked
             # device row that differed from its host row over the rollout (-1: dense).
             transport_mismatches = _C.bopl_transport_mismatches(trainer)
+            # The batched rollout chain (bopl_rollout.cu) on the same rows: the
+            # kernels the rollout actually runs, which bopl_policy_rows does not.
+            extra = {}
+            if architecture == layout.V4_ARCHITECTURE:
+                extra['chain_rows'] = _C.bopl_chain_rows(trainer, observations)
+                # Every step's learner rows of the rollout, for the bit-for-bit
+                # compare of two builds' chains (a chain call takes one step's rows).
+                per_call = observations.shape[0]
+                def chain_all(obs_all):
+                    return np.concatenate([_C.bopl_chain_rows(trainer, obs_all[i:i + per_call])
+                                           for i in range(0, obs_all.shape[0], per_call)])
+                extra['chain_observations'] = np.concatenate([_C.bopl_policy_rows(trainer, t, 64)[0] for t in range(a.horizon)])
+                extra['chain_rows_all'] = chain_all(extra['chain_observations'])
+                if a.chain_reference is not None:
+                    reference = np.load(a.chain_reference)
+                    _C.load_weights(trainer, str(reference['checkpoint']))
+                    extra['chain_rows_reference'] = chain_all(reference['chain_observations'])
             a.dump_rows.parent.mkdir(parents=True, exist_ok=True)
             np.savez(a.dump_rows, observations=observations, rows=rows, checkpoint=str(saved[0].resolve()),
-                     obs_size=obs_size, architecture=architecture, transport_mismatches=transport_mismatches)
+                     obs_size=obs_size, architecture=architecture, transport_mismatches=transport_mismatches, **extra)
             print(f'wrote {a.dump_rows}: {rows.shape[0]} rows of {rows.shape[1]} from {saved[0].name}; '
                   f'transport mismatches {transport_mismatches}', flush=True)
             stop = True

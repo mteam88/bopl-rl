@@ -2683,3 +2683,30 @@ updates, load1 5.8 with the base checkout's rebuild alongside): inc
 665.8k, cand 661.0k (-0.7%, one repeat: noise band). Rollout 73.0 vs
 73.4 ms, train 61.6 vs 62.1. Kept as the seam the chain kernel builds
 on (31bcacec); the 3x A/B comes with the kernel itself.
+
+## Step 1b: the chain's gate, `bopl_chain_rows` + check_dump chain compare
+
+`br_chain_rows` (bopl_rollout.cu): the same `br4_chain` call br_forward
+makes, for buffer 0, on a scratch copy of given observation rows (the
+learner's rows; the buffer's other rows zero), zero recurrent state,
+the actor snapshot refreshed and re-transposed first as rollouts_start
+does (so a checkpoint loaded with load_weights is what runs). Returns
+count x (dec_cols + 1): logits then value. Bound as `_C.bopl_chain_rows
+(trainer, observations)`. train.py --dump-rows saves `chain_rows` (the
+t = 0 rows, compared to the eager rows) and `chain_observations` /
+`chain_rows_all` (every step's learner rows of the rollout, 384 rows at
+the check's shape, 366 distinct observations); `--chain-reference
+REF.npz` loads REF's checkpoint and runs this build's chain on REF's
+observations into `chain_rows_reference`. check_dump.py: the v4 config
+runs 16 games (24 learner rows); a new reader line "rollout chain
+(bopl_rollout.cu)" vs the trainer's eager rows (2e-2 tolerance; measured
+1.54e-04 rel logits, 3.2e-03 value: mma.sync vs cuBLAS TF32), and
+`--chain-reference` prints "rollout chain vs reference build: N of
+11904 values differ" and fails on N > 0. The reference dump lives in
+`native/artifacts/rl/chain-reference/v4.npz` (with its run and
+checkpoint), taken from this build (step 1 + the binding; the incumbent
+.so has no bopl_chain_rows, and step 1 is the same kernel source).
+Self-compare: 0 of 11904 differ.
+
+Every later step's exactness gate: `check_dump.py --only v4
+--chain-reference native/artifacts/rl/chain-reference/v4.npz`.

@@ -1068,4 +1068,45 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
                         (size_t)rows * p.num_atns * sizeof(float), cudaMemcpyDeviceToHost, stream);
 }
 #include "bopl_rollout_v4.cu"
+
+// The batched chain's decoder rows on given observations (check_dump.py via
+// _C.bopl_chain_rows): the same br4_chain call br_forward makes, for buffer 0,
+// on a scratch copy of the rows (the learner's first `count` rows; the other
+// rows of the buffer zero) from a zero recurrent state, with the weights the
+// trainer holds now (the actor snapshot is refreshed and re-transposed first,
+// as rollouts_start does, so a checkpoint loaded with load_weights is what the
+// chain runs). Returns count x (dec_cols + 1) floats: logits, then the value.
+// Buffer 0's learner state is zeroed and left so: for a stopped trainer only.
+// This is the rollout chain's own gate; bopl_policy_rows drives the eager
+// per-layer path, which shares no kernel with it.
+static void br_chain_rows(PuffeRL* pufferl, const float* host_obs, int count, int obs_width, float* host_dec) {
+    if (!pufferl->br || !pufferl->br->v4) throw std::runtime_error("bopl_chain_rows: the v4 batched chain is not active");
+    BrPlan& p = *pufferl->br;
+    if (pufferl->rollout_in_flight) throw std::runtime_error("bopl_chain_rows: a rollout is in flight");
+    if (count < 1 || count > p.g.end[1] - p.g.end[0]) throw std::runtime_error("bopl_chain_rows: count exceeds the learner's rows");
+    if (obs_width > BOPL_OBS_STRIDE) throw std::runtime_error("bopl_chain_rows: observation width exceeds the row stride");
+    cudaStream_t stream = 0;
+    int rows = p.rows;
+    if (pufferl->num_slots > 1)
+        cudaMemcpyAsync(pufferl->actor_param_puf.data, pufferl->param_puf.data,
+                        numel(pufferl->param_puf.shape) * sizeof(precision_t), cudaMemcpyDeviceToDevice, stream);
+    br_prepare(pufferl, stream);
+    float *obs, *rewards, *terminals, *rew_copy, *term_copy;
+    size_t obs_bytes = (size_t)rows * BOPL_OBS_STRIDE * sizeof(float), row_bytes = (size_t)rows * sizeof(float);
+    cudaMalloc((void**)&obs, obs_bytes); cudaMemsetAsync(obs, 0, obs_bytes, stream);
+    cudaMalloc((void**)&rewards, row_bytes); cudaMemsetAsync(rewards, 0, row_bytes, stream);
+    cudaMalloc((void**)&terminals, row_bytes); cudaMemsetAsync(terminals, 0, row_bytes, stream);
+    cudaMalloc((void**)&rew_copy, row_bytes); cudaMalloc((void**)&term_copy, row_bytes);
+    cudaMemcpy2DAsync(obs + (long)p.g.end[0] * BOPL_OBS_STRIDE, BOPL_OBS_STRIDE * sizeof(float), host_obs, (size_t)obs_width * sizeof(float),
+                      (size_t)obs_width * sizeof(float), count, cudaMemcpyHostToDevice, stream);
+    PrecisionTensor* state = &pufferl->buffer_states[0];
+    cudaMemsetAsync(state->data, 0, (size_t)numel(state->shape) * sizeof(float), stream);
+    br4_chain(pufferl, p, 0, obs, rewards, terminals, obs, rew_copy, term_copy, stream);
+    const float* dec = br4_dec_rows(p, 0) + (long)p.g.end[0] * p.ld_dec;
+    cudaMemcpy2DAsync(host_dec, (size_t)(p.dec_cols + 1) * sizeof(float), dec, (size_t)p.ld_dec * sizeof(float),
+                      (size_t)(p.dec_cols + 1) * sizeof(float), count, cudaMemcpyDeviceToHost, stream);
+    cudaError_t e = cudaStreamSynchronize(stream);
+    cudaFree(obs); cudaFree(rewards); cudaFree(terminals); cudaFree(rew_copy); cudaFree(term_copy);
+    if (e != cudaSuccess) throw std::runtime_error(std::string("bopl_chain_rows: ") + cudaGetErrorString(e));
+}
 #endif  // BR_KERNELS_ONLY

@@ -45,11 +45,12 @@ COMMON = ['--workers', '4', '--buffers', '1', '--banks', '2', '--horizon', '16',
           '--seed', '7', '--training-maps', '0,1,2', '--episode-ticks', '600']
 CONFIGS = {
     'v3': ['--encoder', 'set', '--hidden', '128', '--layers', '1'],
-    'v4': ['--encoder', 'v4', '--hidden', '256', '--layers', '1'],
+    # v4 at 16 games: 24 learner rows x 16 steps for the rollout chain compare.
+    'v4': ['--encoder', 'v4', '--hidden', '256', '--layers', '1', '--workers', '16'],
 }
 
 
-def train_dump(name, out, game):
+def train_dump(name, out, game, chain_reference=None):
     """Run train.py --dump-rows at the tiny shape; the npz path."""
     run = out / name
     if run.exists():
@@ -58,6 +59,8 @@ def train_dump(name, out, game):
     env = dict(os.environ, BOPL_RL_BACKEND='rust', PYTHONPATH=str(PUFFERLIB))
     command = [sys.executable, str(HERE / 'train.py'), '--output', str(run), '--game', str(game),
                '--dump-rows', str(dump)] + COMMON + CONFIGS[name]
+    if chain_reference is not None and name == 'v4':
+        command += ['--chain-reference', str(chain_reference)]
     result = subprocess.run(command, env=env, cwd=ROOT, capture_output=True, text=True)
     if result.returncode or not dump.exists():
         sys.stderr.write(result.stdout[-4000:] + result.stderr[-4000:])
@@ -84,7 +87,7 @@ def readers(dump):
     return data, meta, out
 
 
-def compare(dump, tolerance=2e-2):
+def compare(dump, tolerance=2e-2, chain_reference=None):
     import torch
     data, meta, rs = readers(dump)
     obs = torch.from_numpy(data['observations'][:, :int(meta['obs_size'])].copy())
@@ -104,7 +107,26 @@ def compare(dump, tolerance=2e-2):
     # the dump's rollout must equal its host row bit for bit (-1 = dense transport).
     transport = int(data['transport_mismatches']) if 'transport_mismatches' in data else -1
     report['transport_mismatches'] = transport
-    report['pass_all'] = all(r['pass_all'] for r in report['readers'].values()) and transport <= 0
+    # The batched rollout chain (bopl_rollout.cu, _C.bopl_chain_rows) on the
+    # same rows: the trainer's own eager rows within the readers' tolerance
+    # (mma.sync vs cuBLAS TF32 accumulate differently), and bit for bit against
+    # a reference build's chain on the reference's observations and weights.
+    if 'chain_rows' in data:
+        chain = torch.from_numpy(data['chain_rows'])
+        if tuple(chain.shape) != tuple(expected.shape):
+            raise AssertionError(f'rollout chain: rows {tuple(chain.shape)} vs trainer {tuple(expected.shape)}')
+        logits = ((chain[:, :-1] - expected[:, :-1]).abs().max() / scale).item()
+        value = (chain[:, -1] - expected[:, -1]).abs().max().item()
+        report['readers']['rollout chain (bopl_rollout.cu)'] = dict(logits_rel_max=logits, value_abs_max=value,
+                                                                     pass_all=logits < tolerance and value < tolerance)
+    if chain_reference is not None and 'chain_rows_reference' in data:
+        ref = np.load(chain_reference)['chain_rows_all']
+        got = data['chain_rows_reference']
+        differing = int((ref != got).sum()) if ref.shape == got.shape else ref.size
+        report['chain_reference'] = dict(values=int(ref.size), differing=differing,
+                                         abs_max=float(np.abs(ref - got).max()) if ref.shape == got.shape else float('inf'))
+    report['pass_all'] = (all(r['pass_all'] for r in report['readers'].values()) and transport <= 0
+                          and report.get('chain_reference', {}).get('differing', 0) == 0)
     return report
 
 
@@ -115,13 +137,16 @@ def main():
     parser.add_argument('--keep', type=Path, help='directory for the runs and dumps (default: a temp dir)')
     parser.add_argument('--reuse', action='store_true', help='compare existing dumps under --keep without training')
     parser.add_argument('--json', action='store_true')
+    parser.add_argument('--chain-reference', type=Path, metavar='NPZ',
+                        help='a v4 dump from another build (its run kept): this build\'s rollout chain on its '
+                             'observations and checkpoint must reproduce its chain_rows bit for bit')
     args = parser.parse_args()
     out = args.keep or Path(tempfile.mkdtemp(prefix='bopl-check-dump-'))
     out.mkdir(parents=True, exist_ok=True)
     reports = []
     for name in args.only or sorted(CONFIGS):
-        dump = out / f'{name}.npz' if args.reuse else train_dump(name, out, args.game)
-        report = compare(dump)
+        dump = out / f'{name}.npz' if args.reuse else train_dump(name, out, args.game, args.chain_reference)
+        report = compare(dump, chain_reference=args.chain_reference if name == 'v4' else None)
         reports.append(report)
         if not args.json:
             print(f"{name}: {report['rows']} rows x {report['width']} ({report['architecture']}), "
@@ -129,6 +154,10 @@ def main():
             for reader, r in report['readers'].items():
                 print(f"  {reader:34s} logits rel max {r['logits_rel_max']:.2e}  value abs max {r['value_abs_max']:.2e}"
                       f"  {'ok' if r['pass_all'] else 'FAIL'}")
+            if 'chain_reference' in report:
+                c = report['chain_reference']
+                print(f"  rollout chain vs reference build    {c['differing']} of {c['values']} values differ"
+                      f"  (abs max {c['abs_max']:.2e})  {'ok' if c['differing'] == 0 else 'FAIL'}")
     if args.json:
         print(json.dumps(reports, indent=1))
     if not args.keep:
