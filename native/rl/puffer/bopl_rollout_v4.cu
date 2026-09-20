@@ -267,11 +267,16 @@ __device__ __forceinline__ void br4_mega_gemm_split(int ct, int r, int* ct0, int
     *ct0 = r * per; *n = max(0, min(ct - r * per, per));
 }
 template <bool TF32>
-__global__ void __cluster_dims__(BR4_CLUSTER, 1, 1) __launch_bounds__(BR_THREADS, 1) br4_mega(const Br4MegaArgs a) {
-    __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];   // 32 KB: the GEMMs' A / C tiles
-    __shared__ float rowbuf[1024];                             // the row stages' row
+__global__ void __cluster_dims__(BR4_CLUSTER, 1, 1) __launch_bounds__(BR_THREADS, 2) br4_mega(const Br4MegaArgs a) {
+    // 32 KB, one stage at a time (a barrier separates any two): the GEMMs' A / C
+    // tiles, the row stages' row, the sampler's logits. Registers are capped at
+    // 128 with the launch bounds: a train-stream block co-resides on the SM.
+    __shared__ __align__(16) float smem[BR_KG * BR_TM * BR_TK];
+    float (*As)[BR_TM * BR_TK] = (float (*)[BR_TM * BR_TK])smem;
+    float* rowbuf = smem;                                                            // 1024 floats
+    float (*s_logits)[SAMPLE_MAX_LOGITS] = (float (*)[SAMPLE_MAX_LOGITS])smem;       // BR4_TILE_ROWS_PER_BLOCK rows
+    static_assert(BR4_TILE_ROWS_PER_BLOCK * SAMPLE_MAX_LOGITS <= BR_KG * BR_TM * BR_TK && 1024 <= BR_KG * BR_TM * BR_TK, "stage buffers alias the GEMM tile");
     __shared__ float scratch[8];
-    __shared__ float s_logits[BR4_TILE_ROWS_PER_BLOCK][SAMPLE_MAX_LOGITS];
     const int r = (int)br_cluster_rank();
     const int rt = blockIdx.x / BR4_CLUSTER;
     int grp = 0;
@@ -545,9 +550,13 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         m.cout = ra;
     }
     m.sample = smp;
+    // Stream-ordered, not PDL: an early-launched chain kernel would hold its
+    // SMs through br4_sets, and the train stream pays for every resident block.
     const dim3 grid(p.tiles[p.g.n] * BR4_CLUSTER);
-    if (p.tf32) br_launch_pdl(br4_mega<true>, grid, dim3(BR_THREADS), 0, stream, m);
-    else br_launch_pdl(br4_mega<false>, grid, dim3(BR_THREADS), 0, stream, m);
+    if (p.tf32) br4_mega<true><<<grid, BR_THREADS, 0, stream>>>(m);
+    else br4_mega<false><<<grid, BR_THREADS, 0, stream>>>(m);
+    cudaError_t e = cudaGetLastError();   // a launch that fails skips its work silently otherwise (notes-v4.md, 698cd3d7)
+    if (e != cudaSuccess) { fprintf(stderr, "br4_mega launch: %s\n", cudaGetErrorString(e)); abort(); }
 }
 
 // ---------------------------------------------------------------------------
