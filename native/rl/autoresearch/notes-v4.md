@@ -2710,3 +2710,42 @@ Self-compare: 0 of 11904 differ.
 
 Every later step's exactness gate: `check_dump.py --only v4
 --chain-reference native/artifacts/rl/chain-reference/v4.npz`.
+
+## Step 2: the chain kernel `br4_mega`
+
+One cluster launch per buffer step after `br4_sets`: a thread block
+cluster of 4 blocks (256 threads each) per 16-row tile (the row tiles
+of br_gemm: never straddling a group), `__cluster_dims__(4, 1, 1)`,
+grid = tiles x 4. Block r of a cluster runs, for its tile, the r-th
+quarter of every GEMM's column-tile groups through `br_gemm_tile` (the
+per-GEMM launch's body: same chunk -> warp map, mma and partial-sum
+order for any split), and the tile's rows 4r .. 4r+3 through the
+row-stage bodies (`br4_row`: LN / residual + LN([y, priv]) / critic
+out; `br_gate_elem`; `br_sample_row`, one warp per row). Stages: flat
+GEMM, fusion GEMM, LN, per layer {GRU GEMM, gate}, [LN, FFN in, FFN
+out], residual LN, actor GEMM, learner tiles only {cin GEMM, LN, b1,
+b2, critic out}, sampler. Barriers: `barrier.cluster.arrive.release /
+wait.acquire` (PTX; cooperative_groups.h trips the CCCL toolkit-version
+check of the venv's nvcc / cudart wheels) after every GEMM (a row stage
+needs its rows' full columns) and before every GEMM (it needs the
+tile's full rows): 10 on a learner tile at the lite shape, 6 on a bank
+tile; gate -> residual LN needs none (the same block's rows). Nothing
+grid-wide. Activations stay in the per-buffer globals; every
+cross-block read is `__ldcg` (L1 bypass: another SM wrote the line
+since this one last cached it) in br_gemm_tile's A loads, br4_row and
+br_gate_elem; the sampler's logits reads are the kernel's first touch
+of A.dec. The GRU state is read and written by the same thread as
+before. The FFN path is in (check_dump's default v4 shape has it), the
+critic branch is skipped by bank clusters as a whole. br4_init asserts
+`cudaOccupancyMaxActiveClusters` >= 1 (10 resident on the 5070: 40
+blocks; 8 clusters at 128 rows fit one wave). The sampler moved into
+the kernel: br_forward builds BrSampleArgs before the chain and passes
+them; the v3 chain still launches br_sample.
+
+Exactness, first build: check_dump `--only v4 --only v4-lite
+--chain-reference native/artifacts/rl/chain-reference` (the reference
+dumps from the pre-kernel build feb085b6: default shape with FFN 512 /
+critic 512, and the production lite shape) -> **0 of 11904 values
+differ** on both, and the chain rows sit at 1.2-1.5e-04 rel of the
+eager rows as before. The init line confirms the kernel path ("chain
+kernel: 4-block clusters per 16-row tile, 10 resident").
