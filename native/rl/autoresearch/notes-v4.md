@@ -2633,3 +2633,47 @@ allows.
 Recommended: this is the one exact-class lever left that is sized at
 +50%, not +2%; everything else in the rollout is closed at this depth.
 Not started (Matthew decides; GPU idle).
+
+# Megakernel (rift `megakernel`, branch megakernel off main 6f36c8a0 = throughput-v4 078c567a merged)
+
+Approved 2026-09-19 21:30: build the cluster megakernel sized above (one
+4-block thread block cluster per 16-row tile, N/4 of every GEMM per
+block, cluster barriers between GEMM stages, every stage row-local).
+Rules as before: no flags or toggles in the final code, one step per
+turn. Incumbent for the A/Bs: the `_C` extension built from main
+6f36c8a0 (the 70c68d66 code), copied to
+`native/artifacts/rl/incumbent/_C-6f36c8a0.so` for `BOPL_BENCH_AB_SO`.
+The GPU is shared with Matthew's multi-ability runs from here: builds
+at nice 19, no gates while his train.py is up.
+
+Revision of the sizing before building: br4_sets stays a separate
+launch in front of the megakernel for v1. Its work is 512 (row, set)
+blocks of dependent fmaf chains (~5 us each at one block per SM, 57 us
+per 128-row step over 48 SMs); folded into 32 cluster blocks as it is,
+each block would run 16 of them in sequence (30-80 us), which is the
+whole budget. The megakernel takes the chain from the flat GEMM to the
+sampler (13 stages, 7 GEMMs); the set stage's restructuring (more ILP
+in the exact form, or the set MLPs on tensor cores under the learning
+gate) is a follow-up on its own A/B. Activations stay in the global
+per-buffer buffers (L2 resident, ~80 KB per tile), read with L1-bypass
+loads, ordered by the cluster barriers; DSMEM is the second version if
+the L2 round trips show in the profile.
+
+Gate note: `check_dump` drives `policy_forward` (the eager per-layer
+path), not `br4_chain`; it never exercised the rollout chain. The
+chain's gate for this work is `bopl_chain_rows` (step 1b): the same
+br4_chain call the trainer makes, on the dump's observations with a
+zero state, its decoder rows saved in the dump npz. check_dump compares
+them to policy_forward's rows (tolerance: mma vs cuBLAS TF32) and,
+given a reference npz from the incumbent build, bit for bit against the
+incumbent chain's rows on the same observations and weights.
+
+## Step 1: br_gemm's body as `br_gemm_tile` (device function)
+
+`br_gemm_tile<TF32>(a, rt, ctile0, units, As, pdl)`: the kernel body
+with the row tile and the column-tile group as arguments instead of
+blockIdx, and the PDL wait/release behind a flag the chain kernel
+passes false. br_gemm is the one-line wrapper. Same chunk -> warp map,
+mma order and partial-sum order, so the values are unchanged for any
+split. Built (nice 19), check_dump v4 ok (logits rel max 1.93e-03 vs
+the readers, transport mismatches 0), A/B vs the incumbent .so below.

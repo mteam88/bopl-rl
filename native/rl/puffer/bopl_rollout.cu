@@ -234,18 +234,25 @@ __device__ __forceinline__ void br_mma(float* c, const unsigned* a, unsigned b0,
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
 
+// The GEMM's block body as a device function: row tile rt of the grouped
+// problem a, column-subtile groups ctile0 .. ctile0 + units - 1 (a group is
+// the BR_KG / sub subtiles one round of the block covers), A tiles in As. The
+// row-tile / column-tile arithmetic is the caller's, so the same body serves
+// br_gemm (one block per (rt, ctile)) and a kernel that runs several GEMMs
+// of a chain in sequence for one row tile. pdl: griddepcontrol.wait before
+// the first read of A (the predecessor's output) and launch_dependents under
+// the last epilogue; a chain kernel orders its stages itself and passes
+// false. The values are those of br_gemm as it was launched per GEMM: the
+// same chunk -> warp assignment, mma order and partial-sum order for any
+// (ctile0, units) split, so the sums are bit-identical to the one-round grid.
 template <bool TF32>
-__global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
-    // Per-warp A tile (16 x 64): TF32 in A-fragment order [kstep][lane][4],
-    // fp32 as [k][row] (float4 row reads). The 16 x 32 C tiles alias it after
-    // the K loop.
-    __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];  // 32 KB
+__device__ __forceinline__ void br_gemm_tile(const BrGemmArgs& a, int rt, int ctile0, int units, float (*As)[BR_TM * BR_TK], bool pdl) {
     // PDL: the B operand (weights) does not depend on the predecessor, so
     // the first chunk's B loads are issued before griddepcontrol.wait and
     // their latency overlaps the predecessor's tail; A (the predecessor's
     // output) is read after it. A warp with no chunk waits after the loop.
-    bool waited = false;
-    int rt = blockIdx.x, grp = 0;
+    bool waited = !pdl;
+    int grp = 0;
     while (grp + 1 < a.g.n && rt >= a.tiles[grp + 1]) grp++;
     const int row0 = a.g.end[grp] + (rt - a.tiles[grp]) * BR_TM;
     const int row_end = a.g.end[grp + 1];
@@ -259,12 +266,12 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     const int kg = warp % sub;  // this warp's K slot within its subtile
     const float* __restrict__ Wt = a.wt.w[grp];
     float* Aw = As[warp];
-    // Rounds over the block's column subtiles (a.units of them per warp): the
+    // Rounds over the block's column subtiles (units of them per warp): the
     // same chunk -> warp assignment and partial-sum order as one round per
     // block, so the sums are bit-identical for any units; fewer, longer blocks
     // hold fewer SMs while the training pass runs beside the rollout.
-    for (int u = 0; u < a.units; u++) {
-    const int col0 = ((blockIdx.y * a.units + u) * subtiles + warp / sub) * BR_TN;
+    for (int u = 0; u < units; u++) {
+    const int col0 = ((ctile0 + u) * subtiles + warp / sub) * BR_TN;
 
     // A chunk: 16 rows x 64 k = 256 float4 over the warp (element i: row i%16,
     // k-quad i/16), 8 instructions per chunk (the float2 form took 16). The
@@ -401,13 +408,13 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     }
     if (!waited) { br_pdl_wait(); waited = true; }
     __syncthreads();
-    if (u == a.units - 1) br_pdl_release();   // the dependent launches under this epilogue
+    if (pdl && u == units - 1) br_pdl_release();   // the dependent launches under this epilogue
     // Per subtile, sum its warps' partial tiles in warp order and write the valid entries.
     for (int o = tid; o < subtiles * BR_TM * BR_TN; o += BR_THREADS) {
         int st = o / (BR_TM * BR_TN), e = o % (BR_TM * BR_TN), r = e / BR_TN, cc = e % BR_TN;
         float v = 0.f;
         for (int w = st * sub; w < (st + 1) * sub; w++) v += As[w][r * BR_TN + cc];
-        int row = row0 + r, cl = ((blockIdx.y * a.units + u) * subtiles + st) * BR_TN + cc;
+        int row = row0 + r, cl = ((ctile0 + u) * subtiles + st) * BR_TN + cc;
         if (row < row_end && cl < N) {
             if (a.relu) v = fmaxf(0.f, v);
             a.out[(long)row * a.ld_out + cl] = v;
@@ -415,6 +422,15 @@ __global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
     }
     __syncthreads();  // the C tiles are read before the next round's A tiles overwrite them
     }
+}
+
+template <bool TF32>
+__global__ void __launch_bounds__(BR_THREADS, 2) br_gemm(BrGemmArgs a) {
+    // Per-warp A tile (16 x 64): TF32 in A-fragment order [kstep][lane][4],
+    // fp32 as [k][row] (float4 row reads). The 16 x 32 C tiles alias it after
+    // the K loop.
+    __shared__ __align__(16) float As[BR_KG][BR_TM * BR_TK];  // 32 KB
+    br_gemm_tile<TF32>(a, blockIdx.x, blockIdx.y * a.units, a.units, As, true);
 }
 
 // Column-tile count of br_gemm's grid for a GEMM of depth K over N columns,
