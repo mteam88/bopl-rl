@@ -2464,3 +2464,172 @@ state learns as the b4 gates did and exercises the tolerant 160M read.
 
 Campaign wrap drafted in THROUGHPUT_V4.md section 6 (what landed x3.9,
 the ~700k ceiling with both floors, the 1M reading).
+
+## 2026-09-19 20:00 closing gate read; megakernel sized (not built)
+
+### Gate `final-default-70c68d66` (seed 73, 560M, the shipped defaults as `sanity_v4.sh run` invokes them)
+
+    recipe                          seed  at 955 s        band (240 games)     refit
+    reference v4-aim/000 (p4 w128)   73   160M/955 s      523.5 [482, 565]     646 [504, 898]
+    p2 aim-only                      73   ~350M           572.8 [529, 617]
+    b4 12cc2877                      73   440M/965 s      612.0 [564, 661]     646 [529, 847]
+    b4 12cc2877                      74   440M/965 s      579.2 [539, 623]     646 [529, 847]
+    b4 shipped 70c68d66              73   440M/974 s      531.0 [488, 575]     574 [443, 754]
+
+Equal wall: PASS against the reference (531.0 > 523.5; the intervals
+overlap). Equal steps at 160M: band 400.7 [355, 443] vs 523.5, floor
+448.5, FAIL, as every p1 div2 run has: the recipe buys wall, not
+samples (about -120 band at equal samples, 2.9x the reference's rate).
+80M refit 319.9 vs 379.1 (floor 304.1) ok. EV 0.40, entropy 4.66, KL
+0.0019, run rate 491k learner_sps with the evals in. The tolerant 160M
+read worked (213385216 -> the 160M line).
+
+Reading: the b4 recipe now has three equal-wall runs, 612.0 / 579.2 /
+531.0, mean 574, spread 81 (the plan allows 75 for a seed). Seed 73 was
+also the 612.0 run: the async rollout is not seed-deterministic (thread
+timing decides which rows land where), so seed repeats are independent
+draws. What holds: b4 is not below the reference at equal wall in any
+of three runs while running 2.9x its rate. What does not hold: an
+advantage over p2 aim-only (572.8, one run): the b4 mean equals it. The
+adoption call rests on the first statement. A p2 repeat would say
+whether p2 and b4 differ at equal wall; not launched (GPU left idle as
+instructed). Drift flags (EV up 1.34x, entropy 1.17x, KL 0.56x) are the
+recipe's expected signature (fewer gradient steps per sample).
+
+### Megakernel sizing (the rollout chain as one launch; not built)
+
+Probe first (`/tmp/clprobe/probe.cu`, sm_120, this box): thread block
+clusters are supported (`clusterLaunch=1`), 24 clusters of 4 x 256
+threads resident at once, cluster.sync + one DSMEM round trip 0.2 us,
+an empty 32-block cluster launch 1.9 us. smem opt-in 99 KB per block,
+L2 48 MB (all rollout weights fit), 48 SMs. That decides the design:
+clusters, not cooperative grid sync.
+
+Launch list per 128-row buffer step at the lite shape (F = 0, 1 GRU
+layer, H 256, D 128, I 64, FD 256, JW 1280, W 304, C 384; CUPTI at b4,
+us per step contended / kernel time):
+
+     #  launch                        grid          reads -> writes                 class
+     1  HtoD packed rows (memcpy)     -             host -> packed_dev              28.4 (transport)
+     2  bopl4_unpack_rows             128           packed -> dense obs             10.4 row-local
+     3  br4_sets                      128 x 4       obs -> joined[:, FD:] (+rollout copies)  57.5 row-local
+     4  br_gemm flat  K492  N256      8 x units     obs -> joined[:, :FD]           gemm
+     5  br_gemm fusion K1280 N256     8 x units     joined -> ln                    gemm
+     6  br4_rows LN                   128           ln -> enc                       row-local
+     7  br_gemm gru   K256  N768      8 x units     enc -> comb                     gemm
+     8  br_gate                       128*256/256   comb, state, terminals -> gru, state   row-local
+     9  br4_rows RESIDUAL_LN_PRIV     128           gru, priv -> y, ln              row-local
+    10  br_gemm actor K256  N~32      8 x units     y -> dec logits                 gemm
+    11  br_gemm cin   K304  N384      learner tiles ln -> z                         gemm
+    12  br4_rows LN                   crows         z -> lnc                        row-local
+    13  br_gemm b1    K384  N384      learner tiles lnc -> b (relu)                 gemm
+    14  br_gemm b2    K384  N384      learner tiles b -> z2                         gemm
+    15  br4_rows CRITIC_OUT           crows         z2, z -> dec value              row-local
+    16  br_sample                     128/8         dec -> actions, logp            row-local
+    17  DtoH actions (memcpy)         -             gpu_actions -> host             transport
+    (18-19 at the step's edges: bopl_mask_state_rows on terminals, the pack copy)
+                                                                       br_gemm x7 76.0, br4_rows x4 16.4,
+                                                                       sample 25.0, gate 3.6: kernel sum 218,
+                                                                       eval_gpu 304 (86 of gaps)
+
+Dependency graph: a chain with two forks. 3 and 4 are independent
+(both read obs, write disjoint column ranges of joined); 5 needs both.
+6..9 linear. 10 (actor) and 11..15 (critic) are independent after 9;
+16 needs 10 (logits) only, 15 writes the value column beside them.
+Everything from 2 to 16 is row-local: no stage reads another row's
+output. The only cross-thread coupling inside a row is the GEMMs' K
+reduction (a row's next-stage input is the full previous output row,
+all N columns), and the set pool (all valid rows of the set, one row
+of the batch).
+
+Barrier classes: nothing needs a grid-wide barrier. Stage-to-stage
+dependencies are within a row tile: (a) if one block owns a row tile
+end to end, __syncthreads suffices everywhere; (b) if a row tile's N
+columns are split over blocks (needed for parallelism, see below), the
+split blocks must exchange the finished row before the next GEMM: that
+is a cluster barrier, 0.2 us measured, six of them on the chain (after
+{3,4}, 5, 7, 11, 13, 14; the row-local stages 6, 8, 9, 12, 15, 16 fold
+into the consumer block and are recomputed redundantly per column
+block, 16 x 256 per stage, trivial).
+
+Why (a) alone does not work: the weights, not the rows, are the
+traffic. Per row tile the chain streams its group's weights once:
+flat 492x256x4 B = 0.50 MB, fusion 1280x256x4 = 1.31, gru 256x768x4 =
+0.79, cin 304x384x4 = 0.47, b1+b2 2x384x384x4 = 1.18, sets ~0.09, actor
+0.03: 4.4 MB (fragment-order fp32 for the TF32 mma; the banks' tiles
+skip the critic, 2.6 MB). One block streaming 4.4 MB from L2 at
+100-150 GB/s per SM is 30-45 us, and its tensor work is 16 rows x 1.06M
+MAC x 2 = 34 MFLOP at ~0.65 TFLOPS per SM = 52 us at full rate, so a
+row-tile-per-block chain sits at 60-100 us: no better than today's
+isolated 120 and it leaves 40 SMs idle.
+
+Design: one cluster per 16-row tile, 4 blocks per cluster (8 clusters,
+32 blocks at 128 rows; 8 per cluster is the alternative, 64 blocks,
+BR_TN = 32 columns per block per stage). Each block owns N/4 of every
+GEMM's columns for its tile and streams N/4 of each weight (1.1 MB per
+block over the chain, ~9 us of L2 time, overlapped) and does N/4 of the
+tensor work (8.5 MFLOP, 13 us at full rate, ~20-25 realistic at M = 16
+with one block per SM). The row tile's activations live in distributed
+shared memory: joined 16 x 1280 fp32 = 80 KB across the cluster (20 KB
+per block), enc/y/ln/z 16 x 384 x 4 = 24 KB each; the consumer GEMM
+reads its K operand from the four blocks' smem (DSMEM, one round trip
+per 64-K chunk instead of the global write + PDL wait + global read of
+today). The set stage maps one set per block (4 sets, 4 blocks: the
+cluster's natural split; br4_sets' body as is), the sample stage one
+warp per learner row in block 0. HtoD, unpack (kept as a separate
+launch or folded as stage 0: it is row-local) and the DtoH stay.
+
+Estimated chain latency (isolated, 128 rows): weights 9 us hidden under
+tensor 20-25, plus sets ~6 (the 57 us kernel is 512 blocks over 48
+SMs; one set of 16 rows per block is ~1/128 of it x redundancy), sample
+~3, six cluster barriers ~1.5, launch ~2: 35-45 us against today's
+~120 isolated (19 launches, PDL) and 304 contended. Contended it will
+not be 40: the train stream still takes SMs and L2 bandwidth, but a
+32-block kernel of ~40 us has a far smaller footprint than 19 launches
+x their waves, so the contention factor should fall from today's 2.5x
+toward ~1.5-2x: ~60-80 us. On the wall: step = env 294 + fwd (sum by
+construction at b4), 608 -> ~370 us, rollout 77.9 -> ~47 ms; train
+(57.5 hidden today, 24.8 alone) loses most of its rollout contention
+and lands ~30-40 ms, under the rollout; the env CPU floor is 122 x 294
+= 36 ms. Wall ~47-50 ms -> 49152 / 0.048 = ~1.0M, +50-60% on the
+645k incumbent. This is the notes' own "970k if the forward were at
+its isolated cost" arithmetic reached from the other side; it is the
+lever that moves the ceiling, and the GPU writer sizing (+0..5% today
+because the chain would become the wall) reopens behind it.
+
+Bit-identity: achievable by construction, stage by stage. GEMMs: the
+per-element result depends on the K partition across warps (`sub`
+slots of 64-K chunks, mma m16n8k8 in k order, then the fixed cross-warp
+reduction); the megakernel's column block runs br_gemm's body as a
+device function with the same `sub`, the same chunk order and the same
+reduction, reading A from DSMEM instead of global (the tf32 rounding is
+per element, order-free). LN / gate / residual / critic_out / pool /
+sample: br4_rows', br_gate's, br4_sets' and br_sample's row code moved
+verbatim (same fmaf chains, same warp shuffles). The redundancy (LN
+computed by four blocks) is deterministic. Risk: contraction. The
+device functions inline into one kernel and nvcc may fuse mul+add
+pairs differently across the seam; every reduction that matters is
+already written with explicit fmaf, and check_dump is the arbiter.
+
+Build cost: 8-10 turns. (1) br_gemm's tile as a device function taking
+the A operand from a smem/DSMEM view and writing a smem C tile, exact
+against the current launcher (check_dump): 2 turns. (2) the cluster
+kernel: stage sequence, DSMEM layout (fits: 20 + 24 x 3 + the mma A
+tiles 32 KB < 99 KB per block, or trim to 8-row tiles' worth by keeping
+one activation live at a time), six cluster syncs, sets and sample as
+stages, group/bank weights per tile as today's tiles[] map, the GRU
+state and rollout copies as today: 3-4 turns. (3) PDL edge to the
+unpack, the launch via cudaLaunchKernelEx with the cluster attribute
+and launch_check, cudaOccupancyMaxActiveClusters asserted at plan
+time: 1 turn. (4) gates: the BOPL_BR_CHECK self-check (eager chain vs
+this kernel), check_v4 pass_all at both shapes, check_dump against the
+incumbent's dump row for row; an exact pass means no learning gate: 1
+turn. (5) A/B x3 vs 70c68d66 and the split: 1 turn. Two of the turns
+carry the risk (DSMEM A operand feeding mma with the same fragment
+order; the smem budget at 4 blocks per cluster). If check_dump fails on
+a contraction seam the fallback is the learning gate, which the plan
+allows.
+
+Recommended: this is the one exact-class lever left that is sized at
++50%, not +2%; everything else in the rollout is closed at this depth.
+Not started (Matthew decides; GPU idle).
