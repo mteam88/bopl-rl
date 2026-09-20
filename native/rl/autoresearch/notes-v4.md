@@ -2677,3 +2677,9 @@ passes false. br_gemm is the one-line wrapper. Same chunk -> warp map,
 mma order and partial-sum order, so the values are unchanged for any
 split. Built (nice 19), check_dump v4 ok (logits rel max 1.93e-03 vs
 the readers, transport mismatches 0), A/B vs the incumbent .so below.
+
+A/B (1 repeat, build A/B vs `_C-6f36c8a0.so`, w256 b4 p1 d2, 300
+updates, load1 5.8 with the base checkout's rebuild alongside): inc
+665.8k, cand 661.0k (-0.7%, one repeat: noise band). Rollout 73.0 vs
+73.4 ms, train 61.6 vs 62.1. Kept as the seam the chain kernel builds
+on (31bcacec); the 3x A/B comes with the kernel itself.
