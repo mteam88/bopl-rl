@@ -298,10 +298,14 @@ step gets there alone:
 - Architecture, same box: (i) the chain per row: rows per chain up
   (w512 needs the training buffers to shrink: bf16 rollout storage or
   fewer frozen banks resident; 12 GB is the cap) or the 19-launch chain
-  collapsed into 3-4 persistent-kernel stages (a megakernel: sets +
-  flat GEMM + GRU + heads in one launch per step, ~40-60 us instead of
-  170; a rewrite of bopl_rollout_v4.cu's chain, not exact-gated by
-  construction but bit-identical in principle); (ii) the CPU per
+  collapsed into one launch per step (a megakernel; sized in notes-v4
+  2026-09-19 20:00: one 4-block thread block cluster per 16-row tile,
+  each block N/4 of every GEMM with the row's activations in
+  distributed shared memory, six 0.2 us cluster barriers, no grid-wide
+  barrier since every stage is row-local; 35-45 us isolated at 128
+  rows against 120 today, bit-identical by construction if the GEMM
+  stages run br_gemm's body with the same K partition; 8-10 turns,
+  check_dump-gated); (ii) the CPU per
   decision: the writer to the GPU (+0..5% alone, worth it only after
   (i)), the sim's per-tick cost (platforms 22%, entity export 17%:
   exact housekeeping worth ~3%); (iii) both together: with (i) at 60 us
