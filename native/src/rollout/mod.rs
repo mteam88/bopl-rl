@@ -29,6 +29,7 @@ macro_rules! terrain {
 
 pub mod abi;
 pub mod data;
+pub mod replay;
 mod rope_abilities;
 
 pub const ABI_VERSION: u32 = 3;
@@ -9424,34 +9425,12 @@ impl RolloutWorld {
             if self.players[index].rewind.finish_next_tick {
                 let destination = self.players[index].rewind.destination;
                 let preserved = self.players[index].timers[self.players[index].rewind.ability_slot];
-                let mut position = self.players[index].base.position;
                 let radius = self.players[index].base.radius + Fix::from_f32(0.05);
-                for _ in 0..6 {
-                    let mut changed = false;
-                    for platform in &self.platforms {
-                        let shape = platform.collider;
-                        let Ok(closest) = shape.closest_point(position) else {
-                            continue;
-                        };
-                        let delta = position - closest;
-                        let magnitude = delta.length();
-                        if shape.overlaps(position) {
-                            let direction = if magnitude > Fix::ZERO {
-                                (closest - position) / magnitude
-                            } else {
-                                Vec2::UP
-                            };
-                            position = closest + direction * radius;
-                            changed = true;
-                        } else if magnitude < radius {
-                            position = closest + delta / magnitude * radius;
-                            changed = true;
-                        }
-                    }
-                    if !changed {
-                        break;
-                    }
-                }
+                let position = push_circle_out_of_platforms(
+                    &self.platforms,
+                    self.players[index].base.position,
+                    radius,
+                );
                 let slot = &mut self.players[index];
                 slot.base.position = position;
                 slot.base.velocity = destination.velocity;
@@ -32838,6 +32817,40 @@ impl RolloutWorld {
     }
 }
 
+/// DetPhysics.PushCircleOutOfRoundedRects: moves a circle centre out of every
+/// active platform it overlaps, up to six passes. The reference divides
+/// `vec / magnitude` even on the not-overlapping branch, where a centre
+/// sitting exactly on a corner's rounding arc can give closest == pos
+/// (magnitude zero): .NET throws DivideByZero there and the game would crash.
+/// A rewind arrival hit that on 2026-09-20 (any-3, seed 137851958, map 2),
+/// so a zero delta pushes straight up instead, as the overlapping branch does.
+fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radius: Fix) -> Vec2 {
+    for _ in 0..6 {
+        let mut changed = false;
+        for platform in platforms.iter().filter(|platform| platform.active) {
+            let shape = platform.collider;
+            let Ok(closest) = shape.closest_point(position) else {
+                continue;
+            };
+            let delta = position - closest;
+            let magnitude = delta.length();
+            if shape.overlaps(position) {
+                let direction = if magnitude > Fix::ZERO { (closest - position) / magnitude } else { Vec2::UP };
+                position = closest + direction * radius;
+                changed = true;
+            } else if magnitude < radius {
+                let direction = if magnitude > Fix::ZERO { delta / magnitude } else { Vec2::UP };
+                position = closest + direction * radius;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    position
+}
+
 /// Leaves the bow ability: a landing exit (BowTransform.cs:225-239) or the
 /// fire animation's end (BowTransform.cs:116-130).
 fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
@@ -32991,6 +33004,23 @@ mod tests {
             world.platform_dynamics[index].root_body.inverse_inertia,
             world.platform_dynamics[index].body.inverse_inertia
         );
+    }
+
+    #[test]
+    fn rewind_arrival_on_a_corner_arc_does_not_divide_by_zero() {
+        // The any-3 crash capture of 2026-09-20 (Rewind/Missile/Magnet
+        // mirror, map 2): on its last tick a rewind arrives with its centre
+        // exactly on a platform corner's rounding arc, closest_point returns
+        // the point itself, and the depenetration divided by zero.
+        let raw = include_bytes!("../../fixtures/rewind-arrival-on-corner-arc.rep");
+        let replay::Replay { config, ticks } = replay::decode(raw, 240, 7200).unwrap();
+        let mut world = RolloutWorld::new();
+        world.reset(&config).unwrap();
+        for actions in &ticks[240..] {
+            world.step(actions, 1).unwrap();
+            assert!(!world.terminal);
+        }
+        assert!(world.players.iter().all(|slot| !slot.rewind.rewinding));
     }
 
     #[test]
