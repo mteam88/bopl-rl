@@ -297,22 +297,22 @@ step gets there alone:
   hardware road to 1M with the present architecture.
 - Architecture, same box: (i) the chain per row: rows per chain up
   (w512 needs the training buffers to shrink: bf16 rollout storage or
-  fewer frozen banks resident; 12 GB is the cap) or the 19-launch chain
-  collapsed into one launch per step (a megakernel; sized in notes-v4
-  2026-09-19 20:00: one 4-block thread block cluster per 16-row tile,
-  each block N/4 of every GEMM with the row's activations in
-  distributed shared memory, six 0.2 us cluster barriers, no grid-wide
-  barrier since every stage is row-local; 35-45 us isolated at 128
-  rows against 120 today, bit-identical by construction if the GEMM
-  stages run br_gemm's body with the same K partition; 8-10 turns,
-  check_dump-gated); (ii) the CPU per
-  decision: the writer to the GPU (+0..5% alone, worth it only after
-  (i)), the sim's per-tick cost (platforms 22%, entity export 17%:
-  exact housekeeping worth ~3%); (iii) both together: with (i) at 60 us
-  the step is env-bound again at ~0.26 -> 128 x 0.3 = 38 ms -> ~1.2M
-  before the writer even moves. So the architecture road is the
-  megakernel chain first (the only lever sized above 20%), then the
-  writer.
+  fewer frozen banks resident; 12 GB is the cap). The 19-launch chain
+  collapsed into one launch per step was built and measured (notes-v4
+  "Megakernel", 2026-09-20: one 4-block cluster per 16-row tile,
+  bit-identical, check_dump chain gate 0 of 11904 values differ) and
+  discarded at -5% (cluster 4) / -15% (cluster 8): isolated it runs
+  110 / 86 us against the PDL chain's 76 (the launch gaps it was to
+  remove are already negative under PDL), a GEMM round is SM-port
+  bandwidth for the TF32 B fragments (4-11 us per column group) that
+  the cluster serializes per block, and its resident blocks cost the
+  train stream +26..40%. The chain's floor on this GPU is ~76 us, set
+  by weight bytes per SM port; only non-exact levers (bf16 or 8-bit
+  rollout weights) move it. (ii) the CPU per decision: the writer to
+  the GPU (+0..5% alone), the sim's per-tick cost (platforms 22%,
+  entity export 17%: exact housekeeping worth ~3%). Without (i) the
+  architecture road on this box is closed at the exact class; the
+  hardware road (cores) is the one that moves the wall.
 - Not the road: recipe (replay 1.0 is the PufferLib default already;
   further passes/batch changes trade Elo), SM partition, thread
   placement, more buffers, kernel-level work on the chain's individual
