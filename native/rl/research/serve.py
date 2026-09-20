@@ -23,6 +23,7 @@ HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent / 'sweep')]
 import reference_pool
 import joint_ladder
+import lineup_report
 import map_catalogue
 import visuals
 
@@ -34,6 +35,10 @@ CHART_KEYS = (
 )
 CHART_POINTS = 360
 LAST_K = 3
+# A pool draw makes nearly every lineup unique, so a table of all of them is one
+# row per game: keep the most-played ones and say how many were dropped.
+LINEUP_ROWS = 32
+LINEUP_COLUMNS = 16
 # The sweep objective's pool (sweeps/anchors/pool-v7, sha8 d48f4b64); labels only, never the joint scale.
 PRIMARY_POOL = 'v7'
 
@@ -202,6 +207,135 @@ def latest_report(directory, pattern):
     return compact_report(reports[-1]) if reports else None
 
 
+def evaluation_digest(path):
+    """lineup_report.digest of one evaluation, cached per (path, stat).
+
+    result.json carries every game of the evaluation, so a run page that wants
+    per-ability and per-lineup counters over the whole training curve must never
+    re-read the ones it already read: only the newest file costs a parse.
+    """
+    stat = path.stat()
+    return _evaluation_digest(path, stat.st_ino, stat.st_mtime_ns, stat.st_size)
+
+
+@lru_cache(maxsize=2048)
+def _evaluation_digest(path, inode, modified, size):
+    return lineup_report.digest(json.loads(path.read_text()))
+
+
+def run_digests(directory):
+    rows = []
+    for path in evaluation_results(directory):
+        try:
+            rows.append(evaluation_digest(path))
+        except (ValueError, OSError):   # a result.json still being written
+            continue
+    return rows
+
+
+def run_selection(directory, digests):
+    """The run's loadout block: config.json, else what the last evaluation resolved."""
+    config = read_json(directory / 'config.json', {}) or {}
+    if config.get('loadouts'):
+        return lineup_report.selection(config)
+    return digests[-1]['selection'] if digests else lineup_report.selection(None)
+
+
+def loadout_ratings(directory):
+    """Per-lineup frozen-pool ratings, newest rated checkpoint of each rating directory.
+
+    reference_pool writes a loadout selection's ratings under
+    reference/<pool_sha8>/loadout-<loadout_sha8>/; a default-directory rating
+    carries per-lineup rows only when it was itself played on a set.
+    """
+    root = Path(directory) / 'reference'
+    found = []
+    if not root.is_dir():
+        return found
+    for pool_dir in sorted(child for child in root.iterdir() if child.is_dir()):
+        loadout_dirs = sorted(child for child in pool_dir.iterdir()
+                              if child.is_dir() and child.name.startswith('loadout-'))
+        for folder in (pool_dir, *loadout_dirs):
+            best = None
+            for path in folder.glob('policy-*.json'):
+                payload = read_json(path, {}) or {}
+                if not payload.get('lineups') or payload.get('rating') is None:
+                    continue
+                steps = reference_pool._checkpoint_learner_steps(directory, path.stem) or 0
+                if best is None or steps > best[0]:
+                    best = (steps, path, payload)
+            if best is None:
+                continue
+            steps, path, payload = best
+            found.append(dict(
+                pool_sha8=pool_dir.name, loadout=None if folder is pool_dir else folder.name,
+                checkpoint=path.stem + '.bin', learner_steps=steps, rating=payload.get('rating'),
+                interval=payload.get('interval'), games=payload.get('games'),
+                source=payload.get('source'),
+                rows=[dict(lineup_report.lineup_entry(key), rating=row.get('rating'),
+                           interval=row.get('interval'), games=row.get('games'), draws=row.get('draws'))
+                      for key, row in sorted((payload.get('lineups') or {}).items())]))
+    return found
+
+
+def ability_trend(digests):
+    """{ability id: [{step, per_game}]} — activations per game it was drawn in, over steps."""
+    trend = {}
+    for row in digests:
+        for ability in row['abilities']:
+            if not ability['games']:
+                continue
+            trend.setdefault(ability['id'], []).append(
+                dict(step=row['step'], per_game=ability['activations'] / ability['games']))
+    return trend
+
+
+def lineup_trend(digests):
+    """{lineup key: [{step, scripted, random, games}]} — the curve that shows a lineup stalling."""
+    trend = {}
+    for row in digests:
+        for key, families in row['lineups'].items():
+            point = dict(step=row['step'], games=sum(cell['games'] for cell in families.values()))
+            for family in ('scripted', 'random'):
+                cell = families.get(family)
+                point[family] = cell['wins'] / cell['games'] if cell and cell['games'] else None
+            trend.setdefault(key, []).append(point)
+    return trend
+
+
+def loadout_payload(directory, last_k=LAST_K):
+    """The run page's `loadouts` / `abilities` / `lineups` keys."""
+    digests = run_digests(directory)
+    selection = run_selection(directory, digests)
+    window = digests[-max(1, int(last_k)):]
+    merged = lineup_report.merge_digests(window)
+    abilities = ability_trend(digests)
+    curves = lineup_trend(digests)
+    ratings = loadout_ratings(directory)
+    rated = {} if not ratings else {row['key']: row for row in ratings[-1]['rows']}
+    default = ','.join(str(a) for a in lineup_report.DEFAULT_SELECTION['fixed'])
+    table = lineup_report.lineup_table(merged['lineups'])
+    kept = {row['key'] for row in sorted(table, key=lambda row: (row['key'] != default, -row['games']))[:LINEUP_ROWS]}
+    rows = []
+    for row in table:
+        if row['key'] not in kept:
+            continue
+        hit = rated.get(row['key'])
+        rows.append(dict(row, trend=curves.get(row['key']) or [],
+                         rating=None if not hit else hit['rating'],
+                         rating_interval=None if not hit else hit['interval'],
+                         comparable=row['key'] == default))
+    return dict(
+        loadouts=dict(lineup_report.selection_brief(selection),
+                      evaluations=len(digests), window=len(window), telemetry=merged['telemetry'],
+                      steps=[row['step'] for row in digests],
+                      timeout_rate=window[-1]['timeout_rate'] if window else None,
+                      declared=bool((read_json(directory / 'config.json', {}) or {}).get('loadouts'))),
+        abilities=[dict(row, trend=abilities.get(row['id']) or []) for row in merged['abilities']],
+        lineups=dict(rows=rows, games=merged['games'], window=len(window), distinct=len(table),
+                     hidden=len(table) - len(rows), ratings=ratings, rated=bool(rated)))
+
+
 def discover_sweeps(root, extra_runs):
     found = dict(joint_ladder.discover_sweeps(root))
     for path in extra_runs.values():
@@ -225,6 +359,22 @@ def pool_brief(pool, members=False):
     if members:
         brief['members'] = pool.get('members') or []
     return brief
+
+
+def loadout_brief(config):
+    """The run list / sweep table badge: mode plus a tooltip, off config.json alone."""
+    selection = lineup_report.selection(config)
+    names = lambda ids: ' / '.join(item['name'] for item in lineup_report.named(ids))
+    if selection['mode'] == 'set':
+        title = f"{selection['set_file']} · {len(selection['lineups'])} lineups"
+    elif selection['mode'] == 'pool':
+        title = names(selection['pool'])
+    else:
+        title = names(selection['fixed'])
+    short = dict(set=f"set ×{len(selection['lineups'])}", pool=f"pool {len(selection['pool'])}")
+    return dict(mode=selection['mode'], badge=lineup_report.selection_badge(selection), title=title,
+                short=short.get(selection['mode']) or lineup_report.selection_badge(selection),
+                declared=bool((config or {}).get('loadouts')))
 
 
 def config_bits(config):
@@ -419,6 +569,7 @@ def main():
     pools_state = [None, None, None]
     summary_state = {}
     index_state = [None, None]
+    matrix_state = [None, None]
     joint_state = dict(sig=None, encoded=None, fit=None, building=False, error=None)
     sweep_state = {}
     run_state = OrderedDict()
@@ -581,7 +732,7 @@ def main():
             name=info['name'], family=info.get('family'), sweep=info.get('sweep'),
             trial=info.get('trial'), rel=info.get('rel'), extra=info.get('extra', False),
             status=status.get('status'), steps=status.get('learner_steps'),
-            updated=updated, flags=flags,
+            updated=updated, flags=flags, loadout=loadout_brief(config),
             **config_bits(config),
             pools=[{k: row[k] for k in
                     ('label', 'sha8', 'rating', 'interval', 'unrated', 'game_mismatch') if k in row}
@@ -664,7 +815,7 @@ def main():
         config = map_catalogue.normalize_record(read_json(directory / 'config.json') or {}, status)
         return dict(
             name=name, config=config, status=status,
-            evaluations=evaluations,
+            evaluations=evaluations, **loadout_payload(directory),
             ratings=[] if not picked else picked.get('ratings') or [],
             pools=[{k: row[k] for k in row if k != 'ratings'} | dict(
                 ratings=row.get('ratings') or []) for row in pool_rows],
@@ -791,6 +942,7 @@ def main():
             point = (trial.get('observations') or [None])[-1]
             trials.append(dict(
                 id=trial['id'], status=trial.get('status'), hypers=trial.get('hypers'),
+                loadout=loadout_brief(read_json(run_dir / 'config.json', {})),
                 flags=trial.get('flags') or (picked or {}).get('flags') or [],
                 score=None if not point else point.get('score'),
                 cost=None if not point else point.get('cost'),
@@ -832,6 +984,68 @@ def main():
         encoded = encode_json(sweep_payload(name, directory))
         with cache_lock:
             sweep_state[name] = (sig, encoded)
+        return encoded
+
+    def matrix_runs():
+        """Runs the loadout matrix compares: the ones whose config declares a selection.
+
+        A run older than the multi-ability work played 2,4,14 and nothing else,
+        so it has exactly one row and belongs on the board, not in this matrix.
+        """
+        found = []
+        for name, info in sorted(catalog().items()):
+            config = read_json(info['path'] / 'config.json', {}) or {}
+            if config.get('loadouts'):
+                found.append((name, info, config))
+        return found
+
+    def loadout_sig(directory):
+        reports = evaluation_results(directory)
+        return (stamp(directory / 'config.json'), len(reports),
+                tuple((path.parent.name, stamp(path)) for path in reports[-LAST_K:]),
+                rating_signature(directory))
+
+    def matrix_payload():
+        rows, counts, played = [], {}, {}
+        for name, info, config in matrix_runs():
+            directory = info['path']
+            digests = run_digests(directory)
+            if not digests:
+                continue
+            window = digests[-LAST_K:]
+            ratings = loadout_ratings(directory)
+            rated = {} if not ratings else {row['key']: row for row in ratings[-1]['rows']}
+            cells = {}
+            for row in lineup_report.lineup_table(lineup_report.merge_digests(window)['lineups']):
+                counts[row['key']] = counts.get(row['key'], 0) + 1
+                played[row['key']] = played.get(row['key'], 0) + row['games']
+                hit = rated.get(row['key'])
+                cells[row['key']] = dict(
+                    games=row['games'], timeout_rate=row['timeout_rate'],
+                    scripted=(row['families'].get('scripted') or {}).get('win_rate'),
+                    random=(row['families'].get('random') or {}).get('win_rate'),
+                    rating=None if not hit else hit['rating'])
+            status = read_json(directory / 'status.json', {})
+            rows.append(dict(name=name, sweep=info.get('sweep'), trial=info.get('trial'),
+                             status=status.get('status'), steps=status.get('learner_steps'),
+                             loadout=loadout_brief(config), cells=cells, rated=bool(rated),
+                             window=len(window), evaluations=len(digests)))
+        default = ','.join(str(a) for a in lineup_report.DEFAULT_SELECTION['fixed'])
+        keys = sorted(counts, key=lambda key: (key != default, -counts[key], -played[key], key))[:LINEUP_COLUMNS]
+        for row in rows:
+            row['cells'] = {key: cell for key, cell in row['cells'].items() if key in keys}
+        return dict(runs=rows, last_k=LAST_K, default=default, hidden=len(counts) - len(keys),
+                    lineups=[dict(lineup_report.lineup_entry(key), runs=counts[key], games=played[key],
+                                  comparable=key == default) for key in keys])
+
+    def matrix_rebuild():
+        sig = tuple((name, loadout_sig(info['path'])) for name, info, _ in matrix_runs())
+        with cache_lock:
+            if matrix_state[1] is not None and matrix_state[0] == sig:
+                return matrix_state[1]
+        encoded = encode_json(matrix_payload())
+        with cache_lock:
+            matrix_state[0], matrix_state[1] = sig, encoded
         return encoded
 
     def refresh():
@@ -895,6 +1109,8 @@ def main():
             if path == '/api/index' or path == '/api/runs':
                 joint_rebuild()
                 return self.send_snapshot(index_rebuild())
+            if path == '/api/lineups':
+                return self.send_snapshot(matrix_rebuild())
             if path == '/api/sweeps':
                 return self.json([{'name': name, 'path': str(directory)}
                                   for name, directory in sorted(discover_sweeps(root, extra_runs).items())])
@@ -937,8 +1153,8 @@ def main():
                 if not file.is_relative_to(directory) or file.suffix not in (
                         '.json', '.jsonl', '.rep', '.mp4', '.bin', '.pt', '.jpg', '.gz'):
                     return self.send_error(403)
-            elif path in ('/', '/index.html', '/app.js', '/style.css', '/arena.js') or path.startswith(('/run/', '/sweep/', '/ladder')):
-                file = HERE / 'web' / ('index.html' if path in ('/', '/index.html', '/ladder') or path.startswith(('/run/', '/sweep/', '/ladder')) else path[1:])
+            elif path in ('/', '/index.html', '/app.js', '/style.css', '/arena.js') or path.startswith(('/run/', '/sweep/', '/ladder', '/lineups')):
+                file = HERE / 'web' / ('index.html' if path in ('/', '/index.html') or path.startswith(('/run/', '/sweep/', '/ladder', '/lineups')) else path[1:])
             else:
                 return self.send_error(404)
             archived_visual = is_evaluation_visual(file) and not file.is_file() and visuals.exists(file)

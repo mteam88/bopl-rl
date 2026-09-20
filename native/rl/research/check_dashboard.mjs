@@ -139,6 +139,50 @@ if (sweepHref) {
   await screenshot(out + "/dashboard-sweep.png");
 }
 
+const lineupsUrl = new URL("/lineups", url).href;
+await call("browsingContext.navigate", { context, url: lineupsUrl, wait: "complete" });
+for (let i = 0; i < 40; i++) {
+  await sleep(250);
+  if (await evaluate("!document.querySelector('#lineupsView').hidden && document.querySelectorAll('#matrixRows tr').length > 0")) break;
+}
+const lineupsView = await evaluate(`({
+  runs: document.querySelectorAll('#matrixRows tr').length,
+  columns: document.querySelectorAll('#matrixHead th.lineup-col').length,
+  comparable: document.querySelectorAll('#matrixHead th.comparable').length,
+  wide: document.documentElement.scrollWidth > innerWidth
+})`);
+if (lineupsView.wide) throw Error("Lineups view failed: " + JSON.stringify(lineupsView));
+if (lineupsView.runs) await screenshot(out + "/dashboard-lineups.png");
+for (const metric of ["random", "rating", "games", "scripted"]) {
+  await run(`const s = document.querySelector('#matrixMetric'); s.value = ${JSON.stringify(metric)}; s.dispatchEvent(new Event('change'));`);
+  const filled = await evaluate("document.querySelectorAll('#matrixRows td.num').length");
+  if (lineupsView.runs && !filled) throw Error("Lineups metric empty: " + metric);
+}
+// A multi-loadout run: the loadouts section must open, not collapse to its one line.
+const multiHref = await evaluate(`[...document.querySelectorAll('#matrixRows tr')]
+  .filter(r => r.querySelector('.pill.set, .pill.pool'))
+  .map(r => r.querySelector('a')?.getAttribute('href'))[0] ?? null`);
+let loadoutView = null;
+if (multiHref) {
+  await call("browsingContext.navigate", { context, url: new URL(multiHref, url).href, wait: "complete" });
+  for (let i = 0; i < 40; i++) {
+    await sleep(250);
+    if (await evaluate("document.querySelectorAll('#abilityRows tr').length > 0")) break;
+  }
+  loadoutView = await evaluate(`({
+    badge: document.querySelector('#loadoutBadge')?.textContent,
+    abilities: document.querySelectorAll('#abilityRows tr').length,
+    silent: document.querySelectorAll('#abilityRows tr.silent').length,
+    lineups: document.querySelectorAll('#runLineupRows tr').length,
+    sparks: document.querySelectorAll('#runLineupRows svg.spark').length,
+    detail: !document.querySelector('#loadoutDetail').hidden,
+    wide: document.documentElement.scrollWidth > innerWidth
+  })`);
+  if (!loadoutView.detail || !loadoutView.lineups || loadoutView.wide)
+    throw Error("Loadout section failed: " + JSON.stringify(loadoutView));
+  await screenshot(out + "/dashboard-loadouts.png");
+}
+
 await viewport(390, 844);
 await call("browsingContext.navigate", { context, url, wait: "complete" });
 for (let i = 0; i < 40; i++) {
@@ -148,6 +192,16 @@ for (let i = 0; i < 40; i++) {
 const overflow = await evaluate("document.documentElement.scrollWidth > innerWidth");
 if (overflow) throw Error("Mobile horizontal overflow");
 await screenshot(out + "/dashboard-mobile.png");
+if (multiHref) {
+  await call("browsingContext.navigate", { context, url: new URL(multiHref, url).href, wait: "complete" });
+  for (let i = 0; i < 40; i++) {
+    await sleep(250);
+    if (await evaluate("document.querySelectorAll('#runLineupRows tr').length > 0")) break;
+  }
+  if (await evaluate("document.documentElement.scrollWidth > innerWidth"))
+    throw Error("Mobile horizontal overflow on the loadouts section");
+  await screenshot(out + "/dashboard-mobile-loadouts.png");
+}
 
 const pageErrors = consoleErrors.filter((e) => e.context === context).map((e) => e.text);
 if (pageErrors.length) throw Error("Browser errors: " + JSON.stringify(pageErrors));
@@ -158,8 +212,12 @@ console.log(JSON.stringify({
   names,
   runView,
   sweepView,
+  lineupsView,
+  loadoutView,
   mobile_overflow: overflow,
   console_errors: pageErrors.length,
 }));
+// Firefox allows one BiDi session at a time; end it so a rerun can connect.
+await call("session.end", {}).catch(() => {});
 ws.close();
 process.exit(0);

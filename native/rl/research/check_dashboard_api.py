@@ -10,6 +10,26 @@ with tempfile.TemporaryDirectory() as directory:
     (run / 'status.json').write_text('{"status":"complete"}')
     file = run / 'metrics.jsonl'
     file.write_text('{"step":1,"map_matches":{"0":3}}\n')
+    # A set-mode run: two mirror lineups, one ability that never fired, one overflowing.
+    lineups = [[2, 4, 14, 2, 4, 14], [16, 3, 13, 16, 3, 13]]
+    selection = dict(mode='set', fixed=[2, 4, 14], pool=[], lineups=lineups,
+                     set_file='/tmp/lineups-2.txt', no_dup=False, mirror_share=1.0)
+    multi = root / 'multi'
+    (multi / 'evaluations' / '000002000').mkdir(parents=True)
+    (multi / 'config.json').write_text(json.dumps(dict(schema=1, algorithm='recurrent PPO', loadouts=selection)))
+    (multi / 'status.json').write_text('{"status":"complete","learner_steps":2000}')
+    (multi / 'metrics.jsonl').write_text('{"step":1}\n')
+    (multi / 'evaluations' / '000002000' / 'result.json').write_text(json.dumps(dict(
+        schema=2, step=2000, loadout_selection=selection,
+        ability_activations={'2': 40, '4': 0, '14': 20, '16': 9, '3': 7, '13': 0},
+        entity_overflow={'4': dict(rows=100, dropped=10, rate=.1)},
+        groups=[dict(games=6, timeouts=1)],
+        games=[dict(opponent=opponent, map=0, seed=1, side=0, win=win, timeout=False,
+                    name=f'{opponent}-{index}', loadouts=[triple, triple])
+               for index, (triple, opponent, win) in enumerate((
+                   ([2, 4, 14], 'random', True), ([2, 4, 14], 'mixed-hard', False),
+                   ([2, 4, 14], 'rival-a', False), ([16, 3, 13], 'random', True),
+                   ([16, 3, 13], 'mixed-hard', True), ([16, 3, 13], 'rival-a', True)))])))
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -75,6 +95,39 @@ with tempfile.TemporaryDirectory() as directory:
         assert status == 200 and 'runs' in index and 'families' in index
         assert any(row['name'] == 'test' and row['unrated'] for row in index['runs'])
 
+        assert any(row['name'] == 'multi' and row['loadout']['badge'] == 'set lineups-2 ×2 (mirror 100%)'
+                   and row['loadout']['short'] == 'set ×2' for row in index['runs'])
+        assert next(row for row in index['runs'] if row['name'] == 'test')['loadout']['mode'] == 'fixed'
+
+        status, _, legacy = request('/api/run/test')
+        assert status == 200 and legacy['loadouts']['badge'] == '2·4·14' and legacy['abilities'] == []
+        status, multi_etag, payload = request('/api/run/multi')
+        assert status == 200 and payload['loadouts']['mode'] == 'set'
+        assert payload['loadouts']['set_name'] == 'lineups-2.txt' and payload['loadouts']['telemetry']
+        abilities = {row['name']: row for row in payload['abilities']}
+        assert abilities['Bow']['activations'] == 0 and abilities['Bow']['games'] == 3
+        assert abilities['Bow']['dropped'] == 10 and abilities['Dash']['per_game'] == 40 / 3
+        assert [row['key'] for row in payload['lineups']['rows']] == ['16,3,13', '2,4,14']
+        pool_row = next(row for row in payload['lineups']['rows'] if row['comparable'])
+        assert pool_row['label'] == 'Dash/Bow/Platform' and pool_row['families']['scripted']['win_rate'] == 0
+        assert pool_row['families']['frozen']['games'] == 1 and payload['lineups']['rated'] is False
+        assert [point['step'] for point in pool_row['trend']] == [2000]
+        assert request('/api/run/multi', multi_etag)[0] == 304
+
+        status, matrix_etag, board = open_url('/api/lineups')
+        board = json.loads(board)
+        assert status == 200 and [row['name'] for row in board['runs']] == ['multi']
+        assert [row['key'] for row in board['lineups']] == ['2,4,14', '16,3,13']
+        assert board['lineups'][0]['comparable'] and board['lineups'][0]['label'] == 'Dash/Bow/Platform'
+        assert board['runs'][0]['cells']['16,3,13']['scripted'] == 1
+        assert open_url('/api/lineups', matrix_etag)[0] == 304
+        later = multi / 'evaluations' / '000004000'
+        later.mkdir()
+        (later / 'result.json').write_text((multi / 'evaluations' / '000002000' / 'result.json').read_text()
+                                           .replace('"step": 2000', '"step": 4000'))
+        status, _, board = open_url('/api/lineups', matrix_etag)
+        assert status == 200 and json.loads(board)['runs'][0]['evaluations'] == 2
+
         status, _, body = open_url('/api/ladder')
         ladder = json.loads(body)
         assert status == 200 and 'rows' in ladder and 'members' in ladder
@@ -138,7 +191,10 @@ with tempfile.TemporaryDirectory() as directory:
             body = __import__('gzip').decompress(body)
         assert status == 200 and json.loads(body)['schema'] == 1
         assert (evaldir / 'bot-0.json.dash.gz').is_file()
-        print('PASS: cache invalidation, index/ladder payload, human/pool rows, HTML routes, visual ndjson')
+        status, _, body = open_url('/lineups')
+        assert status == 200 and 'id="matrixRows"' in body.decode()
+        print('PASS: cache invalidation, index/ladder payload, human/pool rows, loadout badges, '
+              'per-ability and per-lineup run payload, /api/lineups matrix, HTML routes, visual ndjson')
     finally:
         server.terminate()
         server.wait(timeout=5)

@@ -19,6 +19,7 @@
     <nav>
       <a href="/" data-nav="index">Runs</a>
       <a href="/ladder" data-nav="ladder">Ladder</a>
+      <a href="/lineups" data-nav="lineups">Lineups</a>
       <a href="/sweep/" data-nav="sweep" id="sweepNav" hidden>Sweep</a>
     </nav>
     <div class="connection" id="connectionBox"><span></span><span id="connection">Connecting</span></div>
@@ -59,6 +60,15 @@
             <option value="none">Unrated</option>
           </select>
         </label>
+        <label>Loadout
+          <select id="filterLoadout">
+            <option value="">All</option>
+            <option value="fixed">Fixed</option>
+            <option value="set">Lineup set</option>
+            <option value="pool">Random pool</option>
+            <option value="multi">Set or pool</option>
+          </select>
+        </label>
         <label>Sort
           <select id="runSort">
             <option value="joint">Joint Elo</option>
@@ -79,6 +89,7 @@
               <th class="num">Steps</th>
               <th class="num">Joint</th>
               <th id="poolHead" hidden></th>
+              <th>Loadout</th>
               <th class="wide">Banks / share</th>
               <th>Flags</th>
             </tr>
@@ -140,6 +151,35 @@
       <p class="caption" id="ladderNote"></p>
     </section>
 
+    <section id="lineupsView" hidden>
+      <div class="intro">
+        <div>
+          <p class="eyebrow">RUNS × LINEUPS</p>
+          <h1>Which loadouts it learned.</h1>
+          <p class="lede" id="matrixLede">Every run whose config declares a loadout selection, over the lineups it actually played. Runs older than the multi-ability work played 2,4,14 only and stay on the board.</p>
+        </div>
+        <div class="identity" id="matrixIdentity"></div>
+      </div>
+      <div class="toolbar">
+        <label>Cell
+          <select id="matrixMetric">
+            <option value="scripted">Win vs scripted</option>
+            <option value="random">Win vs random</option>
+            <option value="rating">Reference rating</option>
+            <option value="games">Games</option>
+          </select>
+        </label>
+        <span id="matrixTag" class="tag">Loading</span>
+      </div>
+      <div class="table-wrap">
+        <table class="ladder lineups" aria-label="Runs by lineup">
+          <thead><tr id="matrixHead"></tr></thead>
+          <tbody id="matrixRows"></tbody>
+        </table>
+      </div>
+      <p class="caption" id="matrixNote"></p>
+    </section>
+
     <section id="runView" hidden>
       <div class="intro">
         <div>
@@ -157,6 +197,42 @@
         </div>
       </div>
       <div class="stats" id="runStats"></div>
+      <section class="panel" id="loadoutPanel" hidden>
+        <div class="section-top">
+          <div><p class="eyebrow">LOADOUTS</p><h2 id="loadoutTitle">What it was given.</h2></div>
+          <span id="loadoutBadge" class="tag"></span>
+        </div>
+        <p class="lede" id="loadoutLede"></p>
+        <div id="loadoutDetail" hidden>
+          <p class="eyebrow" style="margin-top:14px">ABILITIES</p>
+          <div class="table-wrap">
+            <table class="ladder" aria-label="Per-ability activity">
+              <thead>
+                <tr>
+                  <th>Ability</th>
+                  <th class="num">Act / game</th>
+                  <th class="num wide">Activations</th>
+                  <th class="num">Games</th>
+                  <th class="num">Win*</th>
+                  <th class="num wide">Entity rows</th>
+                  <th class="num">Dropped</th>
+                  <th class="wide">Trend</th>
+                </tr>
+              </thead>
+              <tbody id="abilityRows"></tbody>
+            </table>
+          </div>
+          <p class="caption" id="abilityNote"></p>
+          <p class="eyebrow" style="margin-top:18px">LINEUPS</p>
+          <div class="table-wrap">
+            <table class="ladder lineups" aria-label="Per-lineup results">
+              <thead><tr id="runLineupHead"></tr></thead>
+              <tbody id="runLineupRows"></tbody>
+            </table>
+          </div>
+          <p class="caption" id="lineupNote"></p>
+        </div>
+      </section>
       <section class="panel" id="humanRunPanel" hidden>
         <div class="section-top"><p class="eyebrow">MATTHEW</p><h2>He played this agent.</h2></div>
         <p class="lede" id="humanRunLede"></p>

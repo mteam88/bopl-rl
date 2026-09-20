@@ -2,7 +2,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const colors = ["#d6ff32", "#3ee0c5", "#ff7a45", "#9ec0ff", "#ff5d73", "#b6e05a"];
-  let ladder = null, index = null, data = null, sweep = null;
+  let ladder = null, index = null, data = null, sweep = null, matrix = null;
   let selectedEvaluation = null, selectedGame = null, replay = null;
   let playing = false, frameIndex = 0, lastTick = 0, view = "index";
   let familyFilter = "";
@@ -12,6 +12,7 @@
     if (path.startsWith("/run/")) return { view: "run", name: decodeURIComponent(path.slice(5)) };
     if (path.startsWith("/sweep/")) return { view: "sweep", name: decodeURIComponent(path.slice(7)) };
     if (path.startsWith("/ladder")) return { view: "ladder" };
+    if (path.startsWith("/lineups")) return { view: "lineups" };
     return { view: "index" };
   }
   function fmt(n, d = 0) {
@@ -29,6 +30,34 @@
   function poolScore(row, label) {
     return (row.pools || []).find((p) => p.label === label);
   }
+  function pct(value, digits = 0) {
+    return value == null ? "—" : `${(100 * value).toFixed(digits)}%`;
+  }
+  const escape = (text) => String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  // Ability names read; ids stay in the tooltip and in the monospace lineup key.
+  function abilityChips(list) {
+    return (list || []).map((a) => `<span class="ability" title="ability ${a.id}">${escape(a.name)}</span>`).join("<i>/</i>");
+  }
+  function shortBadge(loadout) {
+    if (!loadout) return "—";
+    return loadout.short || loadout.badge || "—";
+  }
+  function sparkSvg(points, opts = {}) {
+    const pts = (points || []).filter((p) => p.y != null);
+    if (pts.length < 2) return "";
+    const xs = pts.map((p) => p.x), ys = pts.map((p) => p.y);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs);
+    const y0 = opts.lo ?? Math.min(...ys), y1 = opts.hi ?? Math.max(...ys);
+    const fx = (v) => (88 * (v - x0)) / (x1 - x0 || 1);
+    const fy = (v) => 25 - (22 * (v - y0)) / (y1 - y0 || 1);
+    const line = pts.map((p) => `${fx(p.x).toFixed(1)},${fy(p.y).toFixed(1)}`).join(" ");
+    const base = opts.base == null ? ""
+      : `<line x1="0" y1="${fy(opts.base).toFixed(1)}" x2="88" y2="${fy(opts.base).toFixed(1)}" stroke="#39404c" stroke-dasharray="3 3" vector-effect="non-scaling-stroke"/>`;
+    const last = pts.at(-1);
+    return `<svg class="spark" viewBox="0 0 88 28" preserveAspectRatio="none" aria-hidden="true">${base}`
+      + `<polyline points="${line}" fill="none" stroke="${opts.color || "#3ee0c5"}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`
+      + `<circle cx="${fx(last.x).toFixed(1)}" cy="${fy(last.y).toFixed(1)}" r="2" fill="${opts.color || "#3ee0c5"}" vector-effect="non-scaling-stroke"/></svg>`;
+  }
   const mem = new Map();
   const inflight = new Map();
   let loadToken = 0, replayLoading = false;
@@ -40,6 +69,9 @@
     } else if (url === "/api/ladder" && r.view === "ladder") {
       ladder = payload;
       renderLadder();
+    } else if (url === "/api/lineups" && r.view === "lineups") {
+      matrix = payload;
+      renderMatrix();
     } else if (r.view === "run" && url === `/api/run/${encodeURIComponent(r.name)}`) {
       data = payload;
       renderRun();
@@ -185,6 +217,7 @@
     view = name;
     $("indexView").hidden = name !== "index";
     $("ladderView").hidden = name !== "ladder";
+    $("lineupsView").hidden = name !== "lineups";
     $("runView").hidden = name !== "run";
     $("sweepView").hidden = name !== "sweep";
     document.querySelectorAll("nav a").forEach((a) => {
@@ -268,9 +301,12 @@
     const status = $("filterStatus").value;
     const rating = $("filterRating").value;
     const fam = $("filterFamily").value || familyFilter;
+    const mode = $("filterLoadout").value;
     const sort = $("runSort").value;
     const items = runs.filter((row) => {
       if (fam && row.family !== fam && row.sweep !== fam && row.name !== fam) return false;
+      if (mode === "multi" && (row.loadout?.mode || "fixed") === "fixed") return false;
+      if (mode && mode !== "multi" && (row.loadout?.mode || "fixed") !== mode) return false;
       if (status === "other" && ["running", "complete", "interrupted"].includes(row.status)) return false;
       if (status && status !== "other" && row.status !== status) return false;
       if (rating === "joint" && !row.joint) return false;
@@ -324,6 +360,12 @@
         td.textContent = score && !score.unrated ? elo(score.rating) : "—";
         return td;
       });
+      const loadout = document.createElement("td");
+      loadout.className = "loadout";
+      loadout.title = row.loadout?.title || "";
+      loadout.innerHTML = `<span class="pill ${row.loadout?.mode || "fixed"}">`
+        + `<span class="badge-long">${escape(row.loadout?.badge || "—")}</span>`
+        + `<span class="badge-short">${escape(shortBadge(row.loadout))}</span></span>`;
       const banks = document.createElement("td");
       banks.className = "wide";
       const share = (row.share_min != null || row.share_max != null)
@@ -335,7 +377,7 @@
       for (const f of row.flags || []) {
         const s = document.createElement("span"); s.textContent = f; s.className = "warn"; flags.append(s);
       }
-      tr.append(name, family, st, steps, joint, ...poolCells, banks, flags);
+      tr.append(name, family, st, steps, joint, ...poolCells, loadout, banks, flags);
       body.append(tr);
     }
     $("indexNote").textContent = `Joint Elo is the last well-played checkpoint on the joint fit (random = 0). Each pool column is IQM3 on that frozen pool${primaryLabel ? ` (pool ${primaryLabel} is the sweep objective)` : ""}; pools are separate scales, not comparable to each other or to joint Elo.`;
@@ -542,8 +584,156 @@
       $("sweepNav").hidden = false;
       $("sweepNav").href = `/sweep/${encodeURIComponent(data.sweep)}`;
     }
+    renderLoadouts();
     renderWinTable();
     selectEvaluation();
+    live();
+  }
+
+  const SLOT_BLIND = "the scripted bots press ability SLOTS (0 as Dash, 1 as Bow, 2 as Platform), so their column is only comparable within one lineup";
+
+  function lineLede(lo, lineups) {
+    const abilities = (data?.abilities || []).filter((a) => a.games);
+    const inline = abilities.map((a) => `${escape(a.name)} ${fmt(a.per_game, 1)}/game`).join(" · ");
+    const played = `in the last ${lo.window} of ${lo.evaluations} evaluations (${lineups.games} games).`;
+    if (lo.mode === "set")
+      return `Lineup set <b>${escape(lo.set_name || "?")}</b> · ${lo.lineups.length} lineups · mirror ${pct(lo.mirror_share)}.`
+        + ` ${lineups.distinct} of them played ${played}`;
+    if (lo.mode === "pool")
+      return `Random draw from <b>${lo.abilities.length} abilities</b> · mirror ${pct(lo.mirror_share)}${lo.no_dup ? " · no duplicates" : ""}.`
+        + ` ${lineups.distinct} distinct lineups drawn ${played}`;
+    if (!lo.telemetry)
+      return `Fixed ${abilityChips(lo.fixed)} — this run predates the ability counters.`;
+    return `Fixed ${abilityChips(lo.fixed)} — ${inline}.`;
+  }
+
+  function renderLoadouts() {
+    const lo = data?.loadouts;
+    const lineups = data?.lineups || { rows: [], ratings: [] };
+    $("loadoutPanel").hidden = !lo;
+    if (!lo) return;
+    const multi = lo.mode !== "fixed" || lineups.rows.length > 1;
+    $("loadoutBadge").textContent = lo.badge;
+    $("loadoutBadge").title = lo.set_file || "";
+    $("loadoutTitle").textContent = multi ? "Which abilities it actually plays." : "What it was given.";
+    const dropped = (data.abilities || []).filter((a) => a.dropped > 0)
+      .sort((a, b) => b.drop_rate - a.drop_rate);
+    const worst = dropped.slice(0, 3).map((a) => `${escape(a.name)} ${pct(a.drop_rate, 1)}`).join(", ");
+    $("loadoutLede").innerHTML = lineLede(lo, lineups)
+      + (dropped.length ? ` <span class="warn-inline">entity rows dropped on ${worst}`
+        + `${dropped.length > 3 ? ` and ${dropped.length - 3} more` : ""}</span>` : "");
+    $("loadoutDetail").hidden = !multi;
+    if (!multi) return;
+    renderAbilityTable();
+    renderRunLineups();
+  }
+
+  function renderAbilityTable() {
+    const rows = data.abilities || [];
+    $("abilityRows").replaceChildren(...rows.map((a) => {
+      const tr = document.createElement("tr");
+      if (!a.games) tr.className = "unrated";
+      else if (!a.activations) tr.className = "silent";
+      const trend = sparkSvg((a.trend || []).map((p) => ({ x: p.step, y: p.per_game })), { lo: 0, color: "#d6ff32" });
+      tr.innerHTML = `<td><span class="ability">${escape(a.name)}</span> <span class="id">${a.id}</span></td>`
+        + `<td class="num">${a.games ? fmt(a.per_game, 1) : "—"}</td>`
+        + `<td class="num wide">${a.activations.toLocaleString()}</td>`
+        + `<td class="num">${a.games.toLocaleString()}</td>`
+        + `<td class="num" title="${a.wins} of ${a.games} games with this ability">${pct(a.win_rate)}</td>`
+        + `<td class="num wide">${a.rows.toLocaleString()}</td>`
+        + `<td class="num${a.dropped ? " bad" : ""}">${a.dropped ? `${a.dropped.toLocaleString()} · ${pct(a.drop_rate, 1)}` : "0"}</td>`
+        + `<td class="wide">${trend}</td>`;
+      return tr;
+    }));
+    const silent = rows.filter((a) => a.games && !a.activations);
+    $("abilityNote").innerHTML = `Last ${data.loadouts.window} evaluation${data.loadouts.window === 1 ? "" : "s"}, both players of every episode. `
+      + `Activations are per game the ability was in the policy's loadout — raw counts are meaningless across lineups drawn different numbers of times. `
+      + `*Win is over every game the policy drew that ability, all opponents mixed — a draw-level read, not a matchup. `
+      + `Dropped &gt; 0 means the observation's entity rows overflowed and the policy could not see everything. `
+      + (silent.length ? `<b>Never pressed: ${silent.map((a) => escape(a.name)).join(", ")}.</b>` : "Every available ability was pressed at least once.");
+  }
+
+  function renderRunLineups() {
+    const lineups = data.lineups;
+    const rows = lineups.rows || [];
+    const families = ["random", "scripted", "frozen", "selfplay", "initial"]
+      .filter((f) => rows.some((row) => row.families[f]));
+    const label = { random: "vs random", scripted: "vs scripted*", frozen: "vs frozen", selfplay: "selfplay", initial: "vs initial" };
+    $("runLineupHead").innerHTML = ["<th>Lineup</th>", "<th class=\"num\">Games</th>",
+      ...families.map((f) => `<th class="num">${label[f]}</th>`),
+      "<th class=\"num wide\">Timeouts</th>",
+      ...(lineups.rated ? ["<th class=\"num\">Reference</th>"] : []),
+      "<th class=\"wide\">Win vs scripted</th>"].join("");
+    $("runLineupRows").replaceChildren(...rows.map((row) => {
+      const tr = document.createElement("tr");
+      if (row.comparable) tr.className = "comparable";
+      const cells = [`<td><span class="lineup">${abilityChips(row.abilities)}</span>`
+        + `<span class="id">${escape(row.key)}</span>${row.comparable ? '<span class="pill pool-row">pool row</span>' : ""}</td>`,
+        `<td class="num">${row.games}</td>`];
+      for (const f of families) {
+        const cell = row.families[f];
+        cells.push(`<td class="num" title="${cell ? `${cell.wins} of ${cell.games}` : "not played"}">`
+          + `${cell ? pct(cell.win_rate) : "—"}</td>`);
+      }
+      cells.push(`<td class="num wide">${pct(row.timeout_rate)}</td>`);
+      if (lineups.rated) cells.push(`<td class="num">${row.rating == null ? "—" : elo(row.rating)}</td>`);
+      cells.push(`<td class="wide">${sparkSvg((row.trend || []).map((p) => ({ x: p.step, y: p.scripted })),
+        { lo: 0, hi: 1, base: 0.5, color: "#3ee0c5" })}</td>`);
+      tr.innerHTML = cells.join("");
+      return tr;
+    }));
+    const rating = (lineups.ratings || []).at(-1);
+    $("lineupNote").innerHTML = `Last ${lineups.window} evaluation${lineups.window === 1 ? "" : "s"}; the sparkline is win rate vs scripted over every evaluation (dashes at 50%). `
+      + (lineups.hidden ? `<b>${lineups.distinct} distinct lineups were drawn; the ${rows.length} most played are shown</b> — with a free pool draw the ability table above is the axis with games behind it. ` : "")
+      + `*${SLOT_BLIND} — off 2,4,14 the bots are degraded, so a high number there is partly the opponent. `
+      + (rating
+        ? `Reference: ${rating.rows.length} lineups on pool ${escape(rating.pool_sha8.slice(0, 8))} at ${(rating.learner_steps || 0).toLocaleString()} steps (${rating.games} games); the marked 2,4,14 row is the one comparable to the run's pool score.`
+        : `No per-lineup reference rating yet — run <span class="mono">reference_pool.py rate-runs --pool &lt;pool.json&gt; --run &lt;dir&gt; --loadout-set ${escape(data.loadouts.set_file || "<lineups.txt>")}</span> to fill the Reference column.`)
+      + ` <a href="/lineups">Compare every run on these lineups</a>.`;
+  }
+
+  function renderMatrix() {
+    show("lineups");
+    if (!matrix) return;
+    const metric = $("matrixMetric").value;
+    const runs = matrix.runs || [];
+    const lineups = matrix.lineups || [];
+    $("matrixIdentity").innerHTML = [
+      `<b>runs</b> ${runs.length}`,
+      `<b>lineups</b> ${lineups.length}`,
+      `<b>window</b> last ${matrix.last_k} evaluations`,
+      `<b>rated</b> ${runs.filter((r) => r.rated).length} with per-lineup reference`,
+    ].join("<br>");
+    $("matrixTag").textContent = `${runs.length} runs × ${lineups.length} lineups`;
+    $("matrixHead").innerHTML = ["<th>Run</th>", "<th>Loadout</th>",
+      ...lineups.map((l) => `<th class="num lineup-col${l.comparable ? " comparable" : ""}" title="${escape(l.label)}">`
+        + `${abilityChips(l.abilities)}<span class="id">${escape(l.key)}</span></th>`)].join("");
+    $("matrixRows").replaceChildren(...runs.map((run) => {
+      const tr = document.createElement("tr");
+      const cells = [`<td><a href="/run/${encodeURIComponent(run.name)}">${escape(run.name)}</a>`
+        + `<span class="id">${run.status || ""}</span></td>`,
+        `<td title="${escape(run.loadout?.title || "")}"><span class="pill ${run.loadout?.mode}">${escape(shortBadge(run.loadout))}</span></td>`];
+      for (const l of lineups) {
+        const cell = run.cells[l.key];
+        let text = "—", title = "not played";
+        if (cell) {
+          title = `${cell.games} games · scripted ${pct(cell.scripted)} · random ${pct(cell.random)}`;
+          if (metric === "games") text = String(cell.games);
+          else if (metric === "rating") text = cell.rating == null ? "—" : elo(cell.rating);
+          else text = pct(cell[metric]);
+        }
+        cells.push(`<td class="num${l.comparable ? " comparable" : ""}" title="${escape(title)}">${text}</td>`);
+      }
+      tr.innerHTML = cells.join("");
+      return tr;
+    }));
+    $("matrixNote").innerHTML = (runs.length ? "" : "No run under --root declares a loadout selection yet, so this matrix is empty. ")
+      + `Cell is the last ${matrix.last_k} evaluations of each run, policy side only. `
+      + (matrix.hidden ? `${matrix.hidden} further lineups are not shown (most-played first; a pool run draws nearly every lineup once). ` : "")
+      + `Win rate vs scripted is not comparable across columns: ${SLOT_BLIND}. `
+      + `The ${escape(matrix.default)} column is the lineup every legacy run and every frozen pool is on. `
+      + `Reference ratings appear once <span class="mono">reference_pool.py rate-runs --loadout-set</span> has run for a lineup set.`;
+    if (index) setSweepNav();
     live();
   }
 
@@ -580,7 +770,7 @@
       : "No scoring pool in sweep.json";
     const params = Object.keys(((sweep.trials || []).find((t) => t.hypers) || {}).hypers || {});
     const iqmLabel = sweep.score_label || "IQM3";
-    $("sweepHead").innerHTML = ["trial", ...params, "cost", "score", iqmLabel, "joint", "flags"]
+    $("sweepHead").innerHTML = ["trial", ...params, "loadout", "cost", "score", iqmLabel, "joint", "flags"]
       .map((h) => `<th>${h}</th>`).join("");
     $("sweepRows").replaceChildren(...(sweep.trials || []).map((t) => {
       const tr = document.createElement("tr");
@@ -589,6 +779,7 @@
         const v = (t.hypers || {})[p];
         cells.push(`<td class="num">${typeof v === "number" ? v.toPrecision(3) : (v ?? "")}</td>`);
       }
+      cells.push(`<td title="${escape(t.loadout?.title || "")}"><span class="pill ${t.loadout?.mode || "fixed"}">${escape(shortBadge(t.loadout))}</span></td>`);
       cells.push(`<td class="num">${t.cost == null ? "—" : Number(t.cost).toExponential(2)}</td>`);
       cells.push(`<td class="num">${fmt(t.score, 1)}</td>`);
       cells.push(`<td class="num">${t.unrated ? "unrated" : elo(t.rating)}</td>`);
@@ -719,6 +910,9 @@
         ladder = ladderPayload;
         index = indexPayload;
         renderLadder();
+      } else if (r.view === "lineups") {
+        matrix = await json("/api/lineups");
+        renderMatrix();
       } else if (r.view === "run") {
         data = await json(`/api/run/${encodeURIComponent(r.name)}`);
         renderRun();
@@ -735,7 +929,8 @@
   }
 
   $("sort").onchange = $("hideBots").onchange = $("allCheckpoints").onchange = () => { if (ladder) renderLadder(); };
-  $("runSearch").oninput = $("filterFamily").onchange = $("filterStatus").onchange = $("filterRating").onchange = $("runSort").onchange = () => {
+  $("matrixMetric").onchange = () => { if (matrix) renderMatrix(); };
+  $("runSearch").oninput = $("filterFamily").onchange = $("filterStatus").onchange = $("filterRating").onchange = $("filterLoadout").onchange = $("runSort").onchange = () => {
     familyFilter = $("filterFamily").value;
     if (index) renderIndex();
   };

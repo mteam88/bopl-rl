@@ -165,7 +165,31 @@ native/artifacts/rl/venv/bin/python native/rl/research/watch_videos.py \
   --run native/artifacts/rl/native-smoke
 ```
 
-`--root` auto-discovers every run (a directory with `metrics.jsonl` or `checkpoints/`). `--run-root NAME=PATH` and `--run-root-glob NAME=GLOB` remain for isolated workspaces; they are not required to list sweep trials. `--pool` is the **primary frozen-pool label** (sweep-objective IQM, run-page side cards), not the joint scale; if omitted, the dashboard prefers pool v6 when `sweeps/anchors/pool-v6/pool.json` exists. `--human` defaults to `human/mac`. Views: `/` all runs, `/ladder` joint Elo, `/run/<name>`, `/sweep/<name>`. Copy `research/start-dashboard.example.sh` over the 8876 launcher to drop the old glob list.
+`--root` auto-discovers every run (a directory with `metrics.jsonl` or `checkpoints/`). `--run-root NAME=PATH` and `--run-root-glob NAME=GLOB` remain for isolated workspaces; they are not required to list sweep trials. `--pool` is the **primary frozen-pool label** (sweep-objective IQM, run-page side cards), not the joint scale; if omitted, the dashboard prefers pool v6 when `sweeps/anchors/pool-v6/pool.json` exists. `--human` defaults to `human/mac`. Views: `/` all runs, `/ladder` joint Elo, `/lineups` runs × lineups, `/run/<name>`, `/sweep/<name>`. Copy `research/start-dashboard.example.sh` over the 8876 launcher to drop the old glob list.
+
+Every run carries its loadout selection (`config.json["loadouts"]`, mirrored in each
+evaluation's `loadout_selection`), so the board and the sweep table badge it —
+`2·4·14` for a fixed loadout, `set lineups-8 ×8 (mirror 100%)` for a lineup file,
+`pool 36 (mirror 50%)` for a random draw — and the board filters on the mode. A run
+older than the multi-ability work has no block and is read as the production
+2,4,14. The run page's **Loadouts** section is one line for a fixed run and opens
+for a set or pool run into (a) a per-ability table over the last `LAST_K`
+evaluations — activations per game the ability was actually drawn in, entity rows,
+dropped rows (overflowing observation budget), and the abilities that were
+available and never pressed; and (b) a per-lineup table: games, win rate vs random
+/ vs scripted / vs frozen, timeout rate, the per-lineup frozen-pool rating when
+`reference_pool.py rate-runs --loadout-set` has written one under
+`<run>/reference/<pool_sha8>/loadout-<loadout_sha8>/`, and a win-rate sparkline per
+lineup over the whole curve. `/lineups` is the same numbers as a runs × lineups
+matrix for the runs whose config declares a selection. **The scripted bots press
+ability slots** (slot 0 as Dash, 1 as Bow, 2 as Platform — `bopl_bots.h`), so off
+2,4,14 they are degraded and their win rate is not comparable across lineups; the
+UI labels that column and the 2,4,14 row stays marked as the one comparable to the
+pool score. The aggregation is `research/lineup_report.py` (also a CLI:
+`lineup_report.py --run <dir> [--last-k K] [--json]`), digested once per
+`result.json` and cached on the evaluation stamps, so a live run costs one parse
+per new evaluation. `research/check_dashboard_api.py` and
+`research/test_dashboard_loadouts.py` cover the payloads.
 
 A short smoke verifies execution and artifact compatibility. It does not establish
 learning strength or whole-game competence. Report measured learner decisions,

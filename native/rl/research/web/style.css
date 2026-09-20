@@ -125,6 +125,31 @@ table.ladder td.cmd-cell {
   color: var(--muted);
 }
 .spark { display: block; width: 88px; height: 28px; }
+
+/* Loadouts: names carry the meaning, ids stay monospace and quiet. */
+.ability { color: var(--ink); }
+.lineup i, table.ladder .lineup i { color: var(--line); font-style: normal; margin: 0 3px; }
+.id {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  margin-left: 6px;
+  letter-spacing: 0.02em;
+}
+.mono { font-family: var(--mono); font-size: 11px; }
+.pill.set { color: var(--pool); border-color: #23514c; }
+.pill.pool { color: var(--run); border-color: #2c3a52; }
+.pill.fixed { font-family: var(--mono); letter-spacing: 0; text-transform: none; }
+.pill.pool-row { margin-left: 8px; color: var(--elo); border-color: #4a5720; }
+.warn-inline { color: var(--bad); }
+table.ladder td.bad { color: var(--bad); }
+table.ladder tr.silent td:first-child .ability { color: var(--bad); }
+table.ladder tr.comparable td { background: #0c0f14; }
+table.ladder th.comparable, table.ladder td.comparable { border-left: 1px solid #3a4230; border-right: 1px solid #3a4230; }
+table.lineups th.lineup-col { font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+table.lineups th.lineup-col .id { display: block; margin: 2px 0 0; }
+td.loadout { max-width: 16rem; overflow: hidden; text-overflow: ellipsis; }
+.badge-short { display: none; }
 .panel { padding: 16px; margin: 16px 0; }
 .section-top { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 10px; }
 h2 { font-size: 18px; margin: 0; letter-spacing: -0.3px; }
@@ -161,6 +186,10 @@ footer { border-top: 1px solid var(--line); padding: 12px 4vw; display: flex; ju
 @media (max-width: 720px) {
   .workspace { grid-template-columns: 1fr; }
   header { flex-wrap: wrap; }
+  .badge-long { display: none; }
+  .badge-short { display: inline; }
+  td.loadout { max-width: 9rem; }
+  table.lineups td:first-child { max-width: 46vw; white-space: normal; }
   .hero-elo { text-align: left; width: 100%; }
   table.board .wide { display: none; }
   table.ladder td:first-child, table.ladder th:first-child {
