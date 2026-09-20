@@ -19,13 +19,20 @@ evaluation checkpoints (rliable / scipy trim_mean 0.25).
 Rating files are derived data on the run: <run>/reference/<pool_sha8>/<checkpoint>.json.
 A rating on another pool lives in another <pool_sha8>/ directory. Legacy files
 at <run>/reference/<checkpoint>.json (overnight-4's driver) are still read.
-Cache key: (pool sha, checkpoint sha, games). A fuller band rating is reused
-for a cheaper request; an evaluation-fit rating is not.
+Cache key: (pool sha, loadouts, checkpoint sha, games). A fuller band rating is
+reused for a cheaper request; an evaluation-fit rating is not.
+
+Ratings are on the production 2,4,14 loadout unless --loadout or --loadout-set
+says otherwise. A set is played one lineup per game and rated per lineup as
+well as pooled; because that is a different question about the same checkpoint,
+it is cached beside the default under reference/<pool_sha8>/loadout-<sha8>/ and
+never becomes the run's score.
 
     python native/rl/sweep/reference_pool.py build --out DIR/pool.json ...
     python native/rl/sweep/reference_pool.py verify DIR/pool.json
     python native/rl/sweep/reference_pool.py rate --pool DIR/pool.json --checkpoint policy.bin
     python native/rl/sweep/reference_pool.py rate-runs --pool DIR/pool.json --run DIR [--sweep DIR]
+        [--loadout 2,4,14 | --loadout-set native/data/lineups-8.txt]
     python native/rl/sweep/reference_pool.py human --pool DIR/pool.json
 """
 import argparse
@@ -45,7 +52,8 @@ sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
 
 import elo_ladder  # noqa: E402  (pure until games are played)
 import map_catalogue  # noqa: E402
-from evaluation_protocol import checkpoint_identity, opponents, scripted_names, map_ids  # noqa: E402
+from evaluation_protocol import (ability_names, checkpoint_identity, opponents, scripted_names,  # noqa: E402
+                                 map_ids, loadout_ids, resolve_loadouts, DEFAULT_LOADOUT)
 
 SCHEMA = 1
 RUST_SIM = ROOT / 'native/target/release/libbopl_sim.so'
@@ -130,9 +138,65 @@ def pool_sha8(pool):
     return pool['pool_sha256'][:8]
 
 
-def rating_dir(run_dir, pool):
-    """<run>/reference/<pool_sha8>/ — the only place new rating files are written."""
-    return Path(run_dir) / 'reference' / pool_sha8(pool)
+# ---- loadouts ------------------------------------------------------------------
+
+def rater_loadouts(fixed=None, lineup_file=None):
+    """The head-to-head rater's loadout selection, or None for today's games.
+
+    None is not the same as an explicit 2,4,14: it leaves the C sampler in fixed
+    mode, which draws no randomness of its own, so an unflagged rating replays
+    exactly the games it always did. A set file is played one lineup per game
+    (elo_ladder.play_games pins the row), so mirror_share never applies: a
+    three-id line is already mirrored by loadout_lineups and a six-id line is
+    played as written, with the side swap covering both halves.
+    """
+    if fixed is None and lineup_file is None:
+        return None
+    return resolve_loadouts(fixed or DEFAULT_LOADOUT, None, lineup_file, False, 0.0)
+
+
+def loadout_sha8(loadouts):
+    """Content hash of a resolved selection: the rating directory it owns."""
+    return hashlib.sha256(json.dumps(loadouts, sort_keys=True).encode()).hexdigest()[:8]
+
+
+def lineup_indices(loadouts):
+    """Task lineup indices for a set selection; () when the draw is free or fixed."""
+    return tuple(range(len(loadouts['lineups']))) if loadouts and loadouts['lineups'] else ()
+
+
+def lineup_key(ability_ids):
+    """'2,4,14' for a mirror lineup, '2,4,14|3,5,6' when the two halves differ."""
+    left, right = list(ability_ids[:3]), list(ability_ids[3:6])
+    text = ','.join(str(a) for a in left)
+    return text if left == right else text + '|' + ','.join(str(a) for a in right)
+
+
+def lineup_label(key):
+    """The ability names behind a lineup key, for printed tables."""
+    names = ability_names()
+    return ' | '.join('/'.join(names.get(int(a), a) for a in half.split(','))
+                      for half in key.split('|'))
+
+
+def group_lineups(games):
+    """{lineup key: [games]} over play_games rows that recorded what they played."""
+    groups = {}
+    for game in games:
+        if game.get('lineup_ids'):
+            groups.setdefault(lineup_key(game['lineup_ids']), []).append(game)
+    return groups
+
+
+def rating_dir(run_dir, pool, loadouts=None):
+    """<run>/reference/<pool_sha8>/ — the only place new rating files are written.
+
+    A loadout selection gets its own loadout-<sha8>/ subdirectory so a lineup
+    rating never overwrites the default rating the run is scored on (and the
+    non-recursive glob in load_run_ratings never mixes the two).
+    """
+    directory = Path(run_dir) / 'reference' / pool_sha8(pool)
+    return directory / f'loadout-{loadout_sha8(loadouts)}' if loadouts else directory
 
 
 def rating_name(checkpoint):
@@ -149,17 +213,19 @@ def _read_rating(path, pool):
     return payload
 
 
-def find_rating(run_dir, pool, checkpoint):
+def find_rating(run_dir, pool, checkpoint, loadouts=None):
     """Return (payload, path) for a cached rating, preferring the sha8 directory.
 
     Falls back to the overnight-4 location <run>/reference/<stem>.json.
     path is always the sha8 location when nothing is cached (where to write).
     """
     name = rating_name(checkpoint)
-    primary = rating_dir(run_dir, pool) / name
+    primary = rating_dir(run_dir, pool, loadouts) / name
     payload = _read_rating(primary, pool)
     if payload:
         return payload, primary
+    if loadouts:   # a loadout rating has no history to fall back on
+        return None, primary
     legacy = Path(run_dir) / 'reference' / name
     payload = _read_rating(legacy, pool)
     if payload:
@@ -167,12 +233,14 @@ def find_rating(run_dir, pool, checkpoint):
     return None, primary
 
 
-def load_run_ratings(run_dir, pool):
+def load_run_ratings(run_dir, pool, loadouts=None):
     """{checkpoint stem: rating payload} for this pool, sha8 files overriding legacy."""
     run_dir = Path(run_dir)
     catalogue_records = map_catalogue.run_records(run_dir)
     files = {}
-    for directory in (run_dir / 'reference', rating_dir(run_dir, pool)):
+    directories = ((rating_dir(run_dir, pool, loadouts),) if loadouts
+                   else (run_dir / 'reference', rating_dir(run_dir, pool)))
+    for directory in directories:
         if not directory.is_dir():
             continue
         for path in directory.glob('*.json'):
@@ -184,11 +252,13 @@ def load_run_ratings(run_dir, pool):
     return files
 
 
-def cache_hit(previous, identity, pool, games):
-    """True when previous is the same (pool, checkpoint sha, games), or a fuller band rating."""
+def cache_hit(previous, identity, pool, games, loadouts=None):
+    """True when previous is the same (pool, loadouts, checkpoint sha, games), or a fuller band rating."""
     if not previous or previous.get('schema') != SCHEMA:
         return False
     if previous.get('pool_sha256') != pool['pool_sha256']:
+        return False
+    if previous.get('loadouts') != loadouts:
         return False
     sha = (previous.get('checkpoint_identity') or {}).get('sha256')
     if identity and sha and sha != identity.get('sha256'):
@@ -414,14 +484,15 @@ def _curve_row(stem, payload, learner_steps):
         interval=payload.get('interval') or [payload['rating'], payload['rating']],
         games=payload.get('games'), source=payload.get('source'),
         game_mismatch=payload.get('game_mismatch', False),
+        lineups=payload.get('lineups') or {},
     )
 
 
-def rated_curve(run_dir, pool):
+def rated_curve(run_dir, pool, loadouts=None):
     """Rated checkpoints in learner-step order from cached rating files (no eval JSON)."""
     run_dir = Path(run_dir)
     rows = []
-    for stem, payload in load_run_ratings(run_dir, pool).items():
+    for stem, payload in load_run_ratings(run_dir, pool, loadouts).items():
         if not stem.startswith('policy-'):
             continue
         learner_steps = _checkpoint_learner_steps(run_dir, stem)
@@ -432,9 +503,9 @@ def rated_curve(run_dir, pool):
     return rows
 
 
-def run_iqm(run_dir, pool, last_k=3):
+def run_iqm(run_dir, pool, last_k=3, loadouts=None):
     """IQM over the last k rated evaluation checkpoints, or None if none are rated."""
-    rows = rated_curve(run_dir, pool)
+    rows = rated_curve(run_dir, pool, loadouts)
     if not rows:
         return None
     window = rows[-max(1, int(last_k)):]
@@ -445,15 +516,26 @@ def run_iqm(run_dir, pool, last_k=3):
 
 # ---- candidate rating ----------------------------------------------------------
 
-def candidate_tasks(candidate, member, maps, pairs, seed_base, start_pair=0):
+def candidate_tasks(candidate, member, maps, pairs, seed_base, start_pair=0, lineups=()):
     """`pairs` side-swapped seed pairs vs one member, cycling maps so every
-    map gets an equal share; start_pair continues a member's sequence."""
+    map gets an equal share; start_pair continues a member's sequence.
+
+    With lineups (indices into a loadout set) the lineup becomes the fastest
+    axis and the map the slower one: a per-lineup rating is the point, and the
+    band rater hands out a few pairs per member per round, so a lineup that
+    only came round once per map cycle would go unplayed at small budgets. The
+    seed advances only after the whole (lineup, map) grid.
+    """
     tasks = []
+    lineups = list(lineups)
+    period = len(maps) * max(1, len(lineups))
     for pair in range(start_pair, start_pair + pairs):
-        map_id = maps[pair % len(maps)]
-        seed = seed_base + pair // len(maps)
-        tasks.append(dict(a=candidate, b=member, map=map_id, seed=seed, side=0))
-        tasks.append(dict(a=candidate, b=member, map=map_id, seed=seed, side=1))
+        index = pair // len(lineups) if lineups else pair
+        task = dict(a=candidate, b=member, map=maps[index % len(maps)], seed=seed_base + pair // period, side=0)
+        if lineups:
+            task['lineup'] = lineups[pair % len(lineups)]
+        tasks.append(task)
+        tasks.append(dict(task, side=1))
     return tasks
 
 
@@ -479,15 +561,38 @@ def plan_round(rating, ratings, remaining_games, band, round_games):
     return plan
 
 
+def lineup_ratings(games, candidate, ratings, bootstrap=1000, seed=0):
+    """Per-lineup fixed-pool ratings: the same fit, restricted to one lineup's games.
+
+    The pooled rating answers "how strong is this policy over the draw"; these
+    answer "on which loadouts", which is the whole point of rating a multi-ability
+    run. {} when the games do not say what they played (the default fixed draw).
+    """
+    result = {}
+    for key, rows in sorted(group_lineups(games).items()):
+        records = records_against(rows, candidate)
+        rating = elo_ladder.bradley_terry_fixed(records, ratings)
+        result[key] = dict(
+            abilities=list(rows[0]['lineup_ids']), label=lineup_label(key),
+            rating=rating, interval=bootstrap_interval(rows, candidate, ratings, samples=bootstrap, seed=seed),
+            games=len(rows), draws=sum(1 for row in rows if row['outcome'] == 'draw'),
+            records=rating_records(records, rating, ratings))
+    return result
+
+
 def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, band=(.15, .85),
                     round_games=48, workers=4, seed_base=70001, maps=None, library=None,
-                    game=None, bootstrap=1000, name=CANDIDATE, log=None, source='band'):
+                    game=None, bootstrap=1000, name=CANDIDATE, log=None, source='band', loadouts=None):
     """Rate one checkpoint against the frozen pool; cached under out or the run's sha8 dir.
 
     source labels the record: 'band' for the scorer's full budget, 'in-run' for
     the eval hook's smaller budget on every evaluation checkpoint (train.py);
     cache_hit lets a fuller rating replace a smaller one, so the scorer's band
-    rating overwrites the in-run point of the checkpoints it rates."""
+    rating overwrites the in-run point of the checkpoints it rates.
+
+    loadouts (rater_loadouts) replaces the fixed 2,4,14 games; a lineup set is
+    played one row per game and the record carries a rating per lineup beside
+    the pooled one. Its ratings live in their own loadout-<sha8>/ directory."""
     pool = map_catalogue.normalize_record(pool, pool)
     checkpoint = Path(checkpoint).resolve()
     identity = checkpoint_identity(checkpoint)
@@ -503,17 +608,19 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
     if out is None:
         if checkpoint.parent.name != 'checkpoints':
             raise ValueError('out is required when the checkpoint is not in a run directory')
-        out = rating_dir(checkpoint.parent.parent, pool)
-        previous, _ = find_rating(checkpoint.parent.parent, pool, checkpoint)
-        if cache_hit(previous, identity, pool, games):
+        out = rating_dir(checkpoint.parent.parent, pool, loadouts)
+        previous, _ = find_rating(checkpoint.parent.parent, pool, checkpoint, loadouts)
+        if cache_hit(previous, identity, pool, games, loadouts):
             return previous
+    elif loadouts and Path(out).name != f'loadout-{loadout_sha8(loadouts)}':
+        out = Path(out) / f'loadout-{loadout_sha8(loadouts)}'
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     cache = out / (checkpoint.stem + '.json')
     previous = _read_rating(cache, pool)
     if previous is None and out.name == pool_sha8(pool):
         previous = _read_rating(out.parent / cache.name, pool)
-    if cache_hit(previous, identity, pool, games):
+    if cache_hit(previous, identity, pool, games, loadouts):
         return previous
     game = game_library(game)
     game_sha256 = sha256_file(game)
@@ -529,15 +636,17 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
     delay = int(pool.get('observation_delay_ticks', 9))
     started = time.monotonic()
     played_pairs = {member: 0 for member in ratings}
+    lineups = lineup_indices(loadouts)
     all_games = []
     rounds = []
 
     def play(plan):
         tasks = []
         for member, pairs in plan.items():
-            tasks += candidate_tasks(name, member, maps, pairs, seed_base, played_pairs[member])
+            tasks += candidate_tasks(name, member, maps, pairs, seed_base, played_pairs[member], lineups)
             played_pairs[member] += pairs
-        all_games.extend(elo_ladder.play_games(by_name, tasks, limit, workers, seed_base, delay=delay))
+        all_games.extend(elo_ladder.play_games(by_name, tasks, limit, workers, seed_base,
+                                               delay=delay, loadouts=loadouts))
         rating = elo_ladder.bradley_terry_fixed(records_against(all_games, name), ratings)
         rounds.append(dict(rating=rating, games=len(all_games), allocated={m: 2 * p for m, p in plan.items()}))
         if log:
@@ -564,6 +673,7 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
         rating=rating, interval=interval, bootstrap=bootstrap, games=len(all_games),
         draws=sum(1 for g in all_games if g['outcome'] == 'draw'),
         source=source, records=rating_records(records, rating, ratings),
+        loadouts=loadouts, lineups=lineup_ratings(all_games, name, ratings, bootstrap=bootstrap, seed=seed_base),
         rounds=rounds, elapsed=time.monotonic() - started,
         note='Bradley-Terry MLE vs fixed pool ratings; timeouts = draws; one virtual draw per member; '
              '95% percentile bootstrap over side-swapped seed pairs')
@@ -574,11 +684,14 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
 # ---- pool construction ---------------------------------------------------------
 
 def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=48, seed_base=50001,
-               episode_ticks=7200, delay=9, workers=4, slow_workers=None, library=None, game=None, note='', log=None):
+               episode_ticks=7200, delay=9, workers=4, slow_workers=None, library=None, game=None, note='', log=None,
+               loadouts=None):
     """Full round robin over random + scripted + checkpoint members; writes pool.json.
 
     checkpoints: [(name, path)]; paths are recorded relative to the pool file.
-    games_per_pair is the total per pair, split evenly over maps and sides.
+    games_per_pair is the total per pair, split evenly over maps and sides --
+    per lineup when loadouts name a set. A pool with no `loadouts` field means
+    the production 2,4,14, which is what every pool through v8 was built on.
     """
     out = Path(out).resolve()
     if out.exists():
@@ -603,7 +716,7 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
     pairs = [(a, b) for i, a in enumerate(names) for b in names[i + 1:]]
     started = time.monotonic()
     games, timing = play_pairs(by_name, pairs, maps, games_per_pair, seed_base, episode_ticks, delay,
-                               workers, slow_workers, log)
+                               workers, slow_workers, log, loadouts)
     records = elo_ladder.tally(games)
     ratings = elo_ladder.bradley_terry(names, records, 'random')
     intervals = pool_intervals(names, records)
@@ -614,7 +727,7 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
                       games=wins + losses + draws, wins=wins, losses=losses, draws=draws)
     pool = dict(schema=SCHEMA, map_catalogue=map_catalogue.IDENTITY,
                 created=time.time(), note=note, game=dict(path=str(game), sha256=sha256_file(game)),
-                maps=maps, games_per_pair=games_per_pair, seed_base=seed_base, episode_ticks=episode_ticks,
+                maps=maps, games_per_pair=games_per_pair, loadouts=loadouts, seed_base=seed_base, episode_ticks=episode_ticks,
                 observation_delay_ticks=delay, games=len(games), elapsed=time.monotonic() - started, timing=timing,
                 fit='Bradley-Terry MLE, timeouts as draws, one virtual draw per pair, random anchored at 0 Elo',
                 members=members,
@@ -625,15 +738,17 @@ def build_pool(out, scripted=(), checkpoints=(), maps=(0, 1, 2), games_per_pair=
     return pool
 
 
-def play_pairs(by_name, pairs, maps, games_per_pair, seed_base, episode_ticks, delay, workers, slow_workers, log):
+def play_pairs(by_name, pairs, maps, games_per_pair, seed_base, episode_ticks, delay, workers, slow_workers, log,
+               loadouts=None):
     """Side-swapped fixed-seed games for every (a, b) pair, games_per_pair split
-    evenly over maps and sides. Rollout-search bots (bopl_rl_fork, ~4 ms per
-    decision) dominate the wall time; their games go through a separate, wider
-    thread pool and are timed on their own."""
+    evenly over maps and sides (and repeated per lineup when loadouts name a set).
+    Rollout-search bots (bopl_rl_fork, ~4 ms per decision) dominate the wall time;
+    their games go through a separate, wider thread pool and are timed on their own."""
     from environment import Environment
+    lineups = lineup_indices(loadouts)
     tasks = []
     for a, b in pairs:
-        tasks += elo_ladder.pair_tasks(a, b, maps, games_per_pair // len(maps), seed_base)
+        tasks += elo_ladder.pair_tasks(a, b, maps, games_per_pair // len(maps), seed_base, lineups)
     slow = {name for name, member in by_name.items()
             if isinstance(member, elo_ladder.Scripted) and Environment.bot_forks(member.bot[0])}
     slow_tasks = [task for task in tasks if task['a'] in slow or task['b'] in slow]
@@ -646,7 +761,7 @@ def play_pairs(by_name, pairs, maps, games_per_pair, seed_base, episode_ticks, d
         if not batch:
             continue
         phase = time.monotonic()
-        games += elo_ladder.play_games(by_name, batch, episode_ticks, count, seed_base, delay=delay)
+        games += elo_ladder.play_games(by_name, batch, episode_ticks, count, seed_base, delay=delay, loadouts=loadouts)
         timing[label] = dict(games=len(batch), workers=count, elapsed=time.monotonic() - phase, members=sorted(slow) if label == 'slow' else None)
         if log:
             log(f"{label} phase {len(batch)} games, {count} workers, {timing[label]['elapsed']:.0f} s")
@@ -805,7 +920,7 @@ def sweep_run_dirs(sweep_dir):
 
 
 def rate_runs(pool, runs, last_k=3, games=240, first_pass_games=6, band=(.15, .85),
-              round_games=48, workers=4, seed_base=70001, log=None):
+              round_games=48, workers=4, seed_base=70001, log=None, loadouts=None):
     """Band-rate the last k evaluation checkpoints of each run into the run dir."""
     import flags
     import scoring
@@ -815,12 +930,12 @@ def rate_runs(pool, runs, last_k=3, games=240, first_pass_games=6, band=(.15, .8
         curve = scoring.reference_curve(run_dir, pool, last_k=last_k, games=games,
                                         first_pass_games=first_pass_games, band=band,
                                         round_games=round_games, workers=workers,
-                                        seed_base=seed_base, log=log)
+                                        seed_base=seed_base, log=log, loadouts=loadouts)
         if not curve:
             if log:
                 log(f'{run_dir.name}: no evaluated checkpoints, skipped')
             continue
-        summary = run_iqm(run_dir, pool, last_k=last_k)
+        summary = run_iqm(run_dir, pool, last_k=last_k, loadouts=loadouts)
         annotated = flags.annotate_run(run_dir, write=False)
         final = summary['last_k'][-1]
         row = dict(run=str(run_dir), name=run_dir.name, rating=final['rating'], interval=final['interval'],
@@ -829,6 +944,9 @@ def rate_runs(pool, runs, last_k=3, games=240, first_pass_games=6, band=(.15, .8
                                 rating=r['rating'], interval=r['interval'], games=r['games'])
                            for r in summary['last_k']],
                    flags=annotated[-1][1]['flags'] if annotated else [],
+                   # The per-lineup split of the final rated checkpoint: the pooled IQM
+                   # hides a policy that carries one loadout and drowns on the rest.
+                   lineups=final['lineups'],
                    game_mismatch=summary['game_mismatch'])
         rows.append(row)
         if log:
@@ -862,8 +980,26 @@ def format_run_table(rows, last_k=3):
     return '\n'.join(lines)
 
 
+def format_lineup_table(lineups, indent='  '):
+    """Per-lineup ratings under a pooled one, strongest first."""
+    lines = []
+    for key, row in sorted(lineups.items(), key=lambda kv: -kv[1]['rating']):
+        low, high = row['interval']
+        lines.append(f"{indent}{key:<14} {row['rating']:8.1f}  [{low:5.0f},{high:5.0f}]  "
+                     f"{row['games']:>4} games ({row['draws']} draws)  {row['label']}")
+    return '\n'.join(lines)
+
+
 def _band(value):
     return tuple(float(v) for v in value.split(','))
+
+
+def _loadout_flags(command):
+    command.add_argument('--loadout', type=loadout_ids, default=None,
+                         help='Three ability IDs to play every game on (default: the production 2,4,14)')
+    command.add_argument('--loadout-set', type=Path, default=None,
+                         help='Lineup file (evaluation_protocol.loadout_lineups): one lineup pinned per game, '
+                              'rated per lineup as well as pooled')
 
 
 def main():
@@ -886,6 +1022,7 @@ def main():
     build.add_argument('--library', type=Path, default=None, help='CPU policy library (native_policy.load)')
     build.add_argument('--game', type=Path, default=None)
     build.add_argument('--note', default='')
+    _loadout_flags(build)
     verify = commands.add_parser('verify', help='Check checkpoint hashes and the pool hash')
     verify.add_argument('pool', type=Path)
     rate = commands.add_parser('rate', help='Rate one checkpoint against a pool')
@@ -902,6 +1039,7 @@ def main():
     rate.add_argument('--game', type=Path, default=None)
     rate.add_argument('--source', choices=('band', 'in-run'), default='band',
                       help="label of the record: 'in-run' for the eval hook's per-checkpoint points")
+    _loadout_flags(rate)
     runs = commands.add_parser('rate-runs', help='Rate run directories into <run>/reference/<pool_sha8>/')
     runs.add_argument('--pool', type=Path, required=True)
     runs.add_argument('--run', action='append', default=[], type=Path, help='Run directory (repeatable)')
@@ -913,6 +1051,7 @@ def main():
     runs.add_argument('--round-games', type=int, default=48)
     runs.add_argument('--workers', type=int, default=4)
     runs.add_argument('--seed-base', type=int, default=70001)
+    _loadout_flags(runs)
     human = commands.add_parser('human', help="Matthew's Elo vs the pool from human/mac games")
     human.add_argument('--pool', type=Path, required=True)
     human.add_argument('--dir', type=Path, default=DEFAULT_HUMAN)
@@ -937,7 +1076,8 @@ def main():
         pool = build_pool(args.out, scripted=args.scripted, checkpoints=checkpoints,
                           maps=args.maps, games_per_pair=args.games_per_pair,
                           seed_base=args.seed_base, episode_ticks=args.episode_ticks, workers=args.workers,
-                          slow_workers=args.slow_workers, library=args.library, game=args.game, note=args.note, log=log)
+                          slow_workers=args.slow_workers, library=args.library, game=args.game, note=args.note, log=log,
+                          loadouts=rater_loadouts(args.loadout, args.loadout_set))
         print(format_table(pool['members']))
         print(f"pool {pool['pool_sha256'][:16]}  {pool['games']} games in {pool['elapsed']:.0f}s -> {pool['path']}")
     elif args.command == 'verify':
@@ -955,8 +1095,13 @@ def main():
         rows = rate_runs(pool, directories, last_k=args.last_k, games=args.games,
                          first_pass_games=args.first_pass_games, band=(lo, hi),
                          round_games=args.round_games, workers=args.workers,
-                         seed_base=args.seed_base, log=log)
+                         seed_base=args.seed_base, log=log,
+                         loadouts=rater_loadouts(args.loadout, args.loadout_set))
         print(format_run_table(rows, last_k=args.last_k))
+        for row in sorted(rows, key=lambda r: -r['iqm']):
+            if row['lineups']:
+                print(f"{row['name']} per lineup ({row['last_k'][-1]['checkpoint']}):")
+                print(format_lineup_table(row['lineups']))
     elif args.command == 'human':
         pool = load_pool(args.pool)
         result = rate_human(pool, args.dir, excluded=args.excluded, map_role=args.map_role)
@@ -972,12 +1117,15 @@ def main():
         result = rate_checkpoint(args.checkpoint, pool, args.out, games=args.games,
                                  first_pass_games=args.first_pass_games, band=(lo, hi), workers=args.workers,
                                  seed_base=args.seed_base, library=args.library, game=args.game, log=log,
-                                 source=args.source)
+                                 source=args.source, loadouts=rater_loadouts(args.loadout, args.loadout_set))
         print(f"{result['rating']:.1f} Elo  95% CI [{result['interval'][0]:.1f}, {result['interval'][1]:.1f}]  "
               f"{result['games']} games ({result['draws']} draws)"
               + (f" in {result['elapsed']:.0f}s" if 'elapsed' in result else ''))
         for member, row in sorted(result['records'].items(), key=lambda kv: -kv[1]['games']):
             print(f"  {member:20} {row['wins']:>3}-{row['losses']}-{row['draws']:<3} expected {row['expected']:.2f} observed {row['observed']:.2f}")
+        if result.get('lineups'):
+            print('per lineup:')
+            print(format_lineup_table(result['lineups']))
 
 
 if __name__ == '__main__':

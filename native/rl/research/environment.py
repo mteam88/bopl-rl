@@ -130,14 +130,9 @@ class Environment:
             setter.restype = C.c_int
         self.handle=LIB.research_open(seed,map_id,limit,delay)
         if not self.handle: raise RuntimeError('Could not open Bopl evaluator')
-        self.loadout_config=loadouts or resolve_loadouts(DEFAULT_LOADOUT)
-        fixed=(C.c_uint32*3)(*self.loadout_config['fixed'])
-        pool=sum(1<<ability for ability in self.loadout_config['pool'])
-        flat=[ability for row in self.loadout_config['lineups'] for ability in row]
-        sets=(C.c_uint8*len(flat))(*flat) if flat else None
-        if LIB.research_configure_loadouts(self.handle,fixed,pool,sets,len(self.loadout_config['lineups']),
-                                           int(self.loadout_config['no_dup']),round(self.loadout_config['mirror_share']*1_000_000)):
-            self.close(); raise ValueError('Invalid native loadout selection')
+        try: self.configure_loadouts(loadouts)
+        except BaseException:
+            self.close(); raise
         # research_open already reset the default configuration; replay the
         # same seed/map once so the requested sampler owns episode zero.
         LIB.research_reset(self.handle,seed,map_id)
@@ -159,6 +154,21 @@ class Environment:
         try: self.check()
         except BaseException:
             self.close();raise
+    def configure_loadouts(self,loadouts):
+        """Install a loadout selection (evaluation_protocol.resolve_loadouts); None = the
+        fixed production loadout. The next reset draws its episode from it, so a rater
+        that wants one named lineup per game reconfigures between resets: the C call only
+        copies the rows (eval_binding.research_configure_loadouts, at most 256 x 6 bytes)
+        and the research environment has no spare world pre-drawing the next config."""
+        config=loadouts or resolve_loadouts(DEFAULT_LOADOUT)
+        fixed=(C.c_uint32*3)(*config['fixed'])
+        pool=sum(1<<ability for ability in config['pool'])
+        flat=[ability for row in config['lineups'] for ability in row]
+        sets=(C.c_uint8*len(flat))(*flat) if flat else None
+        if LIB.research_configure_loadouts(self.handle,fixed,pool,sets,len(config['lineups']),
+                                           int(config['no_dup']),round(config['mirror_share']*1_000_000)):
+            raise ValueError('Invalid native loadout selection')
+        self.loadout_config=config
     def _view(self):
         width=max(layout.obs_size_of(v) for v in self._layouts)
         self.obs=self._rows[:,:width]

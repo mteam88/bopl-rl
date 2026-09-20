@@ -94,6 +94,114 @@ class Allocation(unittest.TestCase):
         self.assertEqual(len(keys), len(first) + len(later))  # no repeated game
 
 
+class Loadouts(unittest.TestCase):
+    """The head-to-head rater's loadout plumbing: no flags must change nothing."""
+    LINEUPS = '2,4,14\n16,3,13\n25 24 23\n'
+
+    def lineup_file(self, directory):
+        path = Path(directory) / 'lineups.txt'
+        path.write_text(self.LINEUPS)
+        return path
+
+    def test_no_flags_leaves_the_sampler_alone(self):
+        # None, not an explicit fixed 2,4,14: fixed mode draws no randomness of its
+        # own, so an unflagged rating replays exactly the games it always did.
+        self.assertIsNone(rp.rater_loadouts(None, None))
+        self.assertEqual(rp.lineup_indices(None), ())
+        self.assertEqual(rp.candidate_tasks('c', 'm', [0, 1, 2], 4, 1000),
+                         rp.candidate_tasks('c', 'm', [0, 1, 2], 4, 1000, lineups=()))
+        self.assertEqual(elo_ladder.pair_tasks('a', 'b', [0, 1], 4, 500),
+                         elo_ladder.pair_tasks('a', 'b', [0, 1], 4, 500, lineups=()))
+        self.assertNotIn('lineup', rp.candidate_tasks('c', 'm', [0], 1, 1000)[0])
+
+    def test_flags_resolve_to_fixed_and_set_selections(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixed = rp.rater_loadouts([9, 9, 3], None)
+            self.assertEqual((fixed['mode'], fixed['fixed']), ('fixed', [9, 9, 3]))
+            chosen = rp.rater_loadouts(None, self.lineup_file(tmp))
+            self.assertEqual(chosen['mode'], 'set')
+            # A three-id line is already mirrored by loadout_lineups, so the rater
+            # never needs mirror_share on top of it.
+            self.assertEqual(chosen['lineups'][0], [2, 4, 14, 2, 4, 14])
+            self.assertEqual(chosen['mirror_share'], 0.0)
+            self.assertEqual(rp.lineup_indices(chosen), (0, 1, 2))
+
+    def test_candidate_tasks_cycle_lineups_fastest(self):
+        # The band rater hands out a few pairs per member per round; a lineup that
+        # only came round once per map cycle would go unplayed at a small budget.
+        tasks = rp.candidate_tasks('c', 'm', [0, 1, 2], 6, 1000, lineups=(0, 1, 2))
+        pairs = [(t['lineup'], t['map'], t['seed']) for t in tasks[::2]]
+        self.assertEqual(pairs, [(0, 0, 1000), (1, 0, 1000), (2, 0, 1000),
+                                 (0, 1, 1000), (1, 1, 1000), (2, 1, 1000)])
+        later = rp.candidate_tasks('c', 'm', [0, 1, 2], 2, 1000, start_pair=9, lineups=(0, 1, 2))
+        self.assertEqual([(t['lineup'], t['map'], t['seed']) for t in later[::2]], [(0, 0, 1001), (1, 0, 1001)])
+        self.assertEqual([t['side'] for t in later], [0, 1, 0, 1])
+
+    def test_pair_tasks_repeat_the_schedule_per_lineup(self):
+        plain = elo_ladder.pair_tasks('a', 'b', [0, 1], 4, 500)
+        with_sets = elo_ladder.pair_tasks('a', 'b', [0, 1], 4, 500, lineups=(0, 1, 2))
+        self.assertEqual(len(with_sets), 3 * len(plain))
+        self.assertEqual(sorted({t['lineup'] for t in with_sets}), [0, 1, 2])
+        keys = {(t['map'], t['seed'], t['side'], t['lineup']) for t in with_sets}
+        self.assertEqual(len(keys), len(with_sets))   # no repeated game
+
+    def test_lineup_keys_name_mirror_and_split_rows(self):
+        self.assertEqual(rp.lineup_key([2, 4, 14, 2, 4, 14]), '2,4,14')
+        self.assertEqual(rp.lineup_key([2, 4, 14, 3, 5, 6]), '2,4,14|3,5,6')
+        self.assertEqual(rp.lineup_label('2,4,14'), 'Dash/Bow/Platform')
+
+    def test_ratings_split_per_lineup(self):
+        ratings = {'bot': 200.0}
+        games = []
+        for lineup, wins in (([2, 4, 14] * 2, 8), ([16, 3, 13] * 2, 0)):
+            for index in range(8):
+                games.append(dict(a='candidate', b='bot', map=0, seed=index, side=index % 2,
+                                  outcome='a' if index < wins else 'b', lineup_ids=lineup))
+        self.assertEqual(sorted(rp.group_lineups(games)), ['16,3,13', '2,4,14'])
+        rows = rp.lineup_ratings(games, 'candidate', ratings, bootstrap=20)
+        self.assertGreater(rows['2,4,14']['rating'], 200.0)
+        self.assertLess(rows['16,3,13']['rating'], 200.0)
+        self.assertEqual(rows['2,4,14']['records']['bot']['wins'], 8)
+        self.assertEqual(rows['16,3,13']['label'], 'Roll/Grenade/Smoke')
+        # Games that never said what they played (the default fixed draw) get no split.
+        self.assertEqual(rp.lineup_ratings([dict(g, lineup_ids=None) for g in games], 'candidate', ratings), {})
+
+    def test_a_lineup_rating_never_shadows_the_default_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = rp.load_pool(fake_pool(tmp))
+            run = Path(tmp) / 'run'
+            loadouts = rp.rater_loadouts(None, self.lineup_file(tmp))
+            directory = rp.rating_dir(run, pool, loadouts)
+            self.assertEqual(directory.parent, rp.rating_dir(run, pool))
+            directory.mkdir(parents=True)
+            payload = dict(schema=rp.SCHEMA, pool_sha256=pool['pool_sha256'], rating=111.0,
+                           interval=[100.0, 120.0], games=96, source='band', loadouts=loadouts,
+                           lineups={'2,4,14': dict(rating=111.0)})
+            (directory / 'policy-000000009.json').write_text(json.dumps(payload))
+            (run / 'checkpoints').mkdir(parents=True)
+            (run / 'checkpoints' / 'policy-000000009.bin.json').write_text(json.dumps({'learner_steps': 9000}))
+            self.assertEqual(rp.run_iqm(run, pool, loadouts=loadouts)['score'], 111.0)
+            self.assertIsNone(rp.run_iqm(run, pool))   # the non-recursive glob never sees it
+            found, _ = rp.find_rating(run, pool, 'policy-000000009.bin', loadouts)
+            self.assertEqual(found['rating'], 111.0)
+            self.assertIsNone(rp.find_rating(run, pool, 'policy-000000009.bin')[0])
+
+    def test_cache_rejects_a_different_selection(self):
+        identity = dict(sha256='abc')
+        pool = dict(pool_sha256='ee' * 32)
+        with tempfile.TemporaryDirectory() as tmp:
+            loadouts = rp.rater_loadouts(None, self.lineup_file(tmp))
+            previous = dict(schema=rp.SCHEMA, pool_sha256=pool['pool_sha256'], checkpoint_identity=identity,
+                            budget=240, games=240, source='band', loadouts=loadouts)
+            self.assertTrue(rp.cache_hit(previous, identity, pool, 240, loadouts))
+            self.assertFalse(rp.cache_hit(previous, identity, pool, 240))
+            self.assertFalse(rp.cache_hit(previous, identity, pool, 240, rp.rater_loadouts([2, 4, 14], None)))
+            # Ratings written before loadouts existed are the default selection.
+            legacy = {key: value for key, value in previous.items() if key != 'loadouts'}
+            self.assertTrue(rp.cache_hit(legacy, identity, pool, 240))
+            self.assertFalse(rp.cache_hit(legacy, identity, pool, 240, loadouts))
+
+
 class RatingLayout(unittest.TestCase):
     def test_sha8_directory_and_legacy_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:

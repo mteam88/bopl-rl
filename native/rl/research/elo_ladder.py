@@ -259,31 +259,58 @@ def bradley_terry_fixed(records,ratings,virtual_draw=.5):
     return r*ELO_SCALE
 
 
-def pair_tasks(a,b,maps,games_per_map,seed_base):
-    """Side-swapped fixed-seed games between two participants on each map."""
+def pair_tasks(a,b,maps,games_per_map,seed_base,lineups=()):
+    """Side-swapped fixed-seed games between two participants on each map.
+
+    lineups are indices into a loadout set (evaluation_protocol.resolve_loadouts
+    'lineups'); each one gets its own games_per_map games on every map, so the
+    count is per lineup. Without them the schedule is the fixed-loadout one.
+    """
     if games_per_map%2 or games_per_map<2: raise ValueError('games per map must be even and positive')
     tasks=[]
     for map_id in maps:
-        for pair in range(games_per_map//2):
-            seed=seed_base+pair
-            tasks.append(dict(a=a,b=b,map=map_id,seed=seed,side=0))
-            tasks.append(dict(a=a,b=b,map=map_id,seed=seed,side=1))
+        for lineup in (lineups or (None,)):
+            for pair in range(games_per_map//2):
+                task=dict(a=a,b=b,map=map_id,seed=seed_base+pair,side=0)
+                if lineup is not None: task['lineup']=lineup
+                tasks.append(task)
+                tasks.append(dict(task,side=1))
     return tasks
 
 
-def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None):
+def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,loadouts=None):
     """Play tasks (dicts a, b, map, seed, side) between participants keyed by name.
 
     Each participant provides start(task, side, rng) -> act(observation, mask)
     and, for scripted bots, attach(env, side). Returns each task with its
     ticks and outcome: 'a', 'b', or 'draw' (a timeout, or neither/both won).
     Deterministic for a given (a, b, map, seed, side) and participant set.
+
+    loadouts (evaluation_protocol.resolve_loadouts) replaces the fixed 2,4,14
+    draw; a task may name a `lineup` index into its set to pin exactly that row
+    for its game, and every game then carries the six ability ids it played as
+    `lineup_ids`. Without loadouts nothing changes: the C sampler stays in fixed
+    mode, draws no extra randomness, and the games are the ones played before.
     """
     from environment import Environment
+    rows=(loadouts or {}).get('lineups') or []
     def play(bucket):
         results=[]
-        with Environment(seed=seed_base+len(tasks),limit=limit,delay=delay) as env:
+        with Environment(seed=seed_base+len(tasks),limit=limit,delay=delay,loadouts=loadouts) as env:
+            pinned=False
             for task in bucket:
+                # bopl_draw_config picks a set row uniformly at random, so the only way
+                # to force one is to hand the environment a set of exactly that row --
+                # verbatim, with no mirroring layered on what the file already says.
+                # It must happen before the reset that draws the episode. Doing it per
+                # task is free next to the episode: the call is a memcpy of at most
+                # 1.5 kB plus a validation pass (96 pinned games cost the same wall
+                # clock as 96 unpinned ones), so nothing here caches the installed row.
+                index=task.get('lineup')
+                if index is not None:
+                    env.configure_loadouts(dict(loadouts,lineups=[rows[index]],mirror_share=0.)); pinned=True
+                elif pinned:
+                    env.configure_loadouts(loadouts); pinned=False
                 env.reset(task['seed'],task['map'])
                 rng=np.random.default_rng((task['seed'],task['map'],task['side'],
                                            int(hashlib.sha256((task['a']+task['b']).encode()).hexdigest()[:8],16)))
@@ -302,6 +329,9 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None):
                 b_won=bool(final['players'][1-task['side']]['flags']&2) and not timeout
                 result=dict(task,ticks=final['t'],
                             outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b'))
+                if loadouts is not None:
+                    played=env.loadouts
+                    result['lineup_ids']=played[0]+played[1]
                 if on_result:
                     on_result(result)
                 results.append(result)

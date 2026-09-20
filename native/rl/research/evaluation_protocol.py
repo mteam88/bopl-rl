@@ -1,4 +1,5 @@
 """Immutable opponent identities and side-swapped evaluation schedules."""
+from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path
@@ -21,6 +22,17 @@ def map_ids(value):
     are rejected.
     """
     return parse_map_ids(value)
+
+
+@lru_cache(maxsize=1)
+def ability_names():
+    """{ability id: name} from the ripped catalogue the sim and the game share.
+
+    Telemetry and loadouts are ability IDs everywhere; only reports resolve them,
+    so this stays out of the hot paths.
+    """
+    rows=json.loads((Path(__file__).resolve().parents[3]/'native/data/rollout.json').read_text())['abilities']
+    return {int(row['id']):row['name'] for row in rows}
 
 
 def loadout_ids(value):

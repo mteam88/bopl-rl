@@ -107,7 +107,8 @@ def evaluation_checkpoints(run_dir):
 
 
 def reference_curve(run_dir, pool, last_k=3, games=240, first_pass_games=6, band=(.15, .85),
-                    round_games=48, workers=4, seed_base=70001, workspace=None, rate=None, log=None):
+                    round_games=48, workers=4, seed_base=70001, workspace=None, rate=None, log=None,
+                    loadouts=None):
     """Fixed-pool Bradley-Terry ratings of the last k evaluation checkpoints.
 
     Each checkpoint is rated against the frozen reference pool (reference_pool
@@ -123,6 +124,7 @@ def reference_curve(run_dir, pool, last_k=3, games=240, first_pass_games=6, band
         return []
     if isinstance(pool, (str, Path)):
         pool = reference_pool.load_pool(pool if Path(pool).is_absolute() else ROOT / pool)
+    # rate_checkpoint nests a loadout selection under its own subdirectory of this one.
     workspace = Path(workspace) if workspace else reference_pool.rating_dir(run_dir, pool)
     rate = rate or reference_pool.rate_checkpoint
     elapsed_at = _elapsed_lookup(run_dir)
@@ -130,7 +132,8 @@ def reference_curve(run_dir, pool, last_k=3, games=240, first_pass_games=6, band
     points = []
     for learner_steps, checkpoint in rows:
         result = rate(checkpoint, pool, workspace, games=games, first_pass_games=first_pass_games,
-                      band=tuple(band), round_games=round_games, workers=workers, seed_base=seed_base, log=log)
+                      band=tuple(band), round_games=round_games, workers=workers, seed_base=seed_base, log=log,
+                      loadouts=loadouts)
         ratings.append(result['rating'])
         points.append(Point(learner_steps, reference_pool.iqm(ratings), elapsed_at(learner_steps)))
     return points

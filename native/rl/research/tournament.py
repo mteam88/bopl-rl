@@ -20,7 +20,7 @@ import elo_ladder
 import joint_ladder
 import map_catalogue
 import reference_pool
-from evaluation_protocol import checkpoint_identity
+from evaluation_protocol import checkpoint_identity, loadout_ids
 
 BASE_ROOT = Path('/home/mte/Documents/Coding/bopl-re/ripped/ExportedProject/native/artifacts/rl')
 POOL_V7 = BASE_ROOT / 'sweeps/anchors/pool-v7/pool.json'
@@ -154,15 +154,17 @@ def load_games(path, catalogue_records=()):
 
 
 def task_key(row):
-    return row['a'], row['b'], int(row['map']), int(row['seed']), int(row['side'])
+    # The lineup is part of the identity: with a loadout set the same
+    # (pair, map, seed, side) is played once per lineup, and resume must tell them apart.
+    return row['a'], row['b'], int(row['map']), int(row['seed']), int(row['side']), row.get('lineup')
 
 
-def plan_tasks(names, maps, games_per_pair, existing):
+def plan_tasks(names, maps, games_per_pair, existing, lineups=()):
     done = {task_key(row) for row in existing}
     tasks = []
     for index, a in enumerate(names):
         for b in names[index + 1:]:
-            for task in elo_ladder.pair_tasks(a, b, maps, games_per_pair // len(maps), SEED_BASE):
+            for task in elo_ladder.pair_tasks(a, b, maps, games_per_pair // len(maps), SEED_BASE, lineups):
                 if task_key(task) not in done:
                     tasks.append(task)
     return tasks
@@ -170,10 +172,13 @@ def plan_tasks(names, maps, games_per_pair, existing):
 
 def game_row(game, members):
     a, b = members[game['a']], members[game['b']]
-    return dict(a=game['a'], a_sha=a.get('sha256'), a_name=a['name'],
-                b=game['b'], b_sha=b.get('sha256'), b_name=b['name'],
-                map=int(game['map']), seed=int(game['seed']), side=int(game['side']),
-                outcome=game['outcome'], ticks=int(game['ticks']))
+    row = dict(a=game['a'], a_sha=a.get('sha256'), a_name=a['name'],
+               b=game['b'], b_sha=b.get('sha256'), b_name=b['name'],
+               map=int(game['map']), seed=int(game['seed']), side=int(game['side']),
+               outcome=game['outcome'], ticks=int(game['ticks']))
+    if game.get('lineup_ids'):
+        row.update(lineup=game.get('lineup'), lineup_ids=list(game['lineup_ids']))
+    return row
 
 
 def local_fit(roster, games):
@@ -193,7 +198,7 @@ def public_member(member, fitted, counts):
     return result
 
 
-def write_pool(out, roster, games, pool_v7, game, games_per_pair, skipped_pairs, elapsed):
+def write_pool(out, roster, games, pool_v7, game, games_per_pair, skipped_pairs, elapsed, loadouts=None):
     records, fitted, counts = local_fit(roster, games)
     members = [public_member(member, fitted, counts) for member in roster]
     result = dict(
@@ -204,7 +209,8 @@ def write_pool(out, roster, games, pool_v7, game, games_per_pair, skipped_pairs,
              'writer-agnostic bridge, and bridge-only pairs are played once. Local Bradley-Terry '
              'fit with random anchored at 0; Wald 95% intervals.',
         game=dict(path=str(game), sha256=sha256_file(game)), maps=list(pool_v7['maps']),
-        games_per_pair=games_per_pair, seed_base=SEED_BASE,
+        # games_per_pair is per lineup; the per-game lineup_ids in games.jsonl say what each played.
+        games_per_pair=games_per_pair, loadouts=loadouts, seed_base=SEED_BASE,
         episode_ticks=int(pool_v7['episode_ticks']),
         observation_delay_ticks=int(pool_v7.get('observation_delay_ticks', 9)),
         games=len(games), elapsed=elapsed,
@@ -246,6 +252,10 @@ def print_roster(roster, skipped):
               f"{(row['interval'][1]-row['interval'][0]) if row else 0:8.1f}  {member['name']}", flush=True)
 
 
+def tournament_loadouts(args):
+    return reference_pool.rater_loadouts(args.loadout, args.loadout_set)
+
+
 def play_task_shard(subset, family, pool_v7, args, game, tasks, worker):
     os.environ['BOPL_RL_BACKEND'] = 'rust'
     os.environ['BOPL4_ABLATE'] = str(family)
@@ -261,7 +271,7 @@ def play_task_shard(subset, family, pool_v7, args, game, tasks, worker):
             os.write(descriptor, (json.dumps(row, separators=(',', ':')) + '\n').encode())
         elo_ladder.play_games(by_name, tasks, int(pool_v7['episode_ticks']), 1,
                               SEED_BASE, delay=int(pool_v7.get('observation_delay_ticks', 9)),
-                              on_result=persist)
+                              on_result=persist, loadouts=tournament_loadouts(args))
     finally:
         os.close(descriptor)
 
@@ -270,7 +280,8 @@ def play_family(roster, family, pool_v7, args, game):
     subset = [member for member in roster if writer_ablation(member) in (None, family)]
     names = [member['name'] for member in subset]
     existing = load_games(args.out / 'games.jsonl')
-    tasks = plan_tasks(names, pool_v7['maps'], args.games_per_pair, existing)
+    tasks = plan_tasks(names, pool_v7['maps'], args.games_per_pair, existing,
+                       reference_pool.lineup_indices(tournament_loadouts(args)))
     print(f'family={family} members={len(subset)} games_existing={len(existing)} games_missing={len(tasks)}', flush=True)
     context = multiprocessing.get_context('spawn')
     shards = [tasks[index::args.workers] for index in range(args.workers)]
@@ -287,7 +298,7 @@ def play_family(roster, family, pool_v7, args, game):
         raise RuntimeError(f'writer family {family} worker exits: {failed}')
 
 
-def schedule_counts(roster, games_per_pair):
+def schedule_counts(roster, games_per_pair, lineups=()):
     allowed = skipped = 0
     for index, a in enumerate(roster):
         a_writer = writer_ablation(a)
@@ -297,7 +308,7 @@ def schedule_counts(roster, games_per_pair):
                 skipped += 1
             else:
                 allowed += 1
-    return allowed, skipped, allowed * games_per_pair
+    return allowed, skipped, allowed * games_per_pair * max(1, len(lineups))
 
 
 def run(args):
@@ -317,7 +328,9 @@ def run(args):
     roster, skipped = select_roster(args.top, pool_v7, runs, before, base_out)
     print_roster(roster, skipped)
     groups = writer_groups(roster)
-    allowed_pairs, skipped_pairs, total = schedule_counts(roster, args.games_per_pair)
+    loadouts = tournament_loadouts(args)
+    allowed_pairs, skipped_pairs, total = schedule_counts(roster, args.games_per_pair,
+                                                          reference_pool.lineup_indices(loadouts))
     existing = load_games(args.out / 'games.jsonl', (raw_pool_v7,))
     print(f'families={{{", ".join(f"{key}: {len(value)}" for key, value in sorted(groups.items()))}}} '
           f'allowed_pairs={allowed_pairs} skipped_pairs={skipped_pairs} '
@@ -334,7 +347,7 @@ def run(args):
     if len(games) != total:
         raise RuntimeError(f'expected {total} compatible games, found {len(games)}')
     tournament = write_pool(args.out, roster, games, pool_v7, game, args.games_per_pair,
-                            skipped_pairs, time.monotonic() - started)
+                            skipped_pairs, time.monotonic() - started, loadouts)
     _, after = fit_ladder(base_root, args.out / 'tournament.json')
     table = comparison(roster, before, after, tournament)
     report = dict(roster=len(roster), skipped_missing=skipped, allowed_pairs=allowed_pairs,
@@ -353,6 +366,9 @@ def parse_args():
     parser.add_argument('--pool', type=Path, default=POOL_V7)
     parser.add_argument('--library', type=Path, default=POLICY_LIBRARY)
     parser.add_argument('--research-library', type=Path, default=RESEARCH_LIBRARY)
+    # --games-per-pair is then per lineup: a set of n lineups plays n times the games.
+    parser.add_argument('--loadout', type=loadout_ids, default=None)
+    parser.add_argument('--loadout-set', type=Path, default=None)
     parser.add_argument('--out', type=Path, default=ROOT / f"native/artifacts/rl/sweeps/anchors/tournament-{time.strftime('%Y%m%d')}")
     return parser.parse_args()
 
