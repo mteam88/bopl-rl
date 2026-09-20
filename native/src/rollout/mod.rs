@@ -32994,6 +32994,28 @@ mod tests {
     }
 
     #[test]
+    fn jump_from_a_deactivated_retained_ground_reads_its_normal() {
+        // Blink/Teleport deactivate the platform under a still-grounded
+        // player; the next jump used to unwrap an active-only lookup and
+        // abort the whole pool worker (any-3 run, 2026-09-20).
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let index = world.spawn_ability_platform(0, Vec2::ZERO, Fix::ONE);
+        let platform = world.platforms[index].clone();
+        let top = platform.surface.center + platform.surface.up * platform.surface.extents.y;
+        world.players[0].base.attach(&platform, top);
+        assert!(world.players[0].base.grounded);
+        world.platforms[index].active = false;
+
+        let normal = world.platforms[index].surface.normal(top);
+        let platforms = world.platforms.clone();
+        world.players[0].base.jump_with_strength(&platforms, Fix::ONE);
+
+        assert!(!world.players[0].base.grounded);
+        assert!(world.players[0].base.velocity.dot(normal) > Fix::ZERO);
+    }
+
+    #[test]
     fn charging_roll_runs_zero_input_ground_move() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();

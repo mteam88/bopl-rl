@@ -575,7 +575,14 @@ impl Player {
         // PlayerPhysics.Jump uses world up while airborne and only reads the
         // attached platform when grounded (PlayerPhysics.cs:333). Roll can
         // charge in the air, so an attached platform is not required here.
-        let platform = self.grounded.then(|| self.platform(platforms).unwrap());
+        // The retained attachedGround is read whether or not it is still
+        // active (Blink/Teleport can deactivate it under a grounded player
+        // before Move ungrounds them), as in move_grounded_scaled; a ground
+        // that no longer exists at all jumps off world up.
+        let platform = self
+            .grounded
+            .then(|| platforms.iter().find(|p| Some(p.id) == self.ground))
+            .flatten();
         let normal = platform.map_or(Vec2::UP, |p| p.surface.normal(self.position));
         let amount = ((normal.y + Fix::ONE) / self.constants.jump_normal_scale)
             .min(Fix::ONE)
