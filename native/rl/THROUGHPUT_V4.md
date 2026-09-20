@@ -212,7 +212,7 @@ under 3% of the row); the privileged block (0.1 us).
   the sim swung 386k-580k ticks/s between runs minutes apart. Every JSON
   row carries `load1`; compare rows only at similar load, or interleave.
 
-## 6. Campaign 3 wrap (2026-09-18 20:00 -> 2026-09-19, throughput-v4 Rift) — DRAFT
+## 6. Campaign 3 wrap (2026-09-18 20:00 -> 2026-09-20 02:45, throughput-v4 and megakernel Rifts; closed by Matthew at 645k)
 
 Metric: `learner_sps` on `bench_shape.sh` (`BOPL_BENCH_ENCODER=v4`, 300
 updates, 3x3 A/Bs, load1 on every row); learning gate `sanity_v4.sh`
@@ -257,7 +257,8 @@ not built: Matthew), set D 128 -> 64 (Matthew: keep), buffers 2/8 at
 w128 and 8 at w256 (-9..+0.5%), w512 (OOM at 12 GB), thread placement
 (6 pinned / 6 / trainer core / trainer core + home mask: -4..-22%),
 SM split 32/16 and 36/12 (-14% / -23%), writer to GPU (sized: +0..5%
-for 8-10 turns, not built).
+for 8-10 turns, not built), the chain megakernel (built bit-identical,
+-5.0% at cluster 4 / -15.4% at cluster 8; below).
 
 ### The measured ceiling at this geometry: ~700k
 
@@ -316,4 +317,36 @@ step gets there alone:
 - Not the road: recipe (replay 1.0 is the PufferLib default already;
   further passes/batch changes trade Elo), SM partition, thread
   placement, more buffers, kernel-level work on the chain's individual
-  kernels (each read ~0 against the contention and launch floor).
+  kernels (each read ~0 against the contention and launch floor), one
+  launch per step (measured: the PDL chain is already at the per-round
+  floor).
+
+### Closing state
+
+- Shipped (main): v4-lite-aim at w256 b4, learner_passes 1 x
+  minibatch_div 2, LR 4.852e-4, 11 stepping threads, packed obs
+  transport, PDL chain with B prefetch, the exact kernel wave. 645k
+  learner_sps on this box (3.9x the post-merge 166.7k), the same
+  policy family; every recipe step passed the equal-wall gate.
+- Ceiling on this box: ~700k (writer-free 688k, contention-free ~71 ms
+  per update). 1M needs cores: the env half is 626 ms of c_step per
+  update over 11 hardware threads on 6 cores; a 16-core part at the
+  same per-core speed reaches ~800-850k with this code, and a GPU with
+  faster L2 per SM shortens the chain's 76 us floor. No exact-class
+  lever left on this box moves more than ~3%; the non-exact ones
+  (bf16 / 8-bit rollout weights, ~25 us of a ~600 us step) are not
+  worth a learning gate.
+- Exactness check for any future rollout-kernel change: `puffer/
+  check_dump.py --only v4 --only v4-lite --chain-reference DIR`, where
+  DIR is the `--keep` directory of the incumbent build's run (its dumps
+  hold every rollout step's learner rows and their `br4_chain` outputs;
+  `train.py --chain-reference` loads the incumbent's checkpoint and
+  runs the new chain on the incumbent's observations; the compare is
+  bit for bit over 11904 values across two shapes). This is the only
+  test that exercises the kernels the rollout actually runs
+  (`bopl_policy_rows` drives the eager per-layer path); the learning
+  gate stays `sanity_v4.sh` at equal wall for anything that is not
+  bit-identical. Reference dumps for the closing build are in
+  `native/artifacts/rl/chain-reference/` (gitignored: regenerate with
+  `check_dump.py --only v4 --only v4-lite --keep <dir>` from the
+  incumbent build before changing a kernel).

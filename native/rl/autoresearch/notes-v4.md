@@ -2,6 +2,10 @@
 
 Rift `throughput-v4`, branch `throughput-v4`, starting commit `05020541`
 (program: `program-v4.md`; background `../THROUGHPUT.md`, `../THROUGHPUT_V4.md`).
+**Closed 2026-09-20 02:45 by Matthew at 645k learner_sps** (from 166.7k;
+the last section of this file and `../THROUGHPUT_V4.md` section 6 are
+the record). The megakernel step ran in a second Rift, `megakernel`,
+off merged main; both Rifts' branches are in main.
 Results table: `results.tsv`, rows appended by `record.py --shape <label>` from
 `native/artifacts/rl/bench-shape/results.jsonl` (gitignored; the run dirs and
 logs sit next to it). Column mapping for campaign-3 rows: `learner_dps_wall`
@@ -2816,3 +2820,32 @@ the sampler-in-chain plumbing, the lifted row / gate / sampler bodies
 and the L1-bypassing loads all go: the .so is the gate reference's
 code again; the lifted bodies are in 674634fe if a future fusion wants
 them).
+
+## Campaign closed (2026-09-20 02:45, Matthew)
+
+Decisions: the megakernel branch (br_gemm_tile, bopl_chain_rows, the
+check_dump chain gate, the v4-lite config, these notes) is in main;
+bf16 B fragments in the rollout chain are not pursued (~25 us of a
+~600 us step for a learning gate, the class every other closed lever
+sits in); the campaign is closed at 645k on this box.
+
+Final state, for the next reader:
+
+- Shipped recipe and code: THROUGHPUT_V4.md section 6 ("What landed",
+  "Closing state"). 645.2k learner_sps at the default (`bench_shape.sh`,
+  `BOPL_BENCH_ENCODER=v4`), 3.9x the post-merge baseline; the policy
+  family is unchanged (v4-lite-aim shape and aim-only writer layout
+  are Matthew's calls, each learning-gated).
+- Ceiling here: ~700k, from two measured floors (writer-free 688k,
+  contention-free ~71 ms/update). 1M needs cores (16 at this per-core
+  speed -> ~800-850k) plus a GPU whose per-SM L2 port moves the TF32
+  weight fragments faster (the chain's 76 us floor); it does not come
+  from this code on this box.
+- The exactness gate for rollout-kernel changes is the chain gate:
+  `check_dump.py --only v4 --only v4-lite --chain-reference <incumbent
+  --keep dir>` (0 of 11904 values may differ). Take the reference from
+  the incumbent build before touching a kernel; a kernel that fails to
+  launch or computes something else fails it (the fused set kernels of
+  698cd3d7 would not have passed it; see "how check_v4 passed" above).
+- Everything discarded is reverted; no runtime toggle from the campaign
+  is in the code. `results.tsv` has every measured row with its commit.
