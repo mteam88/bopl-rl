@@ -1,0 +1,30 @@
+# Sixteen archetype / known-good combos from Matthew (2026-09-20, thread
+# "generalized bots" thr_bam5xbkv6z), written down verbatim from his list and
+# mapped to native/data/rollout.json IDs. Shared three-slot loadouts, one per
+# line, slot order as he gave it (matters for the scripted bots, which press
+# slot 0 as Dash, 1 as Bow, 2 as Platform whatever sits there). His words:
+# "non-comprehensive but these are decent".
+#
+# Two notes on the mapping:
+#  - "revive" is 15 Revival, a partial port (ABILITY_PORT_GAPS.md: multi-marker
+#    actors, clone cap). Explicit sets may include it; --loadout-pool all
+#    still excludes it. Drop that line if Revival turns out to misbehave.
+#  - "move platform" is read as 14 Platform (the only platform ability in the
+#    game); "arrow" as 4 Bow, "laser" as 28 Beam, "rocket" as 5 Engine,
+#    "blink" as 6 Blink gun.
+7,24,14    # gust + mine + platform
+2,2,20     # dash + dash + meteor            (duplicate slot on purpose; do not pass --loadout-no-dup)
+13,3,28    # smoke + grenade + laser
+14,2,10    # platform + dash + missile
+10,11,14   # missile + spike + platform
+6,3,2      # blink + grenade + dash
+2,11,3     # dash + spike + grenade
+3,2,4      # grenade + dash + bow            (production 2,4,14 loadout family, reordered and Platform swapped for Grenade)
+26,14,7    # drill + platform + gust
+2,26,3     # dash + drill + grenade          ("best one?")
+15,14,4    # revive + platform + arrow       (Revival: partial port, see above)
+5,13,14    # rocket + smoke + platform
+23,14,17   # tesla coil + move platform + shrink ray
+8,3,24     # growth ray + grenade + mine
+24,30,18   # mine + magnet gun + black hole
+28,18,6    # laser + black hole + blink
