@@ -9,9 +9,8 @@
 #  - "revive" is 15 Revival, a partial port (ABILITY_PORT_GAPS.md: multi-marker
 #    actors, clone cap). Explicit sets may include it; --loadout-pool all
 #    still excludes it. Drop that line if Revival turns out to misbehave.
-#  - "move platform" is read as 14 Platform (the only platform ability in the
-#    game); "arrow" as 4 Bow, "laser" as 28 Beam, "rocket" as 5 Engine,
-#    "blink" as 6 Blink gun.
+#  - "move platform" is 22 Push (Matthew confirmed 2026-09-20); "arrow" is
+#    4 Bow, "laser" 28 Beam, "rocket" 5 Engine, "blink" 6 Blink gun.
 7,24,14    # gust + mine + platform
 2,2,20     # dash + dash + meteor            (duplicate slot on purpose; do not pass --loadout-no-dup)
 13,3,28    # smoke + grenade + laser
@@ -24,7 +23,7 @@
 2,26,3     # dash + drill + grenade          ("best one?")
 15,14,4    # revive + platform + arrow       (Revival: partial port, see above)
 5,13,14    # rocket + smoke + platform
-23,14,17   # tesla coil + move platform + shrink ray
+23,22,17   # tesla coil + push ("move platform") + shrink ray
 8,3,24     # growth ray + grenade + mine
 24,30,18   # mine + magnet gun + black hole
 28,18,6    # laser + black hole + blink
