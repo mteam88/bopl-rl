@@ -4,11 +4,56 @@
 //! separate handles may run on different threads concurrently.
 use super::{CAction, CConfig, CState, RolloutWorld};
 use std::ffi::c_char;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::PathBuf;
 
 const OK: i32 = 0;
 const ARGUMENT: i32 = 1;
 const GAME_ERROR: i32 = 3;
 const ENDED: i32 = 4;
+
+/// A panic inside a step would otherwise hit the extern "C" boundary and
+/// abort the trainer with nothing to reproduce (the any-3 runs of 2026-09-20
+/// died twice at ~210M steps that way). Catch it, write the episode so far as
+/// a BOPLREP2 beside the game logs, and report a game error naming the file;
+/// the client still stops, but `replay-crash` can now replay the tick.
+fn guarded_step(world: &mut RolloutWorld, step: impl FnOnce(&mut RolloutWorld) -> Result<(), String>) -> Result<(), String> {
+    match catch_unwind(AssertUnwindSafe(|| step(world))) {
+        Ok(result) => result,
+        Err(panic) => {
+            let message = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "panic".into());
+            let saved = crash_replay(world);
+            // Half-stepped state: refuse further steps until the next reset.
+            world.valid = false;
+            Err(format!("sim panic: {message}; episode replay {saved}"))
+        }
+    }
+}
+
+/// The name carries the reset fields the archive header lacks.
+fn crash_replay(world: &mut RolloutWorld) -> String {
+    let dir = std::env::var_os("BOPL_RL_LOG_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let config = world.replay_config;
+    let path = dir.join(format!(
+        "crash-seed{}-map{}-warmup{}-limit{}-pid{}.rep",
+        config.seed,
+        config.map,
+        config.warmup_ticks,
+        config.max_episode_ticks,
+        std::process::id()
+    ));
+    let written = world
+        .encode_replay()
+        .and_then(|()| std::fs::write(&path, &world.replay_buffer).map_err(|error| error.to_string()));
+    match written {
+        Ok(()) => path.display().to_string(),
+        Err(error) => format!("not written ({error})"),
+    }
+}
 
 pub struct Handle {
     world: RolloutWorld,
@@ -198,7 +243,7 @@ pub unsafe extern "C" fn bopl_rl_step(
         return ENDED;
     }
     let actions = unsafe { std::slice::from_raw_parts(actions, count) };
-    match handle.world.step(actions, repeat) {
+    match guarded_step(&mut handle.world, |world| world.step(actions, repeat)) {
         Ok(()) => OK,
         Err(message) => {
             handle.world.set_error(&message);
@@ -234,7 +279,7 @@ pub unsafe extern "C" fn bopl_rl_step_sampled(
         return ENDED;
     }
     let actions = unsafe { std::slice::from_raw_parts(actions, count) };
-    match handle.world.step_sampled(actions, first, second) {
+    match guarded_step(&mut handle.world, |world| world.step_sampled(actions, first, second)) {
         Ok(()) => OK,
         Err(message) => {
             handle.world.set_error(&message);
@@ -351,5 +396,40 @@ pub extern "C" fn bopl_rl_ability_count(_world: *const Handle) -> u32 {
 pub unsafe extern "C" fn bopl_rl_close(world: *mut Handle) {
     if !world.is_null() {
         drop(unsafe { Box::from_raw(world) });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rollout::CPlayerConfig;
+
+    #[test]
+    fn a_panicking_step_writes_the_episode_and_invalidates_the_world() {
+        let dir = std::env::temp_dir().join(format!("bopl-crash-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: tests in this module run single-threaded with respect to this variable.
+        unsafe { std::env::set_var("BOPL_RL_LOG_DIR", &dir) };
+        let mut world = RolloutWorld::new();
+        let mut config = CConfig { seed: 5, map: 0, players: 2, slots: 3, stocks: 3, warmup_ticks: 60, max_episode_ticks: 600, ..CConfig::default() };
+        for (i, player) in config.player[..2].iter_mut().enumerate() {
+            *player = CPlayerConfig { team: i as u32, abilities: [2, 4, 14], ..CPlayerConfig::default() };
+        }
+        world.reset(&config).unwrap();
+        let actions = [CAction::default(); 2];
+        world.step(&actions, 8).unwrap();
+
+        let error = guarded_step(&mut world, |world| {
+            world.step(&actions, 1)?;
+            panic!("fixed division by zero: DivisionByZero")
+        })
+        .unwrap_err();
+        assert!(error.starts_with("sim panic: fixed division by zero"), "{error}");
+        assert!(!world.valid);
+        let path = error.rsplit("episode replay ").next().unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        assert!(bytes.starts_with(b"BOPLREP2"));
+        assert!(path.contains("seed5-map0-warmup60-limit600"), "{path}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
