@@ -47,6 +47,9 @@ CONFIGS = {
     'v3': ['--encoder', 'set', '--hidden', '128', '--layers', '1'],
     # v4 at 16 games: 24 learner rows x 16 steps for the rollout chain compare.
     'v4': ['--encoder', 'v4', '--hidden', '256', '--layers', '1', '--workers', '16'],
+    # The production shape (sweep/configs/v4-lite-aim.toml): set inner 64, no FFN, critic 384, aim-only writer.
+    'v4-lite': ['--encoder', 'v4', '--hidden', '256', '--layers', '1', '--workers', '16', '--v4-ablate', '10',
+                '--v4-set-inner', '64', '--v4-ffn-dim', '0', '--v4-critic-dim', '384'],
 }
 
 
@@ -59,8 +62,8 @@ def train_dump(name, out, game, chain_reference=None):
     env = dict(os.environ, BOPL_RL_BACKEND='rust', PYTHONPATH=str(PUFFERLIB))
     command = [sys.executable, str(HERE / 'train.py'), '--output', str(run), '--game', str(game),
                '--dump-rows', str(dump)] + COMMON + CONFIGS[name]
-    if chain_reference is not None and name == 'v4':
-        command += ['--chain-reference', str(chain_reference)]
+    if chain_reference is not None and name.startswith('v4'):
+        command += ['--chain-reference', str(chain_reference / f'{name}.npz')]
     result = subprocess.run(command, env=env, cwd=ROOT, capture_output=True, text=True)
     if result.returncode or not dump.exists():
         sys.stderr.write(result.stdout[-4000:] + result.stderr[-4000:])
@@ -137,16 +140,16 @@ def main():
     parser.add_argument('--keep', type=Path, help='directory for the runs and dumps (default: a temp dir)')
     parser.add_argument('--reuse', action='store_true', help='compare existing dumps under --keep without training')
     parser.add_argument('--json', action='store_true')
-    parser.add_argument('--chain-reference', type=Path, metavar='NPZ',
-                        help='a v4 dump from another build (its run kept): this build\'s rollout chain on its '
-                             'observations and checkpoint must reproduce its chain_rows bit for bit')
+    parser.add_argument('--chain-reference', type=Path, metavar='DIR',
+                        help='the --keep directory of another build\'s run: this build\'s rollout chain on each v4 '
+                             'dump\'s observations and checkpoint must reproduce its chain_rows bit for bit')
     args = parser.parse_args()
     out = args.keep or Path(tempfile.mkdtemp(prefix='bopl-check-dump-'))
     out.mkdir(parents=True, exist_ok=True)
     reports = []
     for name in args.only or sorted(CONFIGS):
         dump = out / f'{name}.npz' if args.reuse else train_dump(name, out, args.game, args.chain_reference)
-        report = compare(dump, chain_reference=args.chain_reference if name == 'v4' else None)
+        report = compare(dump, chain_reference=args.chain_reference / f'{name}.npz' if args.chain_reference and name.startswith('v4') else None)
         reports.append(report)
         if not args.json:
             print(f"{name}: {report['rows']} rows x {report['width']} ({report['architecture']}), "
