@@ -18,7 +18,7 @@
 #   opponents for most episodes. The in-run behaviour flags (no-offense reads
 #   arrows_per_game) will fire on the non-bow lineups; flags never enter the score.
 # THIS RUN: specialist on 16,3,13 (2026-09-20): the fixed-loadout recipe on one lineups-8 row, a
-#   candidate pool-v9 member so generalists can be rated per lineup against an
+#   candidate member of the next pool so generalists can be rated per lineup against an
 #   opponent that actually plays that kit. Score on pool v8 is its 2,4,14 slice
 #   and is expected to be poor; the per-lineup rating is the reading.
 # Flags not listed are layout.V4_DEFAULTS.
