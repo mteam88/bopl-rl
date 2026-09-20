@@ -178,18 +178,17 @@ __device__ __forceinline__ float br4_block_sum(float v, float* scratch) {
     for (int w = 0; w < (int)(blockDim.x >> 5); w++) total += scratch[w];
     return total;
 }
-// One row by the whole block (256 threads); rowbuf: 1024 floats of shared
-// memory (W <= 1024: hidden + privileged, critic width), scratch: 8. Inputs
-// through L1-bypassing loads: in the chain kernel they were written by other
-// blocks of the cluster.
-__device__ __forceinline__ void br4_row(const Br4RowsArgs& a, int row, float* rowbuf, float* scratch) {
-    const int W = a.W;
+__global__ void __launch_bounds__(256) br4_rows(Br4RowsArgs a) {
+    __shared__ float scratch[8];
+    __shared__ float rowbuf[1024];   // W <= 1024 (hidden + privileged, critic width)
+    br_pdl_wait(); br_pdl_release();
+    const int row = blockIdx.x, W = a.W;
     const float* x = a.x + (long)row * a.ldx;
     const float* res = a.res ? a.res + (long)row * a.ldres : nullptr;
     int n = W;
     if (a.mode == BR4_RESIDUAL_LN_PRIV) n = W - a.P;
     for (int c = threadIdx.x; c < n; c += blockDim.x) {
-        float v = __ldcg(x + c) + (res ? __ldcg(res + c) : 0.0f);
+        float v = x[c] + (res ? res[c] : 0.0f);
         rowbuf[c] = v;
         if (a.mode == BR4_RESIDUAL_LN_PRIV) a.y[(long)row * a.ldy + c] = v;
     }
@@ -212,12 +211,6 @@ __device__ __forceinline__ void br4_row(const Br4RowsArgs& a, int row, float* ro
         for (int c = threadIdx.x; c < W; c += blockDim.x) a.out[(long)row * a.ldout + c] = (rowbuf[c] - mu) * r;
     }
 }
-__global__ void __launch_bounds__(256) br4_rows(Br4RowsArgs a) {
-    __shared__ float scratch[8];
-    __shared__ float rowbuf[1024];
-    br_pdl_wait(); br_pdl_release();
-    br4_row(a, blockIdx.x, rowbuf, scratch);
-}
 
 struct Br4Wt {   // one group's GEMM-side weights (br_prepare) and the set MLPs' bf16 packs (br4_pack_set_weights)
     float *flat, *fusion, *gru[BR_MAX_LAYERS], *ffn_in, *ffn_out, *actor, *cin, *b1, *b2;
@@ -231,113 +224,6 @@ struct Br4Plan {
     Br4Wt wt[BR_MAX_GROUPS];
     Br4Acts* acts;   // [num_buffers]
 };
-
-// ---------------------------------------------------------------------------
-// The chain from the flat GEMM to the sampler as one launch (notes-v4.md,
-// "Megakernel"): a thread block cluster of BR4_CLUSTER blocks per 16-row tile
-// (the row tiles of br_gemm: never straddling a group), every block one
-// BR4_CLUSTER-th of each GEMM's column tiles (br_gemm_tile, the same body as
-// the per-GEMM launches, so the values are bit-identical to them) and one
-// BR4_CLUSTER-th of the tile's rows for the row-wise stages (LN, gate,
-// residual, critic out, sampler). Every stage is row-local, so nothing needs
-// a grid-wide barrier: a GEMM needs the tile's full rows from the row stage
-// before it and a row stage needs its rows' full columns from the GEMM before
-// it, which is the cluster barrier (0.2 us measured on sm_120). Activations
-// stay in the per-buffer global buffers (L2 resident); the readers bypass L1
-// (__ldcg) since another SM's block wrote them since this SM last held the
-// line. The critic branch runs on the learner's tiles only (group 0), as the
-// per-GEMM chain did; a bank tile's cluster skips it as a whole. The sampler
-// is the last stage: warp w of block r samples row r * 4 + w of the tile.
-#define BR4_CLUSTER 8
-#define BR4_TILE_ROWS_PER_BLOCK (BR_TM / BR4_CLUSTER)
-static_assert(BR_TM % BR4_CLUSTER == 0 && BR4_TILE_ROWS_PER_BLOCK >= 1 && BR4_TILE_ROWS_PER_BLOCK <= BR_THREADS / 32, "tile rows per block: one warp each for the sampler");
-struct Br4MegaArgs {
-    BrGemmArgs flat, fusion, gru[BR_MAX_LAYERS], fi, fo, actor, cin, b1, b2;
-    int flat_ct, fusion_ct, gru_ct, fi_ct, fo_ct, actor_ct, cin_ct, b1_ct, b2_ct;   // column-tile groups of each GEMM
-    Br4RowsArgs ln_enc, ln_f, resid, ln_c, cout;
-    BrGateArgs gate[BR_MAX_LAYERS];
-    BrSampleArgs sample;
-    int layers, ffn, critic;   // ffn: y = h + FFN(LN(h)) (F > 0); critic: the critic branch exists (C > 0)
-    BrGroups g;
-    int tiles[BR_MAX_GROUPS + 1];
-};
-// Column-tile groups [ct0, ct0 + n) of a GEMM with ct groups for block r of the cluster.
-__device__ __forceinline__ void br4_mega_gemm_split(int ct, int r, int* ct0, int* n) {
-    int per = (ct + BR4_CLUSTER - 1) / BR4_CLUSTER;
-    *ct0 = r * per; *n = max(0, min(ct - r * per, per));
-}
-template <bool TF32>
-__global__ void __cluster_dims__(BR4_CLUSTER, 1, 1) __launch_bounds__(BR_THREADS, 2) br4_mega(const Br4MegaArgs a) {
-    // 32 KB, one stage at a time (a barrier separates any two): the GEMMs' A / C
-    // tiles, the row stages' row, the sampler's logits. Registers are capped at
-    // 128 with the launch bounds: a train-stream block co-resides on the SM.
-    __shared__ __align__(16) float smem[BR_KG * BR_TM * BR_TK];
-    float (*As)[BR_TM * BR_TK] = (float (*)[BR_TM * BR_TK])smem;
-    float* rowbuf = smem;                                                            // 1024 floats
-    float (*s_logits)[SAMPLE_MAX_LOGITS] = (float (*)[SAMPLE_MAX_LOGITS])smem;       // BR4_TILE_ROWS_PER_BLOCK rows
-    static_assert(BR4_TILE_ROWS_PER_BLOCK * SAMPLE_MAX_LOGITS <= BR_KG * BR_TM * BR_TK && 1024 <= BR_KG * BR_TM * BR_TK, "stage buffers alias the GEMM tile");
-    __shared__ float scratch[8];
-    const int r = (int)br_cluster_rank();
-    const int rt = blockIdx.x / BR4_CLUSTER;
-    int grp = 0;
-    while (grp + 1 < a.g.n && rt >= a.tiles[grp + 1]) grp++;
-    const int row0 = a.g.end[grp] + (rt - a.tiles[grp]) * BR_TM, row_end = a.g.end[grp + 1];
-    const int my_row0 = row0 + r * BR4_TILE_ROWS_PER_BLOCK;
-    const int my_rows = max(0, min(BR4_TILE_ROWS_PER_BLOCK, row_end - my_row0));
-    const int tid = threadIdx.x;
-    int ct0, n;
-    auto gemm = [&](const BrGemmArgs& g, int ct) {
-        br4_mega_gemm_split(ct, r, &ct0, &n);
-        if (n > 0) br_gemm_tile<TF32>(g, rt, ct0, n, As, false);
-    };
-    auto rows = [&](const Br4RowsArgs& ra) {
-        for (int i = 0; i < my_rows; i++) { br4_row(ra, my_row0 + i, rowbuf, scratch); __syncthreads(); }
-    };
-    br_pdl_wait();   // br4_sets (the pooled columns of joined) and the unpacked obs rows
-    // encoder: flat GEMM (obs -> joined[:, :FD]), fusion GEMM (joined -> ln), LN -> enc
-    gemm(a.flat, a.flat_ct);
-    br_cluster_sync();
-    gemm(a.fusion, a.fusion_ct);
-    br_cluster_sync();
-    rows(a.ln_enc);
-    br_cluster_sync();
-    // MinGRU layers: GEMM (x -> comb), gate (comb, x, state -> gru)
-    for (int l = 0; l < a.layers; l++) {
-        gemm(a.gru[l], a.gru_ct);
-        br_cluster_sync();
-        const BrGateArgs& ga = a.gate[l];
-        for (int e = tid; e < my_rows * ga.H; e += BR_THREADS) br_gate_elem(ga, my_row0 + e / ga.H, e % ga.H);
-        __syncthreads();
-        if (l + 1 < a.layers) br_cluster_sync();
-    }
-    // decoder: y = h (+ FFN(LN(h))), ln = LN([y, priv]) for this block's rows, then the heads
-    if (a.ffn) {
-        rows(a.ln_f);
-        br_cluster_sync();
-        gemm(a.fi, a.fi_ct);
-        br_cluster_sync();
-        gemm(a.fo, a.fo_ct);
-        br_cluster_sync();
-    }
-    rows(a.resid);
-    br_cluster_sync();
-    gemm(a.actor, a.actor_ct);
-    if (a.critic && grp == 0) {
-        gemm(a.cin, a.cin_ct);
-        br_cluster_sync();
-        rows(a.ln_c);
-        br_cluster_sync();
-        gemm(a.b1, a.b1_ct);
-        br_cluster_sync();
-        gemm(a.b2, a.b2_ct);
-        br_cluster_sync();
-        rows(a.cout);   // this block's rows' value column
-    }
-    br_cluster_sync();
-    // sampler: one warp per row of this block
-    const int warp = tid >> 5;
-    if (warp < my_rows) br_sample_row(a.sample, my_row0 + warp, s_logits[warp]);
-}
 
 #ifndef BR_KERNELS_ONLY
 static void br_group_weights(PuffeRL* pufferl, int g, int buf, PolicyWeights** w, PrecisionTensor** s);
@@ -398,24 +284,9 @@ static void br4_init(PuffeRL* pufferl, BrPlan* p) {
     }
     size_t smem = br4_sets_smem(q->D, q->I);
     assert(cudaFuncSetAttribute(br4_sets, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)smem) == cudaSuccess);
-    // The chain kernel's clusters must be schedulable on this device.
-    int clusters = 0;
-    {
-        cudaLaunchConfig_t cfg = {};
-        cfg.gridDim = dim3(BR4_CLUSTER); cfg.blockDim = dim3(BR_THREADS);
-        void* kernel = p->tf32 ? (void*)br4_mega<true> : (void*)br4_mega<false>;
-        cudaError_t e = cudaSuccess;
-        if (BR4_CLUSTER > 8) e = cudaFuncSetAttribute(kernel, cudaFuncAttributeNonPortableClusterSizeAllowed, 1);
-        if (e == cudaSuccess) e = cudaOccupancyMaxActiveClusters(&clusters, kernel, &cfg);
-        if (e != cudaSuccess || clusters < 1) {
-            fprintf(stderr, "bopl batched rollout forward: br4_mega cluster launch unavailable (%s, %d clusters)\n", cudaGetErrorString(e), clusters);
-            abort();
-        }
-    }
     p->v4 = q;
-    fprintf(stderr, "bopl batched rollout forward: policy v4 chain (set %d/%d, flat %d, ffn %d, critic %d%s), %.1f KB shared per set block, "
-            "chain kernel: %d-block clusters per 16-row tile, %d resident\n",
-            q->D, q->I, q->FD, q->F, q->C, q->P ? " privileged" : "", smem / 1024.0, BR4_CLUSTER, clusters);
+    fprintf(stderr, "bopl batched rollout forward: policy v4 chain (set %d/%d, flat %d, ffn %d, critic %d%s), %.1f KB shared per set block, W2 rows in registers\n",
+            q->D, q->I, q->FD, q->F, q->C, q->P ? " privileged" : "", smem / 1024.0);
 }
 
 // Every group's GEMM weights into the GEMM-side layout (rollout start).
@@ -472,12 +343,10 @@ static void br4_free(PuffeRL* pufferl, BrPlan* p) {
     p->v4 = nullptr;
 }
 
-// The v4 chain from the live obs rows to the sampled actions: br4_sets (the
-// pooled set columns of joined, the rollout copies of rewards / terminals),
-// then br4_mega: the GEMMs, LNs, gate, heads and the sampler in one cluster
-// launch per buffer step.
+// The v4 chain from the live obs rows to the decoder rows A.dec (logits, value
+// at column dec_cols), rollout copies included. The caller samples.
 static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
-                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, const BrSampleArgs& smp, cudaStream_t stream) {
+                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream) {
     Br4Plan& q = *p.v4; Br4Acts& A = q.acts[buf];
     int rows = p.rows, H = p.H;
     Br4SetsArgs sa = {};
@@ -498,68 +367,58 @@ static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, co
         w_cin.w[g] = q.wt[g].cin; w_b1.w[g] = q.wt[g].b1; w_b2.w[g] = q.wt[g].b2; w_cout.w[g] = dw->critic_out.data;
         gate.state[g] = s->data; gate.state_rows[g] = (int)s->shape[1];
     }
-    br_launch_pdl(br4_sets, dim3(rows, 4), dim3(BR4_SET_THREADS), br4_sets_smem(q.D, q.I), stream, sa);
-
-    Br4MegaArgs m = {};
-    m.layers = p.layers; m.ffn = q.F > 0; m.critic = q.C > 0; m.g = p.g;
-    memcpy(m.tiles, p.tiles, sizeof(m.tiles));
     // encoder
-    m.flat = br_gemm_args(p, obs, BOPL_OBS_STRIDE, A.joined, q.JW, v4::FLAT, q.FD, q.FD, 1, w_flat, &m.flat_ct);
-    m.fusion = br_gemm_args(p, A.joined, q.JW, A.ln, q.LNW, q.JW, H, H, 0, w_fus, &m.fusion_ct);
+    br_launch_pdl(br4_sets, dim3(rows, 4), dim3(BR4_SET_THREADS), br4_sets_smem(q.D, q.I), stream, sa);
+    br_gemm_launch(p, obs, BOPL_OBS_STRIDE, A.joined, q.JW, v4::FLAT, q.FD, q.FD, 1, w_flat, stream);
+    br_gemm_launch(p, A.joined, q.JW, A.ln, q.LNW, q.JW, H, H, 0, w_fus, stream);
     Br4RowsArgs ra = {}; ra.rows = rows; ra.g = p.g;
     ra.mode = BR4_LN; ra.W = H; ra.x = A.ln; ra.ldx = q.LNW; ra.out = A.enc; ra.ldout = H;
-    m.ln_enc = ra;
+    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
     // MinGRU
     const float* x = A.enc;
     for (int l = 0; l < p.layers; l++) {
-        m.gru[l] = br_gemm_args(p, x, H, A.comb, 3 * H, H, 3 * H, 3 * H, 0, w_gru[l], &m.gru_ct);
+        br_gemm_launch(p, x, H, A.comb, 3 * H, H, 3 * H, 3 * H, 0, w_gru[l], stream);
         gate.combined = A.comb; gate.x = x; gate.terminals = terminals;
         gate.out = A.gru[l & 1]; gate.layer = l; gate.H = H; gate.rows = rows; gate.g = p.g;
-        m.gate[l] = gate;
+        br_launch_pdl(br_gate, dim3(grid_size(rows * H)), dim3(BLOCK_SIZE), 0, stream, gate);
         x = A.gru[l & 1];
     }
-    // decoder: y = h + FFN(LN(h)); LN([y, priv]) for the critic; the actor head
+    // decoder: y = h + FFN(LN(h)); then LN([y, priv]) for the critic
     const float* priv = obs + BOPL4_OBS_PRIVILEGED_OFFSET;
     ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
     if (q.F) {
         ra.mode = BR4_LN; ra.W = H; ra.x = x; ra.ldx = H; ra.out = A.ln; ra.ldout = q.LNW;
-        m.ln_f = ra;
-        m.fi = br_gemm_args(p, A.ln, q.LNW, A.f, q.F, H, q.F, q.F, 1, w_fi, &m.fi_ct);
-        m.fo = br_gemm_args(p, A.f, q.F, A.y, H, q.F, H, H, 0, w_fo, &m.fo_ct);
+        br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);
+        br_gemm_launch(p, A.ln, q.LNW, A.f, q.F, H, q.F, q.F, 1, w_fi, stream);
+        br_gemm_launch(p, A.f, q.F, A.y, H, q.F, H, H, 0, w_fo, stream);
         ra = Br4RowsArgs{}; ra.rows = rows; ra.g = p.g;
         ra.mode = BR4_RESIDUAL_LN_PRIV; ra.W = q.W; ra.x = A.y; ra.ldx = H; ra.res = x; ra.ldres = H;
     } else {
         ra.mode = BR4_RESIDUAL_LN_PRIV; ra.W = q.W; ra.x = x; ra.ldx = H;
     }
     ra.y = A.y; ra.ldy = H; ra.out = A.ln; ra.ldout = q.LNW; ra.priv = priv; ra.ldpriv = BOPL_OBS_STRIDE; ra.P = q.P;
-    m.resid = ra;
-    m.actor = br_gemm_args(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, &m.actor_ct);
+    br_launch_pdl(br4_rows, dim3(rows), dim3(256), 0, stream, ra);   // A.y = y (trunk output), A.ln = LN([y, priv])
+    br_gemm_launch(p, A.y, H, A.dec, p.ld_dec, H, p.dec_cols + (q.C ? 0 : 1), p.ld_dec, 0, w_act, stream);
     if (q.C) {
         // The critic runs over the learner's rows only (group 0, its own row
         // tiles): the frozen banks' values are never read (their advantages
         // are zeroed, the statistics take learner rows), and their value
-        // column stays the zero A.dec was allocated with.
+        // column stays the zero A.dec was allocated with. The banks' rows are
+        // 4 of 16 per tile, so this is 4 of the 7 tiles of the three widest
+        // GEMMs (K, N = 512) and the two LNs.
         BrPlan pl = p; pl.g.n = 1;
         const int crows = p.g.end[1];
-        m.cin = br_gemm_args(pl, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, &m.cin_ct);
+        br_gemm_launch(pl, A.ln, q.LNW, A.z, q.C, q.W, q.C, q.C, 0, w_cin, stream);
         ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_LN; ra.W = q.C; ra.x = A.z; ra.ldx = q.C; ra.out = A.lnc; ra.ldout = q.C;
-        m.ln_c = ra;
-        m.b1 = br_gemm_args(pl, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, &m.b1_ct);
-        m.b2 = br_gemm_args(pl, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, &m.b2_ct);
+        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
+        br_gemm_launch(pl, A.lnc, q.C, A.b, q.C, q.C, q.C, q.C, 1, w_b1, stream);
+        br_gemm_launch(pl, A.b, q.C, A.z2, q.C, q.C, q.C, q.C, 0, w_b2, stream);
         ra = Br4RowsArgs{}; ra.rows = crows; ra.g = p.g;
         ra.mode = BR4_CRITIC_OUT; ra.W = q.C; ra.x = A.z2; ra.ldx = q.C; ra.res = A.z; ra.ldres = q.C;
         ra.out = A.dec; ra.ldout = p.ld_dec; ra.vcol = p.dec_cols; ra.cout = w_cout;
-        m.cout = ra;
+        br_launch_pdl(br4_rows, dim3(crows), dim3(256), 0, stream, ra);
     }
-    m.sample = smp;
-    // Stream-ordered, not PDL: an early-launched chain kernel would hold its
-    // SMs through br4_sets, and the train stream pays for every resident block.
-    const dim3 grid(p.tiles[p.g.n] * BR4_CLUSTER);
-    if (p.tf32) br4_mega<true><<<grid, BR_THREADS, 0, stream>>>(m);
-    else br4_mega<false><<<grid, BR_THREADS, 0, stream>>>(m);
-    cudaError_t e = cudaGetLastError();   // a launch that fails skips its work silently otherwise (notes-v4.md, 698cd3d7)
-    if (e != cudaSuccess) { fprintf(stderr, "br4_mega launch: %s\n", cudaGetErrorString(e)); abort(); }
 }
 
 // ---------------------------------------------------------------------------

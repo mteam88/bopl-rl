@@ -50,14 +50,6 @@
 // A kernel that exits without releasing counts as released.
 __device__ __forceinline__ void br_pdl_wait() { asm volatile("griddepcontrol.wait;" ::: "memory"); }
 __device__ __forceinline__ void br_pdl_release() { asm volatile("griddepcontrol.launch_dependents;"); }
-// Thread block clusters (sm_90+), as PTX: cooperative_groups.h drags in the
-// CCCL toolkit-version check, which the venv's nvcc / cudart wheel pair fails.
-__device__ __forceinline__ unsigned br_cluster_rank() { unsigned r; asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(r)); return r; }
-// All threads of every block of the cluster; release / acquire at cluster
-// scope orders the blocks' global writes before the others' reads.
-__device__ __forceinline__ void br_cluster_sync() {
-    asm volatile("barrier.cluster.arrive.release.aligned;\n\tbarrier.cluster.wait.acquire.aligned;" ::: "memory");
-}
 template<typename... KArgs, typename... Args>
 static void br_launch_pdl(void (*kernel)(KArgs...), dim3 grid, dim3 block, size_t smem, cudaStream_t stream, Args&&... args) {
     cudaLaunchConfig_t cfg = {};
@@ -303,11 +295,9 @@ __device__ __forceinline__ void br_gemm_tile(const BrGemmArgs& a, int rt, int ct
         for (int j = 0; j < BR_TK / 8; j++) {
             int i = c + j * 32, r = i & 15, k = k0 + ((i >> 4) << 2);
             const float* src = a.in + (long)(row0 + r) * a.ld_in + k;
-            // L1-bypassing loads: inside the chain kernel A was written by other
-            // blocks of the cluster since this SM last cached these lines.
-            if (row0 + r < row_end && k + 3 < K && a4) av[j] = __ldcg((const float4*)src);
+            if (row0 + r < row_end && k + 3 < K && a4) av[j] = *(const float4*)src;
             else if (row0 + r < row_end && k < K)
-                av[j] = make_float4(__ldcg(src), k + 1 < K ? __ldcg(src + 1) : 0.f, k + 2 < K ? __ldcg(src + 2) : 0.f, k + 3 < K ? __ldcg(src + 3) : 0.f);
+                av[j] = make_float4(src[0], k + 1 < K ? src[1] : 0.f, k + 2 < K ? src[2] : 0.f, k + 3 < K ? src[3] : 0.f);
             else av[j] = make_float4(0.f, 0.f, 0.f, 0.f);
         }
     };
@@ -500,27 +490,25 @@ struct BrGateArgs {
     BrGroups g;
 };
 
-__device__ __forceinline__ void br_gate_elem(const BrGateArgs& a, int row, int h) {
+__global__ void br_gate(BrGateArgs a) {
+    br_pdl_wait(); br_pdl_release();
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= a.rows * a.H) return;
+    int row = idx / a.H, h = idx - row * a.H;
     int grp = br_group_of(a.g, row);
     float* st = a.state[grp] + ((long)a.layer * a.state_rows[grp] + (row - a.g.end[grp])) * a.H + h;
-    long cb = (long)row * 3 * a.H, idx = (long)row * a.H + h;
-    float hidden = __ldcg(a.combined + cb + h);
-    float gate = __ldcg(a.combined + cb + a.H + h);
-    float proj = __ldcg(a.combined + cb + 2 * a.H + h);
+    long cb = (long)row * 3 * a.H;
+    float hidden = a.combined[cb + h];
+    float gate = a.combined[cb + a.H + h];
+    float proj = a.combined[cb + 2 * a.H + h];
     float state = a.terminals[row] != 0.0f ? 0.0f : *st;
-    float x = __ldcg(a.x + idx);
+    float x = a.x[idx];
     float gate_sigmoid = sigmoid(gate);
     float hidden_tilde = (hidden >= 0.0f) ? hidden + 0.5f : fast_sigmoid(hidden);
     float mingru_out = lerp(state, hidden_tilde, gate_sigmoid);
     *st = mingru_out;
     float proj_sigmoid = sigmoid(proj);
     a.out[idx] = proj_sigmoid * mingru_out + (1.0f - proj_sigmoid) * x;
-}
-__global__ void br_gate(BrGateArgs a) {
-    br_pdl_wait(); br_pdl_release();
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= a.rows * a.H) return;
-    br_gate_elem(a, idx / a.H, idx % a.H);
 }
 
 // ---------------------------------------------------------------------------
@@ -560,22 +548,14 @@ static int br_tiles(BrGroups& g, int* tiles) {
     return tiles[g.n];
 }
 
-// The GEMM's arguments; col_tiles = the column-tile groups of its grid (a.units rounds each).
-static BrGemmArgs br_gemm_args(const BrPlan& p, const float* in, int ld_in, float* out, int ld_out,
-        int K, int N, int ldb, int relu, const BrLinear& wt, int* col_tiles) {
+static void br_gemm_launch(const BrPlan& p, const float* in, int ld_in, float* out, int ld_out,
+        int K, int N, int ldb, int relu, const BrLinear& wt, cudaStream_t stream) {
     BrGemmArgs a = {};
     a.in = in; a.ld_in = ld_in; a.out = out; a.ld_out = ld_out; a.K = K; a.N = N; a.ldb = ldb; a.relu = relu;
     if (p.tf32) a.ldb = (N + 7) / 8;  // n-tiles of the fragment layout
     a.g = p.g; a.wt = wt;
     memcpy(a.tiles, p.tiles, sizeof(a.tiles));
-    *col_tiles = br_gemm_col_tiles(K, N, &a.units);
-    return a;
-}
-static void br_gemm_launch(const BrPlan& p, const float* in, int ld_in, float* out, int ld_out,
-        int K, int N, int ldb, int relu, const BrLinear& wt, cudaStream_t stream) {
-    int col_tiles;
-    BrGemmArgs a = br_gemm_args(p, in, ld_in, out, ld_out, K, N, ldb, relu, wt, &col_tiles);
-    dim3 grid(p.tiles[p.g.n], col_tiles);
+    dim3 grid(p.tiles[p.g.n], br_gemm_col_tiles(K, N, &a.units));
     if (p.tf32) br_launch_pdl(br_gemm<true>, grid, dim3(BR_THREADS), 0, stream, a);
     else br_launch_pdl(br_gemm<false>, grid, dim3(BR_THREADS), 0, stream, a);
 }
@@ -608,9 +588,8 @@ __global__ void bopl4_transport_check(const float* __restrict__ dense, const flo
 extern "C" void bopl_pack_register(void* envs, int start, int count, const float* base, float* out, long row_begin, long row_end);
 static void br_check_pre(PuffeRL* pufferl, int buf, cudaStream_t stream);
 static void br_check_post(PuffeRL* pufferl, int buf, int t, const float* terminals, const float* dec_rows, cudaStream_t stream);
-struct BrSampleArgs;
 static void br4_chain(PuffeRL* pufferl, BrPlan& p, int buf, const float* obs, const float* rewards, const float* terminals,
-                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, const BrSampleArgs& smp, cudaStream_t stream);
+                      float* rollout_obs, float* rollout_rewards, float* rollout_terminals, cudaStream_t stream);
 // ---------------------------------------------------------------------------
 // Sampler: sample_logits_warp with the env's byte mask as input and the
 // actions written to both the env buffer (float) and the rollout.
@@ -628,12 +607,16 @@ struct BrSampleArgs {
     int rows;
 };
 
-// One warp samples row idx; row: the warp's SAMPLE_MAX_LOGITS floats of shared memory.
-__device__ __forceinline__ void br_sample_row(const BrSampleArgs& a, int idx, float* row) {
-    const int lane = threadIdx.x & 31;
+__global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs a) {
+    __shared__ float s_logits[SAMPLE_WARP_ROWS][SAMPLE_MAX_LOGITS];
+    br_pdl_wait(); br_pdl_release();
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int idx = blockIdx.x * SAMPLE_WARP_ROWS + warp;
+    if (idx >= a.rows) return;
     const int A_total = a.A_total;
     const float* logits = a.dec + (long)idx * a.ld_dec;
     const unsigned char* mask = a.env_mask ? a.env_mask + (long)idx * a.mask_stride : nullptr;
+    float* row = s_logits[warp];
     // The mask may live in host memory: issue every lane's loads before the first use.
     constexpr int MASK_ITERS = (SAMPLE_MAX_LOGITS + 31) / 32;
     unsigned char mv[MASK_ITERS];
@@ -739,17 +722,9 @@ __device__ __forceinline__ void br_sample_row(const BrSampleArgs& a, int idx, fl
     }
     if (lane == 0) {
         a.logprobs[idx] = total_log_prob;
-        a.values[idx] = __ldcg(logits + a.dec_cols);
+        a.values[idx] = logits[a.dec_cols];
         a.rng[idx] = state;
     }
-}
-__global__ void __launch_bounds__(SAMPLE_WARP_ROWS * 32) br_sample(BrSampleArgs a) {
-    __shared__ float s_logits[SAMPLE_WARP_ROWS][SAMPLE_MAX_LOGITS];
-    br_pdl_wait(); br_pdl_release();
-    const int warp = threadIdx.x >> 5;
-    const int idx = blockIdx.x * SAMPLE_WARP_ROWS + warp;
-    if (idx >= a.rows) return;
-    br_sample_row(a, idx, s_logits[warp]);
 }
 
 // Decide whether the batched chain applies and allocate its per-buffer
@@ -1029,23 +1004,10 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
     PrecisionTensor mask_dst = {};
     if (p.mask_stride) mask_dst = puf_slice(rollouts.action_mask, t, start, rows);
     const float* dec_rows = A.dec;
-    int hc_stride = 0;
-    const signed char* hc_dev = get_head_consume_dev(&hc_stride);
-    BrSampleArgs smp = {};
-    smp.ld_dec = p.ld_dec; smp.A_total = p.A_total;
-    smp.dec_cols = p.dec_cols; smp.aim_fourier = p.aim_fourier; smp.aim_ar = p.aim_ar;
-    smp.act_sizes = pufferl->act_sizes_puf.data; smp.num_atns = p.num_atns;
-    smp.env_mask = mask; smp.mask_stride = p.mask_stride; smp.rollout_mask = mask_dst.data;
-    smp.env_actions = env_actions; smp.rollout_actions = act_dst.data;
-    smp.logprobs = lp_dst.data; smp.values = val_dst.data;
-    smp.rng = pufferl->rng_states[buf];
-    smp.head_consume = hc_dev; smp.hc_stride = hc_stride; smp.rows = rows;
     br_check_pre(pufferl, buf, stream);
     if (p.v4) {
-        // The chain kernel samples as its last stage.
+        br4_chain(pufferl, p, buf, obs, rewards, terminals, obs_dst.data, rew_dst.data, term_dst.data, stream);
         dec_rows = br4_dec_rows(p, buf);
-        smp.dec = dec_rows;
-        br4_chain(pufferl, p, buf, obs, rewards, terminals, obs_dst.data, rew_dst.data, term_dst.data, smp, stream);
     } else {
     // Per-group weights (set-encoder MLPs as stored, GEMM weights transposed by
     // br_prepare) and recurrent state (group 0 = learner snapshot).
@@ -1086,10 +1048,21 @@ static void br_forward(PuffeRL* pufferl, int buf, int t, cudaStream_t stream) {
         x = A.gru[l & 1];
     }
     br_gemm_launch(p, x, H, A.dec, p.ld_dec, H, p.dec_cols + 1, p.ld_dec, 0, w_dec, stream);
-    smp.dec = dec_rows;
-    br_launch_pdl(br_sample, dim3((rows + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS), dim3(SAMPLE_WARP_ROWS * 32), 0, stream, smp);
     }  // v3 chain
     br_check_post(pufferl, buf, t, terminals, dec_rows, stream);
+
+    int hc_stride = 0;
+    const signed char* hc_dev = get_head_consume_dev(&hc_stride);
+    BrSampleArgs smp = {};
+    smp.dec = dec_rows; smp.ld_dec = p.ld_dec; smp.A_total = p.A_total;
+    smp.dec_cols = p.dec_cols; smp.aim_fourier = p.aim_fourier; smp.aim_ar = p.aim_ar;
+    smp.act_sizes = pufferl->act_sizes_puf.data; smp.num_atns = p.num_atns;
+    smp.env_mask = mask; smp.mask_stride = p.mask_stride; smp.rollout_mask = mask_dst.data;
+    smp.env_actions = env_actions; smp.rollout_actions = act_dst.data;
+    smp.logprobs = lp_dst.data; smp.values = val_dst.data;
+    smp.rng = pufferl->rng_states[buf];
+    smp.head_consume = hc_dev; smp.hc_stride = hc_stride; smp.rows = rows;
+    br_launch_pdl(br_sample, dim3((rows + SAMPLE_WARP_ROWS - 1) / SAMPLE_WARP_ROWS), dim3(SAMPLE_WARP_ROWS * 32), 0, stream, smp);
     if (p.graph_copies && !p.actions_zero_copy)
         cudaMemcpyAsync(vec->actions + (long)start * p.num_atns, vec->gpu_actions + (long)start * p.num_atns,
                         (size_t)rows * p.num_atns * sizeof(float), cudaMemcpyDeviceToHost, stream);
@@ -1128,28 +1101,12 @@ static void br_chain_rows(PuffeRL* pufferl, const float* host_obs, int count, in
                       (size_t)obs_width * sizeof(float), count, cudaMemcpyHostToDevice, stream);
     PrecisionTensor* state = &pufferl->buffer_states[0];
     cudaMemsetAsync(state->data, 0, (size_t)numel(state->shape) * sizeof(float), stream);
-    // The kernel samples as its last stage: scratch outputs, this buffer's rng states advance.
-    float *actions, *logprobs, *values, *rmask = nullptr;
-    cudaMalloc((void**)&actions, (size_t)rows * p.num_atns * sizeof(float));
-    cudaMalloc((void**)&logprobs, row_bytes); cudaMalloc((void**)&values, row_bytes);
-    if (p.mask_stride) { cudaMalloc((void**)&rmask, (size_t)rows * p.mask_stride * sizeof(float)); }
-    int hc_stride = 0;
-    BrSampleArgs smp = {};
-    smp.dec = br4_dec_rows(p, 0); smp.ld_dec = p.ld_dec; smp.A_total = p.A_total;
-    smp.dec_cols = p.dec_cols; smp.aim_fourier = p.aim_fourier; smp.aim_ar = p.aim_ar;
-    smp.act_sizes = pufferl->act_sizes_puf.data; smp.num_atns = p.num_atns;
-    smp.env_mask = nullptr; smp.mask_stride = p.mask_stride; smp.rollout_mask = rmask;
-    smp.env_actions = actions; smp.rollout_actions = actions;
-    smp.logprobs = logprobs; smp.values = values;
-    smp.rng = pufferl->rng_states[0];
-    smp.head_consume = get_head_consume_dev(&hc_stride); smp.hc_stride = hc_stride; smp.rows = rows;
-    br4_chain(pufferl, p, 0, obs, rewards, terminals, obs, rew_copy, term_copy, smp, stream);
+    br4_chain(pufferl, p, 0, obs, rewards, terminals, obs, rew_copy, term_copy, stream);
     const float* dec = br4_dec_rows(p, 0) + (long)p.g.end[0] * p.ld_dec;
     cudaMemcpy2DAsync(host_dec, (size_t)(p.dec_cols + 1) * sizeof(float), dec, (size_t)p.ld_dec * sizeof(float),
                       (size_t)(p.dec_cols + 1) * sizeof(float), count, cudaMemcpyDeviceToHost, stream);
     cudaError_t e = cudaStreamSynchronize(stream);
     cudaFree(obs); cudaFree(rewards); cudaFree(terminals); cudaFree(rew_copy); cudaFree(term_copy);
-    cudaFree(actions); cudaFree(logprobs); cudaFree(values); if (rmask) cudaFree(rmask);
     if (e != cudaSuccess) throw std::runtime_error(std::string("bopl_chain_rows: ") + cudaGetErrorString(e));
 }
 #endif  // BR_KERNELS_ONLY

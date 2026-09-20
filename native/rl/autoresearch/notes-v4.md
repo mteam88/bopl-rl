@@ -2811,7 +2811,8 @@ Kept from the campaign step: `br_gemm_tile` (code motion, bit-identical,
 -0.7% noise A/B), `bopl_chain_rows` + check_dump's chain compare and
 `--chain-reference` (the rollout chain's own exactness gate; the
 per-kernel chain has none otherwise), the `v4-lite` check_dump config.
-The br4_mega kernel and the sampler-in-chain plumbing are reverted; the
-lifted device functions (`br4_row`, `br_gate_elem`, `br_sample_row`)
-stay as the kernels' bodies (no cost, and any future fusion starts from
+bopl_rollout.cu / bopl_rollout_v4.cu are back at feb085b6 (the kernel,
+the sampler-in-chain plumbing, the lifted row / gate / sampler bodies
+and the L1-bypassing loads all go: the .so is the gate reference's
+code again; the lifted bodies are in 674634fe if a future fusion wants
 them).
