@@ -13,8 +13,8 @@
 # the game is Builds/macOS/BoplBattle.app (just sync-mac + just build-mac on
 # the PowerSpec), the shim is libbopl_agent.dylib (`make -C native/rl agent-mac`,
 # built here with clang) placed in the bundle's Contents/Plugins, and the
-# binary is exec'd directly so the environment reaches it (`open` would only
-# focus an already running copy and drops the variables).
+# game is launched with `open -n --env` so it runs in the GUI session (controller
+# input) with the environment intact.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APP=${BOPL_APP:-$ROOT/Builds/macOS/BoplBattle.app}
@@ -70,7 +70,14 @@ fi
 echo "agent $AGENT  seed $SEED  maps ${MAPS:-all}${LEVELS:+ (levels $LEVELS)}  results $RESULTS"
 echo "$AGENT" > "$HUMAN/last-agent"
 
-"$GAME"
+# Launch through `open` so the process joins the user's GUI session: a game
+# exec'd from an ssh shell lives in the ssh audit session, where the Input
+# System sees no HID controllers. `open --env` (macOS 14+) carries the
+# variables; Mono finds the shim in Contents/Plugins without DYLD_LIBRARY_PATH.
+ENVARGS=(--env "BOPL_AGENT=$BOPL_AGENT" --env "BOPL_AGENT_SEED=$BOPL_AGENT_SEED"
+         --env "BOPL_AGENT_RESULTS=$BOPL_AGENT_RESULTS" --env "BOPL_AGENT_ROSTER_LOG=$BOPL_AGENT_ROSTER_LOG")
+[ -n "${BOPL_LEVEL_SET:-}" ] && ENVARGS+=(--env "BOPL_LEVEL_SET=$BOPL_LEVEL_SET")
+open -W -n -a "$APP" "${ENVARGS[@]}"
 STATUS=$?
 "$PYTHON" "$ROOT/Tools/play_vs_agent_results.py" "$RESULTS" --agent "$AGENT" --game "$GAME" --library "$LIB" --out "$HUMAN" --player-log "$PLAYER_LOG" --roster-log "$ROSTER_LOG"
 exit $STATUS
