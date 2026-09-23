@@ -404,6 +404,25 @@ static void dump_tables(const BoplRlState *a, const BoplRlState *b, unsigned tic
         printf("%s\n", (ea && eb && (ea->id != eb->id || ea->reserved[0] != eb->reserved[0] ||
                                       ea->flags != eb->flags)) ? "  <<" : "");
     }
+    /* The box/rounded-rect extents and the rotation, for rows whose shape or
+     * orientation is what differs rather than the centre. */
+    printf("%4s | %10s %10s %10s %10s %10s %10s | %10s %10s %10s %10s %10s %10s\n",
+           "idx", "right_x", "right_y", "up_x", "up_y", "radius", "rot",
+           "right_x", "right_y", "up_x", "up_y", "radius", "rot");
+    for (uint32_t i = 0; i < count; i++) {
+        const BoplRlEntity *ea = i < a->header.entity_count ? &a->entities[i] : NULL;
+        const BoplRlEntity *eb = i < b->header.entity_count ? &b->entities[i] : NULL;
+        printf("%4u |", i);
+        if (ea) printf(" %10.5f %10.5f %10.5f %10.5f %10.5f %10.5f |", units(ea->right_x),
+                       units(ea->right_y), units(ea->up_x), units(ea->up_y), units(ea->radius),
+                       units(ea->rotation));
+        else printf(" %70s |", "-");
+        if (eb) printf(" %10.5f %10.5f %10.5f %10.5f %10.5f %10.5f", units(eb->right_x),
+                       units(eb->right_y), units(eb->up_x), units(eb->up_y), units(eb->radius),
+                       units(eb->rotation));
+        else printf(" %70s", "-");
+        printf("\n");
+    }
     for (uint32_t i = 0; i < a->header.slime_count && i < b->header.slime_count; i++) {
         const BoplRlSlime *sa = &a->slimes[i], *sb = &b->slimes[i];
         printf("slime %u | id %u owner %u flags %u state %u af %u/%u/%u | id %u owner %u flags %u state %u af %u/%u/%u\n",
