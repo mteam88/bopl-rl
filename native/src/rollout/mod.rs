@@ -6914,8 +6914,8 @@ impl RolloutWorld {
             && self.players[index].base.outside_bounds()
             && !(0..3).any(|s| {
                 let slot = &self.players[index];
-                let ready = action.buttons & (2 << s) as u8 != 0
-                    && slot.timers[s] > slot.cooldowns[s];
+                let ready =
+                    action.buttons & (2 << s) as u8 != 0 && slot.timers[s] > slot.cooldowns[s];
                 ready
                     && (slot.abilities[s] == ABILITY_DRILL
                         || (slot.abilities[s] == ABILITY_METEOR && !slot.base.grounded))
@@ -33031,11 +33031,19 @@ fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radi
             let delta = position - closest;
             let magnitude = delta.length();
             if shape.overlaps(position) {
-                let direction = if magnitude > Fix::ZERO { (closest - position) / magnitude } else { Vec2::UP };
+                let direction = if magnitude > Fix::ZERO {
+                    (closest - position) / magnitude
+                } else {
+                    Vec2::UP
+                };
                 position = closest + direction * radius;
                 changed = true;
             } else if magnitude < radius {
-                let direction = if magnitude > Fix::ZERO { delta / magnitude } else { Vec2::UP };
+                let direction = if magnitude > Fix::ZERO {
+                    delta / magnitude
+                } else {
+                    Vec2::UP
+                };
                 position = closest + direction * radius;
                 changed = true;
             }
@@ -33203,20 +33211,76 @@ mod tests {
     }
 
     #[test]
+    fn a_centre_on_a_corner_arc_depenetrates_without_dividing_by_zero() {
+        // The crash geometry itself, constructed rather than replayed: a
+        // centre exactly on a corner's rounding arc is outside the collider,
+        // yet closest_point returns the centre, so `delta` is zero and the
+        // reference's `vec / magnitude` on the not-overlapping branch throws
+        // DivideByZero. push_circle_out_of_platforms must take the Vec2::UP
+        // branch and push the centre out by exactly the circle's radius.
+        let mut world = RolloutWorld::new();
+        world.reset(&test_config()).unwrap();
+        let index = world.spawn_ability_platform(0, Vec2::ZERO, Fix::ONE);
+        let platform = world.platforms[index].clone();
+        let box_ = platform.collider.inner;
+        let corner = box_.center + box_.right + box_.up;
+        let diagonal = (box_.right.normalized() + box_.up.normalized()).normalized();
+        let arc = corner + diagonal * platform.collider.radius;
+
+        assert!(!platform.collider.overlaps(arc));
+        assert_eq!(platform.collider.closest_point(arc).unwrap(), arc);
+
+        // The zero delta sends the centre straight up; the remaining passes
+        // settle it on the arc's real normal, clear of the collider.
+        let radius = Fix::from_f32(0.5);
+        let pushed = push_circle_out_of_platforms(&[platform.clone()], arc, radius);
+        assert!(pushed.y > arc.y);
+        assert!(!platform.collider.overlaps(pushed));
+        assert_eq!(
+            push_circle_out_of_platforms(&[platform], pushed, radius),
+            pushed
+        );
+    }
+
+    #[test]
     fn rewind_arrival_on_a_corner_arc_does_not_divide_by_zero() {
         // The any-3 crash capture of 2026-09-20 (Rewind/Missile/Magnet
         // mirror, map 2): on its last tick a rewind arrives with its centre
         // exactly on a platform corner's rounding arc, closest_point returns
         // the point itself, and the depenetration divided by zero.
+        //
+        // The capture was recorded before ability bodies honoured
+        // DestroyIfOutsideSceneBounds, so it ends with a player the port used
+        // to carry below the kill plane. Under `--features q32` that player
+        // now dies at y = -11.3849 on loop iteration 7091 of 7140 and the
+        // episode ends 49 ticks short of the capture's own last tick; the f64
+        // build drifts the other way (the builds desync at iteration 2149 by
+        // 1.2e-6) and still reaches the end. `!world.terminal` was only ever
+        // a proxy for reaching the arrival and is not a property of the
+        // fixture, so this replays as far as the fixture runs and asserts the
+        // depenetration actually ran. The zero-magnitude branch is covered
+        // build-independently by the test above.
         let raw = include_bytes!("../../fixtures/rewind-arrival-on-corner-arc.rep");
         let replay::Replay { config, ticks } = replay::decode(raw, 240, 7200).unwrap();
         let mut world = RolloutWorld::new();
         world.reset(&config).unwrap();
+        let mut rewinding: Vec<bool> = world
+            .players
+            .iter()
+            .map(|slot| slot.rewind.rewinding)
+            .collect();
+        let mut arrivals = 0usize;
         for actions in &ticks[240..] {
+            if world.terminal {
+                break;
+            }
             world.step(actions, 1).unwrap();
-            assert!(!world.terminal);
+            for (player, slot) in world.players.iter().enumerate() {
+                arrivals += usize::from(rewinding[player] && !slot.rewind.rewinding);
+                rewinding[player] = slot.rewind.rewinding;
+            }
         }
-        assert!(world.players.iter().all(|slot| !slot.rewind.rewinding));
+        assert!(arrivals >= 20, "rewind arrivals: {arrivals}");
     }
 
     #[test]
@@ -33235,7 +33299,9 @@ mod tests {
 
         let normal = world.platforms[index].surface.normal(top);
         let platforms = world.platforms.clone();
-        world.players[0].base.jump_with_strength(&platforms, Fix::ONE);
+        world.players[0]
+            .base
+            .jump_with_strength(&platforms, Fix::ONE);
 
         assert!(!world.players[0].base.grounded);
         assert!(world.players[0].base.velocity.dot(normal) > Fix::ZERO);

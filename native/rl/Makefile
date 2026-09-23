@@ -43,8 +43,8 @@ $(OUT)/map_ab: research/rust_ab/map_ab.c bopl_rl.c bopl_rl.h
 # position, and the cause of death. Catches ability bodies that hover below
 # the plane (GunTransform's slow-mo family) and abilities entered on the tick
 # the slime is already out of bounds.
-bounds-ability-ab: $(OUT)/bounds_ability_ab
-	$(abspath $(OUT)/bounds_ability_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT))
+bounds-ability-ab: $(OUT)/bounds_ability_ab rust-q32
+	$(abspath $(OUT)/bounds_ability_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
 
 $(OUT)/bounds_ability_ab: research/rust_ab/bounds_ability_ab.c bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
