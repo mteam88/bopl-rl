@@ -2153,6 +2153,11 @@ pub struct PlayerSlot {
     pub body_entity: usize,
     pub dash_entity: usize,
     pub bow_entity: usize,
+    /// Current thrown-ability prefab for each equipped slot. Grenade, Smoke,
+    /// Tack, Mjolnir, Poke Ball and Missile all register one, so a loadout may
+    /// hold up to three at once; `throw_entity` is the one selected by
+    /// `active_slot`, the alias the collider queries use.
+    pub throw_entities: [usize; 3],
     pub throw_entity: usize,
     pub mine_entity: usize,
     pub spike_entity: usize,
@@ -2896,7 +2901,7 @@ impl RolloutWorld {
         let mut body_entity = [usize::MAX; MAX_PLAYERS];
         let mut dash_entity = [usize::MAX; MAX_PLAYERS];
         let mut bow_entity = [usize::MAX; MAX_PLAYERS];
-        let mut throw_entity = [usize::MAX; MAX_PLAYERS];
+        let mut throw_entity = [[usize::MAX; 3]; MAX_PLAYERS];
         let mut mine_entity = [usize::MAX; MAX_PLAYERS];
         let mut push_entity = [usize::MAX; MAX_PLAYERS];
         let mut freeze_entities = [[usize::MAX; 3]; MAX_PLAYERS];
@@ -3019,7 +3024,7 @@ impl RolloutWorld {
                         ABILITY_MISSILE => (
                             data.missile.hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
-                            &mut throw_entity[i],
+                            &mut throw_entity[i][slot_index],
                             false,
                         ),
                         ABILITY_MINE => (
@@ -3087,7 +3092,7 @@ impl RolloutWorld {
                         | ABILITY_MJOLNIR | ABILITY_POKE_BALL) => (
                             throw_config(data, ability).hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 8,
-                            &mut throw_entity[i],
+                            &mut throw_entity[i][slot_index],
                             false,
                         ),
                         ABILITY_SPIKE => (
@@ -3592,7 +3597,12 @@ impl RolloutWorld {
                 body_entity: body_entity[i],
                 dash_entity: dash_entity[i],
                 bow_entity: bow_entity[i],
-                throw_entity: throw_entity[i],
+                throw_entities: throw_entity[i],
+                throw_entity: throw_entity[i]
+                    .iter()
+                    .copied()
+                    .find(|&entity| entity != usize::MAX)
+                    .unwrap_or(usize::MAX),
                 mine_entity: mine_entity[i],
                 spike_entity: spike_entity[i],
                 time_stop_entity: time_stop_entity[i],
@@ -4480,7 +4490,10 @@ impl RolloutWorld {
         match target {
             0 => slot.dash_entity = entity,
             1 => slot.bow_entity = entity,
-            2 => slot.throw_entity = entity,
+            2 => {
+                slot.throw_entities[ability_slot] = entity;
+                slot.throw_entity = entity;
+            }
             3 => slot.mine_entity = entity,
             4 => slot.push_entity = entity,
             5 => {
@@ -5343,7 +5356,9 @@ impl RolloutWorld {
                     slot.duplicator_entity,
                     slot.magnet_entity,
                     slot.bow_entity,
-                    slot.throw_entity,
+                    slot.throw_entities[0],
+                    slot.throw_entities[1],
+                    slot.throw_entities[2],
                     slot.mine_entity,
                     slot.gust_entity,
                     slot.revival_entity,
@@ -7124,6 +7139,7 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
+                        slot.throw_entity = slot.throw_entities[s];
                         let grounded = slot.base.grounded;
                         slot.throw_item = ThrowItemState {
                             grounded,
@@ -7162,6 +7178,7 @@ impl RolloutWorld {
                             slot.active_slot = s;
                             slot.ability_entry_action = action;
                             slot.telemetry.ability_activations[s] += 1;
+                            slot.throw_entity = slot.throw_entities[s];
                             slot.missile = MissileFormState {
                                 collider_rotation: slot.base.rotation,
                                 ..MissileFormState::default()
@@ -15718,7 +15735,7 @@ impl RolloutWorld {
             });
             let mut dash_entity = usize::MAX;
             let mut bow_entity = usize::MAX;
-            let mut throw_entity = usize::MAX;
+            let mut throw_entities = [usize::MAX; 3];
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
             let mut freeze_entities = [usize::MAX; 3];
@@ -15743,9 +15760,11 @@ impl RolloutWorld {
                     | ABILITY_POKE_BALL) => (
                         throw_config(data, ability).hurtbox_extents,
                         8,
-                        &mut throw_entity,
+                        &mut throw_entities[slot],
                     ),
-                    ABILITY_MISSILE => (data.missile.hurtbox_extents, 7, &mut throw_entity),
+                    ABILITY_MISSILE => {
+                        (data.missile.hurtbox_extents, 7, &mut throw_entities[slot])
+                    }
                     ABILITY_MINE => (
                         data::surface_extents(data.mine.hurtbox_extents),
                         7,
@@ -15985,7 +16004,12 @@ impl RolloutWorld {
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
-            slot.throw_entity = throw_entity;
+            slot.throw_entities = throw_entities;
+            slot.throw_entity = throw_entities
+                .iter()
+                .copied()
+                .find(|&entity| entity != usize::MAX)
+                .unwrap_or(usize::MAX);
             slot.mine_entity = mine_entity;
             slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
@@ -16047,7 +16071,9 @@ impl RolloutWorld {
                 self.players[index].duplicator_entity,
                 self.players[index].magnet_entity,
                 self.players[index].bow_entity,
-                self.players[index].throw_entity,
+                self.players[index].throw_entities[0],
+                self.players[index].throw_entities[1],
+                self.players[index].throw_entities[2],
                 self.players[index].mine_entity,
                 self.players[index].gust_entity,
                 self.players[index].revival_entity,
@@ -16179,7 +16205,7 @@ impl RolloutWorld {
             new_box_count += 1;
             let mut dash_entity = usize::MAX;
             let mut bow_entity = usize::MAX;
-            let mut throw_entity = usize::MAX;
+            let mut throw_entities = [usize::MAX; 3];
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
             let mut freeze_entities = [usize::MAX; 3];
@@ -16204,9 +16230,11 @@ impl RolloutWorld {
                     | ABILITY_POKE_BALL) => (
                         throw_config(data, ability).hurtbox_extents,
                         8,
-                        &mut throw_entity,
+                        &mut throw_entities[slot],
                     ),
-                    ABILITY_MISSILE => (data.missile.hurtbox_extents, 7, &mut throw_entity),
+                    ABILITY_MISSILE => {
+                        (data.missile.hurtbox_extents, 7, &mut throw_entities[slot])
+                    }
                     ABILITY_MINE => (
                         data::surface_extents(data.mine.hurtbox_extents),
                         7,
@@ -16434,7 +16462,12 @@ impl RolloutWorld {
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
-            slot.throw_entity = throw_entity;
+            slot.throw_entities = throw_entities;
+            slot.throw_entity = throw_entities
+                .iter()
+                .copied()
+                .find(|&entity| entity != usize::MAX)
+                .unwrap_or(usize::MAX);
             slot.mine_entity = mine_entity;
             slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
