@@ -28481,13 +28481,25 @@ impl RolloutWorld {
                         &def.sudden_death_y_speed,
                     )
                 };
-                // AnimateVelocity.UpdateSim: home -= down * curve(t - delay)
-                //   * suddenDeathSpeed * (2 << min(t * accel, 5)) * dt.
+                // AnimateVelocity.UpdateSim (AnimateVelocity.cs:137):
+                //
+                // ```text
+                // homePosition += Vec2.down * suddenDeathYSpeed.Evaluate(fix - delay)
+                //     * fix2 * simDeltaTime;
+                // ```
+                //
+                // `Vec2.down` makes the product negative *before* the two
+                // remaining multiplies, and `Fix.operator *` floors (it
+                // shifts the 128-bit product right by 32), so negating last
+                // is not the same number: `floor(-x) = -ceil(x)` differs
+                // from `-floor(x)` by a raw unit whenever the product has a
+                // fraction, which is almost every tick. Keep the descent
+                // negative from the start.
                 let steps = (elapsed * accel).to_int().clamp(0, 5);
                 let scale = speed_scale * Fix::from_int(2 << steps);
                 let speed = curve.evaluate(elapsed - delay);
-                let drop = speed * scale * updater_dt;
-                self.platform_dynamics[i].home_position.y -= drop;
+                let drop = -speed * scale * updater_dt;
+                self.platform_dynamics[i].home_position.y += drop;
             }
         }
 
