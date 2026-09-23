@@ -28,14 +28,31 @@ Gun (6), Growth Ray (8), Shrink Ray (17), Duplicator (29), Black Hole (18).
 It is policy-visible: the rows carry the ACTIVE bit, so the observation writer
 encodes them.
 
-## Fixture #2 - the port carries entity rows across `bopl_rl_reset`
+## Fixture #2 - the port carried entity rows across `bopl_rl_reset`
 
-**Status:** reproducible; affects every batched differential comparison in the
-repo, including `replay_ab` and the map sweeps.
+**Status:** FIXED 2026-09-23 in `d4c1474c` (merged `25743a53`). `leakprobe-q32`
+went 338/1240 -> 0/1240 and `DR_FRESH=0` now gives the same first divergences as
+`DR_FRESH=1`. Re-confirmed on `706d11a3`: leakprobe 0/1240, selfcheck 0/1240.
+Everything below is the original measurement, kept because it is the recipe for
+catching a regression and because fixture #3 depended on it.
 
-When one `BoplRl` handle plays several episodes back to back, the Rust port's
-exported entity table can gain rows belonging to an *earlier* episode. The
-oracle never does this.
+**Root cause: the rope body pool.** A round restart is
+`LoadScene(LoadSceneMode.Single)` (`GameSessionHandler.cs:423`), so `DetPhysics`
+is destroyed and its `Awake` rebuilds the pool wholesale as
+`ropes = new RopeBodyList()` (`DetPhysics.cs:293`) - 128 fresh `RopeBody` with
+`enabled` false - every round, whatever the new loadout holds. `RopeBodyList`
+has no reset method and `RopeBody.Dispose` leaves `enabled` set. The port
+cleared the pool only when the *incoming* loadout carried Grappling Hook or Web
+Swing, which is wrong by construction: what needs clearing depends on the
+episode that just ended. Ropes left flagged `physics.enabled` by a rope episode
+were published as phantom kind-3 rows into later episodes, because the
+observation pass filters on `rope.enabled` alone (`RlObservation.cs:57,:89`).
+That is exactly the signature recorded below - kind 3, radius 0.1, parked far
+under the map.
+
+When one `BoplRl` handle played several episodes back to back, the Rust port's
+exported entity table could gain rows belonging to an *earlier* episode. The
+oracle never did this.
 
 Repro (both Rust builds leak; the oracle is the reference):
 
@@ -95,9 +112,11 @@ across all 16 arm x lens x class combinations, at a cost of 5.2 s for 80 games.
 This is also the mechanism behind `replay_ab` returning different answers
 depending on how many `.rep` files it is handed - see FIXTURES.md #3.
 
-## Fixture #3 - `replay_ab` results depend on how many replays it is given
+## Fixture #3 - `replay_ab` results depended on how many replays it is given
 
-**Status:** reproducible; root cause is fixture #2.
+**Status:** FIXED 2026-09-23 as a consequence of fixture #2, whose root cause it
+shared. The order-sensitivity below should no longer reproduce; the measurement
+is kept as the regression recipe.
 
 `research/rust_ab/replay_ab.c` reuses one handle per backend across every
 `.rep` it is handed, so it inherits the cross-episode leak above. The same
@@ -121,10 +140,11 @@ tool, 32/40 agreed exactly on tick and field, 3 more agreed on the tick and
 differed only in which field of that tick is reported first, and the remaining
 5 were entity-population differences of exactly the fixture #2 kind.
 
-**Consequence.** `make replay-sweep` and the map sweeps are order-sensitive:
-adding or removing a `.rep`, or changing glob order, can change the reported
-first-divergence tick for unrelated replays. Anyone using those gates as a
-regression signal should either reopen handles per replay or pin the file set.
+**Consequence, while it lasted.** `make replay-sweep` and the map sweeps were
+order-sensitive: adding or removing a `.rep`, or changing glob order, could
+change the reported first-divergence tick for unrelated replays. With the rope
+pool fixed this no longer holds, but `leakprobe-q32` is the cheap standing check
+that it has not come back - it needs no oracle and runs 1240 episodes in 6 s.
 
 ## Fixture #1b - the same one-tick aim lag reaches the Bow hurtbox
 
