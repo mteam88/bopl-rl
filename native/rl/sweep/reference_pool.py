@@ -430,10 +430,11 @@ def rating_from_evaluation(report, pool, checkpoint, game=None, bootstrap=1000, 
         game=str(game_path), game_sha256=game_sha,
         game_mismatch=bool(game_sha and pool_sha and game_sha != pool_sha),
         rating=rating, interval=interval, bootstrap=bootstrap, games=len(games),
-        draws=sum(1 for g in games if g['outcome'] == 'draw'),
+        draws=sum(1 for g in games if g['outcome'] == 'draw'), draw_kinds=draw_split(games),
         records=rating_records(records, rating, ratings),
         note='Bradley-Terry MLE vs fixed pool ratings from evaluate.py games on pool maps; '
-             'timeouts = draws; one virtual draw per member; 95% percentile bootstrap over seed pairs')
+             'timeouts and trades both score as draws (see draw_kinds); one virtual draw per member; '
+             '95% percentile bootstrap over seed pairs')
 
 
 def write_evaluation_rating(run_dir, report, pool, checkpoint, game=None):
@@ -561,6 +562,25 @@ def plan_round(rating, ratings, remaining_games, band, round_games):
     return plan
 
 
+def draw_split(games):
+    """{kind: count} over drawn games: a timeout and a trade both score 0.5 but say
+    opposite things about a policy, so every rating reports which it got."""
+    kinds = {}
+    for game in games:
+        if game['outcome'] == 'draw':
+            kind = game.get('draw_kind', 'unlabelled')
+            kinds[kind] = kinds.get(kind, 0) + 1
+    return kinds
+
+
+def format_draws(count, kinds):
+    """"43 draws: 12 timeout, 31 both-dead" for a console line."""
+    if not count:
+        return '0 draws'
+    detail = ', '.join(f'{n} {kind}' for kind, n in sorted(kinds.items(), key=lambda kv: -kv[1]))
+    return f'{count} draws' + (f': {detail}' if detail else '')
+
+
 def lineup_ratings(games, candidate, ratings, bootstrap=1000, seed=0):
     """Per-lineup fixed-pool ratings: the same fit, restricted to one lineup's games.
 
@@ -576,7 +596,7 @@ def lineup_ratings(games, candidate, ratings, bootstrap=1000, seed=0):
             abilities=list(rows[0]['lineup_ids']), label=lineup_label(key),
             rating=rating, interval=bootstrap_interval(rows, candidate, ratings, samples=bootstrap, seed=seed),
             games=len(rows), draws=sum(1 for row in rows if row['outcome'] == 'draw'),
-            records=rating_records(records, rating, ratings))
+            draw_kinds=draw_split(rows), records=rating_records(records, rating, ratings))
     return result
 
 
@@ -671,11 +691,12 @@ def rate_checkpoint(checkpoint, pool, out=None, games=240, first_pass_games=6, b
         game=str(game), game_sha256=game_sha256,
         game_mismatch=game_sha256 != pool.get('game', {}).get('sha256'),
         rating=rating, interval=interval, bootstrap=bootstrap, games=len(all_games),
-        draws=sum(1 for g in all_games if g['outcome'] == 'draw'),
+        draws=sum(1 for g in all_games if g['outcome'] == 'draw'), draw_kinds=draw_split(all_games),
         source=source, records=rating_records(records, rating, ratings),
         loadouts=loadouts, lineups=lineup_ratings(all_games, name, ratings, bootstrap=bootstrap, seed=seed_base),
         rounds=rounds, elapsed=time.monotonic() - started,
-        note='Bradley-Terry MLE vs fixed pool ratings; timeouts = draws; one virtual draw per member; '
+        note='Bradley-Terry MLE vs fixed pool ratings; timeouts and trades both score as draws '
+             '(see draw_kinds); one virtual draw per member; '
              '95% percentile bootstrap over side-swapped seed pairs')
     atomic_json(cache, result)
     return result
@@ -986,7 +1007,8 @@ def format_lineup_table(lineups, indent='  '):
     for key, row in sorted(lineups.items(), key=lambda kv: -kv[1]['rating']):
         low, high = row['interval']
         lines.append(f"{indent}{key:<14} {row['rating']:8.1f}  [{low:5.0f},{high:5.0f}]  "
-                     f"{row['games']:>4} games ({row['draws']} draws)  {row['label']}")
+                     f"{row['games']:>4} games ({format_draws(row['draws'], row.get('draw_kinds') or {})})"
+                     f"  {row['label']}")
     return '\n'.join(lines)
 
 
@@ -1119,7 +1141,7 @@ def main():
                                  seed_base=args.seed_base, library=args.library, game=args.game, log=log,
                                  source=args.source, loadouts=rater_loadouts(args.loadout, args.loadout_set))
         print(f"{result['rating']:.1f} Elo  95% CI [{result['interval'][0]:.1f}, {result['interval'][1]:.1f}]  "
-              f"{result['games']} games ({result['draws']} draws)"
+              f"{result['games']} games ({format_draws(result['draws'], result.get('draw_kinds') or {})})"
               + (f" in {result['elapsed']:.0f}s" if 'elapsed' in result else ''))
         for member, row in sorted(result['records'].items(), key=lambda kv: -kv[1]['games']):
             print(f"  {member:20} {row['wins']:>3}-{row['losses']}-{row['draws']:<3} expected {row['expected']:.2f} observed {row['observed']:.2f}")

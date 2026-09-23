@@ -283,7 +283,8 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,load
 
     Each participant provides start(task, side, rng) -> act(observation, mask)
     and, for scripted bots, attach(env, side). Returns each task with its
-    ticks and outcome: 'a', 'b', or 'draw' (a timeout, or neither/both won).
+    ticks and outcome: 'a', 'b', or 'draw' (a timeout, or neither/both won); a draw
+    also carries draw_kind: 'timeout', 'both-dead' or 'neither-won'.
     Deterministic for a given (a, b, map, seed, side) and participant set.
 
     loadouts (evaluation_protocol.resolve_loadouts) replaces the fixed 2,4,14
@@ -329,6 +330,10 @@ def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,load
                 b_won=bool(final['players'][1-task['side']]['flags']&2) and not timeout
                 result=dict(task,ticks=final['t'],
                             outcome='draw' if timeout or a_won==b_won else ('a' if a_won else 'b'))
+                # A draw is either the episode limit or a trade; they mean opposite things
+                # about a policy, so say which without changing how a draw is scored.
+                if result['outcome']=='draw':
+                    result['draw_kind']='timeout' if timeout else ('both-dead' if a_won else 'neither-won')
                 if loadouts is not None:
                     played=env.loadouts
                     result['lineup_ids']=played[0]+played[1]
