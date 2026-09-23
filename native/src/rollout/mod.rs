@@ -2997,19 +2997,19 @@ impl RolloutWorld {
                     let slot_index = s - 1;
                     match resolved_abilities[i][slot_index] {
                         ABILITY_DASH => (
-                            data.dash.hurtbox_extents,
+                            data::surface_extents(data.dash.hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut dash_entity[i],
                             false,
                         ),
                         ABILITY_BOW => (
-                            data.bow.hurtbox_extents,
+                            data::surface_extents(data.bow.hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut bow_entity[i],
                             false,
                         ),
                         ABILITY_MISSILE => (
-                            data.missile.hurtbox_extents,
+                            data::surface_extents(data.missile.hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut throw_entity[i],
                             false,
@@ -3077,7 +3077,7 @@ impl RolloutWorld {
                         ),
                         ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
                         | ABILITY_MJOLNIR | ABILITY_POKE_BALL) => (
-                            throw_config(data, ability).hurtbox_extents,
+                            data::surface_extents(throw_config(data, ability).hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 8,
                             &mut throw_entity[i],
                             false,
@@ -3139,7 +3139,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_BEAM => (
-                            data.beam.hurtbox_extents,
+                            data::surface_extents(data.beam.hurtbox_extents),
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.beam.collider_hierarchy,
@@ -4341,16 +4341,31 @@ impl RolloutWorld {
         }
 
         let box_data = match ability {
-            ABILITY_DASH => Some((data.dash.hurtbox_extents, Vec2::ZERO, 7, 0)),
-            ABILITY_BOW => Some((data.bow.hurtbox_extents, Vec2::ZERO, 7, 1)),
+            ABILITY_DASH => Some((
+                data::surface_extents(data.dash.hurtbox_extents),
+                Vec2::ZERO,
+                7,
+                0,
+            )),
+            ABILITY_BOW => Some((
+                data::surface_extents(data.bow.hurtbox_extents),
+                Vec2::ZERO,
+                7,
+                1,
+            )),
             ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
             | ABILITY_POKE_BALL) => Some((
-                throw_config(data, ability).hurtbox_extents,
+                data::surface_extents(throw_config(data, ability).hurtbox_extents),
                 Vec2::ZERO,
                 8,
                 2,
             )),
-            ABILITY_MISSILE => Some((data.missile.hurtbox_extents, Vec2::ZERO, 7, 2)),
+            ABILITY_MISSILE => Some((
+                data::surface_extents(data.missile.hurtbox_extents),
+                Vec2::ZERO,
+                7,
+                2,
+            )),
             ABILITY_MINE => Some((
                 data::surface_extents(data.mine.hurtbox_extents),
                 data.mine.collider_offset,
@@ -4439,7 +4454,7 @@ impl RolloutWorld {
                 15,
             )),
             ABILITY_BEAM => Some((
-                data.beam.hurtbox_extents,
+                data::surface_extents(data.beam.hurtbox_extents),
                 data.beam.collider_offset,
                 data.beam.collider_hierarchy,
                 16,
@@ -15678,15 +15693,27 @@ impl RolloutWorld {
             let mut beam_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
-                    ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
-                    ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
+                    ABILITY_DASH => (
+                        data::surface_extents(data.dash.hurtbox_extents),
+                        7,
+                        &mut dash_entity,
+                    ),
+                    ABILITY_BOW => (
+                        data::surface_extents(data.bow.hurtbox_extents),
+                        7,
+                        &mut bow_entity,
+                    ),
                     ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
                     | ABILITY_POKE_BALL) => (
-                        throw_config(data, ability).hurtbox_extents,
+                        data::surface_extents(throw_config(data, ability).hurtbox_extents),
                         8,
                         &mut throw_entity,
                     ),
-                    ABILITY_MISSILE => (data.missile.hurtbox_extents, 7, &mut throw_entity),
+                    ABILITY_MISSILE => (
+                        data::surface_extents(data.missile.hurtbox_extents),
+                        7,
+                        &mut throw_entity,
+                    ),
                     ABILITY_MINE => (
                         data::surface_extents(data.mine.hurtbox_extents),
                         7,
@@ -15765,7 +15792,7 @@ impl RolloutWorld {
                         &mut drill_entity,
                     ),
                     ABILITY_BEAM => (
-                        data.beam.hurtbox_extents,
+                        data::surface_extents(data.beam.hurtbox_extents),
                         data.beam.collider_hierarchy,
                         &mut beam_entity,
                     ),
@@ -16139,15 +16166,27 @@ impl RolloutWorld {
             let mut beam_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
-                    ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
-                    ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
+                    ABILITY_DASH => (
+                        data::surface_extents(data.dash.hurtbox_extents),
+                        7,
+                        &mut dash_entity,
+                    ),
+                    ABILITY_BOW => (
+                        data::surface_extents(data.bow.hurtbox_extents),
+                        7,
+                        &mut bow_entity,
+                    ),
                     ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
                     | ABILITY_POKE_BALL) => (
-                        throw_config(data, ability).hurtbox_extents,
+                        data::surface_extents(throw_config(data, ability).hurtbox_extents),
                         8,
                         &mut throw_entity,
                     ),
-                    ABILITY_MISSILE => (data.missile.hurtbox_extents, 7, &mut throw_entity),
+                    ABILITY_MISSILE => (
+                        data::surface_extents(data.missile.hurtbox_extents),
+                        7,
+                        &mut throw_entity,
+                    ),
                     ABILITY_MINE => (
                         data::surface_extents(data.mine.hurtbox_extents),
                         7,
@@ -16226,7 +16265,7 @@ impl RolloutWorld {
                         &mut drill_entity,
                     ),
                     ABILITY_BEAM => (
-                        data.beam.hurtbox_extents,
+                        data::surface_extents(data.beam.hurtbox_extents),
                         data.beam.collider_hierarchy,
                         &mut beam_entity,
                     ),
