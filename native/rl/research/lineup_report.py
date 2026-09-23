@@ -2,11 +2,17 @@
 
 evaluate.py already records everything this needs per checkpoint: the resolved
 loadout selection, per-ability activation and entity-row counters, the lineup of
-every game and the per-group timeout counts. Nothing is replayed here; the point
-is to see, without spending a game, whether a run is using the abilities it was
-given (an ability with no activations is an ability the policy never learned to
-press), whether the entity rows of the observation are overflowing on the busy
-ones, and — for a lineup set — which lineups it is actually winning on.
+every game, and the per-group timeout and undecided counts. Nothing is replayed
+here; the point is to see, without spending a game, whether a run is using the
+abilities it was given (an ability with no activations is an ability the policy
+never learned to press), whether the entity rows of the observation are
+overflowing on the busy ones, and — for a lineup set — which lineups it is
+actually winning on.
+
+A lineup's record reads `40% of 50 +3u`, where `+3u` is three undecided rounds:
+both sides died together, so nobody won them and they are not losses. Without
+that column a lineup whose rounds all end in a trade reads as a flat 0%, which
+looks like a policy that cannot win rather than one whose rounds have no winner.
 
 The scripted bots (bopl_bots.h) reach for the Dash / Bow / Platform slots by
 index, so on any other lineup they press whatever sits in those slots. Their
@@ -54,7 +60,7 @@ def lineup_key(loadouts):
 
 
 def lineup_rows(report):
-    """Win/timeout counts per (lineup, opponent family) over an evaluation's games.
+    """Win/timeout/undecided counts per (lineup, opponent family) over an evaluation's games.
 
     Only games against the scripted bots and `random` are counted: selfplay and
     the frozen/initial opponents drift with the run and say nothing about a lineup.
@@ -67,10 +73,12 @@ def lineup_rows(report):
         family = 'scripted' if scripted_opponent(opponent) else opponent
         if family not in ('scripted', 'random'):
             continue
-        row = rows.setdefault((lineup_key(game['loadouts']), family), dict(games=0, wins=0, timeouts=0))
+        row = rows.setdefault((lineup_key(game['loadouts']), family),
+                              dict(games=0, wins=0, timeouts=0, undecided=0))
         row['games'] += 1
         row['wins'] += bool(game.get('win'))
         row['timeouts'] += bool(game.get('timeout'))
+        row['undecided'] += bool(game.get('undecided'))
     return rows
 
 
@@ -90,6 +98,19 @@ def timeout_rate(report):
     games = sum(group['games'] for group in report.get('groups') or ())
     timeouts = sum(group['timeouts'] for group in report.get('groups') or ())
     return timeouts / games if games else 0.0
+
+
+def undecided_rate(report):
+    """Undecided rounds over games (both sides died together, scored as a draw).
+
+    Without this a lineup that ends every round in a trade reads as a flat 0%
+    win rate, which looks like a policy that cannot win rather than one whose
+    rounds have no winner. Evaluations written before undecided rounds were
+    reported carry no counts and come back 0.
+    """
+    games = sum(group['games'] for group in report.get('groups') or ())
+    undecided = sum(group.get('undecided', 0) for group in report.get('groups') or ())
+    return undecided / games if games else 0.0
 
 
 def selection(record):
@@ -170,10 +191,12 @@ def digest(report):
     for game in report.get('games') or ():
         loadouts = game.get('loadouts') or fixed
         cell = lineups.setdefault(lineup_key(loadouts), {}).setdefault(
-            opponent_family(game.get('opponent') or ''), dict(games=0, wins=0, timeouts=0))
+            opponent_family(game.get('opponent') or ''),
+            dict(games=0, wins=0, timeouts=0, undecided=0))
         cell['games'] += 1
         cell['wins'] += bool(game.get('win'))
         cell['timeouts'] += bool(game.get('timeout'))
+        cell['undecided'] += bool(game.get('undecided'))
         # A free draw makes almost every lineup unique, so the ability is the
         # only axis with enough games behind it: keep its record too.
         for ability in {int(a) for a in loadouts[0]}:
@@ -186,7 +209,8 @@ def digest(report):
            if activations or overflow else [])
     return dict(
         step=int(report.get('step') or 0), games=len(report.get('games') or ()),
-        selection=sel, timeout_rate=timeout_rate(report), telemetry=bool(ids),
+        selection=sel, timeout_rate=timeout_rate(report),
+        undecided_rate=undecided_rate(report), telemetry=bool(ids),
         abilities=[dict(id=i, name=names.get(i, str(i)), activations=activations.get(i, 0),
                         games=present.get(i, 0), wins=won.get(i, 0),
                         rows=(overflow.get(i) or {}).get('rows', 0),
@@ -211,9 +235,9 @@ def merge_digests(rows):
         for key, families in row['lineups'].items():
             bucket = lineups.setdefault(key, {})
             for family, cell in families.items():
-                seen = bucket.setdefault(family, dict(games=0, wins=0, timeouts=0))
-                for field in ('games', 'wins', 'timeouts'):
-                    seen[field] += cell[field]
+                seen = bucket.setdefault(family, dict(games=0, wins=0, timeouts=0, undecided=0))
+                for field in ('games', 'wins', 'timeouts', 'undecided'):
+                    seen[field] += cell.get(field, 0)
     for ability in abilities.values():
         ability['per_game'] = ability['activations'] / ability['games'] if ability['games'] else None
         ability['win_rate'] = ability['wins'] / ability['games'] if ability['games'] else None
@@ -229,12 +253,16 @@ def lineup_table(lineups):
     rows = []
     for key, families in lineups.items():
         families = {family: dict(cell, win_rate=cell['wins'] / cell['games'] if cell['games'] else None,
-                                 timeout_rate=cell['timeouts'] / cell['games'] if cell['games'] else None)
+                                 timeout_rate=cell['timeouts'] / cell['games'] if cell['games'] else None,
+                                 undecided_rate=(cell.get('undecided', 0) / cell['games']
+                                                 if cell['games'] else None))
                     for family, cell in families.items()}
         games = sum(cell['games'] for cell in families.values())
         timeouts = sum(cell['timeouts'] for cell in families.values())
+        undecided = sum(cell.get('undecided', 0) for cell in families.values())
         rows.append(dict(lineup_entry(key), families=families, games=games,
-                         timeout_rate=timeouts / games if games else None))
+                         timeout_rate=timeouts / games if games else None,
+                         undecided_rate=undecided / games if games else None))
     rows.sort(key=lambda row: (-(row['families'].get('scripted') or {}).get('win_rate', -1), row['key']))
     return rows
 
@@ -243,6 +271,7 @@ def format_report(step, report):
     selection = report.get('loadout_selection') or {}
     lines = [f"step {step:>12}  mode {selection.get('mode', '?')}"
              f"  timeouts {timeout_rate(report):.1%}"
+             + (f"  undecided {undecided_rate(report):.1%}" if undecided_rate(report) else '')
              + (f"  set {Path(selection['set_file']).name}" if selection.get('set_file') else '')]
     lines.append(f"  {'ability':<24} {'activations':>12} {'entity rows':>12} {'dropped':>9}")
     for ability, name, activations, rows, dropped in ability_rows(report):
@@ -251,7 +280,13 @@ def format_report(step, report):
     rows = lineup_rows(report)
     if len(set(key for key, _ in rows)) > 1:
         lines.append(f"  {'lineup':<14} {'vs scripted':>16} {'vs random':>16}   abilities")
-        cell = lambda row: f"{row['wins'] / row['games']:.0%} of {row['games']}" if row else '-'
+
+        # `+Nu` is N undecided rounds: nobody won them, so they are not losses.
+        def cell(row):
+            if not row:
+                return '-'
+            text = f"{row['wins'] / row['games']:.0%} of {row['games']}"
+            return text + f" +{row['undecided']}u" if row.get('undecided') else text
         for key in sorted({key for key, _ in rows}):
             lines.append(f"  {key:<14} {cell(rows.get((key, 'scripted'))):>16} "
                          f"{cell(rows.get((key, 'random'))):>16}   {lineup_label(key)}")
@@ -273,6 +308,7 @@ def main():
     if args.json:
         print(json.dumps([dict(step=step, loadout_selection=report.get('loadout_selection'),
                                timeout_rate=timeout_rate(report),
+                               undecided_rate=undecided_rate(report),
                                abilities=[dict(id=i, name=n, activations=a, entity_rows=r, dropped=d)
                                           for i, n, a, r, d in ability_rows(report)],
                                lineups=[dict(lineup=key, opponent=family, **row)
