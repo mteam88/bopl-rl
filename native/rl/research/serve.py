@@ -523,7 +523,7 @@ def _pool_timeline(directory):
     return out
 
 
-def run_payload(directory, name, members):
+def run_payload(directory, name, members, rated=None):
     status = run_status(directory)
     config = map_catalogue.normalize_record(read_json(directory / 'config.json') or {}, status)
     reports = evaluation_results(directory)
@@ -531,13 +531,17 @@ def run_payload(directory, name, members):
     joined = [member for member in members
               if (member.get('origin') or {}).get('run') == name]
     joined.sort(key=lambda member: (member.get('origin') or {}).get('step') or 0)
+    rated = rated or {}
     return dict(
         name=name, config=config, status=status,
         evaluations=evaluations,
         opponents=opponent_distribution(directory),
+        # The run's own checkpoints as league members, with the league rating
+        # each one holds: this run's trajectory on the league's scale.
         members=[{'id': member['id'], 'name': member.get('name'),
                   'kind': member.get('kind'),
-                  'step': (member.get('origin') or {}).get('step')}
+                  'step': (member.get('origin') or {}).get('step'),
+                  **(rated.get(member['id']) or {})}
                  for member in joined],
     )
 
@@ -601,9 +605,11 @@ def time_to_exploit(agent_id, table):
     """How fast a fresh exploiter reaches 55% and 70% against this member.
 
     A caveat the UI repeats: `league.json` has no field naming the member an
-    exploiter was trained against, so the target is *inferred* as the member it
-    has by far the most games against. Exploiter runs that were pointed at two
-    members, or that also played a broad evaluation slate, will be misread.
+    exploiter was trained against, so the target is *inferred*. The best signal
+    available is `parent` — an exploiter is forked from the main it is meant to
+    beat — and only when that is missing does this fall back to whichever
+    member the exploiter played most, which an even schedule makes ambiguous.
+    A `target` field on the member would remove the guess entirely.
     """
     ids = table['ids']
     seat = ids.index(agent_id)
@@ -616,16 +622,22 @@ def time_to_exploit(agent_id, table):
         cell = table['cells'][other_seat][seat]
         if not cell:
             continue
-        # Inferred target: the opponent this exploiter played most.
-        played = [(peer_cell['games'], peer) for peer, peer_cell
-                  in zip(ids, table['cells'][other_seat]) if peer_cell]
-        if not played or max(played)[1] != agent_id:
-            continue
+        parent = member.get('parent')
+        if parent in by_id:
+            if parent != agent_id:
+                continue
+        else:
+            played = [(peer_cell['games'], peer) for peer, peer_cell
+                      in zip(ids, table['cells'][other_seat]) if peer_cell]
+            if not played or max(played)[1] != agent_id:
+                continue
         run = (member.get('origin') or {}).get('run') or member['id']
         runs[run].append({
             'id': other, 'name': member.get('name'),
             'step': (member.get('origin') or {}).get('step'),
-            'score': 1.0 - cell['score'],   # the exploiter's score against us
+            # cells[exploiter][target] is already the exploiter's score
+            # against this member; it is not the member's own score.
+            'score': cell['score'],
             'games': cell['games'],
         })
     out = []
@@ -637,7 +649,11 @@ def time_to_exploit(agent_id, table):
             marks[str(mark)] = hit['step'] if hit else None
         out.append({'run': run, 'points': points, 'marks': marks,
                     'best': max((point['score'] for point in points), default=None)})
-    return {'runs': out, 'inferred': True}
+    return {'runs': out, 'inferred': True,
+            'basis': 'parent' if any(by_id[other].get('parent') in by_id
+                                     for other in ids
+                                     if by_id[other].get('kind') == 'exploiter')
+                     else 'most-played'}
 
 
 def specialist_regret(agent_id, table):
@@ -691,6 +707,7 @@ def main():
             parser.error('run_root requires NAME=PATH')
         extra_runs[name] = Path(path).resolve()
 
+    condition_default = None
     lock = threading.RLock()
     league_state = {'sig': None, 'members': [], 'rows': []}
     page_state = OrderedDict()
@@ -805,13 +822,26 @@ def main():
                     for name, path in sorted(catalog().items()))
         return cached(page_state, ('runs',), sig, build, 8)
 
+    def rated_members():
+        """{id: {rating, nash_value, condition}} for the default condition."""
+        members, rows = league_data()
+        chosen, _ = pick_condition(rows, condition_default)
+        if chosen is None:
+            return {}
+        table = league.summary(members, rows, chosen)
+        return {member['id']: {'rating': member.get('rating'),
+                               'interval': member.get('interval'),
+                               'nash_value': member.get('nash_value'),
+                               'condition': chosen}
+                for member in table['members']}
+
     def run_encoded(directory, name):
         members, _ = league_data()
         sig = (stamp(directory / 'config.json'), stamp(directory / 'status.json'),
-               stamp(directory / 'evaluations'), stamp(directory / 'opponents.jsonl'),
-               stamp(directory / 'metrics.jsonl'), league_sig())
+               stamp(directory / 'evaluations'), stamp(directory / 'pool'),
+               stamp(directory / 'pool.jsonl'), league_sig())
         return cached(run_state, name, sig,
-                      lambda: run_payload(directory, name, members), 16)
+                      lambda: run_payload(directory, name, members, rated_members()), 16)
 
     def metrics_encoded(directory, name):
         def build():

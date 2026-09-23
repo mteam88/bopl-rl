@@ -460,6 +460,18 @@
     renderOpponents();
 
     const members = run.members || [];
+    const curve = members.filter((m) => m.step != null && m.rating != null);
+    $("runRatingNote").innerHTML = curve.length
+      ? `This run's checkpoints on the league's scale, in condition <b>${esc(curve[0].condition)}</b>.
+         The band is the 95% interval; where it is wide, the member has not played enough games to place.`
+      : members.length
+        ? `This run has members in the league but none of them has a rating in the default condition yet.`
+        : `Nothing from this run has been admitted to the league, so it has no rating trajectory.`;
+    chart($("runRating"), [{
+      label: "League Elo", color: "#b8e03a",
+      points: curve.map((m) => ({ x: m.step, y: m.rating, lo: m.interval?.[0], hi: m.interval?.[1] })),
+    }], { format: (v) => v.toFixed(0) });
+
     $("runMembers").innerHTML = members.length
       ? `<div class="chips">` + members.map((m) =>
         `<a class="chip" href="/agent/${encodeURIComponent(m.id)}" style="color:${kindColor(m.kind)}">${esc(m.name || short(m.id))}<span>${big(m.step)}</span></a>`).join("") + `</div>`
