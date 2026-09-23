@@ -49,7 +49,10 @@ run() {
   python3 - "$dir" "$mode" "$tag" >> "$OUT/results.jsonl" <<'EOF'
 import json, statistics as st, sys, os
 d, mode, tag = sys.argv[1:]
-rows = [json.loads(l) for l in open(os.path.join(d, 'metrics.jsonl'))][20:]
+def metrics_open(d):  # plain, or packed by research/compact_history.py
+    p = os.path.join(d, 'metrics.jsonl')
+    return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
+rows = [json.loads(l) for l in metrics_open(d)][20:]
 per = {k: st.median(r['native_perf'][k] for r in rows) * 1000 / 128 for k in ('rollout', 'eval_gpu', 'eval_env')}
 print(json.dumps(dict(mode=int(mode), tag=tag, updates=len(rows), load1=os.getloadavg()[0],
                       learner_sps_median=st.median(r['learner_sps'] for r in rows),

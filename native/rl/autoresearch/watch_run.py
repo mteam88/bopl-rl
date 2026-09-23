@@ -27,14 +27,19 @@ import argparse
 import hashlib
 import json
 import math
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'rl/research'))
+import packed  # noqa: E402
 
 MAX_ENTROPY = math.log(256) + math.log(16)  # aim x buttons, nats
 
 
 def load_metrics(path):
     rows = []
-    lines = path.read_text().splitlines()
+    with packed.open_text(path) as handle:
+        lines = handle.read().splitlines()
     for i, line in enumerate(lines):
         if not line.strip(): continue
         try: rows.append(json.loads(line))

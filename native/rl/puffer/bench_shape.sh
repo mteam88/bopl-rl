@@ -102,7 +102,10 @@ run_one() {
   python3 - "$dir" "$label" "$WORKERS" "$BUFFERS" "$PASSES" "$HORIZON" "$ENCODER" "$ab_env" <<'PY' | tee -a "$OUT/results.jsonl"
 import json, re, statistics as st, sys, os
 d, label, workers, buffers, passes, horizon, encoder, ab_env = sys.argv[1:]
-rows = [json.loads(l) for l in open(os.path.join(d, 'metrics.jsonl'))]
+def metrics_open(d):  # plain, or packed by research/compact_history.py
+    p = os.path.join(d, 'metrics.jsonl')
+    return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
+rows = [json.loads(l) for l in metrics_open(d)]
 rows = [r for r in rows if 'native_perf' in r][20:]
 H = int(horizon)
 med = lambda key: round(st.median(r[key] for r in rows), 4)

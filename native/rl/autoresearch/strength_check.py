@@ -63,6 +63,7 @@ ROOT = HERE.parents[2]
 RESEARCH = ROOT/'native/rl/research'
 sys.path.insert(0, str(RESEARCH))
 sys.path.insert(0, str(ROOT/'native/tools'))
+import packed  # noqa: E402
 from common import atomic_json  # noqa: E402
 from evaluation_protocol import checkpoint_identity, map_ids, schedule  # noqa: E402
 from reference import resolve_game, player_sources  # noqa: E402
@@ -175,7 +176,8 @@ def final_evaluation(args, run, result, game):
 
 
 def telemetry(run):
-    records = [json.loads(line) for line in (run/'metrics.jsonl').read_text().splitlines() if line.strip()]
+    with packed.open_text(run/'metrics.jsonl') as handle:
+        records = [json.loads(line) for line in handle if line.strip()]
     last = records[-1]; totals = last['behavior']['totals']
     tail = records[-max(1, len(records)//10):]  # last 10% of updates
     episodes = sum(r['behavior']['totals']['episodes'] for r in tail) or 1

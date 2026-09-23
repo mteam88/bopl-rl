@@ -35,6 +35,7 @@ import time
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path[:0] = [str(HERE), str(ROOT / 'native/rl/sweep')]
+import packed  # noqa: E402
 PUFFERLIB_DIR = sorted((ROOT / 'native/artifacts/rl/dependencies').glob('PufferLib-*'))[-1]
 VENV_PYTHON = ROOT / 'native/artifacts/rl/venv/bin/python'
 TRAIN = ROOT / 'native/rl/puffer/train.py'
@@ -154,7 +155,7 @@ def metrics_at(run_dir, key, marks):
     """Value of `key` at the first metrics row at or after each learner-decision mark."""
     found = {mark: None for mark in marks}
     try:
-        with (Path(run_dir) / 'metrics.jsonl').open() as handle:
+        with packed.open_text(Path(run_dir) / 'metrics.jsonl') as handle:
             for line in handle:
                 try:
                     row = json.loads(line)
@@ -174,7 +175,7 @@ def metrics_at(run_dir, key, marks):
 def learner_sps(run_dir):
     values = []
     try:
-        with (Path(run_dir) / 'metrics.jsonl').open() as handle:
+        with packed.open_text(Path(run_dir) / 'metrics.jsonl') as handle:
             for line in handle:
                 try:
                     row = json.loads(line)

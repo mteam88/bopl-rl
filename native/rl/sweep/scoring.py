@@ -13,9 +13,12 @@ point so the driver can use either as Protein's cost.
 """
 import json
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / 'native/rl/research'))
+import packed  # noqa: E402
 
 
 class Point:
@@ -41,7 +44,7 @@ def _metrics_rows(run_dir, keys):
     """Selected keys from every intact metrics.jsonl row (torn tail tolerated)."""
     rows = []
     try:
-        with (Path(run_dir) / 'metrics.jsonl').open() as handle:
+        with packed.open_text(Path(run_dir) / 'metrics.jsonl') as handle:
             for line in handle:
                 try:
                     record = json.loads(line)

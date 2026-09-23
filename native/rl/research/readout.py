@@ -36,6 +36,7 @@ import sys
 from pathlib import Path
 
 import map_catalogue
+import packed
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -76,9 +77,9 @@ ROLE = {"trained": "trained", "untrained": "heldout", "heldout": "heldout"}   # 
 # ---- loading ----
 def read_jsonl(path):
     out = []
-    if not path.exists():
+    if not packed.exists(path):
         return out
-    with open(path) as f:
+    with packed.open_text(path) as f:
         for line in f:
             line = line.strip()
             if not line:

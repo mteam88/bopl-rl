@@ -132,9 +132,12 @@ print(best if best and abs(step(best) - 213352448) <= 2133524 else "")')
     wall_step=$(python3 - "$DIR" "$WALL_SECONDS" <<'PY'
 import json, sys, glob, os
 d, wall = sys.argv[1], float(sys.argv[2])
+def metrics_open(d):  # plain, or packed by research/compact_history.py
+    p = os.path.join(d, 'metrics.jsonl')
+    return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
 evals = {int(os.path.basename(p)) for p in glob.glob(os.path.join(d, 'evaluations', '*')) if os.path.basename(p).isdigit()}
 best = None
-for line in open(os.path.join(d, 'metrics.jsonl')):
+for line in metrics_open(d):
     r = json.loads(line)
     if r['step'] in evals and (best is None or abs(r['elapsed'] - wall) < abs(best[1] - wall)): best = (r['step'], r['elapsed'])
 print(best[0] if best else '')
@@ -150,6 +153,9 @@ PY
   python3 - "$DIR" "$LABEL" "$REFERENCE" "$REF_NAME" "${WALL_SECONDS:-}" <<'PY' | tee -a "$OUT/results.jsonl"
 import glob, json, os, re, sys
 d, label, reference, ref_name, wall_seconds = sys.argv[1:]
+def metrics_open(d):  # plain, or packed by research/compact_history.py
+    p = os.path.join(d, 'metrics.jsonl')
+    return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
 SPREAD = 75            # same-shape pool-v7 seed spread, POLICY_V4_PLAN.md 7c
 # The evaluation steps the gate reads, in the trainer's physical step count
 # (checkpoint names): 80M and 160M learner decisions of the v4-aim recipe.
@@ -174,7 +180,7 @@ def refit_elo(name):
     return curve or {int(s): (e['elo'] if isinstance(e, dict) else e, e.get('interval') if isinstance(e, dict) else None) for s, e in r.get('elo', {}).items()}
 def metrics_at(run, learner_step):
     best = None
-    for line in open(os.path.join(run, 'metrics.jsonl')):
+    for line in metrics_open(run):
         r = json.loads(line)
         if r.get('learner_steps', 0) <= learner_step: best = r
     return best or {}
@@ -209,7 +215,7 @@ for k in ('explained_variance', 'entropy', 'kl', 'learner_sps', 'sps'):
 if wall_seconds:
     wall = float(wall_seconds)
     evals = {int(os.path.basename(p)) for p in glob.glob(os.path.join(d, 'evaluations', '*')) if os.path.basename(p).isdigit()}
-    rows = [json.loads(l) for l in open(os.path.join(d, 'metrics.jsonl'))]
+    rows = [json.loads(l) for l in metrics_open(d)]
     at = min((r for r in rows if r['step'] in evals), key=lambda r: abs(r['elapsed'] - wall), default=None)
     if at:
         elo = run_elo.get(at['step'])

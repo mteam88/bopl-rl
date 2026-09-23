@@ -5,6 +5,8 @@ import json
 import os
 import threading
 
+from packed import open_text, resolved
+
 POINTS = 2400
 TAIL = 120
 CACHE_RUNS = 8
@@ -58,6 +60,9 @@ class MetricsStore:
 
     def read(self, path):
         path = Path(path)
+        found = resolved(path)
+        if found != path:
+            return self.read_packed(path, found)
         with self.lock:
             try:
                 handle = path.open('rb')
@@ -89,6 +94,30 @@ class MetricsStore:
                         state.offset = handle.tell()
                     state.signature = signature
                 return state.snapshot()
+
+    def read_packed(self, path, found):
+        """An archived stream cannot be appended to: parse it once, then serve the cache."""
+        with self.lock:
+            try:
+                stat = found.stat()
+            except FileNotFoundError:
+                self.entries.pop(path, None)
+                return Metrics(None).snapshot()
+            identity = (stat.st_dev, stat.st_ino)
+            signature = (stat.st_size, stat.st_mtime_ns)
+            state = self.entries.pop(path, None)
+            if state is None or state.identity != identity or state.signature != signature:
+                state = Metrics(identity, self.points, self.tail_size)
+                with open_text(found) as handle:
+                    for line in handle:
+                        if not line.endswith('\n'):
+                            break  # a torn tail, as in the plain scan above
+                        state.append(json.loads(line))
+                state.signature = signature
+            self.entries[path] = state
+            while len(self.entries) > self.capacity:
+                self.entries.popitem(last=False)
+            return state.snapshot()
 
 
 store = MetricsStore()

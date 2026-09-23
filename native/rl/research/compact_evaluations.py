@@ -19,6 +19,8 @@ import os
 from pathlib import Path
 import time
 
+import packed
+
 SKIP_NAMES = {'result.json', 'insights.json'}
 
 
@@ -37,7 +39,7 @@ def run_is_idle(run_dir, min_age):
         state = None
     if state == 'running':
         return False
-    newest = max((p.stat().st_mtime for p in (status, run_dir / 'metrics.jsonl') if p.is_file()),
+    newest = max((p.stat().st_mtime for p in (status, packed.resolved(run_dir / 'metrics.jsonl')) if p.is_file()),
                  default=0)
     return time.time() - newest >= min_age
 

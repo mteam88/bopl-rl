@@ -18,6 +18,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
 from metrics_store import store
+from packed import resolved
 
 HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(HERE.parent / 'sweep')]
@@ -52,7 +53,7 @@ def read_json(path, default=None):
 
 def stamp(path):
     try:
-        value = Path(path).stat()
+        value = resolved(path).stat()
     except FileNotFoundError:
         return None
     return value.st_ino, value.st_mtime_ns, value.st_size
@@ -723,7 +724,7 @@ def main():
         updated = None
         for path in (directory / 'status.json', directory / 'metrics.jsonl', directory / 'result.json'):
             try:
-                value = path.stat().st_mtime
+                value = resolved(path).stat().st_mtime
             except FileNotFoundError:
                 continue
             updated = value if updated is None else max(updated, value)

@@ -27,6 +27,8 @@ import time
 
 HERE=Path(__file__).resolve().parent
 TRAINER=HERE.parent/'puffer'/'train.py'
+sys.path.insert(0, str(HERE))
+import packed  # noqa: E402
 
 def proc_stat():
     with open('/proc/stat') as f: fields=f.readline().split()
@@ -90,7 +92,7 @@ def run_once(python,out,workers,decisions,seed,extra,env):
     process=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,env=env)
     finished=time.monotonic(); sampler.stop.set(); sampler.join(); log.close()
     if process.returncode: raise RuntimeError(f'{out.name} failed with {process.returncode}; see {log.name}')
-    records=[json.loads(line) for line in metrics.read_text().splitlines()]
+    records=[json.loads(line) for line in packed.read_text(metrics).splitlines()]
     result=json.loads((out/'result.json').read_text())
     if result['status']!='complete' or result['learner_steps']<decisions:
         raise RuntimeError(f'{out.name} ended {result["status"]} at {result["learner_steps"]} learner decisions')

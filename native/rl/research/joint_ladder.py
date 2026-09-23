@@ -23,6 +23,7 @@ from pathlib import Path
 
 import elo_ladder
 import map_catalogue
+import packed
 import reference_pool
 
 SKIP_DIRS = frozenset({
@@ -52,7 +53,7 @@ def read_json(path, default=None):
 
 def is_run_dir(path):
     path = Path(path)
-    return (path / 'metrics.jsonl').is_file() or (path / 'checkpoints').is_dir()
+    return packed.exists(path / 'metrics.jsonl') or (path / 'checkpoints').is_dir()
 
 
 def run_name(rel):
@@ -122,7 +123,7 @@ def discover_runs(root, extra=None):
             if rel.parts and rel.parts[0] == 'sweeps' and len(rel.parts) == 2 and rel.parts[1] == 'anchors':
                 dirs.clear()
                 continue
-            if not ((path / 'metrics.jsonl').is_file() or (path / 'checkpoints').is_dir()):
+            if not is_run_dir(path):
                 continue
             dirs.clear()
             sweep, trial = sweep_of(rel, root)

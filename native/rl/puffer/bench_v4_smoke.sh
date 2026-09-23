@@ -71,13 +71,16 @@ run() {
 import json, statistics as st, sys, os
 d, name, rc = sys.argv[1:]
 rc = int(rc)
+def metrics_open(d):  # plain, or packed by research/compact_history.py
+    p = os.path.join(d, 'metrics.jsonl')
+    return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
 def tail():
     try:
         return [l.rstrip()[:300] for l in open(d + '.log') if l.strip()][-4:]
     except FileNotFoundError:
         return []
 try:
-    rows = [json.loads(l) for l in open(os.path.join(d, 'metrics.jsonl'))]
+    rows = [json.loads(l) for l in metrics_open(d)]
 except FileNotFoundError:
     print(json.dumps(dict(name=name, updates=0, exit=rc, error='no metrics', log_tail=tail()))); raise SystemExit
 rows = [r for r in rows[10:] if r['native_perf'].get('rollout')]
