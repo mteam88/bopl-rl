@@ -39,7 +39,8 @@ ORIENT='entity[].hierarchy,entity[].right_x,entity[].right_y,entity[].up_x,entit
 # name|cell|games|pool|players|stocks|ticks|A|B|C|tol|ignore|fresh
 CELLS=$(cat <<LIST
 selfcheck-oracle|random|1240|all|2|0|3600|$REFERENCE|$REFERENCE|$REFERENCE|0|$ORIENT|1
-selfcheck-q32|random|1240|all|2|0|3600|$RUST_ROLLOUT_Q32|$RUST_ROLLOUT_Q32|$RUST_ROLLOUT_Q32|0|$ORIENT|1
+selfcheck-q32|random|1240|all|2|0|3600|$RUST_ROLLOUT_Q32|$RUST_ROLLOUT_Q32|$RUST_ROLLOUT_Q32|0|$ORIENT|0
+leakprobe-q32|random|1240|all|2|0|3600|$RUST_ROLLOUT_Q32|$RUST_ROLLOUT_Q32|$RUST_ROLLOUT_Q32|0|$ORIENT|1
 random-fixed|random|4960|fixed|2|0|3600|$REFERENCE|$RUST_ROLLOUT_Q32|$RUST_ROLLOUT|1|entity[].hierarchy|1
 random-all-noorient|random|4960|all|2|0|3600|$REFERENCE|$RUST_ROLLOUT_Q32|$RUST_ROLLOUT|1|$ORIENT|1
 bot-mixed-v2-noorient|bot:9:2|2480|fixed|2|0|3600|$REFERENCE|$RUST_ROLLOUT_Q32|$RUST_ROLLOUT|1|$ORIENT|1

@@ -211,7 +211,11 @@ In the unbiased sweep it shows up as 52 of 34,720 attempted games (0.15%),
 concentrated on maps 12, 34, 82, 11, 58 - the maps that carry a
 VectorFieldPlatform. Five of the six crashed games in the `random-all` cell
 carry ability 18 outright; the sixth is on map 27 and is not explained by 18,
-so there may be a second route into the same stale index.
+so there is a second route into the same stale index. Each of that game's six
+abilities was then played alone for 496 episodes - Portal gun (38), Duplicator
+(29), Shrink ray (17), Missile (10) and Roll (16) all crashed 0/496 - so the
+map-27 case needs a combination of abilities, not a single one. Not chased
+further; the single-ability trigger above is enough to act on.
 
 Crashed games in the unbiased sweep (map, seed, loadout):
 
@@ -231,3 +235,23 @@ third distinct defect in this file that the current gates cannot reach.
 
 The harness survives it: `bopl_rl` catches the panic, the game is counted as
 failed and skipped, and the episode replay is written to /tmp.
+
+### Fixture #2, measured against the library itself
+
+The cleanest measurement of the reset leak needs no oracle at all. Run the q32
+build against *two more copies of itself* with `DR_FRESH=1`, which reopens the
+two candidate handles per episode but reuses the reference handle:
+
+| configuration | divergent episodes |
+|---|---|
+| all three handles reused equally (`DR_FRESH=0`), TOL=0 | **0 / 1240** |
+| reference handle reused, candidates reopened (`DR_FRESH=1`), TOL=0 | **338 / 1240 (27.3%)** |
+
+Every one of the 338 is `header.entity_count`; no other field ever differs.
+Two copies of the same library, given the same seed and the same actions, can
+only disagree because one handle had played earlier episodes and the other had
+not. That is the leak, with the port/oracle comparison removed entirely, and it
+also confirms the simulator itself is deterministic and the comparator sound.
+
+The control script now runs both: `selfcheck-q32` (symmetric, must be 0) and
+`leakprobe-q32` (asymmetric, measures the leak).
