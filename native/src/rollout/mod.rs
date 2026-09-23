@@ -30882,10 +30882,25 @@ impl RolloutWorld {
             // On the following Updater pass each AnimateVelocity notices the
             // global flag and samples in registration order: authored bodies,
             // then live ability-spawned bodies.
-            for (delay, platform) in self.sudden_death_delays.iter_mut().zip(&map.platforms) {
-                *delay = self
+            //
+            // Registration order is the scene's sibling order, which is what
+            // `intro_order` records - NOT the order of `map.platforms`, which
+            // is sorted by serialized hierarchy number. On most maps the two
+            // coincide and drawing in list order is indistinguishable. On map
+            // 53 they do not: `LongSnowCapsule` (hierarchy 104) is first by
+            // hierarchy and last by sibling order, so drawing in list order
+            // permutes every delay on the level. The symptom is a platform
+            // that starts moving several passes before the reference's, and
+            // moving *up*: `suddenDeathYSpeed`'s first segment has value zero
+            // with an out-tangent of -0.4655, so a curve sampled just past
+            // t = 0 returns a negative speed and `Vec2.down * speed` lifts
+            // the spring home instead of lowering it.
+            let mut order: Vec<usize> = (0..map.platforms.len()).collect();
+            order.sort_by_key(|&i| map.platforms[i].intro_order);
+            for i in order {
+                self.sudden_death_delays[i] = self
                     .rng
-                    .fix_range(Fix::ZERO, platform.sudden_death_max_delay);
+                    .fix_range(Fix::ZERO, map.platforms[i].sudden_death_max_delay);
             }
             let spawned_max_delay = data::get().platform.sudden_death_max_delay;
             for spawn in &mut self.spawned {

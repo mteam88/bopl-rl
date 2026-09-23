@@ -510,24 +510,26 @@ every map reaches sudden death and resolves its round. It costs about three
 times the runtime, which is why both targets exist: keep 3000 as the quick
 gate and run the endgame sweep before claiming a build is clean.
 
-It currently **fails**, and the failure is real:
+The first thing it found, on its first run: map 53, probe tick 6964 (level
+7204), authored platform hierarchy 117 (`Big_Ice (3)`). The reference platform
+was still completely at rest at level 7210 while the port had been drifting
+*upward* since 7204 (`v=(0, +0.0000999)`, growing to `+0.0323`). Upward is the
+tell. The first segment of `suddenDeathYSpeed` has value 0 with an out-tangent
+of -0.4655, so a curve sampled just past t = 0 returns a small *negative*
+speed and `homePosition += Vec2.down * speed * ...` lifts the home instead of
+lowering it. The port was therefore past that platform's
+`randomSuddenDeathDelay` several passes before the reference: the two
+disagreed about the delay, not the curve.
 
-* map 53, probe tick 6964 (level 7204), authored platform hierarchy 117
-  (`Big_Ice (3)`). The reference platform is still completely at rest at
-  level 7210; the port has been drifting *upward* since 7204
-  (`v=(0, +0.0000999)` growing to `+0.0323`). Upward is the tell: the first
-  segment of `suddenDeathYSpeed` has value 0 with an out-tangent of -0.4655,
-  so a curve sampled just past t=0 returns a small *negative* speed and
-  `homePosition += Vec2.down * speed * ...` moves the home up. The port is
-  therefore evaluating that platform's curve past its
-  `randomSuddenDeathDelay` several passes before the reference does, i.e. the
-  two disagree about the per-platform delay, not about the curve. The port
-  draws all of `sudden_death_delays` in one loop from post-physics session
-  work; the reference draws one at a time inside each
-  `AnimateVelocity.ActivateSuddenDeath` as the components notice the flag, so
-  anything else drawing from `Updater.RandomFix` in that window permutes the
-  assignment. Map 53 spawns an ability pickup at level 7203. Unowned as of
-  this writing.
+The delays are drawn once when sudden death activates, one per platform. The
+port drew them in `map.platforms` order, which is sorted by serialized
+hierarchy number. The reference draws each one inside
+`AnimateVelocity.ActivateSuddenDeath` as the components notice the flag, in
+Updater registration order -- the scene's sibling order, which is what
+`intro_order` records. On nearly every map the two coincide, which is why
+this survived. On map 53 `LongSnowCapsule` (hierarchy 104) is first by
+hierarchy and last by sibling order, so drawing in list order rotated every
+delay on the level. Fixed by sorting on `intro_order` before drawing.
 
 `MAP_AB_EXCUSE_SUDDEN_DEATH_FLAG=1` (set by the `map-sweep-endgame` recipe
 only) excuses one field: the port raises the header's `sudden_death` flag one
