@@ -12,10 +12,23 @@ map-ab: $(OUT)/map_ab
 REFERENCE ?= ../../sim/Native/bin/Release/net8.0/linux-x64/native/BoplSimNative.so
 RUST_ROLLOUT ?= ../target/release/libbopl_sim.so
 
+# The default `cargo build --release` stores `Fix` as an f64 (native/src/fixed.rs)
+# and is what training uses. It is NOT bit-comparable with the .NET oracle: its
+# multiplications and divisions round to the nearest double instead of
+# truncating to 2^-32, so every differential probe below sees an arithmetic
+# delta of a few raw units at tick 0 and reports that instead of its own
+# subject. Every A/B gate must therefore run the `q32` library, which is the
+# reference's exact Q32.32 arithmetic. It is built into its own target
+# directory so it does not fight the f64 build for `native/target`.
+RUST_ROLLOUT_Q32 ?= ../target-q32/release/libbopl_sim.so
+
+rust-q32:
+	cargo build --release --features q32 --manifest-path ../Cargo.toml --target-dir ../target-q32
+
 # Exhaustive authored-map gate: all 124 maps, both 2- and 6-player layouts,
 # 3000 ticks per live case, with discrete player/slime state required exact.
-map-sweep-3000: $(OUT)/map_ab
-	MAP_AB_STRICT_ACTORS=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT)) 3000
+map-sweep-3000: $(OUT)/map_ab rust-q32
+	MAP_AB_STRICT_ACTORS=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32)) 3000
 
 $(OUT)/map_ab: research/rust_ab/map_ab.c bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
