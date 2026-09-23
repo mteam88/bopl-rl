@@ -42,7 +42,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define WATER_HEIGHT (-11.3)
+/* Map 0's SceneBounds.WaterHeight. It is per-map: map 2's water trigger sits
+ * at (2.04, -18.95) with half-extents (134, 7), so its plane is -11.95. Each
+ * subject therefore carries its own. */
 #define PLAYERS 2
 /* Sudden death begins at 120 s (7200 ticks); the platforms need a while
  * after that to carry a standing player under the plane. */
@@ -129,7 +131,7 @@ static int diff_state(const BoplRlState *a, const BoplRlState *b,
  * after player 0's body first goes under the kill plane while grounded.
  * Returns 1 on a divergence. */
 static int run_case(BoplRl *net, BoplRl *rust, BoplRlConfig *config,
-                    int offset, unsigned hold, unsigned map,
+                    int offset, unsigned hold, unsigned map, double plane,
                     struct sample *seen) {
     char case_name[96];
     snprintf(case_name, sizeof case_name, "map %u offset %+d hold %u",
@@ -149,7 +151,7 @@ static int run_case(BoplRl *net, BoplRl *rust, BoplRlConfig *config,
         if (!cross && sn->header.slime_count > 0) {
             for (unsigned i = 0; i < sn->header.slime_count; i++) {
                 if (sn->slimes[i].owner != 1) continue;
-                if (f(sn->slimes[i].y) < WATER_HEIGHT) {
+                if (f(sn->slimes[i].y) < plane) {
                     cross = tick;
                     long start = (long)tick + offset;
                     pressed_until = (unsigned)(start < 1 ? 1 : start) + hold;
@@ -209,33 +211,62 @@ int main(int argc, char **argv) {
 
     const int offsets[] = {-3, -2, -1, 0, 1, 2};
     const unsigned holds[] = {1, 6};
-    const unsigned maps[] = {0, 2};
+    /* One entry per map that actually carries a living, grounded body under
+     * its kill plane. Map 2 was here and was removed: sudden death drops its
+     * platforms fast enough that the player drowns on the same pass it first
+     * dips below -11.95, so no published tick ever shows it alive under the
+     * plane and all twelve of its cases were `unreached`. Twelve vacuous
+     * cases reading as twenty-four passing ones is exactly the laundering
+     * this file exists to prevent; a map only belongs here once it reaches. */
+    const struct { unsigned map; double plane; } subjects[] = {
+        {0, -11.3},
+    };
     int failures = 0, cases = 0, unreached = 0;
     struct sample seen;
-    for (unsigned m = 0; m < sizeof maps / sizeof *maps; m++) {
+    for (unsigned m = 0; m < sizeof subjects / sizeof *subjects; m++) {
+        int map_cases = 0, map_unreached = 0, map_failures = 0;
         for (unsigned h = 0; h < sizeof holds / sizeof *holds; h++) {
             for (unsigned o = 0; o < sizeof offsets / sizeof *offsets; o++) {
                 int rc = run_case(net, rust, &config, offsets[o], holds[h],
-                                  maps[m], &seen);
-                cases++;
-                if (rc == 1) failures++;
-                else if (rc == 2) unreached++;
+                                  subjects[m].map, subjects[m].plane, &seen);
+                map_cases++;
+                if (rc == 1) map_failures++;
+                else if (rc == 2) map_unreached++;
             }
         }
+        printf("SCALE_BOUNDARY_MAP map=%u plane=%.2f cases=%d reached=%d "
+               "unreached=%d failures=%d\n", subjects[m].map,
+               subjects[m].plane, map_cases, map_cases - map_unreached,
+               map_unreached, map_failures);
+        /* An unreached case tested nothing. A map where none of them reach
+         * is a broken construction, not a pass, and has to say so in its own
+         * exit status - otherwise the next reader counts it as coverage. */
+        if (map_unreached == map_cases) {
+            printf("SCALE_BOUNDARY_VACUOUS map=%u -- no case put a living "
+                   "body under the plane; this map tests nothing and must be "
+                   "reconstructed or removed\n", subjects[m].map);
+            map_failures += map_cases;
+        }
+        cases += map_cases;
+        unreached += map_unreached;
+        failures += map_failures;
     }
     bopl_rl_close(net);
     bopl_rl_close(rust);
-    if (unreached == cases) {
-        printf("SCALE_BOUNDARY_UNREACHED cases=%d -- no case put a grounded "
-               "body under the plane; the construction needs revisiting\n", cases);
-        return 1;
-    }
     if (failures) {
-        printf("SCALE_BOUNDARY_DIFF cases=%d failures=%d unreached=%d\n",
-               cases, failures, unreached);
+        printf("SCALE_BOUNDARY_DIFF cases=%d reached=%d failures=%d "
+               "unreached=%d\n", cases, cases - unreached, failures, unreached);
         return 1;
     }
-    printf("SCALE_BOUNDARY_OK cases=%d unreached=%d -- clone and real Move "
-           "agree across the sweep\n", cases, unreached);
+    if (unreached) {
+        /* Partial coverage still hid a divergence once; name the shortfall
+         * rather than folding it into a pass count. */
+        printf("SCALE_BOUNDARY_SHORT cases=%d reached=%d unreached=%d -- the "
+               "reached cases agree, but the unreached ones tested nothing\n",
+               cases, cases - unreached, unreached);
+        return 1;
+    }
+    printf("SCALE_BOUNDARY_OK cases=%d reached=%d -- clone and real Move "
+           "agree across the sweep\n", cases, cases);
     return 0;
 }
