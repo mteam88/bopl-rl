@@ -494,7 +494,7 @@ int bopl_agent_tick(BoplAgent *a, const BoplRlState *state, BoplRlAction *out) {
         /* c_reset's bookkeeping from the episode's first state. */
         memset(env->returns, 0, sizeof(env->returns)); env->steps=0;
         memcpy(env->previous_telemetry, state->telemetry, sizeof(env->previous_telemetry));
-        for (int i=0; i<a->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=state->players[i].kills; }
+        for (int i=0; i<a->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=(uint32_t)bopl_opponent_kills(state, i); }
         memset(env->last_telemetry, 0, sizeof(env->last_telemetry));
         bopl_reset_observations(env, state);
         bopl_agent_write_mask(a, state);
