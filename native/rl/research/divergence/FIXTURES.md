@@ -183,58 +183,79 @@ Not fixed here - recorded for later.
   (`map_ab.c:479` opens once, `:520` resets per case) - it only ever exercises
   3 of the 38 abilities.
 
-## Fixture #4 - Black hole panics the port on vector-field maps
+## Fixture #4 - Black hole panicked the port on vector-field maps
 
-**Status:** reproducible; hard crash, not a divergence.
+**Status:** FIXED 2026-09-23 in `d545562d` (merged `706d11a3`). Kept for the
+reproduction recipe, and because the map-27 game listed below is a *different,
+still-open* defect that this fix does not touch.
 
-The port aborts with an index-out-of-bounds inside the VectorFieldPlatform
-update. Both panic sites index a platform that no longer exists:
+The port aborted with an index-out-of-bounds inside the VectorFieldPlatform
+update, always `index out of bounds: the len is N but the index is N`, at
+whichever two lines then held:
 
 ```
-src/rollout/mod.rs:29199:35  self.platforms[platform_index].active
-src/rollout/mod.rs:29202:48  map.platforms[self.platform_defs[platform_index]]
+self.platforms[platform_index].active
+map.platforms[self.platform_defs[platform_index]]
 ```
 
-and the message is always `index out of bounds: the len is N but the index is
-N` - a stale index left in `self.vector_fields` after the platform list shrank.
+**Root cause.** `self.vector_fields: Vec<usize>` holds *live* platform indices
+(filled with `self.platforms.len() - 1` as each authored vector-field platform
+is built). `remove_platform` calls `self.platforms.remove(index)`, shifting
+every later element down one, and repaired every other live-index holder -
+`platform_dynamics`, `platform_defs`, `platform_entities`, `orbits`,
+`duplicate_platform_effects`, `spawned`, `players[].platform`, `engines`,
+`spike_attacks`, `tesla_nodes`, `macho_boulders`, `scale_changers`, rope
+attachments - but never `vector_fields`. Every stored index above the removed
+one was then too high by one, and the largest pointed one past the end. The fix
+retires entries exactly as `orbits` does. Purely the port's own bookkeeping:
+the C# iterates components, so no reference behaviour is involved and no
+simulation output changes. `sudden_death_delays` is *authored-def*-indexed, not
+live-indexed, so it correctly stays untouched.
 
-**Trigger is Black hole (ability 18).** Played as the only ability in every
-slot, 496 episodes each:
+**Trigger was Black hole (ability 18).** Played as the only ability in every
+slot, 496 episodes each. The seed matters - pin it or the count is not
+reproducible:
 
-| loadout       | crashes |
-|---------------|---------|
-| Black hole (18) | 13/496 (2.6%) |
-| Platform (14)   | 0/496 |
-| Grenade (3)     | 0/496 |
+| loadout | before (`DR_SEED=0x5eed`) | before (`DR_SEED=24601`) | after |
+|---|---|---|---|
+| Black hole (18) | 13/496 (2.6%) | 11/496 | **0/496** |
+| Platform (14)   | 0/496 | - | 0/496 |
+| Grenade (3)     | 0/496 | - | 0/496 |
 
-In the unbiased sweep it shows up as 52 of 34,720 attempted games (0.15%),
-concentrated on maps 12, 34, 82, 11, 58 - the maps that carry a
-VectorFieldPlatform. Five of the six crashed games in the `random-all` cell
-carry ability 18 outright; the sixth is on map 27 and is not explained by 18,
-so there is a second route into the same stale index. Each of that game's six
-abilities was then played alone for 496 episodes - Portal gun (38), Duplicator
-(29), Shrink ray (17), Missile (10) and Roll (16) all crashed 0/496 - so the
-map-27 case needs a combination of abilities, not a single one. Not chased
-further; the single-ability trigger above is enough to act on.
+In the unbiased sweep it showed up as 52 of 34,720 attempted games (0.15%),
+concentrated on the maps carrying a VectorFieldPlatform: 12, 34, 82, 11, 58,
+and also 51.
 
 Crashed games in the unbiased sweep (map, seed, loadout):
 
 ```
 i1398 map 34 seed 2240342878 [[18,17,16],[3,21,33]]
 i2934 map 82 seed 3380414709 [[15,13,6],[18,11,8]]
-i3251 map 27 seed 3933741779 [[38,29,4],[10,17,16]]
+i3251 map 27 seed 3933741779 [[38,29,4],[10,17,16]]   <- NOT this bug, see below
 i3926 map 82 seed  602382264 [[13,18,37],[1,36,28]]
 i4994 map 34 seed 1670732068 [[6,10,13],[20,18,6]]
 i9188 map 12 seed 3465757549 [[32,11,22],[18,33,1]]
 ```
 
-**Unreachable from the gate loadout**, like fixtures #2 and #3: the scripted
-bots and the existing sweeps use Dash/Bow/Platform, which contains no Black
-hole, so none of the bot cells crashed once in 13,000+ episodes. This is the
-third distinct defect in this file that the current gates cannot reach.
+All five ability-18 games now play to completion with zero panics.
 
-The harness survives it: `bopl_rl` catches the panic, the game is counted as
-failed and skipped, and the episode replay is written to /tmp.
+**The map-27 game is an oracle defect, not a port bug.** An earlier revision of
+this fixture guessed at "a second route into the same stale index". That was
+wrong, and it is why no single ability reproduced it. i3251 fails on **backend 0
+- the oracle** - with a .NET `System.NullReferenceException` in
+`ShootDuplicator.ApplyDuplicationEffect` at tick 193. Run the same game with the
+port in all three backend slots and it completes cleanly: 274 ticks, terminal,
+zero self-divergence. It still fails after the `vector_fields` fix, and no fix
+to `vector_fields` could ever have covered it. Open, and owed its own fixture.
+
+**Was unreachable from the gate loadout**, like fixtures #2 and #3: the scripted
+bots and the existing sweeps use Dash/Bow/Platform, which contains no Black
+hole, so no bot cell crashed once in 13,000+ episodes. That made this the third
+distinct defect in this file the fixed-kit gates cannot reach - the argument for
+randomising the gate loadouts.
+
+The harness survives a panic regardless: `bopl_rl` catches it, the game is
+counted as failed and skipped, and the episode replay is written to /tmp.
 
 ### Fixture #2, measured against the library itself
 
