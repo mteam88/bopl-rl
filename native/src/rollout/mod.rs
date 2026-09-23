@@ -5336,6 +5336,10 @@ impl RolloutWorld {
         // prefab, so their AnimateVelocity spring runs here, after the
         // updater that created and steers them.
         self.platform_springs_tick(data, updater_dt, true);
+        // ResizablePlatform sits behind AnimateVelocity in the clone's
+        // prefab, so its unconditional ResizePlatform lands between the
+        // spring and DetPhysics.
+        self.platform_resizable_tick(data);
         if self.intro_phase == 3 {
             self.platforms_tick(data, updater_dt, physics_dt);
         }
@@ -28538,6 +28542,83 @@ impl RolloutWorld {
                     + angle_delta * dynamics.rotation_speed * updater_dt)
                     * (Fix::ONE - dynamics.rotation_mu);
             }
+        }
+    }
+
+    /// `ResizablePlatform.UpdateSim` for a live spawned platform
+    /// (ResizablePlatform.cs:240-247):
+    ///
+    /// ```text
+    /// Vec2 vec = rr.CalcExtents();
+    /// ResizePlatform(vec.y, vec.x, rr.radius);
+    /// ```
+    ///
+    /// It runs on *every* pass, not only when something resized, and it
+    /// feeds `ResizePlatform` the collider read back as
+    /// `One / box.inverseExtents` (`DPhysicsRoundedRect.CalcExtents`)
+    /// rather than the dimensions `PlatformTransform` just asked for. Both
+    /// halves of `ResizePlatform` are therefore path dependent:
+    ///
+    /// ```text
+    /// body.InverseMass = One / (10 + MassPerArea * PlatformArea(rHeight, rWidth, bevel));
+    /// body.InverseMomentOfInertia = One / rr.ApproximateMOI(rWidth, rHeight, bevel);
+    /// StickyRect.rr.SetExtents(new Vec2(rWidth, rHeight));   // Box.UpdateExtents
+    /// ```
+    ///
+    /// `One / (One / e)` differs from `e` by raw units, so the moment of
+    /// inertia the contact solver sees later in the same pass is not the
+    /// one `PlatformTransform` computed. Registration order puts this
+    /// behind the clone's `AnimateVelocity`, so the spring above still used
+    /// the previous pass's mass.
+    fn platform_resizable_tick(&mut self, data: &data::RolloutData) {
+        for i in 0..self.platforms.len() {
+            if !self.platforms[i].active || !self.platform_dynamics[i].body_resizable {
+                continue;
+            }
+            // `isBeingRemoved` takes the other branch of `UpdateSim` and
+            // resizes from the removal curve instead; that path already runs
+            // at the top of `platforms_tick`.
+            if self
+                .spawned
+                .iter()
+                .any(|s| s.active && s.being_removed && s.platform_index == i)
+            {
+                continue;
+            }
+            let radius = self.platforms[i].collider.radius;
+            let inner = &mut self.platforms[i].collider.inner;
+            // DPhysicsRoundedRect.CalcExtents
+            let extents = Vec2::new(
+                Fix::ONE / inner.inverse_extents.x,
+                Fix::ONE / inner.inverse_extents.y,
+            );
+            // DPhysicsRoundedRect.SetExtents -> Box.UpdateExtents
+            inner.right *= inner.inverse_extents.x;
+            inner.up *= inner.inverse_extents.y;
+            inner.inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+            inner.right *= extents.x;
+            inner.up *= extents.y;
+            // StickyRect.UpdateBounds reads the perimeter back the same way.
+            self.platforms[i].surface.extents = data::surface_extents(extents);
+            self.platforms[i].surface.radius = radius;
+            // ResizePlatform passes (rHeight, rWidth) into PlatformArea's
+            // (rWidth, rHeight) parameters (ResizablePlatform.cs:53).
+            let mass = Fix::from_int(10)
+                + data.platform.spawn_mass_per_area * platform_area(extents.y, extents.x, radius);
+            let w = extents.x + radius;
+            let h = extents.y + radius;
+            let longest = w.max(h);
+            let inertia = w.min(h) * longest * longest * Fix::from_f32(0.2) + Fix::from_int(40);
+            let dynamics = &mut self.platform_dynamics[i];
+            dynamics.body.inverse_mass = Fix::ONE / mass;
+            dynamics.body.inverse_inertia = Fix::ONE / inertia;
+            if dynamics.attached_children == 0 {
+                dynamics.root_body.inverse_mass = dynamics.body.inverse_mass;
+                dynamics.root_body.inverse_inertia = dynamics.body.inverse_inertia;
+            }
+            dynamics.surface_shape_dirty = false;
+            self.platforms_changed();
+            self.rebuild_bounds();
         }
     }
 
