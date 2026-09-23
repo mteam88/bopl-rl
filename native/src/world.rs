@@ -129,6 +129,15 @@ pub struct DashState {
     /// FixTransform keeps it for DetPhysics' sync of inactive colliders.
     #[serde(default)]
     pub exit_rotation: Fix,
+    /// The Dash body's position when `Ability.ExitAbility` read it
+    /// (Ability.cs:151 `SetPosition(potentialCollider.position,
+    /// slimeController)`), i.e. before `onExitAbility` hands the slime back
+    /// and `SlimeController.EnterFall` runs its velocity rays. That is the
+    /// last write to `Player.Position` on the exit pass, so the public
+    /// player row publishes the raw dash endpoint for one tick and only
+    /// picks up the ray-corrected body on the next.
+    #[serde(default)]
+    pub exit_position: Vec2,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[repr(C)]

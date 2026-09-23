@@ -120,6 +120,11 @@ impl Player {
                     self.position = position;
                 }
                 self.dash.exit_rotation = self.rotation;
+                // Ability.ExitAbility publishes `potentialCollider.position`
+                // before `onExitAbility` restores the slime, so this raw
+                // endpoint - not the ray-corrected body below - is what
+                // Player.Position carries on the exit pass.
+                self.dash.exit_position = self.position;
                 self.dash.active = false;
                 self.ground = None;
                 self.grounded = false;

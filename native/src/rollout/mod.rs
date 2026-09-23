@@ -17215,6 +17215,10 @@ impl RolloutWorld {
                 // with the leave velocity. Player::dash_step performs that
                 // shared physical handoff; this updates the rollout state.
                 exit_input = Some(slot.base.dash.input);
+                // `Ability.ExitAbility` ran its `SetPosition` before the
+                // handoff, so the pose the slime reaches through
+                // `collision_rays` only becomes public on the next pass.
+                slot.reported_position = slot.base.dash.exit_position;
             }
             if let Some(input) = exit_input {
                 self.dash_rope_exit(index, input, data::get().dash.leave_speed);
