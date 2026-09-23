@@ -7010,16 +7010,28 @@ impl RolloutWorld {
         }
         self.web_cooldowns_tick(index, action);
         self.grapple_cooldowns_tick(index);
-        // The slime prefab's own DestroyIfOutsideSceneBounds precedes
-        // SlimeController, so a body that is already past a blast boundary
-        // dies before OldUpdate can hand it to an ability this pass: the
-        // ability object never activates and the form's own boundary
-        // component never gets a turn. Observing the position here is the
-        // same observation `move_step` makes -- PlayerPhysics has already
-        // applied gravity and its landing raycast, and Move only advances the
-        // surface local -- so the ordinary falling slime dies on the same
-        // tick as before. game_tick's `boundary_death` attributes it with
-        // CauseOfDeath.Accident (DestroyIfOutsideSceneBounds.cs:148).
+        // The slime prefab's own DestroyIfOutsideSceneBounds runs after
+        // PlayerPhysics.Move and before PlayerBody integrates, which is
+        // exactly where `move_step` tests `outside_bounds`. An ability entry
+        // returns from `player_tick` before `move_step`, so without this the
+        // boundary is never tested on the entry pass and the form carries the
+        // body away (beam +386 ticks, time_stop +585, rewind unbounded).
+        //
+        // The position to test is therefore the one Move leaves behind, not
+        // the one this pass started with: a grounded rider's body is snapped
+        // to its surface by the previous pass's LateUpdateSim and Move then
+        // advances it along that surface, so the two differ and the reference
+        // follows the later one. Testing the earlier position killed a
+        // grounded player one tick early (map 73 tick 2774, and
+        // platform_rotation_ab map 4 / angle 200). Run Move on a copy to read
+        // that position without applying it twice; the real Move still
+        // happens in `move_step` or inside the ability the entry selects.
+        //
+        // Only entry passes need this. On every other pass `move_step` makes
+        // the identical test, so gating on a ready, held ability slot keeps
+        // the duplicated Move off the common path. game_tick's
+        // `boundary_death` attributes the kill with CauseOfDeath.Accident
+        // (DestroyIfOutsideSceneBounds.cs:148).
         //
         // Drill is the measured exception: against the reference a slime that
         // is already below the plane still activates Drill and its body lives
@@ -7035,20 +7047,24 @@ impl RolloutWorld {
         // (MeteorSmash.cs:145-150, 259-273). The reference kills on the same
         // tick but at the vibrated position. A grounded entry instead defers
         // to an animation callback, so it keeps the plain slime kill.
-        if !in_ability
-            && self.players[index].base.alive
-            && self.players[index].base.outside_bounds()
-            && !(0..3).any(|s| {
+        if !in_ability && self.players[index].base.alive {
+            let ready = |s: usize| {
                 let slot = &self.players[index];
-                let ready =
-                    action.buttons & (2 << s) as u8 != 0 && slot.timers[s] > slot.cooldowns[s];
-                ready
-                    && (slot.abilities[s] == ABILITY_DRILL
-                        || (slot.abilities[s] == ABILITY_METEOR && !slot.base.grounded))
-            })
-        {
-            self.players[index].base.alive = false;
-            return;
+                action.buttons & (2 << s) as u8 != 0 && slot.timers[s] > slot.cooldowns[s]
+            };
+            let claims_body = |s: usize| {
+                let slot = &self.players[index];
+                slot.abilities[s] == ABILITY_DRILL
+                    || (slot.abilities[s] == ABILITY_METEOR && !slot.base.grounded)
+            };
+            if (0..3).any(ready) && !(0..3).any(|s| ready(s) && claims_body(s)) {
+                let mut moved = self.players[index].base.clone();
+                moved.move_only(movement_input, terrain!(self));
+                if moved.outside_bounds() {
+                    self.players[index].base.alive = false;
+                    return;
+                }
+            }
         }
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
