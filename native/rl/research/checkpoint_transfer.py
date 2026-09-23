@@ -125,6 +125,50 @@ def reproduce_training_era(out, kit, library, workers=2):
                 ok=not bad and identical == len(replays))
 
 
+# ---- outcomes -------------------------------------------------------------------
+
+# The grid was played by the evaluation scripts at 3994e0c3, whose `win` field counts an
+# undecided round (a trade) as a win for whichever side the report was written from.
+# Main has since redefined it (25b093f8 "evaluation: report undecided rounds and score
+# them as draws"): a round carrying the win flag for more than one team is a win for
+# nobody. Every stored game row carries `final_players` flags, so main's definition is
+# recovered here exactly -- `undecided` and the corrected `kills` are recomputed from the
+# stored rows rather than inherited from the 3994e0c3 `win` field, and the legacy field
+# is never read. Both arms would have carried the same bias, but the trade *rate* itself
+# moves between libraries, so the legacy field would have hidden a real effect.
+
+def classify(game):
+    """main's outcome for the reporting side: win / loss / undecided / timeout / both-dead."""
+    flagged = [bool(p['flags'] & 2) for p in game['final_players']]
+    if game['timeout']:
+        return 'timeout'
+    if sum(flagged) > 1:
+        return 'undecided'
+    if not any(flagged):
+        return 'both-dead'
+    return 'win' if flagged[game['side']] else 'loss'
+
+
+def is_win(game):
+    return classify(game) == 'win'
+
+
+def score(game):
+    """Win 1, loss 0, every kind of draw 0.5 -- the honest scalar when trades are common.
+
+    A suite that ends in trades reads as a collapse under a strict win rate and as a
+    clean sweep under the legacy trade-as-win field; neither is true, and this is the
+    number the per-kit verdicts below are taken from.
+    """
+    outcome = classify(game)
+    return 1.0 if outcome == 'win' else 0.0 if outcome == 'loss' else 0.5
+
+
+def corrected_kills(game):
+    """Kills of somebody else: the game credits a suicide to the victim's own Kills."""
+    return game['kills'] - game['behavior']['totals'].get('deaths_self', 0.0)
+
+
 # ---- statistics ----------------------------------------------------------------
 
 def wilson(wins, n, z=1.96):
@@ -137,71 +181,91 @@ def wilson(wins, n, z=1.96):
     return (max(0.0, mid - half), min(1.0, mid + half))
 
 
-def paired_delta(pairs, resamples=20000, seed=0):
-    """Mean of (main win - base win) over games, with a cluster bootstrap CI.
+def paired(base_games, arm_games, keep, value, resamples=20000, seed=0):
+    """Paired base-vs-main delta of `value`, bootstrapped over side-swapped seed pairs.
 
-    `pairs` is a list of (cluster, base_win, main_win). Clusters are side-swapped
-    seed pairs; resampling whole clusters keeps the two games of a pair together,
-    which is the correlation evaluate.py's own Wilson note says it does not adjust for.
+    Pairing is on (opponent, map, seed, side): the same starting condition under both
+    libraries. Resampling whole (opponent, map, seed) clusters keeps the two sides of a
+    swap together, which is the correlation evaluate.py's own Wilson note says it does
+    not adjust for.
     """
-    if not pairs:
-        return dict(n=0, base=float('nan'), main=float('nan'), delta=float('nan'),
-                    ci=(float('nan'), float('nan')), n01=0, n10=0, churn=None)
     clusters = {}
-    for cluster, base, main in pairs:
-        clusters.setdefault(cluster, []).append((base, main))
+    for key, b in base_games.items():
+        m = arm_games.get(key)
+        if m is None or not keep(b):
+            continue
+        clusters.setdefault((b['opponent'], b['map'], b['seed']), []).append((value(b), value(m)))
     keys = list(clusters)
-    base_all = np.array([b for _, b, _ in pairs], dtype=float)
-    main_all = np.array([m for _, _, m in pairs], dtype=float)
-    # Per-cluster sums, so a bootstrap draw is a sum over sampled clusters.
+    if not keys:
+        return dict(n=0, base=float('nan'), arm=float('nan'), delta=float('nan'),
+                    ci=(float('nan'), float('nan')), clusters=0)
     sums = np.array([[sum(b for b, _ in clusters[k]), sum(m for _, m in clusters[k]), len(clusters[k])]
                      for k in keys], dtype=float)
+    n = int(sums[:, 2].sum())
+    base, arm = sums[:, 0].sum() / n, sums[:, 1].sum() / n
     rng = np.random.default_rng(seed)
-    draws = rng.integers(0, len(keys), size=(resamples, len(keys)))
-    picked = sums[draws]                     # (resamples, clusters, 3)
-    totals = picked.sum(axis=1)
+    totals = sums[rng.integers(0, len(keys), size=(resamples, len(keys)))].sum(axis=1)
     deltas = (totals[:, 1] - totals[:, 0]) / np.maximum(1, totals[:, 2])
-    n01 = int(((base_all == 0) & (main_all == 1)).sum())
-    n10 = int(((base_all == 1) & (main_all == 0)).sum())
-    return dict(n=len(pairs), base=float(base_all.mean()), main=float(main_all.mean()),
-                delta=float(main_all.mean() - base_all.mean()),
-                ci=(float(np.percentile(deltas, 2.5)), float(np.percentile(deltas, 97.5))),
-                n01=n01, n10=n10, clusters=len(keys))
+    return dict(n=n, clusters=len(keys), base=float(base), arm=float(arm), delta=float(arm - base),
+                ci=(float(np.percentile(deltas, 2.5)), float(np.percentile(deltas, 97.5))))
+
+
+def outcome_mix(games, keep):
+    kinds = ('win', 'loss', 'undecided', 'timeout', 'both-dead')
+    sel = [g for g in games.values() if keep(g)]
+    if not sel:
+        return {k: 0.0 for k in kinds}
+    counts = {k: 0 for k in kinds}
+    for g in sel:
+        counts[classify(g)] += 1
+    return {k: counts[k] / len(sel) for k in kinds}
+
+
+def churn_of(base_games, arm_games, keep):
+    both = [(b, arm_games[k]) for k, b in base_games.items() if k in arm_games and keep(b)]
+    return (sum(b['ticks'] != m['ticks'] for b, m in both) / len(both)) if both else 0.0
+
+
+def flips(base_games, arm_games, keep):
+    lost = gained = 0
+    for key, b in base_games.items():
+        m = arm_games.get(key)
+        if m is None or not keep(b):
+            continue
+        lost += is_win(b) and not is_win(m)
+        gained += is_win(m) and not is_win(b)
+    return lost, gained
 
 
 # Pool v7 members that appear in this schedule, with their frozen ratings. A
 # fixed-anchor Elo (elo_ladder.bradley_terry_fixed, OpenAI Five's frozen reference
-# rating) turns the saturated win rates into one scalar that is not at a ceiling.
-# The schedule is identical under both libraries, so unlike reference_pool.py's
-# band allocation there is no adaptive-opponent confound between the two arms.
+# rating) turns saturated win rates into one scalar that is not at a ceiling. The
+# schedule is identical under both libraries, so unlike reference_pool.py's band
+# allocation there is no adaptive-opponent confound between the arms. Draws --
+# timeout, undecided and both-dead alike -- are draws in the fit, as in
+# reference_pool.evaluation_games after 25b093f8.
 POOL_ANCHORS = {'random': 0.0, 'mixed-hard': 378.2, 'search-hard': 580.7, 'search-medium': 588.8}
-
-
-def records_from(games):
-    records = {}
-    for opponent, win, timeout in games:
-        w, l, d = records.get(opponent, (0, 0, 0))
-        records[opponent] = (w + (win and not timeout), l + (not win and not timeout), d + bool(timeout))
-    return records
 
 
 def anchored_elo(games):
     import elo_ladder
-    records = {k: list(v) for k, v in records_from(games).items() if k in POOL_ANCHORS}
-    if not records:
-        return float('nan')
-    return elo_ladder.bradley_terry_fixed(records, POOL_ANCHORS)
+    records = {}
+    for opponent, outcome in games:
+        w, l, d = records.get(opponent, (0, 0, 0))
+        records[opponent] = (w + (outcome == 'win'), l + (outcome == 'loss'),
+                             d + (outcome in ('undecided', 'timeout', 'both-dead')))
+    records = {k: list(v) for k, v in records.items() if k in POOL_ANCHORS}
+    return elo_ladder.bradley_terry_fixed(records, POOL_ANCHORS) if records else float('nan')
 
 
 def elo_pair(base_games, arm_games, keep, resamples=2000, seed=1):
-    """Fixed-anchor Elo under each library and the delta, bootstrapped over seed pairs."""
     clusters = {}
     for key, b in base_games.items():
         m = arm_games.get(key)
         if m is None or not keep(b) or b['opponent'] not in POOL_ANCHORS:
             continue
         clusters.setdefault((b['opponent'], b['map'], b['seed']), []).append(
-            ((b['opponent'], b['win'], b['timeout']), (m['opponent'], m['win'], m['timeout'])))
+            ((b['opponent'], classify(b)), (m['opponent'], classify(m))))
     keys = list(clusters)
     if not keys:
         return dict(base=float('nan'), arm=float('nan'), delta=float('nan'),
@@ -213,38 +277,19 @@ def elo_pair(base_games, arm_games, keep, resamples=2000, seed=1):
     deltas = []
     for _ in range(resamples):
         picked = [keys[i] for i in rng.integers(0, len(keys), len(keys))]
-        gb = [g for k in picked for g, _ in clusters[k]]
-        gm = [g for k in picked for _, g in clusters[k]]
-        deltas.append(anchored_elo(gm) - anchored_elo(gb))
+        deltas.append(anchored_elo([g for k in picked for _, g in clusters[k]])
+                      - anchored_elo([g for k in picked for g, _ in clusters[k]]))
     return dict(base=base, arm=arm, delta=arm - base, games=len(flat_b),
                 ci=(float(np.percentile(deltas, 2.5)), float(np.percentile(deltas, 97.5))))
 
 
-def means(base_games, arm_games, keep):
-    """Continuous metrics, which unlike a saturated win rate can still move."""
-    out = {}
-    for label, source in (('base', base_games), ('arm', arm_games)):
-        sel = [g for k, g in source.items() if keep(base_games.get(k, g))]
-        if not sel:
-            continue
-        out[label] = dict(kills=float(np.mean([g['kills'] for g in sel])),
-                          deaths=float(np.mean([g['deaths'] for g in sel])),
-                          seconds=float(np.mean([g['ticks'] / 60 for g in sel])),
-                          timeout_rate=float(np.mean([g['timeout'] for g in sel])))
-    return out
-
-
-def collect(base_games, arm_games, keep):
-    pairs = []
-    churn = same = 0
-    for key, b in base_games.items():
-        m = arm_games.get(key)
-        if m is None or not keep(b):
-            continue
-        pairs.append(((b['opponent'], b['map'], b['seed']), int(b['win']), int(m['win'])))
-        churn += b['ticks'] != m['ticks']
-        same += 1
-    return pairs, (churn / same if same else 0.0)
+def means(games, keep):
+    sel = [g for g in games.values() if keep(g)]
+    if not sel:
+        return {}
+    return dict(kills=float(np.mean([corrected_kills(g) for g in sel])),
+                deaths=float(np.mean([g['deaths'] for g in sel])),
+                seconds=float(np.mean([g['ticks'] / 60 for g in sel])))
 
 
 def divergence_rates(path):
@@ -268,13 +313,15 @@ def command_run(args):
     out = Path(args.out).resolve()
     (out / 'logs').mkdir(parents=True, exist_ok=True)
     libs = dict(item.split('=', 1) for item in args.libs)
+    import hashlib
     manifest = dict(libraries={name: dict(path=str(Path(p).resolve()),
-                                          sha256=__import__('hashlib').sha256(Path(p).read_bytes()).hexdigest())
+                                          sha256=hashlib.sha256(Path(p).read_bytes()).hexdigest())
                                for name, p in libs.items()},
                     kits=args.kits, scripted=args.scripted, games=args.games,
                     heldout_games=args.heldout_games,
                     training_maps=TRAINING_MAPS, heldout_maps=HELDOUT_MAPS)
-    (out / 'manifest.json').write_text(json.dumps(manifest, indent=1) + '\n')
+    path = out / f'manifest-{"-".join(sorted(libs))}.json'
+    path.write_text(json.dumps(manifest, indent=1) + '\n')
     for kit in args.kits:
         for name, library in libs.items():
             evaluate(out / 'runs' / kit / name, kit, library, args.scripted,
@@ -297,95 +344,102 @@ def command_sanity(args):
         raise SystemExit('training-era reproduction failed: the harness is not measuring what it claims')
 
 
+SUITES = dict(
+    training_era_suite=lambda g: g['opponent'] in (['random', 'initial'] + TRAINING_ERA_SCRIPTED),
+    hard_bots=lambda g: g['opponent'] in HARD_SCRIPTED,
+    all_bots=lambda g: g['opponent'] not in ('selfplay',),
+)
+ROLES = (('trained', TRAINING_MAPS), ('heldout', HELDOUT_MAPS), ('both', None))
+
+
 def command_report(args):
     out = Path(args.out).resolve()
     diverge = divergence_rates(args.divergence)
-    suites = dict(
-        all=lambda g: True,
-        training_era_suite=lambda g: g['opponent'] in (['random', 'initial'] + TRAINING_ERA_SCRIPTED),
-        hard_bots=lambda g: g['opponent'] in HARD_SCRIPTED,
-    )
     report = {}
     for kit in args.kits:
         _, step = final_checkpoint(kit)
         base = read_games(out / 'runs' / kit / args.base / 'evaluations' / f'{step:09d}' / 'result.json')
         arm = read_games(out / 'runs' / kit / args.arm / 'evaluations' / f'{step:09d}' / 'result.json')
         entry = dict(step=step, divergence=diverge.get(kit))
-        for suite, keep in suites.items():
-            for role, maps in (('trained', TRAINING_MAPS), ('heldout', HELDOUT_MAPS), ('both', None)):
+        for suite, keep in SUITES.items():
+            for role, maps in ROLES:
                 sel = (lambda g, keep=keep, maps=maps: keep(g) and (maps is None or g['map'] in maps))
-                pairs, churn = collect(base, arm, sel)
-                stat = paired_delta(pairs, args.resamples)
-                stat['churn'] = churn
-                stat['base_ci'] = wilson(sum(p[1] for p in pairs), len(pairs))
-                stat['arm_ci'] = wilson(sum(p[2] for p in pairs), len(pairs))
-                stat['means'] = means(base, arm, sel)
+                stat = dict(score=paired(base, arm, sel, score, args.resamples),
+                            win=paired(base, arm, sel, lambda g: float(is_win(g)), args.resamples),
+                            undecided=paired(base, arm, sel,
+                                             lambda g: float(classify(g) == 'undecided'), args.resamples),
+                            churn=churn_of(base, arm, sel),
+                            base_mix=outcome_mix(base, sel), arm_mix=outcome_mix(arm, sel),
+                            base_means=means(base, sel), arm_means=means(arm, sel))
+                stat['lost'], stat['gained'] = flips(base, arm, sel)
+                stat['base_win_ci'] = wilson(round(stat['win']['base'] * stat['win']['n']), stat['win']['n'])
+                stat['arm_win_ci'] = wilson(round(stat['win']['arm'] * stat['win']['n']), stat['win']['n'])
                 entry[f'{suite}:{role}'] = stat
-        for role, maps in (('trained', TRAINING_MAPS), ('heldout', HELDOUT_MAPS), ('both', None)):
-            sel = (lambda g, maps=maps: maps is None or g['map'] in maps)
-            entry[f'elo:{role}'] = elo_pair(base, arm, sel)
-        by_opponent = {}
-        for opponent in sorted({g['opponent'] for g in base.values()}):
-            sel = (lambda g, o=opponent: g['opponent'] == o)
-            pairs, churn = collect(base, arm, sel)
-            s2 = paired_delta(pairs, 4000)
-            s2['churn'] = churn
-            by_opponent[opponent] = s2
-        entry['by_opponent'] = by_opponent
+        for role, maps in ROLES:
+            entry[f'elo:{role}'] = elo_pair(base, arm, lambda g, m=maps: m is None or g['map'] in m)
+        entry['by_opponent'] = {o: paired(base, arm, lambda g, o=o: g['opponent'] == o, score, 4000)
+                                for o in sorted({g['opponent'] for g in base.values()} - {'selfplay'})}
         report[kit] = entry
-    overall_churn = np.mean([e['all:both']['churn'] for e in report.values()])
+
+    overall_churn = float(np.mean([e['all_bots:both']['churn'] for e in report.values()]))
     if overall_churn <= 0:
         raise SystemExit('no paired game differed between the libraries: the A/B measured nothing')
     (out / f'report-{args.base}-vs-{args.arm}.json').write_text(json.dumps(report, indent=1) + '\n')
-    print(f'# {args.base} -> {args.arm};  trajectory churn {overall_churn:.1%} of paired games')
-    for suite in suites:
-        print(f'\n## {suite}')
-        print(f"{'kit':28s} {'role':8s} {'n':>6s} {'base':>7s} {'main':>7s} {'delta':>8s} "
-              f"{'95% CI':>18s} {'lose/gain':>10s}")
+
+    print(f'# {args.base} -> {args.arm}   evaluation semantics: main @25b093f8 '
+          f'(undecided = draw), recomputed from stored final_players flags')
+    print(f'# trajectory churn: {overall_churn:.1%} of paired games end on a different tick\n')
+    for suite in SUITES:
+        print(f'## {suite}: score (win 1, draw .5, loss 0), paired delta, 95% cluster bootstrap')
+        print(f"{'kit':28s} {'role':8s} {'n':>6s} {'pairs':>6s} {'base':>7s} {'main':>7s} "
+              f"{'delta':>8s} {'95% CI':>18s} {'win%':>15s} {'undec%':>15s} {'lose/gain':>10s}")
         for kit, entry in report.items():
-            for role in ('trained', 'heldout', 'both'):
+            for role, _ in ROLES:
                 s = entry[f'{suite}:{role}']
-                print(f"{kit:28s} {role:8s} {s['n']:6d} {s['base']:7.3f} {s['main']:7.3f} "
-                      f"{s['delta']:+8.3f} [{s['ci'][0]:+.3f},{s['ci'][1]:+.3f}] {s['n10']:4d}/{s['n01']:<5d}")
-    print('\n## fixed-anchor Elo vs pool v7 (random / mixed-hard / search-medium / search-hard)')
+                sc, w, u = s['score'], s['win'], s['undecided']
+                print(f"{kit:28s} {role:8s} {sc['n']:6d} {sc['clusters']:6d} {sc['base']:7.3f} {sc['arm']:7.3f} "
+                      f"{sc['delta']:+8.3f} [{sc['ci'][0]:+.3f},{sc['ci'][1]:+.3f}] "
+                      f"{w['base']:6.3f}->{w['arm']:<6.3f} {u['base']:6.3f}->{u['arm']:<6.3f} "
+                      f"{s['lost']:4d}/{s['gained']:<5d}")
+        print()
+
+    print('## fixed-anchor Elo vs pool v7 (random / mixed-hard / search-medium / search-hard)')
     print(f"{'kit':28s} {'role':8s} {'games':>6s} {'base':>8s} {'main':>8s} {'delta':>8s} {'95% CI':>20s}")
     for kit, entry in report.items():
-        for role in ('trained', 'heldout', 'both'):
+        for role, _ in ROLES:
             e = entry[f'elo:{role}']
             print(f"{kit:28s} {role:8s} {e['games']:6d} {e['base']:8.1f} {e['arm']:8.1f} "
                   f"{e['delta']:+8.1f} [{e['ci'][0]:+7.1f},{e['ci'][1]:+7.1f}]")
 
-    print('\n## per-opponent paired delta (all maps)')
+    print('\n## per-opponent paired score delta (all maps)')
     kits = list(report)
-    opponents = sorted({o for e in report.values() for o in e['by_opponent']})
-    print(f"{'opponent':18s} " + ' '.join(f'{k[:11]:>12s}' for k in kits))
-    for opponent in opponents:
-        cells = []
-        for kit in kits:
-            s2 = report[kit]['by_opponent'].get(opponent)
-            cells.append('           -' if not s2 or not s2['n'] else f"{s2['delta']:+12.3f}")
+    print(' ' * 19 + ' '.join(f'{k[:11]:>12s}' for k in kits))
+    for opponent in sorted({o for e in report.values() for o in e['by_opponent']}):
+        cells = [f"{report[k]['by_opponent'][opponent]['delta']:+12.3f}"
+                 if report[k]['by_opponent'].get(opponent, {}).get('n') else '           -' for k in kits]
         print(f'{opponent:18s} ' + ' '.join(cells))
 
-    print('\n## continuous metrics, all opponents, all maps (base -> main)')
-    print(f"{'kit':28s} {'kills':>16s} {'deaths':>16s} {'seconds':>16s} {'timeout':>16s}")
+    print('\n## continuous metrics, all bots, all maps (base -> main)')
+    print(f"{'kit':28s} {'kills':>18s} {'deaths':>18s} {'seconds':>18s}")
     for kit, entry in report.items():
-        m = entry['all:both']['means']
-        cells = ' '.join(f"{m['base'][f]:7.3f}->{m['arm'][f]:<8.3f}" for f in ('kills', 'deaths', 'seconds', 'timeout_rate'))
+        s = entry['all_bots:both']
+        cells = ' '.join(f"{s['base_means'][f]:8.3f}->{s['arm_means'][f]:<9.3f}"
+                         for f in ('kills', 'deaths', 'seconds'))
         print(f'{kit:28s} {cells}')
 
-    print('\n# divergence (blast-radius rows-tol1) vs delta')
-    xs, ys = [], []
+    print('\n# observation divergence (blast-radius rows-tol1) vs performance change')
+    xs, ys, es = [], [], []
     for kit, entry in report.items():
         d = entry['divergence']
         if d is None:
             continue
-        xs.append(d); ys.append(entry['all:both']['delta'])
-        print(f"{kit:28s} obs_divergence={d:.3f} win_delta={ys[-1]:+.3f} "
-              f"elo_delta={entry['elo:both']['delta']:+7.1f} churn={entry['all:both']['churn']:.3f}")
+        s = entry['all_bots:both']
+        xs.append(d); ys.append(s['score']['delta']); es.append(entry['elo:both']['delta'])
+        print(f"{kit:28s} obs_divergence={d:.3f} score_delta={ys[-1]:+.3f} "
+              f"elo_delta={es[-1]:+7.1f} churn={s['churn']:.3f}")
     if len(xs) > 2:
-        elo = [report[k]['elo:both']['delta'] for k in report if report[k]['divergence'] is not None]
-        print(f'pearson r (divergence, win delta) = {np.corrcoef(xs, ys)[0,1]:+.3f}  (n={len(xs)} kits)')
-        print(f'pearson r (divergence, elo delta) = {np.corrcoef(xs, elo)[0,1]:+.3f}')
+        print(f'pearson r (divergence, score delta) = {np.corrcoef(xs, ys)[0,1]:+.3f}  (n={len(xs)} kits)')
+        print(f'pearson r (divergence, elo delta)   = {np.corrcoef(xs, es)[0,1]:+.3f}')
 
 
 def main():
@@ -395,8 +449,8 @@ def main():
     parser.add_argument('--libs', nargs='*', default=[], help='name=path/to/libbopl_sim.so')
     parser.add_argument('--kits', nargs='*', default=KITS)
     parser.add_argument('--scripted', nargs='*', default=TRAINING_ERA_SCRIPTED + HARD_SCRIPTED)
-    parser.add_argument('--games', type=int, default=128, help='games per opponent per trained map')
-    parser.add_argument('--heldout-games', type=int, default=192)
+    parser.add_argument('--games', type=int, default=192, help='games per opponent per trained map')
+    parser.add_argument('--heldout-games', type=int, default=288)
     parser.add_argument('--workers', type=int, default=2)
     parser.add_argument('--base', default='base')
     parser.add_argument('--arm', default='main')
