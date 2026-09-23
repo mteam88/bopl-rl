@@ -439,10 +439,11 @@ int main(int argc, char **argv) {
     printf("{\"record\":\"run\",\"cell\":\"%s\",\"oracle\":\"%s\",\"q32\":\"%s\",\"f64\":\"%s\","
            "\"oracle_hash\":\"%s\",\"rust_hash\":\"%s\",\"games\":%u,\"first\":%u,\"seed\":%u,"
            "\"ticks\":%u,\"players\":%d,\"stocks\":%u,\"tol\":%" PRId64 ",\"pool\":\"%s\",\"pool_n\":%d,"
-           "\"maps\":%u,\"map_count\":%u,\"visible_aligned\":%d,\"ignore\":\"%s\"}\n",
+           "\"maps\":%u,\"map_count\":%u,\"visible_aligned\":%d,\"fresh\":%d,\"ignore\":\"%s\"}\n",
            cell_label, argv[1], argv[2], argv[3], bopl_rl_source_hash(world[0]),
            bopl_rl_source_hash(world[1]), games, first, base_seed, horizon, players, stocks,
-           tolerance, pool_spec, pool_n, map_n, map_count, dr_visible_aligned, dr_ignore_list);
+           tolerance, pool_spec, pool_n, map_n, map_count, dr_visible_aligned, dr_fresh,
+           dr_ignore_list);
     fflush(stdout);
 
     unsigned failed = 0;

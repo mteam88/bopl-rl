@@ -165,3 +165,20 @@ button-up tick, so the release tick gets one extra aim update that C# does not
 take. The exported hurtbox rotation is built from that aim at `mod.rs:31999`.
 
 Not fixed here - recorded for later.
+
+### What triggers fixture #2 (negative results, to save the next person the time)
+
+- **Not one ability.** Every ability 2..38 was played alone (all three slots,
+  both players, 8 consecutive episodes, handles reused). None reproduced it.
+- **Not simply a big previous episode.** Across 1238 episodes, the episode
+  immediately before a contaminated one is barely distinguishable from the
+  episode before a clean one: median peak entities 21 vs 20, median length
+  269 vs 262 ticks.
+- **Bursty.** The 186 contaminated episodes fall into 111 bursts, median length
+  1, maximum 10, so poisoning clears on its own.
+- **Not reachable from the gate loadout.** With the fixed Dash/Bow/Platform kit
+  the existing gates use, the effect never fires: 0 of 1240 episodes
+  (95% CI 0-0.31%), against 15.0% with the full ability pool. This is why
+  `map-sweep-3000` passes cleanly while reusing one handle across 248 episodes
+  (`map_ab.c:479` opens once, `:520` resets per case) - it only ever exercises
+  3 of the 38 abilities.

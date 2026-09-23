@@ -211,11 +211,22 @@ def by_map(games, key, label, top=12):
     ranked = sorted(((k / n, n, m) for m, (k, n) in stat.items() if n >= 8), reverse=True)
     if not ranked:
         return
-    print(f'\n--- {label}: worst maps (P[diverge by tick 300], maps with >=8 usable games) ---')
-    print(f'{"map":>5s} {"rate":>7s} {"95% CI":>16s} {"n":>6s}')
+    # P[diverge by 300] saturates near 100% under random actions, so it cannot
+    # rank the worst maps against each other. The censoring-correct median
+    # first-divergence tick still discriminates, so rank on that and show both.
+    per_map = collections.defaultdict(list)
+    for game in games:
+        per_map[game['map']].append(game)
+    med = {m: quantile(kaplan_meier(observations(per_map[m], key)), 0.5)
+           for _, _, m in ranked}
+    ranked.sort(key=lambda r: (med[r[2]] if med[r[2]] is not None else 1 << 30, -r[0]))
+    print(f'\n--- {label}: worst maps (ranked by median first-divergence tick; '
+          f'maps with >=8 usable games) ---')
+    print(f'{"map":>5s} {"median":>7s} {"rate":>7s} {"95% CI":>16s} {"n":>6s}')
     for rate, n, m in ranked[:top]:
         p, lo, hi = wilson(round(rate * n), n)
-        print(f'{m:5d} {p:6.1%} [{lo:5.0%},{hi:5.0%}] {n:6d}')
+        mm = med[m]
+        print(f'{m:5d} {(str(mm) if mm is not None else "-"):>7s} {p:6.1%} [{lo:5.0%},{hi:5.0%}] {n:6d}')
     total_k = sum(k for k, _ in stat.values()); total_n = sum(n for _, n in stat.values())
     p, lo, hi = wilson(total_k, total_n)
     print(f'{"ALL":>5s} {p:6.1%} [{lo:5.0%},{hi:5.0%}] {total_n:6d}   '
@@ -247,14 +258,26 @@ def by_ability(games, key, label, top=16):
     if not base_n:
         return
     base = base_k / base_n
-    print(f'\n--- {label}: abilities by P[diverge by tick 300] (baseline {base:.1%}) ---')
-    print(f'{"id":>4s} {"ability":18s} {"rate":>7s} {"95% CI":>16s} {"n":>6s}  {"status":8s}')
     ranked = sorted(((k / n, n, a) for a, (k, n) in stat.items() if n >= 25), reverse=True)
+    # Same saturation problem as the map table: rank on the median instead.
+    per_ability = collections.defaultdict(list)
+    for game in games:
+        for ability in {a for row in game.get('resolved', []) for a in row if a}:
+            per_ability[ability].append(game)
+    med = {a: quantile(kaplan_meier(observations(per_ability[a], key)), 0.5)
+           for _, _, a in ranked}
+    base_med = quantile(kaplan_meier(observations(games, key)), 0.5)
+    ranked.sort(key=lambda r: (med[r[2]] if med[r[2]] is not None else 1 << 30, -r[0]))
+    print(f'\n--- {label}: abilities ranked by median first-divergence tick '
+          f'(baseline median {base_med}, P[diverge by 300] {base:.1%}) ---')
+    print(f'{"id":>4s} {"ability":18s} {"median":>7s} {"rate":>7s} {"95% CI":>16s} {"n":>6s}  {"status":8s}')
     for rate, n, ability in ranked[:top]:
         p, lo, hi = wilson(round(rate * n), n)
         name = ABILITY_NAMES.get(ability, f'#{ability}')
         status = 'partial' if ability in PARTIAL else ''
-        print(f'{ability:4d} {name:18s} {p:6.1%} [{lo:5.0%},{hi:5.0%}] {n:6d}  {status:8s}')
+        mm = med[ability]
+        print(f'{ability:4d} {name:18s} {(str(mm) if mm is not None else "-"):>7s} '
+              f'{p:6.1%} [{lo:5.0%},{hi:5.0%}] {n:6d}  {status:8s}')
 
 
 def coverage(games, runs):
