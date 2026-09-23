@@ -106,6 +106,23 @@ $(OUT)/sudden_death_chunk_ab: research/rust_ab/sudden_death_chunk_ab.c bopl_rl.c
 map-sweep-endgame: $(OUT)/map_ab rust-q32
 	MAP_AB_STRICT_ACTORS=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32)) 8200
 
+# Randomised-loadout gate: all 38 abilities, stratified over all 124 maps.
+# Every other gate here plays the hardcoded Dash/Bow/Platform kit
+# (puffer/bopl_bots.h:143-149), so the suite only ever exercises 3 of the 38
+# abilities - and all three defects in research/divergence/FIXTURES.md were
+# found in that blind spot, none of them reachable from the gate loadout. This
+# runs the port against two more copies of itself, so it needs no oracle and
+# has no known-divergence baseline to drift against: crashes and self-
+# disagreement must both be exactly zero. 24,800 episodes, ~1 min wall on four
+# workers. Subsumes and supersedes the leakprobe-q32/selfcheck-q32 control
+# cells, which stay in run_divergence_controls.sh at the study's 1240 games
+# because FIXTURES.md quotes those numbers.
+ABILITY_SWEEP_OUT ?= ../artifacts/rl/ability-sweep
+ABILITY_SWEEP_WORKERS ?= 4
+ability-sweep: $(OUT)/divergence_rate rust-q32
+	DR_BIN=$(abspath $(OUT)/divergence_rate) RUST_ROLLOUT_Q32=$(abspath $(RUST_ROLLOUT_Q32)) \
+	  research/divergence/run_ability_sweep.sh $(abspath $(ABILITY_SWEEP_OUT)) $(ABILITY_SWEEP_WORKERS)
+
 # Whole rust_ab differential suite, comparator included. Seventeen probes in
 # research/rust_ab only *print* a per-backend trace and always exit 0, so
 # checking exit status alone reports them as passing unconditionally; this
@@ -267,7 +284,7 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
+.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
 
 # Reward semantics on hand-built terminal states (research/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.
