@@ -59,27 +59,7 @@ struct sample {
  * they are identical, and describes the first difference otherwise. */
 static int diff_state(const BoplRlState *a, const BoplRlState *b,
                       unsigned tick, const char *case_name) {
-    /* Known, separately-owned difference: the port publishes the
-     * `sudden_death` header flag one pass before the reference does.
-     * GameSessionHandler.cs:502 raises it during the session update, and the
-     * reference's observation snapshot is taken before that update runs
-     * while the port's is taken after. The behaviour is identical -- over
-     * ticks 1..7050 of map 0 the ONLY differing tick is the one the flag
-     * flips (7201), with every platform, player and entity field equal
-     * before and after -- so this is an observation-publication lag, not a
-     * physics divergence. It is excluded here, loudly, so this probe can
-     * reach its own subject; it routes through the observation writer and
-     * belongs to whoever owns that. Remove this exclusion when it is fixed. */
-    BoplRlHeader ha = a->header, hb = b->header;
-    if (ha.sudden_death != hb.sudden_death) {
-        static int announced = 0;
-        if (!announced) {
-            printf("NOTE excluding the known sudden_death publication lag "
-                   "(port raises the header flag one pass early)\n");
-            announced = 1;
-        }
-        ha.sudden_death = hb.sudden_death = 0;
-    }
+    const BoplRlHeader ha = a->header, hb = b->header;
     if (memcmp(&ha, &hb, sizeof ha) != 0) {
         printf("%s tick %u header differs: entities %u/%u slimes %u/%u "
                "flags %u/%u sudden %u/%u\n", case_name, tick,

@@ -63,6 +63,18 @@ $(OUT)/scale_boundary_ab: research/rust_ab/scale_boundary_ab.c bopl_rl.c bopl_rl
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -I. research/rust_ab/scale_boundary_ab.c bopl_rl.c -ldl -lm -o $@
 
+# Sudden-death publication gate: the tick each backend first PUBLISHES
+# header.sudden_death, on maps 0..4. GameSessionHandler raises the flag from
+# inside the updater pass against a clock the tick has not advanced yet, so the
+# port's post-increment session update is a pass ahead of it unless the
+# published bit lags by one.
+sudden-death-publication-ab: $(OUT)/sudden_death_publication_ab rust-q32
+	$(abspath $(OUT)/sudden_death_publication_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
+
+$(OUT)/sudden_death_publication_ab: research/rust_ab/sudden_death_publication_ab.c bopl_rl.c bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -I. research/rust_ab/sudden_death_publication_ab.c bopl_rl.c -ldl -lm -o $@
+
 # Whole rust_ab differential suite, comparator included. Seventeen probes in
 # research/rust_ab only *print* a per-backend trace and always exit 0, so
 # checking exit status alone reports them as passing unconditionally; this
@@ -181,4 +193,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research map-ab bounds-ability-ab scale-boundary-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac
+.PHONY: all research map-ab bounds-ability-ab scale-boundary-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac
