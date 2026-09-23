@@ -340,7 +340,7 @@ def command_status(args):
     cover = data['coverage']
     print(f"\ncoverage under {data['condition']}")
     print(f"  {cover['pairs_played']}/{cover['pairs_possible']} pairs ({cover['fraction']:.0%}), "
-          f"{cover['games_total']} games, {cover['games_per_pair_min']} min per pair")
+          f"{cover['games_total']} games, {cover['games_per_pair_min']} games per pair at the thinnest")
     newest = registry.ids_for(data['league'], [args.newest])[0] if args.newest else None
     health = rating.saturation(names, data['counts'], elo=data['fit']['ratings'],
                                mixture=data['mixture'], newest=newest)
