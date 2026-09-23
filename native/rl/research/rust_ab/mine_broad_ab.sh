@@ -14,10 +14,11 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
 # One broad Mine gate over grounded and pickup casts, autonomous state
-# transitions, active forms, Gust, Time Stop, duplication and shared
-# ThrowItem entry/exit behavior.
+# transitions, owner scan immunity and owner ignition, active forms, Gust,
+# Time Stop, duplication and shared ThrowItem entry/exit behavior.
 for scenario in \
     mine_ability_ab \
+    mine_owner_contact_ab \
     gust_mine_ab \
     gust_mine_form_ab \
     time_stop_mine_ab \
@@ -31,4 +32,4 @@ do
     (cd "$project" && "$tmp/$scenario" "$reference" "$rust")
 done
 
-echo "MINE_BROAD_GOLDEN_OK scenarios=8"
+echo "MINE_BROAD_GOLDEN_OK scenarios=9"
