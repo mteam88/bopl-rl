@@ -7045,62 +7045,6 @@ impl RolloutWorld {
         }
         self.web_cooldowns_tick(index, action);
         self.grapple_cooldowns_tick(index);
-        // The slime prefab's own DestroyIfOutsideSceneBounds runs after
-        // PlayerPhysics.Move and before PlayerBody integrates, which is
-        // exactly where `move_step` tests `outside_bounds`. An ability entry
-        // returns from `player_tick` before `move_step`, so without this the
-        // boundary is never tested on the entry pass and the form carries the
-        // body away (beam +386 ticks, time_stop +585, rewind unbounded).
-        //
-        // The position to test is therefore the one Move leaves behind, not
-        // the one this pass started with: a grounded rider's body is snapped
-        // to its surface by the previous pass's LateUpdateSim and Move then
-        // advances it along that surface, so the two differ and the reference
-        // follows the later one. Testing the earlier position killed a
-        // grounded player one tick early (map 73 tick 2774, and
-        // platform_rotation_ab map 4 / angle 200). Run Move on a copy to read
-        // that position without applying it twice; the real Move still
-        // happens in `move_step` or inside the ability the entry selects.
-        //
-        // Only entry passes need this. On every other pass `move_step` makes
-        // the identical test, so gating on a ready, held ability slot keeps
-        // the duplicated Move off the common path. game_tick's
-        // `boundary_death` attributes the kill with CauseOfDeath.Accident
-        // (DestroyIfOutsideSceneBounds.cs:148).
-        //
-        // Drill is the measured exception: against the reference a slime that
-        // is already below the plane still activates Drill and its body lives
-        // three further passes, so the Drill ability object claims the body
-        // before the slime's boundary component gets its turn. Let that entry
-        // through; Drill's own boundary check (below) then owns the body.
-        //
-        // An airborne MeteorSmash entry is the second: OnEnterAbility calls
-        // Jump -> Vibrate_fromAirStart synchronously, so the Meteor body is
-        // live and in State.Vibrate within this same pass and its UpdateSim
-        // displaces the FixTransform by vibrationStr * 0.5 = 0.05 before the
-        // body's own DestroyIfOutsideSceneBounds observes it
-        // (MeteorSmash.cs:145-150, 259-273). The reference kills on the same
-        // tick but at the vibrated position. A grounded entry instead defers
-        // to an animation callback, so it keeps the plain slime kill.
-        if !in_ability && self.players[index].base.alive {
-            let ready = |s: usize| {
-                let slot = &self.players[index];
-                action.buttons & (2 << s) as u8 != 0 && slot.timers[s] > slot.cooldowns[s]
-            };
-            let claims_body = |s: usize| {
-                let slot = &self.players[index];
-                slot.abilities[s] == ABILITY_DRILL
-                    || (slot.abilities[s] == ABILITY_METEOR && !slot.base.grounded)
-            };
-            if (0..3).any(ready) && !(0..3).any(|s| ready(s) && claims_body(s)) {
-                let mut moved = self.players[index].base.clone();
-                moved.move_only(movement_input, terrain!(self));
-                if moved.outside_bounds() {
-                    self.players[index].base.alive = false;
-                    return;
-                }
-            }
-        }
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
             for s in 0..3 {
@@ -7263,6 +7207,14 @@ impl RolloutWorld {
                             // the input vector captured before Rewind set
                             // suppressInput.
                             slot.base.move_only(movement_input, terrain!(self));
+                            // Rewind is instant: the slime stays active, so
+                            // its own bounds component still runs here, in
+                            // the same slot `move_step` tests -- after Move,
+                            // before PlayerBody integrates.
+                            if slot.base.outside_bounds() {
+                                slot.base.alive = false;
+                                return;
+                            }
                             slot.base.position +=
                                 (slot.base.velocity + slot.base.external_velocity) * DT;
                             slot.base.external_velocity *= Fix::from_f64(0.95);
@@ -7377,6 +7329,15 @@ impl RolloutWorld {
                                 // velocity survives into the enabled form.
                                 slot.base.velocity = Vec2::ZERO;
                             }
+                        }
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
                         }
                         if grounded {
                             // Missile's PlayerPhysics and PlayerBody follow
@@ -7564,6 +7525,15 @@ impl RolloutWorld {
                             previous_player_velocity: velocity,
                             ..RockState::default()
                         };
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
+                        }
                         return;
                     }
                     ABILITY_ROLL => {
@@ -7614,6 +7584,15 @@ impl RolloutWorld {
                         // Roll collider later in this same updater pass.
                         slot.reported_position = form_position;
                         slot.reported_tick = self.tick;
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
+                        }
                         self.roll_tick(index, action, data);
                         return;
                     }
@@ -7710,6 +7689,15 @@ impl RolloutWorld {
                             slot.base.grounded = false;
                             slot.base.ground = None;
                             slot.base.grounded_speed = Fix::ZERO;
+                        }
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
                         }
                         self.time_stop_cast_tick(index, action, data);
                         return;
@@ -8323,6 +8311,15 @@ impl RolloutWorld {
                                 slot.base.grounded_speed = Fix::ZERO;
                             }
                         }
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
+                        }
                         self.spawn_beam_orb(index, data);
                         self.beam_tick(index, action, false, data);
                         return;
@@ -8349,6 +8346,15 @@ impl RolloutWorld {
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
+                        }
                         return;
                     }
                     // Other catalog abilities are never simulated here.
@@ -8536,7 +8542,21 @@ impl RolloutWorld {
             // DestroyIfOutsideSceneBounds component. Unlike the ordinary
             // slime, this ability body's position is final for this updater
             // pass (the separate platform moves later in DetPhysics).
-            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+            //
+            // If the form exited during its own update the boundary component
+            // does not run: `Ability.ExitAbility` ends with
+            // `base.gameObject.SetActive(value: false)` before `onExitAbility`
+            // (Ability.cs:151-153), so the ability object is already inactive
+            // when its turn would come. The restored slime's own component
+            // took its turn earlier in the pass, while the slime was still
+            // inactive, so nothing tests the boundary on an exit pass and the
+            // kill lands on the next one. Roll already guards this
+            // (`active == Roll` above); Platform did not, and killed a form
+            // that exited below the plane a tick early.
+            if self.players[index].active == ActiveAbility::Platform
+                && self.players[index].base.alive
+                && self.players[index].base.outside_bounds()
+            {
                 // The slime takes over the ability body's position
                 // (DestroyIfOutsideSceneBounds.cs:137, SlimeController.cs:217).
                 self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
