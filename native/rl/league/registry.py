@@ -30,7 +30,7 @@ LEAGUE = HERE / 'league.json'
 PAYOFF = HERE / 'payoff.jsonl'
 SCHEMA = 1
 ANCHOR = 'random'
-KINDS = ('main', 'exploiter', 'specialist', 'scripted', 'random')
+KINDS = ('main', 'exploiter', 'specialist', 'scripted', 'random', 'human')
 
 
 # ---- conditions --------------------------------------------------------------
@@ -81,12 +81,22 @@ def sha256_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def member(name, kind, *, id, parent=None, origin=None, sim=None, reward=None,
+def member(name, kind, *, id, parent=None, target=None, origin=None, sim=None, reward=None,
            loadouts=None, added=None, path=None, metadata_sha256=None):
-    """One immutable league member. Field order is the order it is written in."""
+    """One immutable league member. Field order is the order it is written in.
+
+    `parent` and `target` are different questions and neither substitutes for the
+    other. `parent` is where the weights came from and is null for anything that
+    started from random init, which is every exploiter here by design. `target`
+    is the member the exploiter was trained to beat. Without it, "how long did
+    this exploiter take to beat its target" has to guess from the schedule, and
+    an even schedule makes that guess arbitrary.
+    """
     if kind not in KINDS:
         raise ValueError(f'{kind} is not one of {KINDS}')
-    row = dict(id=id, name=name, kind=kind, parent=parent, origin=origin, sim=sim,
+    if target is not None and kind not in ('exploiter', 'main'):
+        raise ValueError(f'a {kind} member has no target; only exploiters and mains are aimed at one')
+    row = dict(id=id, name=name, kind=kind, parent=parent, target=target, origin=origin, sim=sim,
                reward=reward, loadouts=loadouts, added=added)
     if path is not None:
         row['path'] = str(path)
@@ -95,12 +105,12 @@ def member(name, kind, *, id, parent=None, origin=None, sim=None, reward=None,
     return row
 
 
-def checkpoint_member(name, kind, weights, *, parent=None, origin=None, sim=None,
+def checkpoint_member(name, kind, weights, *, parent=None, target=None, origin=None, sim=None,
                       reward=None, loadouts=None, added=None):
     """A trained member, identified by the sha256 of the weights it froze at."""
     weights = Path(weights)
     sidecar = Path(str(weights) + '.json')
-    return member(name, kind, id=sha256_file(weights), parent=parent, origin=origin,
+    return member(name, kind, id=sha256_file(weights), parent=parent, target=target, origin=origin,
                   sim=sim, reward=reward, loadouts=loadouts, added=added,
                   path=str(weights.relative_to(ROOT)),
                   metadata_sha256=sha256_file(sidecar) if sidecar.is_file() else None)
@@ -172,20 +182,44 @@ def by_name(league):
 
 # ---- payoff ------------------------------------------------------------------
 
+def canonical(a, b, wins, losses, draws):
+    """One ordered pair per matchup: a < b, counts from a's side.
+
+    Both orderings of a matchup describe the same games from opposite sides, so a
+    file containing both invites a reader to sum them and double-count. This is
+    the single place rows are built, and it swaps (b, a) into (a, b) -- so
+    payoff.jsonl never holds both orderings and a consumer may sum rows with
+    matching (a, b, condition) without inspecting direction.
+
+    Side-swapping is NOT this: every matchup is played from both seatings and
+    both seatings are already inside these counts.
+    """
+    if a > b:
+        return b, a, losses, wins, draws
+    return a, b, wins, losses, draws
+
+
 def append(rows, path=None):
-    """Append aggregated counts. One row per (a, b, condition) per play session;
-    the loader sums duplicates, so the file stays append-only and small."""
+    """Append aggregated counts in canonical (a < b) order.
+
+    One row per (a, b, condition) per play session; the loader sums duplicates,
+    so the file stays append-only and small.
+    """
     path = Path(path or PAYOFF)
     with path.open('a') as handle:
         for row in rows:
-            handle.write(json.dumps({k: row[k] for k in ('a', 'b', 'condition', 'wins', 'losses', 'draws')}) + '\n')
+            a, b, wins, losses, draws = canonical(row['a'], row['b'], row['wins'],
+                                                  row['losses'], row['draws'])
+            handle.write(json.dumps(dict(a=a, b=b, condition=row['condition'],
+                                         wins=wins, losses=losses, draws=draws)) + '\n')
 
 
 def read_payoff(path=None, condition=None):
     """{(a, b): [wins_a, losses_a, draws]} summed over rows, one condition only.
 
-    Rows are ordered pairs as they were played; (b, a) is folded into (a, b) with
-    wins and losses swapped, so a pair is one entry however it was scheduled.
+    `append` only ever writes the canonical a < b ordering, so a well-formed file
+    holds one ordering per pair. This still folds (b, a) defensively, in case a
+    row was hand-written or produced by an older writer.
     """
     path = Path(path or PAYOFF)
     counts = {}

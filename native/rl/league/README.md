@@ -20,11 +20,19 @@ them.
 
 - `id` — sha256 of the weights for a checkpoint, the bot name for a scripted
   bot, `random` for the anchor.
-- `kind` — `main`, `exploiter`, `specialist`, `scripted`, `random`.
+- `kind` — `main`, `exploiter`, `specialist`, `scripted`, `random`, `human`.
+  A `human` member is one of Matthew's recorded games; it has no weights and
+  cannot be scheduled by `play`, which refuses it with a message. Its counts are
+  appended to `payoff.jsonl` from the recording.
 - `parent` — the member this was forked or reset from; `null` for random init.
   Every exploiter here is `null` on purpose: exploiters start from random
   weights, not from a fork of the main, so they are free to find combinations
   the main's representation cannot reach.
+- `target` — the member an exploiter was trained to beat. This is a *different*
+  question from `parent` and does not substitute for it: because our exploiters
+  begin at random init, `parent` is null by design, so anything asking "how long
+  did this exploiter take to beat what it was aimed at" must read `target`.
+  Only `exploiter` and `main` may carry one; any other kind is rejected.
 - `origin` — `{run, step}` for trained members.
 - `sim` — the simulator library the member *trained* under. This is provenance,
   and is not the same thing as the library its games were *played* under, which
@@ -51,9 +59,21 @@ counts, and a league that grows for months would otherwise commit millions of
 lines to git permanently. Per-game detail is derived data and belongs under
 `native/artifacts/`.
 
-`a` and `b` are member *names* (unique and permanent); the reader folds a
-`(b, a)` row into `(a, b)` with wins and losses swapped, and sums duplicate
-rows, so one `play` session appends one row per pair and the file stays small.
+`a` and `b` are member *names*, unique and permanent.
+
+**Ordering is canonical: `a < b`, always, with the counts taken from `a`'s
+side.** A matchup therefore appears under exactly one ordering; `(b, a)` rows do
+not exist. A consumer may sum every row with a matching `(a, b, condition)`
+without inspecting direction and will not double-count. `registry.canonical` is
+the single place this is enforced, at the only point rows are written.
+
+Do not confuse this with side-swapping. Every matchup is played from *both*
+seatings, and both seatings are already folded into these counts.
+
+`wins`, `losses` and `draws` are each written explicitly from the games' own
+outcomes. Never reconstruct a loss as `games - wins`: that silently converts
+every trade and every timeout into a loss for one side, which is the exact bug
+that made a kit's "92.6% win rate" really 62.2% wins plus 30.4% trades.
 
 Counts are **never summed across conditions**.
 
@@ -92,6 +112,10 @@ python native/rl/league check    # prove the estimators on matrices with known a
 `play` gates matchups it has already decided: a pair whose whole confidence
 interval sits outside 15–85% is skipped as uninformative, which is where the
 throughput goes. Re-running `play` deepens only what is still in doubt.
+
+There is exactly one rating scale in the repo: `research/elo_ladder.py`'s
+`bradley_terry_fit` (draw-aware, `random` anchored at 0 Elo, with intervals).
+This package calls it and does not reimplement it.
 
 ## Why both Elo and Nash
 

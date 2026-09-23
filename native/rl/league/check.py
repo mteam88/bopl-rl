@@ -204,6 +204,27 @@ def run():
                  "the 99 wins logged under condition 'other' are not summed in")
         check.ok('payoff-conditions-listed', registry.conditions_present(payoff) == {'c': 2, 'other': 1},
                  f'{registry.conditions_present(payoff)}')
+        written = [json.loads(line) for line in payoff.read_text().splitlines() if line.strip()]
+        check.ok('payoff-written-canonical', all(row['a'] < row['b'] for row in written),
+                 'the (y,x) row was stored as (x,y) with wins and losses swapped, so the file '
+                 'never holds both orderings of a pair and a consumer may sum without checking direction')
+        reversed_row = [r for r in written if r['wins'] == 1][0]
+        check.ok('payoff-swap-is-lossless', reversed_row == dict(a='x', b='y', condition='c',
+                                                                wins=1, losses=2, draws=0),
+                 f'(y,x) 2-1-0 became {reversed_row["a"]},{reversed_row["b"]} 1-2-0')
+
+    kinds_ok = 'human' in registry.KINDS
+    check.ok('human-kind-exists', kinds_ok, f'kinds are {registry.KINDS}')
+    aimed = registry.member('e1', 'exploiter', id='x', parent=None, target='dash-bow-platform')
+    check.ok('exploiter-carries-target', aimed['target'] == 'dash-bow-platform' and aimed['parent'] is None,
+             'target names what it was trained to beat; parent stays null because it began at random init')
+    try:
+        registry.member('s1', 'scripted', id='s1', target='whatever')
+        rejected = False
+    except ValueError:
+        rejected = True
+    check.ok('target-only-where-it-means-something', rejected,
+             'a scripted member cannot carry a target')
 
     league = registry.load()
     verified = league['verified']

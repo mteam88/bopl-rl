@@ -93,6 +93,10 @@ def participants(league, names, library=None):
     built = {}
     for name in names:
         row = rows[name]
+        if row['kind'] == 'human':
+            raise SystemExit(
+                f'{name} is a human member: their games are recorded, not played. '
+                f'Append their counts to payoff.jsonl directly and exclude them from `play`.')
         if row['kind'] == 'random':
             built[name] = elo_ladder.Random()
         elif row['kind'] == 'scripted':
@@ -144,7 +148,7 @@ def command_add(args):
         raise SystemExit(f'{args.name} is already a member; members are immutable')
     config = json.loads((Path(args.run) / 'config.json').read_text()) if args.run else {}
     member = registry.checkpoint_member(
-        args.name, args.kind, Path(args.weights).resolve(), parent=args.parent,
+        args.name, args.kind, Path(args.weights).resolve(), parent=args.parent, target=args.target,
         origin=dict(run=args.run, step=args.step) if args.run else None,
         sim=(config.get('runtime') or {}).get('player_binary_sha256'),
         reward=reward_tag(config) if config else None,
@@ -200,13 +204,17 @@ def command_play(args):
                                           args.seed_base, lineups=lineups)
             games = elo_ladder.play_games(built, tasks, args.episode_ticks, args.workers,
                                           args.seed_base, loadouts=loadouts)
+            # wins, losses and draws all come from tally(), which counts each
+            # game's own outcome. Never `games - wins`: that silently turns every
+            # trade and every timeout into a loss for one side.
             record = elo_ladder.tally(games).get((a, b), [0, 0, 0])
             # Prove the session exercised the condition it claims: record which
             # (map, loadout) cells the games actually landed on, not which ones
             # the schedule intended.
             cells |= {(g['map'], tuple(g.get('lineup_ids', ()))) for g in games}
-            handle.write(json.dumps(dict(a=a, b=b, condition=key, wins=record[0],
-                                         losses=record[1], draws=record[2])) + '\n')
+            row_a, row_b, wins, losses, draws = registry.canonical(a, b, *record)
+            handle.write(json.dumps(dict(a=row_a, b=row_b, condition=key, wins=wins,
+                                         losses=losses, draws=draws)) + '\n')
             handle.flush()
             played += len(games)
             opponents[a] = opponents.get(a, 0) + len(games)
@@ -359,7 +367,8 @@ def main(argv=None):
     add.add_argument('--weights', required=True)
     add.add_argument('--run')
     add.add_argument('--step', type=int)
-    add.add_argument('--parent')
+    add.add_argument('--parent', help='member the weights were forked from; omit for random init')
+    add.add_argument('--target', help='member an exploiter was trained to beat')
     add.add_argument('--rule', default='manual')
     add.set_defaults(run=command_add)
 
