@@ -2104,6 +2104,10 @@ pub struct PlayerSlot {
     /// Countdown for the land/stop/turn animation states.
     pub state_ticks: u32,
     pub facing_right: bool,
+    /// SlimeController.prevInput: the previous pass's ground alignment of the
+    /// movement stick (SlimeController.cs:127/889). `run` ends on a sign
+    /// change against *this*, not against the sprite facing.
+    pub prev_input_align: Fix,
     /// Ticks until GameSessionHandler.SpawnPlayers instantiates the slime
     /// (only a warmup shorter than SLIME_AWAKE_TICK+1 ends before it).
     pub unspawned: u32,
@@ -3551,6 +3555,7 @@ impl RolloutWorld {
                 obs_state: STATE_FALL,
                 state_ticks: 0,
                 facing_right: true,
+                prev_input_align: Fix::ZERO,
                 unspawned: 0,
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
@@ -4576,6 +4581,17 @@ impl RolloutWorld {
         {
             return;
         }
+        // SlimeController stores this pass's ground alignment in `prevInput`
+        // at the end of OldUpdate (SlimeController.cs:889), on every pass that
+        // reaches the state switch - airborne included. With no attached
+        // ground PlayerPhysics.InputGroundAlignment measures against
+        // Vec2.right (PlayerPhysics.cs:394).
+        let ground_align = if slot.base.grounded {
+            dir.dot(Vec2::new(slot.base.up.y, -slot.base.up.x))
+        } else {
+            dir.x
+        };
+        let previous_align = std::mem::replace(&mut slot.prev_input_align, ground_align);
         // PlayerPhysics.Jump ungrounds the body and OnNoLongerGrounded sets
         // State.fall (SlimeController.cs:956-958) before Move's air raycasts
         // can re-attach it on the same pass (PlayerPhysics.cs:236-238), which
@@ -4591,8 +4607,7 @@ impl RolloutWorld {
         // direction table only emits unit vectors) and the tangential ground
         // alignment past GROUNDALIGNMENTDEADZONE 0.2, or input pressed into
         // the ground with any alignment at all.
-        let tangent = Vec2::new(slot.base.up.y, -slot.base.up.x); // rightward
-        let align = dir.dot(tangent);
+        let align = ground_align; // rightward ground tangent, computed above
         let into_ground = slot.base.up.dot(dir) < Fix::ZERO;
         let moving = dir != Vec2::ZERO
             && (align.abs() >= Fix::from_f32(0.2)
@@ -4612,7 +4627,16 @@ impl RolloutWorld {
                 }
             }
             STATE_RUN => {
-                if !moving || input_right != slot.facing_right {
+                // `!flag5 || Fix.Sign(fix * prevInput) < 0`
+                // (SlimeController.cs:862). The reversal is measured against
+                // the previous pass's alignment, not against the sprite
+                // facing: a turn hands `EnterRun` the alignment captured when
+                // the turn began, so a run that started from a turn faces the
+                // old way while the stick already points the new way, and the
+                // source does not stop for that.
+                let reversed = (align > Fix::ZERO && previous_align < Fix::ZERO)
+                    || (align < Fix::ZERO && previous_align > Fix::ZERO);
+                if !moving || reversed {
                     slot.obs_state = STATE_STOP;
                     slot.state_ticks = STOP_TICKS;
                 }
