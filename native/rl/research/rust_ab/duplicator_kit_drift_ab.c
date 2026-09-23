@@ -28,6 +28,7 @@
 static int64_t d(int64_t a,int64_t b){return a>b?a-b:b-a;}
 /* argv: ref rust map seed ticks a0 a1 a2 buttonmask */
 int main(int argc,char**argv){
+    if(argc!=10){fprintf(stderr,"usage: %s <ref.so> <rust.so> <map> <seed> <ticks> <a0> <a1> <a2> <mask>\n",argv[0]);return 2;}
     unsigned map=atoi(argv[3]),seed=atoi(argv[4]),nt=atoi(argv[5]);
     unsigned a0=atoi(argv[6]),a1=atoi(argv[7]),a2=atoi(argv[8]),bm=atoi(argv[9]);
     char err[512]={0};BoplRl*w[2];
