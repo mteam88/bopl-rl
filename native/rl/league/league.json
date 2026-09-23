@@ -1,0 +1,779 @@
+{
+ "schema": 1,
+ "anchor": "random",
+ "members": [
+  {
+   "id": "random",
+   "name": "random",
+   "kind": "random",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: the anchor, pinned at 0 Elo and never evicted"
+   }
+  },
+  {
+   "id": "archer-easy",
+   "name": "archer-easy",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "archer-medium",
+   "name": "archer-medium",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "archer-hard",
+   "name": "archer-hard",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "pursuer-easy",
+   "name": "pursuer-easy",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "pursuer-medium",
+   "name": "pursuer-medium",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "pursuer-hard",
+   "name": "pursuer-hard",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "evasive-easy",
+   "name": "evasive-easy",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "evasive-medium",
+   "name": "evasive-medium",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "evasive-hard",
+   "name": "evasive-hard",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "mixed-easy",
+   "name": "mixed-easy",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "mixed-medium",
+   "name": "mixed-medium",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "mixed-hard",
+   "name": "mixed-hard",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "search-easy",
+   "name": "search-easy",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "search-medium",
+   "name": "search-medium",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "search-hard",
+   "name": "search-hard",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "archer-v2-easy",
+   "name": "archer-v2-easy",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "archer-v2-medium",
+   "name": "archer-v2-medium",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "archer-v2-hard",
+   "name": "archer-v2-hard",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "pursuer-v2-easy",
+   "name": "pursuer-v2-easy",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "pursuer-v2-medium",
+   "name": "pursuer-v2-medium",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "pursuer-v2-hard",
+   "name": "pursuer-v2-hard",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "evasive-v2-easy",
+   "name": "evasive-v2-easy",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "evasive-v2-medium",
+   "name": "evasive-v2-medium",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "evasive-v2-hard",
+   "name": "evasive-v2-hard",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "mixed-v2-easy",
+   "name": "mixed-v2-easy",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "mixed-v2-medium",
+   "name": "mixed-v2-medium",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "mixed-v2-hard",
+   "name": "mixed-v2-hard",
+   "kind": "scripted",
+   "parent": null,
+   "origin": null,
+   "sim": null,
+   "reward": null,
+   "loadouts": null,
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: hand-coded roster (bopl_bots.h)"
+   }
+  },
+  {
+   "id": "872f7fa9be1a47ac4fb01f7fa5b3e35afd52505da9d7f1defcd4fbd8e13f9078",
+   "name": "dash-bow-platform",
+   "kind": "specialist",
+   "parent": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/dash-bow-platform-long/000",
+    "step": 9253158912
+   },
+   "sim": "3734993c1b74e63b1e2f6985be8d623fda53df2c6df587ff9be50f49fc806bab",
+   "reward": {
+    "tag": "trades-paid",
+    "binding_sha256": "c82375d93f4e0478dfebf6b823264072b9e359ac1e9184d2902ecc3b415f4a2c",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: strongest known play on its kit, frozen as an exploiter"
+   },
+   "path": "native/artifacts/rl/sweeps/dash-bow-platform-long/000/checkpoints/policy-9253158912.bin",
+   "metadata_sha256": "8633b4a9a71bea43d94fe0263269a521fba4109f992e669a77d811f8f6383d94"
+  },
+  {
+   "id": "27a4fc2574ab93b9801a1379d15f9e08b9978bb8eb36d622a8d7e38e4cc66bfb",
+   "name": "roll-grenade-smoke",
+   "kind": "specialist",
+   "parent": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/roll-grenade-smoke-long/000",
+    "step": 9253158912
+   },
+   "sim": "3734993c1b74e63b1e2f6985be8d623fda53df2c6df587ff9be50f49fc806bab",
+   "reward": {
+    "tag": "trades-paid",
+    "binding_sha256": "c82375d93f4e0478dfebf6b823264072b9e359ac1e9184d2902ecc3b415f4a2c",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     16,
+     3,
+     13
+    ]
+   },
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: strongest known play on its kit, frozen as an exploiter"
+   },
+   "path": "native/artifacts/rl/sweeps/roll-grenade-smoke-long/000/checkpoints/policy-9253158912.bin",
+   "metadata_sha256": "f16805f20539cd27f0c28bddb45ecc0ddcfb7186881de80fa6477860b365fd9a"
+  },
+  {
+   "id": "89e2cac0a146d8018cf31b00a8338aa78903ee07a9088ee6089c48119f941923",
+   "name": "teleport-mine-tesla",
+   "kind": "specialist",
+   "parent": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/teleport-mine-tesla-long/000",
+    "step": 9253158912
+   },
+   "sim": "3734993c1b74e63b1e2f6985be8d623fda53df2c6df587ff9be50f49fc806bab",
+   "reward": {
+    "tag": "trades-paid",
+    "binding_sha256": "c82375d93f4e0478dfebf6b823264072b9e359ac1e9184d2902ecc3b415f4a2c",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     25,
+     24,
+     23
+    ]
+   },
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: strongest known play on its kit, frozen as an exploiter"
+   },
+   "path": "native/artifacts/rl/sweeps/teleport-mine-tesla-long/000/checkpoints/policy-9253158912.bin",
+   "metadata_sha256": "71c8cb6ae78979b52d01cd82b77dd4e02f50c828b72fc45e31b07c6ccf5e765a"
+  },
+  {
+   "id": "fe9435d717a8a204cc6a2e5f5aa413d18014f6132b33d8aa663f3970125c2d57",
+   "name": "web-mjolnir-freeze",
+   "kind": "specialist",
+   "parent": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/web-mjolnir-freeze-long/000",
+    "step": 9253158912
+   },
+   "sim": "3734993c1b74e63b1e2f6985be8d623fda53df2c6df587ff9be50f49fc806bab",
+   "reward": {
+    "tag": "trades-paid",
+    "binding_sha256": "c82375d93f4e0478dfebf6b823264072b9e359ac1e9184d2902ecc3b415f4a2c",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     32,
+     37,
+     36
+    ]
+   },
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: strongest known play on its kit, frozen as an exploiter"
+   },
+   "path": "native/artifacts/rl/sweeps/web-mjolnir-freeze-long/000/checkpoints/policy-9253158912.bin",
+   "metadata_sha256": "6e1b2bf9783bafac75111f02d6bddacb9693c991ebe526d67d0c47bfa29e245a"
+  },
+  {
+   "id": "c05e9fb9fef887bfcaddab34fcebc3510560caa98df6a708dd41a025d38a21f3",
+   "name": "dash-missile-platform",
+   "kind": "specialist",
+   "parent": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/dash-missile-platform-long/000",
+    "step": 9253158912
+   },
+   "sim": "3734993c1b74e63b1e2f6985be8d623fda53df2c6df587ff9be50f49fc806bab",
+   "reward": {
+    "tag": "trades-paid",
+    "binding_sha256": "c82375d93f4e0478dfebf6b823264072b9e359ac1e9184d2902ecc3b415f4a2c",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     10,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: strongest known play on its kit, frozen as an exploiter"
+   },
+   "path": "native/artifacts/rl/sweeps/dash-missile-platform-long/000/checkpoints/policy-9253158912.bin",
+   "metadata_sha256": "98d6be530c44a5e0d37e4b89248d97f1e489bbf73a102f8a2b176507a54bff7a"
+  },
+  {
+   "id": "7a714bbbb64f4dc38d71773c9768a8d38dce2c26fe02de87a1067e3c0be5ad57",
+   "name": "grapple-beam-rock",
+   "kind": "specialist",
+   "parent": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/grapple-beam-rock-long/000",
+    "step": 9253158912
+   },
+   "sim": "3734993c1b74e63b1e2f6985be8d623fda53df2c6df587ff9be50f49fc806bab",
+   "reward": {
+    "tag": "trades-paid",
+    "binding_sha256": "c82375d93f4e0478dfebf6b823264072b9e359ac1e9184d2902ecc3b415f4a2c",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     27,
+     28,
+     9
+    ]
+   },
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: strongest known play on its kit, frozen as an exploiter"
+   },
+   "path": "native/artifacts/rl/sweeps/grapple-beam-rock-long/000/checkpoints/policy-9253158912.bin",
+   "metadata_sha256": "e0a3fbdea8b6ec18d828c1f04ecfeba5654588a69cf93f51e72987ec52a476aa"
+  },
+  {
+   "id": "8f46f3ec8b496e1e61809f843600e6e934f022af76d1bf6229c2f869df9079e2",
+   "name": "duplicator-blink-blackhole",
+   "kind": "specialist",
+   "parent": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/duplicator-blink-blackhole-long/000",
+    "step": 9253158912
+   },
+   "sim": "3734993c1b74e63b1e2f6985be8d623fda53df2c6df587ff9be50f49fc806bab",
+   "reward": {
+    "tag": "trades-paid",
+    "binding_sha256": "c82375d93f4e0478dfebf6b823264072b9e359ac1e9184d2902ecc3b415f4a2c",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     29,
+     6,
+     18
+    ]
+   },
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: strongest known play on its kit, frozen as an exploiter"
+   },
+   "path": "native/artifacts/rl/sweeps/duplicator-blink-blackhole-long/000/checkpoints/policy-9253158912.bin",
+   "metadata_sha256": "65fa237412c14d8e49c6163eeed9631d7c48eaa75b4dcccad830c69776db1fa4"
+  },
+  {
+   "id": "322eaf0d6277e92b8fade19765f5a7c9143ea6ef781b2bb882c65058415edd57",
+   "name": "drill-throw-magnet",
+   "kind": "specialist",
+   "parent": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/drill-throw-magnet-long/000",
+    "step": 9253158912
+   },
+   "sim": "3734993c1b74e63b1e2f6985be8d623fda53df2c6df587ff9be50f49fc806bab",
+   "reward": {
+    "tag": "trades-paid",
+    "binding_sha256": "c82375d93f4e0478dfebf6b823264072b9e359ac1e9184d2902ecc3b415f4a2c",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     26,
+     21,
+     30
+    ]
+   },
+   "added": {
+    "date": "2026-09-23",
+    "rule": "seed: strongest known play on its kit, frozen as an exploiter"
+   },
+   "path": "native/artifacts/rl/sweeps/drill-throw-magnet-long/000/checkpoints/policy-9253158912.bin",
+   "metadata_sha256": "a80d60f8a77eefd4cfa3f3b61afdbb65d8fa1d0285ff8ea7d19384d0800a9fbd"
+  }
+ ],
+ "conditions": {
+  "sim9f60ac37.lineups-8.map012.t7200.d9": {
+   "key": "sim9f60ac37.lineups-8.map012.t7200.d9",
+   "sim_sha256": "9f60ac376ec71290eee4c7473046da8458d2ba82e52520be86f5eac96a34333d",
+   "maps": [
+    0,
+    1,
+    2
+   ],
+   "episode_ticks": 7200,
+   "delay": 9,
+   "loadouts": {
+    "mode": "set",
+    "fixed": [
+     2,
+     4,
+     14
+    ],
+    "pool": [],
+    "lineups": [
+     [
+      2,
+      4,
+      14,
+      2,
+      4,
+      14
+     ],
+     [
+      2,
+      10,
+      14,
+      2,
+      10,
+      14
+     ],
+     [
+      16,
+      3,
+      13,
+      16,
+      3,
+      13
+     ],
+     [
+      27,
+      28,
+      9,
+      27,
+      28,
+      9
+     ],
+     [
+      25,
+      24,
+      23,
+      25,
+      24,
+      23
+     ],
+     [
+      32,
+      37,
+      36,
+      32,
+      37,
+      36
+     ],
+     [
+      29,
+      6,
+      18,
+      29,
+      6,
+      18
+     ],
+     [
+      26,
+      21,
+      30,
+      26,
+      21,
+      30
+     ]
+    ],
+    "set_file": "/home/mte/Documents/Coding/bopl-re/ripped/.rifts/ExportedProject/league-core/native/data/lineups-8.txt",
+    "no_dup": false,
+    "mirror_share": 1.0
+   },
+   "loadout_sha256": "ee57f108e5691eb78c49000c7b4a3807e194994429e8f7b4f087b3a62b1be4db"
+  }
+ },
+ "league_sha256": "ff66dd62f4647d5ed396c32bec0014f059626e5204c5ccedbeeb105b593c19bd"
+}
