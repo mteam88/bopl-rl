@@ -8430,7 +8430,21 @@ impl RolloutWorld {
             // DestroyIfOutsideSceneBounds component. Unlike the ordinary
             // slime, this ability body's position is final for this updater
             // pass (the separate platform moves later in DetPhysics).
-            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+            //
+            // If the form exited during its own update the boundary component
+            // does not run: `Ability.ExitAbility` ends with
+            // `base.gameObject.SetActive(value: false)` before `onExitAbility`
+            // (Ability.cs:151-153), so the ability object is already inactive
+            // when its turn would come. The restored slime's own component
+            // took its turn earlier in the pass, while the slime was still
+            // inactive, so nothing tests the boundary on an exit pass and the
+            // kill lands on the next one. Roll already guards this
+            // (`active == Roll` above); Platform did not, and killed a form
+            // that exited below the plane a tick early.
+            if self.players[index].active == ActiveAbility::Platform
+                && self.players[index].base.alive
+                && self.players[index].base.outside_bounds()
+            {
                 // The slime takes over the ability body's position
                 // (DestroyIfOutsideSceneBounds.cs:137, SlimeController.cs:217).
                 self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
