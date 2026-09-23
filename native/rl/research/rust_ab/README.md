@@ -417,6 +417,78 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `sudden_death_ab.c`: authored-platform sink activation and randomized-delay
   trajectories around the 120-second transition.
 
+- `scale_boundary_ab.c`: a grounded player pressing a collider-rescaling
+  ability slot (Dash) while sudden death has carried its platform under
+  SceneBounds.WaterHeight. `player_tick`'s entry-pass boundary check runs
+  `move_only` on a copy of the body, and `move_only` does not call
+  `sync_collider`, so the copy tests with the hurtbox basis the previous pass
+  left behind. Airborne, clone and real Move agree; grounded they need not.
+  24 cases over maps 0 and 2, sweeping the press offset around the plane
+  crossing and a one-pass versus six-pass hold. Map 0 passes; **all 12 map-2
+  cases fail**: the reference lets Dash claim the body and kills it as an
+  ability body (`CauseOfDeath.Other`, ungrounded 0.05 off its surface,
+  y = -11.504346459173) while the port pre-empts the entry and kills the
+  ordinary slime (`Accident`, y = -11.554342044285), which also shifts the
+  platform it stood on by 0.0077 on the following tick. Excludes one
+  separately-owned known difference, the `sudden_death` header flag
+  publication lag, and says so on stdout when it does.
+
+## Trace-only probes: exit status is not a result
+
+Most probes here compare internally and `return 1` when the backends disagree.
+**Seventeen do not.** They print a per-backend trace and end with `return 0`,
+so their exit status is clean whether or not the two backends agree. A suite
+that checks only exit status reports them as passing for ever -- including on
+a build with a known bug, which is how a 30/30 sweep was once obtained on an
+unfixed port.
+
+For those probes the comparison lives in `trace_compare.py`, and it is not
+optional:
+
+```sh
+cc -O2 -I. -o /tmp/platform_rotation_ab \
+  research/rust_ab/platform_rotation_ab.c bopl_rl.c -ldl -lm
+( cd ../.. && /tmp/platform_rotation_ab 4 200 400 900 \
+    net=<BoplSimNative.so> rust=<libbopl_sim.so> ) > /tmp/out.csv
+python3 research/rust_ab/trace_compare.py /tmp/out.csv   # <- the real verdict
+```
+
+Run the whole suite, comparator included, with
+
+```sh
+research/rust_ab/run_suite.sh          # or: make -C native/rl rust-ab-suite
+```
+
+which exits non-zero if anything fails. `run_suite.sh` carries the list of
+trace-only probes; add to it whenever you add a probe that only prints.
+
+Two rules `trace_compare.py` enforces, both learned the hard way:
+
+* **Exact equality, never a tolerance.** Under `--features q32` both backends
+  execute identical Q32.32 integer arithmetic, so any difference is a real
+  divergence. One raw unit is 1/2^32 ~= 2.33e-10. A comparator written with
+  `TOL = 1e-6` would pass every one-raw-unit bug this suite has ever caught,
+  including the `Box.UpdateExtents` reciprocal drift (2 raw units) and the
+  sudden-death negation order (1 raw unit).
+* **A missing row is a divergence.** If one backend emits a sample for a tick
+  and the other does not, that is an entity that exists on one side only --
+  not a pair to skip. An earlier comparator skipped unmatched keys and so
+  missed `platform_rotation_ab` map 0 / angle 200 entirely, reporting 29/30
+  where the truth was 28/30.
+
+If a trace-only probe would be better off asserting internally, convert it --
+`magnet_ability_ab.c` is the model, comparing headers, players, slimes and
+entities by `memcmp` and printing the first differing field. The external
+comparator is a reasonable alternative for probes whose value is the readable
+trace (`move_ab`, `state_ab`, `platform_rotation_ab`), but it must be wired,
+not remembered.
+
+The seventeen, as of this writing: `ability_push_ab`, `arrow_bounds_ab`,
+`bow_ab`, `bow_ground_exit_ab`, `bow_phase_ab`, `dash_phase_ab`,
+`entity_velocity_ab`, `keyboard_ab`, `move_ab`, `platform_ab`,
+`platform_boundary_ab`, `platform_phase_ab`, `platform_rotation_ab`,
+`recast_ab`, `state_ab`, `stock_respawn_ab`, `sudden_death_ab`.
+
 See RUST_ROLLOUTS.md "Fidelity gate" for the validated scopes and measured
 numeric tolerances. Do not infer fidelity from an all-identical dual-backend
 trace unless `bopl_rl.c` includes the library-identity pool fix (`1cd34b2`).

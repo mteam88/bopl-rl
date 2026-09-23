@@ -49,6 +49,34 @@ $(OUT)/bounds_ability_ab: research/rust_ab/bounds_ability_ab.c bopl_rl.c bopl_rl
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -I. research/rust_ab/bounds_ability_ab.c bopl_rl.c -ldl -lm -o $@
 
+# Collider-rescale vs entry-pass boundary gate: a grounded player pressing a
+# rescaling ability slot (Dash) while sudden death has carried it under the
+# kill plane. The entry-pass check runs Move on a COPY of the body, and the
+# copy does not re-sync the collider, so clone and real Move can disagree.
+# Currently FAILS on map 2: the reference lets Dash claim the body and kills
+# it as an ability body (cause Other, ungrounded 0.05 off the surface) while
+# the port pre-empts and kills the ordinary slime (cause Accident).
+scale-boundary-ab: $(OUT)/scale_boundary_ab rust-q32
+	$(abspath $(OUT)/scale_boundary_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
+
+$(OUT)/scale_boundary_ab: research/rust_ab/scale_boundary_ab.c bopl_rl.c bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -I. research/rust_ab/scale_boundary_ab.c bopl_rl.c -ldl -lm -o $@
+
+# Whole rust_ab differential suite, comparator included. Seventeen probes in
+# research/rust_ab only *print* a per-backend trace and always exit 0, so
+# checking exit status alone reports them as passing unconditionally; this
+# target runs trace_compare.py over their output and fails on any difference.
+# See research/rust_ab/README.md "Trace-only probes".
+rust-ab-suite: rust-q32
+	REFERENCE=$(abspath $(REFERENCE)) RUST=$(abspath $(RUST_ROLLOUT_Q32)) \
+	  research/rust_ab/run_suite.sh $(PROBE)
+
+# The comparator on its own, for a capture you already have:
+#   make -C native/rl rust-ab-trace CAPTURE=/tmp/out.csv
+rust-ab-trace:
+	$(PYTHON) research/rust_ab/trace_compare.py $(CAPTURE)
+
 # Real-game replay differential: re-steps saved evaluation games (the .rep
 # recordings beside every evaluations/*.json) in both backends with the
 # recorded per-tick inputs and reports the first divergence per game.
@@ -85,6 +113,7 @@ replay-selfcheck: $(OUT)/replay_ab rust-q32
 # LIBRARY must be a build of the commit the corpus was recorded with - the
 # prebuilt `../target/release` in a working checkout is not reliably that, and
 # replaying a corpus in a later build fails this by design.
+PYTHON ?= python3
 LIBRARY ?= $(RUST_ROLLOUT)
 replay-roundtrip: $(OUT)/replay_ab
 	../artifacts/rl/venv/bin/python research/rust_ab/replay_ab_selfcheck.py \
@@ -152,4 +181,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research map-ab bounds-ability-ab replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac
+.PHONY: all research map-ab bounds-ability-ab scale-boundary-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac
