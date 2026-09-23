@@ -1247,6 +1247,12 @@ pub struct BowState {
     /// Remaining ticks of the fireGround/fireAir animation before exit.
     pub fire_ticks_left: u32,
     pub loading_frame: u32,
+    /// The form's FixTransform rotation. `body.up = inputVector`
+    /// (BowTransform.cs:246) sits after Fire in UpdateSim, so the firing pass
+    /// never applies its own aim and every later pass leaves this alone:
+    /// the bow keeps the orientation the last pre-shot pass wrote. Zero from
+    /// OnEnterAbility (BowTransform.cs:102).
+    pub form_rotation: Fix,
 }
 
 /// BounceBall.cs state for the Rock player form. The rigid body is kept here
@@ -24463,6 +24469,12 @@ impl RolloutWorld {
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
         }
+        // `body.up = inputVector` (BowTransform.cs:244-247), the tail of
+        // UpdateSim. It is skipped once the arrow is away, so the form's
+        // rotation latches on the pass before the shot.
+        if !slot.bow.has_fired {
+            slot.bow.form_rotation = slot.bow.aim.perp_cw().normalized_angle();
+        }
         if exit {
             bow_exit(slot, terrain);
         }
@@ -31860,7 +31872,7 @@ impl RolloutWorld {
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
-            let bow_aim = slot.bow.aim;
+            let bow_form_rotation = slot.bow.form_rotation;
             // Ability.ExitAbility deactivates the ability body where it
             // ended (Ability.cs:151-152) and DetPhysics still syncs that
             // frozen FixTransform every pass (DetPhysics.cs:2498-2530), so
@@ -31996,9 +32008,9 @@ impl RolloutWorld {
                     // invokes Ability.ExitAbility directly, so the disabled
                     // body retains the last aimed rotation.
                     let (center, rotation) = if alive && bowing {
-                        (synced, bow_aim.perp_cw().normalized_angle())
+                        (synced, bow_form_rotation)
                     } else if slot.freeze_form_exit_tick == self.tick {
-                        (exit_position, bow_aim.perp_cw().normalized_angle())
+                        (exit_position, bow_form_rotation)
                     } else {
                         (exit_position, Fix::ZERO)
                     };
@@ -32236,7 +32248,19 @@ impl RolloutWorld {
                 }
                 if (alive && freezing) || was_active {
                     let forced_exit = slot.gun.forced_exit_tick == self.tick;
-                    let (root, rotation) = if freezing || forced_exit {
+                    // GunTransform only writes `body.up` from the aim while the
+                    // shot is pending (GunTransform.cs:184-192) and once more
+                    // inside Fire (GunTransform.cs:120-121); afterwards the form
+                    // keeps the orientation it fired at. The DetPhysics-synced
+                    // body rotation already carries that latch, so publish it
+                    // rather than re-deriving an angle from the live aim.
+                    let (root, rotation) = if freezing {
+                        (synced, rotation)
+                    } else if forced_exit {
+                        // The bypass leaves the disabled form's FixTransform on
+                        // its aimed basis, but `exit_form_for_freeze` has
+                        // already zeroed the shared body rotation for the
+                        // restored slime, so the aim is what survives here.
                         (synced, slot.gun.aim.normalized_angle())
                     } else {
                         (exit_position, Fix::ZERO)
@@ -32280,7 +32304,8 @@ impl RolloutWorld {
                 }
                 if (alive && blinking) || was_active {
                     let (root, rotation, scale) = if blinking {
-                        (synced, slot.gun.aim.normalized_angle(), slot.base.scale)
+                        // Latched at the shot, as at the Freeze row above.
+                        (synced, rotation, slot.base.scale)
                     } else {
                         (exit_position, Fix::ZERO, slot.base.scale)
                     };
@@ -32327,7 +32352,8 @@ impl RolloutWorld {
                 }
                 if (alive && active) || was_active {
                     let (root, rotation, scale) = if active {
-                        (synced, slot.gun.aim.normalized_angle(), slot.base.scale)
+                        // Latched at the shot, as at the Freeze row above.
+                        (synced, rotation, slot.base.scale)
                     } else {
                         (exit_position, Fix::ZERO, slot.base.scale)
                     };
@@ -32367,7 +32393,8 @@ impl RolloutWorld {
                 }
                 if (alive && duplicating) || was_active {
                     let (root, rotation, scale) = if duplicating {
-                        (synced, slot.gun.aim.normalized_angle(), slot.base.scale)
+                        // Latched at the shot, as at the Freeze row above.
+                        (synced, rotation, slot.base.scale)
                     } else {
                         (exit_position, Fix::ZERO, slot.base.scale)
                     };
