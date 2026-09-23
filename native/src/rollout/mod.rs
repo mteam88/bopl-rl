@@ -15184,7 +15184,19 @@ impl RolloutWorld {
                 id,
                 kind: 1,
                 layer: data.smoke.explosion_layer,
-                owner: explosion.owner as u32 + 1,
+                // No owner: `SmokeGrenadeExplode2.Detonate`
+                // (sim/Gameplay/SmokeGrenadeExplode2.cs:50) instantiates the
+                // SmokeExplosion prefab bare and never assigns it a player id,
+                // and the prefab's root carries only Explosion, SpriteAnimator,
+                // DPhysicsBox, FixTransform and PlaySound
+                // (Assets/GameObject/SmokeExplosion.prefab) -- none of which is
+                // an `IPlayerIdHolder`. `RlObservation.Collider`
+                // (sim/Gameplay/RlObservation.cs:110, 118) therefore publishes
+                // owner 0 for this row, exactly as it does for the grenade,
+                // missile and mine explosions. (Those three prefabs do carry a
+                // `Shockwave`, which *is* an `IPlayerIdHolder`, but nothing in
+                // the simulation ever calls `Shockwave.SetPlayerId`, so its
+                // `ownerId` stays 0 as well.)
                 flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
                 hierarchy: 100_000_000
                     + explosion.hierarchy_base
