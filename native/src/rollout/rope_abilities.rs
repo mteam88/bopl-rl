@@ -642,7 +642,10 @@ impl RolloutWorld {
         input: Vec2,
         jump_pressed: bool,
     ) {
-        if jump_pressed && self.players[player].base.grounded {
+        // Same SlimeController jump as `Player::move_step`; the rope's own
+        // release below keeps the raw button.
+        let suppressed = std::mem::take(&mut self.players[player].base.suppress_jump);
+        if jump_pressed && self.players[player].base.grounded && !suppressed {
             let strength = self.players[player].base.constants.jump_strength;
             self.players[player]
                 .base

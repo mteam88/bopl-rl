@@ -2108,6 +2108,10 @@ pub struct PlayerSlot {
     /// movement stick (SlimeController.cs:127/889). `run` ends on a sign
     /// change against *this*, not against the sprite facing.
     pub prev_input_align: Fix,
+    /// Tick of the last instant-ability cast. `OldUpdate` returns right after
+    /// `EnterAbility` (SlimeController.cs:824-831), so the state switch, the
+    /// jump and the `prevInput` store below it are all skipped on that pass.
+    pub instant_cast_tick: u32,
     /// Ticks until GameSessionHandler.SpawnPlayers instantiates the slime
     /// (only a warmup shorter than SLIME_AWAKE_TICK+1 ends before it).
     pub unspawned: u32,
@@ -3434,6 +3438,7 @@ impl RolloutWorld {
                     grounded_speed: Fix::ZERO,
                     previous_jump: false,
                     skip_next_gravity: false,
+                    suppress_jump: false,
                     jumped_this_frame: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
@@ -3556,6 +3561,7 @@ impl RolloutWorld {
                 state_ticks: 0,
                 facing_right: true,
                 prev_input_align: Fix::ZERO,
+                instant_cast_tick: u32::MAX,
                 unspawned: 0,
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
@@ -4564,6 +4570,7 @@ impl RolloutWorld {
     /// then chain like the .NET callbacks (land->idle, stop->idle,
     /// turn->run); reversals while running pass through `stop`.
     fn update_obs_state(&mut self, index: usize, dir: Vec2) {
+        let tick = self.tick;
         let slot = &mut self.players[index];
         if slot.ragdoll_grounded_fall {
             if slot.base.grounded {
@@ -4591,7 +4598,19 @@ impl RolloutWorld {
         } else {
             dir.x
         };
-        let previous_align = std::mem::replace(&mut slot.prev_input_align, ground_align);
+        // SlimeController.OldUpdate returns immediately after EnterAbility
+        // (SlimeController.cs:824-831), so a cast pass reaches neither the
+        // state switch nor the `prevInput = fix` store at line 889. The
+        // PlayerPhysics callbacks and the animation callbacks below are not
+        // part of OldUpdate and still fire. The form abilities are already
+        // excluded by `active` above; the instant ones keep the ordinary
+        // slime and need the cast tick.
+        let cast_pass = slot.instant_cast_tick == tick;
+        let previous_align = if cast_pass {
+            slot.prev_input_align
+        } else {
+            std::mem::replace(&mut slot.prev_input_align, ground_align)
+        };
         // PlayerPhysics.Jump ungrounds the body and OnNoLongerGrounded sets
         // State.fall (SlimeController.cs:956-958) before Move's air raycasts
         // can re-attach it on the same pass (PlayerPhysics.cs:236-238), which
@@ -4636,13 +4655,13 @@ impl RolloutWorld {
                 // source does not stop for that.
                 let reversed = (align > Fix::ZERO && previous_align < Fix::ZERO)
                     || (align < Fix::ZERO && previous_align > Fix::ZERO);
-                if !moving || reversed {
+                if !cast_pass && (!moving || reversed) {
                     slot.obs_state = STATE_STOP;
                     slot.state_ticks = STOP_TICKS;
                 }
             }
             STATE_STOP => {
-                if moving && input_right != slot.facing_right {
+                if !cast_pass && moving && input_right != slot.facing_right {
                     slot.obs_state = STATE_TURN;
                     slot.state_ticks = TURN_TICKS;
                     slot.facing_right = input_right;
@@ -4654,7 +4673,7 @@ impl RolloutWorld {
                 }
             }
             STATE_TURN => {
-                if !moving {
+                if !cast_pass && !moving {
                     slot.obs_state = STATE_STOP;
                     slot.state_ticks = STOP_TICKS;
                 } else {
@@ -4666,7 +4685,8 @@ impl RolloutWorld {
             }
             _ => {
                 // idle (and anything unexpected).
-                if moving {
+                if cast_pass {
+                } else if moving {
                     slot.obs_state = STATE_RUN;
                     slot.facing_right = input_right;
                 } else {
@@ -6765,6 +6785,9 @@ impl RolloutWorld {
         jump_pressed: bool,
         data: &data::RolloutData,
     ) {
+        // Scoped to this pass: only a cast below may set it, and only the
+        // fall-through movement at the end of this function consumes it.
+        self.players[index].base.suppress_jump = false;
         let leaving_blink_wall = self.players[index].base.ground.is_some_and(|ground| {
             self.platforms
                 .iter()
@@ -6888,6 +6911,7 @@ impl RolloutWorld {
                 if !button_down || slot.timers[s] <= slot.cooldowns[s] {
                     continue;
                 }
+                let tick = self.tick;
                 let ability = slot.abilities[s];
                 let ability_data = &data.abilities[ability as usize];
                 if (ability_data.ground_only && !slot.base.grounded)
@@ -6922,14 +6946,20 @@ impl RolloutWorld {
                     // Ability.EnterAbility scales the enabled form collider
                     // from Player.Scale before invoking its components.
                     slot.base.scale = slot.player_scale;
+                    // OldUpdate returns here (SlimeController.cs:830). The
+                    // form abilities are already excluded from the state
+                    // machine by `active`; the instant ones are not.
+                    slot.instant_cast_tick = tick;
                 }
                 match ability {
                     ABILITY_GRAPPLING_HOOK => {
                         self.use_grapple(index, s, action);
+                        self.players[index].base.suppress_jump = true;
                         break;
                     }
                     ABILITY_WEB_SWING => {
                         self.fire_web(index, s);
+                        self.players[index].base.suppress_jump = true;
                         break;
                     }
                     ABILITY_INVISIBILITY => {
@@ -6943,6 +6973,7 @@ impl RolloutWorld {
                         slot.cooldowns[s] = Fix::from_int(10_000);
                         slot.timers[s] = Fix::ZERO;
                         slot.telemetry.ability_activations[s] += 1;
+                        self.players[index].base.suppress_jump = true;
                         break;
                     }
                     ABILITY_GOLD_MUSHROOM => {
@@ -6955,6 +6986,7 @@ impl RolloutWorld {
                         slot.cooldowns[s] = Fix::from_int(10_000);
                         slot.timers[s] = Fix::ZERO;
                         slot.telemetry.ability_activations[s] += 1;
+                        self.players[index].base.suppress_jump = true;
                         break;
                     }
                     ABILITY_TELEPORT => {
@@ -6991,6 +7023,7 @@ impl RolloutWorld {
                             });
                             self.players[index].teleport_markers[s] = Some(marker_index);
                         }
+                        self.players[index].base.suppress_jump = true;
                         break;
                     }
                     ABILITY_PORTAL_GUN => {
@@ -7007,6 +7040,7 @@ impl RolloutWorld {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         self.spawn_portal_shot(index, s, direction, data);
+                        self.players[index].base.suppress_jump = true;
                         break;
                     }
                     ABILITY_REWIND => {
@@ -7036,6 +7070,7 @@ impl RolloutWorld {
                         // Rewind sets InstantAbility.ignoreNextCooldown when
                         // the recorder has fewer than two samples.
                         slot.rewind.finish_next_tick = true;
+                        self.players[index].base.suppress_jump = true;
                         break;
                     }
                     ABILITY_DASH => {
@@ -21063,6 +21098,7 @@ impl RolloutWorld {
             grounded_speed: Fix::ZERO,
             previous_jump: false,
             skip_next_gravity: false,
+            suppress_jump: false,
             jumped_this_frame: false,
             constants: data.player.constants.clone(),
             cooldown: Fix::ZERO,
