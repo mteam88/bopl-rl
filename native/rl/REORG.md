@@ -48,9 +48,29 @@ Maps are the generalization axis.
 **Surgery stays available but stays simple.** It is a worse fit for this problem
 than it was for AlphaStar, so it should be as simple as possible.
 
-**q32 is a measurement instrument, not a goal** (2026-09-23). See the
-"Number type" section of `RUST_ROLLOUTS.md` for the evidence and the working
-rule that follows from it.
+**q32 is a measurement instrument, not a goal** (2026-09-23). Bit-exact
+agreement with the oracle is how we *measure* fidelity; it is not a target worth
+spending fidelity work on for its own sake. The evidence: q32 and f64 produce
+identical discrete medians at training horizons, so a residual f64/q32
+divergence that does not move a discrete outcome does not change what a policy
+learns.
+
+- A divergence that is f64-only - both Rust builds agree with each other but not
+  the oracle - is a logic defect and is worth chasing. That is the useful
+  signal; `entity[].right_x` aim latching (FIXTURES #1) is the standing example.
+- A divergence that is q32-only, i.e. arithmetic, is a measurement artifact.
+  Record it; do not chase it.
+- Keep the q32 build working, because the exactness gates depend on it:
+  `map-sweep-3000`, `map-sweep-endgame`, and `leakprobe-q32`/`selfcheck-q32`,
+  which detect cross-episode contamination with no oracle at all.
+- f64 stays the build that trains. `native/src/fixed.rs` is f64 behind the
+  Q32.32 `Fix` API; `native/src/fixed_q32.rs` behind the `q32` feature is the
+  bit-exact one. Unit tests in `fixed.rs` pin the constants and the timer
+  exactness that both builds rely on, so that knowledge lives in code, not here.
+- After editing anything under `native/src/`, rebuild **both**:
+  `cargo build --release --manifest-path native/Cargo.toml` (f64, which the
+  divergence harness loads as backend 2) and `make -C native/rl rust-q32`.
+  Rebuilding one leaves the other stale and a working fix measures as broken.
 
 ## Deletion inventory
 
@@ -58,18 +78,35 @@ Deleting is most of the work. Verified dead, to be removed as the reorg lands:
 
 - ~3,200 lines of dead Python now, ~4,350 once PFSP replaces the old opponent
   selection (`--swap-winrate`, the banks, `--elo-init`/`--elo-k`)
-- `review/` - 9 files of prose from a completed code review
+- `review/` - removed 2026-09-23; 9 files of prose from a completed code review
 - `reports/` - removed 2026-09-23; it was a single stale `.pyc`
-- `evidence/` - 38 dated measurement records, ~2.0M. **Decided: delete**
-  (2026-09-23). It is the only *data* category in the inventory, so it needs a
-  deliberate call rather than being swept up. Two things to respect when doing
-  it: the records are committed and pushed, so `git log` remains the recovery
-  path, and **ten documents link into `evidence/` and `review/`** -
-  `NATIVE_HANDOFF.md`, `MANY_WORLDS.md`, `SIM_OVERHAUL.md`, `THROUGHPUT.md`,
-  `ABILITY_PORT_GAPS.md`, `README.md`, `autoresearch/notes.md`,
-  `sim/PORTING.md`. Fix those links in the same change that removes the
-  directories, which is why this waits for the reorg rather than happening
-  separately.
+- `evidence/` - removed 2026-09-23; 38 dated measurement records, ~2.0M
+- **43 stale documents, 21,348 lines** - removed 2026-09-23. They described
+  approaches that were abandoned, carried version numbers in their names, or
+  recorded one-off spikes and reviews that had already landed. Six documents
+  survive, and each is either a live contract or actively used:
+  `REORG.md` (this file), `rl/README.md`, `league/README.md`,
+  `research/METRICS_CONTRACT.md` (asserted by `check_routing.py`),
+  `research/divergence/FIXTURES.md` (open defects and their repro recipes),
+  `research/rust_ab/README.md` (the probe suite behind `rust-ab-suite`).
+
+All of it is recoverable: everything was committed and pushed to the private
+origin before deletion. `git log --diff-filter=D --name-only` finds it.
+
+Two things were lifted out before the docs went, because they were the only
+record of something still open: the q32 decision above, and three open defects
+now recorded at the end of `research/divergence/FIXTURES.md` (the oracle's
+`ShootDuplicator` NullReferenceException, the 1-in-17 determinism flake, and the
+AOT `rd.xml` residual risk).
+
+**Still to do: 139 comment references across 87 files point at deleted docs** -
+things like "see POLICY_V4_PLAN.md section 6". A pointer to an explanation that
+no longer exists is worse than no pointer. Strip the reference and keep the
+substantive text: `# SIM_OVERHAUL.md section 4: one GC heap under every world
+costs 25-45%` becomes `# One GC heap under every world costs 25-45%`. This is
+deliberately folded into the reorg rather than done separately, because the reorg
+moves nearly all of those files anyway. `native/rl/sweep/configs/*.toml` is the
+bulk of it.
 
 ## Order of work
 

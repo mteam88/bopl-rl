@@ -1,6 +1,0 @@
-{
-  "return_terminal_and_bootstrap": "pass",
-  "cpu_recurrent_reset_and_reload": "pass",
-  "cuda_recurrent_reset_and_reload": "pass",
-  "real_game_delay_reset_loadout": "pass"
-}

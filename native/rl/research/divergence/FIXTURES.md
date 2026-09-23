@@ -296,3 +296,33 @@ also confirms the simulator itself is deterministic and the comparator sound.
 
 The control script now runs both: `selfcheck-q32` (symmetric, must be 0) and
 `leakprobe-q32` (asymmetric, measures the leak).
+
+## Open items inherited from the deleted porting docs
+
+Not found by this sweep, but this is where open defects live now. The 2026-09-23
+reorganization deleted `sim/PORTING.md`, which carried these as unticked
+checklist entries; they are recoverable in full from git history.
+
+**The oracle throws on one recorded game.** `i3251` (map 27, seed 3933741779,
+loadout `[[38,29,4],[10,17,16]]`) fails on the *oracle* with a .NET
+`System.NullReferenceException` in `ShootDuplicator.ApplyDuplicationEffect` at
+tick 193. The port plays the same game cleanly in all three backend slots: 274
+ticks, terminal, zero self-divergence. See fixture #4, which this was long
+misattributed to.
+
+**Determinism flake, 1 in ~17 runs, never reproduced.** One `checkpoint.sh` l4
+replay diverged at tick 0 on `playerDied` + `updatables` and 16 retries failed to
+reproduce it. The suspicion was a `Dictionary<string,_>` iteration-order leak
+(.NET randomizes string hash seeds per process) on a trace-observable path; a
+later guess was a socket-path artefact. Both rest on that single observation, so
+the rate on the in-process path the RL evaluation actually uses is unknown. This
+matters for any oracle-hosted measurement: if the backend is not reproducible
+across processes then per-game comparisons are noise and only large-N averages
+mean anything. `research/backend_determinism.py` is the instrument that measures
+it - each repeat is a separate `evaluate.py` process, which is the unit the
+hypothesis is about - and it should be run on the Rust sim too, where the arm
+must come back perfectly identical.
+
+**AOT residual risk in the coordinator.** Serialized `List<T>` fields without
+inline initializers, on maps and loadouts not yet exercised, may need `rd.xml`
+entries. A serialized-field scan that generates `rd.xml` would close it.
