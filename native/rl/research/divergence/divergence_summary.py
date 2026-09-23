@@ -287,6 +287,26 @@ def coverage(games, runs):
     reached = sorted(maps)
     missing = [m for m in range(map_count) if m not in maps]
     print(f'maps reached {len(reached)}/{map_count}; unreached: {missing if missing else "none"}')
+    # The ask is about the map x ability space, which marginal counts do not
+    # answer: every map and every ability can be covered while most pairs are
+    # not. A pair counts as reached when the ability was in a resolved loadout
+    # on that map, and as fired when it also activated there.
+    usable = [a for a in range(1, 39) if a != 1]
+    pairs_seen, pairs_fired = set(), set()
+    for game in games:
+        m = game['map']
+        acts = game.get('activations') or []
+        for pi, row in enumerate(game.get('resolved', [])):
+            for si, a in enumerate(row):
+                if not a:
+                    continue
+                pairs_seen.add((m, a))
+                if pi < len(acts) and si < len(acts[pi]) and acts[pi][si]:
+                    pairs_fired.add((m, a))
+    total_pairs = map_count * len(usable)
+    print(f'map x ability pairs: {len(pairs_seen)}/{total_pairs} equipped '
+          f'({len(pairs_seen) / total_pairs:.1%}), {len(pairs_fired)}/{total_pairs} '
+          f'observed firing ({len(pairs_fired) / total_pairs:.1%})')
     print(f'  games per map: min {min(maps.values())} median '
           f'{sorted(maps.values())[len(maps) // 2]} max {max(maps.values())}')
 
