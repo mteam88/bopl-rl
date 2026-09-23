@@ -165,7 +165,18 @@ def score(game):
 
 
 def corrected_kills(game):
-    """Kills of somebody else: the game credits a suicide to the victim's own Kills."""
+    """Kills of somebody else: the game credits a suicide to the victim's own Kills.
+
+    Which side of that subtraction a stored row is on depends on the evaluate.py that
+    wrote it. Before the "score undecided rounds as draws" change, evaluate.py stored
+    the raw Player.Kills and the subtraction belonged here; since then it stores
+    `me['kills'] - deaths_self` itself, and doing it again here would charge every
+    suicide twice. The same commit added the per-game `undecided` flag, so its
+    presence dates the row -- and getting this wrong is not cosmetic: mixing the two
+    conventions across two arms reads as a 41% drop in kills that no backend caused.
+    """
+    if 'undecided' in game:
+        return game['kills']
     return game['kills'] - game['behavior']['totals'].get('deaths_self', 0.0)
 
 
@@ -415,7 +426,23 @@ def command_report(args):
         _, step = final_checkpoint(kit)
         base = read_games(out / 'runs' / kit / args.base / 'evaluations' / f'{step:09d}' / 'result.json')
         arm = read_games(out / 'runs' / kit / args.arm / 'evaluations' / f'{step:09d}' / 'result.json')
-        entry = dict(step=step, divergence=diverge.get(kit))
+        # Every number below is a PAIRED comparison, so restrict both arms to the games
+        # they actually share. paired()/flips()/churn_of() intersect internally, but
+        # outcome_mix() and means() summarise one arm on its own: fed a base arm that
+        # also played opponents the other could not (an oracle arm has no `search` bots,
+        # which are the two strongest), they would compare different populations and
+        # report a large spurious difference in kills and episode length. That is not a
+        # hypothetical -- it read as "27% shorter episodes, 35% fewer kills" before this.
+        shared = set(base) & set(arm)
+        dropped = (len(base) - len(shared), len(arm) - len(shared))
+        if any(dropped):
+            print(f'# {kit}: pairing on {len(shared)} shared games '
+                  f'({dropped[0]} base-only, {dropped[1]} arm-only dropped: '
+                  f'{sorted({k[0] for k in set(base) - shared} | {k[0] for k in set(arm) - shared})})')
+        base = {k: v for k, v in base.items() if k in shared}
+        arm = {k: v for k, v in arm.items() if k in shared}
+        entry = dict(step=step, divergence=diverge.get(kit), paired_games=len(shared),
+                     dropped_base_only=dropped[0], dropped_arm_only=dropped[1])
         for suite, keep in SUITES.items():
             for role, maps in ROLES:
                 sel = (lambda g, keep=keep, maps=maps: keep(g) and (maps is None or g['map'] in maps))
