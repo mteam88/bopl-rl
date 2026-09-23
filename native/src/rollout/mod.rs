@@ -2166,6 +2166,7 @@ impl PlayerSlot {
         // so the collider's stored inverse extents keep drifting by raw units.
         let ratio = (Fix::ONE / self.body_collider_scale) * scale;
         self.body_inverse_extents = self.body_inverse_extents / ratio;
+        self.base.collider_inverse_extents = self.body_inverse_extents;
         self.body_collider_scale = scale;
         self.base.scale = scale;
     }
@@ -3441,6 +3442,7 @@ impl RolloutWorld {
                         inverse_extents: Vec2::new(Fix::ONE, Fix::ONE),
                     },
                     collider_rotation: Fix::ZERO,
+                    collider_inverse_extents: Vec2::ZERO,
                     collider_basis: Vec2::ZERO,
                     aligned: None,
                     input_normalized: None,
@@ -21084,6 +21086,7 @@ impl RolloutWorld {
             dash: DashState::default(),
             collider,
             collider_rotation: Fix::ZERO,
+            collider_inverse_extents: Vec2::ZERO,
             collider_basis: Vec2::RIGHT,
             aligned: None,
             input_normalized: None,
