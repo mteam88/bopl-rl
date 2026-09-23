@@ -182,3 +182,52 @@ Not fixed here - recorded for later.
   `map-sweep-3000` passes cleanly while reusing one handle across 248 episodes
   (`map_ab.c:479` opens once, `:520` resets per case) - it only ever exercises
   3 of the 38 abilities.
+
+## Fixture #4 - Black hole panics the port on vector-field maps
+
+**Status:** reproducible; hard crash, not a divergence.
+
+The port aborts with an index-out-of-bounds inside the VectorFieldPlatform
+update. Both panic sites index a platform that no longer exists:
+
+```
+src/rollout/mod.rs:29199:35  self.platforms[platform_index].active
+src/rollout/mod.rs:29202:48  map.platforms[self.platform_defs[platform_index]]
+```
+
+and the message is always `index out of bounds: the len is N but the index is
+N` - a stale index left in `self.vector_fields` after the platform list shrank.
+
+**Trigger is Black hole (ability 18).** Played as the only ability in every
+slot, 496 episodes each:
+
+| loadout       | crashes |
+|---------------|---------|
+| Black hole (18) | 13/496 (2.6%) |
+| Platform (14)   | 0/496 |
+| Grenade (3)     | 0/496 |
+
+In the unbiased sweep it shows up as 52 of 34,720 attempted games (0.15%),
+concentrated on maps 12, 34, 82, 11, 58 - the maps that carry a
+VectorFieldPlatform. Five of the six crashed games in the `random-all` cell
+carry ability 18 outright; the sixth is on map 27 and is not explained by 18,
+so there may be a second route into the same stale index.
+
+Crashed games in the unbiased sweep (map, seed, loadout):
+
+```
+i1398 map 34 seed 2240342878 [[18,17,16],[3,21,33]]
+i2934 map 82 seed 3380414709 [[15,13,6],[18,11,8]]
+i3251 map 27 seed 3933741779 [[38,29,4],[10,17,16]]
+i3926 map 82 seed  602382264 [[13,18,37],[1,36,28]]
+i4994 map 34 seed 1670732068 [[6,10,13],[20,18,6]]
+i9188 map 12 seed 3465757549 [[32,11,22],[18,33,1]]
+```
+
+**Unreachable from the gate loadout**, like fixtures #2 and #3: the scripted
+bots and the existing sweeps use Dash/Bow/Platform, which contains no Black
+hole, so none of the bot cells crashed once in 13,000+ episodes. This is the
+third distinct defect in this file that the current gates cannot reach.
+
+The harness survives it: `bopl_rl` catches the panic, the game is counted as
+failed and skipped, and the episode replay is written to /tmp.

@@ -494,7 +494,18 @@ int main(int argc, char **argv) {
         game.seed = config.seed;
         for (int p = 0; p < players; p++)
             for (int s = 0; s < 3; s++) game.loadout[p][s] = config.player[p].abilities[s];
-        if (dr_play(world, &config, &driver, tolerance, horizon, &game)) { failed++; continue; }
+        if (dr_play(world, &config, &driver, tolerance, horizon, &game)) {
+            /* Record what the game WAS, so a crash can be attributed to a map
+             * and a loadout instead of just counted. */
+            failed++;
+            printf("{\"record\":\"fail\",\"cell\":\"%s\",\"i\":%u,\"map\":%u,"
+                   "\"seed\":%u,\"loadout\":[[%u,%u,%u],[%u,%u,%u]]}\n",
+                   cell_label, index, game.map, game.seed,
+                   game.loadout[0][0], game.loadout[0][1], game.loadout[0][2],
+                   game.loadout[1][0], game.loadout[1][1], game.loadout[1][2]);
+            fflush(stdout);
+            continue;
+        }
         dr_write_replay(world[0], cell_label, index, game.map);
         ticks_total += game.ticks;
         compared_total += game.compared;
