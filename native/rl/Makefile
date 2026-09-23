@@ -1,6 +1,13 @@
 CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Werror
 OUT ?= ../artifacts/rl
+# Probes under research/rust_ab resolve their fixture and log through
+# /proc/self/cwd/native/..., so a recipe that runs one has to change into the
+# project root first - make's own working directory is native/rl, where that
+# path does not exist and the failure is a bare `open:` with an empty message.
+# `rust-ab-suite` already does this through run_suite.sh, which is why the
+# standalone targets went for a while without anyone noticing.
+PROJECT_ROOT := $(abspath ../..)
 
 all: $(OUT)/libbopl_rl.so $(OUT)/benchmark $(OUT)/coverage $(OUT)/record $(OUT)/reset_check $(OUT)/sampled_check $(OUT)/reset_profile $(OUT)/frame_profile
 
@@ -57,7 +64,7 @@ $(OUT)/bounds_ability_ab: research/rust_ab/bounds_ability_ab.c bopl_rl.c bopl_rl
 # it as an ability body (cause Other, ungrounded 0.05 off the surface) while
 # the port pre-empts and kills the ordinary slime (cause Accident).
 scale-boundary-ab: $(OUT)/scale_boundary_ab rust-q32
-	$(abspath $(OUT)/scale_boundary_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
+	cd $(PROJECT_ROOT) && $(abspath $(OUT)/scale_boundary_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
 
 $(OUT)/scale_boundary_ab: research/rust_ab/scale_boundary_ab.c bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
@@ -74,6 +81,30 @@ sudden-death-publication-ab: $(OUT)/sudden_death_publication_ab rust-q32
 $(OUT)/sudden_death_publication_ab: research/rust_ab/sudden_death_publication_ab.c bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -I. research/rust_ab/sudden_death_publication_ab.c bopl_rl.c -ldl -lm -o $@
+
+# Sudden-death endgame gate: maps 0-4 played out with no input at all, every
+# entity, slime and player field compared exactly from reset through the tick
+# that resolves the round (level 7302-8218 depending on the map). This is the
+# only gate that sees the game after sudden death begins at level tick 7200;
+# map-sweep-3000 stops 4,200 ticks short of it. Found the round-resolution
+# sudden-death flag bug: WinGame lowers SuddenDeathInProgress before the
+# authored level updaters run, so map 2's AntiLockPlatform orbiter takes one
+# more waypoint kick on the deciding tick.
+sudden-death-chunk-ab: $(OUT)/sudden_death_chunk_ab rust-q32
+	cd $(PROJECT_ROOT) && BOPL_RL_ABILITY_SPAWNS=1 $(abspath $(OUT)/sudden_death_chunk_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
+
+$(OUT)/sudden_death_chunk_ab: research/rust_ab/sudden_death_chunk_ab.c bopl_rl.c bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -I. research/rust_ab/sudden_death_chunk_ab.c bopl_rl.c -ldl -lm -o $@
+
+# The same authored-map gate as map-sweep-3000, run long enough that every
+# map reaches sudden death and the round resolves. Strictly wider coverage at
+# ~3x the runtime, so both targets exist: keep 3000 as the quick gate.
+# Nothing is excluded here: the header's sudden_death flag is compared like
+# every other field, which is what makes this the gate for the observation
+# writer's one-pass publication lag.
+map-sweep-endgame: $(OUT)/map_ab rust-q32
+	MAP_AB_STRICT_ACTORS=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32)) 8200
 
 # Whole rust_ab differential suite, comparator included. Seventeen probes in
 # research/rust_ab only *print* a per-backend trace and always exit 0, so
@@ -193,4 +224,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research map-ab bounds-ability-ab scale-boundary-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac
+.PHONY: all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac

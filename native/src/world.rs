@@ -17,6 +17,9 @@ fn default_scale() -> Fix {
 fn default_true() -> bool {
     true
 }
+fn default_up() -> Vec2 {
+    Vec2::UP
+}
 fn is_true(value: &bool) -> bool {
     *value
 }
@@ -87,6 +90,28 @@ pub struct Player {
     /// `RolloutWorld::update_obs_state` read it without consuming it.
     #[serde(default)]
     pub(crate) instant_cast_this_pass: bool,
+    /// `SlimeController.wasUpsideDown`: `Jump()` records the sign of the
+    /// ground normal it is leaving before handing over to PlayerPhysics.Jump
+    /// (SlimeController.cs:897-900), and `AlignTransformAir` consumes it on
+    /// the same pass (SlimeController.cs:967-972). Only the slime's own jump
+    /// records it; the ability jumps call PlayerPhysics.Jump directly.
+    #[serde(default)]
+    pub(crate) was_upside_down: bool,
+    /// The ground frame `OldUpdate` saw. SlimeController.UpdateSim runs
+    /// OldUpdate at line 1067 and only calls `PlayerPhysics.Move` at 1084, so
+    /// `fix`, `fix2` and both `IsGrounded()` tests (SlimeController.cs:795-798
+    /// and 890) read the pose left by PlayerPhysics.UpdateSim's gravity and
+    /// landing raycasts, never the one Move goes on to produce.
+    #[serde(default = "default_up")]
+    pub(crate) pre_move_up: Vec2,
+    #[serde(default)]
+    pub(crate) pre_move_grounded: bool,
+    /// `attachToGround` flips the sprite from the normal at the instant of
+    /// attachment (SlimeController.cs:1126-1134). That normal is not the
+    /// end-of-tick `up`: on a steep or rotating surface the two differ by a
+    /// whole tick of surface rotation. `None` when nothing attached this pass.
+    #[serde(default)]
+    pub(crate) attach_upside_down: Option<bool>,
     pub constants: MovementConstants,
     pub cooldown: Fix,
     pub dash: DashState,
@@ -569,6 +594,14 @@ impl Player {
             .attach(platform.id, &platform.surface, position)
             .expect("valid attachment");
         self.apply_ground_state(motion);
+        // SlimeController subscribes attachToGround to OnAttachedToGround
+        // (SlimeController.cs:472) and reads `attachedGround.currentNormal(body)`
+        // inside that callback (SlimeController.cs:1131). PlayerPhysics has
+        // already snapped the body onto the surface by then
+        // (player_physics.rs attaches before it notifies), so the normal it
+        // sees is the post-attach one - exactly the `up` just stored, and not
+        // the normal at the raw raycast point nor the end-of-tick one.
+        self.attach_upside_down = Some(self.up.y < Fix::ZERO);
     }
     pub(crate) fn collision_rays(&mut self, terrain: Terrain) {
         let velocity = self.velocity + self.external_velocity;
@@ -597,7 +630,21 @@ impl Player {
     }
 
     fn jump(&mut self, platforms: &[Platform]) {
+        self.record_upside_down_jump(platforms);
         self.jump_with_strength(platforms, self.constants.jump_strength);
+    }
+    /// `SlimeController.Jump` reads the normal of the ground it is leaving and
+    /// stores it in `wasUpsideDown` before calling PlayerPhysics.Jump
+    /// (SlimeController.cs:897-900). Only the slime's own jump does this: the
+    /// ability jumps (Roll, Meteor) reach PlayerPhysics.Jump directly and
+    /// leave the flag alone.
+    pub(crate) fn record_upside_down_jump(&mut self, platforms: &[Platform]) {
+        let normal = self
+            .grounded
+            .then(|| platforms.iter().find(|p| Some(p.id) == self.ground))
+            .flatten()
+            .map_or(Vec2::UP, |p| p.surface.normal(self.position));
+        self.was_upside_down = normal.y < Fix::ZERO;
     }
     pub(crate) fn jump_with_strength(&mut self, platforms: &[Platform], strength: Fix) {
         // PlayerPhysics.Jump uses world up while airborne and only reads the
@@ -738,10 +785,26 @@ impl Player {
     /// uses the same vector for both; keyboard players use W/A/S/D for motion
     /// and the joystick byte independently for ability aim.
     pub(crate) fn step_with_input(&mut self, action: Action, input: Vec2, terrain: Terrain) {
+        self.begin_pass();
         if !self.dash.active {
             self.gravity_step(terrain);
         }
+        self.capture_pre_move();
         self.move_step(action, input, terrain);
+    }
+    /// Start of this body's updater pass, before PlayerPhysics.UpdateSim.
+    /// `attach_upside_down` records whichever of this pass's two raycast
+    /// phases fires attachToGround, so it has to be cleared ahead of both.
+    pub(crate) fn begin_pass(&mut self) {
+        self.attach_upside_down = None;
+    }
+    /// The boundary between PlayerPhysics.UpdateSim and SlimeController's
+    /// OldUpdate. Everything OldUpdate reads about the ground is sampled here,
+    /// because Move does not run until SlimeController.cs:1084 - long after
+    /// OldUpdate has finished with it.
+    pub(crate) fn capture_pre_move(&mut self) {
+        self.pre_move_up = self.up;
+        self.pre_move_grounded = self.grounded;
     }
     /// SlimeController.UpdateSim after PlayerPhysics.UpdateSim has applied
     /// gravity: dash entry/continuation, jump, ground or air movement, then

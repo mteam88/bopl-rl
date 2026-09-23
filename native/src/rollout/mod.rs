@@ -2334,7 +2334,21 @@ pub struct RolloutWorld {
     pub portal_body_inside: Vec<u64>,
     pub portal_body_ids: Vec<u32>,
     duplicate_platform_effects: Vec<DuplicatePlatformState>,
+    /// `GameSessionHandler.SuddenDeathInProgress`. `WinGame` and
+    /// `DeclareGameUndecided` both call `ActivateSuddenDeath(activate: false)`
+    /// (GameSessionHandler.cs:655, 548), so this drops back to false on the
+    /// pass that resolves the round - before the authored level updaters run,
+    /// which is what lets map 2's `AntiLockPlatform` orbit resume for that one
+    /// tick.
     pub sudden_death: bool,
+    /// `AnimateVelocity.inSuddenDeath`, the per-component latch. Nothing ever
+    /// calls `ActivateSuddenDeath(false)` on the component, so the level keeps
+    /// sinking after the round is decided even though the global flag is down.
+    pub sudden_death_latched: bool,
+    /// `GameSessionHandler.gameInProgress`. Cleared by `prepareNextlevel`
+    /// through `WinGame`/`DeclareGameUndecided`; it is what stops
+    /// `UpdateSim` from immediately re-arming sudden death on the next pass.
+    pub game_in_progress: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
     pub ability_spawner_enabled: bool,
@@ -2487,6 +2501,8 @@ impl RolloutWorld {
             beam_snapshot: crate::beam::graph::Snapshot::default(),
             beam_inputs: Vec::with_capacity(MAX_PLAYERS),
             sudden_death: false,
+            sudden_death_latched: false,
+            game_in_progress: true,
             sudden_death_tick: 0,
             sudden_death_delays: Vec::with_capacity(64),
             ability_spawner_enabled: false,
@@ -2596,6 +2612,8 @@ impl RolloutWorld {
         self.beam_snapshot.clone_from(&src.beam_snapshot);
         self.beam_inputs.clone_from(&src.beam_inputs);
         self.sudden_death = src.sudden_death;
+        self.sudden_death_latched = src.sudden_death_latched;
+        self.game_in_progress = src.game_in_progress;
         self.sudden_death_tick = src.sudden_death_tick;
         self.sudden_death_delays
             .clone_from(&src.sudden_death_delays);
@@ -2695,6 +2713,8 @@ impl RolloutWorld {
             beam_snapshot: _,
             beam_inputs: _,
             sudden_death: _,
+            sudden_death_latched: _,
+            game_in_progress: _,
             sudden_death_tick: _,
             sudden_death_delays: _,
             ability_spawner_enabled: _,
@@ -2776,6 +2796,8 @@ impl RolloutWorld {
         self.replay_config = *config;
         self.rng = Random::new(config.seed.max(1));
         self.sudden_death = false;
+        self.sudden_death_latched = false;
+        self.game_in_progress = true;
         self.arrows.clear();
         self.ability_pickups.clear();
         self.black_holes.clear();
@@ -3449,6 +3471,10 @@ impl RolloutWorld {
                     previous_jump: false,
                     skip_next_gravity: false,
                     instant_cast_this_pass: false,
+                    was_upside_down: false,
+                    pre_move_up: Vec2::UP,
+                    pre_move_grounded: false,
+                    attach_upside_down: None,
                     jumped_this_frame: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
@@ -4624,11 +4650,51 @@ impl RolloutWorld {
         }
         // SlimeController stores this pass's ground alignment in `prevInput`
         // at the end of OldUpdate (SlimeController.cs:889), on every pass that
-        // reaches the state switch - airborne included. With no attached
-        // ground PlayerPhysics.InputGroundAlignment measures against
-        // Vec2.right (PlayerPhysics.cs:394).
-        let ground_align = if slot.base.grounded {
-            dir.dot(Vec2::new(slot.base.up.y, -slot.base.up.x))
+        // reaches the state switch - airborne included.
+        // OldUpdate reads this before Move (SlimeController.cs:1067, 1084), so
+        // it is the frame PlayerPhysics.UpdateSim left, not the end-of-tick
+        // one. On a surface that rotates under the slime the two differ by a
+        // full tick of rotation, and every facing decision below inherits it.
+        //
+        // The airborne fallback is `Vec2.right` and the test below is
+        // `pre_move_grounded`, where PlayerPhysics.InputGroundAlignment
+        // (PlayerPhysics.cs:392-396) instead branches on
+        // `attachedGround != null`:
+        //
+        //   Vec2 u = ((attachedGround != null) ? attachedGround.forwardsDirection(body) : Vec2.right);
+        //
+        // Those two predicates really are different - `UnGround`
+        // (PlayerPhysics.cs:362-370) clears `isGrounded` and deliberately
+        // leaves `attachedGround` pointing at the platform just departed, and
+        // only the airborne arms of the two `SyncPhysicsTo` overloads null it
+        // (PlayerPhysics.cs:549, :577). Keying on `grounded` here is
+        // nevertheless correct, because the reference never *consumes* a
+        // `fix` computed on the far side of that gap:
+        //
+        //   - SlimeController.cs:473 subscribes `OnNoLongerGrounded`
+        //     unconditionally at Start, and `UnGround` always raises it
+        //     (PlayerPhysics.cs:377-379). The handler at :956-958 sets
+        //     `currentState = State.fall` synchronously, in the same call that
+        //     cleared `isGrounded`.
+        //   - `fix` and `flag5` are read only from the `switch (currentState)`
+        //     arms at :834-866 - land, stop, turn, idle, run - all ground
+        //     states. `State.fall` has no arm.
+        //   - `prevInput` is stored every pass but read only by the `run` arm
+        //     (:861-862), and `run` is reachable only through `land` and
+        //     `idle`, so the pass it is read against was itself grounded.
+        //   - the reference's other two callers, PlayerPhysics.cs:205 and
+        //     :240, both sit past `if (!isGrounded) { ...; return; }` in
+        //     `Move` (:229-234).
+        //
+        // So `InputGroundAlignment`'s `attachedGround`-without-`isGrounded`
+        // regime is unreachable, and a "fix" that models it changes behaviour
+        // the reference cannot exhibit. Measured: keying this on retained
+        // ground moved 27/748 dash-missile-platform games and improved nothing
+        // against the oracle (clean 245 either way, compared ticks 182480 ->
+        // 182370). Do not re-derive this one from the C# alone.
+        let pre_up = slot.base.pre_move_up;
+        let ground_align = if slot.base.pre_move_grounded {
+            dir.dot(Vec2::new(pre_up.y, -pre_up.x))
         } else {
             dir.x
         };
@@ -4647,9 +4713,30 @@ impl RolloutWorld {
         // State.fall (SlimeController.cs:956-958) before Move's air raycasts
         // can re-attach it on the same pass (PlayerPhysics.cs:236-238), which
         // then lands it again through attachToGround.
-        if std::mem::take(&mut slot.base.jumped_this_frame) || !slot.base.grounded {
+        let jumped = std::mem::take(&mut slot.base.jumped_this_frame);
+        if jumped || !slot.base.grounded {
             slot.obs_state = STATE_FALL;
             slot.state_ticks = 0;
+        }
+        // The last statement of OldUpdate is `if (!IsGrounded())
+        // AlignTransformAir()` (SlimeController.cs:890-892). That IsGrounded()
+        // is the pre-Move one, less whatever Jump() just ungrounded, so a pass
+        // that only walked off the ledge inside Move still took the grounded
+        // branch and did not re-aim. A pass that entered an ability returned
+        // long before reaching this line.
+        if !held && (!slot.base.pre_move_grounded || jumped) {
+            // AlignTransformAir (SlimeController.cs:967-982): consume the
+            // ground normal Jump() left behind, then aim from the raw stick
+            // against MIN_TURNSPEED 0.02 - not from the ground alignment, and
+            // with no DEADZONE test.
+            if std::mem::take(&mut slot.base.was_upside_down) {
+                slot.facing_right = !slot.facing_right;
+            }
+            if dir.x < -Fix::from_f32(0.02) {
+                slot.facing_right = false;
+            } else if dir.x > Fix::from_f32(0.02) {
+                slot.facing_right = true;
+            }
         }
         if !slot.base.grounded {
             return;
@@ -4659,7 +4746,9 @@ impl RolloutWorld {
         // alignment past GROUNDALIGNMENTDEADZONE 0.2, or input pressed into
         // the ground with any alignment at all.
         let align = ground_align; // rightward ground tangent, computed above
-        let into_ground = slot.base.up.dot(dir) < Fix::ZERO;
+        // `fix2` is taken from the same pre-Move frame as `fix`
+        // (SlimeController.cs:797), against the raw stick.
+        let into_ground = pre_up.dot(dir) < Fix::ZERO;
         let moving = dir != Vec2::ZERO
             && (align.abs() >= Fix::from_f32(0.2)
                 || (into_ground && align.abs() >= Fix::from_f32(0.01)));
@@ -4671,10 +4760,30 @@ impl RolloutWorld {
             STATE_FALL => {
                 // attachToGround: land animation, then idle (one tick longer
                 // after an ability exit, see `PlayerSlot::exit_to_fall`).
+                // Landing on a ceiling flips the sprite
+                // (SlimeController.cs:1131-1134). The test is the normal at
+                // the instant the raycast attached, recorded by
+                // `Player::attach`; the end-of-tick `up` has already rotated
+                // away from it on a moving or steeply curved surface.
+                if slot.base.attach_upside_down == Some(true) {
+                    slot.facing_right = !slot.facing_right;
+                }
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks += LAND_TICKS;
             }
             STATE_LAND => {
+                // `case State.land: if (Fix.Abs(fix) >= GROUNDALIGNMENTDEADZONE
+                // || fix2 < 0) flipTrans.alignTransform(fix >= 0)`
+                // (SlimeController.cs:836-841). This is the one state that
+                // re-aims the sprite without changing state, and its test is
+                // weaker than flag5: no DEADZONE magnitude, and any input
+                // pressed into the ground at all. It is part of
+                // `switch (currentState)`, so a pass that returned at
+                // EnterAbility skips it while the animator still advances the
+                // land timer below.
+                if !held && (align.abs() >= Fix::from_f32(0.2) || into_ground) {
+                    slot.facing_right = align >= Fix::ZERO;
+                }
                 slot.state_ticks = slot.state_ticks.saturating_sub(1);
                 if slot.state_ticks == 0 {
                     slot.obs_state = STATE_IDLE;
@@ -6833,6 +6942,10 @@ impl RolloutWorld {
         // Scoped to this pass: only a cast below sets it, and the movement at
         // the end of this function and `update_obs_state` only read it.
         self.players[index].base.instant_cast_this_pass = false;
+        // Also scoped to this pass: PlayerPhysics' landing raycasts (in the
+        // gravity step below) and Move's raycasts both fire attachToGround,
+        // and `update_obs_state` consumes whichever one landed the body.
+        self.players[index].base.begin_pass();
         let leaving_blink_wall = self.players[index].base.ground.is_some_and(|ground| {
             self.platforms
                 .iter()
@@ -6908,6 +7021,13 @@ impl RolloutWorld {
             if !slot.base.grounded {
                 slot.base.gravity_step(terrain!(self));
             }
+            // Everything above is PlayerPhysics.UpdateSim; everything below is
+            // SlimeController.UpdateSim, which runs OldUpdate in full before
+            // it ever calls PlayerPhysics.Move (SlimeController.cs:1067 vs
+            // 1084). `update_obs_state` is the tail of OldUpdate but runs at
+            // the end of the tick, so the ground frame OldUpdate actually read
+            // has to be carried across to it.
+            slot.base.capture_pre_move();
             // Player.UpdatePlayer published before SlimeController discovers
             // that an attached Blink wall was disabled. Preserve that value
             // on the one detachment pass; the live slime body already moves
@@ -6947,62 +7067,6 @@ impl RolloutWorld {
         }
         self.web_cooldowns_tick(index, action);
         self.grapple_cooldowns_tick(index);
-        // The slime prefab's own DestroyIfOutsideSceneBounds runs after
-        // PlayerPhysics.Move and before PlayerBody integrates, which is
-        // exactly where `move_step` tests `outside_bounds`. An ability entry
-        // returns from `player_tick` before `move_step`, so without this the
-        // boundary is never tested on the entry pass and the form carries the
-        // body away (beam +386 ticks, time_stop +585, rewind unbounded).
-        //
-        // The position to test is therefore the one Move leaves behind, not
-        // the one this pass started with: a grounded rider's body is snapped
-        // to its surface by the previous pass's LateUpdateSim and Move then
-        // advances it along that surface, so the two differ and the reference
-        // follows the later one. Testing the earlier position killed a
-        // grounded player one tick early (map 73 tick 2774, and
-        // platform_rotation_ab map 4 / angle 200). Run Move on a copy to read
-        // that position without applying it twice; the real Move still
-        // happens in `move_step` or inside the ability the entry selects.
-        //
-        // Only entry passes need this. On every other pass `move_step` makes
-        // the identical test, so gating on a ready, held ability slot keeps
-        // the duplicated Move off the common path. game_tick's
-        // `boundary_death` attributes the kill with CauseOfDeath.Accident
-        // (DestroyIfOutsideSceneBounds.cs:148).
-        //
-        // Drill is the measured exception: against the reference a slime that
-        // is already below the plane still activates Drill and its body lives
-        // three further passes, so the Drill ability object claims the body
-        // before the slime's boundary component gets its turn. Let that entry
-        // through; Drill's own boundary check (below) then owns the body.
-        //
-        // An airborne MeteorSmash entry is the second: OnEnterAbility calls
-        // Jump -> Vibrate_fromAirStart synchronously, so the Meteor body is
-        // live and in State.Vibrate within this same pass and its UpdateSim
-        // displaces the FixTransform by vibrationStr * 0.5 = 0.05 before the
-        // body's own DestroyIfOutsideSceneBounds observes it
-        // (MeteorSmash.cs:145-150, 259-273). The reference kills on the same
-        // tick but at the vibrated position. A grounded entry instead defers
-        // to an animation callback, so it keeps the plain slime kill.
-        if !in_ability && self.players[index].base.alive {
-            let ready = |s: usize| {
-                let slot = &self.players[index];
-                action.buttons & (2 << s) as u8 != 0 && slot.timers[s] > slot.cooldowns[s]
-            };
-            let claims_body = |s: usize| {
-                let slot = &self.players[index];
-                slot.abilities[s] == ABILITY_DRILL
-                    || (slot.abilities[s] == ABILITY_METEOR && !slot.base.grounded)
-            };
-            if (0..3).any(ready) && !(0..3).any(|s| ready(s) && claims_body(s)) {
-                let mut moved = self.players[index].base.clone();
-                moved.move_only(movement_input, terrain!(self));
-                if moved.outside_bounds() {
-                    self.players[index].base.alive = false;
-                    return;
-                }
-            }
-        }
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
             for s in 0..3 {
@@ -7165,6 +7229,14 @@ impl RolloutWorld {
                             // the input vector captured before Rewind set
                             // suppressInput.
                             slot.base.move_only(movement_input, terrain!(self));
+                            // Rewind is instant: the slime stays active, so
+                            // its own bounds component still runs here, in
+                            // the same slot `move_step` tests -- after Move,
+                            // before PlayerBody integrates.
+                            if slot.base.outside_bounds() {
+                                slot.base.alive = false;
+                                return;
+                            }
                             slot.base.position +=
                                 (slot.base.velocity + slot.base.external_velocity) * DT;
                             slot.base.external_velocity *= Fix::from_f64(0.95);
@@ -7279,6 +7351,15 @@ impl RolloutWorld {
                                 // velocity survives into the enabled form.
                                 slot.base.velocity = Vec2::ZERO;
                             }
+                        }
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
                         }
                         if grounded {
                             // Missile's PlayerPhysics and PlayerBody follow
@@ -7466,6 +7547,15 @@ impl RolloutWorld {
                             previous_player_velocity: velocity,
                             ..RockState::default()
                         };
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
+                        }
                         return;
                     }
                     ABILITY_ROLL => {
@@ -7516,6 +7606,15 @@ impl RolloutWorld {
                         // Roll collider later in this same updater pass.
                         slot.reported_position = form_position;
                         slot.reported_tick = self.tick;
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
+                        }
                         self.roll_tick(index, action, data);
                         return;
                     }
@@ -7612,6 +7711,15 @@ impl RolloutWorld {
                             slot.base.grounded = false;
                             slot.base.ground = None;
                             slot.base.grounded_speed = Fix::ZERO;
+                        }
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
                         }
                         self.time_stop_cast_tick(index, action, data);
                         return;
@@ -7861,7 +7969,15 @@ impl RolloutWorld {
                             // slime and consumes the first enter frame now.
                             animation_ticks: 1,
                             aim,
-                            body_right: aim,
+                            // MagnetGun.OnEnterAbility ends with
+                            // `body.rotation = Fix.Zero` (MagnetGun.cs:325),
+                            // and FixTransform's rotation setter rebuilds the
+                            // basis from that angle (FixTransform.cs:42-47):
+                            // the entry pass's firepoint therefore runs off
+                            // world right, not off the aim. Only the tail of
+                            // UpdateSim turns the body to the aim
+                            // (MagnetGun.cs:1256).
+                            body_right: Vec2::RIGHT,
                             ..MagnetState::default()
                         };
                         slot.base.radius = data.magnet.radius;
@@ -8217,6 +8333,15 @@ impl RolloutWorld {
                                 slot.base.grounded_speed = Fix::ZERO;
                             }
                         }
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
+                        }
                         self.spawn_beam_orb(index, data);
                         self.beam_tick(index, action, false, data);
                         return;
@@ -8243,6 +8368,15 @@ impl RolloutWorld {
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
+                        // The form's DestroyIfOutsideSceneBounds runs on
+                        // the entry pass too: OldUpdate enters the ability
+                        // before PlayerPhysics.Move (SlimeController.cs:1067,
+                        // 1084), so the live body this pass is the form's and
+                        // its own bounds component is what observes it, before
+                        // the form moves.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
+                        }
                         return;
                     }
                     // Other catalog abilities are never simulated here.
@@ -21350,6 +21484,10 @@ impl RolloutWorld {
             previous_jump: false,
             skip_next_gravity: false,
             instant_cast_this_pass: false,
+            was_upside_down: false,
+            pre_move_up: Vec2::UP,
+            pre_move_grounded: false,
+            attach_upside_down: None,
             jumped_this_frame: false,
             constants: data.player.constants.clone(),
             cooldown: Fix::ZERO,
@@ -28712,8 +28850,12 @@ impl RolloutWorld {
         runtime_spawned: bool,
     ) {
         // ActivateSuddenDeath moves the spring home; the body follows through
-        // the ordinary spring/integration path rather than teleporting.
-        if self.sudden_death {
+        // the ordinary spring/integration path rather than teleporting. This
+        // is `AnimateVelocity.inSuddenDeath`, not the session flag: the
+        // component latch survives `WinGame`'s
+        // `ActivateSuddenDeath(activate: false)`, so the level keeps sinking
+        // on the tick that decides the round and on every tick after it.
+        if self.sudden_death_latched {
             let map = &data.maps[self.map];
             let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
             for i in 0..self.platforms.len() {
@@ -29928,7 +30070,7 @@ impl RolloutWorld {
         if !disturbed {
             self.quiet_epoch = self.platform_epoch;
         }
-        if !self.sudden_death
+        if !self.sudden_death_latched
             && !orbit_running
             && !disturbed
             && !self.spawned.iter().any(|spawn| spawn.active)
@@ -30528,7 +30670,11 @@ impl RolloutWorld {
         // Stocks: spawn the replacement clone at the chooser's safe center
         // point. Since Player.Kill sees that clone, it does not mark the
         // player eliminated and leaves CauseOfDeath at NotDeadYet.
-        if !already_won && slot.stocks > 0 && !self.sudden_death {
+        // StockRespawn.UpdateSim (StockRespawn.cs:20) also bails on
+        // `HasGameEnded()`, which is `!gameInProgress`: once the round is
+        // resolved the loser does not get a replacement clone even though
+        // `WinGame` has already lowered the sudden-death flag.
+        if !already_won && slot.stocks > 0 && !self.sudden_death && self.game_in_progress {
             if spawn_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
@@ -30769,6 +30915,12 @@ impl RolloutWorld {
     /// tick's deaths. The rest of the current updater pass still runs after it
     /// marks the game ended; RlBridge observes terminal only after the pass.
     fn session_result_tick(&mut self) {
+        // `if (!gameInProgress) return;` (GameSessionHandler.cs:513-516)
+        // guards the whole result block, so a decided round never re-enters
+        // it.
+        if !self.game_in_progress {
+            return;
+        }
         // Distinct teams still in, on the stack: this runs every tick.
         let mut alive_teams = [0u32; MAX_PLAYERS];
         let mut alive_count = 0;
@@ -30780,12 +30932,10 @@ impl RolloutWorld {
         }
         let alive_teams = &alive_teams[..alive_count];
         if self.players.len() == 1 && self.players[0].out {
-            self.terminal = true;
-            self.end_sudden_death();
+            self.end_round();
             self.players[0].won = true;
         } else if self.players.len() > 1 && alive_teams.len() <= 1 {
-            self.terminal = true;
-            self.end_sudden_death();
+            self.end_round();
             if alive_teams.len() == 1 {
                 let winner = alive_teams[0];
                 for p in &mut self.players {
@@ -30818,15 +30968,18 @@ impl RolloutWorld {
         }
     }
 
-    /// Every branch that ends the round clears the sudden-death flag:
-    /// `WinGame` (sim/Gameplay/GameSessionHandler.cs:656) and
-    /// `DeclareGameUndecided` (sim/Gameplay/GameSessionHandler.cs:548) both
-    /// call `ActivateSuddenDeath(activate: false)`, which is just
-    /// `SuddenDeathInProgress = activate` (:612-620). The reference sets and
-    /// reads the flag inside the same `updatables` pass that resolves the
-    /// winner, so -- unlike the raise -- the clear reaches
-    /// `RlObservation.Write` on that very tick and no publication lag applies.
-    fn end_sudden_death(&mut self) {
+    /// `gameInProgress = false` plus the `ActivateSuddenDeath(activate: false)`
+    /// that both `WinGame` (GameSessionHandler.cs:655) and
+    /// `DeclareGameUndecided` (GameSessionHandler.cs:548) perform before
+    /// anything else. The global flag falls on this pass, so every consumer
+    /// that reads `SuddenDeathInProgress` later in the same Updater walk sees
+    /// it down: `AntiLockPlatform` (AntiLockPlatform.cs:35) and
+    /// `VectorFieldPlatform` (VectorFieldPlatform.cs:48) both resume for that
+    /// tick. `AnimateVelocity.inSuddenDeath` is a separate per-component latch
+    /// that nobody lowers, so the level keeps sinking regardless.
+    fn end_round(&mut self) {
+        self.terminal = true;
+        self.game_in_progress = false;
         self.sudden_death = false;
     }
 
@@ -30835,19 +30988,32 @@ impl RolloutWorld {
     fn session_tick(&mut self) {
         let map = &data::get().maps[self.map];
         let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-        // `UpdateSim`'s activation test is gated on `gameInProgress`
-        // (sim/Gameplay/GameSessionHandler.cs:502), which every end-of-round
-        // branch has already cleared, so a resolved round never re-arms.
-        if !self.terminal && !self.sudden_death && sim_time > map.sudden_death_time {
+        if !self.sudden_death && self.game_in_progress && sim_time > map.sudden_death_time {
             self.sudden_death = true;
+            self.sudden_death_latched = true;
             self.sudden_death_tick = self.tick;
             // On the following Updater pass each AnimateVelocity notices the
             // global flag and samples in registration order: authored bodies,
             // then live ability-spawned bodies.
-            for (delay, platform) in self.sudden_death_delays.iter_mut().zip(&map.platforms) {
-                *delay = self
+            //
+            // Registration order is the scene's sibling order, which is what
+            // `intro_order` records - NOT the order of `map.platforms`, which
+            // is sorted by serialized hierarchy number. On most maps the two
+            // coincide and drawing in list order is indistinguishable. On map
+            // 53 they do not: `LongSnowCapsule` (hierarchy 104) is first by
+            // hierarchy and last by sibling order, so drawing in list order
+            // permutes every delay on the level. The symptom is a platform
+            // that starts moving several passes before the reference's, and
+            // moving *up*: `suddenDeathYSpeed`'s first segment has value zero
+            // with an out-tangent of -0.4655, so a curve sampled just past
+            // t = 0 returns a negative speed and `Vec2.down * speed` lifts
+            // the spring home instead of lowering it.
+            let mut order: Vec<usize> = (0..map.platforms.len()).collect();
+            order.sort_by_key(|&i| map.platforms[i].intro_order);
+            for i in order {
+                self.sudden_death_delays[i] = self
                     .rng
-                    .fix_range(Fix::ZERO, platform.sudden_death_max_delay);
+                    .fix_range(Fix::ZERO, map.platforms[i].sudden_death_max_delay);
             }
             let spawned_max_delay = data::get().platform.sudden_death_max_delay;
             for spawn in &mut self.spawned {
@@ -31089,7 +31255,24 @@ impl RolloutWorld {
         let any_platform = held.iter().any(|slots| slots.contains(&ABILITY_PLATFORM));
         let drill_hitbox_layer = data::get().drill.hitbox_layer;
         for row in out.iter_mut() {
-            if row.reserved[0] == ABILITY_NULL || row.flags & E_PICKUP != 0 {
+            if row.reserved[0] == ABILITY_NULL {
+                continue;
+            }
+            // `RlObservation.Entity` (sim/Gameplay/RlObservation.cs:224-229)
+            // wraps every metadata lookup -- source ability, timer, clock and
+            // the component flag bits -- in `if (transform != null)`. A row
+            // the reference reports as DESTROYED with `activeInHierarchy`
+            // clear is one whose `FixTransform` has gone with its GameObject
+            // (`Collider` derives bit 0 from `transform != null &&
+            // transform.gameObject.activeInHierarchy`, :113-114), so the
+            // reference publishes a source of 0 for it however the collider
+            // was credited while it lived. The port's own table keeps the id:
+            // an ability collider is reused when the ability is cast again.
+            if row.flags & E_DESTROYED != 0 && row.flags & E_ACTIVE == 0 {
+                row.reserved[0] = ABILITY_NULL;
+                continue;
+            }
+            if row.flags & E_PICKUP != 0 {
                 continue;
             }
             if row.kind == 1 && row.layer == drill_hitbox_layer && row.reserved[0] == ABILITY_DRILL
@@ -33376,6 +33559,34 @@ impl RolloutWorld {
     }
 }
 
+// Entries into the zero-delta branch of `push_circle_out_of_platforms`,
+// counted only in test builds.
+//
+// `delta == 0` means `closest_point` returned the centre itself. That is the
+// geometry the reference divides by zero on, and it is the whole reason
+// `push_circle_out_of_platforms` carries a fallback direction at all. A test
+// that never enters the branch does not cover it, however green it looks, so
+// `a_centre_on_a_corner_arc_depenetrates_without_dividing_by_zero` reads this
+// counter to prove it reached the branch rather than passing vacuously.
+#[cfg(test)]
+thread_local! {
+    static ZERO_DELTA_PUSHES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_zero_delta_push() {
+    ZERO_DELTA_PUSHES.with(|count| count.set(count.get() + 1));
+}
+
+/// Reads the counter and resets it, so each test measures only its own calls.
+#[cfg(test)]
+fn take_zero_delta_pushes() -> u32 {
+    ZERO_DELTA_PUSHES.with(|count| count.replace(0))
+}
+
+#[cfg(not(test))]
+fn note_zero_delta_push() {}
+
 /// DetPhysics.PushCircleOutOfRoundedRects: moves a circle centre out of every
 /// active platform it overlaps, up to six passes. The reference divides
 /// `vec / magnitude` even on the not-overlapping branch, where a centre
@@ -33397,6 +33608,7 @@ fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radi
                 let direction = if magnitude > Fix::ZERO {
                     (closest - position) / magnitude
                 } else {
+                    note_zero_delta_push();
                     Vec2::UP
                 };
                 position = closest + direction * radius;
@@ -33405,6 +33617,7 @@ fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radi
                 let direction = if magnitude > Fix::ZERO {
                     delta / magnitude
                 } else {
+                    note_zero_delta_push();
                     Vec2::UP
                 };
                 position = closest + direction * radius;
@@ -33596,7 +33809,19 @@ mod tests {
         // The zero delta sends the centre straight up; the remaining passes
         // settle it on the arc's real normal, clear of the collider.
         let radius = Fix::from_f32(0.5);
+        take_zero_delta_pushes();
         let pushed = push_circle_out_of_platforms(&[platform.clone()], arc, radius);
+        // This test is the project's only cover for the zero-delta branch, so
+        // it has to prove it actually entered it. The geometry above is exact
+        // in both backends - `closest_point(arc) == arc` is asserted, not
+        // hoped for - which is what makes the count a build-independent
+        // measurement rather than a trajectory artefact. The replay fixture
+        // below used to carry this claim and no longer reaches the branch at
+        // all; see its comment.
+        assert!(
+            take_zero_delta_pushes() >= 1,
+            "the constructed arc geometry must enter the zero-delta branch"
+        );
         assert!(pushed.y > arc.y);
         assert!(!platform.collider.overlaps(pushed));
         assert_eq!(
@@ -33606,23 +33831,42 @@ mod tests {
     }
 
     #[test]
-    fn rewind_arrival_on_a_corner_arc_does_not_divide_by_zero() {
-        // The any-3 crash capture of 2026-09-20 (Rewind/Missile/Magnet
-        // mirror, map 2): on its last tick a rewind arrives with its centre
-        // exactly on a platform corner's rounding arc, closest_point returns
-        // the point itself, and the depenetration divided by zero.
+    fn rewind_capture_replays_to_the_end_with_rewind_running() {
+        // Provenance: the any-3 crash capture of 2026-09-20 (Rewind/Missile/
+        // Magnet mirror, map 2). On its last tick a rewind arrived with its
+        // centre exactly on a platform corner's rounding arc, closest_point
+        // returned the point itself, and the depenetration divided by zero.
         //
-        // The capture was recorded before ability bodies honoured
-        // DestroyIfOutsideSceneBounds, so it ends with a player the port used
-        // to carry below the kill plane. Under `--features q32` that player
-        // now dies at y = -11.3849 on loop iteration 7091 of 7140 and the
-        // episode ends 49 ticks short of the capture's own last tick; the f64
-        // build drifts the other way (the builds desync at iteration 2149 by
-        // 1.2e-6) and still reaches the end. `!world.terminal` was only ever
-        // a proxy for reaching the arrival and is not a property of the
-        // fixture, so this replays as far as the fixture runs and asserts the
-        // depenetration actually ran. The zero-magnitude branch is covered
-        // build-independently by the test above.
+        // This is an integration replay now, not that crash's cover, and the
+        // rename says so. The history is worth recording because it is a
+        // case study in an assertion that measured nothing:
+        //
+        //   * The capture predates ability bodies honouring
+        //     DestroyIfOutsideSceneBounds, so its tail was never reproducible
+        //     to begin with. The original `!world.terminal` assertion was
+        //     replaced with `arrivals >= 20` for exactly that reason.
+        //   * `arrivals >= 20` then survived only because the two backends
+        //     were differently wrong. Before the SlimeController facing fix
+        //     and the MagnetGun entry-basis fix, q32 reached >= 20 while f64
+        //     reached 14 - the desync this comment used to document at loop
+        //     iteration 2149. A threshold that one backend cleared and the
+        //     other did not was never a property of the simulation.
+        //   * With both fixes in, the backends agree exactly: 13 arrivals in
+        //     f64 and 13 in q32. The trajectory is now the same in both, and
+        //     it is a different trajectory than the recording, because the
+        //     recording was made by a port that aimed slimes wrongly.
+        //
+        // The crash arrival was the 21st; at 13 this replay no longer reaches
+        // the zero-delta branch in either build. Asserting a branch counter
+        // here would therefore fail honestly or pass vacuously, which is the
+        // same trap in a new coat - so that proof lives on
+        // `a_centre_on_a_corner_arc_depenetrates_without_dividing_by_zero`,
+        // which constructs the geometry and asserts it entered the branch.
+        //
+        // What this fixture can still honestly assert is that a real recorded
+        // three-ability episode replays end to end without panicking, and
+        // that the Rewind machinery under test actually ran. Both are
+        // build-independent.
         let raw = include_bytes!("../../fixtures/rewind-arrival-on-corner-arc.rep");
         let replay::Replay { config, ticks } = replay::decode(raw, 240, 7200).unwrap();
         let mut world = RolloutWorld::new();
@@ -33633,17 +33877,29 @@ mod tests {
             .map(|slot| slot.rewind.rewinding)
             .collect();
         let mut arrivals = 0usize;
+        let mut stepped = 0usize;
         for actions in &ticks[240..] {
             if world.terminal {
                 break;
             }
             world.step(actions, 1).unwrap();
+            stepped += 1;
             for (player, slot) in world.players.iter().enumerate() {
                 arrivals += usize::from(rewinding[player] && !slot.rewind.rewinding);
                 rewinding[player] = slot.rewind.rewinding;
             }
         }
-        assert!(arrivals >= 20, "rewind arrivals: {arrivals}");
+        // The episode ends on its own terms - terminal or out of recorded
+        // input - rather than on a panic, and it is a long episode, not a
+        // handful of ticks that decoded and immediately died.
+        assert!(
+            stepped > 1000,
+            "the capture should replay deep into the episode: {stepped} ticks"
+        );
+        // Rewind was exercised: a rewind that starts must also arrive, so a
+        // non-zero arrival count is the cheapest proof the ability ran rather
+        // than being skipped by a divergence earlier in the episode.
+        assert!(arrivals > 0, "rewind arrivals: {arrivals}");
     }
 
     #[test]
@@ -35629,3 +35885,5 @@ mod tests {
         );
     }
 }
+
+
