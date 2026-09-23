@@ -162,6 +162,42 @@ replay-roundtrip: $(OUT)/replay_ab
 	../artifacts/rl/venv/bin/python research/rust_ab/replay_ab_selfcheck.py \
 	  --binary $(abspath $(OUT)/replay_ab) --library $(abspath $(LIBRARY)) $(GAMES)/*/*.rep
 
+# How long does the port agree with the oracle, and about what?
+#
+# Every other differential here checks something somebody thought to check, so
+# what they can report is "these bugs are fixed", not how much is left. This
+# one plays whole games from randomly drawn seeds, maps and loadouts, drives
+# the oracle and BOTH Rust builds off one action stream, and measures the
+# survival curve of ticks-to-first-divergence. The product is a rate, and a
+# regression metric to re-measure after any change.
+#
+# It deliberately lives in research/divergence and not research/rust_ab:
+# run_suite.sh globs that directory, so a probe added there changes the gate
+# result for everybody. This target is not a gate and never fails a build.
+#
+#   make -C native/rl divergence-rate            # the full study (~1 h, 4 workers)
+#   make -C native/rl divergence-report          # curves + attribution + coverage
+#   DIVERGENCE_WORKERS=2 make -C native/rl divergence-rate   # on a busy machine
+DIVERGENCE_OUT ?= ../artifacts/rl/divergence-rate
+DIVERGENCE_WORKERS ?= 4
+
+divergence-rate: $(OUT)/divergence_rate rust-q32 $(RUST_ROLLOUT)
+	DR_BIN=$(abspath $(OUT)/divergence_rate) REFERENCE=$(abspath $(REFERENCE)) \
+	  RUST_ROLLOUT_Q32=$(abspath $(RUST_ROLLOUT_Q32)) RUST_ROLLOUT=$(abspath $(RUST_ROLLOUT)) \
+	  research/divergence/run_divergence_rate.sh $(abspath $(DIVERGENCE_OUT)) $(DIVERGENCE_WORKERS)
+
+divergence-report:
+	$(PYTHON) research/divergence/divergence_summary.py $(abspath $(DIVERGENCE_OUT))
+
+# The f64 build the library actually trains in; the q32 one is `rust-q32`.
+$(RUST_ROLLOUT):
+	cargo build --release --manifest-path ../Cargo.toml
+
+$(OUT)/divergence_rate: research/divergence/divergence_rate.c research/divergence/divergence_compare.h bopl_rl.c bopl_rl.h puffer/bopl_bots.h puffer/bopl_bots_v2.h puffer/bopl_bots_v2_play.h puffer/bopl_layout.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -I. -Ipuffer -Iresearch/divergence \
+	  research/divergence/divergence_rate.c bopl_rl.c -ldl -lm -lpthread -o $@
+
 # Observation-writer microbenchmark + sim ticks/s on one core (THROUGHPUT_V4.md).
 writer-bench: $(OUT)/writer_bench
 
@@ -224,7 +260,7 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
+.PHONY: divergence-rate divergence-report all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
 
 # Reward semantics on hand-built terminal states (research/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.
