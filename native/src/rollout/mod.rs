@@ -6855,6 +6855,46 @@ impl RolloutWorld {
         }
         self.web_cooldowns_tick(index, action);
         self.grapple_cooldowns_tick(index);
+        // The slime prefab's own DestroyIfOutsideSceneBounds precedes
+        // SlimeController, so a body that is already past a blast boundary
+        // dies before OldUpdate can hand it to an ability this pass: the
+        // ability object never activates and the form's own boundary
+        // component never gets a turn. Observing the position here is the
+        // same observation `move_step` makes -- PlayerPhysics has already
+        // applied gravity and its landing raycast, and Move only advances the
+        // surface local -- so the ordinary falling slime dies on the same
+        // tick as before. game_tick's `boundary_death` attributes it with
+        // CauseOfDeath.Accident (DestroyIfOutsideSceneBounds.cs:148).
+        //
+        // Drill is the measured exception: against the reference a slime that
+        // is already below the plane still activates Drill and its body lives
+        // three further passes, so the Drill ability object claims the body
+        // before the slime's boundary component gets its turn. Let that entry
+        // through; Drill's own boundary check (below) then owns the body.
+        //
+        // An airborne MeteorSmash entry is the second: OnEnterAbility calls
+        // Jump -> Vibrate_fromAirStart synchronously, so the Meteor body is
+        // live and in State.Vibrate within this same pass and its UpdateSim
+        // displaces the FixTransform by vibrationStr * 0.5 = 0.05 before the
+        // body's own DestroyIfOutsideSceneBounds observes it
+        // (MeteorSmash.cs:145-150, 259-273). The reference kills on the same
+        // tick but at the vibrated position. A grounded entry instead defers
+        // to an animation callback, so it keeps the plain slime kill.
+        if !in_ability
+            && self.players[index].base.alive
+            && self.players[index].base.outside_bounds()
+            && !(0..3).any(|s| {
+                let slot = &self.players[index];
+                let ready = action.buttons & (2 << s) as u8 != 0
+                    && slot.timers[s] > slot.cooldowns[s];
+                ready
+                    && (slot.abilities[s] == ABILITY_DRILL
+                        || (slot.abilities[s] == ABILITY_METEOR && !slot.base.grounded))
+            })
+        {
+            self.players[index].base.alive = false;
+            return;
+        }
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
             for s in 0..3 {
@@ -8797,6 +8837,14 @@ impl RolloutWorld {
                 slot.meteor.prev_offset = offset;
                 slot.base.velocity = Vec2::UP * data.meteor.hold_speed;
                 slot.base.external_velocity *= Fix::from_f64(0.8);
+                // Meteor's DestroyIfOutsideSceneBounds sits between
+                // MeteorSmash.UpdateSim and PlayerBody, so it observes the
+                // vibrated position and the body is never integrated after.
+                // MeteorSmash.ExitAbility does not unground (MeteorSmash.cs:196).
+                if self.ability_boundary_kill(index, false) {
+                    return;
+                }
+                let slot = &mut self.players[index];
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
@@ -11251,6 +11299,12 @@ impl RolloutWorld {
                 self.exit_black_hole_form(index, grounded);
                 return;
             }
+        }
+        // BlackHoleClap's DestroyIfOutsideSceneBounds runs before PlayerBody
+        // integrates this pass; its ExitAbility publishes the attached
+        // position without ungrounding (BlackHoleClap.cs:158).
+        if self.ability_boundary_kill(index, false) {
+            return;
         }
         self.black_hole_form_motion(index);
     }
@@ -17629,6 +17683,12 @@ impl RolloutWorld {
         // calls Move(zero), and still steers the live projectile this pass.
         self.steer_active_missile(index, action, DT, data);
 
+        // SparkShot's DestroyIfOutsideSceneBounds runs before PlayerBody
+        // integrates this pass; its ExitAbility does not unground.
+        if self.ability_boundary_kill(index, false) {
+            return;
+        }
+
         if self.players[index].base.grounded {
             self.players[index]
                 .base
@@ -17783,6 +17843,13 @@ impl RolloutWorld {
             }
         }
 
+        // ThrowItem's DestroyIfOutsideSceneBounds runs after the mine logic
+        // and before PlayerBody integrates this pass. ThrowItem.ExitAbility
+        // publishes the attached position without ungrounding
+        // (ThrowItem.cs:165).
+        if self.ability_boundary_kill(index, false) {
+            return;
+        }
         if self.players[index].base.grounded {
             let before_player_physics = self.players[index].base.position;
             self.players[index]
@@ -17943,6 +18010,35 @@ impl RolloutWorld {
         }
     }
 
+    /// DestroyIfOutsideSceneBounds on an ability body prefab. The component
+    /// sits between the ability's own updaters and PlayerBody, so it observes
+    /// the position this pass started with and the body is never integrated
+    /// afterwards. selfDestruct resolves the body's IAbilityComponent and
+    /// calls ExitAbility with a default AbilityExitInfo, so the restored
+    /// slime takes over the ability body's position and game_tick's
+    /// `boundary_death` attributes the kill with CauseOfDeath.Other
+    /// (DestroyIfOutsideSceneBounds.cs:135-141, SlimeController.cs:217).
+    ///
+    /// `unground` follows the form's own ExitAbility: the GunTransform family
+    /// (BowTransform.cs:120, GunTransform.cs:87, MagnetGun.cs:359) calls
+    /// PlayerPhysics.UnGround before publishing the position, so a grounded
+    /// body dies 0.05 off its surface; ThrowItem2 and SparkShot publish the
+    /// attached position unchanged (ThrowItem2.cs:199, SparkShot.cs:283).
+    ///
+    /// Returns true when the body died; callers must return immediately so
+    /// the rest of the prefab's updaters, PlayerBody included, do not run.
+    fn ability_boundary_kill(&mut self, index: usize, unground: bool) -> bool {
+        if !self.players[index].base.alive || !self.players[index].base.outside_bounds() {
+            return false;
+        }
+        self.players[index].base.alive = false;
+        if unground {
+            self.players[index].base.force_unground(&self.platforms);
+        }
+        self.players[index].reported_position = self.players[index].base.position;
+        true
+    }
+
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         self.players[index].throw_item.collider_rotation = self.players[index].base.rotation;
         let ability = active_throw_ability(self.players[index].active);
@@ -18062,6 +18158,12 @@ impl RolloutWorld {
                 slot.reported_tick = self.tick;
                 return;
             }
+        }
+        // ThrowItem2's DestroyIfOutsideSceneBounds runs after the item logic
+        // and before PlayerBody integrates this pass. ThrowItem2.ExitAbility
+        // publishes the attached position without ungrounding.
+        if self.ability_boundary_kill(index, false) {
+            return;
         }
         if self.players[index].base.grounded {
             // PlayerPhysics.Move(Vec2.zero) consumes the throw recoil while
@@ -18360,6 +18462,12 @@ impl RolloutWorld {
             }
         }
 
+        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
+        // and before PlayerBody integrates this pass.
+        if self.ability_boundary_kill(index, true) {
+            return;
+        }
+
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -18500,6 +18608,12 @@ impl RolloutWorld {
             }
         }
 
+        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
+        // and before PlayerBody integrates this pass.
+        if self.ability_boundary_kill(index, true) {
+            return;
+        }
+
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -18638,6 +18752,12 @@ impl RolloutWorld {
             self.fire_scale_ray(index, growth, data);
         }
 
+        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
+        // and before PlayerBody integrates this pass.
+        if self.ability_boundary_kill(index, true) {
+            return;
+        }
+
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -18772,6 +18892,12 @@ impl RolloutWorld {
             self.fire_duplicator(index, data);
         }
 
+        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
+        // and before PlayerBody integrates this pass.
+        if self.ability_boundary_kill(index, true) {
+            return;
+        }
+
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -18858,6 +18984,11 @@ impl RolloutWorld {
         self.magnet_ability_update_scale(index);
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
+
+        // MagnetGun's DestroyIfOutsideSceneBounds precedes PlayerBody.
+        if self.ability_boundary_kill(index, true) {
+            return;
+        }
 
         // PlayerBody.UpdateSim, hierarchy 8.
         let slot = &mut self.players[index];
