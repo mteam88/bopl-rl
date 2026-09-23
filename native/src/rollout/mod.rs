@@ -2334,7 +2334,21 @@ pub struct RolloutWorld {
     pub portal_body_inside: Vec<u64>,
     pub portal_body_ids: Vec<u32>,
     duplicate_platform_effects: Vec<DuplicatePlatformState>,
+    /// `GameSessionHandler.SuddenDeathInProgress`. `WinGame` and
+    /// `DeclareGameUndecided` both call `ActivateSuddenDeath(activate: false)`
+    /// (GameSessionHandler.cs:655, 548), so this drops back to false on the
+    /// pass that resolves the round - before the authored level updaters run,
+    /// which is what lets map 2's `AntiLockPlatform` orbit resume for that one
+    /// tick.
     pub sudden_death: bool,
+    /// `AnimateVelocity.inSuddenDeath`, the per-component latch. Nothing ever
+    /// calls `ActivateSuddenDeath(false)` on the component, so the level keeps
+    /// sinking after the round is decided even though the global flag is down.
+    pub sudden_death_latched: bool,
+    /// `GameSessionHandler.gameInProgress`. Cleared by `prepareNextlevel`
+    /// through `WinGame`/`DeclareGameUndecided`; it is what stops
+    /// `UpdateSim` from immediately re-arming sudden death on the next pass.
+    pub game_in_progress: bool,
     pub sudden_death_tick: u32,
     pub sudden_death_delays: Vec<Fix>,
     pub ability_spawner_enabled: bool,
@@ -2487,6 +2501,8 @@ impl RolloutWorld {
             beam_snapshot: crate::beam::graph::Snapshot::default(),
             beam_inputs: Vec::with_capacity(MAX_PLAYERS),
             sudden_death: false,
+            sudden_death_latched: false,
+            game_in_progress: true,
             sudden_death_tick: 0,
             sudden_death_delays: Vec::with_capacity(64),
             ability_spawner_enabled: false,
@@ -2596,6 +2612,8 @@ impl RolloutWorld {
         self.beam_snapshot.clone_from(&src.beam_snapshot);
         self.beam_inputs.clone_from(&src.beam_inputs);
         self.sudden_death = src.sudden_death;
+        self.sudden_death_latched = src.sudden_death_latched;
+        self.game_in_progress = src.game_in_progress;
         self.sudden_death_tick = src.sudden_death_tick;
         self.sudden_death_delays
             .clone_from(&src.sudden_death_delays);
@@ -2695,6 +2713,8 @@ impl RolloutWorld {
             beam_snapshot: _,
             beam_inputs: _,
             sudden_death: _,
+            sudden_death_latched: _,
+            game_in_progress: _,
             sudden_death_tick: _,
             sudden_death_delays: _,
             ability_spawner_enabled: _,
@@ -2776,6 +2796,8 @@ impl RolloutWorld {
         self.replay_config = *config;
         self.rng = Random::new(config.seed.max(1));
         self.sudden_death = false;
+        self.sudden_death_latched = false;
+        self.game_in_progress = true;
         self.arrows.clear();
         self.ability_pickups.clear();
         self.black_holes.clear();
@@ -28715,8 +28737,12 @@ impl RolloutWorld {
         runtime_spawned: bool,
     ) {
         // ActivateSuddenDeath moves the spring home; the body follows through
-        // the ordinary spring/integration path rather than teleporting.
-        if self.sudden_death {
+        // the ordinary spring/integration path rather than teleporting. This
+        // is `AnimateVelocity.inSuddenDeath`, not the session flag: the
+        // component latch survives `WinGame`'s
+        // `ActivateSuddenDeath(activate: false)`, so the level keeps sinking
+        // on the tick that decides the round and on every tick after it.
+        if self.sudden_death_latched {
             let map = &data.maps[self.map];
             let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
             for i in 0..self.platforms.len() {
@@ -29931,7 +29957,7 @@ impl RolloutWorld {
         if !disturbed {
             self.quiet_epoch = self.platform_epoch;
         }
-        if !self.sudden_death
+        if !self.sudden_death_latched
             && !orbit_running
             && !disturbed
             && !self.spawned.iter().any(|spawn| spawn.active)
@@ -30531,7 +30557,11 @@ impl RolloutWorld {
         // Stocks: spawn the replacement clone at the chooser's safe center
         // point. Since Player.Kill sees that clone, it does not mark the
         // player eliminated and leaves CauseOfDeath at NotDeadYet.
-        if !already_won && slot.stocks > 0 && !self.sudden_death {
+        // StockRespawn.UpdateSim (StockRespawn.cs:20) also bails on
+        // `HasGameEnded()`, which is `!gameInProgress`: once the round is
+        // resolved the loser does not get a replacement clone even though
+        // `WinGame` has already lowered the sudden-death flag.
+        if !already_won && slot.stocks > 0 && !self.sudden_death && self.game_in_progress {
             if spawn_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
@@ -30772,6 +30802,12 @@ impl RolloutWorld {
     /// tick's deaths. The rest of the current updater pass still runs after it
     /// marks the game ended; RlBridge observes terminal only after the pass.
     fn session_result_tick(&mut self) {
+        // `if (!gameInProgress) return;` (GameSessionHandler.cs:513-516)
+        // guards the whole result block, so a decided round never re-enters
+        // it.
+        if !self.game_in_progress {
+            return;
+        }
         // Distinct teams still in, on the stack: this runs every tick.
         let mut alive_teams = [0u32; MAX_PLAYERS];
         let mut alive_count = 0;
@@ -30783,10 +30819,10 @@ impl RolloutWorld {
         }
         let alive_teams = &alive_teams[..alive_count];
         if self.players.len() == 1 && self.players[0].out {
-            self.terminal = true;
+            self.end_round();
             self.players[0].won = true;
         } else if self.players.len() > 1 && alive_teams.len() <= 1 {
-            self.terminal = true;
+            self.end_round();
             if alive_teams.len() == 1 {
                 let winner = alive_teams[0];
                 for p in &mut self.players {
@@ -30819,13 +30855,29 @@ impl RolloutWorld {
         }
     }
 
+    /// `gameInProgress = false` plus the `ActivateSuddenDeath(activate: false)`
+    /// that both `WinGame` (GameSessionHandler.cs:655) and
+    /// `DeclareGameUndecided` (GameSessionHandler.cs:548) perform before
+    /// anything else. The global flag falls on this pass, so every consumer
+    /// that reads `SuddenDeathInProgress` later in the same Updater walk sees
+    /// it down: `AntiLockPlatform` (AntiLockPlatform.cs:35) and
+    /// `VectorFieldPlatform` (VectorFieldPlatform.cs:48) both resume for that
+    /// tick. `AnimateVelocity.inSuddenDeath` is a separate per-component latch
+    /// that nobody lowers, so the level keeps sinking regardless.
+    fn end_round(&mut self) {
+        self.terminal = true;
+        self.game_in_progress = false;
+        self.sudden_death = false;
+    }
+
     /// Remaining post-physics session work: sudden-death activation and the
     /// RL episode limit. Winner resolution belongs to `session_result_tick`.
     fn session_tick(&mut self) {
         let map = &data::get().maps[self.map];
         let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-        if !self.sudden_death && sim_time > map.sudden_death_time {
+        if !self.sudden_death && self.game_in_progress && sim_time > map.sudden_death_time {
             self.sudden_death = true;
+            self.sudden_death_latched = true;
             self.sudden_death_tick = self.tick;
             // On the following Updater pass each AnimateVelocity notices the
             // global flag and samples in registration order: authored bodies,
