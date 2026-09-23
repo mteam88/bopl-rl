@@ -644,8 +644,8 @@ impl RolloutWorld {
     ) {
         // Same SlimeController jump as `Player::move_step`; the rope's own
         // release below keeps the raw button.
-        let suppressed = std::mem::take(&mut self.players[player].base.suppress_jump);
-        if jump_pressed && self.players[player].base.grounded && !suppressed {
+        let cast = self.players[player].base.instant_cast_this_pass;
+        if jump_pressed && self.players[player].base.grounded && !cast {
             let strength = self.players[player].base.constants.jump_strength;
             self.players[player]
                 .base

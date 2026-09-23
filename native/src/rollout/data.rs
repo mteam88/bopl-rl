@@ -2425,7 +2425,12 @@ fn map_def(raw: &RawMap) -> MapDef {
                 Fix::ONE / collider_inverse_extents.x,
                 Fix::ONE / collider_inverse_extents.y,
             );
-            let collider_axis_extents = authored_extents * grow_scale;
+            // Box.SetRotation (Box.cs:33) builds the collider axes as
+            // `Vec2.right / inverseExtents.x`, i.e. the reciprocal of what the
+            // collider actually stores - not the authored extent. In Q32.32 that
+            // round trip moves non-power-of-two extents by a few raw units, and
+            // the axes DetPhysics publishes are the round-tripped ones.
+            let collider_axis_extents = collider_extents;
             let mut platform_body = body(&p.body, rotation);
             // GrowOnStart.Init writes the FixTransform scale before the first
             // BoplBody updater pass. Non-resizable bodies then multiply both

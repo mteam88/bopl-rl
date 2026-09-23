@@ -9,26 +9,45 @@ research: $(OUT)/libbopl_research.so
 
 map-ab: $(OUT)/map_ab
 
-# The C# NativeAOT oracle. `publish/` is the deployable link; the sibling
-# `native/` directory holds the intermediate object of whichever build ran
-# last and can be months stale (and on an older bopl_rl.h ABI), so point at
-# `publish/`.
+# `dotnet publish` refreshes publish/; the sibling native/ directory keeps whatever
+# an earlier build left there, so pointing at it silently compares against a stale
+# oracle - it held an ABI 2 library for nine days after ABI 3 landed.
 REFERENCE ?= ../../sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so
 RUST_ROLLOUT ?= ../target/release/libbopl_sim.so
-# The default `Fix` is an IEEE double behind the Q32.32 API (native/src/fixed.rs:1-30),
-# so the default build cannot be compared with the oracle below ~1e-6: every
-# multiply and divide rounds differently. Differential work needs the bit-exact
-# arithmetic:  cd native && cargo build --release --features q32 --target-dir target-q32
-RUST_Q32 ?= ../target-q32/release/libbopl_sim.so
+# The default `cargo build --release` stores `Fix` as an f64 (native/src/fixed.rs)
+# and is what training uses. It is NOT bit-comparable with the .NET oracle: its
+# multiplications and divisions round to the nearest double instead of
+# truncating to 2^-32, so every differential probe below sees an arithmetic
+# delta of a few raw units at tick 0 and reports that instead of its own
+# subject. Every A/B gate must therefore run the `q32` library, which is the
+# reference's exact Q32.32 arithmetic. It is built into its own target
+# directory so it does not fight the f64 build for `native/target`.
+RUST_ROLLOUT_Q32 ?= ../target-q32/release/libbopl_sim.so
+
+rust-q32:
+	cargo build --release --features q32 --manifest-path ../Cargo.toml --target-dir ../target-q32
 
 # Exhaustive authored-map gate: all 124 maps, both 2- and 6-player layouts,
 # 3000 ticks per live case, with discrete player/slime state required exact.
-map-sweep-3000: $(OUT)/map_ab
-	MAP_AB_STRICT_ACTORS=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT)) 3000
+map-sweep-3000: $(OUT)/map_ab rust-q32
+	MAP_AB_STRICT_ACTORS=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32)) 3000
 
 $(OUT)/map_ab: research/rust_ab/map_ab.c bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -I. research/rust_ab/map_ab.c bopl_rl.c -ldl -lm -o $@
+
+# DestroyIfOutsideSceneBounds gate: walks a player off the edge of map 0 and
+# engages each ability form at three depths relative to the kill plane, then
+# requires the reference and the port to agree on the death tick, the death
+# position, and the cause of death. Catches ability bodies that hover below
+# the plane (GunTransform's slow-mo family) and abilities entered on the tick
+# the slime is already out of bounds.
+bounds-ability-ab: $(OUT)/bounds_ability_ab
+	$(abspath $(OUT)/bounds_ability_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT))
+
+$(OUT)/bounds_ability_ab: research/rust_ab/bounds_ability_ab.c bopl_rl.c bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -I. research/rust_ab/bounds_ability_ab.c bopl_rl.c -ldl -lm -o $@
 
 # Real-game replay differential: re-steps saved evaluation games (the .rep
 # recordings beside every evaluations/*.json) in both backends with the
@@ -42,25 +61,30 @@ $(OUT)/replay_ab: research/rust_ab/replay_ab.c bopl_rl.c bopl_rl.h
 # Whole-directory sweep over one study or sweep evaluation directory:
 #   make -C native/rl replay-sweep GAMES=../artifacts/rl/study-grenade/evaluations
 GAMES ?= ../artifacts/rl/study-grenade/evaluations
-# `RUST=$(RUST_ROLLOUT)` compares the shipping f64 build instead, which only
-# makes sense with a loose REPLAY_AB_TOL.
-RUST ?= $(RUST_Q32)
-replay-sweep: $(OUT)/replay_ab
-	REPLAY_AB_TOL=$${REPLAY_AB_TOL-1} $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(RUST)) $(abspath $(GAMES))
+# `REPLAY_RUST=$(RUST_ROLLOUT)` compares the shipping f64 build instead, which
+# only makes sense with a loose REPLAY_AB_TOL. The default 1 raw unit (2.3e-10)
+# absorbs the one-ulp residue q32 leaves on statically authored extents at tick
+# 0; 1 and 4 report the same divergences, so it is not hiding drift.
+REPLAY_RUST ?= $(RUST_ROLLOUT_Q32)
+replay-sweep: $(OUT)/replay_ab rust-q32
+	REPLAY_AB_TOL=$${REPLAY_AB_TOL-1} $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(REPLAY_RUST)) $(abspath $(GAMES))
 
 # The same sweep restricted to what a trained policy can actually read
 # (bopl_puffer.h:316): the ranking that answers whether a divergence could
 # have changed a policy's behaviour.
-replay-visible: $(OUT)/replay_ab
-	REPLAY_AB_VISIBLE=1 REPLAY_AB_TOL=$${REPLAY_AB_TOL-1} $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(RUST)) $(abspath $(GAMES))
+replay-visible: $(OUT)/replay_ab rust-q32
+	REPLAY_AB_VISIBLE=1 REPLAY_AB_TOL=$${REPLAY_AB_TOL-1} $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(REPLAY_RUST)) $(abspath $(GAMES))
 
 # Self check: the reference replayed against itself must be bit-identical.
-replay-selfcheck: $(OUT)/replay_ab
+replay-selfcheck: $(OUT)/replay_ab rust-q32
 	REPLAY_AB_TOL=0 $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(REFERENCE)) $(abspath $(GAMES))
-	REPLAY_AB_TOL=0 $(abspath $(OUT)/replay_ab) $(abspath $(RUST)) $(abspath $(RUST)) $(abspath $(GAMES))
+	REPLAY_AB_TOL=0 $(abspath $(OUT)/replay_ab) $(abspath $(REPLAY_RUST)) $(abspath $(REPLAY_RUST)) $(abspath $(GAMES))
+
 # The stronger half of the self check: the recorded inputs, replayed in the
 # backend that produced the recording, must reproduce the saved <game>.json.
-# LIBRARY must therefore be the build the corpus was recorded with.
+# LIBRARY must be a build of the commit the corpus was recorded with - the
+# prebuilt `../target/release` in a working checkout is not reliably that, and
+# replaying a corpus in a later build fails this by design.
 LIBRARY ?= $(RUST_ROLLOUT)
 replay-roundtrip: $(OUT)/replay_ab
 	../artifacts/rl/venv/bin/python research/rust_ab/replay_ab_selfcheck.py \
@@ -128,4 +152,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research map-ab replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip writer-bench agent agent-mac
+.PHONY: all research map-ab bounds-ability-ab replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac

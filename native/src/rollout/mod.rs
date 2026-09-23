@@ -2012,6 +2012,14 @@ pub struct PlayerSlot {
     /// EnterFall after a grounded ragdoll timeout has no new landing callback,
     /// so its visible state stays Fall until the body detaches.
     pub ragdoll_grounded_fall: bool,
+    /// Skips this tick's SlimeController state switch. Two callers need it:
+    /// `SlimeController.OldUpdate` returns straight after `EnterAbility`, so
+    /// the switch never runs on the tick a cast starts (instant abilities
+    /// included, which leave no `active` form behind to freeze it), and
+    /// PlantObjectOnPlatform's recover callback runs after SlimeController's
+    /// own pass, so the grounded EnterStop/EnterIdle it installs survives the
+    /// exit tick untouched and the state machine resumes on the next one.
+    pub obs_state_held_this_tick: bool,
     /// One live Poke Ball pinning this victim. More than one physics callback
     /// can capture the same slime from a prebuilt manifold set; this points to
     /// a remaining captor when another one pops.
@@ -2108,10 +2116,6 @@ pub struct PlayerSlot {
     /// movement stick (SlimeController.cs:127/889). `run` ends on a sign
     /// change against *this*, not against the sprite facing.
     pub prev_input_align: Fix,
-    /// Tick of the last instant-ability cast. `OldUpdate` returns right after
-    /// `EnterAbility` (SlimeController.cs:824-831), so the state switch, the
-    /// jump and the `prevInput` store below it are all skipped on that pass.
-    pub instant_cast_tick: u32,
     /// Ticks until GameSessionHandler.SpawnPlayers instantiates the slime
     /// (only a warmup shorter than SLIME_AWAKE_TICK+1 ends before it).
     pub unspawned: u32,
@@ -3010,19 +3014,19 @@ impl RolloutWorld {
                     let slot_index = s - 1;
                     match resolved_abilities[i][slot_index] {
                         ABILITY_DASH => (
-                            data.dash.hurtbox_extents,
+                            data::surface_extents(data.dash.hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut dash_entity[i],
                             false,
                         ),
                         ABILITY_BOW => (
-                            data.bow.hurtbox_extents,
+                            data::surface_extents(data.bow.hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut bow_entity[i],
                             false,
                         ),
                         ABILITY_MISSILE => (
-                            data.missile.hurtbox_extents,
+                            data::surface_extents(data.missile.hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut throw_entity[i][slot_index],
                             false,
@@ -3090,7 +3094,7 @@ impl RolloutWorld {
                         ),
                         ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
                         | ABILITY_MJOLNIR | ABILITY_POKE_BALL) => (
-                            throw_config(data, ability).hurtbox_extents,
+                            data::surface_extents(throw_config(data, ability).hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 8,
                             &mut throw_entity[i][slot_index],
                             false,
@@ -3152,7 +3156,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_BEAM => (
-                            data.beam.hurtbox_extents,
+                            data::surface_extents(data.beam.hurtbox_extents),
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.beam.collider_hierarchy,
@@ -3443,7 +3447,7 @@ impl RolloutWorld {
                     grounded_speed: Fix::ZERO,
                     previous_jump: false,
                     skip_next_gravity: false,
-                    suppress_jump: false,
+                    instant_cast_this_pass: false,
                     jumped_this_frame: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
@@ -3516,6 +3520,7 @@ impl RolloutWorld {
                 frozen_solid_count: 0,
                 freeze_form_exit_tick: u32::MAX,
                 ragdoll_grounded_fall: false,
+                obs_state_held_this_tick: false,
                 captured_by_ball: None,
                 poke_invulnerable: false,
                 callback_killed_tick: None,
@@ -3566,7 +3571,6 @@ impl RolloutWorld {
                 state_ticks: 0,
                 facing_right: true,
                 prev_input_align: Fix::ZERO,
-                instant_cast_tick: u32::MAX,
                 unspawned: 0,
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
@@ -4362,16 +4366,31 @@ impl RolloutWorld {
         }
 
         let box_data = match ability {
-            ABILITY_DASH => Some((data.dash.hurtbox_extents, Vec2::ZERO, 7, 0)),
-            ABILITY_BOW => Some((data.bow.hurtbox_extents, Vec2::ZERO, 7, 1)),
+            ABILITY_DASH => Some((
+                data::surface_extents(data.dash.hurtbox_extents),
+                Vec2::ZERO,
+                7,
+                0,
+            )),
+            ABILITY_BOW => Some((
+                data::surface_extents(data.bow.hurtbox_extents),
+                Vec2::ZERO,
+                7,
+                1,
+            )),
             ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
             | ABILITY_POKE_BALL) => Some((
-                throw_config(data, ability).hurtbox_extents,
+                data::surface_extents(throw_config(data, ability).hurtbox_extents),
                 Vec2::ZERO,
                 8,
                 2,
             )),
-            ABILITY_MISSILE => Some((data.missile.hurtbox_extents, Vec2::ZERO, 7, 2)),
+            ABILITY_MISSILE => Some((
+                data::surface_extents(data.missile.hurtbox_extents),
+                Vec2::ZERO,
+                7,
+                2,
+            )),
             ABILITY_MINE => Some((
                 data::surface_extents(data.mine.hurtbox_extents),
                 data.mine.collider_offset,
@@ -4460,7 +4479,7 @@ impl RolloutWorld {
                 15,
             )),
             ABILITY_BEAM => Some((
-                data.beam.hurtbox_extents,
+                data::surface_extents(data.beam.hurtbox_extents),
                 data.beam.collider_offset,
                 data.beam.collider_hierarchy,
                 16,
@@ -4583,8 +4602,8 @@ impl RolloutWorld {
     /// then chain like the .NET callbacks (land->idle, stop->idle,
     /// turn->run); reversals while running pass through `stop`.
     fn update_obs_state(&mut self, index: usize, dir: Vec2) {
-        let tick = self.tick;
         let slot = &mut self.players[index];
+        let held = std::mem::take(&mut slot.obs_state_held_this_tick);
         if slot.ragdoll_grounded_fall {
             if slot.base.grounded {
                 return;
@@ -4611,15 +4630,13 @@ impl RolloutWorld {
         } else {
             dir.x
         };
-        // SlimeController.OldUpdate returns immediately after EnterAbility
-        // (SlimeController.cs:824-831), so a cast pass reaches neither the
-        // state switch nor the `prevInput = fix` store at line 889. The
-        // PlayerPhysics callbacks and the animation callbacks below are not
-        // part of OldUpdate and still fire. The form abilities are already
-        // excluded by `active` above; the instant ones keep the ordinary
-        // slime and need the cast tick.
-        let cast_pass = slot.instant_cast_tick == tick;
-        let previous_align = if cast_pass {
+        // OldUpdate returns at EnterAbility before reaching the `prevInput =
+        // fix` store at SlimeController.cs:889, so a cast pass leaves the
+        // previous pass's alignment in place. `obs_state_held_this_tick` is
+        // not the test here: PlantObjectOnPlatform's exit holds the state
+        // switch from a callback that runs *after* OldUpdate has already
+        // stored `prevInput`.
+        let previous_align = if slot.base.instant_cast_this_pass {
             slot.prev_input_align
         } else {
             std::mem::replace(&mut slot.prev_input_align, ground_align)
@@ -4646,6 +4663,9 @@ impl RolloutWorld {
                 || (into_ground && align.abs() >= Fix::from_f32(0.01)));
         let input_right = align >= Fix::ZERO;
         match slot.obs_state {
+            // attachToGround and the land animation are PlayerPhysics/animator
+            // callbacks, so they still land and chain on a held tick; only
+            // `switch (currentState)` below is what OldUpdate returns before.
             STATE_FALL => {
                 // attachToGround: land animation, then idle (one tick longer
                 // after an ability exit, see `PlayerSlot::exit_to_fall`).
@@ -4658,6 +4678,7 @@ impl RolloutWorld {
                     slot.obs_state = STATE_IDLE;
                 }
             }
+            _ if held => {}
             STATE_RUN => {
                 // `!flag5 || Fix.Sign(fix * prevInput) < 0`
                 // (SlimeController.cs:862). The reversal is measured against
@@ -4668,13 +4689,13 @@ impl RolloutWorld {
                 // source does not stop for that.
                 let reversed = (align > Fix::ZERO && previous_align < Fix::ZERO)
                     || (align < Fix::ZERO && previous_align > Fix::ZERO);
-                if !cast_pass && (!moving || reversed) {
+                if !moving || reversed {
                     slot.obs_state = STATE_STOP;
                     slot.state_ticks = STOP_TICKS;
                 }
             }
             STATE_STOP => {
-                if !cast_pass && moving && input_right != slot.facing_right {
+                if moving && input_right != slot.facing_right {
                     slot.obs_state = STATE_TURN;
                     slot.state_ticks = TURN_TICKS;
                     slot.facing_right = input_right;
@@ -4686,7 +4707,7 @@ impl RolloutWorld {
                 }
             }
             STATE_TURN => {
-                if !cast_pass && !moving {
+                if !moving {
                     slot.obs_state = STATE_STOP;
                     slot.state_ticks = STOP_TICKS;
                 } else {
@@ -4698,8 +4719,7 @@ impl RolloutWorld {
             }
             _ => {
                 // idle (and anything unexpected).
-                if cast_pass {
-                } else if moving {
+                if moving {
                     slot.obs_state = STATE_RUN;
                     slot.facing_right = input_right;
                 } else {
@@ -6800,9 +6820,9 @@ impl RolloutWorld {
         jump_pressed: bool,
         data: &data::RolloutData,
     ) {
-        // Scoped to this pass: only a cast below may set it, and only the
-        // fall-through movement at the end of this function consumes it.
-        self.players[index].base.suppress_jump = false;
+        // Scoped to this pass: only a cast below sets it, and the movement at
+        // the end of this function and `update_obs_state` only read it.
+        self.players[index].base.instant_cast_this_pass = false;
         let leaving_blink_wall = self.players[index].base.ground.is_some_and(|ground| {
             self.platforms
                 .iter()
@@ -6917,6 +6937,46 @@ impl RolloutWorld {
         }
         self.web_cooldowns_tick(index, action);
         self.grapple_cooldowns_tick(index);
+        // The slime prefab's own DestroyIfOutsideSceneBounds precedes
+        // SlimeController, so a body that is already past a blast boundary
+        // dies before OldUpdate can hand it to an ability this pass: the
+        // ability object never activates and the form's own boundary
+        // component never gets a turn. Observing the position here is the
+        // same observation `move_step` makes -- PlayerPhysics has already
+        // applied gravity and its landing raycast, and Move only advances the
+        // surface local -- so the ordinary falling slime dies on the same
+        // tick as before. game_tick's `boundary_death` attributes it with
+        // CauseOfDeath.Accident (DestroyIfOutsideSceneBounds.cs:148).
+        //
+        // Drill is the measured exception: against the reference a slime that
+        // is already below the plane still activates Drill and its body lives
+        // three further passes, so the Drill ability object claims the body
+        // before the slime's boundary component gets its turn. Let that entry
+        // through; Drill's own boundary check (below) then owns the body.
+        //
+        // An airborne MeteorSmash entry is the second: OnEnterAbility calls
+        // Jump -> Vibrate_fromAirStart synchronously, so the Meteor body is
+        // live and in State.Vibrate within this same pass and its UpdateSim
+        // displaces the FixTransform by vibrationStr * 0.5 = 0.05 before the
+        // body's own DestroyIfOutsideSceneBounds observes it
+        // (MeteorSmash.cs:145-150, 259-273). The reference kills on the same
+        // tick but at the vibrated position. A grounded entry instead defers
+        // to an animation callback, so it keeps the plain slime kill.
+        if !in_ability
+            && self.players[index].base.alive
+            && self.players[index].base.outside_bounds()
+            && !(0..3).any(|s| {
+                let slot = &self.players[index];
+                let ready = action.buttons & (2 << s) as u8 != 0
+                    && slot.timers[s] > slot.cooldowns[s];
+                ready
+                    && (slot.abilities[s] == ABILITY_DRILL
+                        || (slot.abilities[s] == ABILITY_METEOR && !slot.base.grounded))
+            })
+        {
+            self.players[index].base.alive = false;
+            return;
+        }
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
             for s in 0..3 {
@@ -6926,7 +6986,6 @@ impl RolloutWorld {
                 if !button_down || slot.timers[s] <= slot.cooldowns[s] {
                     continue;
                 }
-                let tick = self.tick;
                 let ability = slot.abilities[s];
                 let ability_data = &data.abilities[ability as usize];
                 if (ability_data.ground_only && !slot.base.grounded)
@@ -6961,20 +7020,23 @@ impl RolloutWorld {
                     // Ability.EnterAbility scales the enabled form collider
                     // from Player.Scale before invoking its components.
                     slot.base.scale = slot.player_scale;
-                    // OldUpdate returns here (SlimeController.cs:830). The
-                    // form abilities are already excluded from the state
-                    // machine by `active`; the instant ones are not.
-                    slot.instant_cast_tick = tick;
+                    // SlimeController.OldUpdate returns immediately after
+                    // EnterAbility (SlimeController.cs:828-830), so this tick's
+                    // state switch never runs. A form ability is also caught by
+                    // the `active` guard in update_obs_state, but an instant
+                    // ability leaves nothing behind, and without this its aim
+                    // direction would be read as a run/stop input.
+                    slot.obs_state_held_this_tick = true;
                 }
                 match ability {
                     ABILITY_GRAPPLING_HOOK => {
                         self.use_grapple(index, s, action);
-                        self.players[index].base.suppress_jump = true;
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_WEB_SWING => {
                         self.fire_web(index, s);
-                        self.players[index].base.suppress_jump = true;
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_INVISIBILITY => {
@@ -6988,7 +7050,7 @@ impl RolloutWorld {
                         slot.cooldowns[s] = Fix::from_int(10_000);
                         slot.timers[s] = Fix::ZERO;
                         slot.telemetry.ability_activations[s] += 1;
-                        self.players[index].base.suppress_jump = true;
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_GOLD_MUSHROOM => {
@@ -7001,7 +7063,7 @@ impl RolloutWorld {
                         slot.cooldowns[s] = Fix::from_int(10_000);
                         slot.timers[s] = Fix::ZERO;
                         slot.telemetry.ability_activations[s] += 1;
-                        self.players[index].base.suppress_jump = true;
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_TELEPORT => {
@@ -7038,7 +7100,7 @@ impl RolloutWorld {
                             });
                             self.players[index].teleport_markers[s] = Some(marker_index);
                         }
-                        self.players[index].base.suppress_jump = true;
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_PORTAL_GUN => {
@@ -7055,7 +7117,7 @@ impl RolloutWorld {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         self.spawn_portal_shot(index, s, direction, data);
-                        self.players[index].base.suppress_jump = true;
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_REWIND => {
@@ -7085,7 +7147,7 @@ impl RolloutWorld {
                         // Rewind sets InstantAbility.ignoreNextCooldown when
                         // the recorder has fewer than two samples.
                         slot.rewind.finish_next_tick = true;
-                        self.players[index].base.suppress_jump = true;
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_DASH => {
@@ -8873,6 +8935,14 @@ impl RolloutWorld {
                 slot.meteor.prev_offset = offset;
                 slot.base.velocity = Vec2::UP * data.meteor.hold_speed;
                 slot.base.external_velocity *= Fix::from_f64(0.8);
+                // Meteor's DestroyIfOutsideSceneBounds sits between
+                // MeteorSmash.UpdateSim and PlayerBody, so it observes the
+                // vibrated position and the body is never integrated after.
+                // MeteorSmash.ExitAbility does not unground (MeteorSmash.cs:196).
+                if self.ability_boundary_kill(index, false) {
+                    return;
+                }
+                let slot = &mut self.players[index];
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
             }
@@ -9848,10 +9918,15 @@ impl RolloutWorld {
             slot.base.up = up;
             slot.base.rotation = up.perp_cw().normalized_angle();
             let alignment = slot.last_movement_input.normalized_safe().dot(up.perp_cw());
+            // PlantObjectOnPlatform.ExitAbility: enterTurn (SlimeController
+            // EnterStop) needs `Sign2(alignment) * transform.localScale.x >= 0`
+            // and OnEnterAbility set localScale.x to -1 while facing right, so
+            // the stop is entered when the held direction opposes the facing.
             let enter_stop = alignment.abs() >= Fix::from_f32(0.2)
-                && (alignment >= Fix::ZERO) == slot.facing_right;
+                && (alignment >= Fix::ZERO) != slot.facing_right;
             slot.obs_state = if enter_stop { STATE_STOP } else { STATE_IDLE };
             slot.state_ticks = if enter_stop { STOP_TICKS } else { 0 };
+            slot.obs_state_held_this_tick = true;
         } else {
             slot.base.up = Vec2::UP;
             slot.exit_to_fall();
@@ -11327,6 +11402,12 @@ impl RolloutWorld {
                 self.exit_black_hole_form(index, grounded);
                 return;
             }
+        }
+        // BlackHoleClap's DestroyIfOutsideSceneBounds runs before PlayerBody
+        // integrates this pass; its ExitAbility publishes the attached
+        // position without ungrounding (BlackHoleClap.cs:158).
+        if self.ability_boundary_kill(index, false) {
+            return;
         }
         self.black_hole_form_motion(index);
     }
@@ -15754,17 +15835,27 @@ impl RolloutWorld {
             let mut beam_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
-                    ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
-                    ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
+                    ABILITY_DASH => (
+                        data::surface_extents(data.dash.hurtbox_extents),
+                        7,
+                        &mut dash_entity,
+                    ),
+                    ABILITY_BOW => (
+                        data::surface_extents(data.bow.hurtbox_extents),
+                        7,
+                        &mut bow_entity,
+                    ),
                     ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
                     | ABILITY_POKE_BALL) => (
-                        throw_config(data, ability).hurtbox_extents,
+                        data::surface_extents(throw_config(data, ability).hurtbox_extents),
                         8,
                         &mut throw_entities[slot],
                     ),
-                    ABILITY_MISSILE => {
-                        (data.missile.hurtbox_extents, 7, &mut throw_entities[slot])
-                    }
+                    ABILITY_MISSILE => (
+                        data::surface_extents(data.missile.hurtbox_extents),
+                        7,
+                        &mut throw_entities[slot],
+                    ),
                     ABILITY_MINE => (
                         data::surface_extents(data.mine.hurtbox_extents),
                         7,
@@ -15843,7 +15934,7 @@ impl RolloutWorld {
                         &mut drill_entity,
                     ),
                     ABILITY_BEAM => (
-                        data.beam.hurtbox_extents,
+                        data::surface_extents(data.beam.hurtbox_extents),
                         data.beam.collider_hierarchy,
                         &mut beam_entity,
                     ),
@@ -16224,17 +16315,27 @@ impl RolloutWorld {
             let mut beam_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 let (extents, relative_hierarchy, target) = match abilities[slot] {
-                    ABILITY_DASH => (data.dash.hurtbox_extents, 7, &mut dash_entity),
-                    ABILITY_BOW => (data.bow.hurtbox_extents, 7, &mut bow_entity),
+                    ABILITY_DASH => (
+                        data::surface_extents(data.dash.hurtbox_extents),
+                        7,
+                        &mut dash_entity,
+                    ),
+                    ABILITY_BOW => (
+                        data::surface_extents(data.bow.hurtbox_extents),
+                        7,
+                        &mut bow_entity,
+                    ),
                     ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
                     | ABILITY_POKE_BALL) => (
-                        throw_config(data, ability).hurtbox_extents,
+                        data::surface_extents(throw_config(data, ability).hurtbox_extents),
                         8,
                         &mut throw_entities[slot],
                     ),
-                    ABILITY_MISSILE => {
-                        (data.missile.hurtbox_extents, 7, &mut throw_entities[slot])
-                    }
+                    ABILITY_MISSILE => (
+                        data::surface_extents(data.missile.hurtbox_extents),
+                        7,
+                        &mut throw_entities[slot],
+                    ),
                     ABILITY_MINE => (
                         data::surface_extents(data.mine.hurtbox_extents),
                         7,
@@ -16313,7 +16414,7 @@ impl RolloutWorld {
                         &mut drill_entity,
                     ),
                     ABILITY_BEAM => (
-                        data.beam.hurtbox_extents,
+                        data::surface_extents(data.beam.hurtbox_extents),
                         data.beam.collider_hierarchy,
                         &mut beam_entity,
                     ),
@@ -17721,6 +17822,12 @@ impl RolloutWorld {
         // calls Move(zero), and still steers the live projectile this pass.
         self.steer_active_missile(index, action, DT, data);
 
+        // SparkShot's DestroyIfOutsideSceneBounds runs before PlayerBody
+        // integrates this pass; its ExitAbility does not unground.
+        if self.ability_boundary_kill(index, false) {
+            return;
+        }
+
         if self.players[index].base.grounded {
             self.players[index]
                 .base
@@ -17875,6 +17982,13 @@ impl RolloutWorld {
             }
         }
 
+        // ThrowItem's DestroyIfOutsideSceneBounds runs after the mine logic
+        // and before PlayerBody integrates this pass. ThrowItem.ExitAbility
+        // publishes the attached position without ungrounding
+        // (ThrowItem.cs:165).
+        if self.ability_boundary_kill(index, false) {
+            return;
+        }
         if self.players[index].base.grounded {
             let before_player_physics = self.players[index].base.position;
             self.players[index]
@@ -18035,6 +18149,35 @@ impl RolloutWorld {
         }
     }
 
+    /// DestroyIfOutsideSceneBounds on an ability body prefab. The component
+    /// sits between the ability's own updaters and PlayerBody, so it observes
+    /// the position this pass started with and the body is never integrated
+    /// afterwards. selfDestruct resolves the body's IAbilityComponent and
+    /// calls ExitAbility with a default AbilityExitInfo, so the restored
+    /// slime takes over the ability body's position and game_tick's
+    /// `boundary_death` attributes the kill with CauseOfDeath.Other
+    /// (DestroyIfOutsideSceneBounds.cs:135-141, SlimeController.cs:217).
+    ///
+    /// `unground` follows the form's own ExitAbility: the GunTransform family
+    /// (BowTransform.cs:120, GunTransform.cs:87, MagnetGun.cs:359) calls
+    /// PlayerPhysics.UnGround before publishing the position, so a grounded
+    /// body dies 0.05 off its surface; ThrowItem2 and SparkShot publish the
+    /// attached position unchanged (ThrowItem2.cs:199, SparkShot.cs:283).
+    ///
+    /// Returns true when the body died; callers must return immediately so
+    /// the rest of the prefab's updaters, PlayerBody included, do not run.
+    fn ability_boundary_kill(&mut self, index: usize, unground: bool) -> bool {
+        if !self.players[index].base.alive || !self.players[index].base.outside_bounds() {
+            return false;
+        }
+        self.players[index].base.alive = false;
+        if unground {
+            self.players[index].base.force_unground(&self.platforms);
+        }
+        self.players[index].reported_position = self.players[index].base.position;
+        true
+    }
+
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         self.players[index].throw_item.collider_rotation = self.players[index].base.rotation;
         let ability = active_throw_ability(self.players[index].active);
@@ -18154,6 +18297,12 @@ impl RolloutWorld {
                 slot.reported_tick = self.tick;
                 return;
             }
+        }
+        // ThrowItem2's DestroyIfOutsideSceneBounds runs after the item logic
+        // and before PlayerBody integrates this pass. ThrowItem2.ExitAbility
+        // publishes the attached position without ungrounding.
+        if self.ability_boundary_kill(index, false) {
+            return;
         }
         if self.players[index].base.grounded {
             // PlayerPhysics.Move(Vec2.zero) consumes the throw recoil while
@@ -18452,6 +18601,12 @@ impl RolloutWorld {
             }
         }
 
+        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
+        // and before PlayerBody integrates this pass.
+        if self.ability_boundary_kill(index, true) {
+            return;
+        }
+
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -18592,6 +18747,12 @@ impl RolloutWorld {
             }
         }
 
+        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
+        // and before PlayerBody integrates this pass.
+        if self.ability_boundary_kill(index, true) {
+            return;
+        }
+
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -18730,6 +18891,12 @@ impl RolloutWorld {
             self.fire_scale_ray(index, growth, data);
         }
 
+        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
+        // and before PlayerBody integrates this pass.
+        if self.ability_boundary_kill(index, true) {
+            return;
+        }
+
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -18864,6 +19031,12 @@ impl RolloutWorld {
             self.fire_duplicator(index, data);
         }
 
+        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
+        // and before PlayerBody integrates this pass.
+        if self.ability_boundary_kill(index, true) {
+            return;
+        }
+
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -18950,6 +19123,11 @@ impl RolloutWorld {
         self.magnet_ability_update_scale(index);
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
+
+        // MagnetGun's DestroyIfOutsideSceneBounds precedes PlayerBody.
+        if self.ability_boundary_kill(index, true) {
+            return;
+        }
 
         // PlayerBody.UpdateSim, hierarchy 8.
         let slot = &mut self.players[index];
@@ -21131,7 +21309,7 @@ impl RolloutWorld {
             grounded_speed: Fix::ZERO,
             previous_jump: false,
             skip_next_gravity: false,
-            suppress_jump: false,
+            instant_cast_this_pass: false,
             jumped_this_frame: false,
             constants: data.player.constants.clone(),
             cooldown: Fix::ZERO,
@@ -34741,12 +34919,12 @@ mod tests {
     }
 
     #[test]
-    fn planted_object_exit_enters_stop_for_forward_ground_input() {
+    fn planted_object_exit_enters_stop_for_reversed_ground_input() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         world.players[0].active = ActiveAbility::Engine;
         world.players[0].facing_right = true;
-        world.players[0].last_movement_input = Vec2::RIGHT;
+        world.players[0].last_movement_input = -Vec2::RIGHT;
 
         world.exit_engine_cast(0);
 
@@ -34754,9 +34932,46 @@ mod tests {
         assert_eq!(world.players[0].state_ticks, STOP_TICKS);
 
         world.players[0].active = ActiveAbility::Tesla;
-        world.players[0].last_movement_input = -Vec2::RIGHT;
+        world.players[0].last_movement_input = Vec2::RIGHT;
         world.exit_engine_cast(0);
         assert_eq!(world.players[0].obs_state, STATE_IDLE);
+    }
+
+    #[test]
+    fn instant_ability_cast_freezes_the_state_machine_for_its_tick() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        for player in &mut config.player {
+            player.abilities[0] = ABILITY_TELEPORT;
+        }
+        world.reset(&config).unwrap();
+        world.players[0].obs_state = STATE_IDLE;
+        world.players[0].state_ticks = 0;
+        world.players[0].facing_right = true;
+        world.players[0].timers[0] = Fix::from_int(100);
+
+        world.player_tick(
+            0,
+            Action {
+                buttons: 2,
+                ..Action::default()
+            },
+            Vec2::ZERO,
+            false,
+            data::get(),
+        );
+        // SlimeController.OldUpdate returned right after EnterAbility, and an
+        // instant ability leaves no form behind to freeze the switch later.
+        assert!(world.players[0].active == ActiveAbility::None);
+        assert!(world.players[0].obs_state_held_this_tick);
+
+        world.update_obs_state(0, Vec2::RIGHT);
+        assert_eq!(world.players[0].obs_state, STATE_IDLE);
+        assert!(!world.players[0].obs_state_held_this_tick);
+
+        // The next tick is an ordinary one again.
+        world.update_obs_state(0, Vec2::RIGHT);
+        assert_eq!(world.players[0].obs_state, STATE_RUN);
     }
 
     #[test]

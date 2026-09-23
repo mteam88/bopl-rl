@@ -15,12 +15,13 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
 # One broad Teleport gate over marker creation/recast, stationary and moving
 # casts, both captured query sets, mixed-team overlap, effect deactivation,
-# strict reactivation timing, and subsequent ordinary airborne movement.
-for scenario in teleport_ability_ab teleport_multi_ab
+# strict reactivation timing, the cast tick's frozen slime state under every
+# aim, and subsequent ordinary airborne movement.
+for scenario in teleport_ability_ab teleport_multi_ab teleport_cast_state_ab
 do
     cc -O2 -I"$here" -o "$tmp/$scenario" \
         "$here/research/rust_ab/$scenario.c" "$here/bopl_rl.c" -ldl -lm
     (cd "$project" && "$tmp/$scenario" "$reference" "$rust")
 done
 
-echo "TELEPORT_BROAD_GOLDEN_OK scenarios=2"
+echo "TELEPORT_BROAD_GOLDEN_OK scenarios=3"
