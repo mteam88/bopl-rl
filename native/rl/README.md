@@ -215,8 +215,10 @@ UI labels that column and the 2,4,14 row stays marked as the one comparable to t
 pool score. The aggregation is `research/lineup_report.py` (also a CLI:
 `lineup_report.py --run <dir> [--last-k K] [--json]`), digested once per
 `result.json` and cached on the evaluation stamps, so a live run costs one parse
-per new evaluation. `research/check_dashboard_api.py` and
-`research/test_dashboard_loadouts.py` cover the payloads.
+per new evaluation. (The loadout view moved onto the agent page when the board
+became league-centric; `check_dashboard_api.py`, `check_dashboard.mjs` and
+`test_dashboard_loadouts.py` covered the retired sweep-centric endpoints and
+were deleted with them.)
 
 A short smoke verifies execution and artifact compatibility. It does not establish
 learning strength or whole-game competence. Report measured learner decisions,
