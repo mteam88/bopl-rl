@@ -33309,6 +33309,34 @@ impl RolloutWorld {
     }
 }
 
+// Entries into the zero-delta branch of `push_circle_out_of_platforms`,
+// counted only in test builds.
+//
+// `delta == 0` means `closest_point` returned the centre itself. That is the
+// geometry the reference divides by zero on, and it is the whole reason
+// `push_circle_out_of_platforms` carries a fallback direction at all. A test
+// that never enters the branch does not cover it, however green it looks, so
+// `a_centre_on_a_corner_arc_depenetrates_without_dividing_by_zero` reads this
+// counter to prove it reached the branch rather than passing vacuously.
+#[cfg(test)]
+thread_local! {
+    static ZERO_DELTA_PUSHES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_zero_delta_push() {
+    ZERO_DELTA_PUSHES.with(|count| count.set(count.get() + 1));
+}
+
+/// Reads the counter and resets it, so each test measures only its own calls.
+#[cfg(test)]
+fn take_zero_delta_pushes() -> u32 {
+    ZERO_DELTA_PUSHES.with(|count| count.replace(0))
+}
+
+#[cfg(not(test))]
+fn note_zero_delta_push() {}
+
 /// DetPhysics.PushCircleOutOfRoundedRects: moves a circle centre out of every
 /// active platform it overlaps, up to six passes. The reference divides
 /// `vec / magnitude` even on the not-overlapping branch, where a centre
@@ -33330,6 +33358,7 @@ fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radi
                 let direction = if magnitude > Fix::ZERO {
                     (closest - position) / magnitude
                 } else {
+                    note_zero_delta_push();
                     Vec2::UP
                 };
                 position = closest + direction * radius;
@@ -33338,6 +33367,7 @@ fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radi
                 let direction = if magnitude > Fix::ZERO {
                     delta / magnitude
                 } else {
+                    note_zero_delta_push();
                     Vec2::UP
                 };
                 position = closest + direction * radius;
@@ -33529,7 +33559,19 @@ mod tests {
         // The zero delta sends the centre straight up; the remaining passes
         // settle it on the arc's real normal, clear of the collider.
         let radius = Fix::from_f32(0.5);
+        take_zero_delta_pushes();
         let pushed = push_circle_out_of_platforms(&[platform.clone()], arc, radius);
+        // This test is the project's only cover for the zero-delta branch, so
+        // it has to prove it actually entered it. The geometry above is exact
+        // in both backends - `closest_point(arc) == arc` is asserted, not
+        // hoped for - which is what makes the count a build-independent
+        // measurement rather than a trajectory artefact. The replay fixture
+        // below used to carry this claim and no longer reaches the branch at
+        // all; see its comment.
+        assert!(
+            take_zero_delta_pushes() >= 1,
+            "the constructed arc geometry must enter the zero-delta branch"
+        );
         assert!(pushed.y > arc.y);
         assert!(!platform.collider.overlaps(pushed));
         assert_eq!(
@@ -33539,23 +33581,42 @@ mod tests {
     }
 
     #[test]
-    fn rewind_arrival_on_a_corner_arc_does_not_divide_by_zero() {
-        // The any-3 crash capture of 2026-09-20 (Rewind/Missile/Magnet
-        // mirror, map 2): on its last tick a rewind arrives with its centre
-        // exactly on a platform corner's rounding arc, closest_point returns
-        // the point itself, and the depenetration divided by zero.
+    fn rewind_capture_replays_to_the_end_with_rewind_running() {
+        // Provenance: the any-3 crash capture of 2026-09-20 (Rewind/Missile/
+        // Magnet mirror, map 2). On its last tick a rewind arrived with its
+        // centre exactly on a platform corner's rounding arc, closest_point
+        // returned the point itself, and the depenetration divided by zero.
         //
-        // The capture was recorded before ability bodies honoured
-        // DestroyIfOutsideSceneBounds, so it ends with a player the port used
-        // to carry below the kill plane. Under `--features q32` that player
-        // now dies at y = -11.3849 on loop iteration 7091 of 7140 and the
-        // episode ends 49 ticks short of the capture's own last tick; the f64
-        // build drifts the other way (the builds desync at iteration 2149 by
-        // 1.2e-6) and still reaches the end. `!world.terminal` was only ever
-        // a proxy for reaching the arrival and is not a property of the
-        // fixture, so this replays as far as the fixture runs and asserts the
-        // depenetration actually ran. The zero-magnitude branch is covered
-        // build-independently by the test above.
+        // This is an integration replay now, not that crash's cover, and the
+        // rename says so. The history is worth recording because it is a
+        // case study in an assertion that measured nothing:
+        //
+        //   * The capture predates ability bodies honouring
+        //     DestroyIfOutsideSceneBounds, so its tail was never reproducible
+        //     to begin with. The original `!world.terminal` assertion was
+        //     replaced with `arrivals >= 20` for exactly that reason.
+        //   * `arrivals >= 20` then survived only because the two backends
+        //     were differently wrong. Before the SlimeController facing fix
+        //     and the MagnetGun entry-basis fix, q32 reached >= 20 while f64
+        //     reached 14 - the desync this comment used to document at loop
+        //     iteration 2149. A threshold that one backend cleared and the
+        //     other did not was never a property of the simulation.
+        //   * With both fixes in, the backends agree exactly: 13 arrivals in
+        //     f64 and 13 in q32. The trajectory is now the same in both, and
+        //     it is a different trajectory than the recording, because the
+        //     recording was made by a port that aimed slimes wrongly.
+        //
+        // The crash arrival was the 21st; at 13 this replay no longer reaches
+        // the zero-delta branch in either build. Asserting a branch counter
+        // here would therefore fail honestly or pass vacuously, which is the
+        // same trap in a new coat - so that proof lives on
+        // `a_centre_on_a_corner_arc_depenetrates_without_dividing_by_zero`,
+        // which constructs the geometry and asserts it entered the branch.
+        //
+        // What this fixture can still honestly assert is that a real recorded
+        // three-ability episode replays end to end without panicking, and
+        // that the Rewind machinery under test actually ran. Both are
+        // build-independent.
         let raw = include_bytes!("../../fixtures/rewind-arrival-on-corner-arc.rep");
         let replay::Replay { config, ticks } = replay::decode(raw, 240, 7200).unwrap();
         let mut world = RolloutWorld::new();
@@ -33566,17 +33627,29 @@ mod tests {
             .map(|slot| slot.rewind.rewinding)
             .collect();
         let mut arrivals = 0usize;
+        let mut stepped = 0usize;
         for actions in &ticks[240..] {
             if world.terminal {
                 break;
             }
             world.step(actions, 1).unwrap();
+            stepped += 1;
             for (player, slot) in world.players.iter().enumerate() {
                 arrivals += usize::from(rewinding[player] && !slot.rewind.rewinding);
                 rewinding[player] = slot.rewind.rewinding;
             }
         }
-        assert!(arrivals >= 20, "rewind arrivals: {arrivals}");
+        // The episode ends on its own terms - terminal or out of recorded
+        // input - rather than on a panic, and it is a long episode, not a
+        // handful of ticks that decoded and immediately died.
+        assert!(
+            stepped > 1000,
+            "the capture should replay deep into the episode: {stepped} ticks"
+        );
+        // Rewind was exercised: a rewind that starts must also arrive, so a
+        // non-zero arrival count is the cheapest proof the ability ran rather
+        // than being skipped by a divergence earlier in the episode.
+        assert!(arrivals > 0, "rewind arrivals: {arrivals}");
     }
 
     #[test]
