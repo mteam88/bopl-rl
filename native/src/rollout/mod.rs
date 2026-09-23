@@ -4628,13 +4628,48 @@ impl RolloutWorld {
         }
         // SlimeController stores this pass's ground alignment in `prevInput`
         // at the end of OldUpdate (SlimeController.cs:889), on every pass that
-        // reaches the state switch - airborne included. With no attached
-        // ground PlayerPhysics.InputGroundAlignment measures against
-        // Vec2.right (PlayerPhysics.cs:394).
+        // reaches the state switch - airborne included.
         // OldUpdate reads this before Move (SlimeController.cs:1067, 1084), so
         // it is the frame PlayerPhysics.UpdateSim left, not the end-of-tick
         // one. On a surface that rotates under the slime the two differ by a
         // full tick of rotation, and every facing decision below inherits it.
+        //
+        // The airborne fallback is `Vec2.right` and the test below is
+        // `pre_move_grounded`, where PlayerPhysics.InputGroundAlignment
+        // (PlayerPhysics.cs:392-396) instead branches on
+        // `attachedGround != null`:
+        //
+        //   Vec2 u = ((attachedGround != null) ? attachedGround.forwardsDirection(body) : Vec2.right);
+        //
+        // Those two predicates really are different - `UnGround`
+        // (PlayerPhysics.cs:362-370) clears `isGrounded` and deliberately
+        // leaves `attachedGround` pointing at the platform just departed, and
+        // only the airborne arms of the two `SyncPhysicsTo` overloads null it
+        // (PlayerPhysics.cs:549, :577). Keying on `grounded` here is
+        // nevertheless correct, because the reference never *consumes* a
+        // `fix` computed on the far side of that gap:
+        //
+        //   - SlimeController.cs:473 subscribes `OnNoLongerGrounded`
+        //     unconditionally at Start, and `UnGround` always raises it
+        //     (PlayerPhysics.cs:377-379). The handler at :956-958 sets
+        //     `currentState = State.fall` synchronously, in the same call that
+        //     cleared `isGrounded`.
+        //   - `fix` and `flag5` are read only from the `switch (currentState)`
+        //     arms at :834-866 - land, stop, turn, idle, run - all ground
+        //     states. `State.fall` has no arm.
+        //   - `prevInput` is stored every pass but read only by the `run` arm
+        //     (:861-862), and `run` is reachable only through `land` and
+        //     `idle`, so the pass it is read against was itself grounded.
+        //   - the reference's other two callers, PlayerPhysics.cs:205 and
+        //     :240, both sit past `if (!isGrounded) { ...; return; }` in
+        //     `Move` (:229-234).
+        //
+        // So `InputGroundAlignment`'s `attachedGround`-without-`isGrounded`
+        // regime is unreachable, and a "fix" that models it changes behaviour
+        // the reference cannot exhibit. Measured: keying this on retained
+        // ground moved 27/748 dash-missile-platform games and improved nothing
+        // against the oracle (clean 245 either way, compared ticks 182480 ->
+        // 182370). Do not re-derive this one from the C# alone.
         let pre_up = slot.base.pre_move_up;
         let ground_align = if slot.base.pre_move_grounded {
             dir.dot(Vec2::new(pre_up.y, -pre_up.x))
