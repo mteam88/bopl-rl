@@ -87,6 +87,16 @@ pub struct Player {
     pub collider: OrientedBox,
     #[serde(default)]
     pub collider_rotation: Fix,
+    /// `Box.inverseExtents` of the Player-layer hurtbox as
+    /// `DPhysicsBox.Scale` has accumulated it. The setter rescales the
+    /// stored reciprocal by `(One / oldScale) * newScale`
+    /// (DPhysicsBox.cs:203-219) instead of rebuilding it from the authored
+    /// extents, and `SlimeController.UpdateSim` assigns `hurtBox.Scale`
+    /// every pass (SlimeController.cs:206), so even a constant scale walks
+    /// the value by raw units. Zero until the first assignment, which is
+    /// the standalone movement slice's unscaled case.
+    #[serde(skip, default)]
+    pub collider_inverse_extents: Vec2,
     /// `Vec2::angle(collider_rotation)`, kept so an unchanged rotation does
     /// not pay for the sine table again (zero until the first sync).
     #[serde(default)]
@@ -119,6 +129,15 @@ pub struct DashState {
     /// FixTransform keeps it for DetPhysics' sync of inactive colliders.
     #[serde(default)]
     pub exit_rotation: Fix,
+    /// The Dash body's position when `Ability.ExitAbility` read it
+    /// (Ability.cs:151 `SetPosition(potentialCollider.position,
+    /// slimeController)`), i.e. before `onExitAbility` hands the slime back
+    /// and `SlimeController.EnterFall` runs its velocity rays. That is the
+    /// last write to `Player.Position` on the exit pass, so the public
+    /// player row publishes the raw dash endpoint for one tick and only
+    /// picks up the ray-corrected body on the next.
+    #[serde(default)]
+    pub exit_position: Vec2,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[repr(C)]
@@ -806,12 +825,19 @@ impl Player {
         self.external_velocity += direction * Fix::from_raw(21_474_836) * Fix::from_int(35);
     }
     pub(crate) fn sync_collider(&mut self) {
-        let extents = if self.dash.active {
-            Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))
+        // The Dash body is its own DPhysicsBox and its `OnScaleChanged` is
+        // empty (Dash.cs:70-72), so only the slime hurtbox carries the
+        // accumulated reciprocal.
+        let inv = if !self.dash.active && self.collider_inverse_extents != Vec2::ZERO {
+            self.collider_inverse_extents
         } else {
-            Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
-        } * self.scale;
-        let inv = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+            let extents = if self.dash.active {
+                Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))
+            } else {
+                Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
+            } * self.scale;
+            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
+        };
         if self.rotation != self.collider_rotation || self.collider_basis == Vec2::ZERO {
             self.collider_basis = Vec2::angle(self.rotation);
             self.collider_rotation = self.rotation;
