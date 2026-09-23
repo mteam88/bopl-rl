@@ -213,6 +213,23 @@ def run():
                                                                 wins=1, losses=2, draws=0),
                  f'(y,x) 2-1-0 became {reversed_row["a"]},{reversed_row["b"]} 1-2-0')
 
+    # The guard for the failure that actually shipped: `play` wrote member NAMES as
+    # payoff keys while every consumer joined on member IDs. It hid because a
+    # scripted bot's id IS its name by design, so 10 of 18 participants matched by
+    # coincidence and only the 8 checkpoint members diverged -- this CLI reported
+    # 153 pairs and 100% coverage while the dashboard reader saw 45 and 7%.
+    stored = {key for pair in registry.read_payoff() for key in pair}
+    member_ids = {row['id'] for row in registry.load()['members']}
+    orphans = sorted(stored - member_ids)
+    check.ok('payoff-keys-are-member-ids', not orphans,
+             f'{len(stored)} participant keys in payoff.jsonl, all resolve to a member id'
+             if not orphans else f'{len(orphans)} keys are not member ids: {orphans[:3]}')
+    names = {row['name'] for row in registry.load()['members']}
+    ambiguous = stored & (names - member_ids)
+    check.ok('payoff-keys-are-not-names', not ambiguous,
+             'no participant key is a member name that is not also its id'
+             if not ambiguous else f'{len(ambiguous)} keys are names, not ids: {sorted(ambiguous)[:3]}')
+
     kinds_ok = 'human' in registry.KINDS
     check.ok('human-kind-exists', kinds_ok, f'kinds are {registry.KINDS}')
     aimed = registry.member('e1', 'exploiter', id='x', parent=None, target='dash-bow-platform')
@@ -287,6 +304,12 @@ def run():
     check.ok('saturation-flags-even-pairs', saturated['pairs_near_even'] == 1.0 and spread['pairs_near_even'] < 1.0,
              f"{saturated['pairs_near_even']:.0%} of pairs within 0.45-0.55 when saturated, "
              f"{spread['pairs_near_even']:.0%} when not")
+    flipped = {(b, a): [l, w, d] for (a, b), (w, l, d) in counts_from(flat, tiers).items()}
+    check.ok('saturation-spread-orientation-invariant',
+             abs(spread['pair_score_spread']
+                 - rating.saturation(flat, flipped)['pair_score_spread']) < 1e-12,
+             f"reading every pair from the other side leaves the spread at "
+             f"{spread['pair_score_spread']:.4f}; it measures the pool, not the key order")
     check.ok('saturation-unknown-is-not-zero', saturated['opponent_entropy'] is None,
              'with no realized opponent distribution recorded the field is None, not a confident 0.0')
 
