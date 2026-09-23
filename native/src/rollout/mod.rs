@@ -9136,11 +9136,7 @@ impl RolloutWorld {
 
     fn meteor_dash(&mut self, index: usize, data: &data::RolloutData) {
         let start = self.players[index].base.position;
-        let scene_water = if data.maps[self.map].is_space() {
-            Fix::from_int(-50)
-        } else {
-            Fix::from_f32(-11.3)
-        };
+        let scene_water = data.maps[self.map].scene_water_height();
         let ray_start = start - Vec2::UP * data.meteor.physics_radius;
         let direction = -Vec2::UP;
         let distance_limit = Fix::from_int(1_000_000);
@@ -15188,7 +15184,19 @@ impl RolloutWorld {
                 id,
                 kind: 1,
                 layer: data.smoke.explosion_layer,
-                owner: explosion.owner as u32 + 1,
+                // No owner: `SmokeGrenadeExplode2.Detonate`
+                // (sim/Gameplay/SmokeGrenadeExplode2.cs:50) instantiates the
+                // SmokeExplosion prefab bare and never assigns it a player id,
+                // and the prefab's root carries only Explosion, SpriteAnimator,
+                // DPhysicsBox, FixTransform and PlaySound
+                // (Assets/GameObject/SmokeExplosion.prefab) -- none of which is
+                // an `IPlayerIdHolder`. `RlObservation.Collider`
+                // (sim/Gameplay/RlObservation.cs:110, 118) therefore publishes
+                // owner 0 for this row, exactly as it does for the grenade,
+                // missile and mine explosions. (Those three prefabs do carry a
+                // `Shockwave`, which *is* an `IPlayerIdHolder`, but nothing in
+                // the simulation ever calls `Shockwave.SetPlayerId`, so its
+                // `ownerId` stays 0 as well.)
                 flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
                 hierarchy: 100_000_000
                     + explosion.hierarchy_base
@@ -23361,7 +23369,11 @@ impl RolloutWorld {
 
     fn release_grounded_blink_player(&mut self, victim: usize) {
         let old_position = self.players[victim].base.position;
-        let water_limit = Fix::from_f32(-11.3) + Fix::from_f32(0.5);
+        // QuantumTunnel.determinePlayerReleasePosition reads the global
+        // SceneBounds.WaterHeight (sim/Gameplay/QuantumTunnel.cs:242, :331),
+        // which is -50 on a space level, not the flat -11.3.
+        let scene_water = data::get().maps[self.map].scene_water_height();
+        let water_limit = scene_water + Fix::from_f32(0.5);
         let probe = Vec2::new(Fix::ZERO, Fix::from_int(1000));
         let mut candidates = [0usize; 64];
         let mut count = 0usize;
@@ -23415,6 +23427,9 @@ impl RolloutWorld {
 
     fn release_airborne_blink_player(&mut self, victim: usize) {
         let old_position = self.players[victim].base.position;
+        // SceneBounds.WaterHeight (sim/Gameplay/QuantumTunnel.cs:331), -50 on
+        // a space level.
+        let scene_water = data::get().maps[self.map].scene_water_height();
         let mut center = Vec2::ZERO;
         for platform in &self.platforms {
             center += platform.collider.inner.center;
@@ -23442,7 +23457,7 @@ impl RolloutWorld {
         }
         let min = Vec2::new(
             left,
-            (center.y - Fix::from_int(4)).max(Fix::from_f32(-11.3) + Fix::ONE),
+            (center.y - Fix::from_int(4)).max(scene_water + Fix::ONE),
         );
         let max = Vec2::new(right, Fix::from_int(40) - Fix::from_f64(1.7));
         let min = Vec2::new(min.x.min(max.x), min.y.min(max.y));
@@ -31026,15 +31041,36 @@ impl RolloutWorld {
 
     // ---- Observation ----
 
+    /// `GameSessionHandler.SuddenDeathInProgress` as the reference's
+    /// observation writer sees it. `GameSessionHandler.UpdateSim`
+    /// (sim/Gameplay/GameSessionHandler.cs:502) raises the flag from inside the
+    /// `updatables` pass, testing `Updater.SimTimeSinceLevelLoaded`, which
+    /// `TickSimulationInner` only advances at the very end of the tick
+    /// (sim/Gameplay/Updater.cs:353). During the tick that publishes
+    /// `header.tick == N` the reference therefore compares `(N - 1) * DT`,
+    /// while `session_tick` runs after `self.tick` has already been bumped and
+    /// compares `N * DT` -- one pass ahead.
+    ///
+    /// The simulation flag has to keep the earlier timing: it must be live for
+    /// the whole of the pass on which the reference raises it mid-`updatables`,
+    /// and `AnimateVelocity`'s delay draws are seeded from it. Only the
+    /// published bit lags, by exactly the one pass that separates the two
+    /// tests.
+    fn published_sudden_death(&self) -> bool {
+        self.sudden_death && self.tick > self.sudden_death_tick
+    }
+
     fn observe_main(&mut self) {
         self.refresh_entities();
         let mut entities = std::mem::take(&mut self.state_entities);
         self.publish_entities(&mut entities);
+        self.gate_published_source_abilities(&mut entities);
         self.state_entities = entities;
         let mut slimes = std::mem::take(&mut self.slimes);
         self.fill_slimes(&mut slimes);
         self.slimes = slimes;
         let flags = self.flags();
+        let sudden_death = self.published_sudden_death();
         Self::write_state(
             &mut self.state,
             &self.players,
@@ -31047,7 +31083,7 @@ impl RolloutWorld {
             self.warmup,
             flags,
             self.player_time_scale,
-            self.sudden_death,
+            sudden_death,
         );
         self.state.entities = self.state_entities.as_ptr();
         self.state.slimes = self.slimes.as_ptr();
@@ -31057,11 +31093,13 @@ impl RolloutWorld {
         self.refresh_entities();
         let mut entities = std::mem::take(&mut self.sample_entities);
         self.publish_entities(&mut entities);
+        self.gate_published_source_abilities(&mut entities);
         self.sample_entities = entities;
         let mut slimes = std::mem::take(&mut self.sample_slimes);
         self.fill_slimes(&mut slimes);
         self.sample_slimes = slimes;
         let flags = self.flags();
+        let sudden_death = self.published_sudden_death();
         Self::write_state(
             &mut self.sample,
             &self.players,
@@ -31074,7 +31112,7 @@ impl RolloutWorld {
             self.warmup,
             flags,
             self.player_time_scale,
-            self.sudden_death,
+            sudden_death,
         );
         self.sample.entities = self.sample_entities.as_ptr();
         self.sample.slimes = self.sample_slimes.as_ptr();
@@ -31184,10 +31222,101 @@ impl RolloutWorld {
         self.refresh_entity_metadata();
     }
 
-    /// Rebuild ABI-v3 semantic metadata after collider refreshes. Several
-    /// gameplay paths replace a complete `CEntity` to mirror DetPhysics, so
-    /// component flags and timer fields are applied in one final allocation-
-    /// free pass immediately before publishing the observation.
+    /// The ability slots of every slime `RlObservation.Write` would collect,
+    /// indexed by player id. `AbilityId` (sim/Gameplay/RlObservation.cs:122-132)
+    /// matches an entity's ability component instance against `slime.abilities`
+    /// of every slime in that LIVE list, and the owner-scoped fallback at the
+    /// end of `SourceAbility` (sim/Gameplay/RlObservation.cs:203-217) skips
+    /// every slime whose `GetPlayerId()` is not the entity's owner. So once the
+    /// caster's slime is gone the reference publishes 0 for everything that
+    /// caster still has in flight, and an opponent holding the same ability
+    /// does not stand in for it -- the match is on the component instance, not
+    /// on the id.
+    ///
+    /// Two forms escape the slime search and keep their id: DynamicAbilityPickup
+    /// reads the granted ability off its own sprite
+    /// (sim/Gameplay/RlObservation.cs:180-183), and ResizablePlatform goes
+    /// through `PlatformAbility` (sim/Gameplay/RlObservation.cs:154-175), which
+    /// falls back to ANY live slime's platform slot when no spawner buffer
+    /// holds the platform.
+    fn live_slime_abilities(&self) -> [[u32; 3]; MAX_PLAYERS + 1] {
+        let mut held = [[ABILITY_NULL; 3]; MAX_PLAYERS + 1];
+        for slot in &self.players {
+            // The same liveness test `fill_slimes` applies to build the rows
+            // RlObservation.Write collects from `Updater.updatables`.
+            if slot.base.alive
+                && slot.unspawned == 0
+                && !slot.revival_clone_pending
+                && !slot.stock_clone_pending
+                && (slot.base.id as usize) < held.len()
+            {
+                held[slot.base.id as usize] = slot.abilities;
+            }
+        }
+        held
+    }
+
+    /// Drop the source ability of every published row whose caster no longer
+    /// has a slime in that list. This runs on the published copy, never on
+    /// `self.entities`: a row whose `reserved[0]` is only written once (an
+    /// orphaned Drill hitbox, a spawned platform) still drives
+    /// `refresh_entity_metadata`'s component flags on later passes, and the
+    /// caster of a platform can come back on a later stock.
+    fn gate_published_source_abilities(&self, out: &mut [CEntity]) {
+        let held = self.live_slime_abilities();
+        let any_platform = held.iter().any(|slots| slots.contains(&ABILITY_PLATFORM));
+        let drill_hitbox_layer = data::get().drill.hitbox_layer;
+        for row in out.iter_mut() {
+            if row.reserved[0] == ABILITY_NULL {
+                continue;
+            }
+            // `RlObservation.Entity` (sim/Gameplay/RlObservation.cs:224-229)
+            // wraps every metadata lookup -- source ability, timer, clock and
+            // the component flag bits -- in `if (transform != null)`. A row
+            // the reference reports as DESTROYED with `activeInHierarchy`
+            // clear is one whose `FixTransform` has gone with its GameObject
+            // (`Collider` derives bit 0 from `transform != null &&
+            // transform.gameObject.activeInHierarchy`, :113-114), so the
+            // reference publishes a source of 0 for it however the collider
+            // was credited while it lived. The port's own table keeps the id:
+            // an ability collider is reused when the ability is cast again.
+            if row.flags & E_DESTROYED != 0 && row.flags & E_ACTIVE == 0 {
+                row.reserved[0] = ABILITY_NULL;
+                continue;
+            }
+            if row.flags & E_PICKUP != 0 {
+                continue;
+            }
+            if row.kind == 1 && row.layer == drill_hitbox_layer && row.reserved[0] == ABILITY_DRILL
+            {
+                // `HitboxCombo.SpawnHitboxesIfNotYetSpawned` creates each box
+                // with `FixTransform.InstantiateFixed`
+                // (sim/Gameplay/HitboxCombo.cs:52), so the object is a scene
+                // root: it carries `DPhysicsBox` and `Hitbox` and nothing
+                // else. `Drill` is a `MonoUpdatable`/`IAbilityComponent`
+                // (sim/Gameplay/Drill.cs:6), not an `AbilityMonoBehaviour`,
+                // and it is not in the parent chain anyway, so
+                // `RlObservation.SourceAbility`'s direct/parent lookup
+                // (sim/Gameplay/RlObservation.cs:188-191) finds nothing and
+                // its final loop only credits smoke, spark and projectile
+                // (:203-219). The reference always publishes 0 here. The
+                // internal marker has to stay on `self.entities`: it is what
+                // `refresh_entity_metadata` keys `E_HITBOX` off.
+                row.reserved[0] = ABILITY_NULL;
+            } else if row.kind == 2 && row.reserved[0] == ABILITY_PLATFORM {
+                // The only rounded rectangle credited to Platform is a
+                // ResizablePlatform the ability spawned.
+                if !any_platform {
+                    row.reserved[0] = ABILITY_NULL;
+                }
+            } else if row.owner != 0
+                && !held[row.owner as usize].contains(&row.reserved[0])
+            {
+                row.reserved[0] = ABILITY_NULL;
+            }
+        }
+    }
+
     fn refresh_entity_metadata(&mut self) {
         let simple_mask = ability_bit(ABILITY_DASH)
             | ability_bit(ABILITY_GUST)
@@ -31233,6 +31362,7 @@ impl RolloutWorld {
             }
             return;
         }
+        let held = self.live_slime_abilities();
         let drill_hitbox_layer = data::get().drill.hitbox_layer;
         for row in &mut self.entities {
             row.flags &= !E_COMPONENT_METADATA;
@@ -31363,7 +31493,17 @@ impl RolloutWorld {
                 row.flags |= E_PROJECTILE;
             }
             if item.ability != ABILITY_MINE {
-                row.reserved[0] = item.ability;
+                // Item carries no IPlayerIdHolder, so the row publishes owner
+                // 0 and `SourceAbility` can only reach the ability through
+                // `Grenade.thrower` -- which resolves through `AbilityId`, and
+                // so through the thrower's live slime.
+                row.reserved[0] = if held[self.players[item.owner].base.id as usize]
+                    .contains(&item.ability)
+                {
+                    item.ability
+                } else {
+                    ABILITY_NULL
+                };
             }
             // Grenade.Init runs on the updater pass after instantiation. Both
             // ordinary and smoke payloads carry Grenade, but its timer remains

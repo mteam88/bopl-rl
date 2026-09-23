@@ -1336,6 +1336,18 @@ impl MapDef {
             .map(|(position, extents, _)| position.y + extents.y)
     }
 
+    /// `SceneBounds.WaterHeight` (sim/Gameplay/SceneBounds.cs:11-33): the
+    /// global kill plane the gameplay code reads, -50 on a space level and
+    /// -11.3 everywhere else. Distinct from `water_height()`, which is the
+    /// map's own authored water collider, and from `lower_boundary()`.
+    pub fn scene_water_height(&self) -> Fix {
+        if self.is_space() {
+            Fix::from_int(-50)
+        } else {
+            Fix::from_f32(-11.3)
+        }
+    }
+
     pub fn lower_boundary(&self) -> Fix {
         if self.is_space() {
             // DestroyIfOutsideSceneBounds uses SceneBounds.Camera_YMin for

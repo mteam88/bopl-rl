@@ -70,6 +70,18 @@ $(OUT)/scale_boundary_ab: research/rust_ab/scale_boundary_ab.c bopl_rl.c bopl_rl
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -I. research/rust_ab/scale_boundary_ab.c bopl_rl.c -ldl -lm -o $@
 
+# Sudden-death publication gate: the tick each backend first PUBLISHES
+# header.sudden_death, on maps 0..4. GameSessionHandler raises the flag from
+# inside the updater pass against a clock the tick has not advanced yet, so the
+# port's post-increment session update is a pass ahead of it unless the
+# published bit lags by one.
+sudden-death-publication-ab: $(OUT)/sudden_death_publication_ab rust-q32
+	$(abspath $(OUT)/sudden_death_publication_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
+
+$(OUT)/sudden_death_publication_ab: research/rust_ab/sudden_death_publication_ab.c bopl_rl.c bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -I. research/rust_ab/sudden_death_publication_ab.c bopl_rl.c -ldl -lm -o $@
+
 # Sudden-death endgame gate: maps 0-4 played out with no input at all, every
 # entity, slime and player field compared exactly from reset through the tick
 # that resolves the round (level 7302-8218 depending on the map). This is the
@@ -88,12 +100,11 @@ $(OUT)/sudden_death_chunk_ab: research/rust_ab/sudden_death_chunk_ab.c bopl_rl.c
 # The same authored-map gate as map-sweep-3000, run long enough that every
 # map reaches sudden death and the round resolves. Strictly wider coverage at
 # ~3x the runtime, so both targets exist: keep 3000 as the quick gate.
-# MAP_AB_EXCUSE_SUDDEN_DEATH_FLAG is the single announced exclusion: the port
-# raises the header's sudden_death flag one observation early. Physics is
-# identical either side of it and every other field in this sweep proves that.
-# Drop the variable once the observation writer is fixed.
+# Nothing is excluded here: the header's sudden_death flag is compared like
+# every other field, which is what makes this the gate for the observation
+# writer's one-pass publication lag.
 map-sweep-endgame: $(OUT)/map_ab rust-q32
-	MAP_AB_STRICT_ACTORS=1 MAP_AB_EXCUSE_SUDDEN_DEATH_FLAG=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32)) 8200
+	MAP_AB_STRICT_ACTORS=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32)) 8200
 
 # Whole rust_ab differential suite, comparator included. Seventeen probes in
 # research/rust_ab only *print* a per-backend trace and always exit 0, so
@@ -213,4 +224,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac
+.PHONY: all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac

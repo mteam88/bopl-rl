@@ -61,28 +61,6 @@ static void describe(const char *label, const BoplRlEntity *e) {
            f(e->up_x), f(e->up_y), f(e->radius), f(e->inverse_mass));
 }
 
-/* The one announced exclusion, kept as narrow as a single field on a single
- * class of row. The port leaves `reserved[0]` (the granted-ability id) set on
- * an entity row it has already flagged DESTROYED, where the reference clears
- * it. That is publication metadata on a body that no longer simulates: it
- * cannot move anything, and it is an open item against the observation
- * writer, not against the endgame physics this probe exists to test. Every
- * other field of a destroyed row, and every field of a live one, is compared
- * byte for byte. Remove this the moment the writer stops retaining it. */
-static int excuse_destroyed_reserved(BoplRlEntity *x, BoplRlEntity *y) {
-    if (!(x->flags & BOPL_ENTITY_DESTROYED) ||
-        !(y->flags & BOPL_ENTITY_DESTROYED)) return 0;
-    if (x->reserved[0] == y->reserved[0]) return 0;
-    static int announced = 0;
-    if (!announced) {
-        printf("NOTE excluding the known retained reserved[0] on DESTROYED "
-               "entity rows (observation writer, not physics)\n");
-        announced = 1;
-    }
-    x->reserved[0] = y->reserved[0] = 0;
-    return 1;
-}
-
 /* 0 clean, 1 divergence, 2 harness failure. */
 static int run_map(BoplRl *world[2], unsigned map, unsigned ticks) {
     const char *labels[2] = {"net", "rust"};
@@ -168,7 +146,6 @@ static int run_map(BoplRl *world[2], unsigned map, unsigned ticks) {
         }
         for (unsigned i = 0; i < a->header.entity_count; i++) {
             BoplRlEntity x = a->entities[i], y = b->entities[i];
-            excuse_destroyed_reserved(&x, &y);
             if (memcmp(&x, &y, sizeof x) != 0) {
                 printf("SD_CHUNK_DIFF map=%u tick %u (level %u) entity "
                        "index %u\n", map, tick, a->header.tick, i);
