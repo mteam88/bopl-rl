@@ -37,6 +37,19 @@ $(OUT)/map_ab: research/rust_ab/map_ab.c bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -I. research/rust_ab/map_ab.c bopl_rl.c -ldl -lm -o $@
 
+# DestroyIfOutsideSceneBounds gate: walks a player off the edge of map 0 and
+# engages each ability form at three depths relative to the kill plane, then
+# requires the reference and the port to agree on the death tick, the death
+# position, and the cause of death. Catches ability bodies that hover below
+# the plane (GunTransform's slow-mo family) and abilities entered on the tick
+# the slime is already out of bounds.
+bounds-ability-ab: $(OUT)/bounds_ability_ab
+	$(abspath $(OUT)/bounds_ability_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT))
+
+$(OUT)/bounds_ability_ab: research/rust_ab/bounds_ability_ab.c bopl_rl.c bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -I. research/rust_ab/bounds_ability_ab.c bopl_rl.c -ldl -lm -o $@
+
 # Observation-writer microbenchmark + sim ticks/s on one core (THROUGHPUT_V4.md).
 writer-bench: $(OUT)/writer_bench
 
@@ -99,4 +112,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research map-ab writer-bench agent agent-mac
+.PHONY: all research map-ab bounds-ability-ab writer-bench agent agent-mac
