@@ -50,6 +50,12 @@ HELDOUT_MAPS = [3, 4]
 
 KEY = ('opponent', 'map', 'seed', 'side')
 MATCH_FIELDS = ('win', 'timeout', 'kills', 'deaths', 'ticks')
+# `win` and `kills` are written differently by different evaluate.py versions (see
+# corrected_kills and classify), so two arms produced by different checkouts cannot be
+# compared on them even when the simulation was bit-identical. These fields carry the
+# same meaning in every version: the tick the episode ended on, the deaths, and the
+# elimination flags the outcome is recomputed from.
+STABLE_FIELDS = ('timeout', 'deaths', 'ticks')
 
 
 def kit_run(kit):
@@ -60,6 +66,11 @@ def final_checkpoint(kit):
     run = kit_run(kit)
     step = json.loads((run / 'result.json').read_text())['step']
     return run / f'checkpoints/policy-{step:09d}.bin', step
+
+
+def flags_of(game):
+    """The elimination flags every outcome in the report is recomputed from."""
+    return tuple(bool(p['flags'] & 2) for p in game['final_players'])
 
 
 def game_key(game):
@@ -165,7 +176,18 @@ def score(game):
 
 
 def corrected_kills(game):
-    """Kills of somebody else: the game credits a suicide to the victim's own Kills."""
+    """Kills of somebody else: the game credits a suicide to the victim's own Kills.
+
+    Which side of that subtraction a stored row is on depends on the evaluate.py that
+    wrote it. Before the "score undecided rounds as draws" change, evaluate.py stored
+    the raw Player.Kills and the subtraction belonged here; since then it stores
+    `me['kills'] - deaths_self` itself, and doing it again here would charge every
+    suicide twice. The same commit added the per-game `undecided` flag, so its
+    presence dates the row -- and getting this wrong is not cosmetic: mixing the two
+    conventions across two arms reads as a 41% drop in kills that no backend caused.
+    """
+    if 'undecided' in game:
+        return game['kills']
     return game['kills'] - game['behavior']['totals'].get('deaths_self', 0.0)
 
 
@@ -352,6 +374,64 @@ SUITES = dict(
 ROLES = (('trained', TRAINING_MAPS), ('heldout', HELDOUT_MAPS), ('both', None))
 
 
+def command_crosscheck(args):
+    """Are two evaluations of the same library interchangeable on the games they share?
+
+    The oracle cannot host the two `search` bots (they decide by rollouts on a
+    bopl_rl_fork, which only the Rust sim provides), so an oracle arm must be
+    scheduled without them. evaluation_protocol.schedule derives a game's seed
+    from (seed_base, map, game index) alone -- never from the opponent's position
+    in the list -- so dropping an opponent should leave every other game's
+    (opponent, map, seed, side) key AND its outcome untouched, which is what
+    makes an existing 7-opponent arm reusable as the comparison arm.
+
+    "Should" is the part that has bitten this project before: the workers reuse
+    one game world across tasks, so if any state leaked across resets, changing
+    the task list would change the results. This replays that claim against real
+    data instead of asserting it: it requires a nonzero number of shared games
+    (a comparator that silently compared nothing would otherwise "pass") and
+    reports exact agreement on win/timeout/kills/deaths/ticks.
+
+        checkpoint_transfer.py crosscheck --out DIR --reference OTHER_DIR \
+            --base main --arm main --kits ...
+    """
+    out, reference = Path(args.out).resolve(), Path(args.reference).resolve()
+    rows, failed = [], False
+    for kit in args.kits:
+        _, step = final_checkpoint(kit)
+        mine = out / 'runs' / kit / args.arm / 'evaluations' / f'{step:09d}' / 'result.json'
+        theirs = reference / 'runs' / kit / args.base / 'evaluations' / f'{step:09d}' / 'result.json'
+        if not mine.is_file() or not theirs.is_file():
+            rows.append(dict(kit=kit, shared=0, mismatched=0, ok=False,
+                             note=f'missing {"mine" if not mine.is_file() else "reference"}'))
+            failed = True
+            continue
+        a, b = read_games(mine), read_games(theirs)
+        shared = sorted(set(a) & set(b))
+        fields = STABLE_FIELDS if args.stable_fields else MATCH_FIELDS
+        bad = [k for k in shared if any(a[k][f] != b[k][f] for f in fields)
+               or (args.stable_fields and flags_of(a[k]) != flags_of(b[k]))]
+        # Opponents present on only one side are the point of the exercise; count
+        # them so the report shows the comparison was not vacuously empty.
+        only_mine = sorted({k[0] for k in set(a) - set(b)})
+        only_theirs = sorted({k[0] for k in set(b) - set(a)})
+        ok = bool(shared) and not bad
+        failed |= not ok
+        rows.append(dict(kit=kit, mine=len(a), reference=len(b), shared=len(shared),
+                         mismatched=len(bad), opponents_only_mine=only_mine,
+                         opponents_only_reference=only_theirs, ok=ok,
+                         examples=[list(k) for k in bad[:5]]))
+    for r in rows:
+        print(f"{r['kit']:28s} shared={r.get('shared',0):5d} mismatched={r.get('mismatched',0):4d} "
+              f"only-reference={','.join(r.get('opponents_only_reference') or ['-'])} "
+              f"{'OK' if r['ok'] else 'FAIL ' + str(r.get('note') or r.get('examples'))}", flush=True)
+    (out / 'crosscheck.json').write_text(json.dumps(rows, indent=1) + '\n')
+    if failed:
+        raise SystemExit('crosscheck failed: the two schedules are NOT interchangeable on their shared games')
+    fields = STABLE_FIELDS + ('final_players flags',) if args.stable_fields else MATCH_FIELDS
+    print('\ncrosscheck OK: every shared game agrees on ' + '/'.join(fields))
+
+
 def command_report(args):
     out = Path(args.out).resolve()
     diverge = divergence_rates(args.divergence)
@@ -360,7 +440,23 @@ def command_report(args):
         _, step = final_checkpoint(kit)
         base = read_games(out / 'runs' / kit / args.base / 'evaluations' / f'{step:09d}' / 'result.json')
         arm = read_games(out / 'runs' / kit / args.arm / 'evaluations' / f'{step:09d}' / 'result.json')
-        entry = dict(step=step, divergence=diverge.get(kit))
+        # Every number below is a PAIRED comparison, so restrict both arms to the games
+        # they actually share. paired()/flips()/churn_of() intersect internally, but
+        # outcome_mix() and means() summarise one arm on its own: fed a base arm that
+        # also played opponents the other could not (an oracle arm has no `search` bots,
+        # which are the two strongest), they would compare different populations and
+        # report a large spurious difference in kills and episode length. That is not a
+        # hypothetical -- it read as "27% shorter episodes, 35% fewer kills" before this.
+        shared = set(base) & set(arm)
+        dropped = (len(base) - len(shared), len(arm) - len(shared))
+        if any(dropped):
+            print(f'# {kit}: pairing on {len(shared)} shared games '
+                  f'({dropped[0]} base-only, {dropped[1]} arm-only dropped: '
+                  f'{sorted({k[0] for k in set(base) - shared} | {k[0] for k in set(arm) - shared})})')
+        base = {k: v for k, v in base.items() if k in shared}
+        arm = {k: v for k, v in arm.items() if k in shared}
+        entry = dict(step=step, divergence=diverge.get(kit), paired_games=len(shared),
+                     dropped_base_only=dropped[0], dropped_arm_only=dropped[1])
         for suite, keep in SUITES.items():
             for role, maps in ROLES:
                 sel = (lambda g, keep=keep, maps=maps: keep(g) and (maps is None or g['map'] in maps))
@@ -372,8 +468,13 @@ def command_report(args):
                             base_mix=outcome_mix(base, sel), arm_mix=outcome_mix(arm, sel),
                             base_means=means(base, sel), arm_means=means(arm, sel))
                 stat['lost'], stat['gained'] = flips(base, arm, sel)
-                stat['base_win_ci'] = wilson(round(stat['win']['base'] * stat['win']['n']), stat['win']['n'])
-                stat['arm_win_ci'] = wilson(round(stat['win']['arm'] * stat['win']['n']), stat['win']['n'])
+                # A suite can be empty by construction: the oracle backend cannot host
+                # the two `search` bots (no bopl_rl_fork), so `hard_bots` has no paired
+                # games there and `paired` reports n=0 with NaN rates. Report the empty
+                # suite as empty rather than crashing on round(NaN).
+                n = stat['win']['n']
+                stat['base_win_ci'] = wilson(round(stat['win']['base'] * n), n) if n else (float('nan'),) * 2
+                stat['arm_win_ci'] = wilson(round(stat['win']['arm'] * n), n) if n else (float('nan'),) * 2
                 entry[f'{suite}:{role}'] = stat
         for role, maps in ROLES:
             entry[f'elo:{role}'] = elo_pair(base, arm, lambda g, m=maps: m is None or g['map'] in m)
@@ -444,7 +545,7 @@ def command_report(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('command', choices=('run', 'sanity', 'report'))
+    parser.add_argument('command', choices=('run', 'sanity', 'report', 'crosscheck'))
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--libs', nargs='*', default=[], help='name=path/to/libbopl_sim.so')
     parser.add_argument('--kits', nargs='*', default=KITS)
@@ -455,10 +556,16 @@ def main():
     parser.add_argument('--base', default='base')
     parser.add_argument('--arm', default='main')
     parser.add_argument('--resamples', type=int, default=20000)
+    parser.add_argument('--reference', type=Path,
+                        help='crosscheck: another run directory to compare shared games against')
+    parser.add_argument('--stable-fields', action='store_true',
+                        help='crosscheck: compare only fields whose meaning is the same across '
+                             'evaluate.py versions (ticks/deaths/timeout plus the elimination flags)')
     parser.add_argument('--divergence', type=Path,
                         default=Path('/home/mte/.local/share/bopl-null-hypothesis/blast-radius-2026-09-23/rows-tol1.tsv'))
     args = parser.parse_args()
-    dict(run=command_run, sanity=command_sanity, report=command_report)[args.command](args)
+    dict(run=command_run, sanity=command_sanity, report=command_report,
+         crosscheck=command_crosscheck)[args.command](args)
 
 
 if __name__ == '__main__':
