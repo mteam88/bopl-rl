@@ -352,6 +352,61 @@ SUITES = dict(
 ROLES = (('trained', TRAINING_MAPS), ('heldout', HELDOUT_MAPS), ('both', None))
 
 
+def command_crosscheck(args):
+    """Are two evaluations of the same library interchangeable on the games they share?
+
+    The oracle cannot host the two `search` bots (they decide by rollouts on a
+    bopl_rl_fork, which only the Rust sim provides), so an oracle arm must be
+    scheduled without them. evaluation_protocol.schedule derives a game's seed
+    from (seed_base, map, game index) alone -- never from the opponent's position
+    in the list -- so dropping an opponent should leave every other game's
+    (opponent, map, seed, side) key AND its outcome untouched, which is what
+    makes an existing 7-opponent arm reusable as the comparison arm.
+
+    "Should" is the part that has bitten this project before: the workers reuse
+    one game world across tasks, so if any state leaked across resets, changing
+    the task list would change the results. This replays that claim against real
+    data instead of asserting it: it requires a nonzero number of shared games
+    (a comparator that silently compared nothing would otherwise "pass") and
+    reports exact agreement on win/timeout/kills/deaths/ticks.
+
+        checkpoint_transfer.py crosscheck --out DIR --reference OTHER_DIR \
+            --base main --arm main --kits ...
+    """
+    out, reference = Path(args.out).resolve(), Path(args.reference).resolve()
+    rows, failed = [], False
+    for kit in args.kits:
+        _, step = final_checkpoint(kit)
+        mine = out / 'runs' / kit / args.arm / 'evaluations' / f'{step:09d}' / 'result.json'
+        theirs = reference / 'runs' / kit / args.base / 'evaluations' / f'{step:09d}' / 'result.json'
+        if not mine.is_file() or not theirs.is_file():
+            rows.append(dict(kit=kit, shared=0, mismatched=0, ok=False,
+                             note=f'missing {"mine" if not mine.is_file() else "reference"}'))
+            failed = True
+            continue
+        a, b = read_games(mine), read_games(theirs)
+        shared = sorted(set(a) & set(b))
+        bad = [k for k in shared if any(a[k][f] != b[k][f] for f in MATCH_FIELDS)]
+        # Opponents present on only one side are the point of the exercise; count
+        # them so the report shows the comparison was not vacuously empty.
+        only_mine = sorted({k[0] for k in set(a) - set(b)})
+        only_theirs = sorted({k[0] for k in set(b) - set(a)})
+        ok = bool(shared) and not bad
+        failed |= not ok
+        rows.append(dict(kit=kit, mine=len(a), reference=len(b), shared=len(shared),
+                         mismatched=len(bad), opponents_only_mine=only_mine,
+                         opponents_only_reference=only_theirs, ok=ok,
+                         examples=[list(k) for k in bad[:5]]))
+    for r in rows:
+        print(f"{r['kit']:28s} shared={r.get('shared',0):5d} mismatched={r.get('mismatched',0):4d} "
+              f"only-reference={','.join(r.get('opponents_only_reference') or ['-'])} "
+              f"{'OK' if r['ok'] else 'FAIL ' + str(r.get('note') or r.get('examples'))}", flush=True)
+    (out / 'crosscheck.json').write_text(json.dumps(rows, indent=1) + '\n')
+    if failed:
+        raise SystemExit('crosscheck failed: the two schedules are NOT interchangeable on their shared games')
+    print('\ncrosscheck OK: every shared game agrees on ' + '/'.join(MATCH_FIELDS))
+
+
 def command_report(args):
     out = Path(args.out).resolve()
     diverge = divergence_rates(args.divergence)
@@ -372,8 +427,13 @@ def command_report(args):
                             base_mix=outcome_mix(base, sel), arm_mix=outcome_mix(arm, sel),
                             base_means=means(base, sel), arm_means=means(arm, sel))
                 stat['lost'], stat['gained'] = flips(base, arm, sel)
-                stat['base_win_ci'] = wilson(round(stat['win']['base'] * stat['win']['n']), stat['win']['n'])
-                stat['arm_win_ci'] = wilson(round(stat['win']['arm'] * stat['win']['n']), stat['win']['n'])
+                # A suite can be empty by construction: the oracle backend cannot host
+                # the two `search` bots (no bopl_rl_fork), so `hard_bots` has no paired
+                # games there and `paired` reports n=0 with NaN rates. Report the empty
+                # suite as empty rather than crashing on round(NaN).
+                n = stat['win']['n']
+                stat['base_win_ci'] = wilson(round(stat['win']['base'] * n), n) if n else (float('nan'),) * 2
+                stat['arm_win_ci'] = wilson(round(stat['win']['arm'] * n), n) if n else (float('nan'),) * 2
                 entry[f'{suite}:{role}'] = stat
         for role, maps in ROLES:
             entry[f'elo:{role}'] = elo_pair(base, arm, lambda g, m=maps: m is None or g['map'] in m)
@@ -444,7 +504,7 @@ def command_report(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('command', choices=('run', 'sanity', 'report'))
+    parser.add_argument('command', choices=('run', 'sanity', 'report', 'crosscheck'))
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--libs', nargs='*', default=[], help='name=path/to/libbopl_sim.so')
     parser.add_argument('--kits', nargs='*', default=KITS)
@@ -455,10 +515,13 @@ def main():
     parser.add_argument('--base', default='base')
     parser.add_argument('--arm', default='main')
     parser.add_argument('--resamples', type=int, default=20000)
+    parser.add_argument('--reference', type=Path,
+                        help='crosscheck: another run directory to compare shared games against')
     parser.add_argument('--divergence', type=Path,
                         default=Path('/home/mte/.local/share/bopl-null-hypothesis/blast-radius-2026-09-23/rows-tol1.tsv'))
     args = parser.parse_args()
-    dict(run=command_run, sanity=command_sanity, report=command_report)[args.command](args)
+    dict(run=command_run, sanity=command_sanity, report=command_report,
+         crosscheck=command_crosscheck)[args.command](args)
 
 
 if __name__ == '__main__':
