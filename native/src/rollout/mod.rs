@@ -25089,6 +25089,17 @@ impl RolloutWorld {
                 orbit.0 -= 1;
             }
         }
+        // `vector_fields` holds live platform indices, like `orbits`, and the
+        // VectorFieldPlatform pass dereferences them into `platforms`,
+        // `platform_defs` and `platform_dynamics` unchecked. Dropping a
+        // vector-field platform without retiring its entry leaves an index one
+        // past the end of the shrunken list, which panics the next pass.
+        self.vector_fields.retain(|&p| p != index);
+        for p in &mut self.vector_fields {
+            if *p > index {
+                *p -= 1;
+            }
+        }
         for s in &mut self.spawned {
             if s.active && s.platform_index == index {
                 s.active = false;
