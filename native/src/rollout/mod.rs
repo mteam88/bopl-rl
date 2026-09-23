@@ -2012,6 +2012,14 @@ pub struct PlayerSlot {
     /// EnterFall after a grounded ragdoll timeout has no new landing callback,
     /// so its visible state stays Fall until the body detaches.
     pub ragdoll_grounded_fall: bool,
+    /// Skips this tick's SlimeController state switch. Two callers need it:
+    /// `SlimeController.OldUpdate` returns straight after `EnterAbility`, so
+    /// the switch never runs on the tick a cast starts (instant abilities
+    /// included, which leave no `active` form behind to freeze it), and
+    /// PlantObjectOnPlatform's recover callback runs after SlimeController's
+    /// own pass, so the grounded EnterStop/EnterIdle it installs survives the
+    /// exit tick untouched and the state machine resumes on the next one.
+    pub obs_state_held_this_tick: bool,
     /// One live Poke Ball pinning this victim. More than one physics callback
     /// can capture the same slime from a prebuilt manifold set; this points to
     /// a remaining captor when another one pops.
@@ -3502,6 +3510,7 @@ impl RolloutWorld {
                 frozen_solid_count: 0,
                 freeze_form_exit_tick: u32::MAX,
                 ragdoll_grounded_fall: false,
+                obs_state_held_this_tick: false,
                 captured_by_ball: None,
                 poke_invulnerable: false,
                 callback_killed_tick: None,
@@ -4560,6 +4569,7 @@ impl RolloutWorld {
     /// turn->run); reversals while running pass through `stop`.
     fn update_obs_state(&mut self, index: usize, dir: Vec2) {
         let slot = &mut self.players[index];
+        let held = std::mem::take(&mut slot.obs_state_held_this_tick);
         if slot.ragdoll_grounded_fall {
             if slot.base.grounded {
                 return;
@@ -4599,6 +4609,9 @@ impl RolloutWorld {
                 || (into_ground && align.abs() >= Fix::from_f32(0.01)));
         let input_right = align >= Fix::ZERO;
         match slot.obs_state {
+            // attachToGround and the land animation are PlayerPhysics/animator
+            // callbacks, so they still land and chain on a held tick; only
+            // `switch (currentState)` below is what OldUpdate returns before.
             STATE_FALL => {
                 // attachToGround: land animation, then idle (one tick longer
                 // after an ability exit, see `PlayerSlot::exit_to_fall`).
@@ -4611,6 +4624,7 @@ impl RolloutWorld {
                     slot.obs_state = STATE_IDLE;
                 }
             }
+            _ if held => {}
             STATE_RUN => {
                 if !moving || input_right != slot.facing_right {
                     slot.obs_state = STATE_STOP;
@@ -6898,6 +6912,13 @@ impl RolloutWorld {
                     // Ability.EnterAbility scales the enabled form collider
                     // from Player.Scale before invoking its components.
                     slot.base.scale = slot.player_scale;
+                    // SlimeController.OldUpdate returns immediately after
+                    // EnterAbility (SlimeController.cs:828-830), so this tick's
+                    // state switch never runs. A form ability is also caught by
+                    // the `active` guard in update_obs_state, but an instant
+                    // ability leaves nothing behind, and without this its aim
+                    // direction would be read as a run/stop input.
+                    slot.obs_state_held_this_tick = true;
                 }
                 match ability {
                     ABILITY_GRAPPLING_HOOK => {
@@ -9772,10 +9793,15 @@ impl RolloutWorld {
             slot.base.up = up;
             slot.base.rotation = up.perp_cw().normalized_angle();
             let alignment = slot.last_movement_input.normalized_safe().dot(up.perp_cw());
+            // PlantObjectOnPlatform.ExitAbility: enterTurn (SlimeController
+            // EnterStop) needs `Sign2(alignment) * transform.localScale.x >= 0`
+            // and OnEnterAbility set localScale.x to -1 while facing right, so
+            // the stop is entered when the held direction opposes the facing.
             let enter_stop = alignment.abs() >= Fix::from_f32(0.2)
-                && (alignment >= Fix::ZERO) == slot.facing_right;
+                && (alignment >= Fix::ZERO) != slot.facing_right;
             slot.obs_state = if enter_stop { STATE_STOP } else { STATE_IDLE };
             slot.state_ticks = if enter_stop { STOP_TICKS } else { 0 };
+            slot.obs_state_held_this_tick = true;
         } else {
             slot.base.up = Vec2::UP;
             slot.exit_to_fall();
@@ -34648,12 +34674,12 @@ mod tests {
     }
 
     #[test]
-    fn planted_object_exit_enters_stop_for_forward_ground_input() {
+    fn planted_object_exit_enters_stop_for_reversed_ground_input() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         world.players[0].active = ActiveAbility::Engine;
         world.players[0].facing_right = true;
-        world.players[0].last_movement_input = Vec2::RIGHT;
+        world.players[0].last_movement_input = -Vec2::RIGHT;
 
         world.exit_engine_cast(0);
 
@@ -34661,9 +34687,46 @@ mod tests {
         assert_eq!(world.players[0].state_ticks, STOP_TICKS);
 
         world.players[0].active = ActiveAbility::Tesla;
-        world.players[0].last_movement_input = -Vec2::RIGHT;
+        world.players[0].last_movement_input = Vec2::RIGHT;
         world.exit_engine_cast(0);
         assert_eq!(world.players[0].obs_state, STATE_IDLE);
+    }
+
+    #[test]
+    fn instant_ability_cast_freezes_the_state_machine_for_its_tick() {
+        let mut world = RolloutWorld::new();
+        let mut config = test_config();
+        for player in &mut config.player {
+            player.abilities[0] = ABILITY_TELEPORT;
+        }
+        world.reset(&config).unwrap();
+        world.players[0].obs_state = STATE_IDLE;
+        world.players[0].state_ticks = 0;
+        world.players[0].facing_right = true;
+        world.players[0].timers[0] = Fix::from_int(100);
+
+        world.player_tick(
+            0,
+            Action {
+                buttons: 2,
+                ..Action::default()
+            },
+            Vec2::ZERO,
+            false,
+            data::get(),
+        );
+        // SlimeController.OldUpdate returned right after EnterAbility, and an
+        // instant ability leaves no form behind to freeze the switch later.
+        assert!(world.players[0].active == ActiveAbility::None);
+        assert!(world.players[0].obs_state_held_this_tick);
+
+        world.update_obs_state(0, Vec2::RIGHT);
+        assert_eq!(world.players[0].obs_state, STATE_IDLE);
+        assert!(!world.players[0].obs_state_held_this_tick);
+
+        // The next tick is an ordinary one again.
+        world.update_obs_state(0, Vec2::RIGHT);
+        assert_eq!(world.players[0].obs_state, STATE_RUN);
     }
 
     #[test]

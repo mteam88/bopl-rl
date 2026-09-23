@@ -306,10 +306,10 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `missile_broad_ab.sh`: one broad gate over 16 optimized-Q32 Missile
   scenarios spanning entry variants, steering/instability, players/forms,
   Arrow, Grenade, Water, Gust, Time Stop, duplication, scale, Magnet and Dash.
-- `mine_broad_ab.sh`: one broad gate over eight optimized-Q32 Mine scenarios
-  spanning ordinary chase/detonation, held and released Gust, held/released/
-  anticipation Time Stop, Duplicator fan copies and Dash against all shared
-  ThrowItem forms.
+- `mine_broad_ab.sh`: one broad gate over nine optimized-Q32 Mine scenarios
+  spanning ordinary chase/detonation, owner scan immunity and owner ignition,
+  held and released Gust, held/released/anticipation Time Stop, Duplicator fan
+  copies and Dash against all shared ThrowItem forms.
 - `mjolnir_broad_ab.sh`: one broad gate over six optimized-Q32 Mjolnir
   scenarios spanning aerial flight/recall, grounded wall clang and platform
   push, released Gust, both Time Stop phases, duplication and Dash against all
@@ -367,6 +367,27 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
 - `teleport_multi_ab.c`: a three-player two-way portal swap with a teammate at
   each query circle. It also verifies sorted-team spawn assignment, authored
   teammate offsets, two simultaneous effects, and entity order.
+- `teleport_cast_state_ab.c`: marker-placing and swapping casts under four aim
+  directions. `SlimeController.OldUpdate` returns straight after
+  `EnterAbility`, so the run/stop/turn switch never runs on a cast tick, and an
+  instant ability leaves no form behind to keep it frozen afterwards; aim and
+  movement share one stick, so a horizontal aim used to drive the port into
+  run -> stop -> idle while the reference stayed idle.
+- `tesla_exit_state_ab.c`: the Tesla plant-exit branch.
+  `PlantObjectOnPlatform.ExitAbility` reaches `enterTurn` (SlimeController
+  `EnterStop`) when the held ground direction opposes the facing, because
+  `OnEnterAbility` set `localScale.x` to -1 while facing right, and the state
+  its recover callback installs survives the exit tick. Both orientations are
+  required, so neither branch can regress unnoticed.
+- `mine_owner_contact_ab.c`: `Mine.ScanForPlayers` skips the owner, so an armed
+  mine hovering inside its own six-unit scan radius never chases or
+  proximity-detonates on the player that threw it; `Mine.OnCollide` has no such
+  exemption, so the owner's own hurtbox still ignites it and the resulting
+  `Explosion` (`PlayerOwnerId = item.OwnerId`) kills the owner with
+  `CauseOfDeath.Accident` while `Player.Kill` still credits it a kill. Entities
+  are matched by hierarchy number because the fatal tick's explosion and
+  death-drop pickup receive swapped observation ids under the documented
+  deferred-prefab drain-order gap.
 - `portal_arrow_ab.c`: a live Bow Arrow crosses a linked Portal Gun pair,
   mirrors its momentum and collides at the exit on the same pass.
 - `portal_rock_ab.c`: a flying PortalShot resolves an ordinary circle/circle
