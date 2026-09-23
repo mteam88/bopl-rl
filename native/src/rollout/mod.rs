@@ -2112,6 +2112,10 @@ pub struct PlayerSlot {
     /// Countdown for the land/stop/turn animation states.
     pub state_ticks: u32,
     pub facing_right: bool,
+    /// SlimeController.prevInput: the previous pass's ground alignment of the
+    /// movement stick (SlimeController.cs:127/889). `run` ends on a sign
+    /// change against *this*, not against the sprite facing.
+    pub prev_input_align: Fix,
     /// Ticks until GameSessionHandler.SpawnPlayers instantiates the slime
     /// (only a warmup shorter than SLIME_AWAKE_TICK+1 ends before it).
     pub unspawned: u32,
@@ -2153,6 +2157,11 @@ pub struct PlayerSlot {
     pub body_entity: usize,
     pub dash_entity: usize,
     pub bow_entity: usize,
+    /// Current thrown-ability prefab for each equipped slot. Grenade, Smoke,
+    /// Tack, Mjolnir, Poke Ball and Missile all register one, so a loadout may
+    /// hold up to three at once; `throw_entity` is the one selected by
+    /// `active_slot`, the alias the collider queries use.
+    pub throw_entities: [usize; 3],
     pub throw_entity: usize,
     pub mine_entity: usize,
     pub spike_entity: usize,
@@ -2897,7 +2906,7 @@ impl RolloutWorld {
         let mut body_entity = [usize::MAX; MAX_PLAYERS];
         let mut dash_entity = [usize::MAX; MAX_PLAYERS];
         let mut bow_entity = [usize::MAX; MAX_PLAYERS];
-        let mut throw_entity = [usize::MAX; MAX_PLAYERS];
+        let mut throw_entity = [[usize::MAX; 3]; MAX_PLAYERS];
         let mut mine_entity = [usize::MAX; MAX_PLAYERS];
         let mut push_entity = [usize::MAX; MAX_PLAYERS];
         let mut freeze_entities = [[usize::MAX; 3]; MAX_PLAYERS];
@@ -3020,7 +3029,7 @@ impl RolloutWorld {
                         ABILITY_MISSILE => (
                             data::surface_extents(data.missile.hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
-                            &mut throw_entity[i],
+                            &mut throw_entity[i][slot_index],
                             false,
                         ),
                         ABILITY_MINE => (
@@ -3088,7 +3097,7 @@ impl RolloutWorld {
                         | ABILITY_MJOLNIR | ABILITY_POKE_BALL) => (
                             data::surface_extents(throw_config(data, ability).hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 8,
-                            &mut throw_entity[i],
+                            &mut throw_entity[i][slot_index],
                             false,
                         ),
                         ABILITY_SPIKE => (
@@ -3439,6 +3448,7 @@ impl RolloutWorld {
                     grounded_speed: Fix::ZERO,
                     previous_jump: false,
                     skip_next_gravity: false,
+                    instant_cast_this_pass: false,
                     jumped_this_frame: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
@@ -3562,6 +3572,7 @@ impl RolloutWorld {
                 obs_state: STATE_FALL,
                 state_ticks: 0,
                 facing_right: true,
+                prev_input_align: Fix::ZERO,
                 unspawned: 0,
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
@@ -3592,7 +3603,12 @@ impl RolloutWorld {
                 body_entity: body_entity[i],
                 dash_entity: dash_entity[i],
                 bow_entity: bow_entity[i],
-                throw_entity: throw_entity[i],
+                throw_entities: throw_entity[i],
+                throw_entity: throw_entity[i]
+                    .iter()
+                    .copied()
+                    .find(|&entity| entity != usize::MAX)
+                    .unwrap_or(usize::MAX),
                 mine_entity: mine_entity[i],
                 spike_entity: spike_entity[i],
                 time_stop_entity: time_stop_entity[i],
@@ -4495,7 +4511,10 @@ impl RolloutWorld {
         match target {
             0 => slot.dash_entity = entity,
             1 => slot.bow_entity = entity,
-            2 => slot.throw_entity = entity,
+            2 => {
+                slot.throw_entities[ability_slot] = entity;
+                slot.throw_entity = entity;
+            }
             3 => slot.mine_entity = entity,
             4 => slot.push_entity = entity,
             5 => {
@@ -4603,6 +4622,27 @@ impl RolloutWorld {
         {
             return;
         }
+        // SlimeController stores this pass's ground alignment in `prevInput`
+        // at the end of OldUpdate (SlimeController.cs:889), on every pass that
+        // reaches the state switch - airborne included. With no attached
+        // ground PlayerPhysics.InputGroundAlignment measures against
+        // Vec2.right (PlayerPhysics.cs:394).
+        let ground_align = if slot.base.grounded {
+            dir.dot(Vec2::new(slot.base.up.y, -slot.base.up.x))
+        } else {
+            dir.x
+        };
+        // OldUpdate returns at EnterAbility before reaching the `prevInput =
+        // fix` store at SlimeController.cs:889, so a cast pass leaves the
+        // previous pass's alignment in place. `obs_state_held_this_tick` is
+        // not the test here: PlantObjectOnPlatform's exit holds the state
+        // switch from a callback that runs *after* OldUpdate has already
+        // stored `prevInput`.
+        let previous_align = if slot.base.instant_cast_this_pass {
+            slot.prev_input_align
+        } else {
+            std::mem::replace(&mut slot.prev_input_align, ground_align)
+        };
         // PlayerPhysics.Jump ungrounds the body and OnNoLongerGrounded sets
         // State.fall (SlimeController.cs:956-958) before Move's air raycasts
         // can re-attach it on the same pass (PlayerPhysics.cs:236-238), which
@@ -4618,8 +4658,7 @@ impl RolloutWorld {
         // direction table only emits unit vectors) and the tangential ground
         // alignment past GROUNDALIGNMENTDEADZONE 0.2, or input pressed into
         // the ground with any alignment at all.
-        let tangent = Vec2::new(slot.base.up.y, -slot.base.up.x); // rightward
-        let align = dir.dot(tangent);
+        let align = ground_align; // rightward ground tangent, computed above
         let into_ground = slot.base.up.dot(dir) < Fix::ZERO;
         let moving = dir != Vec2::ZERO
             && (align.abs() >= Fix::from_f32(0.2)
@@ -4643,7 +4682,16 @@ impl RolloutWorld {
             }
             _ if held => {}
             STATE_RUN => {
-                if !moving || input_right != slot.facing_right {
+                // `!flag5 || Fix.Sign(fix * prevInput) < 0`
+                // (SlimeController.cs:862). The reversal is measured against
+                // the previous pass's alignment, not against the sprite
+                // facing: a turn hands `EnterRun` the alignment captured when
+                // the turn began, so a run that started from a turn faces the
+                // old way while the stick already points the new way, and the
+                // source does not stop for that.
+                let reversed = (align > Fix::ZERO && previous_align < Fix::ZERO)
+                    || (align < Fix::ZERO && previous_align > Fix::ZERO);
+                if !moving || reversed {
                     slot.obs_state = STATE_STOP;
                     slot.state_ticks = STOP_TICKS;
                 }
@@ -5330,7 +5378,9 @@ impl RolloutWorld {
                     slot.duplicator_entity,
                     slot.magnet_entity,
                     slot.bow_entity,
-                    slot.throw_entity,
+                    slot.throw_entities[0],
+                    slot.throw_entities[1],
+                    slot.throw_entities[2],
                     slot.mine_entity,
                     slot.gust_entity,
                     slot.revival_entity,
@@ -6780,6 +6830,9 @@ impl RolloutWorld {
         jump_pressed: bool,
         data: &data::RolloutData,
     ) {
+        // Scoped to this pass: only a cast below sets it, and the movement at
+        // the end of this function and `update_obs_state` only read it.
+        self.players[index].base.instant_cast_this_pass = false;
         let leaving_blink_wall = self.players[index].base.ground.is_some_and(|ground| {
             self.platforms
                 .iter()
@@ -6988,10 +7041,12 @@ impl RolloutWorld {
                 match ability {
                     ABILITY_GRAPPLING_HOOK => {
                         self.use_grapple(index, s, action);
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_WEB_SWING => {
                         self.fire_web(index, s);
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_INVISIBILITY => {
@@ -7005,6 +7060,7 @@ impl RolloutWorld {
                         slot.cooldowns[s] = Fix::from_int(10_000);
                         slot.timers[s] = Fix::ZERO;
                         slot.telemetry.ability_activations[s] += 1;
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_GOLD_MUSHROOM => {
@@ -7017,6 +7073,7 @@ impl RolloutWorld {
                         slot.cooldowns[s] = Fix::from_int(10_000);
                         slot.timers[s] = Fix::ZERO;
                         slot.telemetry.ability_activations[s] += 1;
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_TELEPORT => {
@@ -7053,6 +7110,7 @@ impl RolloutWorld {
                             });
                             self.players[index].teleport_markers[s] = Some(marker_index);
                         }
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_PORTAL_GUN => {
@@ -7069,6 +7127,7 @@ impl RolloutWorld {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         self.spawn_portal_shot(index, s, direction, data);
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_REWIND => {
@@ -7098,6 +7157,7 @@ impl RolloutWorld {
                         // Rewind sets InstantAbility.ignoreNextCooldown when
                         // the recorder has fewer than two samples.
                         slot.rewind.finish_next_tick = true;
+                        self.players[index].base.instant_cast_this_pass = true;
                         break;
                     }
                     ABILITY_DASH => {
@@ -7151,6 +7211,7 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
+                        slot.throw_entity = slot.throw_entities[s];
                         let grounded = slot.base.grounded;
                         slot.throw_item = ThrowItemState {
                             grounded,
@@ -7189,6 +7250,7 @@ impl RolloutWorld {
                             slot.active_slot = s;
                             slot.ability_entry_action = action;
                             slot.telemetry.ability_activations[s] += 1;
+                            slot.throw_entity = slot.throw_entities[s];
                             slot.missile = MissileFormState {
                                 collider_rotation: slot.base.rotation,
                                 ..MissileFormState::default()
@@ -15764,7 +15826,7 @@ impl RolloutWorld {
             });
             let mut dash_entity = usize::MAX;
             let mut bow_entity = usize::MAX;
-            let mut throw_entity = usize::MAX;
+            let mut throw_entities = [usize::MAX; 3];
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
             let mut freeze_entities = [usize::MAX; 3];
@@ -15797,12 +15859,12 @@ impl RolloutWorld {
                     | ABILITY_POKE_BALL) => (
                         data::surface_extents(throw_config(data, ability).hurtbox_extents),
                         8,
-                        &mut throw_entity,
+                        &mut throw_entities[slot],
                     ),
                     ABILITY_MISSILE => (
                         data::surface_extents(data.missile.hurtbox_extents),
                         7,
-                        &mut throw_entity,
+                        &mut throw_entities[slot],
                     ),
                     ABILITY_MINE => (
                         data::surface_extents(data.mine.hurtbox_extents),
@@ -16043,7 +16105,12 @@ impl RolloutWorld {
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
-            slot.throw_entity = throw_entity;
+            slot.throw_entities = throw_entities;
+            slot.throw_entity = throw_entities
+                .iter()
+                .copied()
+                .find(|&entity| entity != usize::MAX)
+                .unwrap_or(usize::MAX);
             slot.mine_entity = mine_entity;
             slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
@@ -16105,7 +16172,9 @@ impl RolloutWorld {
                 self.players[index].duplicator_entity,
                 self.players[index].magnet_entity,
                 self.players[index].bow_entity,
-                self.players[index].throw_entity,
+                self.players[index].throw_entities[0],
+                self.players[index].throw_entities[1],
+                self.players[index].throw_entities[2],
                 self.players[index].mine_entity,
                 self.players[index].gust_entity,
                 self.players[index].revival_entity,
@@ -16237,7 +16306,7 @@ impl RolloutWorld {
             new_box_count += 1;
             let mut dash_entity = usize::MAX;
             let mut bow_entity = usize::MAX;
-            let mut throw_entity = usize::MAX;
+            let mut throw_entities = [usize::MAX; 3];
             let mut mine_entity = usize::MAX;
             let mut push_entity = usize::MAX;
             let mut freeze_entities = [usize::MAX; 3];
@@ -16270,12 +16339,12 @@ impl RolloutWorld {
                     | ABILITY_POKE_BALL) => (
                         data::surface_extents(throw_config(data, ability).hurtbox_extents),
                         8,
-                        &mut throw_entity,
+                        &mut throw_entities[slot],
                     ),
                     ABILITY_MISSILE => (
                         data::surface_extents(data.missile.hurtbox_extents),
                         7,
-                        &mut throw_entity,
+                        &mut throw_entities[slot],
                     ),
                     ABILITY_MINE => (
                         data::surface_extents(data.mine.hurtbox_extents),
@@ -16504,7 +16573,12 @@ impl RolloutWorld {
             slot.body_entity = body_entity;
             slot.dash_entity = dash_entity;
             slot.bow_entity = bow_entity;
-            slot.throw_entity = throw_entity;
+            slot.throw_entities = throw_entities;
+            slot.throw_entity = throw_entities
+                .iter()
+                .copied()
+                .find(|&entity| entity != usize::MAX)
+                .unwrap_or(usize::MAX);
             slot.mine_entity = mine_entity;
             slot.spike_entity = spike_entity;
             slot.circle_entity = platform_entity;
@@ -21249,6 +21323,7 @@ impl RolloutWorld {
             grounded_speed: Fix::ZERO,
             previous_jump: false,
             skip_next_gravity: false,
+            instant_cast_this_pass: false,
             jumped_this_frame: false,
             constants: data.player.constants.clone(),
             cooldown: Fix::ZERO,

@@ -78,6 +78,15 @@ pub struct Player {
     /// state machine has seen it.
     #[serde(default)]
     pub(crate) jumped_this_frame: bool,
+    /// SlimeController.OldUpdate returns as soon as it has entered an ability
+    /// (SlimeController.cs:824-831), so neither the jump block at 867-871 nor
+    /// the `prevInput` store at 889 runs on a cast pass. Set for the instant
+    /// abilities, which keep the ordinary slime body; the form abilities are
+    /// already held out of both by `PlayerSlot::active`. Scoped to one pass:
+    /// `player_tick` clears it, the cast sets it, and the movement below plus
+    /// `RolloutWorld::update_obs_state` read it without consuming it.
+    #[serde(default)]
+    pub(crate) instant_cast_this_pass: bool,
     pub constants: MovementConstants,
     pub cooldown: Fix,
     pub dash: DashState,
@@ -739,6 +748,7 @@ impl Player {
     /// PlayerBody's integration.
     pub(crate) fn move_step(&mut self, action: Action, input: Vec2, terrain: Terrain) {
         let jump = action.buttons & 1 != 0;
+        let cast = self.instant_cast_this_pass;
         if self.dash.active {
             self.previous_jump = jump;
             self.dash_step(action, terrain);
@@ -751,7 +761,7 @@ impl Player {
             self.dash_step(action, terrain);
             return;
         }
-        if jump && !self.previous_jump && self.grounded {
+        if jump && !self.previous_jump && self.grounded && !cast {
             self.jump(terrain.platforms);
         }
         self.previous_jump = jump;

@@ -14,7 +14,6 @@ map-ab: $(OUT)/map_ab
 # oracle - it held an ABI 2 library for nine days after ABI 3 landed.
 REFERENCE ?= ../../sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so
 RUST_ROLLOUT ?= ../target/release/libbopl_sim.so
-
 # The default `cargo build --release` stores `Fix` as an f64 (native/src/fixed.rs)
 # and is what training uses. It is NOT bit-comparable with the .NET oracle: its
 # multiplications and divisions round to the nearest double instead of
@@ -49,6 +48,47 @@ bounds-ability-ab: $(OUT)/bounds_ability_ab rust-q32
 $(OUT)/bounds_ability_ab: research/rust_ab/bounds_ability_ab.c bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -I. research/rust_ab/bounds_ability_ab.c bopl_rl.c -ldl -lm -o $@
+
+# Real-game replay differential: re-steps saved evaluation games (the .rep
+# recordings beside every evaluations/*.json) in both backends with the
+# recorded per-tick inputs and reports the first divergence per game.
+replay-ab: $(OUT)/replay_ab
+
+$(OUT)/replay_ab: research/rust_ab/replay_ab.c bopl_rl.c bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -I. research/rust_ab/replay_ab.c bopl_rl.c -ldl -lm -o $@
+
+# Whole-directory sweep over one study or sweep evaluation directory:
+#   make -C native/rl replay-sweep GAMES=../artifacts/rl/study-grenade/evaluations
+GAMES ?= ../artifacts/rl/study-grenade/evaluations
+# `REPLAY_RUST=$(RUST_ROLLOUT)` compares the shipping f64 build instead, which
+# only makes sense with a loose REPLAY_AB_TOL. The default 1 raw unit (2.3e-10)
+# absorbs the one-ulp residue q32 leaves on statically authored extents at tick
+# 0; 1 and 4 report the same divergences, so it is not hiding drift.
+REPLAY_RUST ?= $(RUST_ROLLOUT_Q32)
+replay-sweep: $(OUT)/replay_ab rust-q32
+	REPLAY_AB_TOL=$${REPLAY_AB_TOL-1} $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(REPLAY_RUST)) $(abspath $(GAMES))
+
+# The same sweep restricted to what a trained policy can actually read
+# (bopl_puffer.h:316): the ranking that answers whether a divergence could
+# have changed a policy's behaviour.
+replay-visible: $(OUT)/replay_ab rust-q32
+	REPLAY_AB_VISIBLE=1 REPLAY_AB_TOL=$${REPLAY_AB_TOL-1} $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(REPLAY_RUST)) $(abspath $(GAMES))
+
+# Self check: the reference replayed against itself must be bit-identical.
+replay-selfcheck: $(OUT)/replay_ab rust-q32
+	REPLAY_AB_TOL=0 $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(REFERENCE)) $(abspath $(GAMES))
+	REPLAY_AB_TOL=0 $(abspath $(OUT)/replay_ab) $(abspath $(REPLAY_RUST)) $(abspath $(REPLAY_RUST)) $(abspath $(GAMES))
+
+# The stronger half of the self check: the recorded inputs, replayed in the
+# backend that produced the recording, must reproduce the saved <game>.json.
+# LIBRARY must be a build of the commit the corpus was recorded with - the
+# prebuilt `../target/release` in a working checkout is not reliably that, and
+# replaying a corpus in a later build fails this by design.
+LIBRARY ?= $(RUST_ROLLOUT)
+replay-roundtrip: $(OUT)/replay_ab
+	../artifacts/rl/venv/bin/python research/rust_ab/replay_ab_selfcheck.py \
+	  --binary $(abspath $(OUT)/replay_ab) --library $(abspath $(LIBRARY)) $(GAMES)/*/*.rep
 
 # Observation-writer microbenchmark + sim ticks/s on one core (THROUGHPUT_V4.md).
 writer-bench: $(OUT)/writer_bench
@@ -112,4 +152,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research map-ab bounds-ability-ab writer-bench agent agent-mac
+.PHONY: all research map-ab bounds-ability-ab replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac
