@@ -191,8 +191,19 @@ def main():
                 activations=[after-before for after,before in zip(ability_after['activations'],ability_before['activations'])]
                 entity_rows=[after-before for after,before in zip(ability_after['entity_rows'],ability_before['entity_rows'])]
                 entity_overflow=[after-before for after,before in zip(ability_after['entity_overflow'],ability_before['entity_overflow'])]
-                timeout=bool(final['flags']&2); win=bool(me['flags']&2) and not timeout
-                result={**task,'win':win,'timeout':timeout,'kills':me['kills'],'deaths':me['deaths'],
+                # An undecided round -- both sides eliminated on the same tick
+                # -- carries the win flag for everyone, and is a win for nobody,
+                # exactly as the reward scores it (bopl_undecided in
+                # native/rl/puffer/bopl_puffer.h). These matches are 1v1, so a
+                # second flagged player is a second team.
+                timeout=bool(final['flags']&2)
+                undecided=sum(bool(p['flags']&2) for p in final['players'])>1
+                win=bool(me['flags']&2) and not timeout and not undecided
+                # Kills of somebody else. The game credits a suicide to the
+                # victim's own Kills, and deaths_self is where those are
+                # counted; the reward's kill term makes the same subtraction.
+                kills=me['kills']-final['telemetry'][task['side']]['deaths_self']
+                result={**task,'win':win,'timeout':timeout,'kills':kills,'deaths':me['deaths'],
                         'loadouts':episode_loadouts,
                         'ability_activations':{str(ability):count for ability,count in enumerate(activations) if count},
                         'entity_overflow':{str(ability):dict(rows=rows,dropped=entity_overflow[ability],

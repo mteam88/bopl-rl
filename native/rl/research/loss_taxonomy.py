@@ -133,7 +133,11 @@ def _worker(args):
             os.close(saved)
         timeout = bool(final['flags'] & 2)
         players = final['players']
-        winner = next((i for i, p in enumerate(players) if p['flags'] & 2), None) if not timeout else None
+        # Two winners in a 1v1 is the game flagging both sides of a round it
+        # left undecided; nobody won it, and the reward pays nobody
+        # (bopl_undecided in native/rl/puffer/bopl_puffer.h).
+        decided = not timeout and sum(bool(p['flags'] & 2) for p in players) == 1
+        winner = next((i for i, p in enumerate(players) if p['flags'] & 2), None) if decided else None
         bot_index = (1 - task['side']) if task['kind'] == 'policy' else task['side']
         result = dict(task, timeout=timeout, ticks=final['t'], winner=winner, bot_index=bot_index,
                       bot_won=(winner == bot_index), final_players=players, telemetry=final['telemetry'],

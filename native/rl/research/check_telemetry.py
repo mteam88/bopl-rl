@@ -58,7 +58,13 @@ def capture(out,games,game=None):
                 np.testing.assert_array_equal(total[:,FIELDS.index('reward_deaths')],0)
                 np.testing.assert_array_equal(total[:,FIELDS.index('reward_kills')],0)
                 truncated=bool(env.state.header.flags&2)
-                expected=[-0.5 if truncated else (1 if p.flags&2 else -1) for p in env.state.players[:2]]
+                # The game awards WonThisRound to every side that died on the
+                # final tick, so the flag reaching more than one team means the
+                # round was left undecided; the reward pays nobody for that
+                # (bopl_undecided, native/rl/puffer/bopl_puffer.h).
+                players=env.state.players[:2]
+                undecided=len({p.team for p in players if p.flags&2})>1
+                expected=[-0.5 if truncated else (1 if p.flags&2 and not undecided else -1) for p in players]
                 np.testing.assert_array_equal(total[:,FIELDS.index('reward_outcome')],expected)
                 np.testing.assert_array_equal(total[:,FIELDS.index('timeouts')],int(truncated))
                 row['totals']=dict(zip(FIELDS,total.sum(axis=0).tolist()))

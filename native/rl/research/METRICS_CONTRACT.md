@@ -125,14 +125,20 @@ New — the dashboard renders these once present (per update):
   two-player, stocks-0 Dash/Bow/Platform setup, an arrow can be counted at
   most once for killing its sole opponent. The counter does not track
   individual projectile identities or nonlethal contacts.
-- `behavior.totals.kills` — the game's credited-kill counter for learner
-  players, **including self-kills**. `Player.Kill` increments the credited
-  player's `Kills` even when killer equals victim. Native training records
-  this directly, independently of `reward_kills` and its reward coefficient.
-  It is not an opponent-kill count. Learner-only totals need not equal
+- `behavior.totals.wins` — decided wins only. The game awards `WonThisRound`
+  to every side eliminated on the final tick, so a round it left undecided
+  carries the win flag for all of them; those episodes count in `episodes`,
+  never in `wins`, and pay the loss outcome to everyone in them. `wins` and
+  `timeouts` therefore do not partition `episodes`.
+- `behavior.totals.kills` — kills of somebody else, for learner players.
+  `Player.Kill` increments the credited player's `Kills` even when killer
+  equals victim, so the game's counter includes self-kills; training subtracts
+  `deaths_self` back out, which leaves exactly the kills earned against another
+  player. Suicides remain visible in `deaths_self`. `reward_kills` is this same
+  quantity scaled by the kill coefficient. Learner-only totals need not equal
   `deaths_self + deaths_opponent`, since kills and deaths concern different
   players and frozen opponents are excluded from learner totals. Per-game
-  evaluation `kills` and group `mean_kills` use the same game counter.
+  evaluation `kills` and group `mean_kills` make the same subtraction.
 
 ## Evaluation result.json (required)
 

@@ -70,7 +70,11 @@ from the bank's win-rate and Elo statistics. Pool state is recorded per update
 under `pool` in `metrics.jsonl` and as events in `pool.jsonl`.
 
 Rewards are +1 for a win, -1 for a loss, and -0.5 for each player at timeout.
-There is no kill, death or per-tick reward. The default cap is 7,200 simulation
+A round the game leaves undecided -- both sides eliminated on the same tick, so
+every side carries the win flag -- is a loss for everyone in it, and is counted
+as a win for nobody. Optional kill/death shaping counts kills of somebody else:
+the game credits a suicide to the victim's own kill count, and that credit is
+subtracted back out. There is no per-tick reward. The default cap is 7,200 simulation
 ticks (two minutes), configurable with `--episode-ticks`. Entropy regularization
 decays exponentially from 0.01, halving every 30M learner decisions until it
 reaches the 0.0005 floor at about 129.7M decisions. `--entropy-half-life` sets

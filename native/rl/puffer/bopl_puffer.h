@@ -997,6 +997,71 @@ static int bopl_draw_roster(uint32_t *rng) {
     }
     return n-1;
 }
+/* Reward semantics. The simulation is the game's and stays the game's; what we
+ * choose to pay for is ours, and these two derivations are where that choice
+ * lives.
+ *
+ * Self-kills. Player.Kill credits the kill to whoever the killer id resolves
+ * to, and for a suicide that is the victim itself (Player.cs:449-455), so a
+ * player's own kill count rises when they blow themselves up. RlTelemetry.Death
+ * files that same death under deaths_self, and it is the only classification
+ * that coincides with a credited kill: an environment or "other" death resolves
+ * to no Player and credits nobody. Subtracting deaths_self from kills therefore
+ * leaves exactly the kills earned against another player.
+ *
+ * Undecided rounds. When the last teams are eliminated together the game runs
+ * DeclareGameUndecided: it awards WonThisRound to whoever died on the greatest
+ * SimulationTicks and expands that to their whole team, so a tie hands the win
+ * flag to every side at once. Outlasting the opponent by even one tick is a
+ * real win and stays one; sharing the final tick is not, and the flag spanning
+ * more than one team is precisely that case. It catches the whole family of
+ * simultaneous endings -- a mine trade, a double drowning in sudden death, one
+ * player falling off the level as the other eats a mine -- and none of them
+ * earns a winner's +1.
+ *
+ * Telling that family apart is the kill term's job, not the outcome term's:
+ * whoever actually killed an opponent on the way out keeps the +0.1 for it and
+ * whoever drowned does not. A trade therefore pays a little above a plain loss
+ * and far below a clean win, which is the ordering we want. */
+static int64_t bopl_opponent_kills(const BoplRlState *state, int player) {
+    return (int64_t)state->players[player].kills-(int64_t)state->telemetry[player].deaths_self;
+}
+static int bopl_undecided(const BoplRlState *state, int players) {
+    uint32_t team=0; int seen=0;
+    for (int i=0; i<players; i++) if (state->players[i].flags&2) {
+        if (!seen) { team=state->players[i].team; seen=1; }
+        else if (state->players[i].team!=team) return 1;
+    }
+    return 0;
+}
+/* The match ended with a winner: a terminal that is neither a timeout nor an
+ * undecided round. */
+static int bopl_decided(const BoplRlState *state, int players) {
+    return (state->header.flags&BOPL_RL_TERMINAL) && !(state->header.flags&BOPL_RL_TRUNCATED)
+        && !bopl_undecided(state, players);
+}
+/* Everything one decision pays one player. `previous_kills` and
+ * `previous_deaths` are that player's counters as of the previous decision;
+ * kills are opponent kills, never the game's self-crediting count. */
+typedef struct {
+    int64_t kills, deaths;   /* what this decision added */
+    int terminal, truncated, won;
+    float shaping, outcome;  /* kill/death shaping, and the terminal payment */
+} BoplOutcome;
+static BoplOutcome bopl_outcome(const BoplRlState *state, int i, int decided,
+                                int64_t previous_kills, int64_t previous_deaths,
+                                float reward_kill, float reward_timeout) {
+    BoplOutcome o;
+    o.kills=bopl_opponent_kills(state, i)-previous_kills;
+    o.deaths=(int64_t)state->players[i].deaths-previous_deaths;
+    o.terminal=(state->header.flags&BOPL_RL_TERMINAL)!=0;
+    o.truncated=(state->header.flags&BOPL_RL_TRUNCATED)!=0;
+    o.won=decided && (state->players[i].flags&2)!=0;
+    o.shaping=reward_kill*((float)o.kills-(float)o.deaths);
+    /* An undecided round is a loss for everyone in it. */
+    o.outcome=o.terminal?(o.truncated?reward_timeout:(o.won?1.0f:-1.0f)):0.0f;
+    return o;
+}
 static void c_reset(BoplPuffer *env) {
     bopl_world_ready(env);
     bopl_spare_ready(env);
@@ -1019,7 +1084,7 @@ static void c_reset(BoplPuffer *env) {
     const BoplRlState *state=bopl_rl_state(env->world);
     memset(env->returns, 0, sizeof(env->returns)); env->steps=0;
     memcpy(env->previous_telemetry, state->telemetry, sizeof(env->previous_telemetry));
-    for (int i=0; i<env->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=state->players[i].kills; }
+    for (int i=0; i<env->players; i++) { env->deaths[i]=state->players[i].deaths; env->kills[i]=(uint32_t)bopl_opponent_kills(state, i); }
     /* The scripted-bot stream (the share draw below) restarts from this
      * episode's seed, like the bot seeds (bopl_bot_seed): nothing a bot does
      * depends on the episodes played before. */
@@ -1153,6 +1218,7 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
     for (int i=0; i<env->players; i++) env->applied[i]=actions[i];
     env->log.environment_ticks+=state->header.episode_ticks-ticks; env->steps++;
     int terminal=(state->header.flags&BOPL_RL_TERMINAL)!=0;
+    int decided=bopl_decided(state, env->players);
     for (int i=0; i<env->players; i++) {
         const BoplRlPlayer *player=&state->players[i];
         int slot=bopl_slot(env, i), learner=!env->banks || i==env->side;
@@ -1164,55 +1230,55 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
             if (events[field]<previous[field]) bopl_failed(env, "telemetry counter regressed");
             stats[field]=(float)(events[field]-previous[field]);
         }
-        int truncated=(state->header.flags&BOPL_RL_TRUNCATED)!=0;
-        stats[BOPL_REWARD_KILLS]=env->reward_kill*(float)((int64_t)player->kills-env->kills[i]);
-        stats[BOPL_REWARD_DEATHS]=-env->reward_kill*(float)((int64_t)player->deaths-env->deaths[i]);
+        BoplOutcome o=bopl_outcome(state, i, decided, env->kills[i], env->deaths[i],
+                                   env->reward_kill, env->reward_timeout);
+        if (o.kills<0) bopl_failed(env, "opponent kill counter regressed");
+        stats[BOPL_REWARD_KILLS]=env->reward_kill*(float)o.kills;
+        stats[BOPL_REWARD_DEATHS]=-env->reward_kill*(float)o.deaths;
         /* Terminal reward as paid: the win/loss outcome, or the timeout penalty
          * both players receive on truncation (0 in the phase-1 comparison). */
-        stats[BOPL_REWARD_OUTCOME]=terminal?(truncated?env->reward_timeout:((player->flags&2)?1.0f:-1.0f)):0;
+        stats[BOPL_REWARD_OUTCOME]=o.outcome;
         stats[BOPL_EPISODES]=(float)terminal;
-        stats[BOPL_WINS]=terminal && !(state->header.flags&BOPL_RL_TRUNCATED) && (player->flags&2);
-        stats[BOPL_TIMEOUTS]=terminal && (state->header.flags&BOPL_RL_TRUNCATED);
+        stats[BOPL_WINS]=(float)o.won;
+        stats[BOPL_TIMEOUTS]=terminal && o.truncated;
         stats[BOPL_TICKS]=(float)(state->header.episode_ticks-ticks);
         env->previous_telemetry[i]=state->telemetry[i];
         /* Retain the original arithmetic/order for the actual PPO reward. */
-        float reward=env->reward_kill*((float)((int64_t)player->kills-env->kills[i])-(float)((int64_t)player->deaths-env->deaths[i]));
-        if (terminal) reward+=truncated?env->reward_timeout:((player->flags&2)?1.0f:-1.0f);
+        float reward=o.shaping+o.outcome;
         *env->reward_ptr[slot]=reward; env->returns[i]+=reward;
         BoplCounters *c=&env->counters;
         c->game_steps++;
         if (learner) {
             c->learner_steps++;
-            c->kills+=(double)((int64_t)player->kills-env->kills[i]);
+            c->kills+=(double)o.kills;
             for (int field=0; field<BOPL_TELEMETRY_SIZE; field++) c->telemetry[field]+=stats[field];
             for (int bit=0; bit<4; bit++) c->buttons[bit]+=(actions[i].buttons>>bit)&1u;
             if (fresh[i]) env->log.hold_choice[holds[i]]++; else env->log.latched_decisions++;
         } else c->opponent_game_decisions++;
-        env->deaths[i]=player->deaths; env->kills[i]=player->kills;
+        env->deaths[i]=player->deaths; env->kills[i]=(uint32_t)bopl_opponent_kills(state, i);
         if (terminal) {
             if (env->config.map<BOPL_COUNTER_MAPS) env->log.map_fraction[env->config.map]++;
             *env->terminal_ptr[slot]=1;
-            int won=!truncated && (player->flags&2)!=0;
-            env->log.perf+=won; env->log.score+=player->kills;
+            env->log.perf+=o.won; env->log.score+=(float)bopl_opponent_kills(state, i);
             env->log.episode_return+=env->returns[i]; env->log.episode_length+=env->steps; env->log.n++;
             if (learner) {
-                env->log.learner_episodes++; env->log.learner_wins+=won;
+                env->log.learner_episodes++; env->log.learner_wins+=o.won;
                 if (env->banks) {
-                    env->log.historical_episodes++; env->log.historical_wins+=won;
+                    env->log.historical_episodes++; env->log.historical_wins+=o.won;
                     /* The pool's Elo/swap statistics skip a match whose opponent
                      * weights the trainer replaced while it ran (the swap
                      * cleared boundary_reached; the next c_reset raises it). */
                     int scripted=0;
                     for (int p=0; p<env->players; p++) scripted|=env->bot_select[p];
                     if (scripted) {
-                        env->log.bot_n_bank[env->active_bank]++; env->log.bot_score_bank[env->active_bank]+=won;
-                        /* Timeouts are not roster games: Elo and per-entry
-                         * winrate count decided matches only. */
-                        if (!truncated && env->roster_pick>=0 && env->roster_pick<BOPL_ROSTER_MAX) {
-                            env->log.bot_n_entry[env->roster_pick]++; env->log.bot_score_entry[env->roster_pick]+=won;
+                        env->log.bot_n_bank[env->active_bank]++; env->log.bot_score_bank[env->active_bank]+=o.won;
+                        /* Timeouts and undecided rounds are not roster games:
+                         * Elo and per-entry winrate count decided matches only. */
+                        if (decided && env->roster_pick>=0 && env->roster_pick<BOPL_ROSTER_MAX) {
+                            env->log.bot_n_entry[env->roster_pick]++; env->log.bot_score_entry[env->roster_pick]+=o.won;
                         }
                     }
-                    else if (env->boundary_reached) { env->log.hist_n_bank[env->active_bank]++; env->log.hist_score_bank[env->active_bank]+=won; }
+                    else if (env->boundary_reached) { env->log.hist_n_bank[env->active_bank]++; env->log.hist_score_bank[env->active_bank]+=o.won; }
                 }
             }
         }
