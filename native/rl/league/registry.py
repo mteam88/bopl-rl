@@ -180,6 +180,25 @@ def by_name(league):
     return {row['name']: row for row in league['members']}
 
 
+def by_id(league):
+    return {row['id']: row for row in league['members']}
+
+
+def ids_for(league, names):
+    """Member ids for display names, in the order given.
+
+    Names address members at the CLI and on screen; ids address them in
+    payoff.jsonl. Keep the two apart: a name is a mutable label, and the payoff
+    log is append-only and outlives its members, so a name that was removed and
+    later reused would silently inherit the old agent's record. A sha256 cannot.
+    """
+    rows = by_name(league)
+    missing = [name for name in names if name not in rows]
+    if missing:
+        raise ValueError(f'not members of this league: {missing}')
+    return [rows[name]['id'] for name in names]
+
+
 # ---- payoff ------------------------------------------------------------------
 
 def canonical(a, b, wins, losses, draws):

@@ -259,7 +259,12 @@ def saturation(names, counts, elo=None, mixture=None, opponent_shares=None, newe
     report = dict(
         elo_spread=float(values.std()),
         elo_range=float(values.max() - values.min()) if len(values) else 0.0,
-        pair_score_spread=float(pair_scores.std()) if pair_scores.size else 0.0,
+        # RMS deviation from 0.5, not the standard deviation of the scores. A pair
+        # reads as s or 1-s depending on which member happens to index first, and the
+        # std of a mix of both orientations moves when the key order changes -- it
+        # shifted 0.168 -> 0.166 purely from rekeying payoff.jsonl by id. (s-0.5)**2
+        # is identical under s -> 1-s, so this measures the pool, not the ordering.
+        pair_score_spread=float(np.sqrt(np.mean((pair_scores - .5) ** 2))) if pair_scores.size else 0.0,
         pairs_near_even=float(np.mean(np.abs(pair_scores - .5) < .05)) if pair_scores.size else 0.0,
         pairs_scored=int(pair_scores.size),
     )

@@ -197,6 +197,10 @@ def command_play(args):
     print(f'{total} games = {len(pairs)} pairs x {len(args.maps)} maps x {len(lineups)} lineups'
           f' x {args.games_per_cell} (side-swapped); est {total*0.2/60:.0f} min at 0.2 s/game')
 
+    # Rows are keyed by member id, never by name: payoff.jsonl is append-only and
+    # outlives its members, so a reused name would inherit the old agent's record.
+    # Names stay in the schedule, the console and the CLI arguments.
+    identity = dict(zip(names, registry.ids_for(league, names)))
     started, played, opponents, cells = time.time(), 0, {}, set()
     with registry.PAYOFF.open('a') as handle:
         for number, (a, b) in enumerate(pairs, 1):
@@ -212,7 +216,7 @@ def command_play(args):
             # (map, loadout) cells the games actually landed on, not which ones
             # the schedule intended.
             cells |= {(g['map'], tuple(g.get('lineup_ids', ()))) for g in games}
-            row_a, row_b, wins, losses, draws = registry.canonical(a, b, *record)
+            row_a, row_b, wins, losses, draws = registry.canonical(identity[a], identity[b], *record)
             handle.write(json.dumps(dict(a=row_a, b=row_b, condition=key, wins=wins,
                                          losses=losses, draws=draws)) + '\n')
             handle.flush()
@@ -245,7 +249,15 @@ def readout(condition=None, members=None, bootstrap=400):
         raise SystemExit('payoff.jsonl is empty; run `play` first')
     condition = condition or max(present, key=present.get)
     counts = registry.read_payoff(condition=condition)
-    names = members or sorted({n for pair in counts for n in pair})
+    # Everything below joins on member id; `label` is the only place names re-enter.
+    rows = registry.by_id(league)
+    names = (registry.ids_for(league, members) if members
+             else sorted({n for pair in counts for n in pair}))
+    unknown = [n for n in names if n not in rows]
+    if unknown:
+        raise SystemExit(f'payoff.jsonl references {len(unknown)} participants that are not '
+                         f'members of this league: {unknown[:3]}')
+    label = {i: rows[i]['name'] for i in names}
     scores, games = rating.matrix(names, counts)
     fit = rating.ratings(names, counts)
     # With no bootstrap budget, fall back to the Wald intervals the fit already
@@ -255,7 +267,7 @@ def readout(condition=None, members=None, bootstrap=400):
     antisym = rating.advantage(scores)
     mixture = rating.maxent_nash(antisym)
     return dict(league=league, condition=condition, names=names, counts=counts, scores=scores,
-                games=games, fit=fit, bootstrap=boot, antisym=antisym, mixture=mixture,
+                games=games, fit=fit, bootstrap=boot, antisym=antisym, mixture=mixture, label=label,
                 nash=rating.nash_scores(antisym, mixture),
                 coverage=rating.coverage(names, games))
 
@@ -280,7 +292,7 @@ def sparse_warning(cover):
 
 def command_rate(args):
     data = readout(args.condition, bootstrap=args.bootstrap)
-    names, fit, boot = data['names'], data['fit'], data['bootstrap']
+    names, fit, boot, label = data['names'], data['fit'], data['bootstrap'], data['label']
     order = sorted(names, key=lambda n: -fit['ratings'][n])
     print(f"condition {data['condition']}")
     cover = data['coverage']
@@ -294,7 +306,7 @@ def command_rate(args):
     for name in order:
         low, high = boot[name]
         played = int(data['games'][index[name]].sum())
-        print(f'{name:<28}{fit["ratings"][name]:>8.0f}  [{low:>7.0f},{high:>7.0f}]'
+        print(f'{label[name]:<28}{fit["ratings"][name]:>8.0f}  [{low:>7.0f},{high:>7.0f}]'
               f'{nash[name]:>+9.3f}{mass[name]:>8.3f}{played:>8}')
     print(f"\nBradley-Terry: anchor {rating.ANCHOR} at 0 Elo, {fit['ci']} intervals shown as bootstrap")
     warning = sparse_warning(cover)
@@ -304,7 +316,7 @@ def command_rate(args):
     print(f'Nash: maxent equilibrium over a_ij = w_ij - 1/2; support '
           f'{int((data["mixture"] > 1e-3).sum())}/{len(names)} members. '
           f'Single-population value n.A.n = {identity:+.2e} (0 by antisymmetry, not a readout).')
-    learned = [n for n in names if registry.by_name(data['league'])[n]['kind'] not in ('scripted', 'random')]
+    learned = [n for n in names if registry.by_id(data['league'])[n]['kind'] not in ('scripted', 'random')]
     anchors = [n for n in names if n not in learned]
     if learned and anchors:
         cross = data['antisym'][np.ix_([index[n] for n in learned], [index[n] for n in anchors])]
@@ -329,8 +341,9 @@ def command_status(args):
     print(f"\ncoverage under {data['condition']}")
     print(f"  {cover['pairs_played']}/{cover['pairs_possible']} pairs ({cover['fraction']:.0%}), "
           f"{cover['games_total']} games, {cover['games_per_pair_min']} min per pair")
+    newest = registry.ids_for(data['league'], [args.newest])[0] if args.newest else None
     health = rating.saturation(names, data['counts'], elo=data['fit']['ratings'],
-                               mixture=data['mixture'], newest=args.newest)
+                               mixture=data['mixture'], newest=newest)
     print('\nsaturation')
     print(f"  Elo spread {health['elo_spread']:.0f} (range {health['elo_range']:.0f}) "
           f"-- collapsing toward 0 means members stopped differing")
@@ -345,7 +358,7 @@ def command_status(args):
         print('  realized opponent distribution: none recorded (no learner has trained against this league yet)')
     if health.get('ranking_shift'):
         shift = health['ranking_shift']
-        print(f"  dropping {shift['member']}: kendall tau {shift['kendall_tau']:.4f}, "
+        print(f"  dropping {data['label'][shift['member']]}: kendall tau {shift['kendall_tau']:.4f}, "
               f"ranking {'changed' if shift['changed_ranking'] else 'UNCHANGED (member added no information)'}, "
               f"max Elo move {shift['max_elo_move']:.0f}")
 
