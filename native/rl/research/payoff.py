@@ -191,12 +191,12 @@ def ratings(ids, records):
         return {}, {}
     anchor = ANCHOR if ANCHOR in ids else ids[0]
     if not records:
-        return {member_id: 0.0 for member_id in ids}, {}
+        return {}, {}
     fit = elo_ladder.bradley_terry_fit(list(ids), records, anchor)
     return fit.get('ratings') or {}, fit.get('intervals') or {}
 
 
-def nash(cells):
+def nash(cells, played=None):
     """A maximum-entropy-ish Nash mixture of the population, and its values.
 
     The payoff matrix is made antisymmetric (`score - 0.5`), which turns the
@@ -213,17 +213,30 @@ def nash(cells):
     Returns each member's mass in the mixture, and its expected score against
     the mixture back on the 0..1 scale.
     """
-    size = len(cells)
-    if not size:
+    total_size = len(cells)
+    if not total_size:
         return [], []
+    # Only members that have actually played. An empty cell is a zero
+    # advantage, and a zero advantage in a symmetric zero-sum game reads as a
+    # draw against everyone -- so an unplayed member is scored as an unbeatable
+    # strategy and is handed mass for never having been tested. With 26 of 36
+    # members unplayed that was 71% of the mixture sitting on agents with no
+    # evidence at all. They come back None, which is what the UI expects.
+    if played is None:
+        played = [i for i, row in enumerate(cells) if any(row)]
+    played = list(played)
+    size = len(played)
+    if not size:
+        return [None] * total_size, [None] * total_size
     advantage = [[0.0] * size for _ in range(size)]
-    for i in range(size):
-        for j in range(size):
+    for x, i in enumerate(played):
+        for y, j in enumerate(played):
             cell = cells[i][j]
             if i != j and cell:
-                advantage[i][j] = cell['score'] - 0.5
-            # No games means no evidence either way, which is a zero here. The
-            # UI reports coverage so a sparse matrix is visibly sparse.
+                advantage[x][y] = cell['score'] - 0.5
+            # A missing cell between two members that have each played others
+            # is still a zero here; the UI reports coverage so a sparse matrix
+            # is visibly sparse.
     weights = [1.0 / size] * size
     accumulated = [0.0] * size
     for step in range(NASH_ITERATIONS):
@@ -240,7 +253,12 @@ def nash(cells):
     mixture = [value / total for value in accumulated]
     values = [0.5 + sum(advantage[i][j] * mixture[j] for j in range(size))
               for i in range(size)]
-    return mixture, values
+    mixture_out = [None] * total_size
+    values_out = [None] * total_size
+    for x, i in enumerate(played):
+        mixture_out[i] = mixture[x]
+        values_out[i] = values[x]
+    return mixture_out, values_out
 
 
 def cycles(cells, ids, min_games=CYCLE_MIN_GAMES, limit=CYCLE_LIMIT):
@@ -318,8 +336,9 @@ def summary(members, rows, condition):
     table = matrix(members, rows, condition)
     cells = table['cells']
     ids = table['ids']
-    rating, interval = ratings(ids, table.pop('records'))
-    weights, values = nash(cells)
+    played = [i for i, row in enumerate(cells) if any(row)]
+    rating, interval = ratings([ids[i] for i in played], table.pop('records'))
+    weights, values = nash(cells, played)
     overall = totals(cells)
     table['members'] = [
         dict(member,
@@ -331,6 +350,8 @@ def summary(members, rows, condition):
              opponents=overall[i]['opponents'])
         for i, member in enumerate(members)
     ]
+    table['rated'] = len(played)
+    table['unrated'] = len(ids) - len(played)
     table['cycles'] = cycles(cells, ids)
     table['saturation'] = saturation(members, cells,
                                      [rating.get(member_id) for member_id in ids])
