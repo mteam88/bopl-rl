@@ -9,7 +9,10 @@ research: $(OUT)/libbopl_research.so
 
 map-ab: $(OUT)/map_ab
 
-REFERENCE ?= ../../sim/Native/bin/Release/net8.0/linux-x64/native/BoplSimNative.so
+# `dotnet publish` refreshes publish/; the sibling native/ directory keeps whatever
+# an earlier build left there, so pointing at it silently compares against a stale
+# oracle - it held an ABI 2 library for nine days after ABI 3 landed.
+REFERENCE ?= ../../sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so
 RUST_ROLLOUT ?= ../target/release/libbopl_sim.so
 
 # The default `cargo build --release` stores `Fix` as an f64 (native/src/fixed.rs)
