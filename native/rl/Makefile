@@ -21,6 +21,26 @@ $(OUT)/map_ab: research/rust_ab/map_ab.c bopl_rl.c bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -I. research/rust_ab/map_ab.c bopl_rl.c -ldl -lm -o $@
 
+# Real-game replay differential: re-steps saved evaluation games (the .rep
+# recordings beside every evaluations/*.json) in both backends with the
+# recorded per-tick inputs and reports the first divergence per game.
+replay-ab: $(OUT)/replay_ab
+
+$(OUT)/replay_ab: research/rust_ab/replay_ab.c bopl_rl.c bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -I. research/rust_ab/replay_ab.c bopl_rl.c -ldl -lm -o $@
+
+# Whole-directory sweep over one study or sweep evaluation directory:
+#   make -C native/rl replay-sweep GAMES=../artifacts/rl/study-grenade/evaluations
+GAMES ?= ../artifacts/rl/study-grenade/evaluations
+replay-sweep: $(OUT)/replay_ab
+	$(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT)) $(abspath $(GAMES))
+
+# Self check: the reference replayed against itself must be bit-identical.
+replay-selfcheck: $(OUT)/replay_ab
+	REPLAY_AB_TOL=0 $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(REFERENCE)) $(abspath $(GAMES))
+	REPLAY_AB_TOL=0 $(abspath $(OUT)/replay_ab) $(abspath $(RUST_ROLLOUT)) $(abspath $(RUST_ROLLOUT)) $(abspath $(GAMES))
+
 # Observation-writer microbenchmark + sim ticks/s on one core (THROUGHPUT_V4.md).
 writer-bench: $(OUT)/writer_bench
 
@@ -83,4 +103,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research map-ab writer-bench agent agent-mac
+.PHONY: all research map-ab replay-ab replay-sweep replay-selfcheck writer-bench agent agent-mac
