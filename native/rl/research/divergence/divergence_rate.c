@@ -182,6 +182,23 @@ static void dr_decide(DrDriver *d, BoplRl *pilot, const BoplRlState *state, int 
  * tick window, for pulling one divergence apart by hand. */
 static unsigned dr_dump_from = 0, dr_dump_to = 0;
 static int dr_dump_entity = -1;
+/* DR_REPLAY_OUT=<dir> writes each game's lossless BOPLREP2 recording, so the
+ * same games can be re-compared by research/rust_ab/replay_ab.c - an
+ * independently written comparator - and the two made to agree. */
+static const char *dr_replay_out = NULL;
+
+static void dr_write_replay(BoplRl *world, const char *cell, unsigned index, uint32_t map) {
+    const void *bytes = NULL; size_t length = 0;
+    if (!dr_replay_out || bopl_rl_replay(world, &bytes, &length) != BOPL_RL_OK || !bytes) return;
+    char path[512], safe[64];
+    snprintf(safe, sizeof safe, "%s", cell);
+    for (char *at = safe; *at; at++) if (*at == ':') *at = '-';
+    snprintf(path, sizeof path, "%s/%s-i%06u-map%03u.rep", dr_replay_out, safe, index, map);
+    FILE *file = fopen(path, "wb");
+    if (!file) return;
+    fwrite(bytes, 1, length, file);
+    fclose(file);
+}
 
 static const char *DR_ARM_NAME[DR_ARMS] = {"q32", "f64"};
 static const char *DR_LENS_NAME[DR_LENSES] = {"all", "visible"};
@@ -341,6 +358,8 @@ int main(int argc, char **argv) {
      * reset); it is the same class as the ENABLED-bit exclusion replay_ab.c
      * already carries. Both curves are reported, so nothing is hidden. */
     dr_ignore_list = dr_env("DR_IGNORE", "entity[].hierarchy");
+    int dr_fresh = atoi(dr_env("DR_FRESH", "1"));
+    dr_replay_out = getenv("DR_REPLAY_OUT");
     if (getenv("DR_DUMP")) {
         dr_dump_to = 0;
         if (sscanf(getenv("DR_DUMP"), "%u:%u:%d", &dr_dump_from, &dr_dump_to, &dr_dump_entity) < 2)
@@ -447,6 +466,27 @@ int main(int argc, char **argv) {
                                                            : (uint32_t)pool[dr_rand(&draw) % (uint32_t)pool_n];
         driver.rng = draw ^ 0xD1B54A32D192ED03ull;
 
+        /* DR_FRESH=1 reopens the two Rust handles before every game. The port
+         * carries state across bopl_rl_reset: after certain episodes a later
+         * episode's exported entity table gains up to ~70 extra ACTIVE rows
+         * left over from the earlier one (FIXTURES.md #2). They have no
+         * physics effect - positions stay bit-identical and episode length is
+         * unchanged - but they are ACTIVE && !DESTROYED, so the observation
+         * writer would encode them, and they make any batched differential
+         * comparison depend on how many games shared the process. Reopening
+         * isolates each game so the measured rate is a per-episode rate.
+         * The oracle handle is never reopened: it does not leak, and it is
+         * the expensive one to load. */
+        if (dr_fresh) {
+            for (int i = 1; i < 3; i++) {
+                bopl_rl_close(world[i]);
+                char err[256], rlog[64];
+                snprintf(rlog, sizeof rlog, "/tmp/divergence-rate-%d.log", (int)getpid());
+                world[i] = bopl_rl_open(argv[i + 1], "/dev/null", rlog, 300000, err, sizeof err);
+                if (!world[i]) { fprintf(stderr, "reopen %s: %s\n", argv[i + 1], err); return 2; }
+            }
+        }
+
         DrGame game;
         memset(&game, 0, sizeof game);
         game.map = config.map;
@@ -454,6 +494,7 @@ int main(int argc, char **argv) {
         for (int p = 0; p < players; p++)
             for (int s = 0; s < 3; s++) game.loadout[p][s] = config.player[p].abilities[s];
         if (dr_play(world, &config, &driver, tolerance, horizon, &game)) { failed++; continue; }
+        dr_write_replay(world[0], cell_label, index, game.map);
         ticks_total += game.ticks;
         compared_total += game.compared;
 

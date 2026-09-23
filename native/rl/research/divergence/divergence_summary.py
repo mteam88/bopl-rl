@@ -27,7 +27,7 @@ HORIZONS = (100, 300, 1000, 3600)
 
 
 def load(paths):
-    runs, games = [], []
+    runs, games, dones, errors = [], [], [], []
     for path in paths:
         path = Path(path)
         files = sorted(path.glob('*.jsonl')) if path.is_dir() else [path]
@@ -43,7 +43,13 @@ def load(paths):
                     games.append(row)
                 elif row.get('record') == 'run':
                     runs.append(row)
-    return runs, games
+                elif row.get('record') == 'done':
+                    dones.append(row)
+            side = file.with_suffix('.err')
+            if side.exists():
+                errors.extend(line for line in side.read_text().splitlines()
+                              if 'panic' in line or 'failed' in line)
+    return runs, games, dones, errors
 
 
 def kaplan_meier(observations):
@@ -123,15 +129,22 @@ def curve_table(games, label, keys=('q32_all_anyx', 'q32_all_discx', 'q32_visibl
                                     'f64_visible_anyx', 'f64_visible_discx')):
     print(f'\n--- {label}  (n={len(games)} games, '
           f'{sum(g["ticks"] for g in games):,} ticks) ---')
-    header = f'{"curve":28s} {"median":>8s} {"p25":>7s} {"p75":>7s}'
+    header = f'{"curve":28s} {"/1k ticks":>10s} {"median":>8s} {"p25":>7s} {"p75":>7s}'
     for h in HORIZONS:
         header += f' {"S(" + str(h) + ")":>16s}'
     print(header)
     rows = {}
     for key in keys:
-        km = kaplan_meier(observations(games, key))
-        line = f'{key:28s} {str(quantile(km, 0.5)):>8s} {str(quantile(km, 0.25)):>7s} {str(quantile(km, 0.75)):>7s}'
-        entry = {'median': quantile(km, 0.5), 'p25': quantile(km, 0.25), 'p75': quantile(km, 0.75)}
+        obs = observations(games, key)
+        km = kaplan_meier(obs)
+        # The plain hazard: divergences per 1000 ticks of exposure, where a
+        # game contributes ticks up to its first divergence and no further.
+        events = sum(e for _, e in obs)
+        exposure = sum(t for t, _ in obs)
+        hazard = 1000.0 * events / exposure if exposure else float('nan')
+        entry = {'per1k': hazard, 'events': events, 'exposure': exposure}
+        line = f'{key:28s} {hazard:10.2f} {str(quantile(km, 0.5)):>8s} {str(quantile(km, 0.25)):>7s} {str(quantile(km, 0.75)):>7s}'
+        entry.update(median=quantile(km, 0.5), p25=quantile(km, 0.25), p75=quantile(km, 0.75))
         for h in HORIZONS:
             s, lo, hi = survival_at(km, h)
             line += f'  {s:5.1%} [{lo:4.0%},{hi:4.0%}]'
@@ -330,6 +343,30 @@ def hierarchy_cost(games):
           f'{earlier}/{len(games)} = {p:.1%} [{lo:.1%},{hi:.1%}]')
 
 
+def failures(dones, errors, played):
+    """A game the harness could not finish is not a clean game: the Rust sim
+    panicking mid-episode is the most extreme divergence there is, and it is
+    dropped from the survival data because it has no first-divergence tick.
+    It has to be reported next to the curves or the curves flatter the port."""
+    failed = sum(d.get('failed', 0) for d in dones)
+    print('\n=== games the harness could not finish ===')
+    total = played + failed
+    p, lo, hi = wilson(failed, total) if total else (0, 0, 0)
+    print(f'{failed} of {total} attempted games = {p:.2%} [{lo:.2%},{hi:.2%}]')
+    sites = collections.Counter()
+    maps = collections.Counter()
+    for line in errors:
+        if 'panicked at' in line:
+            sites[line.split('panicked at ', 1)[1].split(':')[0] + ':'
+                  + line.split('panicked at ', 1)[1].split(':')[1]] += 1
+        if 'sim panic' in line and 'map ' in line:
+            maps[line.split('map ', 1)[1].split()[0]] += 1
+    for site, count in sites.most_common():
+        print(f'  panic site {site}: {count}')
+    if maps:
+        print('  maps: ' + ', '.join(f'{m}x{c}' for m, c in maps.most_common(12)))
+
+
 def main(argv):
     paths = [a for a in argv[1:] if not a.startswith('--')]
     if not paths:
@@ -339,7 +376,7 @@ def main(argv):
         ABILITY_NAMES.update({int(r['id']): r['name'] for r in catalogue['abilities']})
     except Exception as error:                      # noqa: BLE001 - reporting only
         print(f'(ability names unavailable: {error})')
-    runs, games = load(paths)
+    runs, games, dones, errors = load(paths)
     if not games:
         print('no games found'); return 2
     print(f'=== divergence rate: {len(games):,} games, '
@@ -376,6 +413,8 @@ def main(argv):
     print('\n\n############ CROSS-CHECKS ############')
     end_tick_agreement(games)
     hierarchy_cost(games)
+
+    failures(dones, errors, len(games))
 
     print('\n\n############ COVERAGE ############')
     coverage(games, runs)

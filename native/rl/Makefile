@@ -186,6 +186,13 @@ divergence-rate: $(OUT)/divergence_rate rust-q32 $(RUST_ROLLOUT)
 	  RUST_ROLLOUT_Q32=$(abspath $(RUST_ROLLOUT_Q32)) RUST_ROLLOUT=$(abspath $(RUST_ROLLOUT)) \
 	  research/divergence/run_divergence_rate.sh $(abspath $(DIVERGENCE_OUT)) $(DIVERGENCE_WORKERS)
 
+# The controls the study's numbers depend on: the instrument measured against
+# itself, and the narrow loadout the existing gates use.
+divergence-controls: $(OUT)/divergence_rate rust-q32 $(RUST_ROLLOUT)
+	DR_BIN=$(abspath $(OUT)/divergence_rate) REFERENCE=$(abspath $(REFERENCE)) \
+	  RUST_ROLLOUT_Q32=$(abspath $(RUST_ROLLOUT_Q32)) RUST_ROLLOUT=$(abspath $(RUST_ROLLOUT)) \
+	  research/divergence/run_divergence_controls.sh $(abspath $(DIVERGENCE_OUT))-controls $(DIVERGENCE_WORKERS)
+
 divergence-report:
 	$(PYTHON) research/divergence/divergence_summary.py $(abspath $(DIVERGENCE_OUT))
 
@@ -260,7 +267,7 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-report all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
+.PHONY: divergence-rate divergence-controls divergence-report all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
 
 # Reward semantics on hand-built terminal states (research/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.
