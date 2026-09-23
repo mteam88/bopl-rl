@@ -399,14 +399,21 @@ def games_from_evaluation(report, pool, catalogue_records=()):
             continue
         if maps and game.get('map') not in maps:
             continue
-        if game.get('timeout'):
+        # A trade is a draw here as it is in elo_ladder.play_games: neither
+        # side won a round the game left undecided. Reports written before
+        # evaluate.py said so carry no `undecided` key and score as they did.
+        draw_kind = 'timeout' if game.get('timeout') else 'both-dead' if game.get('undecided') else None
+        if draw_kind:
             outcome = 'draw'
         elif game.get('win'):
             outcome = 'a'
         else:
             outcome = 'b'
-        games.append(dict(a=CANDIDATE, b=game['opponent'], map=game['map'],
-                          seed=game['seed'], side=game.get('side', 0), outcome=outcome))
+        row = dict(a=CANDIDATE, b=game['opponent'], map=game['map'],
+                   seed=game['seed'], side=game.get('side', 0), outcome=outcome)
+        if draw_kind:
+            row['draw_kind'] = draw_kind
+        games.append(row)
     return games
 
 

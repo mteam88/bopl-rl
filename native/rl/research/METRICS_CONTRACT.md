@@ -151,11 +151,17 @@ Written today by `evaluate.py`; keep this shape: top level `schema`, `step`,
 like `mixed-hard`, scheduled on evaluation and held-out maps alongside
 `random`; see `native/rl/SCRIPTED_BOTS.md`), `training_maps`, `groups` (per opponent×map:
 `opponent, map, games, wins, win_rate, interval` (Wilson), `timeouts`,
-`behavior_totals`, `mean_duration`), and `games` — per game:
-`opponent, map, seed, side, save, name, win, timeout, kills, deaths, ticks,
-behavior, action_rates`, plus for saved games `replay`, `replay_sha256`,
+`undecided`, `behavior_totals`, `mean_duration`), and `games` — per game:
+`opponent, map, seed, side, save, name, win, timeout, undecided, kills, deaths,
+ticks, behavior, action_rates`, plus for saved games `replay`, `replay_sha256`,
 `visual`, `final_players`. The replay browser needs `replay`, `replay_sha256`,
 `ticks`, `final_players`, `side`, `opponent`, `map`, `seed`.
+
+`undecided` is a round the game left undecided: both sides eliminated on the
+same tick, so `WonThisRound` landed on all of them. It is nobody's `win` and it
+is not a `timeout`, so `wins + timeouts + undecided <= games`, the remainder
+being losses. `reference_pool.py` scores it as a draw of kind `both-dead`,
+matching `elo_ladder.play_games`.
 
 The saved-game physics file `<game>.json` keeps
 `{schema:1, frames:[{t, players, slimes, entities, actions:[[angle,buttons] x2]}],

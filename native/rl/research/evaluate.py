@@ -203,7 +203,7 @@ def main():
                 # victim's own Kills, and deaths_self is where those are
                 # counted; the reward's kill term makes the same subtraction.
                 kills=me['kills']-final['telemetry'][task['side']]['deaths_self']
-                result={**task,'win':win,'timeout':timeout,'kills':kills,'deaths':me['deaths'],
+                result={**task,'win':win,'timeout':timeout,'undecided':undecided,'kills':kills,'deaths':me['deaths'],
                         'loadouts':episode_loadouts,
                         'ability_activations':{str(ability):count for ability,count in enumerate(activations) if count},
                         'entity_overflow':{str(ability):dict(rows=rows,dropped=entity_overflow[ability],
@@ -237,6 +237,9 @@ def main():
         groups.append(dict(opponent=opponent,map=map_id,games=n,wins=wins,win_rate=wins/n,
                            map_role='trained' if map_id in config['training_maps'] else 'untrained',
                            interval=wilson(wins,n),timeouts=sum(r['timeout'] for r in selected),
+                           # Games neither side won. Without this a suite that
+                           # ends in trades reads as a flat 0% win rate.
+                           undecided=sum(r['undecided'] for r in selected),
                            seed_pairs=n//2,
                            behavior_totals={key:sum(r['behavior']['totals'][key] for r in selected) for key in FIELDS},
                            mean_kills=float(np.mean([r['kills'] for r in selected])),
