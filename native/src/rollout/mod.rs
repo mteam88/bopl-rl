@@ -3449,6 +3449,10 @@ impl RolloutWorld {
                     previous_jump: false,
                     skip_next_gravity: false,
                     instant_cast_this_pass: false,
+                    was_upside_down: false,
+                    pre_move_up: Vec2::UP,
+                    pre_move_grounded: false,
+                    attach_upside_down: None,
                     jumped_this_frame: false,
                     constants: data.player.constants.clone(),
                     cooldown: Fix::ZERO,
@@ -4627,8 +4631,13 @@ impl RolloutWorld {
         // reaches the state switch - airborne included. With no attached
         // ground PlayerPhysics.InputGroundAlignment measures against
         // Vec2.right (PlayerPhysics.cs:394).
-        let ground_align = if slot.base.grounded {
-            dir.dot(Vec2::new(slot.base.up.y, -slot.base.up.x))
+        // OldUpdate reads this before Move (SlimeController.cs:1067, 1084), so
+        // it is the frame PlayerPhysics.UpdateSim left, not the end-of-tick
+        // one. On a surface that rotates under the slime the two differ by a
+        // full tick of rotation, and every facing decision below inherits it.
+        let pre_up = slot.base.pre_move_up;
+        let ground_align = if slot.base.pre_move_grounded {
+            dir.dot(Vec2::new(pre_up.y, -pre_up.x))
         } else {
             dir.x
         };
@@ -4647,9 +4656,30 @@ impl RolloutWorld {
         // State.fall (SlimeController.cs:956-958) before Move's air raycasts
         // can re-attach it on the same pass (PlayerPhysics.cs:236-238), which
         // then lands it again through attachToGround.
-        if std::mem::take(&mut slot.base.jumped_this_frame) || !slot.base.grounded {
+        let jumped = std::mem::take(&mut slot.base.jumped_this_frame);
+        if jumped || !slot.base.grounded {
             slot.obs_state = STATE_FALL;
             slot.state_ticks = 0;
+        }
+        // The last statement of OldUpdate is `if (!IsGrounded())
+        // AlignTransformAir()` (SlimeController.cs:890-892). That IsGrounded()
+        // is the pre-Move one, less whatever Jump() just ungrounded, so a pass
+        // that only walked off the ledge inside Move still took the grounded
+        // branch and did not re-aim. A pass that entered an ability returned
+        // long before reaching this line.
+        if !held && (!slot.base.pre_move_grounded || jumped) {
+            // AlignTransformAir (SlimeController.cs:967-982): consume the
+            // ground normal Jump() left behind, then aim from the raw stick
+            // against MIN_TURNSPEED 0.02 - not from the ground alignment, and
+            // with no DEADZONE test.
+            if std::mem::take(&mut slot.base.was_upside_down) {
+                slot.facing_right = !slot.facing_right;
+            }
+            if dir.x < -Fix::from_f32(0.02) {
+                slot.facing_right = false;
+            } else if dir.x > Fix::from_f32(0.02) {
+                slot.facing_right = true;
+            }
         }
         if !slot.base.grounded {
             return;
@@ -4659,7 +4689,9 @@ impl RolloutWorld {
         // alignment past GROUNDALIGNMENTDEADZONE 0.2, or input pressed into
         // the ground with any alignment at all.
         let align = ground_align; // rightward ground tangent, computed above
-        let into_ground = slot.base.up.dot(dir) < Fix::ZERO;
+        // `fix2` is taken from the same pre-Move frame as `fix`
+        // (SlimeController.cs:797), against the raw stick.
+        let into_ground = pre_up.dot(dir) < Fix::ZERO;
         let moving = dir != Vec2::ZERO
             && (align.abs() >= Fix::from_f32(0.2)
                 || (into_ground && align.abs() >= Fix::from_f32(0.01)));
@@ -4671,10 +4703,30 @@ impl RolloutWorld {
             STATE_FALL => {
                 // attachToGround: land animation, then idle (one tick longer
                 // after an ability exit, see `PlayerSlot::exit_to_fall`).
+                // Landing on a ceiling flips the sprite
+                // (SlimeController.cs:1131-1134). The test is the normal at
+                // the instant the raycast attached, recorded by
+                // `Player::attach`; the end-of-tick `up` has already rotated
+                // away from it on a moving or steeply curved surface.
+                if slot.base.attach_upside_down == Some(true) {
+                    slot.facing_right = !slot.facing_right;
+                }
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks += LAND_TICKS;
             }
             STATE_LAND => {
+                // `case State.land: if (Fix.Abs(fix) >= GROUNDALIGNMENTDEADZONE
+                // || fix2 < 0) flipTrans.alignTransform(fix >= 0)`
+                // (SlimeController.cs:836-841). This is the one state that
+                // re-aims the sprite without changing state, and its test is
+                // weaker than flag5: no DEADZONE magnitude, and any input
+                // pressed into the ground at all. It is part of
+                // `switch (currentState)`, so a pass that returned at
+                // EnterAbility skips it while the animator still advances the
+                // land timer below.
+                if !held && (align.abs() >= Fix::from_f32(0.2) || into_ground) {
+                    slot.facing_right = align >= Fix::ZERO;
+                }
                 slot.state_ticks = slot.state_ticks.saturating_sub(1);
                 if slot.state_ticks == 0 {
                     slot.obs_state = STATE_IDLE;
@@ -6833,6 +6885,10 @@ impl RolloutWorld {
         // Scoped to this pass: only a cast below sets it, and the movement at
         // the end of this function and `update_obs_state` only read it.
         self.players[index].base.instant_cast_this_pass = false;
+        // Also scoped to this pass: PlayerPhysics' landing raycasts (in the
+        // gravity step below) and Move's raycasts both fire attachToGround,
+        // and `update_obs_state` consumes whichever one landed the body.
+        self.players[index].base.begin_pass();
         let leaving_blink_wall = self.players[index].base.ground.is_some_and(|ground| {
             self.platforms
                 .iter()
@@ -6908,6 +6964,13 @@ impl RolloutWorld {
             if !slot.base.grounded {
                 slot.base.gravity_step(terrain!(self));
             }
+            // Everything above is PlayerPhysics.UpdateSim; everything below is
+            // SlimeController.UpdateSim, which runs OldUpdate in full before
+            // it ever calls PlayerPhysics.Move (SlimeController.cs:1067 vs
+            // 1084). `update_obs_state` is the tail of OldUpdate but runs at
+            // the end of the tick, so the ground frame OldUpdate actually read
+            // has to be carried across to it.
+            slot.base.capture_pre_move();
             // Player.UpdatePlayer published before SlimeController discovers
             // that an attached Blink wall was disabled. Preserve that value
             // on the one detachment pass; the live slime body already moves
@@ -21324,6 +21387,10 @@ impl RolloutWorld {
             previous_jump: false,
             skip_next_gravity: false,
             instant_cast_this_pass: false,
+            was_upside_down: false,
+            pre_move_up: Vec2::UP,
+            pre_move_grounded: false,
+            attach_upside_down: None,
             jumped_this_frame: false,
             constants: data.player.constants.clone(),
             cooldown: Fix::ZERO,
@@ -35471,3 +35538,5 @@ mod tests {
         );
     }
 }
+
+

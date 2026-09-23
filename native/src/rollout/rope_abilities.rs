@@ -647,6 +647,11 @@ impl RolloutWorld {
         let cast = self.players[player].base.instant_cast_this_pass;
         if jump_pressed && self.players[player].base.grounded && !cast {
             let strength = self.players[player].base.constants.jump_strength;
+            // This is SlimeController.Jump, so it records wasUpsideDown just
+            // as `Player::jump` does (SlimeController.cs:897-900).
+            self.players[player]
+                .base
+                .record_upside_down_jump(&self.platforms);
             self.players[player]
                 .base
                 .jump_with_strength(&self.platforms, strength);
