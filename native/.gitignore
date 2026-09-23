@@ -8,3 +8,4 @@ __pycache__/
 # The Unity repository ignores bin directories and csproj files globally.
 !/src/bin/
 !*.csproj
+/target-q32/

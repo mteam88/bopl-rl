@@ -9,8 +9,17 @@ research: $(OUT)/libbopl_research.so
 
 map-ab: $(OUT)/map_ab
 
-REFERENCE ?= ../../sim/Native/bin/Release/net8.0/linux-x64/native/BoplSimNative.so
+# The C# NativeAOT oracle. `publish/` is the deployable link; the sibling
+# `native/` directory holds the intermediate object of whichever build ran
+# last and can be months stale (and on an older bopl_rl.h ABI), so point at
+# `publish/`.
+REFERENCE ?= ../../sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so
 RUST_ROLLOUT ?= ../target/release/libbopl_sim.so
+# The default `Fix` is an IEEE double behind the Q32.32 API (native/src/fixed.rs:1-30),
+# so the default build cannot be compared with the oracle below ~1e-6: every
+# multiply and divide rounds differently. Differential work needs the bit-exact
+# arithmetic:  cd native && cargo build --release --features q32 --target-dir target-q32
+RUST_Q32 ?= ../target-q32/release/libbopl_sim.so
 
 # Exhaustive authored-map gate: all 124 maps, both 2- and 6-player layouts,
 # 3000 ticks per live case, with discrete player/slime state required exact.
@@ -33,13 +42,29 @@ $(OUT)/replay_ab: research/rust_ab/replay_ab.c bopl_rl.c bopl_rl.h
 # Whole-directory sweep over one study or sweep evaluation directory:
 #   make -C native/rl replay-sweep GAMES=../artifacts/rl/study-grenade/evaluations
 GAMES ?= ../artifacts/rl/study-grenade/evaluations
+# `RUST=$(RUST_ROLLOUT)` compares the shipping f64 build instead, which only
+# makes sense with a loose REPLAY_AB_TOL.
+RUST ?= $(RUST_Q32)
 replay-sweep: $(OUT)/replay_ab
-	$(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT)) $(abspath $(GAMES))
+	REPLAY_AB_TOL=$${REPLAY_AB_TOL-1} $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(RUST)) $(abspath $(GAMES))
+
+# The same sweep restricted to what a trained policy can actually read
+# (bopl_puffer.h:316): the ranking that answers whether a divergence could
+# have changed a policy's behaviour.
+replay-visible: $(OUT)/replay_ab
+	REPLAY_AB_VISIBLE=1 REPLAY_AB_TOL=$${REPLAY_AB_TOL-1} $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(RUST)) $(abspath $(GAMES))
 
 # Self check: the reference replayed against itself must be bit-identical.
 replay-selfcheck: $(OUT)/replay_ab
 	REPLAY_AB_TOL=0 $(abspath $(OUT)/replay_ab) $(abspath $(REFERENCE)) $(abspath $(REFERENCE)) $(abspath $(GAMES))
-	REPLAY_AB_TOL=0 $(abspath $(OUT)/replay_ab) $(abspath $(RUST_ROLLOUT)) $(abspath $(RUST_ROLLOUT)) $(abspath $(GAMES))
+	REPLAY_AB_TOL=0 $(abspath $(OUT)/replay_ab) $(abspath $(RUST)) $(abspath $(RUST)) $(abspath $(GAMES))
+# The stronger half of the self check: the recorded inputs, replayed in the
+# backend that produced the recording, must reproduce the saved <game>.json.
+# LIBRARY must therefore be the build the corpus was recorded with.
+LIBRARY ?= $(RUST_ROLLOUT)
+replay-roundtrip: $(OUT)/replay_ab
+	../artifacts/rl/venv/bin/python research/rust_ab/replay_ab_selfcheck.py \
+	  --binary $(abspath $(OUT)/replay_ab) --library $(abspath $(LIBRARY)) $(GAMES)/*/*.rep
 
 # Observation-writer microbenchmark + sim ticks/s on one core (THROUGHPUT_V4.md).
 writer-bench: $(OUT)/writer_bench
@@ -103,4 +128,4 @@ $(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: all research map-ab replay-ab replay-sweep replay-selfcheck writer-bench agent agent-mac
+.PHONY: all research map-ab replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip writer-bench agent agent-mac

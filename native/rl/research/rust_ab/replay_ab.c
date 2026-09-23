@@ -33,6 +33,12 @@
  *   REPLAY_AB_TOL        numeric tolerance in raw Q32.32 units (default 8192,
  *                        1.9e-6 world units); 0 demands bit-exactness
  *   REPLAY_AB_STRICT     1 = drop the inactive-prefab ENABLED-bit exclusion
+ *   REPLAY_AB_VISIBLE    1 = compare only what the v4 observation writer can
+ *                        read: entity rows that are ACTIVE and not DESTROYED
+ *                        (bopl_puffer.h:316), without `id` or `hierarchy`,
+ *                        and the visible entity count instead of the raw one.
+ *                        This is the ranking that says whether a divergence
+ *                        could have changed a trained policy's behaviour.
  *   REPLAY_AB_ALL        1 = print every differing field, not only the first
  *   REPLAY_AB_DUMP       tick: print both backends' entity/slime tables there
  *   REPLAY_AB_IGNORE     comma-separated generalized field names to skip,
@@ -165,6 +171,15 @@ static void generalize(const char *field, char *out, size_t capacity);
 
 static int report_all = 0;              /* print every differing field, not just the first */
 static int strict = 0;                  /* 1 = no built-in exclusions at all */
+static int visible_only = 0;            /* 1 = compare only what a policy can read */
+
+/* The observation writer's entity filter (bopl_puffer.h:316-317): a row that
+ * is not ACTIVE, or is DESTROYED, is never encoded, so nothing it carries can
+ * reach a policy. `entity[].id` and `entity[].hierarchy` are not read by the
+ * v4 writer at all. */
+static int obs_visible(const BoplRlEntity *e) {
+    return (e->flags & BOPL_ENTITY_ACTIVE) && !(e->flags & BOPL_ENTITY_DESTROYED);
+}
 static const char *ignore_list = NULL;  /* comma separated generalized field names */
 
 static int ignored(const char *field) {
@@ -233,7 +248,14 @@ static int compare_state(const BoplRlState *a, const BoplRlState *b, unsigned ti
     const BoplRlHeader *ha = &a->header, *hb = &b->header;
 
     DISCRETE("header.player_count", "", ha->player_count, hb->player_count);
-    DISCRETE("header.entity_count", "entity population (lifecycle)", ha->entity_count, hb->entity_count);
+    if (visible_only) {
+        uint32_t va = 0, vb = 0;
+        for (uint32_t i = 0; i < ha->entity_count; i++) va += (uint32_t)obs_visible(&a->entities[i]);
+        for (uint32_t i = 0; i < hb->entity_count; i++) vb += (uint32_t)obs_visible(&b->entities[i]);
+        DISCRETE("header.visible_entities", "entity population (lifecycle)", va, vb);
+    } else {
+        DISCRETE("header.entity_count", "entity population (lifecycle)", ha->entity_count, hb->entity_count);
+    }
     DISCRETE("header.slime_count", "slime population (clones/stocks)", ha->slime_count, hb->slime_count);
     DISCRETE("header.flags", "terminal/truncated/started/failed bits", ha->flags, hb->flags);
     DISCRETE("header.episode_ticks", "", ha->episode_ticks, hb->episode_ticks);
@@ -310,11 +332,14 @@ static int compare_state(const BoplRlState *a, const BoplRlState *b, unsigned ti
 
     for (uint32_t i = 0; i < ha->entity_count; i++) {
         const BoplRlEntity *ea = &a->entities[i], *eb = &b->entities[i];
+        if (visible_only && !obs_visible(ea) && !obs_visible(eb)) continue;
         snprintf(context, sizeof context,
                  "entity %u kind %u/%u layer %u/%u owner %u/%u source-ability %u/%u flags %u/%u",
                  i, ea->kind, eb->kind, ea->layer, eb->layer, ea->owner, eb->owner,
                  ea->reserved[0], eb->reserved[0], ea->flags, eb->flags);
-        snprintf(field, sizeof field, "entity[%u].id", i);        DISCRETE(field, context, ea->id, eb->id);
+        if (!visible_only) {
+            snprintf(field, sizeof field, "entity[%u].id", i);    DISCRETE(field, context, ea->id, eb->id);
+        }
         snprintf(field, sizeof field, "entity[%u].kind", i);      DISCRETE(field, context, ea->kind, eb->kind);
         snprintf(field, sizeof field, "entity[%u].layer", i);     DISCRETE(field, context, ea->layer, eb->layer);
         snprintf(field, sizeof field, "entity[%u].owner", i);     DISCRETE(field, context, ea->owner, eb->owner);
@@ -328,7 +353,10 @@ static int compare_state(const BoplRlState *a, const BoplRlState *b, unsigned ti
             flags_b &= ~(uint32_t)BOPL_ENTITY_ENABLED;
         }
         snprintf(field, sizeof field, "entity[%u].flags", i);     DISCRETE(field, context, flags_a, flags_b);
-        snprintf(field, sizeof field, "entity[%u].hierarchy", i); DISCRETE(field, context, ea->hierarchy, eb->hierarchy);
+        if (!visible_only) {
+            snprintf(field, sizeof field, "entity[%u].hierarchy", i);
+            DISCRETE(field, context, ea->hierarchy, eb->hierarchy);
+        }
         snprintf(field, sizeof field, "entity[%u].source_ability", i);
         DISCRETE(field, context, ea->reserved[0], eb->reserved[0]);
         snprintf(field, sizeof field, "entity[%u].timer_ticks", i);
@@ -570,6 +598,7 @@ int main(int argc, char **argv) {
     report_all = getenv("REPLAY_AB_ALL") && atoi(getenv("REPLAY_AB_ALL"));
     ignore_list = getenv("REPLAY_AB_IGNORE");
     strict = getenv("REPLAY_AB_STRICT") && atoi(getenv("REPLAY_AB_STRICT"));
+    visible_only = getenv("REPLAY_AB_VISIBLE") && atoi(getenv("REPLAY_AB_VISIBLE"));
     dump_tick = getenv("REPLAY_AB_DUMP") ? atol(getenv("REPLAY_AB_DUMP")) : -1;
 
     Paths set = {0};
