@@ -2,340 +2,210 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Bopl · Quality</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bopl league</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header>
-    <a class="brand" href="/" aria-label="Bopl quality home">
-      <svg viewBox="0 0 48 40" aria-hidden="true">
-        <path d="M5 27C2 16 9 4 24 5s23 13 20 23C41 39 8 40 5 27" fill="currentColor"/>
-        <circle cx="19" cy="19" r="3" fill="#07080b"/>
-        <circle cx="32" cy="19" r="3" fill="#07080b"/>
-      </svg>
-      <span>Bopl <i>/</i> Quality</span>
-    </a>
+    <div class="brand">Bopl <i>/</i> league</div>
     <nav>
-      <a href="/" data-nav="index">Runs</a>
-      <a href="/ladder" data-nav="ladder">Ladder</a>
-      <a href="/lineups" data-nav="lineups">Lineups</a>
-      <a href="/sweep/" data-nav="sweep" id="sweepNav" hidden>Sweep</a>
+      <a href="/" data-nav="league">League</a>
+      <a href="/run" data-nav="run">Run</a>
+      <a href="/watch" data-nav="watch">Watch</a>
+      <a href="/agent" data-nav="agent" id="agentNav" hidden>Agent</a>
     </nav>
-    <div class="connection" id="connectionBox"><span></span><span id="connection">Connecting</span></div>
+    <div class="connection" id="connectionBox"><span></span><span id="connection">Live</span></div>
   </header>
   <main>
-    <p id="notice" role="status"></p>
+    <p class="notice" id="notice"></p>
 
-    <section id="indexView">
+    <!-- ===================================================== 1. LEAGUE -->
+    <section id="leagueView" hidden>
       <div class="intro">
         <div>
-          <p class="eyebrow">EVERY RUN UNDER --ROOT</p>
-          <h1>The board.</h1>
-          <p class="lede" id="indexLede">Auto-discovered families and sweeps. Joint Elo is one scale; frozen-pool IQM stays labelled and never shares an axis.</p>
+          <p class="eyebrow">PAYOFF MATRIX</p>
+          <h1>Who beats whom.</h1>
+          <p class="lede">A scalar rating hides cycles. The matrix does not, which is why it is the artifact.</p>
         </div>
-        <div class="identity" id="indexIdentity"></div>
+        <div class="hero-stack" id="leagueHero"></div>
       </div>
-      <div id="families" class="families" aria-label="Run families"></div>
-      <div class="toolbar">
-        <label class="grow">Search
-          <input id="runSearch" type="search" placeholder="name, family, flag…" />
-        </label>
-        <label>Family
-          <select id="filterFamily"><option value="">All</option></select>
-        </label>
-        <label>Status
-          <select id="filterStatus">
-            <option value="">All</option>
-            <option value="running">Running</option>
-            <option value="complete">Complete</option>
-            <option value="interrupted">Interrupted</option>
-            <option value="other">Other</option>
-          </select>
-        </label>
-        <label>Rating
-          <select id="filterRating">
-            <option value="">All</option>
-            <option value="joint">Has joint Elo</option>
-            <option value="none">Unrated</option>
-          </select>
-        </label>
-        <label>Loadout
-          <select id="filterLoadout">
-            <option value="">All</option>
-            <option value="fixed">Fixed</option>
-            <option value="set">Lineup set</option>
-            <option value="pool">Random pool</option>
-            <option value="multi">Set or pool</option>
-          </select>
-        </label>
-        <label>Sort
-          <select id="runSort">
-            <option value="joint">Joint Elo</option>
-            <option value="steps">Steps</option>
-            <option value="updated">Updated</option>
-            <option value="name">Name</option>
-          </select>
-        </label>
-        <span id="indexTag" class="tag">Loading</span>
-      </div>
-      <div class="table-wrap">
-        <table class="ladder board" aria-label="All runs">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th class="wide">Family</th>
-              <th>Status</th>
-              <th class="num">Steps</th>
-              <th class="num">Joint</th>
-              <th id="poolHead" hidden></th>
-              <th>Loadout</th>
-              <th class="wide">Banks / share</th>
-              <th>Flags</th>
-            </tr>
-          </thead>
-          <tbody id="runRows"></tbody>
-        </table>
-      </div>
-      <p class="caption" id="indexNote"></p>
-    </section>
 
-    <section id="ladderView" hidden>
-      <div class="intro">
-        <div>
-          <p class="eyebrow">JOINT FIT · RANDOM = 0</p>
-          <h1>One scale.</h1>
-          <p class="lede" id="ladderLede">Bradley-Terry over every pool round-robin, cached candidate record, and human game. Frozen-pool IQM is a different number and lives on run/sweep pages.</p>
+      <div class="conditionbar" id="conditionBar"></div>
+      <div id="leagueWarnings"></div>
+
+      <section class="panel" id="emptyLeague" hidden>
+        <p class="eyebrow">NO MEMBERS YET</p>
+        <h2>The league is empty.</h2>
+        <p class="lede" id="emptyLeagueWhy"></p>
+      </section>
+
+      <section class="panel" id="matrixPanel">
+        <div class="section-top">
+          <div><p class="eyebrow">ALL PAIRS</p><h2>Row's score against column.</h2></div>
+          <div class="toolbar">
+            <label>Order
+              <select id="matrixSort">
+                <option value="rating">Rating</option>
+                <option value="nash">Nash value</option>
+                <option value="kind">Kind</option>
+                <option value="added">Added</option>
+              </select>
+            </label>
+            <label class="check"><input type="checkbox" id="groupKind" checked /> Group by kind</label>
+          </div>
         </div>
-        <div class="identity" id="poolIdentity"></div>
-      </div>
-      <div class="toolbar">
-        <label>Sort
-          <select id="sort">
-            <option value="rating">Elo</option>
-            <option value="games">Games</option>
-            <option value="name">Name</option>
-            <option value="kind">Kind</option>
-          </select>
-        </label>
-        <label class="check"><input type="checkbox" id="hideBots" /> Hide bots</label>
-        <label class="check"><input type="checkbox" id="allCheckpoints" /> All checkpoints</label>
-        <span id="ladderTag" class="tag">Loading</span>
-      </div>
-      <div class="table-wrap">
-        <table class="ladder board" aria-label="Quality ladder">
-          <thead>
-            <tr>
-              <th>Rank</th>
-              <th>Name</th>
-              <th class="wide">Kind</th>
-              <th class="num">Elo</th>
-              <th class="num wide">95% CI</th>
-              <th class="num">W-L-D</th>
-              <th class="num wide">Games</th>
-            </tr>
-          </thead>
-          <tbody id="ladderRows"></tbody>
-        </table>
-      </div>
-      <section class="panel" id="humanPanel" hidden>
-        <div class="section-top"><p class="eyebrow">MATTHEW</p><h2>Record vs each opponent.</h2></div>
-        <p class="lede" id="humanLede"></p>
+        <p class="caption">Draw-aware: a win is 1, a draw 0.5. Colour is the row's score; grey is an unplayed pair.</p>
+        <div class="scale" id="matrixScale"></div>
+        <div class="matrix-wrap" id="matrixWrap"></div>
+      </section>
+
+      <section class="panel" id="cyclePanel">
+        <div class="section-top"><div><p class="eyebrow">NON-TRANSITIVITY</p><h2 id="cycleTitle">Cycles.</h2></div></div>
+        <p class="caption">A beats B beats C beats A. Counted only on pairs with enough games to mean it.</p>
+        <div id="cycleList"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-top"><div><p class="eyebrow">RATINGS</p><h2>Bradley-Terry against Nash.</h2></div></div>
+        <p class="caption">Bradley-Terry moves when the population's composition changes; the Nash value does not.
+          Where they disagree, the population is doing something a ladder cannot express.</p>
         <div class="table-wrap">
-          <table class="ladder" aria-label="Human per-opponent record">
-            <thead><tr><th>Opponent</th><th class="num">W-L-D</th><th class="num">Games</th></tr></thead>
-            <tbody id="humanRows"></tbody>
-          </table>
+          <table class="ladder" id="ratingTable"></table>
         </div>
       </section>
-      <p class="caption" id="ladderNote"></p>
+
+      <section class="panel">
+        <div class="section-top"><div><p class="eyebrow">SATURATION</p><h2>Is the league still learning anything?</h2></div></div>
+        <div class="stats" id="saturationStats"></div>
+      </section>
     </section>
 
-    <section id="lineupsView" hidden>
+    <!-- ====================================================== 2. AGENT -->
+    <section id="agentView" hidden>
       <div class="intro">
         <div>
-          <p class="eyebrow">RUNS × LINEUPS</p>
-          <h1>Which loadouts it learned.</h1>
-          <p class="lede" id="matrixLede">Every run whose config declares a loadout selection, over the lineups it actually played. Runs older than the multi-ability work played 2,4,14 only and stay on the board.</p>
+          <p class="eyebrow" id="agentKind">MEMBER</p>
+          <h1 id="agentTitle">—</h1>
+          <p class="lede" id="agentLede"></p>
         </div>
-        <div class="identity" id="matrixIdentity"></div>
+        <div class="hero-stack" id="agentHero"></div>
       </div>
-      <div class="toolbar">
-        <label>Cell
-          <select id="matrixMetric">
-            <option value="scripted">Win vs scripted</option>
-            <option value="random">Win vs random</option>
-            <option value="rating">Reference rating</option>
-            <option value="games">Games</option>
-          </select>
-        </label>
-        <span id="matrixTag" class="tag">Loading</span>
-      </div>
-      <div class="table-wrap">
-        <table class="ladder lineups" aria-label="Runs by lineup">
-          <thead><tr id="matrixHead"></tr></thead>
-          <tbody id="matrixRows"></tbody>
-        </table>
-      </div>
-      <p class="caption" id="matrixNote"></p>
+      <div class="conditionbar" id="agentConditionBar"></div>
+
+      <section class="panel">
+        <div class="section-top"><div><p class="eyebrow">PROVENANCE</p><h2>Where this came from.</h2></div></div>
+        <div class="identity" id="agentProvenance"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-top"><div><p class="eyebrow">RATING HISTORY</p><h2>Its run's checkpoints, over steps.</h2></div></div>
+        <canvas id="agentHistory" height="200"></canvas>
+        <p class="caption" id="agentHistoryNote"></p>
+      </section>
+
+      <section class="panel">
+        <div class="section-top"><div><p class="eyebrow">ITS ROW</p><h2>Against every member.</h2></div></div>
+        <div class="table-wrap"><table class="ladder" id="agentRow"></table></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-top"><div><p class="eyebrow">TIME TO EXPLOIT</p><h2>How fast a fresh exploiter gets there.</h2></div></div>
+        <p class="caption" id="exploitNote"></p>
+        <div id="exploitList"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-top"><div><p class="eyebrow">PER-ABILITY REGRET</p><h2>What each kit takes off it.</h2></div></div>
+        <p class="caption">How far below an even split this member lands against each specialist. The kit is the specialist's loadout descriptor.</p>
+        <div id="regretList"></div>
+      </section>
     </section>
 
+    <!-- ======================================================== 3. RUN -->
     <section id="runView" hidden>
       <div class="intro">
         <div>
-          <p class="eyebrow" id="runEyebrow">RUN</p>
+          <p class="eyebrow">TRAINING RUN</p>
           <h1 id="runTitle">—</h1>
           <p class="lede" id="runLede"></p>
         </div>
-        <div class="hero-stack">
-          <div class="hero-elo">
-            <strong id="runElo">—</strong>
-            <small id="runInterval">joint</small>
-            <span id="runFlags" class="flags"></span>
-          </div>
-          <div class="hero-side" id="runHero"></div>
-        </div>
+        <div class="hero-stack" id="runHero"></div>
       </div>
-      <div class="stats" id="runStats"></div>
-      <section class="panel" id="loadoutPanel" hidden>
-        <div class="section-top">
-          <div><p class="eyebrow">LOADOUTS</p><h2 id="loadoutTitle">What it was given.</h2></div>
-          <span id="loadoutBadge" class="tag"></span>
-        </div>
-        <p class="lede" id="loadoutLede"></p>
-        <div id="loadoutDetail" hidden>
-          <p class="eyebrow" style="margin-top:14px">ABILITIES</p>
-          <div class="table-wrap">
-            <table class="ladder" aria-label="Per-ability activity">
-              <thead>
-                <tr>
-                  <th>Ability</th>
-                  <th class="num">Act / game</th>
-                  <th class="num wide">Activations</th>
-                  <th class="num">Games</th>
-                  <th class="num">Win*</th>
-                  <th class="num wide">Entity rows</th>
-                  <th class="num">Dropped</th>
-                  <th class="wide">Trend</th>
-                </tr>
-              </thead>
-              <tbody id="abilityRows"></tbody>
-            </table>
-          </div>
-          <p class="caption" id="abilityNote"></p>
-          <p class="eyebrow" style="margin-top:18px">LINEUPS</p>
-          <div class="table-wrap">
-            <table class="ladder lineups" aria-label="Per-lineup results">
-              <thead><tr id="runLineupHead"></tr></thead>
-              <tbody id="runLineupRows"></tbody>
-            </table>
-          </div>
-          <p class="caption" id="lineupNote"></p>
-        </div>
+
+      <div class="toolbar" id="runPicker">
+        <label class="grow">Run <input type="search" id="runSearch" placeholder="filter runs" /></label>
+        <label>Open <select id="runSelect"></select></label>
+      </div>
+
+      <section class="panel" id="opponentPanel">
+        <div class="section-top"><div><p class="eyebrow">OPPONENTS</p><h2>Who it actually played.</h2></div></div>
+        <p class="caption" id="opponentNote"></p>
+        <div class="stats" id="opponentStats"></div>
+        <div id="opponentBars"></div>
+        <p class="caption" id="opponentUnavailable" hidden></p>
       </section>
-      <section class="panel" id="humanRunPanel" hidden>
-        <div class="section-top"><p class="eyebrow">MATTHEW</p><h2>He played this agent.</h2></div>
-        <p class="lede" id="humanRunLede"></p>
-        <div class="table-wrap">
-          <table class="ladder" aria-label="Human record vs this run">
-            <thead><tr><th>Checkpoint</th><th class="num">W-L-D</th><th class="num">Games</th></tr></thead>
-            <tbody id="humanRunRows"></tbody>
-          </table>
-        </div>
+
+      <section class="panel" id="runMembersPanel">
+        <div class="section-top"><div><p class="eyebrow">IN THE LEAGUE</p><h2>Rating over steps.</h2></div></div>
+        <p class="caption" id="runRatingNote"></p>
+        <canvas id="runRating" height="180"></canvas>
+        <div id="runMembers"></div>
       </section>
+
       <section class="panel">
-        <div class="section-top"><p class="eyebrow">JOINT ELO</p><h2>One scale, over steps.</h2></div>
-        <canvas id="jointChart" class="chart" aria-label="Joint Elo over learner steps"></canvas>
-        <p class="caption" id="jointCaption"></p>
+        <div class="section-top"><div><p class="eyebrow">EVALUATIONS</p><h2>Score over steps.</h2></div></div>
+        <canvas id="runEval" height="180"></canvas>
       </section>
+
       <section class="panel">
         <div class="section-top">
-          <div><p class="eyebrow" id="poolChartEyebrow">FROZEN POOL</p><h2>IQM vs that pool only.</h2></div>
-          <label>Pool <select id="poolPick"></select></label>
+          <div><p class="eyebrow">METRICS</p><h2 id="metricTitle">Training.</h2></div>
+          <label>Series <select id="metricPick"></select></label>
         </div>
-        <canvas id="eloChart" class="chart" aria-label="Frozen-pool Elo over learner steps"></canvas>
-        <p class="caption" id="eloCaption"></p>
-        <p class="cmd" id="rateCommand" hidden></p>
-        <div class="table-wrap">
-          <table class="ladder" aria-label="Rated checkpoints">
-            <thead>
-              <tr>
-                <th>Checkpoint</th>
-                <th class="num">Steps</th>
-                <th class="num">Elo</th>
-                <th class="num">95% CI</th>
-                <th>Source</th>
-              </tr>
-            </thead>
-            <tbody id="ratingRows"></tbody>
-          </table>
-        </div>
+        <canvas id="runMetric" height="200"></canvas>
       </section>
-      <div class="workspace">
-        <section class="panel watch">
-          <div class="section-top">
-            <div><p class="eyebrow">REPLAY</p><h2>A match.</h2></div>
-            <span id="replayTag" class="tag">Awaiting evaluation</span>
-          </div>
-          <div class="replay-select">
-            <label>Checkpoint<select id="checkpoint"></select></label>
-            <label>Match<select id="match"></select></label>
-          </div>
-          <div class="stage">
-            <canvas id="arena" width="1440" height="480" aria-label="Physics replay"></canvas>
-            <div id="emptyReplay">No saved match yet.</div>
-          </div>
-          <div class="replay-controls">
-            <button id="play" disabled aria-label="Play replay">▶</button>
-            <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Replay position" />
-            <span id="replayTime">0:00 / 0:00</span>
-            <select id="speed" aria-label="Playback speed">
-              <option value="0.5">0.5×</option>
-              <option value="1" selected>1×</option>
-              <option value="2">2×</option>
-              <option value="4">4×</option>
-            </select>
-            <a id="download" hidden>Replay</a>
-          </div>
-          <div id="players"></div>
-        </section>
-        <section class="panel">
-          <div class="section-top"><p class="eyebrow">OPPONENTS</p><h2>Win rates.</h2></div>
-          <label>Map <select id="winMap"></select></label>
-          <div class="table-wrap">
-            <table class="ladder">
-              <thead><tr><th>Opponent</th><th class="num">Win</th><th class="num">Games</th></tr></thead>
-              <tbody id="winRows"></tbody>
-            </table>
-          </div>
-          <div class="section-top" style="margin-top:24px"><p class="eyebrow">BEHAVIOUR</p><h2>How it plays.</h2></div>
-          <dl class="metrics" id="behavior"></dl>
-        </section>
-      </div>
     </section>
 
-    <section id="sweepView" hidden>
+    <!-- ====================================================== 4. WATCH -->
+    <section id="watchView" hidden>
       <div class="intro">
         <div>
-          <p class="eyebrow">SWEEP</p>
-          <h1 id="sweepTitle">—</h1>
-          <p class="lede" id="sweepLede"></p>
+          <p class="eyebrow">REPLAY</p>
+          <h1>A match.</h1>
+          <p class="lede">The same renderer as before, with the policy's own value estimate laid over the timeline.</p>
         </div>
-        <div class="identity" id="sweepIdentity"></div>
       </div>
-      <section class="panel">
-        <div class="section-top"><p class="eyebrow">SCORE OVER TRIALS</p><h2>Each trial's objective Elo, and the best so far.</h2></div>
-        <canvas id="scoreChart" class="chart" aria-label="Score per trial in launch order"></canvas>
+      <div class="toolbar">
+        <label>Run <select id="watchRun"></select></label>
+        <label>Checkpoint <select id="checkpoint"></select></label>
+        <label>Match <select id="match"></select></label>
+      </div>
+      <section class="panel watch">
+        <canvas id="arena" height="460"></canvas>
+        <p class="empty" id="emptyReplay">Pick a match with a saved replay.</p>
+        <div class="valuestrip" id="valueStrip"></div>
+        <div class="transport">
+          <button id="play" disabled>▶</button>
+          <input type="range" id="scrub" min="0" max="0" value="0" />
+          <span class="mono" id="replayTime">0:00 / 0:00</span>
+          <label>Speed <select id="speed">
+            <option value="0.25">0.25x</option><option value="0.5">0.5x</option>
+            <option value="1" selected>1x</option><option value="2">2x</option><option value="4">4x</option>
+          </select></label>
+          <span class="tag" id="replayTag"></span>
+          <a id="download" hidden download>.rep</a>
+        </div>
+        <div class="players" id="players"></div>
       </section>
-      <div class="table-wrap">
-        <table class="ladder" aria-label="Sweep trials">
-          <thead><tr id="sweepHead"></tr></thead>
-          <tbody id="sweepRows"></tbody>
-        </table>
-      </div>
+      <section class="panel" id="valuePanel">
+        <div class="section-top"><div><p class="eyebrow">VALUE HEAD</p><h2>The same game, every checkpoint.</h2></div></div>
+        <p class="caption" id="valueNote"></p>
+        <canvas id="valueChart" height="200"></canvas>
+      </section>
     </section>
   </main>
-  <footer><span>BOPL / QUALITY</span><span id="updated"></span></footer>
+  <div class="tip" id="tip" hidden></div>
   <script src="/arena.js"></script>
   <script src="/app.js"></script>
 </body>
