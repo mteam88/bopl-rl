@@ -183,7 +183,10 @@ int main(int argc, char **argv) {
                 break;
             }
         if (!death_tick && state[0]->players[0].deaths == 1) {
-            if (!live || live->flags != 1 || live->id != 20 ||
+            /* Active, not enabled, plus the ABI v3 component metadata the
+             * oracle attaches to every DynamicAbilityPickup: bit 6 (a known
+             * swap timer) and bit 7 (pickup); RlObservation.cs:238,253-255. */
+            if (!live || live->flags != (1u | 1u << 6 | 1u << 7) || live->id != 20 ||
                 live->hierarchy != 100000095 ||
                 live->x != INT64_C(-157721924043) ||
                 live->y != INT64_C(-50279367391)) {
