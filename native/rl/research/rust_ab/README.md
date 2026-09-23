@@ -423,15 +423,59 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   `move_only` on a copy of the body, and `move_only` does not call
   `sync_collider`, so the copy tests with the hurtbox basis the previous pass
   left behind. Airborne, clone and real Move agree; grounded they need not.
-  24 cases over maps 0 and 2, sweeping the press offset around the plane
-  crossing and a one-pass versus six-pass hold. Map 0 passes; **all 12 map-2
-  cases fail**: the reference lets Dash claim the body and kills it as an
-  ability body (`CauseOfDeath.Other`, ungrounded 0.05 off its surface,
-  y = -11.504346459173) while the port pre-empts the entry and kills the
-  ordinary slime (`Accident`, y = -11.554342044285), which also shifts the
-  platform it stood on by 0.0077 on the following tick. Excludes one
-  separately-owned known difference, the `sudden_death` header flag
-  publication lag, and says so on stdout when it does.
+  Twelve cases on map 0, sweeping the press offset around the plane crossing
+  and a one-pass versus six-pass hold. Excludes one separately-owned known
+  difference, the `sudden_death` header flag publication lag, and says so on
+  stdout when it does.
+
+  **An unreached case is not a passing case.** `run_case` returns a distinct
+  code when no tick ever published a living player below the plane, the probe
+  prints a `SCALE_BOUNDARY_MAP` line per map, and it exits non-zero if any
+  case went unreached -- `SCALE_BOUNDARY_VACUOUS` when a whole map did.
+  This matters: the probe ran for a while over maps 0 and 2 and reported
+  `cases=24`, but all twelve map-2 cases were unreached. Sudden death drops
+  map 2's platforms fast enough that the player drowns on the same pass it
+  first dips below the plane (-11.95 there, not -11.3 -- the kill plane is
+  per-map and comes from the water trigger), so no published tick ever shows
+  it alive underneath. Twelve vacuous cases read from outside exactly like
+  twelve passing ones, which is the same failure as a trace-only probe
+  exiting 0. Map 2 was therefore removed rather than left inflating the
+  count; each subject now carries its own plane, and a map only belongs in
+  the list once it demonstrably reaches.
+
+- `sudden_death_chunk_ab.c`: the endgame. Maps 0-4 played out with **no input
+  at all**, every entity, slime and player field compared exactly from reset
+  through the tick that resolves the round (level 7302-8218 depending on the
+  map). Sudden death begins at level tick 7200 and `map-sweep-3000` stops
+  4,200 ticks short of it, so before this probe nothing in the collapsing
+  endgame -- or in round resolution itself -- was covered by any gate.
+  `make -C native/rl sudden-death-chunk-ab`.
+
+  What it caught: map 2's `AntiLockPlatform` orbiter (entity 18, hierarchy
+  162, the one platform in the set with an `OrbitPath`). `WinGame` opens with
+  `ActivateSuddenDeath(activate: false)` (GameSessionHandler.cs:655), and
+  `GameSessionHandler.UpdateSim` runs ahead of the authored level updaters,
+  so on the pass that decides the round `SuddenDeathInProgress` is already
+  down and AntiLockPlatform.cs:35 fires once more -- one 600-unit kick toward
+  waypoint `(0, 24.674)`, `600/18/60 * 0.98 = 0.5445` of velocity, which is
+  exactly the `(-0.464, +0.285)` the reference had and the port did not. The
+  port held a single flag for both the session state and
+  `AnimateVelocity.inSuddenDeath`, which is a *per-component* latch nobody
+  ever lowers; those are now separate (`sudden_death` vs
+  `sudden_death_latched`, plus `game_in_progress` for `gameInProgress`).
+
+  `SD_CHUNK_DUMP=<first>[:<last>]` prints entity rows for a tick range,
+  `SD_CHUNK_NEAR=<id>` restricts that to one body's neighbourhood and
+  `SD_CHUNK_SLACK` widens it. Note when reading a neighbourhood dump that
+  these platforms are rounded rectangles with 0.01 x 0.01 extents and a 6.03
+  corner radius -- effectively discs -- so a filter written against the
+  extents finds nothing.
+
+  One announced exclusion, as narrow as a single field on a single class of
+  row: the port leaves `reserved[0]` set on entity rows it has already
+  flagged `DESTROYED`, where the reference clears it. That is publication
+  metadata on a body that no longer simulates, and an open item against the
+  observation writer. It prints a `NOTE` when it applies.
 
 ## Trace-only probes: exit status is not a result
 
@@ -452,6 +496,47 @@ cc -O2 -I. -o /tmp/platform_rotation_ab \
     net=<BoplSimNative.so> rust=<libbopl_sim.so> ) > /tmp/out.csv
 python3 research/rust_ab/trace_compare.py /tmp/out.csv   # <- the real verdict
 ```
+
+## The endgame was outside every gate
+
+`map-sweep-3000` compares 124 maps for 3,000 ticks and is worth what it says
+it is -- 417,009 snapshots, every authored map row exact. It is also
+structurally blind to everything after level tick 3000, and sudden death does
+not start until 7200. Two of the three divergences found in one session lived
+past that line.
+
+`make -C native/rl map-sweep-endgame` is the same probe run to 8,200 ticks, so
+every map reaches sudden death and resolves its round. It costs about three
+times the runtime, which is why both targets exist: keep 3000 as the quick
+gate and run the endgame sweep before claiming a build is clean.
+
+It currently **fails**, and the failure is real:
+
+* map 53, probe tick 6964 (level 7204), authored platform hierarchy 117
+  (`Big_Ice (3)`). The reference platform is still completely at rest at
+  level 7210; the port has been drifting *upward* since 7204
+  (`v=(0, +0.0000999)` growing to `+0.0323`). Upward is the tell: the first
+  segment of `suddenDeathYSpeed` has value 0 with an out-tangent of -0.4655,
+  so a curve sampled just past t=0 returns a small *negative* speed and
+  `homePosition += Vec2.down * speed * ...` moves the home up. The port is
+  therefore evaluating that platform's curve past its
+  `randomSuddenDeathDelay` several passes before the reference does, i.e. the
+  two disagree about the per-platform delay, not about the curve. The port
+  draws all of `sudden_death_delays` in one loop from post-physics session
+  work; the reference draws one at a time inside each
+  `AnimateVelocity.ActivateSuddenDeath` as the components notice the flag, so
+  anything else drawing from `Updater.RandomFix` in that window permutes the
+  assignment. Map 53 spawns an ability pickup at level 7203. Unowned as of
+  this writing.
+
+`MAP_AB_EXCUSE_SUDDEN_DEATH_FLAG=1` (set by the `map-sweep-endgame` recipe
+only) excuses one field: the port raises the header's `sudden_death` flag one
+observation before the reference. `GameSessionHandler.UpdateSim` activates it
+at its own updater slot; the port does it from post-physics session work on
+the preceding pass, with nothing but the observation write in between, so the
+physics either side is identical and the rest of the sweep proves it. Delete
+the variable the moment the observation writer is fixed. `map-sweep-3000`
+never sets it and never reaches the flag.
 
 Run the whole suite, comparator included, with
 
