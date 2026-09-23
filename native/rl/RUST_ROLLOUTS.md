@@ -978,6 +978,23 @@ boundaries: `Fix::from_raw`/`Fix::raw` convert for the `bopl_rl.h` structs
 level fixtures and the `bopl.h` state dump. The ABI version and the
 observation layout are unchanged.
 
+**q32 is a measurement instrument, not a goal (decided 2026-09-23).** Bit-exact
+agreement with the oracle is how we *measure* fidelity; it is not a target worth
+spending fidelity work on for its own sake. The evidence: q32 and f64 produce
+identical discrete medians at training horizons, so a residual f64/q32
+divergence that does not move a discrete outcome does not change what a policy
+learns. Consequences for how to work:
+
+- A divergence that is f64-only - both builds agree with each other but not the
+  oracle - is a logic defect and is worth chasing. That is the useful signal,
+  and `entity[].right_x` aim latching (FIXTURES #1) is the standing example.
+- A divergence that is q32-only, i.e. arithmetic, is a measurement artifact.
+  Record it; do not chase it.
+- Keep the q32 build working, because the exactness gates depend on it:
+  `map-sweep-3000`, `map-sweep-endgame`, and `leakprobe-q32`/`selfcheck-q32`,
+  which detect cross-episode contamination with no oracle at all.
+- f64 stays the build that trains.
+
 Decisions, each checked against `Fix.cs`:
 
 - **Constants stay the game's truncated values**: `PI` = 13493037704/2^32,
