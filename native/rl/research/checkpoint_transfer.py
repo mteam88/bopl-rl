@@ -50,6 +50,12 @@ HELDOUT_MAPS = [3, 4]
 
 KEY = ('opponent', 'map', 'seed', 'side')
 MATCH_FIELDS = ('win', 'timeout', 'kills', 'deaths', 'ticks')
+# `win` and `kills` are written differently by different evaluate.py versions (see
+# corrected_kills and classify), so two arms produced by different checkouts cannot be
+# compared on them even when the simulation was bit-identical. These fields carry the
+# same meaning in every version: the tick the episode ended on, the deaths, and the
+# elimination flags the outcome is recomputed from.
+STABLE_FIELDS = ('timeout', 'deaths', 'ticks')
 
 
 def kit_run(kit):
@@ -60,6 +66,11 @@ def final_checkpoint(kit):
     run = kit_run(kit)
     step = json.loads((run / 'result.json').read_text())['step']
     return run / f'checkpoints/policy-{step:09d}.bin', step
+
+
+def flags_of(game):
+    """The elimination flags every outcome in the report is recomputed from."""
+    return tuple(bool(p['flags'] & 2) for p in game['final_players'])
 
 
 def game_key(game):
@@ -397,7 +408,9 @@ def command_crosscheck(args):
             continue
         a, b = read_games(mine), read_games(theirs)
         shared = sorted(set(a) & set(b))
-        bad = [k for k in shared if any(a[k][f] != b[k][f] for f in MATCH_FIELDS)]
+        fields = STABLE_FIELDS if args.stable_fields else MATCH_FIELDS
+        bad = [k for k in shared if any(a[k][f] != b[k][f] for f in fields)
+               or (args.stable_fields and flags_of(a[k]) != flags_of(b[k]))]
         # Opponents present on only one side are the point of the exercise; count
         # them so the report shows the comparison was not vacuously empty.
         only_mine = sorted({k[0] for k in set(a) - set(b)})
@@ -415,7 +428,8 @@ def command_crosscheck(args):
     (out / 'crosscheck.json').write_text(json.dumps(rows, indent=1) + '\n')
     if failed:
         raise SystemExit('crosscheck failed: the two schedules are NOT interchangeable on their shared games')
-    print('\ncrosscheck OK: every shared game agrees on ' + '/'.join(MATCH_FIELDS))
+    fields = STABLE_FIELDS + ('final_players flags',) if args.stable_fields else MATCH_FIELDS
+    print('\ncrosscheck OK: every shared game agrees on ' + '/'.join(fields))
 
 
 def command_report(args):
@@ -544,6 +558,9 @@ def main():
     parser.add_argument('--resamples', type=int, default=20000)
     parser.add_argument('--reference', type=Path,
                         help='crosscheck: another run directory to compare shared games against')
+    parser.add_argument('--stable-fields', action='store_true',
+                        help='crosscheck: compare only fields whose meaning is the same across '
+                             'evaluate.py versions (ticks/deaths/timeout plus the elimination flags)')
     parser.add_argument('--divergence', type=Path,
                         default=Path('/home/mte/.local/share/bopl-null-hypothesis/blast-radius-2026-09-23/rows-tol1.tsv'))
     args = parser.parse_args()
