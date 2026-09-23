@@ -7908,7 +7908,15 @@ impl RolloutWorld {
                             // slime and consumes the first enter frame now.
                             animation_ticks: 1,
                             aim,
-                            body_right: aim,
+                            // MagnetGun.OnEnterAbility ends with
+                            // `body.rotation = Fix.Zero` (MagnetGun.cs:325),
+                            // and FixTransform's rotation setter rebuilds the
+                            // basis from that angle (FixTransform.cs:42-47):
+                            // the entry pass's firepoint therefore runs off
+                            // world right, not off the aim. Only the tail of
+                            // UpdateSim turns the body to the aim
+                            // (MagnetGun.cs:1256).
+                            body_right: Vec2::RIGHT,
                             ..MagnetState::default()
                         };
                         slot.base.radius = data.magnet.radius;
