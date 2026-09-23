@@ -5332,6 +5332,10 @@ impl RolloutWorld {
             }
         }
         self.refresh_actor_entities();
+        // Runtime-spawned platforms register behind every player/ability
+        // prefab, so their AnimateVelocity spring runs here, after the
+        // updater that created and steers them.
+        self.platform_springs_tick(data, updater_dt, true);
         if self.intro_phase == 3 {
             self.platforms_tick(data, updater_dt, physics_dt);
         }
@@ -28420,6 +28424,123 @@ impl RolloutWorld {
     /// components run before the dynamically registered player prefabs, so
     /// their damping must observe the velocity from the start of the tick,
     /// before Gust or another later ability applies a direct impulse.
+    /// `AnimateVelocity.UpdateSim` for one half of the platform list.
+    ///
+    /// `Updater` walks its updatables in registration order. Every authored
+    /// map platform registers during level load, ahead of the player and
+    /// ability prefabs; anything a prefab spawns at runtime - including the
+    /// Platform ability's `ResizablePlatform(Clone)` - registers behind them
+    /// all and therefore takes its spring pass *after* the ability updater
+    /// that owns it. `PlatformTransform.UpdateSim` (PlatformTransform.cs:277-282)
+    /// writes `animVel.homeRotation = body.rotation` and resizes the platform
+    /// in the same pass the clone's `AnimateVelocity` then reads, so the very
+    /// first integration tick after a cast already pulls towards the aimed
+    /// rotation instead of the spawn rotation.
+    fn platform_springs_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        runtime_spawned: bool,
+    ) {
+        // ActivateSuddenDeath moves the spring home; the body follows through
+        // the ordinary spring/integration path rather than teleporting.
+        if self.sudden_death {
+            let map = &data.maps[self.map];
+            let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
+            for i in 0..self.platforms.len() {
+                if !self.platforms[i].active
+                    || (self.platform_defs[i] == usize::MAX) != runtime_spawned
+                {
+                    continue;
+                }
+                let def_index = self.platform_defs[i];
+                let (speed_scale, accel, delay, curve) = if def_index == usize::MAX {
+                    let Some(spawn) = self
+                        .spawned
+                        .iter()
+                        .find(|s| s.active && s.platform_index == i)
+                    else {
+                        continue;
+                    };
+                    (
+                        data.platform.sudden_death_speed,
+                        data.platform.sudden_death_acceleration,
+                        spawn.sudden_death_delay,
+                        &data.platform.sudden_death_y_speed,
+                    )
+                } else {
+                    let def = &map.platforms[def_index];
+                    (
+                        def.sudden_death_speed,
+                        def.sudden_death_acceleration,
+                        self.sudden_death_delays[def_index],
+                        &def.sudden_death_y_speed,
+                    )
+                };
+                // AnimateVelocity.UpdateSim: home -= down * curve(t - delay)
+                //   * suddenDeathSpeed * (2 << min(t * accel, 5)) * dt.
+                let steps = (elapsed * accel).to_int().clamp(0, 5);
+                let scale = speed_scale * Fix::from_int(2 << steps);
+                let speed = curve.evaluate(elapsed - delay);
+                let drop = speed * scale * updater_dt;
+                self.platform_dynamics[i].home_position.y -= drop;
+            }
+        }
+
+        // AnimateVelocity.UpdateSim. Keep the apparently cancelling inverse
+        // mass and 60 Hz impulse conversions: their intermediate fixed-point
+        // rounding is observable over long-running springs (notably map 2's
+        // orbiter), so simplifying this to `velocity += spring * DT` drifts.
+        for i in 0..self.platforms.len() {
+            if !self.platforms[i].active
+                || self.platform_dynamics[i].intro_disabled
+                || (self.platform_defs[i] == usize::MAX) != runtime_spawned
+            {
+                continue;
+            }
+            let position = self.platforms[i].surface.center;
+            if self.platform_dynamics[i].init_tick == Some(self.tick) {
+                // AnimateVelocity.Init (AnimateVelocity.cs:74-79) homes on
+                // the current position and clears inSuddenDeath, so an
+                // in-progress sudden death is re-activated with a fresh delay
+                // (AnimateVelocity.cs:126-129, 111-118).
+                self.platform_dynamics[i].init_tick = None;
+                self.platform_dynamics[i].home_position = position;
+                if self.sudden_death {
+                    let max_delay = data.platform.sudden_death_max_delay;
+                    if let Some(spawn) = self
+                        .spawned
+                        .iter_mut()
+                        .find(|s| s.active && s.platform_index == i)
+                    {
+                        spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, max_delay);
+                    }
+                }
+            }
+            let dynamics = &mut self.platform_dynamics[i];
+            let spring = if dynamics.float_next_frame {
+                dynamics.float_next_frame = false;
+                dynamics.home_position = position;
+                -dynamics.body.velocity * dynamics.mu
+            } else {
+                (dynamics.home_position - position) * dynamics.speed
+                    - dynamics.body.velocity * dynamics.mu
+            };
+            let impulse = spring * updater_dt / dynamics.body.inverse_mass;
+            dynamics.body.force += impulse * Fix::from_int(60);
+            if dynamics.interpolate_rotation_home {
+                let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
+                if angle_delta.abs() > Fix::PI {
+                    angle_delta =
+                        -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
+                }
+                dynamics.body.angular_velocity = (dynamics.body.angular_velocity
+                    + angle_delta * dynamics.rotation_speed * updater_dt)
+                    * (Fix::ONE - dynamics.rotation_mu);
+            }
+        }
+    }
+
     fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active {
@@ -28476,98 +28597,7 @@ impl RolloutWorld {
             self.platform_dynamics[i].surface_shape_dirty = false;
             self.platforms_changed();
         }
-        // ActivateSuddenDeath moves the spring home; the body follows through
-        // the ordinary spring/integration path rather than teleporting.
-        if self.sudden_death {
-            let map = &data.maps[self.map];
-            let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
-            for i in 0..self.platforms.len() {
-                if !self.platforms[i].active {
-                    continue;
-                }
-                let def_index = self.platform_defs[i];
-                let (speed_scale, accel, delay, curve) = if def_index == usize::MAX {
-                    let Some(spawn) = self
-                        .spawned
-                        .iter()
-                        .find(|s| s.active && s.platform_index == i)
-                    else {
-                        continue;
-                    };
-                    (
-                        data.platform.sudden_death_speed,
-                        data.platform.sudden_death_acceleration,
-                        spawn.sudden_death_delay,
-                        &data.platform.sudden_death_y_speed,
-                    )
-                } else {
-                    let def = &map.platforms[def_index];
-                    (
-                        def.sudden_death_speed,
-                        def.sudden_death_acceleration,
-                        self.sudden_death_delays[def_index],
-                        &def.sudden_death_y_speed,
-                    )
-                };
-                // AnimateVelocity.UpdateSim: home -= down * curve(t - delay)
-                //   * suddenDeathSpeed * (2 << min(t * accel, 5)) * dt.
-                let steps = (elapsed * accel).to_int().clamp(0, 5);
-                let scale = speed_scale * Fix::from_int(2 << steps);
-                let speed = curve.evaluate(elapsed - delay);
-                let drop = speed * scale * updater_dt;
-                self.platform_dynamics[i].home_position.y -= drop;
-            }
-        }
-
-        // AnimateVelocity.UpdateSim. Keep the apparently cancelling inverse
-        // mass and 60 Hz impulse conversions: their intermediate fixed-point
-        // rounding is observable over long-running springs (notably map 2's
-        // orbiter), so simplifying this to `velocity += spring * DT` drifts.
-        for i in 0..self.platforms.len() {
-            if !self.platforms[i].active || self.platform_dynamics[i].intro_disabled {
-                continue;
-            }
-            let position = self.platforms[i].surface.center;
-            if self.platform_dynamics[i].init_tick == Some(self.tick) {
-                // AnimateVelocity.Init (AnimateVelocity.cs:74-79) homes on
-                // the current position and clears inSuddenDeath, so an
-                // in-progress sudden death is re-activated with a fresh delay
-                // (AnimateVelocity.cs:126-129, 111-118).
-                self.platform_dynamics[i].init_tick = None;
-                self.platform_dynamics[i].home_position = position;
-                if self.sudden_death {
-                    let max_delay = data.platform.sudden_death_max_delay;
-                    if let Some(spawn) = self
-                        .spawned
-                        .iter_mut()
-                        .find(|s| s.active && s.platform_index == i)
-                    {
-                        spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, max_delay);
-                    }
-                }
-            }
-            let dynamics = &mut self.platform_dynamics[i];
-            let spring = if dynamics.float_next_frame {
-                dynamics.float_next_frame = false;
-                dynamics.home_position = position;
-                -dynamics.body.velocity * dynamics.mu
-            } else {
-                (dynamics.home_position - position) * dynamics.speed
-                    - dynamics.body.velocity * dynamics.mu
-            };
-            let impulse = spring * updater_dt / dynamics.body.inverse_mass;
-            dynamics.body.force += impulse * Fix::from_int(60);
-            if dynamics.interpolate_rotation_home {
-                let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
-                if angle_delta.abs() > Fix::PI {
-                    angle_delta =
-                        -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
-                }
-                dynamics.body.angular_velocity = (dynamics.body.angular_velocity
-                    + angle_delta * dynamics.rotation_speed * updater_dt)
-                    * (Fix::ONE - dynamics.rotation_mu);
-            }
-        }
+        self.platform_springs_tick(data, updater_dt, false);
 
         // ShakablePlatform follows AnimateVelocity in each authored platform
         // prefab. It writes a temporary transform displacement directly;
