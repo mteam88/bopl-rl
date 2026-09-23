@@ -124,6 +124,29 @@ Learning Lab still consumes these run directories: learning curves, frozen
 opponent results, truncation rates, behavior, replay playback and policy values.
 The video worker is separate so rendering can be scheduled around training.
 
+### Archiving and retention
+
+A finished run's bulk is archivable in place: `research/compact_evaluations.py`
+gzips the evaluation replays, `research/compact_history.py` packs `metrics.jsonl`
+and the run logs with zstd (metrics ~10x, the repetitive worker `game-logs`
+~1000x). Readers resolve either spelling through `research/packed.py`, so reports
+keep naming `metrics.jsonl`. Neither tool touches a live run; because a killed run
+keeps `status: running` for ever, compact_history treats a status that has not
+moved for a day as dead rather than as a writer to protect.
+
+Decompression shells out to the `zstd` CLI deliberately. The training venv is
+Python 3.11 with no zstd bindings at all — no `zstandard`, no `pyzstd`, no
+`compression.zstd` — even though the system Python 3.14 does have
+`compression.zstd`, so an import that works in a shell will fail under the venv.
+
+Pruning intermediate `checkpoints/policy-*.bin` cannot break the opponent pools:
+the anchor pool and each run's `pool/` hold their own `.bin` copies, and
+`.mind.json.gz` names a checkpoint by SHA256 rather than by path. It can break
+`~/.local/share/bopl-null-hypothesis/`, which is an undeclared dependency on
+artifact layout — parked and completed gpu-queue jobs name checkpoints by **bare
+filename** (`policy-2133393408.bin`) with no run to attribute them to. Scan that
+directory alongside `artifacts/rl`, and keep an unattributable name in every run.
+
 ## Commands
 
 Run from the Unity project root, the directory containing `Assets/` and `native/`.

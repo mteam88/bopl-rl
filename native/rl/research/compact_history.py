@@ -21,20 +21,30 @@ from pathlib import Path
 import subprocess
 import time
 
+import packed
 from compact_evaluations import run_directories
+
+STALE = 24 * 3600   # a killed run keeps status "running" for ever; its files stop moving
 
 
 def run_is_idle(run_dir, min_age):
-    """As compact_evaluations, but a packed metrics.jsonl no longer dates the run."""
+    """As compact_evaluations, with two differences.
+
+    A packed metrics.jsonl no longer dates the run, so resolve it. And a run that
+    was killed (crash, abort, reboot) never rewrites status.json, so "running"
+    alone cannot mean live: a status that has not moved for STALE is a dead run,
+    not a trainer to protect. Only the writer's own clock decides.
+    """
     status = run_dir / 'status.json'
     try:
         state = json.loads(status.read_text()).get('status')
     except (OSError, ValueError):
         state = None
-    if state == 'running':
+    stamps = [p.stat().st_mtime for p in (status, packed.resolved(run_dir / 'metrics.jsonl')) if p.is_file()]
+    idle = time.time() - max(stamps, default=0)
+    if state == 'running' and idle < STALE:
         return False
-    stamps = [p.stat().st_mtime for p in (status, run_dir / 'metrics.jsonl') if p.is_file()]
-    return time.time() - max(stamps, default=0) >= min_age
+    return idle >= min_age
 
 
 def history_files(run_dir):

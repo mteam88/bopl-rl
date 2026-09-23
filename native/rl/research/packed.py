@@ -1,8 +1,12 @@
 """Read a run artifact whether it is plain or packed by compact_history.py.
 
 `metrics.jsonl` and the run logs of a finished run live as `<name>.zst`; readers
-resolve either spelling so paths in reports and run state stay unchanged. The
-training venv has no zstd bindings, so decompression shells out to `zstd -dc`.
+resolve either spelling so paths in reports and run state stay unchanged.
+
+Decompression shells out to `zstd -dc` on purpose: the training venv is Python
+3.11 with no zstd bindings at all (no `zstandard`, no `pyzstd`, no
+`compression.zstd`), even though the system Python 3.14 does have
+`compression.zstd`. An import that works in a shell will fail under the venv.
 """
 import contextlib
 import io
