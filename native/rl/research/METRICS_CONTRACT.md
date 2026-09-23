@@ -283,5 +283,5 @@ cache of view JSON and sends `If-None-Match`.
 Reader regression check: `python3 native/rl/research/check_metrics_store.py`.
 
 Note: this document still describes the sweep-centric dashboard. The board is
-now league-centric (`research/serve.py` + `research/league.py`, four pages:
+now league-centric (`research/serve.py` + `research/payoff.py`, four pages:
 league / agent / run / watch) and this file needs a pass to match.

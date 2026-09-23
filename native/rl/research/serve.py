@@ -11,7 +11,7 @@ The league is the centre: a durable population that runs join and are measured
 against. Everything is read from `native/rl/league/` (members and aggregated
 payoff counts) and `native/artifacts/rl/` (per-run training artifacts).
 
-Counts are never pooled across `condition` values; see league.py.
+Counts are never pooled across `condition` values; see payoff.py.
 """
 import argparse
 from collections import OrderedDict, defaultdict
@@ -32,7 +32,7 @@ from urllib.parse import unquote, urlparse, parse_qs
 
 from metrics_store import store
 import packed
-import league
+import payoff
 import map_catalogue
 import visuals
 
@@ -554,7 +554,7 @@ def member_index(members):
 
 def agent_payload(agent_id, members, rows, condition):
     """One member: its row of the matrix, its history, and who beats it."""
-    table = league.summary(members, rows, condition)
+    table = payoff.summary(members, rows, condition)
     ids = table['ids']
     if agent_id not in ids:
         return None
@@ -591,7 +591,7 @@ def agent_payload(agent_id, members, rows, condition):
 
     return {
         'condition': condition,
-        'conditions': league.conditions(rows),
+        'conditions': payoff.conditions(rows),
         'member': me,
         'row': row,
         'history': history,
@@ -724,13 +724,13 @@ def main():
         with lock:
             if league_state['sig'] == sig:
                 return league_state['members'], league_state['rows']
-        members, rows = league.read(league_dir)
+        members, rows = payoff.read(league_dir)
         with lock:
             league_state.update(sig=sig, members=members, rows=rows)
         return members, rows
 
     def pick_condition(rows, wanted):
-        available = league.conditions(rows)
+        available = payoff.conditions(rows)
         names = [item['condition'] for item in available]
         if wanted in names:
             return wanted, available
@@ -776,11 +776,11 @@ def main():
         if chosen is None:
             return {'condition': None, 'conditions': [], 'members': [], 'ids': [],
                     'cells': [], 'cycles': {'count': 0, 'edges': 0, 'top': []},
-                    'saturation': league.saturation(members, [], []),
+                    'saturation': payoff.saturation(members, [], []),
                     'coverage': 0.0, 'pairs': 0, 'games': 0, 'mirrored': False,
                     'empty': not members,
                     'runs': sorted(catalog())}
-        table = league.summary(members, rows, chosen)
+        table = payoff.summary(members, rows, chosen)
         table['conditions'] = available
         table['empty'] = not members
         table['runs'] = sorted(catalog())
@@ -828,7 +828,7 @@ def main():
         chosen, _ = pick_condition(rows, condition_default)
         if chosen is None:
             return {}
-        table = league.summary(members, rows, chosen)
+        table = payoff.summary(members, rows, chosen)
         return {member['id']: {'rating': member.get('rating'),
                                'interval': member.get('interval'),
                                'nash_value': member.get('nash_value'),
