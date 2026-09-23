@@ -2898,10 +2898,18 @@ impl RolloutWorld {
                 self.active_subsystems |= ability_bit(ability);
             }
         }
-        let rope_mask = ability_bit(ABILITY_GRAPPLING_HOOK) | ability_bit(ABILITY_WEB_SWING);
-        if self.ability_spawner_enabled || self.active_subsystems & rope_mask != 0 {
-            rope_abilities::reset_rope_pool(&mut self.ropes);
-        }
+        // A round restart is a LoadSceneMode.Single load of the next level
+        // (GameSessionHandler.LoadNextLevelScene, GameSessionHandler.cs:423),
+        // and DetPhysics is an ordinary per-scene MonoBehaviour, so its Awake
+        // rebuilds the pool as `ropes = new RopeBodyList()` (DetPhysics.cs:293)
+        // - 128 fresh RopeBody, every `enabled` false - on every round, whatever
+        // the new loadout holds. Nothing else ever clears it: RopeBodyList has
+        // no reset and RopeBody.Dispose leaves `enabled` set (RopeBody.cs:145).
+        // Gating this on the incoming abilities therefore left a previous
+        // round's still-enabled ropes in the pool, and both observation passes
+        // walk all 128 entries filtering on `rope.enabled` alone
+        // (RlObservation.cs:57, :89), which published them as phantom rows.
+        rope_abilities::reset_rope_pool(&mut self.ropes);
         // Entity table, in the .NET DetPhysics shape-group order. Within a
         // group registration follows player then equipped-slot order.
         // Dynamic entities (arrows, spawned platforms) append after.
