@@ -17,7 +17,7 @@ if not LIBRARY.exists():
 os.environ["BOPL_RESEARCH_LIBRARY"] = str(LIBRARY)
 sys.path.insert(0, str(HERE.parent))
 import numpy as np  # noqa: E402
-from environment import Environment, LIB, State, OBS_SIZE  # noqa: E402
+from environment import Environment, LIB, State, OBS_SIZE, OBS_STRIDE  # noqa: E402
 import layout  # noqa: E402
 
 LIB.probe_observed_state.argtypes = [C.c_void_p]; LIB.probe_observed_state.restype = C.POINTER(State)
@@ -61,9 +61,9 @@ class ProbeEnvironment(Environment):
 
     def pack(self, state_pointer):
         """Undelayed encode of a state for both players: (2, OBS_SIZE), own-action tail zero."""
-        out = np.zeros((2, OBS_SIZE), dtype=np.float32)
+        out = np.zeros((2, OBS_STRIDE), dtype=np.float32)  # the encoder writes rows OBS_STRIDE apart
         LIB.probe_pack(self.handle, state_pointer, fptr(out))
-        return out
+        return np.ascontiguousarray(out[:, :OBS_SIZE])
 
     def entity_rows(self, state_pointer, player):
         ids = np.zeros(layout.OBS_ENTITIES, dtype=np.uint32)

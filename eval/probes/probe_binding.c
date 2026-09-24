@@ -359,7 +359,7 @@ double probe_rays_bench(const BoplRlState *state, int player, int n, int extra_d
 }
 /* Nanoseconds per undelayed observation encode (both players), for the cost comparison. */
 double probe_pack_bench(BoplPuffer *env, int iterations) {
-    float *out=malloc((size_t)env->players*BOPL_OBS_SIZE*sizeof(float));
+    float *out=malloc((size_t)env->players*BOPL_OBS_STRIDE*sizeof(float));
     const BoplRlState *state=bopl_rl_state(env->world);
     struct timespec a, b;
     clock_gettime(CLOCK_MONOTONIC, &a);
