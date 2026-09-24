@@ -4,8 +4,8 @@
  * every ability body prefab the slime turns into. A player that leaves the
  * arena while an ability form is active must therefore still die at
  * SceneBounds.WaterHeight (-11.3). The Rust port only implemented the
- * component for the plain slime and for Rock/Roll/Drill/Platform/Bow, so a
- * player holding one of the hovering ray-gun forms fell past the plane and
+ * component for the plain slime and for Rock/Roll/Drill/Platform/Bow/Gust, so
+ * a player holding one of the hovering ray-gun forms fell past the plane and
  * stayed alive indefinitely.
  *
  * Each case walks player 0 off the left side of map 0 (left + periodic jump),
@@ -97,12 +97,15 @@ struct ability_case {
     int slot;
     uint8_t aim;
     /* Set for forms whose *trajectory* still diverges from the reference for
-     * reasons unrelated to the boundary component. Both are reported but do
-     * not fail the probe:
+     * reasons unrelated to the boundary component. Reported but does not fail
+     * the probe:
      *   blackhole - BlackHoleClap's horizontal drift differs by ~0.4 world
-     *               units before the kill; the kill tick and y now match.
-     *   gust      - the QuickSpell form falls on a slightly different arc, so
-     *               the port crosses the plane one tick early.
+     *               units before the kill. On `early` and `late` the kill tick
+     *               and y still match; on `brink` they do not - the port
+     *               survives the entry pass and dies at 368 where the
+     *               reference dies at 367, which is the boundary component
+     *               BlackHoleClap.prefab carries at hierarchyNumber 5 and the
+     *               port does not run on that form.
      * Owned elsewhere; this probe's subject is when the boundary kills. */
     int known_trajectory_divergence;
 };
@@ -152,7 +155,7 @@ int main(int argc, char **argv) {
         {"smoke",        {13, 16, 3},  0, 64, 0},
         {"dash",         { 2, 4, 14},  0, 64, 0},
         {"engine",       { 5, 2, 14},  0, 64, 0},
-        {"gust",         { 7, 2, 14},  0, 64, 1},
+        {"gust",         { 7, 2, 14},  0, 64, 0},
         {"growth_ray",   { 8, 2, 14},  0, 64, 0},
         {"shrink_ray",   {17, 2, 14},  0, 64, 0},
         {"spike",        {11, 2, 14},  0, 64, 0},
