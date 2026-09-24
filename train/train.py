@@ -25,6 +25,8 @@ from reference_pool import DEFAULT_POOL
 from native_vector import NativeVector
 import reference
 import scripted_roster
+sys.path[:0] = [str(ROOT)]
+from league import registry
 
 
 def maps(value):
@@ -299,6 +301,11 @@ def arguments():
     p.add_argument('--snapshot-interval', type=int, default=10_000_000, help='Learner decisions between pool snapshots taken regardless of win rate')
     p.add_argument('--opponent-timeout', type=int, default=50_000_000, help='Learner decisions a bank keeps one opponent before a forced swap')
     p.add_argument('--pool-seed', type=int, help='Opponent sampling seed (defaults to --seed)')
+    p.add_argument('--opponents', default='league',
+                   help="League members this run plays besides its own snapshots: 'league' for "
+                        "every member with weights, 'self' for none, or a comma list of member "
+                        "names (how an exploiter aims at one member). PFSP draws over all of them "
+                        "together on the same statistic, so there is no separate share to set.")
     p.add_argument('--scripted-bots', type=scripted_bots, default='',
                    help='Comma-separated bot kinds that take over the last banks. Without '
                         '--scripted-roster each kind is a one-entry roster at --scripted-level; '
@@ -646,6 +653,21 @@ def main():
     roster_entries = (scripted_roster.entries_from_names(
         a.scripted_roster, scripted_roster.load_anchor_ratings())
         if a.scripted_roster else [])
+    # Resolved before the trainer exists so a typo'd member name, a missing
+    # checkpoint or a member from another policy architecture fails here rather
+    # than a minute into a run - or, for the architecture, never.
+    if a.opponents == 'self':
+        league_opponents = []
+    else:
+        names = None if a.opponents == 'league' else [s for s in a.opponents.split(',') if s]
+        league_opponents = registry.opponents(
+            registry.load(), names,
+            policy=dict(architecture=architecture, obs_size=obs_size, hidden=a.hidden,
+                        num_layers=a.layers, aim_fourier=a.aim_fourier, aim_ar=a.aim_ar,
+                        v4_shape=v4_shape))
+    print(f'league opponents: {len(league_opponents)}'
+          + (' (' + ', '.join(o['name'] for o in league_opponents) + ')' if league_opponents else ''),
+          flush=True)
     share = 0.0
     try:
         trainer = _C.create_pufferl(args)
@@ -716,8 +738,8 @@ def main():
                                          max_size=a.pool_size, min_games=a.min_games,
                                          snapshot_interval=round(a.snapshot_interval*native_per_learner),
                                          opp_timeout_steps=round(a.opponent_timeout*native_per_learner),
-                                         pfsp_p=a.pfsp_p, seed=a.pool_seed)
-            ledger = native_selfplay.members(str(initial))
+                                         pfsp_p=a.pfsp_p, seed=a.pool_seed, league=league_opponents)
+            ledger = native_selfplay.members(str(initial), league_opponents)
         if roster_entries:
             sync_scripted()
         vector.reset()
@@ -917,7 +939,7 @@ def main():
                 record = update(native, counts, previous, elapsed=elapsed, previous_elapsed=previous_elapsed,
                                 entropy_coefficient=native['loss']['entropy_coefficient'],
                                 learning_rate=native['loss']['learning_rate'],
-                                pool_steps=sorted(bank['opponent_step'] for bank in after_pool['banks']),
+                                pool_opponents=sorted(bank['opponent'] for bank in after_pool['banks']),
                                 rollout_seconds=rollout_seconds, train_seconds=trained-rolled)
                 # With overlap the rollout (timed on the buffer threads) and the
                 # train phase run concurrently, so they no longer sum to the

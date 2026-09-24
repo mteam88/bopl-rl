@@ -165,7 +165,7 @@ try:
     check('counters start at zero', previous['game_steps'] == previous['learner_steps'] == previous['matches'] == 0, counters=previous)
     report['setup_seconds'] = time.monotonic()-started
     tick = time.monotonic(); previous_elapsed = 0.; loop_seconds = 0.
-    def one_update(number, pool_steps):
+    def one_update(number, pool_opponents):
         global previous, previous_elapsed, loop_seconds
         t0 = time.monotonic(); _C.rollouts(trainer); t1 = time.monotonic(); _C.train(trainer); t2 = time.monotonic()
         loop_seconds += t2-t0
@@ -174,7 +174,7 @@ try:
         elapsed = time.monotonic()-tick
         record = metrics_update(native, count, previous, elapsed=elapsed, previous_elapsed=previous_elapsed,
                                 entropy_coefficient=native['loss']['entropy_coefficient'], learning_rate=native['loss']['learning_rate'],
-                                pool_steps=pool_steps, rollout_seconds=t1-t0, train_seconds=t2-t1)
+                                pool_opponents=pool_opponents, rollout_seconds=t1-t0, train_seconds=t2-t1)
         env = native['env']
         check(f'update {number}: no game errors or observation overflow', env.get('game_errors', 0) == 0 and env.get('observation_overflow', 0) == 0, env=env)
         check(f'update {number}: physical decisions', count['game_steps'] == number*games*2*horizon, counters=count)
@@ -192,7 +192,7 @@ try:
         print(json.dumps(dict(update=number, learner_steps=count['learner_steps'], game_steps=count['game_steps'], matches=count['matches'],
                               entropy=record['entropy'], learner_sps=round(record['learner_sps']))), flush=True)
         return count
-    for number in range(1, options.updates+1): count = one_update(number, [0])
+    for number in range(1, options.updates+1): count = one_update(number, ['self@0'])
     check('matches completed', count['matches'] > 0, matches=count['matches'])
     final, final_meta = save('final.bin', count)
     check('weights changed', initial_meta['weights_sha256'] != final_meta['weights_sha256'])
@@ -206,7 +206,7 @@ try:
           and policy.width == policy_layout.decoder_logits(options.aim_fourier, options.aim_ar), width=policy.width)
     # Pool rotation: bank 0 now serves the trained weights, bank 1 keeps the initial ones.
     _C.load_frozen_bank(trainer, 0, str(final))
-    count = one_update(options.updates+1, [0, count['game_steps']])
+    count = one_update(options.updates+1, ['self@0', 'self@%d' % count['game_steps']])
     check('rotation keeps games running', count['matches'] >= previous['matches'], matches=count['matches'])
     learner_decisions = count['learner_steps']
     report.update(status='passed', checkpoint=str(final), counters=count, native_agent_steps=trainer.global_step,

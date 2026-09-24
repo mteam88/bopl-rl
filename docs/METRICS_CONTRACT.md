@@ -74,14 +74,16 @@ Required (all currently written by `train.py`):
   platform_activations, arrows_fired, arrow_hits, deaths_environment,
   deaths_opponent, deaths_self, deaths_other, reward_outcome, reward_kills,
   reward_deaths, episodes, wins, timeouts, ticks}}`
-- `pool_steps` (physical decisions of the snapshot each frozen bank currently
-  serves, sorted), `opponent_game_decisions`, `script_assignments`
+- `pool_opponents` (the name each frozen bank currently serves, sorted -
+  `self@<physical decisions>` for this run's own snapshots, the member name for
+  a league member), `opponent_game_decisions`, `script_assignments`
 - `cuda_memory_mb`, `rollout_seconds`, `train_seconds`
 - `pool` — PFSP self-play pool state after this update:
   `{schema:2, size, winrate (learner vs all banks since their last swaps,
   nullable), entries:[{step, learner_steps, games, winrate, score}],
-  banks:[{opponent_step, games, winrate, score, draws, pending_step,
-  score_at_swap, epochs_to_align}], pfsp:{...}}`. `winrate` is wins/games;
+  banks:[{opponent, games, winrate, score, draws, pending,
+  score_at_swap, epochs_to_align}], pfsp:{...}}`. `opponent` and `pending` are
+  names, not steps. `winrate` is wins/games;
   `score` is the draw-aware score PFSP actually weights on (a draw is half a
   win, and an undecided round or a timeout is a draw). On entries these are
   lifetime totals for that snapshot as an opponent; on banks they cover the
@@ -89,8 +91,8 @@ Required (all currently written by `train.py`):
   measured post-hoc under a fixed condition.
 
   `pool.pfsp` is the saturation block, and it is the point:
-  `{p, f ("hard"|"var"), candidates, draws, games, intended:{step: weight},
-  realized:{step: share}, played:{step: share}, played_evicted, divergence,
+  `{p, f ("hard"|"var"), candidates, draws, games, intended:{name: weight},
+  realized:{name: share}, played:{name: share}, played_evicted, divergence,
   entropy:{intended, realized, played}, played_top2, serving}`.
   `intended` is what the pool wants *now*; `realized` is the share of every
   PFSP draw the run ever made; `played` is the share of games actually played,

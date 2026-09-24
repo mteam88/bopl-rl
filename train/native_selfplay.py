@@ -46,19 +46,40 @@ from pufferlib.selfplay import evict
 # matchup we learn nothing from, so the draw chases coin-flips instead.
 HOPELESS = 0.3
 
-_NEW = dict(step=None, learner_steps=None, games=0, wins=0, draws=0)
+_NEW = dict(step=None, learner_steps=None, games=0, wins=0, draws=0, name='?')
+# A run snapshot's candidate name. League members bring their own.
+SELF = 'self@%d'
+
+
+def _thin(entries, max_size):
+    """evict() over this run's snapshots; league members are never dropped."""
+    snapshots = [e for e in entries if not e.get('permanent')]
+    kept = {id(e) for e in evict(snapshots, max_size)}
+    return [e for e in entries if e.get('permanent') or id(e) in kept]
 
 
 def state(pool_dir, bootstrap, banks, historical_per_bank, global_step, *, max_size,
-          min_games, snapshot_interval, opp_timeout_steps, pfsp_p, seed):
+          min_games, snapshot_interval, opp_timeout_steps, pfsp_p, seed, league=()):
+    """`league` is the committed members this run plays besides its own history.
+
+    Each is dict(name, path). They are PERMANENT candidates: eviction thins the
+    run's own snapshots and never touches them, because they are not this run's
+    history to forget -- they are the standing population the run is measured
+    against, and dropping one would silently narrow the curriculum. max_size
+    therefore bounds the snapshots, not the candidate set.
+    """
     if banks < 1 or historical_per_bank < 1 or max_size < 1 or min_games < 1:
         raise ValueError('The pool needs at least one bank, historical game, entry and game per swap')
     if not pfsp_p >= 0:
         raise ValueError('pfsp_p must be non-negative (0 is uniform over candidates)')
+    league = [dict(path=str(m['path']), name=str(m['name']), permanent=True) for m in league]
+    if len({m['name'] for m in league}) != len(league):
+        raise ValueError('League candidates must have distinct names')
     bank = dict(cur_opp_path=bootstrap, hist_n=0, hist_wins=0, hist_draws=0,
                 pending_opp_path=None, epoch_armed=0, opp_started_step=global_step,
                 num_hist_envs=historical_per_bank, last_score_at_swap=0.0, last_epochs_to_align=0)
-    return dict(pool_dir=str(pool_dir), pool=[dict(path=bootstrap)],
+    return dict(pool_dir=str(pool_dir),
+                pool=[dict(path=bootstrap, name=SELF % 0, permanent=False)] + league,
                 rng=np.random.default_rng(seed), max_size=max_size, min_games=min_games,
                 snapshot_interval=snapshot_interval, opp_timeout_steps=opp_timeout_steps,
                 num_banks=banks, banks=[dict(bank) for _ in range(banks)], pfsp_p=float(pfsp_p),
@@ -68,9 +89,17 @@ def state(pool_dir, bootstrap, banks, historical_per_bank, global_step, *, max_s
                 picks=[], last_snapshot_step=global_step)
 
 
-def members(bootstrap):
-    """Ledger of every snapshot the pool ever held: age and lifetime record against the learner."""
-    return {bootstrap: dict(step=0, learner_steps=0, games=0, wins=0, draws=0)}
+def members(bootstrap, league=()):
+    """Ledger of every candidate the run ever held: age and lifetime record against the learner.
+
+    A league member has no step: it is not a snapshot of this run, and reporting
+    0 would put it at the origin of the run's own history.
+    """
+    ledger = {bootstrap: dict(step=0, learner_steps=0, games=0, wins=0, draws=0, name=SELF % 0)}
+    for m in league:
+        ledger[str(m['path'])] = dict(step=None, learner_steps=None, games=0, wins=0, draws=0,
+                                      name=str(m['name']))
+    return ledger
 
 
 def _wld(games, wins, draws):
@@ -133,8 +162,8 @@ def _snapshot(trainer, backend, pool):
     path = os.path.join(pool['pool_dir'], f'{int(trainer.global_step):016d}.bin')
     if not any(entry['path'] == path for entry in pool['pool']):
         backend.save_weights(trainer, path)
-        pool['pool'].append(dict(path=path))
-        pool['pool'] = evict(pool['pool'], pool['max_size'])
+        pool['pool'].append(dict(path=path, name=SELF % int(trainer.global_step), permanent=False))
+        pool['pool'] = _thin(pool['pool'], pool['max_size'])
     pool['last_snapshot_step'] = int(trainer.global_step)
     return path
 
@@ -214,13 +243,14 @@ def register(pool, ledger, step, learner_steps):
     """Record when snapshots step() just took were made."""
     for entry in pool['pool']:
         ledger.setdefault(entry['path'], dict(step=step, learner_steps=learner_steps,
-                                              games=0, wins=0, draws=0))
+                                              games=0, wins=0, draws=0, name=entry['name']))
 
 
 def _member(ledger, path):
     row = ledger[path]
     wins, losses, draws = _wld(row['games'], row['wins'], row['draws'])
-    return dict(step=row['step'], learner_steps=row['learner_steps'], games=row['games'],
+    return dict(name=row['name'], step=row['step'], learner_steps=row['learner_steps'],
+                games=row['games'],
                 winrate=row['wins'] / row['games'] if row['games'] else None,
                 score=pfsp.score(wins, losses, draws) if row['games'] else None)
 
@@ -231,23 +261,25 @@ def summary(pool, ledger):
     for bank in pool['banks']:
         games = bank['hist_n']
         wins, losses, draws = _wld(games, bank['hist_wins'], bank['hist_draws'])
-        banks.append(dict(opponent_step=ledger[bank['cur_opp_path']]['step'], games=games,
+        banks.append(dict(opponent=ledger[bank['cur_opp_path']]['name'], games=games,
                           winrate=bank['hist_wins'] / games if games else None,
                           score=pfsp.score(wins, losses, draws) if games else None,
                           draws=draws,
-                          pending_step=_entry(ledger, bank['pending_opp_path'])['step']
+                          pending=_entry(ledger, bank['pending_opp_path'])['name']
                           if bank['pending_opp_path'] else None,
                           score_at_swap=bank['last_score_at_swap'],
                           epochs_to_align=bank['last_epochs_to_align']))
     saturation = _saturation(pool, ledger, scores(pool, ledger))
-    step_of = {path: ledger[path]['step'] for path in ledger}
+    # Keyed by candidate NAME, not by step: a league member is not a snapshot of
+    # this run and has no step, so a step key could not name one.
+    name_of = {path: ledger[path]['name'] for path in ledger}
     for key in ('intended', 'realized'):
-        saturation[key] = {step_of.get(path, -1): share for path, share in saturation[key].items()}
+        saturation[key] = {name_of.get(path, '?'): share for path, share in saturation[key].items()}
     # Members the pool has evicted still consumed curriculum; keep them as one
     # number rather than growing every metrics line with the whole ledger.
     live = {entry['path'] for entry in pool['pool']}
     played = saturation.pop('played')
-    saturation['played'] = {step_of[path]: share for path, share in played.items() if path in live}
+    saturation['played'] = {name_of[path]: share for path, share in played.items() if path in live}
     saturation['played_evicted'] = sum(share for path, share in played.items() if path not in live)
     games = sum(bank['hist_n'] for bank in pool['banks'])
     wins = sum(bank['hist_wins'] for bank in pool['banks'])
@@ -258,22 +290,22 @@ def summary(pool, ledger):
 def events(before, after, ledger, learner_steps):
     """pool.jsonl records for what step() changed between two summaries."""
     out = []
-    old = {entry['step']: entry for entry in before['entries']}
-    new = {entry['step']: entry for entry in after['entries']}
-    for step in sorted(new.keys() - old.keys()):
-        out.append(dict(event='snapshot', step=step))
-    for step in sorted(old.keys() - new.keys()):
-        out.append(dict(event='evicted', **old[step]))
+    old = {entry['name']: entry for entry in before['entries']}
+    new = {entry['name']: entry for entry in after['entries']}
+    for name in sorted(new.keys() - old.keys()):
+        out.append(dict(event='snapshot', name=name, step=new[name]['step']))
+    for name in sorted(old.keys() - new.keys()):
+        out.append(dict(event='evicted', **old[name]))
     for index, (was, now) in enumerate(zip(before['banks'], after['banks'])):
-        if now['pending_step'] is not None and was['pending_step'] is None:
-            out.append(dict(event='armed', bank=index, step=now['pending_step'],
+        if now['pending'] is not None and was['pending'] is None:
+            out.append(dict(event='armed', bank=index, name=now['pending'],
                             score=now['score_at_swap'], games=now['games']))
-        if now['opponent_step'] != was['opponent_step'] or (was['pending_step'] is not None and now['pending_step'] is None):
-            retired = next(m for m in ledger.values() if m['step'] == was['opponent_step'])
+        if now['opponent'] != was['opponent'] or (was['pending'] is not None and now['pending'] is None):
+            retired = next(m for m in ledger.values() if m['name'] == was['opponent'])
             wins, losses, draws = _wld(retired['games'], retired['wins'], retired['draws'])
-            out.append(dict(event='loaded', bank=index, step=now['opponent_step'],
+            out.append(dict(event='loaded', bank=index, name=now['opponent'],
                             epochs_to_align=now['epochs_to_align'],
-                            retired=dict(step=was['opponent_step'], games=retired['games'],
+                            retired=dict(name=was['opponent'], games=retired['games'],
                                          winrate=retired['wins'] / retired['games'] if retired['games'] else None,
                                          score=pfsp.score(wins, losses, draws) if retired['games'] else None)))
     for record in out:

@@ -117,6 +117,52 @@ There is exactly one rating scale in the repo: `eval/elo_ladder.py`'s
 `bradley_terry_fit` (draw-aware, `random` anchored at 0 Elo, with intervals).
 This package calls it and does not reimplement it.
 
+## Training against the league
+
+A run's PFSP opponents are its own frozen snapshots *and* league members, drawn
+from one distribution on one statistic. `--opponents` chooses the members:
+
+```
+--opponents league              # every member with weights (the default)
+--opponents self                # snapshots only, the old behaviour
+--opponents drill-throw-magnet  # one member: this is what an exploiter is
+```
+
+There is no share to set. A league member is a permanent PFSP candidate and a
+snapshot is an evictable one (`--pool-size` bounds the snapshots, not the
+candidate set), and PFSP weights all of them by the learner's own draw-aware
+score against each. An exploiter is not a separate mechanism, a separate loop or
+a separate flag family: it is a run from random init whose `--opponents` names
+one member.
+
+Members are identified by name everywhere the run reports them - `pool_opponents`
+in `metrics.jsonl`, `pool.banks[].opponent`, and the `intended`/`realized`/`played`
+shares in `pool.pfsp` are all keyed by name, with a run's own snapshots named
+`self@<physical decisions>`.
+
+**A member can only be loaded by a run shaped like it.** A frozen bank is a flat
+float32 array that the learner's own kernel indexes, so nothing about loading one
+is type-checked: a 4.4 MB v4/256 checkpoint read into a 620 KB set/128 policy is
+accepted, and the opponent plays at chance. That is not hypothetical - the first
+run of this feature reported an even score against `drill-throw-magnet`, a member
+rated 592 Elo above random, and the scores were even against all eight members
+because all eight were noise. `registry.opponents` now compares the member's
+checkpoint sidecar against the run's own architecture (`architecture`, `obs_size`,
+`hidden`, `num_layers`, `aim_fourier`, `aim_ar`, `v4_shape`) and refuses a
+mismatch before the trainer is created. With the shapes matched, the same
+600k-decision run from random init scores 0.036 against `drill-throw-magnet` on
+its own kit and 0.22-0.48 against the seven playing a foreign one, and PFSP puts
+its largest weight on `drill-throw-magnet`. `v4_shape.ablate` is part of the
+comparison: it is a writer bitmask, so a member trained with features ablated
+would otherwise be fed features it has never seen.
+
+The practical consequence is that the eight seeded specialists pin any run that
+wants to train against them to their shape (`--encoder v4 --hidden 256
+--aim-fourier 4 --v4-set-inner 64 --v4-ffn-dim 0 --v4-critic-dim 384
+--v4-ablate 10`). A run that wants a different architecture trains with
+`--opponents self` and joins the league by being rated against it afterwards,
+which is what conditions are for.
+
 ## Why both Elo and Nash
 
 Elo assumes strength is one number, which is only true when the payoff is

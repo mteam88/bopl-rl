@@ -275,6 +275,36 @@ def run():
         else:
             check.skip('league-detects-weight-swap', 'fewer than two checkpoint members seeded')
 
+    # Opponent loading. The failure this guards against happened: a run with the
+    # `set` encoder loaded eight v4 members into its banks, the 4.4 MB weight
+    # files were read into 620 KB policies without complaint, and every one of
+    # them played at chance -- the run reported an even score against a member
+    # rated 592 Elo above random. Size and shape are not checked by the loader
+    # because a bank is a flat float32 array the learner's own kernel indexes.
+    loadable = registry.opponents(league)
+    shapes = {row['name']: registry.policy_shape(row['path']) for row in loadable}
+    check.ok('opponents-are-loadable-members', bool(loadable) and all(row['kind'] != 'scripted' for row in loadable),
+             f'{len(loadable)} of {len(league["members"])} members carry weights a bank can hold')
+    if loadable:
+        mine = dict(shapes[loadable[0]['name']])
+        check.ok('opponents-accept-their-own-shape',
+                 len(registry.opponents(league, [loadable[0]['name']], policy=mine)) == 1,
+                 f"{loadable[0]['name']} loads into a run built the way it was")
+        mine['hidden'] = int(mine['hidden']) * 2
+        try:
+            registry.opponents(league, [loadable[0]['name']], policy=mine)
+            refused = False
+        except ValueError:
+            refused = True
+        check.ok('opponents-refuse-another-architecture', refused,
+                 'a member from a differently shaped policy cannot be loaded as an opponent')
+    try:
+        registry.opponents(league, ['not-a-member'])
+        named = False
+    except ValueError:
+        named = True
+    check.ok('opponents-reject-unknown-names', named, 'a typo in --opponents fails instead of narrowing the population')
+
     print('promotion and saturation')
     verdict = rating.promotion('cand', {('cand', 'm1'): [90, 10, 0]}, ['m1', 'm2'])
     check.ok('promotion-counts-unplayed', verdict['admit'] is False and verdict['unplayed'] == ['m2'],

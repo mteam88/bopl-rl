@@ -19,7 +19,7 @@ def empty_counters():
 
 
 def update(log, counters, previous, *, elapsed, previous_elapsed,
-           entropy_coefficient, learning_rate, pool_steps=(), rollout_seconds=None,
+           entropy_coefficient, learning_rate, pool_opponents=(), rollout_seconds=None,
            train_seconds=None):
     """Return one update record; never infer learner work from padded SPS.
 
@@ -79,7 +79,7 @@ def update(log, counters, previous, *, elapsed, previous_elapsed,
                                                            if entity_rows[ability] else None))
                                    for ability in range(1,39)},
                   mean_reward=sum(totals[k] for k in ('reward_outcome','reward_kills','reward_deaths'))/decisions,
-                  pool_steps=list(pool_steps), opponent_game_decisions=counters['opponent_game_decisions'],
+                  pool_opponents=list(pool_opponents), opponent_game_decisions=counters['opponent_game_decisions'],
                   script_assignments={}, env=dict(log.get('env', {})),
                   cuda_memory_mb=util.get('vram_used_gb',0)*1024 if 'vram_used_gb' in util else None,
                   rollout_seconds=rollout_seconds, train_seconds=train_seconds if train_seconds is not None else perf.get('train'))

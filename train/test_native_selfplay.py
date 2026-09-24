@@ -82,13 +82,14 @@ class PoolHarness(unittest.TestCase):
     def summary(self):
         return native_selfplay.summary(self.pool, self.ledger)
 
-    def add_member(self, name, games=0, wins=0, draws=0):
+    def add_member(self, name, games=0, wins=0, draws=0, permanent=False):
         """A pool member with a fixed lifetime record, bypassing play."""
         path = str(self.pool_dir / name)
         Path(path).write_bytes(b'w')
-        self.pool['pool'].append(dict(path=path))
-        self.ledger[path] = dict(step=len(self.ledger), learner_steps=0,
-                                 games=games, wins=wins, draws=draws)
+        self.pool['pool'].append(dict(path=path, name=name, permanent=permanent))
+        self.ledger[path] = dict(step=None if permanent else len(self.ledger),
+                                 learner_steps=None if permanent else 0,
+                                 games=games, wins=wins, draws=draws, name=name)
         return path
 
 
@@ -162,7 +163,8 @@ class Retirement(PoolHarness):
         self.trainer.global_step = 100
         self.step(logs(4, **{'0': (6, 5, 0)}), 0)
         self.assertIsNone(self.pool['banks'][0]['pending_opp_path'])
-        self.assertEqual(self.pool['pool'], [dict(path=self.bootstrap)], 'and takes no snapshot')
+        self.assertEqual([e['path'] for e in self.pool['pool']], [self.bootstrap],
+                         'and takes no snapshot')
 
     def test_a_matchup_that_settles_against_us_retires_without_a_snapshot(self):
         self.trainer.global_step = 100
@@ -183,7 +185,7 @@ class Retirement(PoolHarness):
         self.step(logs(4, **{'0': (10, 5, 0), '1': (10, 5, 0)}), 0)
         after = self.summary()
         self.assertEqual(after['size'], 1, 'a timeout is a stalemate, not progress')
-        self.assertTrue(all(bank['pending_step'] == 0 for bank in after['banks']))
+        self.assertTrue(all(bank['pending'] == 'self@0' for bank in after['banks']))
         self.assertEqual([e['event'] for e in native_selfplay.events(before, after, self.ledger, 0)],
                          ['armed', 'armed'])
 
@@ -300,6 +302,35 @@ class Saturation(PoolHarness):
         self.assertEqual(summary['pfsp']['serving'], 1, 'every bank starts on the bootstrap')
         self.pool['banks'][0]['cur_opp_path'] = other
         self.assertEqual(self.summary()['pfsp']['serving'], 2)
+
+
+class LeagueCandidates(PoolHarness):
+    def test_league_members_are_candidates_and_survive_eviction(self):
+        # max_size is 4. Fill well past it with snapshots and one league member;
+        # the league member must still be a candidate at the end, because it is
+        # not this run's history to thin.
+        member = self.add_member('search-hard', permanent=True)
+        for step in range(1, 12):
+            self.trainer.global_step = step * 1000
+            native_selfplay._snapshot(self.trainer, self.backend, self.pool)
+            native_selfplay.register(self.pool, self.ledger, step, step)
+        paths = [e['path'] for e in self.pool['pool']]
+        self.assertIn(member, paths, 'a league member is never evicted')
+        snapshots = [e for e in self.pool['pool'] if not e['permanent']]
+        self.assertLessEqual(len(snapshots), 4, 'snapshots are still bounded by max_size')
+        # And it is drawable: PFSP scores it like any other candidate.
+        self.assertIn(member, native_selfplay.scores(self.pool, self.ledger))
+
+    def test_telemetry_names_a_league_member(self):
+        # A league member has no step, so step keys could not name it.
+        self.add_member('search-hard', games=10, wins=2, permanent=True)
+        report = self.summary()
+        names = {entry['name'] for entry in report['entries']}
+        self.assertEqual(names, {'self@0', 'search-hard'})
+        self.assertIn('search-hard', report['pfsp']['intended'])
+        row = next(e for e in report['entries'] if e['name'] == 'search-hard')
+        self.assertIsNone(row['step'], 'a league member is not a snapshot of this run')
+        self.assertAlmostEqual(row['score'], 0.2)
 
 
 if __name__ == '__main__':

@@ -176,6 +176,77 @@ def verify_league(league):
     return dict(checked=len(league['members']), weights_rehashed=rehashed, missing=missing)
 
 
+def opponents(league, names=None, root=None, policy=None):
+    """League members a training run can load as frozen opponents.
+
+    Every member whose weights exist on disk, as dict(name, path, kind) in league
+    order. Scripted members and the random anchor are excluded: they carry no
+    weights, so a bank cannot be loaded with one (the environment plays them by
+    kind and level instead). `names` restricts the set - that is how an exploiter
+    aims at one member without a second mechanism.
+
+    A member whose path is recorded but missing on disk is an error, not a
+    silent omission: a run that quietly trained against a narrower population
+    than its config named would be impossible to interpret afterwards.
+
+    `policy` is the loading run's architecture (POLICY_SHAPE keys, as written in
+    a checkpoint's .json sidecar). Every member must match it exactly or this
+    raises. The bank holds a flat float32 array and the GPU reads it with the
+    learner's own kernel and shapes, so a mismatch is not a load error: a 4.4 MB
+    v4/256 checkpoint read into a 620 KB set/128 policy is accepted and plays at
+    chance, and the run reports an even score against a member rated 592 Elo
+    above random. Found exactly that way, 2026-09-24.
+    """
+    root = Path(root or ROOT)
+    wanted = None if names is None else list(names)
+    if wanted is not None:
+        known = {m['name'] for m in league['members']}
+        unknown = [n for n in wanted if n not in known]
+        if unknown:
+            raise ValueError(f'Not league members: {unknown}')
+    out, missing = [], []
+    for m in league['members']:
+        if wanted is not None and m['name'] not in wanted:
+            continue
+        if not m.get('path'):
+            continue
+        path = Path(m['path'])
+        path = path if path.is_absolute() else root / path
+        if not path.is_file():
+            missing.append(f"{m['name']} -> {path}")
+            continue
+        out.append(dict(name=m['name'], path=str(path), kind=m['kind']))
+    if missing:
+        raise FileNotFoundError('League members have no weights on disk: ' + '; '.join(missing))
+    if policy is not None:
+        wrong = []
+        for row in out:
+            theirs = policy_shape(row['path'])
+            differs = {key: (theirs.get(key), policy.get(key))
+                       for key in POLICY_SHAPE if theirs.get(key) != policy.get(key)}
+            if differs:
+                wrong.append(f"{row['name']}: " + ', '.join(
+                    f'{key} {mine!r} != run {ours!r}' for key, (mine, ours) in differs.items()))
+        if wrong:
+            raise ValueError('League members were trained with another policy architecture and '
+                             'cannot be loaded into this run\'s banks: ' + '; '.join(wrong))
+    if wanted is not None:
+        empty = [n for n in wanted if not any(o['name'] == n for o in out)]
+        if empty:
+            raise ValueError(f'Named league members carry no weights and cannot be loaded: {empty}')
+    return out
+
+
+# What has to agree for one member's weights to run in another run's frozen bank.
+POLICY_SHAPE = ('architecture', 'obs_size', 'hidden', 'num_layers', 'aim_fourier', 'aim_ar', 'v4_shape')
+
+
+def policy_shape(path):
+    """A checkpoint's architecture, from its .json sidecar. Defaults match the sidecar's."""
+    meta = json.loads(Path(str(path) + '.json').read_text())
+    return {key: meta.get(key, 0 if key in ('aim_fourier', 'aim_ar') else None) for key in POLICY_SHAPE}
+
+
 def by_name(league):
     return {row['name']: row for row in league['members']}
 
