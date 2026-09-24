@@ -31,7 +31,11 @@ concurrency = 1
 [trial]
 memory_max = "10G"
 nice = 0
-max_seconds = 30000                # ~4.5 h expected; the cap is a safety net, not a budget
+max_seconds = 54000                # 15 h. The full writer runs at ~220k learner/s, not the
+                                   # specialists' ~630k, so this arm needs ~8.7 h and the old
+                                   # 30000 (8.3 h) would have killed it at ~96% - measured on
+                                   # the live run 2026-09-24, not estimated. Both arms carry the
+                                   # same cap so [trial] never differs between them.
 poll_seconds = 60
 
 [scoring]

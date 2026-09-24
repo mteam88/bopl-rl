@@ -11,8 +11,12 @@
 # + aim ray), the lite file with v4_ablate 10 (aim ray and line of sight only,
 # no terrain block and no fan) which is what every specialist used and what won
 # the sweep that chose the recipe - on three maps and one kit, where terrain
-# perception buys little. Across 111 topologies it plausibly buys a lot. Two
-# runs of ~4.5 h settle it; arguing about it does not.
+# perception buys little. Across 111 topologies it plausibly buys a lot. The
+# pair settles it; arguing about it does not. It is not a cheap pair: the full
+# writer measured ~220k learner/s against the lite writer's ~630k, so this arm
+# is ~8.7 h and the control ~3.1 h. That asymmetry is the cost of the writer,
+# and it is itself part of the answer - a small win for the full writer is not
+# worth 2.8x the wall clock per step.
 #
 # --opponents self in both, deliberately. League members exist and PFSP would
 # draw them, but all eight were trained at v4_ablate 10 and registry.opponents
@@ -40,7 +44,11 @@ concurrency = 1
 [trial]
 memory_max = "10G"
 nice = 0
-max_seconds = 30000                # ~4.5 h expected; the cap is a safety net, not a budget
+max_seconds = 54000                # 15 h. The full writer runs at ~220k learner/s, not the
+                                   # specialists' ~630k, so this arm needs ~8.7 h and the old
+                                   # 30000 (8.3 h) would have killed it at ~96% - measured on
+                                   # the live run 2026-09-24, not estimated. Both arms carry the
+                                   # same cap so [trial] never differs between them.
 poll_seconds = 60
 
 [scoring]
