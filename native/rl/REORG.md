@@ -108,6 +108,41 @@ deliberately folded into the reorg rather than done separately, because the reor
 moves nearly all of those files anyway. `native/rl/sweep/configs/*.toml` is the
 bulk of it.
 
+## The mapping, concretely
+
+Decided 2026-09-24. Stage 1 moves the RL tree, which is where the accretion is.
+It deliberately does **not** move the Cargo root, the Rust port, or the artifacts
+tree - see "What does not move" below for why.
+
+| from | to |
+|---|---|
+| `native/rl/research/` (minus the dashboard parts) | `eval/` |
+| `native/rl/research/web/`, `research/serve.py`, `research/start-dashboard.example.sh` | `board/` |
+| `native/rl/puffer/` | `train/` |
+| `native/rl/sweep/` | `train/sweep/` |
+| `native/rl/league/` | `league/` |
+| the gate and benchmark C programs at `native/rl/*.c` - `fidelity_gate`, `backend_check`, `native_check`, `coverage`, `dump_state`, `sampled_check`, `reset_check`, `reset_profile`, `frame_profile`, `record`, `benchmark`, `writer_bench`, plus `verify_replay.py` | `eval/` |
+| `native/rl/bopl_rl.c`, `native/rl/bopl_rl.h` | `sim/abi/` - the C ABI both backends sit behind, so it belongs with the simulator rather than with either consumer |
+| `native/rl/Makefile` | `Makefile` at the repo root, so the command is `make ability-sweep`, not `make -C native/rl ability-sweep` |
+| the six surviving docs | `docs/` |
+| `native/rl/autoresearch/` | deleted - accretion era. `check_routing.py` and `smoke.py` reference it and must be repointed, and `.gitignore` needs the entry dropped |
+
+`native/rl/` should not exist when this is done.
+
+## What does not move, and why
+
+- **`native/artifacts/` stays exactly where it is.** It is gitignored live data,
+  and absolute paths into it are baked into archived run metadata - 293
+  references across 179 files. Never rename a live `sweeps/<run>` directory.
+- **`native/src/` (the Rust port), `native/Cargo.toml`, `native/target/`** stay
+  put in stage 1. Moving the Cargo root relocates the `.so` that every gate
+  loads and orphans a warm `target/` that costs a full rebuild of a 30k-line
+  file. Folding the port into `sim/` is stage 2, once stage 1 is green.
+- `native/data/`, `native/fixtures/`, `native/reference-export/`,
+  `native/tools/`, `native/justfile` stay in stage 1.
+- `Assets/`, `ProjectSettings/`, `Packages/`, `Tools/`, `UserSettings/` are the
+  decompiled Unity project, not our code. Never touch them.
+
 ## Order of work
 
 1. The reorg itself: move to the layout above, execute the deletion inventory.
