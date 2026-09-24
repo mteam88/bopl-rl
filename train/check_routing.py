@@ -32,6 +32,12 @@ sys.path.insert(0, str(ROOT / 'eval'))
 import layout  # noqa: E402  (bopl_layout.h mirror: observation offsets and action heads)
 
 OBS = layout.OBS_SIZE
+# Row pitch is BOPL_OBS_STRIDE, not OBS_SIZE: row memory is sized for the wider
+# layout v4 so both fit (train/bopl_layout_v4.h:5), and the v3 columns come first
+# within each row (train/check_set_encoder.py:126). So every offset below stays a
+# layout-v3 offset, but rows are ROW floats apart. Reshaping at OBS instead reads
+# row 0 correctly and every later row at a sliding offset.
+ROW = layout.OBS_STRIDE
 PLAYER0 = layout.PLAYER0
 PLAYER = layout.PLAYER_FEATURES
 NUM_ATNS = layout.NUM_ATNS  # aim, buttons, hold length index
@@ -66,7 +72,7 @@ def host_rows(lib, native, total):
     n = lib.bopl_vec_host(ctypes.c_void_p(native.gpu_obs_ptr), *[ctypes.byref(h) for h in out])
     if n != total:
         raise RuntimeError(f'native vector exposes {n} host rows, expected {total}')
-    obs = np.ctypeslib.as_array((ctypes.c_float*(total*OBS)).from_address(out[0].value)).reshape(total, OBS)
+    obs = np.ctypeslib.as_array((ctypes.c_float*(total*ROW)).from_address(out[0].value)).reshape(total, ROW)
     rewards = np.ctypeslib.as_array((ctypes.c_float*total).from_address(out[1].value))
     terminals = np.ctypeslib.as_array((ctypes.c_float*total).from_address(out[2].value))
     return obs, rewards, terminals
@@ -125,6 +131,7 @@ def main():
     lib.bopl_vec_handles.restype = ctypes.c_int; lib.bopl_vec_handles.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
     lib.bopl_vec_host.restype = ctypes.c_int
     lib.bopl_vec_host.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(ctypes.c_void_p)]*3
+    lib.bopl_vec_reset.argtypes = [ctypes.c_void_p]; lib.bopl_vec_reset.restype = ctypes.c_int
     lib.bopl_vec_set_perm.restype = ctypes.c_int; lib.bopl_vec_set_perm.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
     lib.bopl_vec_set_tags.restype = ctypes.c_int; lib.bopl_vec_set_tags.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
     lib.bopl_vec_count_aligned.restype = ctypes.c_int; lib.bopl_vec_count_aligned.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
@@ -147,11 +154,24 @@ def main():
         check(f'b{num_buffers}: layout counts', [e['num_agents'] for e in envs] == [2, 3]*(2*num_buffers)
               and all(g == dict(primary=6, bank=[2, 2]) for g in groups), envs=[e['num_agents'] for e in envs], groups=groups)
         check(f'b{num_buffers}: permutation is not identity', perm != list(range(total)), perm=perm)
+        # Order mirrors the trainer: PufferLib resets with identity routing inside
+        # create_pufferl, the permutation and tags are installed on top, and the native
+        # reset then restarts every game with that routing in place. Resetting after the
+        # permutation instead would restart the games twice and double-count a match.
+        vec.reset()
         assert lib.bopl_vec_set_perm(ctypes.c_void_p(native.gpu_obs_ptr), (ctypes.c_int*total)(*perm)) == 0
         tags = (ctypes.c_int*(4*num_buffers))(*[e['tag'] for e in envs])
         assert lib.bopl_vec_set_tags(ctypes.c_void_p(native.gpu_obs_ptr), tags) == 0
-        vec.reset()
+        # PufferLib's reset routes with identity and drops the per-match terminal flags, so
+        # train/native_vector.py:91 follows it with bopl_vec_reset, which restarts the games
+        # under the installed routing and raises a fresh-episode flag on every row. Checking
+        # routing after the upstream reset alone inspects a state the trainer never trains from.
+        assert lib.bopl_vec_reset(ctypes.c_void_p(native.gpu_obs_ptr)) == 0
         envs = layout(lib, native, 4*num_buffers)
+        # Matches started before any stepping. The native reset aborts the match the
+        # upstream reset began and starts another, so this is 2, not 1: counting
+        # completions as matches-1 would credit the aborted one.
+        base_matches = [e['matches'] for e in envs]
         expected = []; slot = 0
         for e in envs: expected.append(perm[slot:slot+e['num_agents']]); slot += e['num_agents']
         check(f'b{num_buffers}: slots follow the permutation', [e['slots'] for e in envs] == expected,
@@ -185,10 +205,13 @@ def main():
         ok_idle = all(not obs[r].any() for e in envs for r in idle_rows(e))
         check(f'b{num_buffers}: active rows are two mutually visible players', ok_pairs)
         check(f'b{num_buffers}: idle bank rows are blank', ok_idle)
-        # Opponent rows start each match with a terminal flag (fresh recurrent state); learner rows do not.
-        check(f'b{num_buffers}: first match terminates opponent rows only',
-              all(terminals[e['slots'][1+e['bank']]] == 1 for e in envs if e['banks'])
-              and all(terminals[r] == 0 for e in envs for r in ([e['slots'][0]] if e['banks'] else e['slots'])))
+        # bopl_vec_reset flags every row as a fresh episode, so the first rollout step zeroes
+        # the recurrent state of every bank before consuming observation 0 (binding.c:238-241).
+        # Opponent-row-only flagging is c_reset's per-match behaviour, covered by the
+        # match-end check below; at reset there is no state worth keeping on any row.
+        check(f'b{num_buffers}: reset flags every row as a fresh episode',
+              all(terminals[r] == 1 for e in envs for r in e['slots'][:e['num_agents']]),
+              terminals=[float(t) for t in terminals])
         if num_buffers > 1:
             vec.close(); continue
         # Step on the host path with a distinct action per physical row.
@@ -221,7 +244,7 @@ def main():
                     seen_apart[i] |= separated(*rows)
                     for k, r in enumerate(rows):
                         # previous-action tail: [angle==0, cos, sin, buttons bits, latch left, 4 button runs]
-                        tail = obs[r, OBS-PREVIOUS:]
+                        tail = obs[r, OBS-PREVIOUS:OBS]
                         angle, buttons, _hold = actions[r]
                         want_bits = [(int(buttons) >> b) & 1 for b in range(4)]
                         if terminals[r] == 0 and (tail[0] != (angle == 0) or list(tail[3:7]) != want_bits or tail[7] != 0
@@ -271,7 +294,8 @@ def main():
               skipped=skipped, finished=finished, expected=expected_n, log={k: v for k, v in log.items() if 'bank' in k or k == 'n'})
         # Cumulative counters (what the metrics helper differences): physical and learner decisions,
         # held buttons, completed matches (once each, per map), learner-only telemetry, kills.
-        snap = counters.snapshot(lib, native); completed = sum(e['matches']-1 for e in cur)
+        snap = counters.snapshot(lib, native)
+        completed = sum(e['matches']-b for e, b in zip(cur, base_matches))
         n = expect['steps']
         check('b1: counters count physical and learner decisions', snap['game_steps'] == 8*n and snap['learner_steps'] == 6*n
               and snap['opponent_game_decisions'] == 2*n, snap=snap, steps=n)

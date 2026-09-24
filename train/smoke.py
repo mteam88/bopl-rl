@@ -29,7 +29,7 @@ ROOT = HERE.parent
 sys.path[:0] = [str(ROOT/'native/tools'), str(ROOT/'eval'), str(HERE)]
 import reference  # noqa: E402
 import counters  # noqa: E402
-from check_routing import layout, build_perm, OBS, PLAYER0, PLAYER  # noqa: E402
+from check_routing import layout, build_perm, OBS, ROW, PLAYER0, PLAYER  # noqa: E402
 import layout as policy_layout  # noqa: E402  (eval/layout.py: architecture string, heads)
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -150,7 +150,7 @@ try:
     check('slots follow the permutation', [e['slots'] for e in envs] == expected_slots)
     host = [C.c_void_p(), C.c_void_p(), C.c_void_p()]
     check('host rows exposed', lib.bopl_vec_host(C.c_void_p(vec.gpu_obs_ptr), *[C.byref(h) for h in host]) == total_agents)
-    obs = np.ctypeslib.as_array((C.c_float*(total_agents*OBS)).from_address(host[0].value)).reshape(total_agents, OBS)
+    obs = np.ctypeslib.as_array((C.c_float*(total_agents*ROW)).from_address(host[0].value)).reshape(total_agents, ROW)
     terminals = np.ctypeslib.as_array((C.c_float*total_agents).from_address(host[2].value))
     check('reset flags every row for a fresh recurrent state', bool((terminals == 1).all()))
     def rows_ok(label):
