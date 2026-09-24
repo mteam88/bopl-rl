@@ -429,6 +429,10 @@ def opponent_distribution(directory):
                           'which opponents it played was never recorded.'}
 
     live = [entry['path'] for entry in pool.get('pool') or [] if entry.get('path')]
+    # The candidate list names each opponent and says whether it is a permanent
+    # league member or one of this run's evictable snapshots. Fall back to the
+    # file name for a run recorded before opponents carried names.
+    named = {entry['path']: entry for entry in pool.get('pool') or [] if entry.get('path')}
     banks = pool.get('banks') or []
     serving = [bank.get('cur_opp_path') for bank in banks if bank.get('cur_opp_path')]
     ledger = state.get('ledger') or {}
@@ -452,8 +456,10 @@ def opponent_distribution(directory):
         games = int(record.get('games') or 0)
         wins = int(record.get('wins') or 0)
         draws = int(record.get('draws') or 0)
+        candidate = named.get(path) or {}
         entries.append({
-            'id': Path(path).name, 'kind': 'snapshot',
+            'id': record.get('name') or candidate.get('name') or Path(path).name,
+            'kind': 'member' if candidate.get('permanent') else 'snapshot',
             'step': record.get('step'), 'learner_steps': record.get('learner_steps'),
             'games': games, 'wins': wins,
             'winrate': (wins / games) if games else None,
@@ -478,7 +484,7 @@ def opponent_distribution(directory):
     entries.sort(key=lambda entry: -entry['games'])
 
     played = [entry for entry in entries if entry['games']]
-    snapshots = [entry for entry in entries if entry['kind'] == 'snapshot']
+    snapshots = [entry for entry in entries if entry['kind'] in ('snapshot', 'member')]
     scripted = [entry for entry in entries if entry['kind'] == 'scripted']
     live_snapshots = [entry for entry in snapshots if entry['live']]
     scripted_games = sum(entry['games'] for entry in scripted)
@@ -495,7 +501,8 @@ def opponent_distribution(directory):
         'live': len(live_snapshots),
         # The degeneration signature: live pool members the learner never met.
         'live_unplayed': sum(1 for entry in live_snapshots if not entry['games']),
-        'serving': [Path(path).name for path in serving],
+        'serving': [(ledger.get(path) or {}).get('name')
+                    or (named.get(path) or {}).get('name') or Path(path).name for path in serving],
         'distinct_serving': len(set(serving)),
         'banks': len(banks),
         'top_share': sum(entry['share'] for entry in played[:4]),

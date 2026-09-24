@@ -497,23 +497,24 @@
     }
     $("opponentNote").innerHTML =
       `Realized counts come from the pool ledger and the scripted roster. Matchmaking is <b>PFSP</b>
-       (<code>f_${o.pfsp_f ?? "?"}</code>, p = ${o.pfsp_p ?? "?"}) over a live pool of ${o.max_size ?? "?"} served by
-       ${o.banks ?? "?"} banks, so the intended weight vector is real and recomputed here from the ledger.
+       (<code>f_${o.pfsp_f ?? "?"}</code>, p = ${o.pfsp_p ?? "?"}) over ${o.max_size ?? "?"} live snapshots plus every league
+       member this run named, served by ${o.banks ?? "?"} opponent slots, so the intended weight vector is real and
+       recomputed here from the ledger.
        Intended is a wish, the ${big(o.pfsp_draws)} draws are what it actually picked, and the bars are games played
-       — a pool saturates when those three come apart.`;
+       — the population saturates when those three come apart.`;
     const degenerate = o.distinct_serving != null && o.banks && o.distinct_serving < o.banks;
     $("opponentStats").innerHTML =
-      stat("Distinct opponents played", big(o.distinct), `${big(o.pooled)} ever pooled`)
-      + stat("Banks → distinct snapshots", `${o.banks ?? "—"} → ${o.distinct_serving ?? "—"}`,
-        degenerate ? "banks have collapsed onto the same opponents" : "banks are serving distinct opponents")
-      + stat("Live pool never played", `${o.live_unplayed ?? "—"} / ${o.live ?? "—"}`,
-        o.live_unplayed ? "these are in the pool but contribute nothing" : "every live member is being played")
+      stat("Distinct opponents played", big(o.distinct), `${big(o.pooled)} candidates ever`)
+      + stat("Slots → distinct opponents", `${o.banks ?? "—"} → ${o.distinct_serving ?? "—"}`,
+        degenerate ? "slots have collapsed onto the same opponents" : "slots are serving distinct opponents")
+      + stat("Candidates never played", `${o.live_unplayed ?? "—"} / ${o.live ?? "—"}`,
+        o.live_unplayed ? "these are candidates but contribute nothing" : "every live candidate is being played")
       + stat("Top 4 share", pct(o.top_share, 1), "of all games")
       + stat("Intended vs drawn", o.pfsp_divergence == null ? "—" : o.pfsp_divergence.toFixed(3),
-        "total variation — 0 is the pool getting the curriculum it asked for")
+        "total variation — 0 is PFSP getting the curriculum it asked for")
       + stat("Draw entropy",
         `${o.pfsp_drawn_entropy == null ? "—" : o.pfsp_drawn_entropy.toFixed(2)} / ${(o.pfsp_intended_entropy ?? 0).toFixed(2)}`,
-        "realized vs intended, nats — a collapsing pool loses the left number first")
+        "realized vs intended, nats — a collapsing population loses the left number first")
       + stat("Scripted realized", pct(o.scripted_realized_lifetime, 1), "lifetime")
       + stat("Scripted intended", pct(o.scripted_intended_final, 1), "final value — adaptive, not a lifetime target");
 
@@ -527,15 +528,16 @@
         + `<tr><td>score (draws half)</td><td>${e.score == null ? "—" : pct(e.score, 1)}</td></tr>`
         + `<tr><td>intended</td><td>${e.intended == null ? "—" : pct(e.intended, 1)}</td></tr>`
         + `<tr><td>drawn</td><td>${e.drawn == null ? "—" : pct(e.drawn, 1)}</td></tr>`
-        + `<tr><td>in pool</td><td>${e.live ? "yes" : "evicted"}</td></tr></table>`;
+        + `<tr><td>a candidate</td><td>${e.live ? "yes" : "evicted"}</td></tr></table>`;
       return `<div class="bar" data-tip="${esc(tipHtml)}">`
-        + `<span class="bar-label">${esc(e.id)}<i>${e.serving ? "serving now" : e.live ? "in pool" : "evicted"}</i></span>`
+        + `<span class="bar-label">${esc(e.id)}<i>${e.serving ? "serving now" : e.live ? "a candidate" : "evicted"}</i></span>`
         + `<span class="bar-track"><span class="bar-fill" style="width:${(100 * e.share / peak).toFixed(1)}%;`
-        + `background:${e.kind === "scripted" ? "#6aa8ff" : e.live ? "#b8e03a" : "#4a5160"}"></span></span>`
+        + `background:${e.kind === "scripted" ? "#6aa8ff" : e.kind === "member" ? "#e0a33a" : e.live ? "#b8e03a" : "#4a5160"}"></span></span>`
         + `<span class="bar-value">${pct(e.share, 2)}</span></div>`;
     }).join("") + `</div>`
-      + `<p class="caption">Bars are the realized share of all training games. Green is a pooled snapshot, blue a scripted bot,
-         grey a snapshot that has since been evicted. A long grey tail with a few tall bars is the degeneration to watch for.</p>`;
+      + `<p class="caption">Bars are the realized share of all training games. Green is one of this run\u2019s own snapshots,
+         amber a league member, blue a scripted bot, grey a snapshot that has since been evicted. A long grey tail with a few
+         tall bars is the degeneration to watch for.</p>`;
   }
 
   const METRIC_KEYS = ["policy_loss", "value_loss", "entropy", "kl", "clip_fraction",
