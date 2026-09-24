@@ -1,7 +1,7 @@
 """The league CLI: seed, add, play, rate, status, check.
 
     python league seed
-    python league play  --members specialist,random,scripted:hard --games 48
+    python league play  --members all --games-per-cell 4
     python league rate
     python league status
     python league add --name X --kind exploiter --weights policy.bin --run DIR --step N
@@ -61,9 +61,13 @@ def configure_environment(workspace):
     configure(Path(workspace) / 'workers', SIM)
 
 
-def seed_loadouts():
-    from evaluation_protocol import resolve_loadouts
-    return resolve_loadouts(lineup_file=str(LINEUPS8), mirror_share=1.0)
+def kit_list(value):
+    """Kits for `play`: a lineup file (each row's two halves) or 'a,b,c;d,e,f'."""
+    from evaluation_protocol import loadout_lineups
+    if Path(value).is_file():
+        rows = loadout_lineups(value)
+        return list(dict.fromkeys(tuple(row[i:i + 3]) for row in rows for i in (0, 3)))
+    return [tuple(int(a) for a in kit.split(',')) for kit in value.split(';') if kit.strip()]
 
 
 def own_kit_rows(league, names):
@@ -170,12 +174,13 @@ def participants(league, names, library=None):
 # ---- seed --------------------------------------------------------------------
 
 def command_seed(args):
-    from evaluation_protocol import SCRIPTED_NAMES
+    from evaluation_protocol import SCRIPTED_NAMES, DEFAULT_LOADOUT
     today = date.today().isoformat()
     members = [registry.member('random', 'random', id='random',
                                added=dict(date=today, rule='seed: the anchor, pinned at 0 Elo and never evicted'))]
     for name in SCRIPTED_NAMES:
         members.append(registry.member(name, 'scripted', id=name,
+                                       loadouts=dict(mode='fixed', fixed=list(DEFAULT_LOADOUT)),
                                        added=dict(date=today, rule='seed: hand-coded roster (bopl_bots.h)')))
     for kit in SPECIALISTS:
         run = SWEEPS / f'{kit}-long/000'
@@ -189,12 +194,11 @@ def command_seed(args):
             reward=reward_tag(config),
             loadouts=dict(mode='fixed', fixed=config['loadouts']['fixed']),
             added=dict(date=today, rule='seed: strongest known play on its kit, frozen as an exploiter')))
-    _, detail = registry.condition(registry.sha256_file(SIM), seed_loadouts(), [0, 1, 2])
-    payload = registry.write(members, {detail['key']: detail})
+    payload = registry.write(members, {})
     print(f"wrote {registry.LEAGUE.relative_to(ROOT)}: {len(members)} members "
           f"({sum(m['kind']=='specialist' for m in members)} specialist, "
           f"{sum(m['kind']=='scripted' for m in members)} scripted, 1 random)")
-    print(f"league_sha256 {payload['league_sha256'][:16]}  condition {detail['key']}")
+    print(f"league_sha256 {payload['league_sha256'][:16]}")
     if not registry.PAYOFF.exists():
         registry.PAYOFF.write_text('')
         print(f"created empty {registry.PAYOFF.relative_to(ROOT)}")
@@ -207,14 +211,15 @@ def command_add(args):
     rows = registry.by_name(league)
     if args.name in rows:
         raise SystemExit(f'{args.name} is already a member; members are immutable')
-    config = json.loads((Path(args.run) / 'config.json').read_text()) if args.run else {}
+    # The run's config.json, else the config the checkpoint's own sidecar carries.
+    config = (json.loads((Path(args.run_dir) / 'config.json').read_text()) if args.run_dir
+              else json.loads(Path(args.weights + '.json').read_text()).get('config') or {})
     member = registry.checkpoint_member(
         args.name, args.kind, Path(args.weights).resolve(), parent=args.parent, target=args.target,
-        origin=dict(run=args.run, step=args.step) if args.run else None,
+        origin=dict(run=args.run_dir, step=args.step) if args.run_dir else None,
         sim=(config.get('runtime') or {}).get('player_binary_sha256'),
         reward=reward_tag(config) if config else None,
-        loadouts=(dict(mode=config['loadouts']['mode'], fixed=config['loadouts'].get('fixed'),
-                       set_file=config['loadouts'].get('set_file')) if config.get('loadouts') else None),
+        loadouts=registry.trained_loadouts(config),
         added=dict(date=date.today().isoformat(), rule=args.rule))
     registry.write(league['members'] + [member], league.get('conditions', {}))
     print(f"added {args.name} ({args.kind}) id {member['id'][:16]}")
@@ -223,79 +228,99 @@ def command_add(args):
 # ---- play --------------------------------------------------------------------
 
 def command_play(args):
+    """Play every informative pair under each condition and append the counts.
+
+    By default one condition per kit: every member that can play the kit
+    (registry.kits) meets every other on it, both seats on the same three
+    abilities. Ratings are therefore per kit, and a member is only ever measured
+    on a kit it was built for - which is what keeps a scripted bot, written for
+    2,4,14, from being scored on a kit whose slots mean something else to it.
+    --own-kit is the one cross-kit condition: each specialist on its own kit.
+    """
     import elo_ladder
+    from evaluation_protocol import resolve_loadouts
     league = registry.load()
     print(f"verified {league['verified']['weights_rehashed']} member weights by rehash"
           + (f", missing {league['verified']['missing']}" if league['verified']['missing'] else ''))
     names = select(league, args.members)
-    own_kit = getattr(args, 'own_kit', False)
-    loadouts = own_kit_loadouts(league, names) if own_kit else seed_loadouts()
-    kit_of, _, row_index = own_kit_rows(league, names) if own_kit else ({}, [], {})
-    key, detail = registry.condition(registry.sha256_file(SIM), loadouts, args.maps)
-    known = league.get('conditions', {})
-    if key in known and known[key]['loadout_sha256'] != detail['loadout_sha256']:
-        raise SystemExit(f'condition {key} already names a different loadout set; refusing to pool them')
-    if key not in known:
-        registry.write(league['members'], dict(known, **{key: detail}))
-        print(f'registered new condition {key}')
+    rows = registry.by_name(league)
+    maps = list(args.maps)
+    sessions = []
+    if args.own_kit:
+        kit_of, _, row_index = own_kit_rows(league, names)
 
-    counts = registry.read_payoff(condition=key)
-    pairs, skipped = [], []
-    for i, a in enumerate(names):
-        for b in names[i + 1:]:
-            value = counts.get((a, b) if a < b else (b, a), [0, 0, 0])
-            wins, losses, draws = value if a < b else [value[1], value[0], value[2]]
-            if args.gate and not pfsp.informative(wins, losses, draws):
-                skipped.append(((a, b), pfsp.score(wins, losses, draws), wins + losses + draws))
-            else:
-                pairs.append((a, b))
-    print(f'{len(names)} members, {len(pairs)} pairs to play, {len(skipped)} skipped as uninformative'
-          f' (whole CI outside {pfsp.BAND})')
-    if not pairs:
-        return
-    configure_environment(args.workspace)
-    built = participants(league, names)
-    lineups = list(range(len(loadouts['lineups'])))
-    if own_kit:
-        # Each pair plays exactly its own two rows, [A|B] and [B|A], one per side.
-        total = len(pairs) * len(args.maps) * args.games_per_cell
-        print(f'{total} games = {len(pairs)} pairs x {len(args.maps)} maps x'
-              f' {args.games_per_cell} (side-swapped, each side on its own kit);'
-              f' est {total*0.2/60:.0f} min at 0.2 s/game')
+        def tasks(a, b):
+            return elo_ladder.side_pinned_tasks(a, b, maps, args.games_per_cell, args.seed_base,
+                                                {0: row_index[(a, b)], 1: row_index[(b, a)]})
+
+        def want(a, b, seat_a):
+            kit_a, kit_b = kit_of[a] or kit_of[b], kit_of[b] or kit_of[a]
+            return (kit_a + kit_b) if seat_a == 0 else (kit_b + kit_a)
+        sessions.append(('own kit', own_kit_loadouts(league, names), names, tasks, want))
     else:
-        total = len(pairs) * len(args.maps) * len(lineups) * args.games_per_cell
-        print(f'{total} games = {len(pairs)} pairs x {len(args.maps)} maps x {len(lineups)} lineups'
-              f' x {args.games_per_cell} (side-swapped); est {total*0.2/60:.0f} min at 0.2 s/game')
+        def tasks(a, b):
+            return elo_ladder.pair_tasks(a, b, maps, args.games_per_cell, args.seed_base)
+        for kit in args.kits:
+            eligible = [n for n in names if registry.plays(rows[n], kit)]
+            sessions.append((','.join(map(str, kit)), resolve_loadouts(kit), eligible, tasks,
+                             lambda a, b, seat_a, kit=kit: list(kit) * 2))
 
+    sim = registry.sha256_file(SIM)
+    built = None
+    for label, loadouts, eligible, tasks, want in sessions:
+        key, detail = registry.condition(sim, loadouts, maps, args.episode_ticks)
+        known = league.get('conditions', {})
+        if key in known and known[key]['loadout_sha256'] != detail['loadout_sha256']:
+            raise SystemExit(f'condition {key} already names a different loadout set; refusing to pool them')
+        if key not in known:
+            league['conditions'] = dict(known, **{key: detail})
+            registry.write(league['members'], league['conditions'])
+            print(f'registered new condition {key}')
+        counts = registry.read_payoff(condition=key)
+        identity = dict(zip(eligible, registry.ids_for(league, eligible)))
+        pairs, skipped = [], 0
+        for i, a in enumerate(eligible):
+            for b in eligible[i + 1:]:
+                ia, ib = identity[a], identity[b]
+                value = counts.get((ia, ib) if ia < ib else (ib, ia), [0, 0, 0])
+                wins, losses, draws = value if ia < ib else [value[1], value[0], value[2]]
+                if args.gate and not pfsp.informative(wins, losses, draws):
+                    skipped += 1
+                else:
+                    pairs.append((a, b))
+        total = sum(len(tasks(a, b)) for a, b in pairs)
+        print(f'\n{label}: {len(eligible)} members, {len(pairs)} pairs to play, {skipped} skipped as '
+              f'uninformative (whole CI outside {pfsp.BAND}); {total} games, '
+              f'est {total * 0.2 / 60 / args.workers:.0f} min at 0.2 s/game/worker')
+        if not pairs:
+            continue
+        if built is None:
+            configure_environment(args.workspace)
+            built = participants(league, names)
+        play_condition(built, pairs, identity, key, loadouts, tasks, want, total, args)
+
+
+def play_condition(built, pairs, identity, key, loadouts, tasks, want, total, args):
+    import elo_ladder
     # Rows are keyed by member id, never by name: payoff.jsonl is append-only and
     # outlives its members, so a reused name would inherit the old agent's record.
     # Names stay in the schedule, the console and the CLI arguments.
-    identity = dict(zip(names, registry.ids_for(league, names)))
-    started, played, opponents, cells = time.time(), 0, {}, set()
+    started, played, opponents, cells, expected = time.time(), 0, {}, set(), set()
     with registry.PAYOFF.open('a') as handle:
         for number, (a, b) in enumerate(pairs, 1):
-            if own_kit:
-                tasks = elo_ladder.side_pinned_tasks(a, b, list(args.maps), args.games_per_cell,
-                                                     args.seed_base,
-                                                     {0: row_index[(a, b)], 1: row_index[(b, a)]})
-            else:
-                tasks = elo_ladder.pair_tasks(a, b, list(args.maps), args.games_per_cell,
-                                              args.seed_base, lineups=lineups)
-            games = elo_ladder.play_games(built, tasks, args.episode_ticks, args.workers,
+            games = elo_ladder.play_games(built, tasks(a, b), args.episode_ticks, args.workers,
                                           args.seed_base, loadouts=loadouts)
-            if own_kit:
-                # Assert the construction instead of trusting it. lineup_ids is
-                # what the game actually played, so this is the one cheap check
-                # that catches a seat holding its opponent's kit.
-                kit_a, kit_b = kit_of[a] or kit_of[b], kit_of[b] or kit_of[a]
-                for game in games:
-                    seat_a = game['side']
-                    want = (kit_a + kit_b) if seat_a == 0 else (kit_b + kit_a)
-                    got = list(game.get('lineup_ids') or [])
-                    if got != want:
-                        raise SystemExit(
-                            f'own-kit violation on {a} vs {b}, map {game["map"]}, side {seat_a}:'
-                            f' played {got}, expected {want}. Nothing was written for this pair.')
+            # Assert the construction instead of trusting it. lineup_ids is what
+            # the game actually played, so this is the one cheap check that
+            # catches a seat holding a kit it was not scheduled on.
+            for game in games:
+                wanted = want(a, b, game['side'])
+                got = list(game.get('lineup_ids') or [])
+                if got != wanted:
+                    raise SystemExit(
+                        f'kit violation on {a} vs {b}, map {game["map"]}, side {game["side"]}:'
+                        f' played {got}, expected {wanted}. Nothing was written for this pair.')
+                expected.add((game['map'], tuple(wanted)))
             # wins, losses and draws all come from tally(), which counts each
             # game's own outcome. Never `games - wins`: that silently turns every
             # trade and every timeout into a loss for one side.
@@ -320,23 +345,8 @@ def command_play(args):
     print('realized opponent share: top '
           + ', '.join(f'{n} {s:.3f}' for n, s in sorted(shares.items(), key=lambda kv: -kv[1])[:5]))
     print(f'realized share entropy {pfsp.entropy(shares):.3f} of max {np.log(len(shares)):.3f}')
-    maps_hit = sorted({cell[0] for cell in cells})
-    kits_hit = sorted({cell[1] for cell in cells})
-    if own_kit:
-        # Count distinct (map, row CONTENT) cells, not row indices. A pair with a
-        # kitless member uses two indices whose rows are the same six ids, so an
-        # index-based expectation over-counts and reports a complete run as
-        # incomplete.
-        scheduled = set()
-        for x, y in pairs:
-            scheduled.add(tuple(loadouts['lineups'][row_index[(x, y)]]))
-            scheduled.add(tuple(loadouts['lineups'][row_index[(y, x)]]))
-        expected = len(args.maps) * len(scheduled)
-    else:
-        expected = len(args.maps) * len(loadouts['lineups'])
-    print(f'exercised {len(cells)}/{expected} (map, loadout) cells: maps {maps_hit}, '
-          f'{len(kits_hit)} distinct loadouts of {len(loadouts["lineups"])}'
-          + ('' if len(cells) == expected else '  <-- INCOMPLETE, some cells never played'))
+    print(f'exercised {len(cells)}/{len(expected)} (map, loadout) cells: maps {sorted({c[0] for c in cells})}'
+          + ('' if cells == expected else '  <-- INCOMPLETE, some cells never played'))
 
 
 # ---- rate --------------------------------------------------------------------
@@ -507,7 +517,7 @@ def main(argv=None):
     add.add_argument('--name', required=True)
     add.add_argument('--kind', required=True, choices=registry.KINDS)
     add.add_argument('--weights', required=True)
-    add.add_argument('--run')
+    add.add_argument('--run', dest='run_dir')
     add.add_argument('--step', type=int)
     add.add_argument('--parent', help='member the weights were forked from; omit for random init')
     add.add_argument('--target', help='member an exploiter was trained to beat')
@@ -523,6 +533,10 @@ def main(argv=None):
                            'and 8 lineups at the default 2 games per cell is 208 games per pair.')
     play.add_argument('--games-per-cell', type=int, default=2,
                       help='side-swapped games per (map, lineup) cell; must be even')
+    play.add_argument('--kits', type=kit_list, default=str(LINEUPS8),
+                      help='kits to rate on, one condition each: a lineup file or a,b,c;d,e,f'
+                           ' (default native/data/lineups-8.txt). Each pairs only the members'
+                           ' that can play it (registry.kits)')
     play.add_argument('--own-kit', action='store_true',
                       help='each specialist on its own three abilities against the others on theirs'
                            ' (native/data/lineups-own-kit.txt, mirror-share 0); specialists only')

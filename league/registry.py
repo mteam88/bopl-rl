@@ -154,6 +154,49 @@ def checkpoint_member(name, kind, weights, *, parent=None, target=None, origin=N
                   metadata_sha256=sha256_file(sidecar) if sidecar.is_file() else None)
 
 
+def kits(row):
+    """The kits a member can meaningfully play, as 3-tuples; None means any kit.
+
+    Read from the member's `loadouts`, which records what it was built for:
+    `fixed` is one kit, `set` lists its `kits`, and null is kit-general (only the
+    random anchor). A scripted bot is `fixed` 2,4,14 because bopl_bots.h indexes
+    BOT_SLOT_DASH 0, BOT_SLOT_BOW 1, BOT_SLOT_PLATFORM 2 - handed any other kit it
+    presses whatever sits in the slot it wants. A checkpoint plays what it trained
+    on. Scheduling only ever pairs members on a kit both can play, so a game
+    between two members is always a game both of them were built for.
+    """
+    loadouts = row.get('loadouts')
+    if loadouts is None:
+        return None
+    if loadouts['mode'] == 'fixed':
+        return [tuple(loadouts['fixed'])]
+    return [tuple(kit) for kit in loadouts['kits']]
+
+
+def plays(row, kit):
+    known = kits(row)
+    return known is None or tuple(kit) in known
+
+
+def trained_loadouts(config):
+    """A run's config.json `loadouts` as a member declaration (see kits).
+
+    A run with no `loadouts` trained on DEFAULT_LOADOUT, the same reading
+    evaluate.py makes. A `set` run declares every kit either seat was dealt; a
+    free `pool` draw is not a kit list and is refused rather than read as "any".
+    """
+    from evaluation_protocol import DEFAULT_LOADOUT
+    loadouts = config.get('loadouts')
+    if not loadouts:
+        return dict(mode='fixed', fixed=list(DEFAULT_LOADOUT))
+    if loadouts['mode'] == 'fixed':
+        return dict(mode='fixed', fixed=list(loadouts['fixed']))
+    if loadouts['mode'] == 'set':
+        halves = {tuple(row[i:i + 3]) for row in loadouts['lineups'] for i in (0, 3) if row[i:i + 3]}
+        return dict(mode='set', kits=[list(kit) for kit in sorted(halves)])
+    raise ValueError(f"cannot declare kits for a {loadouts['mode']!r} loadout draw")
+
+
 def league_hash(members):
     """Content hash over the member list; any edit after writing changes it."""
     return hashlib.sha256(json.dumps(members, sort_keys=True, separators=(',', ':')).encode()).hexdigest()

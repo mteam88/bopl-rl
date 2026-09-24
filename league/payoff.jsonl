@@ -187,3 +187,4 @@
 {"a": "322eaf0d6277e92b8fade19765f5a7c9143ea6ef781b2bb882c65058415edd57", "b": "8f46f3ec8b496e1e61809f843600e6e934f022af76d1bf6229c2f869df9079e2", "condition": "simf0ab99a8.lineups-own-kit.map0-1-2.t7200.d9", "wins": 32, "losses": 16, "draws": 0}
 {"a": "8f46f3ec8b496e1e61809f843600e6e934f022af76d1bf6229c2f869df9079e2", "b": "random", "condition": "simf0ab99a8.lineups-own-kit.map0-1-2.t7200.d9", "wins": 47, "losses": 1, "draws": 0}
 {"a": "322eaf0d6277e92b8fade19765f5a7c9143ea6ef781b2bb882c65058415edd57", "b": "random", "condition": "simf0ab99a8.lineups-own-kit.map0-1-2.t7200.d9", "wins": 42, "losses": 6, "draws": 0}
+{"a": "27a4fc2574ab93b9801a1379d15f9e08b9978bb8eb36d622a8d7e38e4cc66bfb", "b": "random", "condition": "simf0ab99a8.fixed-16-3-13.map0-1-2.t7200.d9", "wins": 5, "losses": 0, "draws": 1}

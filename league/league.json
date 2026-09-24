@@ -26,7 +26,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -41,7 +48,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -56,7 +70,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -71,7 +92,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -86,7 +114,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -101,7 +136,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -116,7 +158,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -131,7 +180,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -146,7 +202,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -161,7 +224,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -176,7 +246,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -191,7 +268,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -206,7 +290,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -221,7 +312,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -236,7 +334,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -251,7 +356,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -266,7 +378,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -281,7 +400,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -296,7 +422,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -311,7 +444,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -326,7 +466,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -341,7 +488,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -356,7 +510,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -371,7 +532,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -386,7 +554,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -401,7 +576,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -416,7 +598,14 @@
    "origin": null,
    "sim": null,
    "reward": null,
-   "loadouts": null,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
    "added": {
     "date": "2026-09-23",
     "rule": "seed: hand-coded roster (bopl_bots.h)"
@@ -717,6 +906,820 @@
    },
    "path": "native/artifacts/rl/sweeps/drill-throw-magnet-long/000/checkpoints/policy-9253158912.bin",
    "metadata_sha256": "a80d60f8a77eefd4cfa3f3b61afdbb65d8fa1d0285ff8ea7d19384d0800a9fbd"
+  },
+  {
+   "id": "411995765bead143a730ffb27e7e5de62fa95305e136c29b85fded2e2f13ed5a",
+   "name": "v4-full-2133m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-full/000",
+    "step": 2133360640
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-fdd8b8ea",
+    "binding_sha256": "fdd8b8ea1a8bcd0bf6bc24b16b26d7af602d0a79e4f56dfeda001561d4cf7224",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-full/000/checkpoints/policy-2133360640.bin",
+   "metadata_sha256": "9f39ddfb4aa422ec7dd4bd423d3a36303ae115cc7663aa5d23cc3c6d0fd71566"
+  },
+  {
+   "id": "e138a76457a3cd412fa5a79892e62020ed59e40f1238720135a67f2d5509fad0",
+   "name": "v4-full-2240m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-full/000",
+    "step": 2240020480
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-fdd8b8ea",
+    "binding_sha256": "fdd8b8ea1a8bcd0bf6bc24b16b26d7af602d0a79e4f56dfeda001561d4cf7224",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-full/000/checkpoints/policy-2240020480.bin",
+   "metadata_sha256": "7db8d703d8309c3161dff7635a732fd5d5a0c22506c7f75e370f014d4fc091ab"
+  },
+  {
+   "id": "9d7d01a8fd0ffa839ced78bc9c684c1646de85e5ba199ed8b6bbed7ed6608e2c",
+   "name": "v4-full-2313m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-full/000",
+    "step": 2313256960
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-fdd8b8ea",
+    "binding_sha256": "fdd8b8ea1a8bcd0bf6bc24b16b26d7af602d0a79e4f56dfeda001561d4cf7224",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-full/000/checkpoints/policy-2313256960.bin",
+   "metadata_sha256": "fad8fdfa2e37add5465ebe25b2960b549aa49f20a96635e7da881a6d99858fdd"
+  },
+  {
+   "id": "645030edbadbdde24120e812d5b3de28bda704058391cc6f0839ac8d0243470c",
+   "name": "v4-full-s74-2133m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-full-s74/000",
+    "step": 2133360640
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-41eb50da",
+    "binding_sha256": "41eb50dae6351f306074b1746682932df2110fdaf1a4b7e094ef0591d54044cd",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-full-s74/000/checkpoints/policy-2133360640.bin",
+   "metadata_sha256": "b37821f4e723f11f26bcf46105e0027c0b3465525ebf6d9b9dd07258b7bbb0da"
+  },
+  {
+   "id": "012afcdea7bf9978a98351e200e9ad4d8893bd1e956df75fbb7c44d3339a6f4d",
+   "name": "v4-full-s74-2240m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-full-s74/000",
+    "step": 2240020480
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-41eb50da",
+    "binding_sha256": "41eb50dae6351f306074b1746682932df2110fdaf1a4b7e094ef0591d54044cd",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-full-s74/000/checkpoints/policy-2240020480.bin",
+   "metadata_sha256": "2df72dcf63e9a189ad28d3e79df55696123c96ef553099c5aa5b40ae771cadea"
+  },
+  {
+   "id": "c3b07393d81d0fe3381c8ec5d821495bc539220f76ab17cd41c68772676f8c34",
+   "name": "v4-full-s74-2313m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-full-s74/000",
+    "step": 2313256960
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-41eb50da",
+    "binding_sha256": "41eb50dae6351f306074b1746682932df2110fdaf1a4b7e094ef0591d54044cd",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-full-s74/000/checkpoints/policy-2313256960.bin",
+   "metadata_sha256": "61afbd1e48a62949f6413881f98f0568b202e2f15117a50db56a0487ab766397"
+  },
+  {
+   "id": "d88ff919c7370b9fb53af4bc118666bcb946e453c00593a60758c6db71f69cb7",
+   "name": "v4-aim-2133m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-aim/000",
+    "step": 2133360640
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-21efa0a0",
+    "binding_sha256": "21efa0a05f5321ac2b598e5b1b8b011a3c3ca80c18f0fbae46c1b5470945e730",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-aim/000/checkpoints/policy-2133360640.bin",
+   "metadata_sha256": "4ee9397f5e977a92924ab8d59f2e3d3f73a74e9d8f3280f0ca74e1b3cd8e9073"
+  },
+  {
+   "id": "4d967a62c4fd0bc4043454adac8cd3edae6c3371f590eb5a6003be26dd3e42a3",
+   "name": "v4-aim-2240m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-aim/000",
+    "step": 2240020480
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-21efa0a0",
+    "binding_sha256": "21efa0a05f5321ac2b598e5b1b8b011a3c3ca80c18f0fbae46c1b5470945e730",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-aim/000/checkpoints/policy-2240020480.bin",
+   "metadata_sha256": "eca8437966766ca046710e8349eaa31f2d2a39c24b79360afd3af50deb553831"
+  },
+  {
+   "id": "ccebcecf4a91e3380f458cb5f42634dd6bb33f56ede36d9e1f81161059a9b24f",
+   "name": "v4-aim-2313m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-aim/000",
+    "step": 2313256960
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-21efa0a0",
+    "binding_sha256": "21efa0a05f5321ac2b598e5b1b8b011a3c3ca80c18f0fbae46c1b5470945e730",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-aim/000/checkpoints/policy-2313256960.bin",
+   "metadata_sha256": "7c925784ed32a0ba268509dc6833eb3509abcc062956445fa619d77d0f7d85a3"
+  },
+  {
+   "id": "71d9cdc03db1584e161c52ef153a61588c8e2feee45af34fb1aa7834efc3d816",
+   "name": "v4-aim-only-2133m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-aim-only/000",
+    "step": 2133360640
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-21efa0a0",
+    "binding_sha256": "21efa0a05f5321ac2b598e5b1b8b011a3c3ca80c18f0fbae46c1b5470945e730",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-aim-only/000/checkpoints/policy-2133360640.bin",
+   "metadata_sha256": "0fa7e58b306084ea387a550a37af467a1d297a5d815dcd1c0cb8896e67bd70c5"
+  },
+  {
+   "id": "928e13b81d62b260ff9cd5f26e0b101c605926119d306f0966133dda810d82c5",
+   "name": "v4-aim-only-2240m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-aim-only/000",
+    "step": 2240020480
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-21efa0a0",
+    "binding_sha256": "21efa0a05f5321ac2b598e5b1b8b011a3c3ca80c18f0fbae46c1b5470945e730",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-aim-only/000/checkpoints/policy-2240020480.bin",
+   "metadata_sha256": "03dbb6ae145cf77c0f9d88eac0dac561f54abfae02f33f7ca3af2b1eab4ee80e"
+  },
+  {
+   "id": "59fe89cc5975a7f4294c81c1c2915cb03ae55ad72b05762ac951f74b05d6ab88",
+   "name": "v4-aim-only-2313m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-aim-only/000",
+    "step": 2313256960
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-21efa0a0",
+    "binding_sha256": "21efa0a05f5321ac2b598e5b1b8b011a3c3ca80c18f0fbae46c1b5470945e730",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-aim-only/000/checkpoints/policy-2313256960.bin",
+   "metadata_sha256": "db681fbfcadebe6b2341a2453ffa997e3a3eabba2ae52514d1d2854b7338be65"
+  },
+  {
+   "id": "c5a13c62210cde9ee6d67bc5ea47768dabc1dad6b38689d39fd3cef38478024d",
+   "name": "v4-no-rays-2133m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-no-rays/000",
+    "step": 2133360640
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-41eb50da",
+    "binding_sha256": "41eb50dae6351f306074b1746682932df2110fdaf1a4b7e094ef0591d54044cd",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-no-rays/000/checkpoints/policy-2133360640.bin",
+   "metadata_sha256": "3783631e605637a3ef047c06454f65e366ea353bc3499f885d5fc702b339defc"
+  },
+  {
+   "id": "9e1c67d71d6dc0f2fc3f915e83749122991fb8ab61ac0afb31288622187d65bb",
+   "name": "v4-no-rays-2240m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-no-rays/000",
+    "step": 2240020480
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-41eb50da",
+    "binding_sha256": "41eb50dae6351f306074b1746682932df2110fdaf1a4b7e094ef0591d54044cd",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-no-rays/000/checkpoints/policy-2240020480.bin",
+   "metadata_sha256": "10a3a22f6f12645bb47770a300ab161b0d6f4eaa98bd92e43e780fad75cde8d8"
+  },
+  {
+   "id": "72c2d10b04c971bd689fedae068a596bd5da91ab575f043e149a7448138c5ee0",
+   "name": "v4-no-rays-2313m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-no-rays/000",
+    "step": 2313256960
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-41eb50da",
+    "binding_sha256": "41eb50dae6351f306074b1746682932df2110fdaf1a4b7e094ef0591d54044cd",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-no-rays/000/checkpoints/policy-2313256960.bin",
+   "metadata_sha256": "1e334629afb9da87827dcdb617e2bdf07102b4e3450803825a0f95a59e3a75f1"
+  },
+  {
+   "id": "c9912484df82795a56ac3cc068dc0f4e7a4b60c042cfb2bf1e2b5ee01283ceb7",
+   "name": "v4-lite-1920m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-lite/000",
+    "step": 1920008192
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-aecd6b4b",
+    "binding_sha256": "aecd6b4b2f068fc90ed3884e89bbe2bec7472e189ba20dcc902242dc1445e654",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-lite/000/checkpoints/policy-1920008192.bin",
+   "metadata_sha256": "2f24157d8364796f2f547ad8762c12dfe7891bb899f30135d7b6fea66b5e6465"
+  },
+  {
+   "id": "c535710db2fbe43879c2fc858410389c9fb70ddc08cb206954e535b1c0b6d392",
+   "name": "v4-lite-2133m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-lite/000",
+    "step": 2133360640
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-aecd6b4b",
+    "binding_sha256": "aecd6b4b2f068fc90ed3884e89bbe2bec7472e189ba20dcc902242dc1445e654",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-lite/000/checkpoints/policy-2133360640.bin",
+   "metadata_sha256": "b06c45f39e7763bb21e759d0a9aa5366b568fbfd7e0871046879a3e90f64cd4e"
+  },
+  {
+   "id": "4b693beec0a6682964f3a6fcc10f5cfa8605f97040b8f7406e0b303d5fa4b199",
+   "name": "v4-lite-2240m",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v4-lite/000",
+    "step": 2240020480
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-aecd6b4b",
+    "binding_sha256": "aecd6b4b2f068fc90ed3884e89bbe2bec7472e189ba20dcc902242dc1445e654",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.2883693237829292,
+     "death": -0.2883693237829292
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v4-lite/000/checkpoints/policy-2240020480.bin",
+   "metadata_sha256": "3dfcaeb7ba9a7466738cfc7d81e62e602421e47f051de5eb8efcead5369c8e72"
+  },
+  {
+   "id": "d2216d2767ef3342440eec7fd8e76b767b1452f5c2d67580ab103fab0476b5e1",
+   "name": "v3b-007-final",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v3-base-007/000",
+    "step": 1333362688
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-1c774991",
+    "binding_sha256": "1c774991acbb899f74c9c9a330618f71dd5daf27046928e15b2413190be2a326",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.105,
+     "death": -0.105
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v3-base-007/000/checkpoints/policy-1333362688.bin",
+   "metadata_sha256": "262359beacfbd8e96898f93fc4504a2fd9482cdba87117497999d7f00dfa5888"
+  },
+  {
+   "id": "c9854796480645e5500023954bbaa128ae73dcbbcee022d539208c8b853de934",
+   "name": "v3b-016-final",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v3-base-016/000",
+    "step": 1333362688
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-1c774991",
+    "binding_sha256": "1c774991acbb899f74c9c9a330618f71dd5daf27046928e15b2413190be2a326",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.596,
+     "death": -0.596
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v3-base-016/000/checkpoints/policy-1333362688.bin",
+   "metadata_sha256": "90fecb3eada78848f518db0143a623754953308cf63364cbee0c262ab42f1559"
+  },
+  {
+   "id": "50116362e908384f06d4edca2bb3f6bbc2117abddddf6a33f198e9270d8b559d",
+   "name": "v3b-041-final",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v3-base-041/000",
+    "step": 1333362688
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-1c774991",
+    "binding_sha256": "1c774991acbb899f74c9c9a330618f71dd5daf27046928e15b2413190be2a326",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.909,
+     "death": -0.909
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v3-base-041/000/checkpoints/policy-1333362688.bin",
+   "metadata_sha256": "282fd3fa16c6b9efd65cc6adc11bdb1b76f0cbaa6bcb4abcb4d49f648874b351"
+  },
+  {
+   "id": "5afa185f30f8a0b57712b07a16de8f96e1eae86ba83acb2029bd85b05df4d1b8",
+   "name": "v3b-059-final",
+   "kind": "main",
+   "parent": null,
+   "target": null,
+   "origin": {
+    "run": "native/artifacts/rl/sweeps/v3-base-059/000",
+    "step": 1333362688
+   },
+   "sim": "a73a3f254e464a79efcbe86d73ce7b01c0f465249c0ca15a811fb40de142e004",
+   "reward": {
+    "tag": "binding-1c774991",
+    "binding_sha256": "1c774991acbb899f74c9c9a330618f71dd5daf27046928e15b2413190be2a326",
+    "shaping": {
+     "win": 1,
+     "loss": -1,
+     "timeout": -1.0,
+     "kill": 0.845,
+     "death": -0.845
+    }
+   },
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ]
+   },
+   "added": {
+    "date": "2026-09-24",
+    "rule": "imported: pool-v8 member, from its original run"
+   },
+   "path": "native/artifacts/rl/sweeps/v3-base-059/000/checkpoints/policy-1333362688.bin",
+   "metadata_sha256": "35403f7dcb903df0ee4c2e88e607ef0d36653b03540438a90d7536b8e635874b"
   }
  ],
  "conditions": {
@@ -1411,7 +2414,32 @@
     "mirror_share": 0.0
    },
    "loadout_sha256": "7b56625c7cff601cd6cf31efb05984293d40263db2ca2db0b3ea1c0e4075b4fe"
+  },
+  "simf0ab99a8.fixed-16-3-13.map0-1-2.t7200.d9": {
+   "key": "simf0ab99a8.fixed-16-3-13.map0-1-2.t7200.d9",
+   "sim_sha256": "f0ab99a89167f3012e62c936a225fe25a71f52f8cb820559392881cac65bd092",
+   "maps": [
+    0,
+    1,
+    2
+   ],
+   "episode_ticks": 7200,
+   "delay": 9,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     16,
+     3,
+     13
+    ],
+    "pool": [],
+    "lineups": [],
+    "set_file": null,
+    "no_dup": false,
+    "mirror_share": 0.0
+   },
+   "loadout_sha256": "1190e7840d50849a4f45fdd137dfb5fc5173080f32feba59b567b367ba1d6f49"
   }
  },
- "league_sha256": "efeaeef934c27d382c1837c853a24bdd8fae6871a8776073d45d99d445ad73a9"
+ "league_sha256": "b29c66998fb9f1114d9bb47fa462111379cb705d5e63eae0c3aa0747f64804df"
 }
