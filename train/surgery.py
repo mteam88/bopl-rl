@@ -129,8 +129,16 @@ def aim_segments(arch):
     return out
 
 
+# The tail of a grown Fourier aim block starts at zero, so raising K starts as
+# exactly the aim distribution the source had and learns the finer harmonics from
+# there. Nothing else zero-extends: a new hidden unit whose incoming row is zero
+# sits at the ReLU's dead side and never earns a gradient, so those keep the
+# trainer's init even though it perturbs what the source computed.
+ZERO_EXTENDED = '.harmonics'
+
+
 def overlaps(target_axis, source_axis, extent):
-    """(target slice, source slice, factor) for every segment the two axes share.
+    """(target slice, source slice, factor, zeroed tail) per segment both axes name.
 
     The lone unlabelled segment spans the axis. An aim block the source does not
     have falls back to its block 0: turning aim_ar on gives every button combo the
@@ -150,7 +158,8 @@ def overlaps(target_axis, source_axis, extent):
         if found is not None:
             start, source_size, source_scale = found
             width = min(size, source_size)
-            yield slice(offset, offset + width), slice(start, start + width), source_scale / scale
+            tail = slice(offset + width, offset + size) if label.endswith(ZERO_EXTENDED) and size > width else None
+            yield slice(offset, offset + width), slice(start, start + width), source_scale / scale, tail
         offset += size
 
 
@@ -159,12 +168,14 @@ def graft(name, source, target, source_arch, target_arch):
     source_rows, source_cols = segments(name, source_arch)
     target_rows, target_cols = segments(name, target_arch)
     copied = 0
-    for rows, source_rows_slice, row_factor in overlaps(target_rows, source_rows, (target.shape[0], source.shape[0])):
-        for cols, source_cols_slice, col_factor in overlaps(target_cols, source_cols, (target.shape[1], source.shape[1])):
+    for rows, source_rows_slice, row_factor, tail in overlaps(target_rows, source_rows, (target.shape[0], source.shape[0])):
+        for cols, source_cols_slice, col_factor, _ in overlaps(target_cols, source_cols, (target.shape[1], source.shape[1])):
             block = source[source_rows_slice, source_cols_slice]
             factor = row_factor * col_factor
             target[rows, cols] = block if factor == 1.0 else block * np.float32(factor)
             copied += block.size
+        if tail is not None:
+            target[tail] = 0.0
     return copied
 
 
