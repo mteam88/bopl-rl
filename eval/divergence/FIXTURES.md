@@ -1514,7 +1514,7 @@ pass boundary itself is misplaced.
 
 ### 2. Missile - the released object is published a step further on - 1 case
 
-**Status:** FIXED 2026-09-24, see fixture #11. It was the same defect as
+**Status:** FIXED 2026-09-24, see fixture #14. It was the same defect as
 class 1: `Missile.prefab` is boundary/ability 5/6, and the port steered the
 projectile before running the boundary. The guess recorded below - "the same
 one-pass difference as class 1, seen in velocity and rotation instead of
@@ -1636,8 +1636,20 @@ description implies, and the guess that `grapple` and `beam` being one kit in tw
 slot orders meant something turned out to be a coincidence - measured, by landing
 the rope fix alone and watching every count case stay character-for-character
 identical. The four that remain, `grenade` and `smoke` on `early` and `late`,
-reduce after the count fix to gaps byte-identical to class 1's, so class 1 and
-this half of class 5 are **one** defect and class 1 covers ten cases, not six.
+reduce after the count fix to gaps byte-identical to class 1's.
+
+That resemblance led to a wrong conclusion twice over, recorded here because the
+correction is the transferable part. It was read as meaning class 1 and this half
+of class 5 are one defect, so that class 1 covered ten cases rather than six and
+the ThrowItem2 fix would close these four for free. Measured on two branches,
+neither holds. On `847d7c9b` plus the ThrowItem2 fix alone, `grenade` x3 and
+`smoke` x3 are still divergent at aim 64. On `847d7c9b` plus the five fixes of
+this fixture alone, `grenade` and `smoke` on `early` and `late` are still
+divergent - the two `brink` cases do close here. **The remaining four need both
+fixes and are closed by neither alone.** That is a conjunction of two defects,
+not one defect with a wider blast radius, and not a set of cases either fixture
+can claim. Byte-identical gaps mean two defects displace the same object by the
+same one tick of the same player's motion; they do not mean one defect.
 
 ### 6. Last-bit noise, not defects - 3 cases
 
@@ -1650,10 +1662,27 @@ sound.
 
 ### Where this stands, measured 2026-09-24
 
-On merged main with fixtures #9 through #13 in, the sweep is **110 clean / 4
-divergent**, against 84/30 when it was first run. What is left is
-`missile-early` and `meteor`'s three, and the three `meteor` rows are the
-documented 1-raw-unit cases in class 6 - so the real remaining count is one.
+On merged main with fixtures #9 through #14 in, both libraries rebuilt from
+source and every gate binary deleted first, the sweep is **111 clean / 3
+divergent**, against 84/30 when it was first run. The three are `meteor` early,
+late and brink, all of them the documented 1-raw-unit cases in class 6 - so
+nothing in this sweep is an open defect any more.
+
+```
+meteor  early  tick 348  entity[4].x  ref -175978855390  cand -175978855391
+meteor  late   tick 363  entity[4].x  ref -175978855390  cand -175978855391
+meteor  brink  tick 367  player[0].x  ref -181418992402  cand -181418992403
+```
+
+Two things this sweep does not cover, and neither is visible in that count: the
+field lists are a lower bound per case (the walk stops at the first diverging
+tick), and the aim column is a fixed input rather than a swept one - see below.
+The sweep script itself is worth one warning too. Both of its first two runs on
+this tree produced a wrong answer rather than an error: `bounds_case_trace` is
+not built by any gate target, so deleting the gate executables removes it and
+every case fails in a second, and a guard that tests the reference `.so` for the
+executable bit rejects it because the oracle library is mode 644. A sweep runner
+must abort when a case produces no verdict line, never score it.
 
 ### A second coverage limit: the aim column
 
@@ -1904,7 +1933,7 @@ first: the six guns above (6/2), plus Meteor (5/3), Platform (5/2), Roll (5/4),
 Time stop (5/1), Dash (5/1).
 
 **Sweep class 2, `missile-early`, was this same defect and is now fixed** in
-fixture #11, together with the Mine comment named below. Both are recorded
+fixture #14, together with the Mine comment named below. Both are recorded
 there rather than here.
 
 ### The whole 114 re-run against the base, which is the regression evidence
@@ -1936,7 +1965,7 @@ divergences that the aim-64 run does not show. **Do not compare 76/114 against
 84/114.** The base-versus-fixed pair above is internally consistent and is the
 claim being made.
 
-**Settled afterwards, in fixture #11: the recorded sweep was `BCT_AIM=64`.** The
+**Settled afterwards, in fixture #14: the recorded sweep was `BCT_AIM=64`.** The
 114 re-run at aim 64 measures 24 divergent on this change. `847d7c9b` itself was
 not re-measured at aim 64, so the corroboration is arithmetic and not direct:
 the record's own 30, minus exactly these six, is 24. So the sweep section's
@@ -1956,7 +1985,7 @@ BCT_ABILITIES=37,32,36 BCT_SLOT=0 BCT_AIM=0 BCT_ENGAGE_Y=0.0 BCT_ALL=1 \
 The six cases are `BCT_ABILITIES` 37,32,36 (Mjolnir), 33,2,14 (Poke ball) and
 35,2,14 (Tack), each at `BCT_ENGAGE_Y` 0.0 and -8.0.
 
-## Fixture #11 - Missile steered its projectile one pass past the death, and Mine had the same reversed comment
+## Fixture #14 - Missile steered its projectile one pass past the death, and Mine had the same reversed comment
 
 **Status:** FIXED 2026-09-24 on branch `throwitem-pass`, on top of fixture #9.
 Closes sweep class 2. Two sites, one of which no case measures.
@@ -2063,9 +2092,12 @@ One attribution correction, because it was measured rather than argued: fixture
 #9's ThrowItem2 change closed **six** cases, not ten. On the build carrying
 fixture #9 plus this missile fix but *not* fixture #10, the aim-64 sweep still
 reports `grenade` x3, `smoke` x3, `roll` x3, `grapple` x3 and `beam-brink`
-divergent - thirteen cases that go clean only once fixture #10 lands. So the
-ten-case reading of class 1 belongs to fixture #10's mechanism, not to the
-ThrowItem2 release site.
+divergent - thirteen cases that go clean only once fixture #10 lands. But the
+ten-case reading of class 1 does not belong to fixture #10 either: on `847d7c9b`
+plus fixture #10's five fixes and *not* this one, `grenade` and `smoke` on
+`early` and `late` are still divergent. Four of those cases need both fixtures
+and are closed by neither alone; only the two `brink` cases are fixture #10's on
+its own. The class-1 status block carries the full accounting.
 
 Anyone re-running the sweep should use `BCT_AIM=64` and expect 23 without
 fixture #10, or 10 on merged main with it. At
