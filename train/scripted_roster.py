@@ -147,7 +147,7 @@ def scripted_share(entry_elos, learner_elo, share_min=0.0, share_max=1.0):
 
 
 def rate_entry(entry_elo, learner_elo, wins, games, k):
-    """One PufferLib-window Elo update (selfplay.update_elo opponent side).
+    """One log-window Elo update, opponent side.
 
     Timeouts are not games: `games` is decided matches only. One K-update per
     log interval, not K per game — a window has dozens. The learner is the fixed
