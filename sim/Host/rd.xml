@@ -1,4 +1,4 @@
-<!-- NativeAOT reflection roots (AOT spike - sim/Oracle/AOT-SPIKE.md).
+<!-- NativeAOT reflection roots (AOT spike).
      The Export loader activates gameplay/shim types by exported name
      (ExportDatabase.ResolveType -> Activator.CreateInstance) and resolves
      fields/methods by string (PropertyApplier.ResolveMember,

@@ -3,7 +3,9 @@
 Training uses the pinned PufferLib native CUDA trainer. Persistent Unity IL2CPP
 processes run the reconstructed game; the C environment provides observations,
 stepping, rewards and counters. This is separate from the partial Rust gameplay
-port in the parent `native/` directory.
+port in `native/src/`, which both backends reach through the C ABI in
+`sim/abi/`. The trainer is `train/`, evaluation and the gates `eval/`, the
+league `league/`, the dashboard `board/`.
 
 The current diagnostic uses two players with Dash, Bow and Platform, three stocks,
 and configurable maps. The larger goal remains diverse abilities, maps and
@@ -193,7 +195,7 @@ native/artifacts/rl/venv/bin/python eval/watch_videos.py \
   --run native/artifacts/rl/native-smoke
 ```
 
-`--root` auto-discovers every run (a directory with `metrics.jsonl` or `checkpoints/`). `--run-root NAME=PATH` and `--run-root-glob NAME=GLOB` remain for isolated workspaces; they are not required to list sweep trials. `--pool` is the **primary frozen-pool label** (sweep-objective IQM, run-page side cards), not the joint scale; if omitted, the dashboard prefers pool v6 when `sweeps/anchors/pool-v6/pool.json` exists. `--human` defaults to `human/mac`. Views: `/` all runs, `/ladder` joint Elo, `/lineups` runs × lineups, `/run/<name>`, `/sweep/<name>`. Copy `eval/start-dashboard.example.sh` over the 8876 launcher to drop the old glob list.
+`--root` auto-discovers every run (a directory with `metrics.jsonl` or `checkpoints/`). `--run-root NAME=PATH` and `--run-root-glob NAME=GLOB` remain for isolated workspaces; they are not required to list sweep trials. `--pool` is the **primary frozen-pool label** (sweep-objective IQM, run-page side cards), not the joint scale; if omitted, the dashboard prefers pool v6 when `sweeps/anchors/pool-v6/pool.json` exists. `--human` defaults to `human/mac`. Views: `/` all runs, `/ladder` joint Elo, `/lineups` runs × lineups, `/run/<name>`, `/sweep/<name>`. Copy `board/start-dashboard.example.sh` over the 8876 launcher to drop the old glob list.
 
 Every run carries its loadout selection (`config.json["loadouts"]`, mirrored in each
 evaluation's `loadout_selection`), so the board and the sweep table badge it —

@@ -17,7 +17,7 @@
     <ProjectReference Include="../Export/Export.csproj" />
   </ItemGroup>
 
-  <!-- NativeAOT spike (sim/Oracle/AOT-SPIKE.md): reflection roots for the
+  <!-- NativeAOT spike: reflection roots for the
        string-driven Export loader. No effect on regular builds. -->
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <RdXmlFile Include="rd.xml" />
