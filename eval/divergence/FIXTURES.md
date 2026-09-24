@@ -1352,6 +1352,36 @@ the 114-case sweep, before and after. Whoever picks it up should find a case
 where the mine form publishes something on its death pass first, rather than
 reorder on the strength of the prefab alone.
 
+### The whole 114 re-run against the base, which is the regression evidence
+
+The eight gates are green, but none of them reads a mid-flight trajectory, so
+they cannot by themselves say this change moved only what it was aimed at. So
+the 114-case sweep was run twice on the same machine and the same oracle: once
+on `847d7c9b` rebuilt from source, once on this change, with identical
+parameters.
+
+```
+base    clean=70  divergent=44  total=114
+fixed   clean=76  divergent=38  total=114
+```
+
+The divergent **sets** differ by exactly the six cases this fixture is about -
+`mjolnir`, `poke_ball` and `tack` at `early` and `late` - and by nothing else.
+Every one of the 38 surviving divergences reports a **byte-identical**
+`FIRST any` line before and after, so no other case moved even in its last bit.
+
+One caveat on the numbers, because they do not match the 84/114 recorded in the
+sweep section above: this pair was run at `BCT_AIM=0`, which is what the sweep's
+own "Reproduce" block and the class-1 measurements use, while the prose there
+says the aim column comes from the case table in `bounds_ability_ab.c`, where it
+is 64. The two parameterizations give different totals - the aimed-gun family of
+fixture #1 is aim-sensitive, and at `BCT_AIM=0` `plain`, `duplicator`, `blink`,
+`freeze`, `growth_ray`, `shrink_ray` and `magnet` pick up entity-basis
+divergences that the aim-64 run does not show. **Do not compare 76/114 against
+84/114.** The base-versus-fixed pair above is internally consistent and is the
+claim being made; whoever re-runs the full sweep should settle which aim the
+record means and say so.
+
 ### Reproduce
 
 ```bash
