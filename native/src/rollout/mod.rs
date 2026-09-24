@@ -11895,8 +11895,26 @@ impl RolloutWorld {
             let t = data.black_hole.size_curve.evaluate(hole.time_since_growth);
             let size = (hole.previous_target_size * (Fix::ONE - t) + hole.target_size * t)
                 .max(data.black_hole.min_size);
-            hole.radius = (size * data.black_hole.start_radius * Fix::from_f32(0.01))
-                .max(data.black_hole.min_size);
+            // BlackHole.UpdateSize forms the unit first and then scales it:
+            // `Fix fix = startRadius * (Fix)0.01f;` then `t * fix`
+            // (BlackHole.cs:198-203). Fix multiply floors, and floor-multiply is
+            // not associative, so grouping it as (size * startRadius) * 0.01 the
+            // way this line used to makes the hole steadily too large: +68 raw at
+            // size 100, +79 at 115, +89 at 130, +137 at 200. That radius feeds the
+            // influence gate, the eat-contact tests and the exported entity
+            // radius, so copy the C# grouping literally rather than the algebra.
+            let unit = data.black_hole.start_radius * Fix::from_f32(0.01);
+            let candidate = size * unit;
+            // C# returns early when the candidate is below minSize and leaves the
+            // previous radius in place (BlackHole.cs:199-201) - it never clamps up
+            // to minSize, which is what `.max(min_size)` here used to do. With the
+            // shipped constants (startRadius 1.24, minSize 0.15, targetSize >= 100)
+            // the candidate is ~1.24 and the branch is unreachable, so this changes
+            // nothing today; it is written this way so it stays right if a mod or a
+            // future ability shrinks a hole.
+            if candidate >= data.black_hole.min_size {
+                hole.radius = candidate;
+            }
             if stopped {
                 if let Some(entity) = hole.entity {
                     self.entities[entity].radius = hole.radius.raw();

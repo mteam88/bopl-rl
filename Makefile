@@ -298,7 +298,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
+.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward check-routing
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.
@@ -306,6 +306,25 @@ $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 # this reads, so what is under test is only what the reward makes of them.
 check-reward: $(OUT)/check_reward
 	$(OUT)/check_reward
+
+# Per-player routing: PufferLib's agent permutation, the frozen bank slices, and
+# the tag / count_aligned alignment protocol that decides which matches count
+# towards per-bank pool statistics. No game process and no GPU - it loads a
+# backend library and steps it on the host path.
+#
+# Both backends on purpose. They must agree, and *how* they disagree is the
+# diagnostic: if the oracle and the port fail the same checks the bug is in the
+# check, because two independent implementations do not share one; if only the
+# port fails, it is a port divergence. Diagnosing the 2026-09-24 failures took
+# exactly that comparison (FIXTURES.md, "Open items").
+#
+# --output must be absolute: it becomes the native log path, and bopl_rl_open
+# rejects a relative executable/replay/log outright (and aborts doing it).
+check-routing: $(RUST_ROLLOUT)
+	native/artifacts/rl/venv/bin/python train/check_routing.py \
+	  --game $(abspath $(REFERENCE)) --output $(abspath $(OUT))/check-routing-oracle
+	native/artifacts/rl/venv/bin/python train/check_routing.py \
+	  --game $(abspath $(RUST_ROLLOUT)) --output $(abspath $(OUT))/check-routing-port
 
 $(OUT)/check_reward: eval/check_reward.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)

@@ -567,14 +567,29 @@ the error scales with size. It feeds the influence gate (amplified ~5x by
 radius. The port also clamps unconditionally where C# returns early at
 `BlackHole.cs:199-201` and leaves the previous radius in place.
 
-The one-line correction is `let unit = start_radius * Fix::from_f32(0.01);
-hole.radius = (size * unit).max(min_size);`. It is **not** applied on this
-branch: it changes Black hole sizing globally - influence gates and eat
-contacts - so it wants its own change and its own full gate run, and it is
-unrelated to the boundary component this fixture is about. It was tried, and
-**it does not close the player-1 residue above**: the residue's raw values are
+**Fixed separately after this fixture merged**, as its own change with its own
+full gate run, because it changes Black hole sizing globally - influence gates
+and eat contacts - and is unrelated to the boundary component this fixture is
+about. Two things were corrected, not one:
+
+- the grouping, now `let unit = start_radius * Fix::from_f32(0.01);` then
+  `size * unit`, matching the C# term for term;
+- the clamp. C# returns early below `minSize` and leaves the previous radius in
+  place; the port used `.max(min_size)`, which clamps *up*. With the shipped
+  constants (`startRadius` 1.24, `minSize` 0.15, `targetSize` >= 100) the
+  candidate is about 1.24 and that branch is unreachable, so this half changes
+  nothing today and is written faithfully only so it stays right if anything
+  ever shrinks a hole.
+
+The +68/+79/+89/+137 figures were reproduced independently from the raw
+constants before the fix was applied, by evaluating both groupings under
+floor-multiply. They come out exactly, and only when `0.01` truncates to raw
+42949672 rather than rounding to 42949673 - which incidentally confirms
+`Fix::from_f32` truncates.
+
+It **does not** close the player-1 residue above: the residue's raw values are
 byte-identical with and without it (`cand 54678440797`). Whatever moves player 1
-is not the radius.
+is not the radius, and that remains open.
 
 The remaining lead, for whoever picks this up: the rounded-rect loop is the only
 *unbounded-range* channel from a hole to a distant body, because the shipped
@@ -692,7 +707,31 @@ the `bopl_vec_reset` that follows it in the trainer, so it inspected a state the
 trainer never trains from; and counting completed matches as `matches-1` when
 the native reset makes the pre-stepping baseline 2.
 
-No gate covers `check_routing.py`, which is how it drifted through an
-observation-layout change unnoticed. It needs no GPU, so it is a cheap gate
-candidate - but by this repo's standard it has to be watched failing on a
-deliberately broken build before it is worth trusting.
+Nothing gated `check_routing.py`, which is how it drifted through an
+observation-layout change unnoticed. `make check-routing` now does, running
+**both** backends, because the oracle and the port agreeing is the diagnostic
+that separates a broken check from a real divergence.
+
+It was proven to fail before it was trusted. Reverting each of the three fixes
+individually, the gate fails with a distinct signature each time, and the
+unmodified tree passes:
+
+| reverted | gate | failing checks |
+|---|---|---|
+| row pitch | FAIL | 6 - the observation-content cluster |
+| native reset | FAIL | 8 - the terminal flags *and* the routing checks, because without it the games are never restarted under the installed permutation |
+| completion arithmetic | FAIL | 1, reporting `matches=40 completed=44` |
+| nothing (HEAD) | PASS | 62 across both backends |
+
+The clean arm earned its keep immediately: on the first attempt all four arms
+"failed", including that one, which is what exposed the gate itself being wrong
+rather than the code. `--output` becomes the native log path and `bopl_rl_open`
+rejects a relative executable/replay/log, so the target needs
+`$(abspath $(OUT))`. A three-arm proof without a clean control would have read
+as a total success.
+
+Worth noting alongside the handshake result above: *that* path aborts. A relative
+path fails the startup check with `Absolute executable/replay/log paths and
+timeout 1..3600000 ms required` and dumps core. So "does the ABI dump core" has
+different answers for different rejections - the protocol-version rejection exits
+0 cleanly, the path-validation rejection aborts.
