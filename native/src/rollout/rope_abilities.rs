@@ -398,10 +398,17 @@ impl RolloutWorld {
 
     fn fire_grapple(&mut self, player: usize, ability_slot: usize, action: Action) {
         let source = &data::get().ropes;
-        let mut direction = action.direction();
-        if direction == Vec2::ZERO {
-            direction = Vec2::RIGHT;
-        }
+        // HookshotInstant.FireHook offsets the spawn by the raw aim vector and
+        // only substitutes Vec2.right for the hook's *velocity*
+        // (sim/Gameplay/HookshotInstant.cs:152-156). With no aim input the
+        // oracle therefore spawns the hook and the rope exactly on the body and
+        // still launches it rightwards.
+        let aim = action.direction();
+        let launch = if aim == Vec2::ZERO {
+            Vec2::RIGHT
+        } else {
+            aim
+        };
         let position = self.players[player].base.position;
         let player_query = Circle {
             center: position,
@@ -424,7 +431,7 @@ impl RolloutWorld {
         let rope_end = nearby_player
             .map(|target| self.players[target].base.position)
             .unwrap_or(position);
-        let hook_position = rope_end + direction * source.grapple_spawn_offset;
+        let hook_position = rope_end + aim * source.grapple_spawn_offset;
         let hook_id = self.next_id();
         let hook_entity = self.entities.len();
         self.entities.push(CEntity {
@@ -459,7 +466,7 @@ impl RolloutWorld {
             rope.hook_active = true;
             rope.hook_entity = Some(hook_entity);
             rope.hook_position = hook_position;
-            rope.hook_velocity = direction * source.grapple_speed;
+            rope.hook_velocity = launch * source.grapple_speed;
             rope.hook_end_player = nearby_player.unwrap_or(player);
         }
         if let Some(target) = nearby_player {
@@ -1002,8 +1009,12 @@ impl RolloutWorld {
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
+                    // RopeHook.OnCollide destroys the hitbox and the component
+                    // and leaves the GameObject alone (RopeHook.cs:182-189), so
+                    // RlObservation's activeInHierarchy bit stays set while the
+                    // enabled bit clears (RlObservation.cs:115-117).
                     self.entities[entity].flags =
-                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                        (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
                 }
                 continue;
             }
@@ -1043,8 +1054,12 @@ impl RolloutWorld {
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
+                    // RopeHook.OnCollide destroys the hitbox and the component
+                    // and leaves the GameObject alone (RopeHook.cs:182-189), so
+                    // RlObservation's activeInHierarchy bit stays set while the
+                    // enabled bit clears (RlObservation.cs:115-117).
                     self.entities[entity].flags =
-                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                        (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
                 }
                 continue;
             }
@@ -1080,8 +1095,12 @@ impl RolloutWorld {
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
+                    // RopeHook.OnCollide destroys the hitbox and the component
+                    // and leaves the GameObject alone (RopeHook.cs:182-189), so
+                    // RlObservation's activeInHierarchy bit stays set while the
+                    // enabled bit clears (RlObservation.cs:115-117).
                     self.entities[entity].flags =
-                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                        (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
                 }
             }
         }
