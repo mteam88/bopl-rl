@@ -1755,7 +1755,24 @@ Class 1 happens to reproduce at either aim, which is why fixture #9's six cases
 were measured at 0 without anything looking wrong; class 2 does not, and that is
 the case that exposes it.
 
-Anyone re-running the sweep should use `BCT_AIM=64` and expect 23. At
+**Re-measured on merged main** (`a55aca5f`, which carries fixture #10's rope and
+death-publication work) with this change on top and both libraries rebuilt:
+**104 clean / 10 divergent**, against 11 on `a55aca5f` without it. The one case
+that closes is `missile-early`, and the ten that remain are `gold_mushroom` x3,
+`meteor` x3, `platform` x2 and `rewind` x2 - none of them this fixture's, and
+`meteor` is the one-raw-unit noise class. All eight gates green on that same
+merged build.
+
+One attribution correction, because it was measured rather than argued: fixture
+#9's ThrowItem2 change closed **six** cases, not ten. On the build carrying
+fixture #9 plus this missile fix but *not* fixture #10, the aim-64 sweep still
+reports `grenade` x3, `smoke` x3, `roll` x3, `grapple` x3 and `beam-brink`
+divergent - thirteen cases that go clean only once fixture #10 lands. So the
+ten-case reading of class 1 belongs to fixture #10's mechanism, not to the
+ThrowItem2 release site.
+
+Anyone re-running the sweep should use `BCT_AIM=64` and expect 23 without
+fixture #10, or 10 on merged main with it. At
 `BCT_AIM=0` the totals differ in both directions - the aimed-gun family of
 fixture #1 picks up entity-basis divergences that aim 64 does not show, and
 `missile` loses its only divergent phase - so the two are not comparable and
