@@ -808,7 +808,7 @@
     "no_dup": false,
     "mirror_share": 1.0
    },
-   "loadout_sha256": "ee57f108e5691eb78c49000c7b4a3807e194994429e8f7b4f087b3a62b1be4db"
+   "loadout_sha256": "d9e3107a7b2d40db679c1a6f0b1825c0088f78e7f8122c47e56c6968564ec816"
   },
   "simf0ab99a8.lineups-own-kit.map012.t7200.d9": {
    "key": "simf0ab99a8.lineups-own-kit.map012.t7200.d9",
@@ -1410,7 +1410,7 @@
     "no_dup": false,
     "mirror_share": 0.0
    },
-   "loadout_sha256": "6b8178669180ad43ea86a68545063aff6e3ed13947e88fca34cdb6a4d46d24ad"
+   "loadout_sha256": "7b56625c7cff601cd6cf31efb05984293d40263db2ca2db0b3ea1c0e4075b4fe"
   }
  },
  "league_sha256": "efeaeef934c27d382c1837c853a24bdd8fae6871a8776073d45d99d445ad73a9"

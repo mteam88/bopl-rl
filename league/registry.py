@@ -45,7 +45,17 @@ def loadout_tag(loadouts):
 
 
 def loadout_sha256(loadouts):
-    return hashlib.sha256(json.dumps(loadouts, sort_keys=True).encode()).hexdigest()
+    """Fingerprint of a loadout distribution, independent of where it was read from.
+
+    `set_file` is excluded: it is an absolute path into whichever checkout ran
+    the measurement, so hashing it would make two identical conditions measured
+    from two clones disagree, and `play`'s guard against one condition key naming
+    two different loadout sets would fire on a move rather than on a change.
+    Nothing is lost - `lineups` already holds the file's expanded contents, which
+    is what actually decides who plays what.
+    """
+    content = {key: value for key, value in loadouts.items() if key != 'set_file'}
+    return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
 def condition(sim_sha256, loadouts, maps, episode_ticks=7200, delay=9):

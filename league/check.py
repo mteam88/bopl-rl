@@ -275,6 +275,13 @@ def run():
         else:
             check.skip('league-detects-weight-swap', 'fewer than two checkpoint members seeded')
 
+    # A condition's fingerprint must not depend on where the league was cloned.
+    moved = dict(league['conditions'][sorted(league['conditions'])[0]]['loadouts'])
+    here = registry.loadout_sha256(moved)
+    moved['set_file'] = '/somewhere/else/' + str(moved.get('set_file') or 'x').rsplit('/', 1)[-1]
+    check.ok('condition-fingerprint-is-path-independent', registry.loadout_sha256(moved) == here,
+             'the same loadout set measured from another checkout fingerprints the same')
+
     # Opponent loading. The failure this guards against happened: a run with the
     # `set` encoder loaded eight v4 members into its banks, the 4.4 MB weight
     # files were read into 620 KB policies without complaint, and every one of
