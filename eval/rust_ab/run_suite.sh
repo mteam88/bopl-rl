@@ -49,7 +49,7 @@ trace_only="
 # representation check that takes two Rust builds rather than the oracle.
 # `replay_ab` is a differential, but it takes replay-specific arguments
 # rather than two library paths; drive it with `make replay-ab`.
-not_differential=" aim_map bow_test platform_rotation_trace repr_ab replay_ab "
+not_differential=" aim_map bow_test repr_ab replay_ab "
 
 pass=0; fail=0; skipped=0
 failures=()
@@ -114,5 +114,15 @@ echo
 echo "pass=$pass fail=$fail skipped=$skipped"
 if [ ${#failures[@]} -gt 0 ]; then
   printf 'failed: %s\n' "${failures[@]}"
+  exit 1
+fi
+
+# Probes are discovered by globbing this directory, so deleting one narrows the
+# suite without failing it: fail=0 reads identically whether 215 probes passed
+# or 3 did. Assert the floor. Raise it when you add probes; lowering it is a
+# deliberate act that should say why in the commit.
+probe_floor=215
+if [ -z "$filter" ] && [ $((pass + fail + skipped)) -lt "$probe_floor" ]; then
+  echo "COVERAGE $((pass + fail + skipped)) probes ran, floor is $probe_floor" >&2
   exit 1
 fi
