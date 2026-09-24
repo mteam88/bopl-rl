@@ -881,7 +881,11 @@ oracle's for this ability, which needs the Updater registration order for a
 ability forms that spawn something from an animator callback have the same
 one-pass skew, since the fix here is local to Black hole.
 
-## Fixture #9 - what a death publishes: the rope's detach bit, and four defects stacked behind it
+## Fixture #10 - what a death publishes: the rope's detach bit, and four defects stacked behind it
+
+Numbered after #9 but written in parallel with it and merged second, so it sits
+earlier in this file than the fixture it follows. The sections here are in the
+order they were appended, not in numeric order.
 
 Found 2026-09-24 by taking class 5 of the 114-case sweep - "a different number
 of objects released by the death", thirteen cases - and driving each one to
@@ -1162,7 +1166,7 @@ beam-brink         367                367 / 367
 grapple-early      383                383 / 383
 grapple-late       378                378 / 378
 grapple-brink      367                367 / 367
-                   ^ wrong: see fixture #9. These three are the `FIRST discrete`
+                   ^ wrong: see fixture #10. These three are the `FIRST discrete`
                      line. At BCT_AIM=0 grapple first diverges at the engage
                      tick, 348 / 363 / 367, on the hook's position.
 missile-early      371                371 / 371
@@ -1361,7 +1365,7 @@ one bit, set on every node and on no other field, so it is a single per-node fla
 the port never sets on the tick the rope's owner dies - worth fixing on its own
 and independent of the permutation.
 
-**Closed 2026-09-24 under fixture #9**, which took all thirteen and got eleven of
+**Closed 2026-09-24 under fixture #10**, which took all thirteen and got eleven of
 them to `FIRST any none`. It needed five fixes rather than the one or two this
 description implies, and the guess that `grapple` and `beam` being one kit in two
 slot orders meant something turned out to be a coincidence - measured, by landing
