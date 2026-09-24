@@ -326,6 +326,28 @@ def command_rate(args):
               f"mixture beats the anchors' at {0.5+value['value']:.3f}.")
 
 
+def run_opponent_shares(directory):
+    """The opponent distribution a training run ACTUALLY played, by games.
+
+    rating.saturation asks for the shares that were played, not the weights
+    that were intended, and until PFSP landed nothing recorded them. The
+    trainer's pool/state.json ledger now carries games/wins/draws per snapshot
+    and pool/roster.json the same for the scripted entries; between them that is
+    the whole realized distribution. Returns {} when the run has played nothing,
+    so the caller reports None rather than a confident zero entropy.
+    """
+    directory = Path(directory)
+    state = json.loads((directory / 'pool' / 'state.json').read_text())
+    counts = {Path(path).name: int(row.get('games') or 0)
+              for path, row in (state.get('ledger') or {}).items()}
+    roster = directory / 'pool' / 'roster.json'
+    if roster.is_file():
+        for entry in json.loads(roster.read_text()).get('entries') or []:
+            counts[entry['name']] = int(entry.get('games') or 0)
+    total = sum(counts.values())
+    return {name: games / total for name, games in counts.items() if games} if total else {}
+
+
 def command_status(args):
     data = readout(args.condition, bootstrap=0 if args.fast else 200)
     league, names = data['league'], data['names']
@@ -342,8 +364,9 @@ def command_status(args):
     print(f"  {cover['pairs_played']}/{cover['pairs_possible']} pairs ({cover['fraction']:.0%}), "
           f"{cover['games_total']} games, {cover['games_per_pair_min']} games per pair at the thinnest")
     newest = registry.ids_for(data['league'], [args.newest])[0] if args.newest else None
+    shares = run_opponent_shares(args.run_dir) if args.run_dir else None
     health = rating.saturation(names, data['counts'], elo=data['fit']['ratings'],
-                               mixture=data['mixture'], newest=newest)
+                               mixture=data['mixture'], opponent_shares=shares, newest=newest)
     print('\nsaturation')
     print(f"  Elo spread {health['elo_spread']:.0f} (range {health['elo_range']:.0f}) "
           f"-- collapsing toward 0 means members stopped differing")
@@ -355,7 +378,14 @@ def command_status(args):
     if warning:
         print(warning)
     if health.get('opponent_entropy') is None:
-        print('  realized opponent distribution: none recorded (no learner has trained against this league yet)')
+        print('  realized opponent distribution: none recorded '
+              + ('(that run has played nothing yet)' if args.run_dir
+                 else '(pass --run to read one from a training run\'s pool)'))
+    else:
+        print(f"  realized opponent distribution over {len(shares)} opponents: entropy "
+              f"{health['opponent_entropy']:.2f}/{health['opponent_entropy_max']:.2f} nats, "
+              f"top share {health['opponent_top_share']:.0%} "
+              f"-- this is what was played, not what the pool intended")
     if health.get('ranking_shift'):
         shift = health['ranking_shift']
         print(f"  dropping {data['label'][shift['member']]}: kendall tau {shift['kendall_tau']:.4f}, "
@@ -407,6 +437,10 @@ def main(argv=None):
     status.add_argument('--condition')
     status.add_argument('--newest', help='member to leave out for the ranking-shift test')
     status.add_argument('--fast', action='store_true')
+    # dest is not `run`: every subparser stores its handler there (set_defaults below).
+    status.add_argument('--run', dest='run_dir',
+                        help="training run directory whose pool/ supplies the realized "
+                             "opponent distribution (otherwise it reads as unrecorded)")
     status.set_defaults(run=command_status)
 
     sub.add_parser('check', help='prove the estimators on constructed matrices').set_defaults(run=command_check)

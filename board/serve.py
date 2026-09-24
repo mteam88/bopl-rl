@@ -33,7 +33,9 @@ from urllib.parse import unquote, urlparse, parse_qs
 # The dashboard reads the evaluation tree's stores and catalogues; those modules
 # live in eval/, which used to be this file's own directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'eval'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from league import pfsp
 from metrics_store import store
 import packed
 import payoff
@@ -426,21 +428,38 @@ def opponent_distribution(directory):
                 'reason': 'This run has no pool/state.json or pool/roster.json, so '
                           'which opponents it played was never recorded.'}
 
-    live = {entry.get('path'): entry.get('elo')
-            for entry in pool.get('pool') or [] if entry.get('path')}
+    live = [entry['path'] for entry in pool.get('pool') or [] if entry.get('path')]
     banks = pool.get('banks') or []
     serving = [bank.get('cur_opp_path') for bank in banks if bank.get('cur_opp_path')]
+    ledger = state.get('ledger') or {}
+
+    # What the pool intends right now, against every draw it ever made. The
+    # scores are the learner's own draw-aware scores, which is what PFSP weights
+    # (league/pfsp.py); passing the opponent's instead inverts the curriculum.
+    scores = {}
+    for path in live:
+        record = ledger.get(path) or {}
+        games, wins, draws = (int(record.get(k) or 0) for k in ('games', 'wins', 'draws'))
+        scores[path] = pfsp.score(wins, games - wins - draws, draws)
+    exponent = pool.get('pfsp_p')
+    hopeless = bool(scores) and max(scores.values()) < 0.3
+    f = pfsp.f_var if hopeless else (lambda x: pfsp.f_hard(x, exponent if exponent is not None else 1.0))
+    intended = pfsp.weights(scores, f)
+    drawn = pfsp.realized(pool.get('picks') or [], candidates=live)
 
     entries = []
-    for path, record in (state.get('ledger') or {}).items():
+    for path, record in ledger.items():
         games = int(record.get('games') or 0)
         wins = int(record.get('wins') or 0)
+        draws = int(record.get('draws') or 0)
         entries.append({
             'id': Path(path).name, 'kind': 'snapshot',
             'step': record.get('step'), 'learner_steps': record.get('learner_steps'),
             'games': games, 'wins': wins,
             'winrate': (wins / games) if games else None,
-            'elo': live.get(path), 'live': path in live, 'serving': path in serving,
+            'score': pfsp.score(wins, games - wins - draws, draws) if games else None,
+            'intended': intended.get(path), 'drawn': drawn.get(path),
+            'live': path in live, 'serving': path in serving,
         })
     for entry in roster.get('entries') or []:
         games = int(entry.get('games') or 0)
@@ -449,7 +468,7 @@ def opponent_distribution(directory):
             'id': entry.get('name'), 'kind': 'scripted', 'step': None,
             'games': games, 'wins': wins,
             'winrate': (wins / games) if games else None,
-            'elo': entry.get('elo'), 'live': True, 'serving': False,
+            'score': None, 'elo': entry.get('elo'), 'live': True, 'serving': False,
         })
     total = sum(entry['games'] for entry in entries) or 1
     for entry in entries:
@@ -485,7 +504,14 @@ def opponent_distribution(directory):
         'scripted_realized_lifetime': scripted_games / total,
         'scripted_intended_final': roster.get('share'),
         'max_size': pool.get('max_size') or policy.get('max_size'),
-        'swap_winrate': pool.get('swap_winrate') or policy.get('swap_winrate'),
+        'pfsp_p': exponent if exponent is not None else policy.get('pfsp_p'),
+        'pfsp_f': 'var' if hopeless else 'hard',
+        # Intended is a wish; drawn is every PFSP draw the run ever made; the
+        # bars above are games. All three collapse differently, so show all three.
+        'pfsp_divergence': pfsp.divergence(intended, drawn) if pool.get('picks') else None,
+        'pfsp_intended_entropy': pfsp.entropy(intended),
+        'pfsp_drawn_entropy': pfsp.entropy(drawn) if pool.get('picks') else None,
+        'pfsp_draws': len(pool.get('picks') or []),
         'snapshot_interval': pool.get('snapshot_interval') or policy.get('snapshot_interval'),
         'events': dict(events),
         'timeline': _pool_timeline(directory),
@@ -518,7 +544,7 @@ def _pool_timeline(directory):
         out.append({
             'event': record['event'], 'step': record.get('step'),
             'learner_steps': record.get('learner_steps'), 'bank': record.get('bank'),
-            'winrate': record.get('winrate'), 'elo': record.get('elo'),
+            'score': record.get('score'),
         })
     out.sort(key=lambda item: item.get('learner_steps') or 0)
     if len(out) > 600:

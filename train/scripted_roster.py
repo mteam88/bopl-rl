@@ -100,6 +100,18 @@ def initial_elo(name, ratings, elo_init=0.0):
     return float(elo_init) + float(ratings[hard]) - LEVEL_GAP * steps
 
 
+# The roster rates its bots RELATIVE TO THE LEARNER, with the learner fixed at
+# the origin: every consumer below reads only win_prob's difference, so an
+# entry's Elo is "how far above the current learner this bot is" and the whole
+# drift lands on the entries. This number used to come from the self-play
+# pool's online Elo -- the learner rated on games against frozen snapshots, then
+# spent on scripted matchmaking, two conditions conflated into one rating.
+# Cross-condition ratings are league/rating.py's job, measured post-hoc.
+LEARNER_ELO = 0.0
+# One K-update per log window, not per game: a window holds dozens of matches.
+ELO_K = 16.0
+
+
 def win_prob(learner_elo, entry_elo):
     """P(learner beats entry) on the pool's 400-point Elo scale."""
     return 1.0 / (1.0 + 10.0 ** ((float(entry_elo) - float(learner_elo)) / 400.0))
@@ -135,11 +147,11 @@ def scripted_share(entry_elos, learner_elo, share_min=0.0, share_max=1.0):
 
 
 def rate_entry(entry_elo, learner_elo, wins, games, k):
-    """One PufferLib-window Elo update (selfplay.update_elo opponent side).
+    """One log-window Elo update, opponent side.
 
     Timeouts are not games: `games` is decided matches only. One K-update per
-    log interval, matching the pool (not K per game — a window has dozens).
-    Learner Elo is not moved; it comes from the pool.
+    log interval, not K per game — a window has dozens. The learner is the fixed
+    origin (LEARNER_ELO); only entries move.
     """
     games = int(games)
     if games <= 0:

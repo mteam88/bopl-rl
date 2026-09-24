@@ -77,26 +77,58 @@ Required (all currently written by `train.py`):
 - `pool_steps` (physical decisions of the snapshot each frozen bank currently
   serves, sorted), `opponent_game_decisions`, `script_assignments`
 - `cuda_memory_mb`, `rollout_seconds`, `train_seconds`
-- `pool` — PufferLib self-play pool state after this update:
-  `{schema:1, elo (learner), size, winrate (learner vs all banks since their
-  last swaps, nullable), entries:[{step, learner_steps, elo, games, winrate}],
-  banks:[{opponent_step, opponent_elo, games, winrate, pending_step,
-  winrate_at_swap, epochs_to_align}]}`. `games`/`winrate` on entries are
+- `pool` — PFSP self-play pool state after this update:
+  `{schema:2, size, winrate (learner vs all banks since their last swaps,
+  nullable), entries:[{step, learner_steps, games, winrate, score}],
+  banks:[{opponent_step, games, winrate, score, draws, pending_step,
+  score_at_swap, epochs_to_align}], pfsp:{...}}`. `winrate` is wins/games;
+  `score` is the draw-aware score PFSP actually weights on (a draw is half a
+  win, and an undecided round or a timeout is a draw). On entries these are
   lifetime totals for that snapshot as an opponent; on banks they cover the
-  current opponent only. `<run>/pool.jsonl` holds the corresponding events
-  (`snapshot`, `evicted` with lifetime stats, `armed`, `loaded` with the
-  retired opponent's stats), each with `learner_steps` and the learner `elo`.
+  current opponent only. There is no Elo here: ratings are `league/rating.py`'s,
+  measured post-hoc under a fixed condition.
+
+  `pool.pfsp` is the saturation block, and it is the point:
+  `{p, f ("hard"|"var"), candidates, draws, games, intended:{step: weight},
+  realized:{step: share}, played:{step: share}, played_evicted, divergence,
+  entropy:{intended, realized, played}, played_top2, serving}`.
+  `intended` is what the pool wants *now*; `realized` is the share of every
+  PFSP draw the run ever made; `played` is the share of games actually played,
+  restricted to live members with the evicted remainder in `played_evicted`.
+  `divergence` is the total variation distance between `intended` and
+  `realized`. `divergence`, `entropy.realized`, `entropy.played` and
+  `played_top2` are **null until there is a sample** — before the first draw
+  and the first game those distributions are empty, not collapsed, and a
+  confident 0 there would read as saturation for the opening stretch of every
+  run. `played_top2` is the games share of the two most-played
+  opponents and `serving` the number of distinct opponents the banks currently
+  hold — a pool collapsing onto two opponents shows up as `played_top2` near 1,
+  `entropy.played` falling toward ln 2, `serving` below the bank count, and a
+  `divergence` that stays high while `entropy.intended` still looks healthy.
+  The same numbers are on the per-update console line under `pfsp`.
+
+  `python -m league status --run <run>` feeds the same realized distribution
+  (pool ledger plus scripted roster, by games played) into
+  `league/rating.saturation`'s `opponent_shares`, which fills
+  `opponent_entropy` / `opponent_entropy_max` / `opponent_top_share`. Without
+  `--run` that field stays None: unrecorded, not a confident zero.
+
+  `<run>/pool.jsonl` holds the corresponding events (`snapshot`, `evicted` with
+  lifetime stats, `armed` with the `score` that freed the slot, `loaded` with
+  the retired opponent's stats), each with `learner_steps`.
   With `--scripted-bots` / `--scripted-roster`, `pool.banks` covers only the
   policy banks (or all banks when leftover frozen matches are possible);
   the scripted banks report per update under `scripted` and the sibling
-  fields `scripted_share`, `scripted_learner_elo`:
+  field `scripted_share`:
   `scripted` is `{"<kind>-<level>": {bank, elo, games, winrate, weight,
   window_games, window_wins}}` — `games`/`winrate`/`elo` are lifetime
   decided learner-vs-entry totals (timeouts excluded); `window_*` and
   `weight` are this update's draw. `scripted_share` is the bot-match
   fraction pushed to C (`clamp(share_min, share_max * I)` with
-  `I = max 4p(1-p)`). `scripted_learner_elo` is the pool's learner Elo
-  used for matchmaking (`--scripted-roster`; the bots are defined in
+  `I = max 4p(1-p)`). Entry Elos are measured against the learner as a fixed
+  origin (`scripted_roster.LEARNER_ELO`), so an entry's Elo reads as "how far
+  above the current learner this bot is"; there is no separate learner Elo
+  field any more (`--scripted-roster`; the bots are defined in
   `train/bopl_bots.h`).
 
 New — the dashboard renders these once present (per update):

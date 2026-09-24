@@ -1,105 +1,262 @@
-"""PufferLib's selfplay pool (pufferlib.selfplay) on the Bopl trainer's layout.
+"""Prioritized fictitious self-play over the trainer's frozen banks.
 
-pufferlib.selfplay.setup assumes every environment has the same number of
-agents; Bopl's self-play games take two rows and historical games 1+banks rows
-(one per frozen bank, one active). The state built here has exactly the keys
-selfplay.step reads, and the trainer calls selfplay.step every update for the
-Elo ratings, opponent sampling, snapshot cadence, eviction and bank swaps.
+The banks stay: they are a native construct (backend.load_frozen_bank, perm
+tags 1..num_banks, the per-bank counters bopl_puffer.h emits) and playing many
+opponents at once is what AlphaStar does too. What changed is which opponent a
+freed slot receives, and when a slot is freed.
+
+  - choice: league.pfsp.sample over the current pool, weighted by
+    f_hard(x) = (1-x)^p where x is OUR draw-aware score against that member.
+    When we cannot beat anything in the pool f_hard is degenerate -- it would
+    pour every game into the matchup we lose 100-0 -- so the draw falls back to
+    f_var, which peaks on coin-flips. league/pfsp.py owns the conventions.
+  - retirement: league.pfsp.informative, a Wilson-interval band gate. A matchup
+    is retired when it is SETTLED (its whole confidence interval lies outside
+    15-85%), not when we happen to be ahead. The games floor (min_games) and
+    the step timeout escape hatch are unchanged.
+
+There is no online Elo here any more. Ratings are league/rating.py's job,
+measured post-hoc under one fixed condition; a k=16 Elo updated inside the
+training loop conflates every condition it ever saw, which is the thing the
+league registry exists to avoid.
+
+Draws are real. bopl_puffer.h emits hist_decided_bank_{b} beside
+hist_n_bank_{b} / hist_score_bank_{b}, so wins/losses/draws are derived exactly
+instead of charging every undecided round as a loss. That mattered: f_hard
+would have read a draw-heavy matchup as a hard one and poured CPU into it.
 
 Swaps replace a bank's weights in place while its matches run (the alignment
 gate only waits until every environment of the bank has started a match since
 the previous swap). The environment therefore drops a match whose opponent
 changed mid-match from the pool's per-bank statistics (see bopl_puffer.h).
 """
+import os
+import sys
+from pathlib import Path
+
 import numpy as np
 
+sys.path[:0] = [str(Path(__file__).resolve().parents[1])]
+from league import pfsp
+from pufferlib.selfplay import evict
 
-def state(pool_dir, bootstrap, banks, historical_per_bank, global_step, *, max_size, swap_winrate,
-          min_games, snapshot_interval, opp_timeout_steps, elo_init, elo_k, seed):
+# AlphaStar switches a main agent from f_hard to f_var when it cannot beat the
+# candidates (win rate under ~30%). Read over the whole set: when our best
+# score against any pool member is below this, every f_hard weight sits on a
+# matchup we learn nothing from, so the draw chases coin-flips instead.
+HOPELESS = 0.3
+
+_NEW = dict(step=None, learner_steps=None, games=0, wins=0, draws=0)
+
+
+def state(pool_dir, bootstrap, banks, historical_per_bank, global_step, *, max_size,
+          min_games, snapshot_interval, opp_timeout_steps, pfsp_p, seed):
     if banks < 1 or historical_per_bank < 1 or max_size < 1 or min_games < 1:
         raise ValueError('The pool needs at least one bank, historical game, entry and game per swap')
-    if not 0 < swap_winrate <= 1:
-        raise ValueError('swap_winrate must be within (0, 1]')
-    bank = dict(cur_opp_path=bootstrap, cur_opp_elo=elo_init, hist_score=0.0, hist_n=0.0,
-                pending_opp_path=None, pending_opp_elo=None, epoch_armed=0, opp_started_step=global_step,
-                num_hist_envs=historical_per_bank, last_winrate_at_swap=0.0, last_epochs_to_align=0)
-    return dict(pool_dir=str(pool_dir), pool=[dict(path=bootstrap, elo=elo_init)],
+    if not pfsp_p >= 0:
+        raise ValueError('pfsp_p must be non-negative (0 is uniform over candidates)')
+    bank = dict(cur_opp_path=bootstrap, hist_n=0, hist_wins=0, hist_draws=0,
+                pending_opp_path=None, epoch_armed=0, opp_started_step=global_step,
+                num_hist_envs=historical_per_bank, last_score_at_swap=0.0, last_epochs_to_align=0)
+    return dict(pool_dir=str(pool_dir), pool=[dict(path=bootstrap)],
                 rng=np.random.default_rng(seed), max_size=max_size, min_games=min_games,
-                swap_winrate=swap_winrate, snapshot_interval=snapshot_interval,
-                opp_timeout_steps=opp_timeout_steps, num_banks=banks,
-                banks=[dict(bank) for _ in range(banks)], primary_elo=elo_init, elo_k=elo_k,
-                last_snapshot_step=global_step)
+                snapshot_interval=snapshot_interval, opp_timeout_steps=opp_timeout_steps,
+                num_banks=banks, banks=[dict(bank) for _ in range(banks)], pfsp_p=float(pfsp_p),
+                # Every opponent this pool ever drew, in order. pfsp.realized over
+                # this is the only honest answer to "what curriculum did the
+                # learner get"; the intended weights are a wish, not a record.
+                picks=[], last_snapshot_step=global_step)
 
 
 def members(bootstrap):
-    """Ledger of every snapshot the pool ever held: age and lifetime games against the learner."""
-    return {bootstrap: dict(step=0, learner_steps=0, games=0, wins=0)}
+    """Ledger of every snapshot the pool ever held: age and lifetime record against the learner."""
+    return {bootstrap: dict(step=0, learner_steps=0, games=0, wins=0, draws=0)}
+
+
+def _wld(games, wins, draws):
+    return wins, games - wins - draws, draws
+
+
+def _entry(ledger, path):
+    """A ledger row, tolerating a snapshot taken this update that register() has not seen."""
+    return ledger.get(path, _NEW)
 
 
 def credit(pool, flat, ledger):
     """Attribute the window's finished games to each bank's current opponent.
 
-    Call before selfplay.step: it rates the same games, then may swap the bank.
+    Call before step(): it scores the same games, then may retire the matchup.
     """
     n = float(flat.get('env/n', 0.0))
     for index, bank in enumerate(pool['banks']):
         games = round(float(flat.get(f'env/hist_n_bank_{index}', 0.0)) * n)
-        if games:
-            member = ledger[bank['cur_opp_path']]
-            member['games'] += games
-            member['wins'] += round(float(flat.get(f'env/hist_score_bank_{index}', 0.0)) * n)
+        if not games:
+            continue
+        # The counters arrive divided by n and are multiplied back out, so each
+        # rounds independently; clamp rather than let a one-game rounding
+        # disagreement reach pfsp.score_interval as a negative loss count.
+        wins = min(games, max(0, round(float(flat.get(f'env/hist_score_bank_{index}', 0.0)) * n)))
+        # Undecided rounds and timeouts are draws in the opponent statistic.
+        # What they PAY the agent is a separate, deliberate decision (-1).
+        decided = min(games, max(wins, round(float(flat.get(f'env/hist_decided_bank_{index}', 0.0)) * n)))
+        bank['hist_n'] += games
+        bank['hist_wins'] += wins
+        bank['hist_draws'] += games - decided
+        member = ledger[bank['cur_opp_path']]
+        member['games'] += games
+        member['wins'] += wins
+        member['draws'] += games - decided
 
 
-def step(selfplay_step, trainer, backend, pool, flat, epoch):
-    """pufferlib.selfplay.step, then collapse the duplicate entries it can create.
+def scores(pool, ledger):
+    """Our draw-aware score against every current pool member, in [0, 1].
 
-    When several banks pass the swap gate in the same update (they start
-    synchronised on the initial checkpoint), upstream saves and appends the same
-    {global_step}.bin once per bank: the copies are rated separately (only the
-    first receives the Elo update), sampled with multiplied weight, and count
-    towards the winrate-snapshot cap. Keep the first occurrence of each path.
-    With max_size >= 10 (winrate snapshots stop at ten entries) the duplicates
-    never reach eviction, so the pool is exactly what a single append would give;
-    a smaller max_size can still evict one extra old entry in the colliding update.
+    A member we have never played scores 0.5 (pfsp.score's no-games answer):
+    unknown, which is neither hopeless nor mastered.
     """
-    selfplay_step(trainer, backend, pool, flat, epoch)
-    seen, unique = set(), []
+    table = {}
     for entry in pool['pool']:
-        if entry['path'] not in seen:
-            seen.add(entry['path'])
-            unique.append(entry)
-    pool['pool'] = unique
+        row = _entry(ledger, entry['path'])
+        table[entry['path']] = pfsp.score(*_wld(row['games'], row['wins'], row['draws']))
+    return table
+
+
+def intent(pool, table):
+    """(weights, f, used_f_var) for the current candidate set."""
+    hopeless = bool(table) and max(table.values()) < HOPELESS
+    f = pfsp.f_var if hopeless else (lambda x, p=pool['pfsp_p']: pfsp.f_hard(x, p))
+    return pfsp.weights(table, f), f, hopeless
+
+
+def _snapshot(trainer, backend, pool):
+    """Save the learner as a new pool member. Idempotent within one update."""
+    path = os.path.join(pool['pool_dir'], f'{int(trainer.global_step):016d}.bin')
+    if not any(entry['path'] == path for entry in pool['pool']):
+        backend.save_weights(trainer, path)
+        pool['pool'].append(dict(path=path))
+        pool['pool'] = evict(pool['pool'], pool['max_size'])
+    pool['last_snapshot_step'] = int(trainer.global_step)
+    return path
+
+
+def step(trainer, backend, pool, ledger, epoch):
+    """One update of pool bookkeeping: snapshots, retirements, PFSP draws, telemetry."""
+    global_step = int(trainer.global_step)
+
+    if (pool['snapshot_interval'] > 0
+            and global_step - pool['last_snapshot_step'] >= pool['snapshot_interval']):
+        _snapshot(trainer, backend, pool)
+
+    table = scores(pool, ledger)
+    for index, bank in enumerate(pool['banks']):
+        tag = index + 1
+        if bank['pending_opp_path'] is not None:
+            if backend.count_aligned(trainer, tag, 0) >= bank['num_hist_envs']:
+                backend.load_frozen_bank(trainer, index, bank['pending_opp_path'])
+                backend.count_aligned(trainer, tag, 1)
+                bank['cur_opp_path'] = bank['pending_opp_path']
+                bank['pending_opp_path'] = None
+                bank['hist_n'] = bank['hist_wins'] = bank['hist_draws'] = 0
+                bank['opp_started_step'] = global_step
+                bank['last_epochs_to_align'] = epoch - bank['epoch_armed']
+            continue
+
+        wins, losses, draws = _wld(bank['hist_n'], bank['hist_wins'], bank['hist_draws'])
+        settled = bank['hist_n'] >= pool['min_games'] and not pfsp.informative(wins, losses, draws)
+        timed_out = (pool['opp_timeout_steps'] > 0
+                     and global_step - bank['opp_started_step'] >= pool['opp_timeout_steps'])
+        if not (settled or timed_out):
+            continue
+        # The pool grows when the learner OUTGREW a matchup -- the whole
+        # interval is above the band -- because that is a new curriculum rung.
+        # Settling the other way, or merely timing out, is not progress.
+        if settled and pfsp.score_interval(wins, losses, draws)[0] > pfsp.BAND[1]:
+            _snapshot(trainer, backend, pool)
+            table = scores(pool, ledger)
+        _, f, _ = intent(pool, table)
+        path, = pfsp.sample(pool['rng'], table, f, 1)
+        pool['picks'].append(path)
+        bank['pending_opp_path'] = path
+        bank['epoch_armed'] = epoch
+        bank['last_score_at_swap'] = pfsp.score(wins, losses, draws)
+
+
+def _saturation(pool, ledger, table):
+    """The four distributions a human needs to see a pool collapsing."""
+    paths = [entry['path'] for entry in pool['pool']]
+    weights, _, used_f_var = intent(pool, table)
+    observed = pfsp.realized(pool['picks'], candidates=paths)
+    total = sum(row['games'] for row in ledger.values())
+    played = {path: (row['games'] / total if total else 0.0) for path, row in ledger.items()}
+    ranked = sorted(played.values(), reverse=True)
+    # Before the first draw, and before the first game, the realized
+    # distributions are empty rather than collapsed. Reporting 0 entropy and a
+    # 0.5 divergence there would read as a saturated pool for the opening
+    # stretch of every run, so those are null until there is a sample.
+    drawn, staked = bool(pool['picks']), bool(total)
+    return dict(p=pool['pfsp_p'], f='var' if used_f_var else 'hard', candidates=len(paths),
+                draws=len(pool['picks']), games=total,
+                intended=weights, realized=observed, played=played,
+                # Intended is what the pool wants NOW; realized is every draw it
+                # ever made. A pool whose intention keeps saying "spread" while
+                # the draws keep landing on two members holds this high.
+                divergence=pfsp.divergence(weights, observed) if drawn else None,
+                entropy=dict(intended=pfsp.entropy(weights),
+                             realized=pfsp.entropy(observed) if drawn else None,
+                             played=pfsp.entropy(played) if staked else None),
+                # The blunt collapse signature: games share of the top two
+                # opponents, and how many distinct opponents the banks serve.
+                played_top2=sum(ranked[:2]) if staked else None,
+                serving=len({bank['cur_opp_path'] for bank in pool['banks']}))
 
 
 def register(pool, ledger, step, learner_steps):
-    """Record when snapshots selfplay.step just took were made."""
+    """Record when snapshots step() just took were made."""
     for entry in pool['pool']:
-        ledger.setdefault(entry['path'], dict(step=step, learner_steps=learner_steps, games=0, wins=0))
+        ledger.setdefault(entry['path'], dict(step=step, learner_steps=learner_steps,
+                                              games=0, wins=0, draws=0))
 
 
-def _member(ledger, path, elo):
-    member = ledger[path]
-    return dict(step=member['step'], learner_steps=member['learner_steps'], elo=elo, games=member['games'],
-                winrate=member['wins']/member['games'] if member['games'] else None)
+def _member(ledger, path):
+    row = ledger[path]
+    wins, losses, draws = _wld(row['games'], row['wins'], row['draws'])
+    return dict(step=row['step'], learner_steps=row['learner_steps'], games=row['games'],
+                winrate=row['wins'] / row['games'] if row['games'] else None,
+                score=pfsp.score(wins, losses, draws) if row['games'] else None)
 
 
 def summary(pool, ledger):
-    """The pool's rating/swap state for metrics.jsonl."""
+    """The pool's PFSP state for metrics.jsonl."""
     banks = []
     for bank in pool['banks']:
-        games = round(bank['hist_n'])
-        banks.append(dict(opponent_step=ledger[bank['cur_opp_path']]['step'], opponent_elo=bank['cur_opp_elo'],
-                          games=games, winrate=bank['hist_score']/bank['hist_n'] if games else None,
-                          pending_step=ledger[bank['pending_opp_path']]['step'] if bank['pending_opp_path'] else None,
-                          winrate_at_swap=bank['last_winrate_at_swap'], epochs_to_align=bank['last_epochs_to_align']))
+        games = bank['hist_n']
+        wins, losses, draws = _wld(games, bank['hist_wins'], bank['hist_draws'])
+        banks.append(dict(opponent_step=ledger[bank['cur_opp_path']]['step'], games=games,
+                          winrate=bank['hist_wins'] / games if games else None,
+                          score=pfsp.score(wins, losses, draws) if games else None,
+                          draws=draws,
+                          pending_step=_entry(ledger, bank['pending_opp_path'])['step']
+                          if bank['pending_opp_path'] else None,
+                          score_at_swap=bank['last_score_at_swap'],
+                          epochs_to_align=bank['last_epochs_to_align']))
+    saturation = _saturation(pool, ledger, scores(pool, ledger))
+    step_of = {path: ledger[path]['step'] for path in ledger}
+    for key in ('intended', 'realized'):
+        saturation[key] = {step_of.get(path, -1): share for path, share in saturation[key].items()}
+    # Members the pool has evicted still consumed curriculum; keep them as one
+    # number rather than growing every metrics line with the whole ledger.
+    live = {entry['path'] for entry in pool['pool']}
+    played = saturation.pop('played')
+    saturation['played'] = {step_of[path]: share for path, share in played.items() if path in live}
+    saturation['played_evicted'] = sum(share for path, share in played.items() if path not in live)
     games = sum(bank['hist_n'] for bank in pool['banks'])
-    return dict(schema=1, elo=pool['primary_elo'], size=len(pool['pool']),
-                entries=[_member(ledger, entry['path'], entry['elo']) for entry in pool['pool']],
-                winrate=sum(bank['hist_score'] for bank in pool['banks'])/games if games else None, banks=banks)
+    wins = sum(bank['hist_wins'] for bank in pool['banks'])
+    return dict(schema=2, size=len(pool['pool']), entries=[_member(ledger, entry['path']) for entry in pool['pool']],
+                winrate=wins / games if games else None, banks=banks, pfsp=saturation)
 
 
 def events(before, after, ledger, learner_steps):
-    """pool.jsonl records for what selfplay.step changed between two summaries."""
+    """pool.jsonl records for what step() changed between two summaries."""
     out = []
     old = {entry['step']: entry for entry in before['entries']}
     new = {entry['step']: entry for entry in after['entries']}
@@ -110,13 +267,15 @@ def events(before, after, ledger, learner_steps):
     for index, (was, now) in enumerate(zip(before['banks'], after['banks'])):
         if now['pending_step'] is not None and was['pending_step'] is None:
             out.append(dict(event='armed', bank=index, step=now['pending_step'],
-                            winrate=now['winrate_at_swap'], games=now['games']))
+                            score=now['score_at_swap'], games=now['games']))
         if now['opponent_step'] != was['opponent_step'] or (was['pending_step'] is not None and now['pending_step'] is None):
             retired = next(m for m in ledger.values() if m['step'] == was['opponent_step'])
-            out.append(dict(event='loaded', bank=index, step=now['opponent_step'], elo=now['opponent_elo'],
+            wins, losses, draws = _wld(retired['games'], retired['wins'], retired['draws'])
+            out.append(dict(event='loaded', bank=index, step=now['opponent_step'],
                             epochs_to_align=now['epochs_to_align'],
-                            retired=dict(step=was['opponent_step'], elo=was['opponent_elo'], games=retired['games'],
-                                         winrate=retired['wins']/retired['games'] if retired['games'] else None)))
+                            retired=dict(step=was['opponent_step'], games=retired['games'],
+                                         winrate=retired['wins'] / retired['games'] if retired['games'] else None,
+                                         score=pfsp.score(wins, losses, draws) if retired['games'] else None)))
     for record in out:
-        record.update(learner_steps=learner_steps, elo=record.get('elo', after['elo']))
+        record.update(learner_steps=learner_steps)
     return out
