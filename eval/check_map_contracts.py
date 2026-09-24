@@ -15,7 +15,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output',type=Path,required=True);args=parser.parse_args()
     out=args.output.resolve();out.mkdir(parents=True,exist_ok=True)
-    commands=[['cc','-O2','-std=c11','-I'+str(ABI),str(ROOT/'eval/check_map_sampling.c'),'-lm','-o',str(out/'sampling')],
+    commands=[['cc','-O2','-std=c11','-I'+str(ABI),'-I'+str(ROOT/'train'),str(ROOT/'eval/check_map_sampling.c'),'-lm','-o',str(out/'sampling')],
               ['cc','-O2','-DPRECISION_FLOAT','-fopenmp','-ffunction-sections','-fdata-sections','-Wl,--gc-sections',
                '-I'+str(PUFFER),'-I'+str(ABI),'-I'+str(ROOT/'train'),str(ROOT/'eval/check_map_logs.c'),str(ABI/'bopl_rl.c'),
                '-lm','-lpthread','-o',str(out/'logs')]]
