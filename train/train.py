@@ -1,4 +1,4 @@
-"""Train native recurrent PPO against PufferLib's Elo-rated self-play pool."""
+"""Train native recurrent PPO against a PFSP self-play pool (league/pfsp.py)."""
 import argparse
 import hashlib
 import json
@@ -121,7 +121,7 @@ def entropy_coefficient(learner_steps, initial, floor, half_life):
 # Resume (--resume): a run directory is restarted from its last checkpoint and
 # may be given a larger --steps (every schedule is a function of learner
 # decisions or constant, never of the run budget). Restored: policy weights,
-# the self-play pool (entries, Elo, per-bank opponents, sampling RNG), the
+# the self-play pool (entries, per-bank opponents, PFSP draws, sampling RNG), the
 # frozen banks' weights, the native step counter (pool snapshot names and
 # intervals), and the cumulative environment counters, which the C vector
 # restarts at zero and this process offsets. Not restored: the optimizer's
@@ -130,8 +130,8 @@ def entropy_coefficient(learner_steps, initial, floor, half_life):
 RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'layers', 'horizon',
                  'learner_passes', 'learning_rate', 'anneal_lr', 'entropy', 'entropy_floor',
                  'entropy_half_life', 'episode_ticks', 'stocks', 'training_maps', 'reward_kill',
-                 'reward_timeout', 'pool_size', 'swap_winrate', 'min_games', 'snapshot_interval',
-                 'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows',
+                 'reward_timeout', 'pool_size', 'pfsp_p', 'min_games', 'snapshot_interval',
+                 'opponent_timeout', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
                  'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts')
 # Policy v4 (train/bopl_v4.cu) network shape: flag name -> (env var the
@@ -170,9 +170,9 @@ def recorded_hypers(config):
                 anneal_lr=train['anneal_lr'], entropy=config['entropy'], entropy_floor=config['entropy_floor'],
                 entropy_half_life=config['entropy_half_life'], episode_ticks=config['episode_ticks'], stocks=config['stocks'],
                 training_maps=config['training_maps'], reward_kill=config['reward']['kill'],
-                reward_timeout=config['reward']['timeout'], pool_size=pool['max_size'], swap_winrate=pool['swap_winrate'],
+                reward_timeout=config['reward']['timeout'], pool_size=pool['max_size'], pfsp_p=pool['pfsp_p'],
                 min_games=pool['min_games'], snapshot_interval=pool['snapshot_interval'],
-                opponent_timeout=pool['opponent_timeout'], elo_init=pool['elo_init'], elo_k=pool['elo_k'],
+                opponent_timeout=pool['opponent_timeout'],
                 pool_seed=pool['seed'], head_scale=config['entropy_head_scale'],
                 entropy_free_rows=config.get('entropy_free_rows', 0),
                 scripted_bots=config.get('scripted_bots', []), scripted_level=config.get('scripted_level', 'hard'),
@@ -292,13 +292,12 @@ def arguments():
                    help='probability both players receive player 0\'s loadout')
     p.add_argument('--checkpoint-every', type=int, default=1_000_000, help='Learner decisions between immutable snapshots')
     p.add_argument('--pool-size', type=int, default=16, help='Historical snapshots kept by the self-play pool')
-    p.add_argument('--swap-winrate', type=float, default=.6,
-                   help='Learner win rate against a bank opponent that retires it (0.5 is parity in this symmetric game)')
-    p.add_argument('--min-games', type=int, default=256, help='Completed games per bank before its win rate can retire the opponent')
+    p.add_argument('--pfsp-p', type=float, default=1.,
+                   help='PFSP hardness exponent: opponent weight is (1-our score)^p. 0 is uniform, '
+                        'larger concentrates harder on opponents that beat us (league/pfsp.py)')
+    p.add_argument('--min-games', type=int, default=256, help='Completed games per bank before the band gate can retire the opponent')
     p.add_argument('--snapshot-interval', type=int, default=10_000_000, help='Learner decisions between pool snapshots taken regardless of win rate')
     p.add_argument('--opponent-timeout', type=int, default=50_000_000, help='Learner decisions a bank keeps one opponent before a forced swap')
-    p.add_argument('--elo-init', type=float, default=0.)
-    p.add_argument('--elo-k', type=float, default=16.)
     p.add_argument('--pool-seed', type=int, help='Opponent sampling seed (defaults to --seed)')
     p.add_argument('--scripted-bots', type=scripted_bots, default='',
                    help='Comma-separated bot kinds that take over the last banks. Without '
@@ -345,8 +344,8 @@ def arguments():
                  'pool_size', 'min_games', 'snapshot_interval', 'opponent_timeout'):
         if getattr(a, name) < 1:
             p.error(f'{name.replace("_", "-")} must be positive')
-    if not 0 < a.swap_winrate <= 1 or not math.isfinite(a.elo_init) or not math.isfinite(a.elo_k) or a.elo_k <= 0:
-        p.error('Expected 0 < swap-winrate <= 1, finite elo-init and positive elo-k')
+    if not math.isfinite(a.pfsp_p) or a.pfsp_p < 0:
+        p.error('Expected a finite, non-negative pfsp-p')
     a.pool_seed = a.seed if a.pool_seed is None else a.pool_seed
     a.buffers = a.buffers or (2 if a.workers % 4 == 0 else 1)
     if a.workers % (2 * a.buffers):
@@ -504,7 +503,7 @@ def main():
     os.environ['BOPL_AIM_AR'] = str(a.aim_ar)
     import numpy as np
     import torch
-    from pufferlib import _C, pufferl, selfplay
+    from pufferlib import _C, pufferl
     if not _C.gpu:
         raise RuntimeError('Native training requires the CUDA build')
     install_loadout_set(_C,a.loadouts['lineups'])
@@ -555,8 +554,8 @@ def main():
     # fall to frozen weights, so the pool manages every bank (bot matches stay
     # out of hist_*_bank). At share_min = share_max = 1 the leftover never
     # happens and the pool skips those banks, as in the old no-decay path --
-    # unless every bank is scripted, where the pool keeps one (idle) bank so it
-    # still exists to carry the learner's Elo for the roster matchmaking.
+    # unless every bank is scripted, where the pool keeps one (idle) bank
+    # because the pool state is defined over at least one.
     policy_banks = a.banks if (a.n_scripted and a.scripted_share_min < 1.0) else a.banks - a.n_scripted
     policy_banks = max(1, policy_banks)
     scripted_first_bank = a.banks - a.n_scripted
@@ -582,13 +581,13 @@ def main():
                        obs_layout=layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3)
     pufferl.validate_config(args)
     target_physical = math.ceil(a.steps * 4 / 3)
-    # PufferLib's pool counts native agent steps (padded rows included);
+    # The pool counts native agent steps (padded rows included);
     # the knobs above count learner decisions.
     native_per_learner = native_batch / learner_batch
-    pool_config = dict(backend='pufferlib.selfplay', banks=policy_banks, historical_games_per_bank=vector.historical_per_bank,
-                    max_size=a.pool_size, swap_winrate=a.swap_winrate, min_games=a.min_games,
+    pool_config = dict(backend='league.pfsp', banks=policy_banks, historical_games_per_bank=vector.historical_per_bank,
+                    max_size=a.pool_size, pfsp_p=a.pfsp_p, min_games=a.min_games,
                     snapshot_interval=a.snapshot_interval, opponent_timeout=a.opponent_timeout,
-                    elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed, step_unit='learner_decisions',
+                    seed=a.pool_seed, step_unit='learner_decisions',
                     native_steps_per_learner_decision=native_per_learner, mid_match_swaps='counted in neither bank statistic')
     obs_layout_version = layout.V4_LAYOUT_VERSION if a.encoder == 'v4' else 3
     obs_size = layout.obs_size_of(obs_layout_version)
@@ -645,7 +644,7 @@ def main():
     status('starting')
     saved = {}
     roster_entries = (scripted_roster.entries_from_names(
-        a.scripted_roster, scripted_roster.load_anchor_ratings(), a.elo_init)
+        a.scripted_roster, scripted_roster.load_anchor_ratings())
         if a.scripted_roster else [])
     share = 0.0
     try:
@@ -654,17 +653,18 @@ def main():
         pool = ledger = None
         update_index = 0
         elapsed_before = 0.
-        def persist_roster(learner_elo):
+        def persist_roster():
             if roster_entries:
                 atomic_json(output/'pool/roster.json', scripted_roster.state_dict(
-                    roster_entries, share=share, learner_elo=learner_elo))
-        def sync_scripted(learner_elo):
+                    roster_entries, share=share, learner_elo=scripted_roster.LEARNER_ELO))
+        def sync_scripted():
             nonlocal share
             if not roster_entries:
                 return
+            origin = scripted_roster.LEARNER_ELO
             elos = [entry['elo'] for entry in roster_entries]
-            share = scripted_roster.scripted_share(elos, learner_elo, a.scripted_share_min, a.scripted_share_max)
-            set_scripted_curriculum(_C, share, roster_entries, scripted_roster.draw_weights(elos, learner_elo))
+            share = scripted_roster.scripted_share(elos, origin, a.scripted_share_min, a.scripted_share_max)
+            set_scripted_curriculum(_C, share, roster_entries, scripted_roster.draw_weights(elos, origin))
         def save():
             step = counts['game_steps']
             if step not in saved:
@@ -680,7 +680,7 @@ def main():
                 atomic_json(output/'pool/state.json', pool_state_json(
                     pool, ledger, counts=counts, elapsed=elapsed_before + time.monotonic() - training_started,
                     global_step=trainer.global_step, update_index=update_index, checkpoint=saved[step]))
-                persist_roster(pool['primary_elo'])
+                persist_roster()
             return saved[step]
         training_started = time.monotonic()
         if resume:
@@ -707,19 +707,19 @@ def main():
                 scripted_roster.restore_counts(roster_entries, json.loads(roster_path.read_text()))
         else:
             initial = save()
-            # Every bank starts from the initial policy; PufferLib's pool swaps
-            # them independently as the learner outgrows each opponent.
+            # Every bank starts from the initial policy; PFSP retires and
+            # redraws them independently as each matchup settles.
             for bank in range(a.banks):
                 _C.load_frozen_bank(trainer, bank, str(initial))
             (output/'pool').mkdir()
             pool = native_selfplay.state(output/'pool', str(initial), policy_banks, vector.historical_per_bank, trainer.global_step,
-                                         max_size=a.pool_size, swap_winrate=a.swap_winrate, min_games=a.min_games,
+                                         max_size=a.pool_size, min_games=a.min_games,
                                          snapshot_interval=round(a.snapshot_interval*native_per_learner),
                                          opp_timeout_steps=round(a.opponent_timeout*native_per_learner),
-                                         elo_init=a.elo_init, elo_k=a.elo_k, seed=a.pool_seed)
+                                         pfsp_p=a.pfsp_p, seed=a.pool_seed)
             ledger = native_selfplay.members(str(initial))
         if roster_entries:
-            sync_scripted(pool['primary_elo'])
+            sync_scripted()
         vector.reset()
         _C.log(trainer)  # Warmup losses are not measured training updates.
         if vector.snapshot()['learner_steps'] or vector.snapshot()['game_steps']:
@@ -867,7 +867,7 @@ def main():
                     more = ready['learner_steps'] < a.steps
                     if roster_entries:
                         # Matches starting during the next rollout draw against this roster.
-                        sync_scripted(pool['primary_elo'])
+                        sync_scripted()
                     if more:
                         _C.rollouts_start(trainer)
                 else:
@@ -906,11 +906,11 @@ def main():
                         or counts['game_steps']-previous['game_steps'] != a.workers*2*a.horizon):
                     raise RuntimeError('Native rollout physical/learner decision accounting mismatch')
                 elapsed = elapsed_before + time.monotonic()-training_started
-                # Elo, snapshots and bank swaps from this rollout's finished games.
+                # Snapshots, PFSP draws and bank retirements from this rollout's finished games.
                 before_pool = native_selfplay.summary(pool, ledger)
                 flat = {'env/'+key: value for key, value in native['env'].items()}
                 native_selfplay.credit(pool, flat, ledger)
-                native_selfplay.step(selfplay.step, trainer, _C, pool, flat, update_index)
+                native_selfplay.step(trainer, _C, pool, ledger, update_index)
                 update_index += 1
                 native_selfplay.register(pool, ledger, counts['game_steps'], counts['learner_steps'])
                 after_pool = native_selfplay.summary(pool, ledger)
@@ -933,9 +933,11 @@ def main():
                         games = round(float(flat.get(f'env/bot_n_entry_{i}', 0.0)) * n)
                         wins = round(float(flat.get(f'env/bot_score_entry_{i}', 0.0)) * n)
                         window.append((games, wins))
-                    scripted_roster.apply_window(roster_entries, window, after_pool['elo'], a.elo_k)
-                    sync_scripted(after_pool['elo'])
-                    weights = scripted_roster.draw_weights([e['elo'] for e in roster_entries], after_pool['elo'])
+                    scripted_roster.apply_window(roster_entries, window,
+                                                 scripted_roster.LEARNER_ELO, scripted_roster.ELO_K)
+                    sync_scripted()
+                    weights = scripted_roster.draw_weights([e['elo'] for e in roster_entries],
+                                                           scripted_roster.LEARNER_ELO)
                     scripted = {}
                     for i, entry in enumerate(roster_entries):
                         games = entry['games']
@@ -945,7 +947,6 @@ def main():
                             window_games=window[i][0], window_wins=window[i][1])
                     record['scripted'] = scripted
                     record['scripted_share'] = share
-                    record['scripted_learner_elo'] = after_pool['elo']
                 record['free_fraction'] = free
                 record['entropy_head_scale_applied'] = applied_scale
                 # The native trainer's own per-update timers (seconds, averaged
@@ -963,12 +964,20 @@ def main():
                 for event in native_selfplay.events(before_pool, after_pool, ledger, counts['learner_steps']):
                     events.write(json.dumps(event, allow_nan=False)+'\n')
                 events.flush()
+                saturation = after_pool['pfsp']
                 console = dict(step=record['step'], learner_steps=record['learner_steps'],
                                learner_sps=record['learner_sps'], matches=record['matches'],
-                               elo=round(after_pool['elo'], 1), pool=after_pool['size'])
+                               pool=after_pool['size'],
+                               # The saturation line: how concentrated the curriculum
+                               # actually is, next to what the pool currently intends.
+                               pfsp=dict(f=saturation['f'], serving=saturation['serving'],
+                                         top2=round(saturation['played_top2'], 3),
+                                         played_entropy=round(saturation['entropy']['played'], 3),
+                                         intended_entropy=round(saturation['entropy']['intended'], 3),
+                                         divergence=round(saturation['divergence'], 3)))
                 if roster_entries:
                     console['scripted'] = dict(
-                        share=round(share, 3), elo=round(after_pool['elo'], 1),
+                        share=round(share, 3),
                         **{name: (None if row['winrate'] is None else round(row['winrate'], 3))
                            for name, row in record['scripted'].items()})
                 print(json.dumps(console), flush=True)
