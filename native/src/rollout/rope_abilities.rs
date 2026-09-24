@@ -1095,12 +1095,12 @@ impl RolloutWorld {
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
-                    // RopeHook.OnCollide destroys the hitbox and the component
-                    // and leaves the GameObject alone (RopeHook.cs:182-189), so
-                    // RlObservation's activeInHierarchy bit stays set while the
-                    // enabled bit clears (RlObservation.cs:115-117).
+                    // Alone among the collide branches, a hit on a body with a
+                    // PlayerBody destroys the whole hook GameObject and returns
+                    // before the hitbox-only teardown (RopeHook.cs:144-150), so
+                    // activeInHierarchy goes with it.
                     self.entities[entity].flags =
-                        (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
+                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
                 }
             }
         }
