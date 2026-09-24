@@ -348,6 +348,10 @@ the gate correctly does not reproduce i3251, which is the oracle's defect. All
 36 crashes across the four cells land on maps 11, 12, 34, 51, 58 and 82, the
 six carrying a VectorFieldPlatform.
 
+**Not seed luck.** The same broken build re-run at
+`ABILITY_SWEEP_SEED=1`, `999983` and `20260923` fails on all three: 2p crashes
+6, 15 and 12 against 5 at the pinned seed, 6p crashes 15, 15 and 11 against 15.
+
 **Six players are 12x more sensitive to the vector-field panic** than two:
 0.605% of episodes (15/2480) against 0.050% (5/9920). Fixture #4's 0.15%
 headline is an average over heterogeneous study cells, not a per-episode rate
