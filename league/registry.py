@@ -9,8 +9,7 @@ A member is immutable once added. Its `id` is the sha256 of its weights for a
 checkpoint, the bot name for a scripted bot, and `random` for the anchor, so a
 member cannot change under its name without the id changing; `league_sha256`
 hashes the member list so the file cannot be edited after it was written. Both
-are re-checked on every load. The precedent is train/sweep/reference_pool.py, which
-froze a rated pool the same way.
+are re-checked on every load.
 
 payoff.jsonl stores counts, never per-game rows. Bradley-Terry and Nash read
 only counts, and a league that grows for months would otherwise commit millions
@@ -35,9 +34,22 @@ MAP_TAG_SPELLED = 8
 
 LEAGUE = HERE / 'league.json'
 PAYOFF = HERE / 'payoff.jsonl'
+SIM = ROOT / 'native/target/release/libbopl_sim.so'
 SCHEMA = 1
 ANCHOR = 'random'
 KINDS = ('main', 'exploiter', 'specialist', 'scripted', 'random', 'human')
+
+# The one condition the league measures under, per simulator: every map, drawn at
+# random (games.map_order); each seat on a kit its member plays (OWN_KIT); games
+# long enough to be decided. The game starts sudden death at 7200 ticks (120 s at
+# 60 Hz, GameSessionHandler TimeBeforeSuddenDeath) and it ends nearly every game
+# by ~8000, so 10800 is a backstop. A 7200 limit scored 17.5% of games between
+# strong members in tournament-20260917 as draws at the moment they were decided.
+MAPS = 'all-124'
+EPISODE_TICKS = 10800
+DELAY = 9
+# Each seat on a kit its member declares (kits), the two free to differ.
+OWN_KIT = dict(mode='own')
 
 
 # ---- conditions --------------------------------------------------------------
@@ -117,6 +129,11 @@ def condition(sim_sha256, loadouts, maps, episode_ticks=7200, delay=9):
                      loadouts=loadouts, loadout_sha256=loadout_sha256(loadouts))
 
 
+def rating_condition():
+    """(key, detail) of the league's condition on the tree's simulator."""
+    return condition(sha256_file(SIM), OWN_KIT, map_catalogue.parse_map_ids(MAPS), EPISODE_TICKS, DELAY)
+
+
 # ---- members -----------------------------------------------------------------
 
 def sha256_file(path):
@@ -175,11 +192,6 @@ def kits(row):
     if loadouts['mode'] == 'fixed':
         return [tuple(loadouts['fixed'])]
     return [tuple(kit) for kit in loadouts['kits']]
-
-
-# The loadout part of the one condition `play` measures: each seat on a kit its
-# member declares (kits), the two seats free to differ, as in a real match.
-OWN_KIT = dict(mode='own')
 
 
 def plays_map(row, map_id):
