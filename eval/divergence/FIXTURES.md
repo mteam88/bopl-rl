@@ -881,6 +881,255 @@ oracle's for this ability, which needs the Updater registration order for a
 ability forms that spawn something from an animator callback have the same
 one-pass skew, since the fix here is local to Black hole.
 
+## Fixture #9 - what a death publishes: the rope's detach bit, and four defects stacked behind it
+
+Found 2026-09-24 by taking class 5 of the 114-case sweep - "a different number
+of objects released by the death", thirteen cases - and driving each one to
+`FIRST any none`. Eleven of the thirteen closed. They needed **five** separate
+fixes, not the one or two the class description implied, and each fix only
+became visible once the one before it was out of the way. That stacking is the
+result worth keeping: a class in that sweep is a symptom bucket, not a defect.
+
+### The starting measurement
+
+`bounds_case_trace` with `BCT_ALL=1`, the five kits of class 5 x three engage
+heights, on `847d7c9b`:
+
+```
+CASE            FIRST any (before)                                    AFTER
+grapple-early   tick 348 NUMERIC entity[0].x  -36.263780/-35.763780   none
+grapple-late    tick 363 NUMERIC entity[0].x  -41.014505/-40.514505   none
+grapple-brink   tick 367 NUMERIC entity[0].x  -42.281136/-41.781136   none
+beam-early      none                                                  none
+beam-late       none                                                  none
+beam-brink      tick 367 DISCRETE header.entity_count  ref 10/cand 9  none
+roll-early      tick 371 DISCRETE header.entity_count  ref 11/cand 12 none
+roll-late       tick 367 DISCRETE header.entity_count  ref 11/cand 12 none
+roll-brink      tick 367 DISCRETE header.entity_count  ref 11/cand 12 none
+grenade-brink   tick 367 DISCRETE header.entity_count  ref 11/cand 12 none
+smoke-brink     tick 367 DISCRETE header.entity_count  ref 11/cand 12 none
+grenade-early   tick 465 DISCRETE header.entity_count  ref 12/cand 13 class 1
+grenade-late    tick 393 DISCRETE header.entity_count  ref 12/cand 13 class 1
+smoke-early     tick 465 DISCRETE header.entity_count  ref 12/cand 13 class 1
+smoke-late      tick 393 DISCRETE header.entity_count  ref 12/cand 13 class 1
+```
+
+**The sweep's own record of grapple is wrong and this is why.** It lists
+grapple's first divergence as 383 / 378 / 367 - the death ticks - and describes
+only the rope-flag tail. At `BCT_AIM=0`, which is what the reproduce recipe in
+that section prints, grapple first diverges at the *engage* tick, 348 / 363 /
+367, by exactly half a world unit on the hook. The sweep's numbers are the
+`FIRST discrete` line, or were taken at the case table's `aim 64` where that
+defect does not fire. Both aims are now clean; the run above is `BCT_AIM=0` and
+an `aim 64` repeat gives the identical 11-clean / 4-class-1 split.
+
+### 1. The rope is never marked detached when its owner dies
+
+The one the class description named. `flags` 35 in the reference and 3 in the
+port on every rope node, `kind 3`, `layer 0`, one bit: 32.
+
+`PlayerCollision.killPlayer` detaches the slime's rope as its **first** action,
+ahead of the invulnerability early-return, so even a `killPlayer` that returns
+false detaches (PlayerCollision.cs:106-114). `PlayerBody.AttachRope(null, top)`
+(PlayerBody.cs:253-273) runs `SetForce`, `SetTimeInAir((Fix)100)` and then
+`RopeBody.Dettach`, which is where `hasBeenDettached` is set (RopeBody.cs:90-92)
+and what `RlObservation.cs:89` publishes as entity flag 32. `Rollout::kill`
+touched the rope nowhere; `E_DETACHED` had no writer on any death path.
+
+The fix is four lines at the top of `kill`, before the poke-invulnerability
+return, calling the port's existing `attach_player_rope(index, None, top)` -
+which is `PlayerBody.AttachRope` field for field.
+
+**Which call sites.** `Rollout::kill` models both `killPlayer` and
+`Ability.ExitAbility`, and only the first detaches: `Ability.ExitAbility` hands
+the rope to the exit info and calls `EnterAbilityClearRope`, which nulls
+`ropeBody` without ever detaching (Ability.cs:139-146, PlayerBody.cs:275-280).
+An unconditional detach would therefore be wrong, as the brief warned. The
+separator is `active == ActiveAbility::None`, and it is exact rather than
+approximate: a player inside an ability form had `PlayerBody.ropeBody` nulled on
+entry, so `killPlayer`'s detach is a no-op for them anyway, while the rope such
+a form still holds belongs to `BounceBall`, whose own `AttachRope` contains no
+`Dettach` call at all (BounceBall.cs:205-223). The `is_some()` test is not a
+guard either - `killPlayer` only calls `AttachRope` when `ropeBody != null`, and
+the `prev*` velocity snapshot inside it is conditional on that in the C# too.
+
+**Deliberately not reproduced.** `AttachRope`'s `SetForce` honours
+`ignoreGravityWhenRoped`; `attach_player_rope` hardcodes rope gravity. That
+predates this work, is not observable in any of the thirteen cases, and was left
+alone.
+
+### 2 and 3. Two older grapple defects the rope tail was sitting on
+
+Neither is a death-tick defect. Both were invisible while the case diverged
+earlier.
+
+**The hook spawns half a unit off with no aim input.** `HookshotInstant.FireHook`
+computes `fixTrans.position + player.AimVector() * hookSpawnOffset` and
+substitutes `Vec2.right` only in the *velocity* argument
+(`((player.AimVector() == Vec2.zero) ? Vec2.right : player.AimVector()) * hookSpeed`,
+HookshotInstant.cs:152-156). The port folded the fallback in before computing
+either, so with no aim it spawned the hook, and with it the whole rope's
+initialisation, 0.5 to the right. The oracle at the engage tick puts the hook
+exactly on the body and the rope in a degenerate vertical column; the port had
+it already spread along +x. Visible from the engage tick to the end of the
+episode, on all three phases.
+
+**The hook clears activeInHierarchy on hits that do not destroy it.** `flags` 13
+in the reference and 12 in the port on the tick the hook lands. Bit 1 of a
+collider row is `transform.gameObject.activeInHierarchy` (RlObservation.cs:115).
+`RopeHook.OnCollide` ends in `Updater.DestroyFix(hitbox)` and
+`Updater.DestroyFix(this)` - the hitbox and the component, not the object
+(RopeHook.cs:182-189) - so the bit survives a hit on a wall, terrain, an orb or
+a black hole.
+
+**And this one immediately over-corrected, which `dash_grapple_form_ab` caught.**
+Applying "keep the bit" to all three of the port's collide branches flipped the
+same field the other way: reference 12, port 13, on a hook that hit a slime. The
+Player branch is the single exception - when the victim has a `PlayerBody` it
+destroys the whole hook GameObject and `return`s before the shared teardown
+(RopeHook.cs:144-150). Three branches keep the bit, one does not. The probe
+existed and found it in the first suite run, which is the argument for running
+the whole suite rather than the case you are working on.
+
+### 4. Only the selected throw hurtbox was freed on death
+
+This is the entity-count half, for `roll`, `grenade` and `smoke` - the
+`{3, 13, 16}` kit in all three slot orders.
+
+The count is a row-pool count, so reading it needs the partitions. At the death
+tick of `grenade-late` the reference publishes 12 rows and the port 13, and the
+extra one is a box: seven boxes before the death, four after in the reference
+and five in the port. Resolved by id, the reference frees player 1's slime box,
+its Grenade hurtbox **and its Smoke hurtbox**; the port frees the first two.
+
+Every ThrowItem2 slot owns a hurtbox - `throw_entities[ability_slot]` - and
+`throw_entity` is only whichever one is currently selected, reassigned on every
+ability switch. All three of `kill`'s removal lists used `throw_entity`. The
+next-pass cleanup for `out` players, thirty lines away in the same file, already
+listed `throw_entities[0..2]` correctly, which is why the divergence appears on
+the death tick and is gone by the next one.
+
+The 76-to-82 "differing fields" these cases reported were one displaced row
+counted once per field of everything after it, exactly as the class description
+predicted.
+
+**This is not fixture #7's `header.entity_count` defect.** That one fires at
+ticks 57-112 on ~5% of maps and measured loadout-independent. This is a
+per-player ability hurtbox not freed for one pass, fires only on the death tick,
+and only for kits holding more than one ThrowItem2 ability. Different mechanism,
+same field. Fixture #7's own case was not re-measured here.
+
+### 5. Beam's orb, spawned after its own bounds component and destroyed the pass it was born
+
+`beam-brink`, the one case in the class where the reference has *more* rows than
+the port: ref 10, cand 9. The missing row is `kind 0`, `layer 18` (Explosion),
+radius 0.96, at `body.position + staffDir * 2.8` - the beam orb, which
+`beam-late` shows both backends spawning normally at their engage tick.
+
+`brink` is the phase where the engage tick and the death tick are the same tick,
+and two orderings were wrong at once.
+
+`Beam.OnEnterAbility` instantiates the orb itself (Beam.cs:261-267), during the
+ability entry that `SlimeController.OldUpdate` performs, before `Updater` has
+reached any updatable of this pass - including the form's own
+`DestroyIfOutsideSceneBounds`, which is hierarchyNumber 4 on `Beam.prefab`
+(1 Ability, 2 SpriteAnimator, 3 PlayerPhysics, 4 DestroyIfOutsideSceneBounds,
+5 PlayerCollision, 6 DPhysicsBox, 7 PlayerBody, 8 Beam). The port called
+`ability_boundary_kill` first and returned, so the orb was never created.
+
+Moving the spawn ahead of the kill was not enough on its own, and the second
+half is the more interesting one. `Beam.OnEnterAbility` also calls
+`DisableIfNotHeld_deter.HoldThisFrame` on the orb (Beam.cs:270). That component
+destroys its GameObject only when `holder == null` and deactivates it only when
+`!isHeld`, resetting `isHeld` at the end of each pass
+(DisableIfNotHeld_deter.cs:22-47). Held on the pass it was born, the orb cannot
+go on that pass - it goes on the next one. The port's `beam_orbs_tick` removed
+it as soon as the owner stopped being in Beam, with no born-tick test on that
+branch, so the orb the kill had just created was removed in the same pass it was
+created. Both had to change.
+
+### What is left, and it is not this defect
+
+`grenade` and `smoke` on `early` and `late` still diverge, and after the count is
+fixed the residue is two fields:
+
+```
+grenade-late  entity[1].x gap 136006159 (0.031666)   .y gap 348763201 (0.081203)
+grenade-early entity[1].x gap 136079760 (0.031684)   .y gap 545057382 (0.126906)
+```
+
+Those numbers are **byte-identical** to the ones this file already records for
+`mjolnir`, `poke_ball` and `tack` under class 1 of the sweep - the ThrowItem2
+payload released when its holder dies, read from a body position one pass too
+late. Same defect, arrived at from a different kit and a different class. Class
+1 and this half of class 5 are one defect, not two, and the count of "cases in
+class 1" should be ten rather than six. Not fixed here: that code was being
+worked on concurrently and was left untouched deliberately.
+
+### Negative results
+
+- **Defect A is not upstream of the count defect.** Measured, not assumed: with
+  the rope detach landed and nothing else, `beam-brink`, `roll-early`,
+  `grenade-late` and `smoke-brink` report first-divergence lines *identical* to
+  the baseline, character for character. `grapple` and `beam` being the same kit
+  in different slot orders is a coincidence of the case table.
+- **There is no missing `E_ENABLED` on the Smoke hurtbox.** Reading the shifted
+  rows of `grenade-late` suggested the reference had flag 2 where the port did
+  not. That was the row shift comparing a Grenade box against a Smoke box. Once
+  the counts align, every flag field matches.
+- **The half-unit hook offset does not fire at `aim 64`**, which is what the
+  bounds-ability case table uses, and is why the gate never saw it and why the
+  sweep's grapple row disagrees with a `BCT_AIM=0` run.
+
+### Reproduce
+
+```bash
+BCT_ABILITIES=27,28,9 BCT_SLOT=0 BCT_AIM=0 BCT_ENGAGE_Y=0.0 BCT_ALL=1 \
+  native/artifacts/rl/bounds_case_trace \
+  "$PWD/sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so" \
+  "$PWD/native/target-q32/release/libbopl_sim.so"
+```
+
+Kits: `grapple` 27,28,9 - `beam` 28,27,9 - `roll` 16,3,13 - `grenade` 3,16,13 -
+`smoke` 13,16,3, at `BCT_ENGAGE_Y` 0.0, -8.0 and -10.9. `BCT_DUMP=a:b` with
+`BCT_DUMP_ALL=1` is how the row partitions above were read; note that the dump
+prints only rows carrying `E_ACTIVE`, so a freed pool slot shows up as a gap in
+the `e<N>` numbering rather than as a line.
+
+### Gates
+
+All eight, each from a deleted-and-rebuilt binary with both libraries rebuilt
+(`cargo build --release --manifest-path native/Cargo.toml` and `make rust-q32`),
+verbatim:
+
+```
+########## GATE check-reward ##########
+check_reward: pass
+########## GATE check-routing ##########
+ROUTING PASS .../native/artifacts/rl/check-routing-oracle/result.json
+ROUTING PASS .../native/artifacts/rl/check-routing-port/result.json
+########## GATE bounds-ability-ab ##########
+BOUNDS_ABILITY_GOLDEN_OK cases=38 water=-11.3 survivors=4
+########## GATE sudden-death-publication-ab ##########
+SUDDEN_DEATH_PUBLICATION_OK maps_mismatched=0
+########## GATE rust-ab-suite ##########
+pass=211 fail=0 skipped=5
+########## GATE map-sweep-3000 ##########
+MAP_STATE_OK maps=124 player_cases=2 compared_snapshots=417009 nonexact_map_rows=0 max_vector_raw=0 max_basis_raw=0 max_scalar_raw=0
+########## GATE map-sweep-endgame ##########
+MAP_STATE_OK maps=124 player_cases=2 compared_snapshots=801501 nonexact_map_rows=0 max_vector_raw=0 max_basis_raw=0 max_scalar_raw=0
+########## GATE ability-sweep ##########
+ABILITY_SWEEP_OK episodes=24800 maps=124 abilities=37 ability_map_cells=4588 crashes=0 divergent=0 seed=24601
+```
+
+`bounds-ability-ab` printed 114 phase rows with zero `KNOWN-DIVERGENCE`. Every
+number is identical to the pre-change run: the rope detach, the beam-orb
+reordering and the hurtbox free are all changes that could have moved
+`ability-sweep` or either map sweep, and none of them did. The fifth gate needed
+two attempts - the first `rust-ab-suite` failed `dash_grapple_form_ab` at tick
+164 on `flags 12/13`, which is the hook-`activeInHierarchy` mistake described
+above; the numbers here are from the run after that was corrected.
+
 ## The 114-case trajectory sweep - what bounds-ability-ab never looked at
 
 `bounds-ability-ab` compares the boundary kill and nothing else. Fixture #8 was
@@ -913,6 +1162,9 @@ beam-brink         367                367 / 367
 grapple-early      383                383 / 383
 grapple-late       378                378 / 378
 grapple-brink      367                367 / 367
+                   ^ wrong: see fixture #9. These three are the `FIRST discrete`
+                     line. At BCT_AIM=0 grapple first diverges at the engage
+                     tick, 348 / 363 / 367, on the hook's position.
 missile-early      371                371 / 371
 mjolnir-early      465                465 / 465
 mjolnir-late       393                393 / 393
@@ -1101,6 +1353,15 @@ shows only a tail of it: 11 to 39 rope-node rows (`kind 3`, `layer 0`,
 one bit, set on every node and on no other field, so it is a single per-node flag
 the port never sets on the tick the rope's owner dies - worth fixing on its own
 and independent of the permutation.
+
+**Closed 2026-09-24 under fixture #9**, which took all thirteen and got eleven of
+them to `FIRST any none`. It needed five fixes rather than the one or two this
+description implies, and the guess that `grapple` and `beam` being one kit in two
+slot orders meant something turned out to be a coincidence - measured, by landing
+the rope fix alone and watching every count case stay character-for-character
+identical. The four that remain, `grenade` and `smoke` on `early` and `late`,
+reduce after the count fix to gaps byte-identical to class 1's, so class 1 and
+this half of class 5 are **one** defect and class 1 covers ten cases, not six.
 
 ### 6. Last-bit noise, not defects - 3 cases
 
