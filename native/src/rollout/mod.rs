@@ -4600,8 +4600,16 @@ impl RolloutWorld {
     }
 
     fn record_warmup_rewind(&mut self, warmup_tick: u32) {
+        // RewindRecorder is hierarchyNumber 8 and SlimeController is 2, so the
+        // sample this tick contributes is taken *after* this tick's cooldown
+        // advance (SlimeController.cs:727-731) - the same post-increment read
+        // the live recorder does. Counting only the ticks strictly before
+        // `warmup_tick` seeded every warmup sample one DT low, which a Rewind
+        // whose destination lands in the warmup then restored one tick short.
         let timer = TIMER_START
-            + DT * Fix::from_int(i64::from(warmup_tick.saturating_sub(SLIME_AWAKE_TICK)));
+            + DT * Fix::from_int(i64::from(
+                (warmup_tick + 1).saturating_sub(SLIME_AWAKE_TICK),
+            ));
         for slot in &mut self.players {
             slot.rewind.push(RewindSample {
                 position: slot.base.position,
