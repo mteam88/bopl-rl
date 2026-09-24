@@ -76,8 +76,9 @@ learns.
 
 Deleting is most of the work. Verified dead, to be removed as the reorg lands:
 
-- ~3,200 lines of dead Python now, ~4,350 once PFSP replaces the old opponent
-  selection (`--swap-winrate`, the banks, `--elo-init`/`--elo-k`)
+- ~3,200 lines of dead Python. PFSP landed 2026-09-24 and took the old opponent
+  selection with it: `--swap-winrate`, `--elo-init`/`--elo-k` and the trainer's
+  online Elo are gone (the banks stayed — they are a native construct)
 - `review/` - removed 2026-09-23; 9 files of prose from a completed code review
 - `reports/` - removed 2026-09-23; it was a single stale `.pyc`
 - `evidence/` - removed 2026-09-23; 38 dated measurement records, ~2.0M

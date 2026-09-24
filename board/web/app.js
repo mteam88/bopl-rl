@@ -496,9 +496,11 @@
       return;
     }
     $("opponentNote").innerHTML =
-      `Realized counts come from the pool ledger and the scripted roster. The trainer's matchmaking is
-       <b>Elo-weighted, not PFSP</b> — there is no explicit intended weight vector on disk — so "intended" here is the
-       pool policy: a live pool of ${o.max_size ?? "?"} served by ${o.banks ?? "?"} banks, swapping at ${pct(o.swap_winrate, 0)}.`;
+      `Realized counts come from the pool ledger and the scripted roster. Matchmaking is <b>PFSP</b>
+       (<code>f_${o.pfsp_f ?? "?"}</code>, p = ${o.pfsp_p ?? "?"}) over a live pool of ${o.max_size ?? "?"} served by
+       ${o.banks ?? "?"} banks, so the intended weight vector is real and recomputed here from the ledger.
+       Intended is a wish, the ${big(o.pfsp_draws)} draws are what it actually picked, and the bars are games played
+       — a pool saturates when those three come apart.`;
     const degenerate = o.distinct_serving != null && o.banks && o.distinct_serving < o.banks;
     $("opponentStats").innerHTML =
       stat("Distinct opponents played", big(o.distinct), `${big(o.pooled)} ever pooled`)
@@ -507,6 +509,10 @@
       + stat("Live pool never played", `${o.live_unplayed ?? "—"} / ${o.live ?? "—"}`,
         o.live_unplayed ? "these are in the pool but contribute nothing" : "every live member is being played")
       + stat("Top 4 share", pct(o.top_share, 1), "of all games")
+      + stat("Intended vs drawn", (o.pfsp_divergence ?? 0).toFixed(3),
+        "total variation — 0 is the pool getting the curriculum it asked for")
+      + stat("Draw entropy", `${(o.pfsp_drawn_entropy ?? 0).toFixed(2)} / ${(o.pfsp_intended_entropy ?? 0).toFixed(2)}`,
+        "realized vs intended, nats — a collapsing pool loses the left number first")
       + stat("Scripted realized", pct(o.scripted_realized_lifetime, 1), "lifetime")
       + stat("Scripted intended", pct(o.scripted_intended_final, 1), "final value — adaptive, not a lifetime target");
 
@@ -517,6 +523,9 @@
         + `<table><tr><td>games</td><td>${big(e.games)}</td></tr>`
         + `<tr><td>share</td><td>${pct(e.share, 2)}</td></tr>`
         + `<tr><td>learner wr</td><td>${e.winrate == null ? "—" : pct(e.winrate, 1)}</td></tr>`
+        + `<tr><td>score (draws half)</td><td>${e.score == null ? "—" : pct(e.score, 1)}</td></tr>`
+        + `<tr><td>intended</td><td>${e.intended == null ? "—" : pct(e.intended, 1)}</td></tr>`
+        + `<tr><td>drawn</td><td>${e.drawn == null ? "—" : pct(e.drawn, 1)}</td></tr>`
         + `<tr><td>in pool</td><td>${e.live ? "yes" : "evicted"}</td></tr></table>`;
       return `<div class="bar" data-tip="${esc(tipHtml)}">`
         + `<span class="bar-label">${esc(e.id)}<i>${e.serving ? "serving now" : e.live ? "in pool" : "evicted"}</i></span>`
