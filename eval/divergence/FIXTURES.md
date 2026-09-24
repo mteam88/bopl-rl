@@ -881,7 +881,7 @@ oracle's for this ability, which needs the Updater registration order for a
 ability forms that spawn something from an animator callback have the same
 one-pass skew, since the fix here is local to Black hole.
 
-## Fixture #10 - a dead `hierarchyNumber` inflated the spawn cursor
+## Fixture #11 - a dead `hierarchyNumber` inflated the spawn cursor
 
 Found 2026-09-24 working class 4 of the 114-case sweep.
 
@@ -968,7 +968,7 @@ wrong, but they are the same proxy and would break the same way.
 
 All three `gold_mushroom` phases now report `FIRST any none / FIRST discrete none`.
 
-## Fixture #11 - Rewind restored a warmup sample that was seeded a tick short
+## Fixture #12 - Rewind restored a warmup sample that was seeded a tick short
 
 Found 2026-09-24, class 3 of the same sweep. Recorded at length because the
 obvious fix passes the sweep and breaks a gate, and the reason why is the
@@ -1055,12 +1055,21 @@ lower bound per case, not an inventory.
 All three `rewind` phases now report `FIRST any none / FIRST discrete none`, and
 `rewind_ability_ab` reports `REWIND_ABILITY_GOLDEN_OK ticks=300`.
 
-## Fixture #12 - the spawned platform never joined the updater order
+**The transferable part is not the seed.** It is that a correction which is
+right in one scenario and wrong in another is a second defect cancelling a
+first, and that the sign flip is the evidence which says so. No single-scenario
+fix can produce it: the sweep alone said "remove the `+= DT`", the gate alone
+said "keep it", and only running both said "neither - the sample itself is
+wrong". Whenever a one-tick compensation sits under a comment explaining why it
+is needed, the cheap test is to find a second scenario that reaches the same
+code by a different route and see whether the sign holds.
+
+## Fixture #13 - the spawned platform never joined the updater order
 
 Found 2026-09-24 while checking the second half of sweep class 4, which turns
 out not to belong to it.
 
-**It is not the same defect as fixture #10.** The sweep filed `platform`
+**It is not the same defect as fixture #11.** The sweep filed `platform`
 (`BCT_ABILITIES=14,2,10`) under "spawn-hierarchy counter off by one or two"
 together with `gold_mushroom`. The numbers say otherwise: the gap is not one or
 two, it is
@@ -1268,7 +1277,7 @@ not proof of - I have not traced the missile's release site.
 
 `late` and `brink` are clean, so it needs the `early` engage height.
 
-### 3. Rewind's slime timer, exactly one tick - 2 cases - FIXED, fixture #11
+### 3. Rewind's slime timer, exactly one tick - 2 cases - FIXED, fixture #12
 
 `rewind` on `early` and `late`: two `slime[0].timers[]` entries off by 71582788 =
 **0.016667 = 1/60 exactly**. A timer started or decremented one pass apart.
@@ -1281,19 +1290,28 @@ Corrected while fixing it: "nothing downstream has consumed it yet" was wrong.
 Both cases also carry a discrete divergence at tick 525,
 `slime[0].ability_flags[]` ref 1 cand 7. The inflated timers report two
 abilities ready a tick early, which is a behavioural divergence, not a cosmetic
-timer. Root cause and fix in fixture #11.
+timer. Root cause and fix in fixture #12.
 
-**And the reason it was missed generalises.** `BCT_ALL=1` reports every
-differing field *of the first diverging tick*, which is not the same as every
-divergence in the case. The numeric hit at 450 ends the walk, so the discrete
-one at 525 was never printed. So the per-case field lists in this sweep are a
-lower bound on each case, not an inventory of it: any case listed here may carry
-further divergences at later ticks that nothing has looked at. Re-running a
-"fixed" case to `FIRST any none` does clear the whole episode, which is why the
-per-defect verification above is trustworthy where the original field lists are
-not.
+**And the reason it was missed generalises to the whole section.**
+`BCT_ALL=1` reports every differing field *of the first diverging tick*, and
+then the walk stops. It does not report every divergence in the case. The
+numeric hit at 450 ended the walk, so the discrete one at 525 never appeared in
+the log at all.
 
-### 4. Spawn-hierarchy counter off by one or two - 5 cases - FIXED, fixtures #10 and #12
+State that without hedging, because an earlier version of this section bounded
+the problem to the two Rewind cases on the strength of comparing each log's
+`FIRST any` tick against its `FIRST discrete` tick. That test cannot find this:
+nothing after the first diverging tick is in the log, discrete or numeric, so
+there is nothing for it to compare. **Every per-case field list in this section
+is a lower bound. The clean/divergent split is the only number in it that means
+what it says.** Any case listed above may carry further divergences at later
+ticks that nothing has looked at.
+
+Re-running a case to `FIRST any none` *does* clear the whole episode, which is
+why the per-defect verification in fixtures #11, #12 and #13 is trustworthy
+where the original field lists are not.
+
+### 4. Spawn-hierarchy counter off by one or two - 5 cases - FIXED, fixtures #11 and #13
 
 `gold_mushroom` on all three phases, diverging at **tick 0**:
 
@@ -1312,10 +1330,10 @@ these prefabs.
 
 Corrected while fixing it: these are **two unrelated defects**, not one class.
 `gold_mushroom` is a single wrong `updatable_count` applied once to player 0 and
-twice to player 1 (fixture #10). `platform` is not off by one or two at all - it
+twice to player 1 (fixture #11). `platform` is not off by one or two at all - it
 is ref 100000066 against cand 300000016, a different encoding base, at ticks 372
 and 387 rather than tick 0, and it is a spawned prefab that never joined the
-updater order (fixture #12). Do not file it as cosmetic: `Updater` orders a registration batch
+updater order (fixture #13). Do not file it as cosmetic: `Updater` orders a registration batch
 by `hierarchyNumber` (`Updater.cs:271`), which makes this the input to every
 ordering defect in this file - fixtures #6 and #8 both. On these cases it has not
 yet changed an outcome.
@@ -1371,7 +1389,14 @@ BCT_ABILITIES=37,32,36 BCT_SLOT=0 BCT_AIM=0 BCT_ENGAGE_Y=-8.0 BCT_ALL=1 \
 
 The ability triples and slot/aim columns are the case table in
 `eval/rust_ab/bounds_ability_ab.c`; the three phases are `BCT_ENGAGE_Y` 0.0,
--8.0 and -10.9. `BCT_DUMP_ALL=1` additionally dumps every exported row of both
+-8.0 and -10.9.
+
+**Do not pipe a gate into `tail` and then read `$?`.** `make $g 2>&1 | tail -25`
+followed by `echo rc=$?` reports *tail's* status, which is 0 whether the gate
+passed or failed - it silently converts a failing gate into a passing one, which
+is the worst direction for a gate to fail in. This was hit here on 2026-09-24
+and the failure was caught only because the summary line said `fail=1`. Write
+the log to a file and check `make`'s own status, or use `PIPESTATUS`. `BCT_DUMP_ALL=1` additionally dumps every exported row of both
 sides, not only the owned ones, which is how the fixture #8 entity was
 identified.
 
