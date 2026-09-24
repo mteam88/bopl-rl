@@ -96,6 +96,15 @@ def main():
     else:
         loadouts=config.get('loadouts') or resolve_loadouts(DEFAULT_LOADOUT)
     print('Effective loadouts: '+json.dumps(loadouts,separators=(',',':')),flush=True)
+    # The scripted bots address fixed ability slots, not abilities: bopl_bots.h opens
+    # "Scripted opponents for the Dash/Bow/Platform loadout" and indexes BOT_SLOT_DASH 0,
+    # BOT_SLOT_BOW 1, BOT_SLOT_PLATFORM 2. Handed any other kit, "archer" charges a bow
+    # that is not in slot 1 and "pursuer" ejects a platform that is not in slot 2, so its
+    # win rate measures nothing the name claims. Their games therefore run on the kit they
+    # were written for - which is DEFAULT_LOADOUT - while every other opponent uses the
+    # run's own draw. Found 2026-09-24 on a generalist whose evaluation reported
+    # archer-v2-hard against Drill/Throw/Magnet gun.
+    bot_loadouts=resolve_loadouts(DEFAULT_LOADOUT)
     observation_delay=config.get('observation_delay_ticks',9)
     if set(args.heldout_maps)&set(config['training_maps']):
         raise ValueError('A held-out map was used for training')
@@ -135,6 +144,11 @@ def main():
         with Environment(seed=90001+tasks.index(bucket[0]),limit=config['episode_ticks'],delay=observation_delay,
                          reward=config.get('reward'),loadouts=loadouts) as env:
             for task in bucket:
+                # Scripted bots decide inside the C environment from the true game state;
+                # the caller's action floats for them are ignored.
+                scripted=scripted_opponent(task['opponent'])
+                # Selected before the reset that draws the episode's kit (Environment.configure_loadouts).
+                env.configure_loadouts(bot_loadouts if scripted is not None else loadouts)
                 env.reset(task['seed'],task['map'])
                 overflow_before=env.observation_overflow
                 episode_loadouts=env.loadouts
@@ -142,9 +156,6 @@ def main():
                 state=policy.initial(2,'cpu')
                 opponent=models.get(task['opponent'])
                 other_state=opponent.initial(2,'cpu') if opponent is not None else None
-                # Scripted bots decide inside the C environment from the true
-                # game state; the caller's action floats for them are ignored.
-                scripted=scripted_opponent(task['opponent'])
                 env.bot(0,0); env.bot(1,0)
                 if scripted is not None: env.bot(1-task['side'],*scripted)
                 # Each side's row in its checkpoint's observation layout (a scripted or random

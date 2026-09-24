@@ -85,10 +85,13 @@ entropy_head_scale = "0.028821467398601395,1.5,1"
 entropy_free_rows = 1
 reward_kill = 0.2883693237829292
 reward_timeout = -1
-scripted_roster = "default"
-scripted_banks = 3
-scripted_share_max = 1.0
-scripted_share_min = 0.11048204896277423
+# No scripted training banks. The bots address fixed ability slots, not abilities
+# (bopl_bots.h: "Scripted opponents for the Dash/Bow/Platform loadout"), so on seven of
+# this run's eight kits "archer" charges a bow that is not in slot 1. The first attempt
+# gave them three of the four banks and spent 3.0B of its steps on opponents that were
+# pressing arbitrary buttons; killed at 33% on 2026-09-24 rather than finish it. All four
+# banks now hold the run's own snapshots, which play whatever kit they are dealt.
+# Evaluation still reports the bots, on the kit they were written for (evaluate.py).
 scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
 opponents = "self"
 training_maps = "training-111"
