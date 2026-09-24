@@ -19,6 +19,7 @@ game player and no GPU work beyond module load.
 """
 import argparse, ctypes, json, os, sys
 from pathlib import Path
+from types import SimpleNamespace
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
@@ -37,9 +38,43 @@ NUM_ATNS = layout.NUM_ATNS  # aim, buttons, hold length index
 PREVIOUS = layout.PREVIOUS_FEATURES  # (the layout() helper below shadows the module)
 STRIDE = 8 + 14  # bopl_vec_layout row: num_agents, players, banks, tag, side, bank, matches, stepped, slots[14]
 
-def layout(lib, vec, count):
+def native_handle(lib):
+    """The native vector's own handle, which is NOT a PufferLib VecEnv attribute.
+
+    `bopl_vec_*` address the native vector that train/binding.c owns; PufferLib's
+    VecEnv exposes only obs_ptr/rewards_ptr/terminals_ptr. train/native_vector.py
+    stores the handle as `gpu_obs_ptr` on itself and every consumer (counters.py)
+    reads that name, so wrap it the same way train/smoke.py does. Reading
+    `gpu_obs_ptr` off the VecEnv instead is an AttributeError.
+    """
+    handles = (ctypes.c_void_p * 8)()
+    if lib.bopl_vec_handles(handles, 8) != 1:
+        raise RuntimeError('expected exactly one native vector')
+    return SimpleNamespace(gpu_obs_ptr=handles[0])
+
+
+def host_rows(lib, native, total):
+    """obs/rewards/terminals as host arrays, via the binding's own mirror.
+
+    This is a gpu vec (`create_vec(..., True)`), so PufferLib's obs_ptr is device
+    memory and reading it with `from_address` yields garbage - which shows up as
+    every observation-content check failing while every layout and counter check
+    passes. `bopl_vec_host` hands back the host mirror instead; train/smoke.py
+    reads the same rows the same way.
+    """
+    out = [ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()]
+    n = lib.bopl_vec_host(ctypes.c_void_p(native.gpu_obs_ptr), *[ctypes.byref(h) for h in out])
+    if n != total:
+        raise RuntimeError(f'native vector exposes {n} host rows, expected {total}')
+    obs = np.ctypeslib.as_array((ctypes.c_float*(total*OBS)).from_address(out[0].value)).reshape(total, OBS)
+    rewards = np.ctypeslib.as_array((ctypes.c_float*total).from_address(out[1].value))
+    terminals = np.ctypeslib.as_array((ctypes.c_float*total).from_address(out[2].value))
+    return obs, rewards, terminals
+
+
+def layout(lib, native, count):
     out = (ctypes.c_int * (count*STRIDE))()
-    n = lib.bopl_vec_layout(ctypes.c_void_p(vec.gpu_obs_ptr), out, count*STRIDE)
+    n = lib.bopl_vec_layout(ctypes.c_void_p(native.gpu_obs_ptr), out, count*STRIDE)
     assert n == count, n
     rows = np.frombuffer(out, dtype=np.int32).reshape(count, STRIDE)
     return [dict(num_agents=int(r[0]), players=int(r[1]), banks=int(r[2]), tag=int(r[3]), side=int(r[4]),
@@ -87,6 +122,9 @@ def main():
     from pufferlib import _C
     lib = ctypes.CDLL(_C.__file__)
     lib.bopl_vec_layout.restype = ctypes.c_int; lib.bopl_vec_layout.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+    lib.bopl_vec_handles.restype = ctypes.c_int; lib.bopl_vec_handles.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int]
+    lib.bopl_vec_host.restype = ctypes.c_int
+    lib.bopl_vec_host.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(ctypes.c_void_p)]*3
     lib.bopl_vec_set_perm.restype = ctypes.c_int; lib.bopl_vec_set_perm.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
     lib.bopl_vec_set_tags.restype = ctypes.c_int; lib.bopl_vec_set_tags.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
     lib.bopl_vec_count_aligned.restype = ctypes.c_int; lib.bopl_vec_count_aligned.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
@@ -103,16 +141,17 @@ def main():
     for num_buffers in (1, 2):
         total = 10*num_buffers
         vec = _C.create_vec(dict(vec=dict(total_agents=total, num_buffers=num_buffers), env=env_kwargs), True)
-        envs = layout(lib, vec, 4*num_buffers)
+        native = native_handle(lib)
+        envs = layout(lib, native, 4*num_buffers)
         perm, groups = build_perm(envs, num_buffers, banks)
         check(f'b{num_buffers}: layout counts', [e['num_agents'] for e in envs] == [2, 3]*(2*num_buffers)
               and all(g == dict(primary=6, bank=[2, 2]) for g in groups), envs=[e['num_agents'] for e in envs], groups=groups)
         check(f'b{num_buffers}: permutation is not identity', perm != list(range(total)), perm=perm)
-        assert lib.bopl_vec_set_perm(ctypes.c_void_p(vec.gpu_obs_ptr), (ctypes.c_int*total)(*perm)) == 0
+        assert lib.bopl_vec_set_perm(ctypes.c_void_p(native.gpu_obs_ptr), (ctypes.c_int*total)(*perm)) == 0
         tags = (ctypes.c_int*(4*num_buffers))(*[e['tag'] for e in envs])
-        assert lib.bopl_vec_set_tags(ctypes.c_void_p(vec.gpu_obs_ptr), tags) == 0
+        assert lib.bopl_vec_set_tags(ctypes.c_void_p(native.gpu_obs_ptr), tags) == 0
         vec.reset()
-        envs = layout(lib, vec, 4*num_buffers)
+        envs = layout(lib, native, 4*num_buffers)
         expected = []; slot = 0
         for e in envs: expected.append(perm[slot:slot+e['num_agents']]); slot += e['num_agents']
         check(f'b{num_buffers}: slots follow the permutation', [e['slots'] for e in envs] == expected,
@@ -120,11 +159,9 @@ def main():
         check(f'b{num_buffers}: historical envs are dealt to the banks with tag 1+bank',
               [(e['tag'], e['bank']) for e in envs] == [(0, -1), (1, 0), (0, -1), (2, 1)]*num_buffers, got=[(e['tag'], e['bank']) for e in envs])
         check(f'b{num_buffers}: reset aligns every historical env of each bank once',
-              all(lib.bopl_vec_count_aligned(ctypes.c_void_p(vec.gpu_obs_ptr), 1+b, 1) == num_buffers for b in range(banks))
-              and all(lib.bopl_vec_count_aligned(ctypes.c_void_p(vec.gpu_obs_ptr), 1+b, 0) == 0 for b in range(banks)))
-        obs = np.ctypeslib.as_array((ctypes.c_float*(total*OBS)).from_address(vec.obs_ptr)).reshape(total, OBS)
-        rewards = np.ctypeslib.as_array((ctypes.c_float*total).from_address(vec.rewards_ptr))
-        terminals = np.ctypeslib.as_array((ctypes.c_float*total).from_address(vec.terminals_ptr))
+              all(lib.bopl_vec_count_aligned(ctypes.c_void_p(native.gpu_obs_ptr), 1+b, 1) == num_buffers for b in range(banks))
+              and all(lib.bopl_vec_count_aligned(ctypes.c_void_p(native.gpu_obs_ptr), 1+b, 0) == 0 for b in range(banks)))
+        obs, rewards, terminals = host_rows(lib, native, total)
         actions = np.zeros((total, NUM_ATNS), dtype=np.float32)  # hold stays 0 (length 1): no latch overrides the button echo
 
         def active_rows(e):
@@ -176,7 +213,7 @@ def main():
         for step in range(args.steps):
             for r in range(total): actions[r] = (1 + (r*37+step) % 255, (r+step) % 16, 0)
             vec.cpu_step(actions.ctypes.data); account()
-            cur = layout(lib, vec, 4)
+            cur = layout(lib, native, 4)
             for i, e in enumerate(cur):
                 rows = active_rows(e)
                 if e['matches'] == last[i]['matches']:
@@ -205,7 +242,7 @@ def main():
             for i in sides:
                 if cur[i]['matches'] != last[i]['matches']:
                     finished[i] += 1; counted[i] += flag[i]; skipped += 1-flag[i]; flag[i] = 1
-            aligned = lambda tag, reset=0: lib.bopl_vec_count_aligned(ctypes.c_void_p(vec.gpu_obs_ptr), tag, reset)
+            aligned = lambda tag, reset=0: lib.bopl_vec_count_aligned(ctypes.c_void_p(native.gpu_obs_ptr), tag, reset)
             for b in range(banks):
                 if aligned(1+b) != sum(flag[i] for i in sides if cur[i]['bank'] == b): flags_ok = False
             if step == args.steps//3:
@@ -234,7 +271,7 @@ def main():
               skipped=skipped, finished=finished, expected=expected_n, log={k: v for k, v in log.items() if 'bank' in k or k == 'n'})
         # Cumulative counters (what the metrics helper differences): physical and learner decisions,
         # held buttons, completed matches (once each, per map), learner-only telemetry, kills.
-        snap = counters.snapshot(lib, vec); completed = sum(e['matches']-1 for e in cur)
+        snap = counters.snapshot(lib, native); completed = sum(e['matches']-1 for e in cur)
         n = expect['steps']
         check('b1: counters count physical and learner decisions', snap['game_steps'] == 8*n and snap['learner_steps'] == 6*n
               and snap['opponent_game_decisions'] == 2*n, snap=snap, steps=n)
@@ -249,9 +286,9 @@ def main():
     # Final-trainer reward: no kill shaping, timeout -0.5 paid by both players of a truncated match.
     vec = _C.create_vec(dict(vec=dict(total_agents=4, num_buffers=1), env=dict(env_kwargs, banks=0, historical_every=0,
                              reward_kill_milli=0, reward_timeout_milli=-500)), True)
+    native = native_handle(lib)
     vec.reset()
-    rewards = np.ctypeslib.as_array((ctypes.c_float*4).from_address(vec.rewards_ptr))
-    terminals = np.ctypeslib.as_array((ctypes.c_float*4).from_address(vec.terminals_ptr))
+    _, rewards, terminals = host_rows(lib, native, 4)
     actions = np.zeros((4, NUM_ATNS), dtype=np.float32); seen = 0; both = True; nonterminal_zero = True
     for step in range(60):
         vec.cpu_step(actions.ctypes.data)
@@ -261,7 +298,7 @@ def main():
                 seen += 1
                 if not (all(t) and all(abs(rewards[r] + 0.5) < 1e-6 for r in pair)): both = False
             elif any(rewards[r] != 0 for r in pair): nonterminal_zero = False
-    snap = counters.snapshot(lib, vec)
+    snap = counters.snapshot(lib, native)
     check('timeout reward: both players of a truncated match receive -0.5 and nothing otherwise', seen >= 2 and both and nonterminal_zero, seen=seen)
     check('timeout reward: telemetry reports timeouts, outcome -0.5 each, no kill reward',
           snap['telemetry'][14] == snap['telemetry'][12] == 2*snap['matches'] > 0 and abs(snap['telemetry'][9] + 0.5*snap['telemetry'][12]) < 1e-6
