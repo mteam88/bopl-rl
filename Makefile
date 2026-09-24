@@ -226,9 +226,9 @@ $(OUT)/divergence_rate: eval/divergence/divergence_rate.c eval/divergence/diverg
 # Observation-writer microbenchmark + sim ticks/s on one core.
 writer-bench: $(OUT)/writer_bench
 
-$(OUT)/writer_bench: writer_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+$(OUT)/writer_bench: eval/writer_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) writer_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) eval/writer_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
 
 $(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
@@ -242,9 +242,9 @@ agent: $(OUT)/libbopl_agent.so
 
 $(OUT)/libbopl_agent.so: train/bopl_agent.c train/bopl_agent.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c $(INCLUDES) -Ipuffer train/bopl_agent.c -o $(OUT)/bopl_agent.o
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c $(INCLUDES) train/bopl_agent.c -o $(OUT)/bopl_agent.o
 	$(CC) $(CFLAGS) -fPIC -c $(ABI)/bopl_rl.c -o $(OUT)/bopl_agent_rl.o
-	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Ipuffer train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
+	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Itrain train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
 	$(CC) -shared $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o -lm -lpthread -o $@
 	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o
 
@@ -254,9 +254,9 @@ agent-mac: $(OUT)/libbopl_agent.dylib
 
 $(OUT)/libbopl_agent.dylib: train/bopl_agent.c train/bopl_agent.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c $(INCLUDES) -Ipuffer train/bopl_agent.c -o $(OUT)/bopl_agent.o
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c $(INCLUDES) train/bopl_agent.c -o $(OUT)/bopl_agent.o
 	$(CC) $(CFLAGS) -fPIC -c $(ABI)/bopl_rl.c -o $(OUT)/bopl_agent_rl.o
-	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Ipuffer train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
+	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Itrain train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
 	$(CC) -dynamiclib $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o -lm -lpthread -install_name @rpath/libbopl_agent.dylib -o $@
 	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o
 
@@ -264,26 +264,26 @@ $(OUT)/libbopl_rl.so: $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) -fPIC -shared $(ABI)/bopl_rl.c -o $@
 
-$(OUT)/benchmark: benchmark.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
-	$(CC) $(CFLAGS) benchmark.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
+$(OUT)/benchmark: eval/benchmark.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
+	$(CC) $(CFLAGS) -I$(ABI) eval/benchmark.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/coverage: coverage.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
-	$(CC) $(CFLAGS) coverage.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
+$(OUT)/coverage: eval/coverage.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
+	$(CC) $(CFLAGS) -I$(ABI) eval/coverage.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/record: record.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
-	$(CC) $(CFLAGS) record.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
+$(OUT)/record: eval/record.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
+	$(CC) $(CFLAGS) -I$(ABI) eval/record.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/reset_check: reset_check.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
-	$(CC) $(CFLAGS) reset_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
+$(OUT)/reset_check: eval/reset_check.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
+	$(CC) $(CFLAGS) -I$(ABI) eval/reset_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/sampled_check: sampled_check.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
-	$(CC) $(CFLAGS) sampled_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
+$(OUT)/sampled_check: eval/sampled_check.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
+	$(CC) $(CFLAGS) -I$(ABI) eval/sampled_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/reset_profile: reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
-	$(CC) $(CFLAGS) -std=gnu11 reset_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
+$(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
+	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/reset_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/frame_profile: frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
-	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
+$(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
+	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
 .PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
 
