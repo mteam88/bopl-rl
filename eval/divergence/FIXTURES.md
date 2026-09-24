@@ -1031,6 +1031,12 @@ pass boundary itself is misplaced.
 
 ### 2. Missile - the released object is published a step further on - 1 case
 
+**Status:** FIXED 2026-09-24, see fixture #11. It was the same defect as
+class 1: `Missile.prefab` is boundary/ability 5/6, and the port steered the
+projectile before running the boundary. The guess recorded below - "the same
+one-pass difference as class 1, seen in velocity and rotation instead of
+position" - was right, including the caveat that it had not been traced.
+
 `missile-early`, tick 371, which is its death tick. `entity[5]` (layer 10,
 `kind 1`):
 
@@ -1336,28 +1342,9 @@ Forms where it runs **after**, i.e. where the ability's own update must run
 first: the six guns above (6/2), plus Meteor (5/3), Platform (5/2), Roll (5/4),
 Time stop (5/1), Dash (5/1).
 
-**Sweep class 2, `missile-early`, is almost certainly this same defect and is
-deliberately left unfixed here.** `Missile.prefab` is DestroyIfOutsideSceneBounds
-5, `SparkShot` 6, PlayerBody 8, so the boundary again precedes the ability's own
-logic - but `missile_form_tick` calls `steer_active_missile` *before*
-`ability_boundary_kill`, so on the death pass the port advances the live
-projectile one step that the oracle never takes. That is exactly what class 2
-records: the reference publishes the released object at rest and upright
-(rotation 0.000057, vx -0.000824) and the port publishes it at -0.041660 rad and
-vx 0.748645, one ordinary step of an ordinary angular velocity. The fix looks
-like one line - move the `ability_boundary_kill` call above the
-`steer_active_missile` call - but it can move a death tick, `bounds-ability-ab`
-scores `missile` on exactly that, and it was outside this change's scope, so it
-is recorded rather than attempted. It deserves its own measurement and its own
-gate run.
-
-`native/src/rollout/mod.rs:18404` carries the same reversed claim for Mine
-("ThrowItem's DestroyIfOutsideSceneBounds runs after the mine logic") against a
-prefab where the boundary is 5 and the Mine script is 6. It is **not** fixed
-here and no case currently measures it: `mine` is clean on all three phases in
-the 114-case sweep, before and after. Whoever picks it up should find a case
-where the mine form publishes something on its death pass first, rather than
-reorder on the strength of the prefab alone.
+**Sweep class 2, `missile-early`, was this same defect and is now fixed** in
+fixture #11, together with the Mine comment named below. Both are recorded
+there rather than here.
 
 ### The whole 114 re-run against the base, which is the regression evidence
 
@@ -1386,8 +1373,15 @@ fixture #1 is aim-sensitive, and at `BCT_AIM=0` `plain`, `duplicator`, `blink`,
 `freeze`, `growth_ray`, `shrink_ray` and `magnet` pick up entity-basis
 divergences that the aim-64 run does not show. **Do not compare 76/114 against
 84/114.** The base-versus-fixed pair above is internally consistent and is the
-claim being made; whoever re-runs the full sweep should settle which aim the
-record means and say so.
+claim being made.
+
+**Settled afterwards, in fixture #11: the recorded sweep was `BCT_AIM=64`.** The
+114 re-run at aim 64 measures 24 divergent on this change. `847d7c9b` itself was
+not re-measured at aim 64, so the corroboration is arithmetic and not direct:
+the record's own 30, minus exactly these six, is 24. So the sweep section's
+"Reproduce" block is the wrong half of that contradiction, and its totals should
+be read as aim 64. Class 1 reproduces at either aim, which is why nothing looked
+wrong when it was measured at 0; class 2 only reproduces at 64.
 
 ### Reproduce
 
@@ -1400,6 +1394,119 @@ BCT_ABILITIES=37,32,36 BCT_SLOT=0 BCT_AIM=0 BCT_ENGAGE_Y=0.0 BCT_ALL=1 \
 
 The six cases are `BCT_ABILITIES` 37,32,36 (Mjolnir), 33,2,14 (Poke ball) and
 35,2,14 (Tack), each at `BCT_ENGAGE_Y` 0.0 and -8.0.
+
+## Fixture #11 - Missile steered its projectile one pass past the death, and Mine had the same reversed comment
+
+**Status:** FIXED 2026-09-24 on branch `throwitem-pass`, on top of fixture #9.
+Closes sweep class 2. Two sites, one of which no case measures.
+
+This is fixture #9's defect class a second and third time, which is the point of
+the entry: the ordering claim in a comment is what goes wrong, and it goes wrong
+by being copied from a prefab where it held to one where it does not.
+
+### Missile - the measured one
+
+`Missile.prefab` is `boundary/ability` **5/6** - DestroyIfOutsideSceneBounds 5,
+SparkShot 6, DPhysicsBox 7, PlayerBody 8 - so the boundary runs ahead of the
+whole of SparkShot's update. `missile_form_tick` ran `steer_active_missile`, the
+phase machine and `spawn_guided_missile` *before* `ability_boundary_kill`, so on
+the death pass the port advanced the live projectile one step the oracle never
+takes.
+
+Before, `missile-early`, nine differing fields on `entity[5]` (layer 10, kind 1)
+at tick 371, which is the death tick both backends agree on:
+
+```
+entity[5].rotation  ref        245213 (0.000057)  cand  26807390223 (6.241525)
+entity[5].vx        ref      -3538962 (-0.000824) cand   3215404632 (0.748645)
+entity[5].x         ref -158228846144            cand -158175197084  gap 53649060
+...plus y, vy, right_x, right_y, up_x, up_y
+```
+
+6.241525 is 2*pi - 0.041660, i.e. -0.041660 rad wrapped - one tick at -2.5 rad/s,
+an ordinary angular velocity. After: `FIRST any none` on all three phases, at the
+reference's own death tick.
+
+Read that field list as a **lower bound, not an inventory**: `BCT_ALL=1` prints
+every differing field of the *first* diverging tick and then stops, so it says
+what went wrong first, not everything that went wrong. The clean/divergent split
+is trustworthy in both directions - `FIRST any none` means no tick of the episode
+differed in any compared field - but a nine-field list does not mean the episode
+contained nine bad fields.
+
+The fix moves the single `ability_boundary_kill` call to the top of
+`missile_form_tick`. It cannot move the death tick: `steer_active_missile` writes
+only `guided_missiles[..]` and `spawn_guided_missile` only reads the body, so
+`base.position` is identical at the old and new call sites. The
+`Ability`-ordered `Player.Position` publish happens in the shared player loop
+before the ability dispatch, so the kill takes the right position directly.
+
+**This case needs `BCT_AIM=64` and is invisible at `BCT_AIM=0`**, because
+`steer_active_missile` reads `action.direction()` and a zero aim leaves
+`next_up = missile.up`, so nothing is steered and there is nothing to get wrong.
+That matters beyond this fixture - see the aim note below.
+
+### Mine - the unmeasured one, and the comment that was the actual bug
+
+`mod.rs` carried, at the `mine_throw_tick` kill site:
+
+> ThrowItem's DestroyIfOutsideSceneBounds runs after the mine logic and before
+> PlayerBody integrates this pass.
+
+`Mine.prefab` is `boundary/ability` **5/6** - DestroyIfOutsideSceneBounds 5,
+ThrowItem 6, DPhysicsBox 7, PlayerBody 8 - so the boundary runs **before**
+ThrowItem's update and the first half of that sentence was reversed, exactly as
+ThrowItem2's was.
+
+**The code needed to change too, not only the comment.** The kill ran after the
+entire mine update, `fire_mine` included, so on a death pass the port could
+spawn a mine the oracle never spawns, or take the phase-2 exit instead of dying.
+That is the same observable class as fixture #9's released payload. It is latent
+only because no case in the 114 reaches it: `mine` is clean on all three phases
+at both aims, before and after, and its death ticks (371/367/367) are unchanged.
+So this half of the change is **unmeasured by construction** - it is made because
+the prefab says so and because leaving known-wrong ordering behind a corrected
+comment is worse than either alone, not because a number moved.
+
+### The 114 re-run, and what it finally settles about the aim column
+
+Run against the pre-change build (`46d513f7`) exactly as fixture #9's was:
+
+```
+aim=0    pre 38 divergent   post 38 divergent   set difference: none
+aim=64   pre 24 divergent   post 23 divergent   set difference: exactly missile-early
+```
+
+No regressions at either aim, and every surviving divergence reports a
+byte-identical `FIRST any` line before and after.
+
+**The aim ambiguity flagged in fixture #9 is now resolved: the recorded sweep was
+`BCT_AIM=64`.** The arithmetic closes on the record's own number - 30 divergent
+at `847d7c9b`, minus the 6 fixture #9 closed, is 24, which is exactly the
+pre-change count measured here; minus `missile-early` is 23. The sweep section's
+"Reproduce" block, which says `BCT_SLOT=0 BCT_AIM=0`, is the wrong half of that
+contradiction and should be read as 64 for anything reproducing the sweep totals.
+Class 1 happens to reproduce at either aim, which is why fixture #9's six cases
+were measured at 0 without anything looking wrong; class 2 does not, and that is
+the case that exposes it.
+
+Anyone re-running the sweep should use `BCT_AIM=64` and expect 23. At
+`BCT_AIM=0` the totals differ in both directions - the aimed-gun family of
+fixture #1 picks up entity-basis divergences that aim 64 does not show, and
+`missile` loses its only divergent phase - so the two are not comparable and
+neither is wrong, they are different cases.
+
+### Reproduce
+
+```bash
+BCT_ABILITIES=10,2,14 BCT_SLOT=0 BCT_AIM=64 BCT_ENGAGE_Y=0.0 BCT_ALL=1 \
+  native/artifacts/rl/bounds_case_trace \
+  "$PWD/sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so" \
+  "$PWD/native/target-q32/release/libbopl_sim.so"
+```
+
+`late` and `brink` are clean, so this needs the `early` engage height as well as
+the non-zero aim.
 
 ## Open items inherited from the deleted porting docs
 
