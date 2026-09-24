@@ -941,6 +941,13 @@ not committed; the reproduce recipe is at the end of this section.
 
 ### 1. The dying player's released ability object spawns a pass late - 6 cases
 
+**Status:** FIXED 2026-09-24, see fixture #9. All six now report `FIRST any
+none / FIRST discrete none`, `tack`'s `entity[].owner` included. The
+conclusion drawn at the end of this section - that the port integrates the
+body a pass ahead of the oracle, and that fixture #8 and this share one
+underlying offset - **was wrong**; it was an ordinary in-pass ordering error
+on the ThrowItem2 prefabs. Everything below is the original measurement.
+
 `mjolnir`, `poke_ball`, `tack`, each on `early` and `late`. The diverging row is
 a layer-10 (item) entity, `kind 0`, `flags 2307`, appearing on the death tick
 itself, and the gaps are **byte-identical across all three kits**:
@@ -1128,6 +1135,264 @@ identified.
 
 This sweep is deliberately **not** a gate. Making it one means deciding which of
 these six classes is allowed to stay, and four of them should be fixed instead.
+
+## Fixture #9 - ThrowItem2's boundary component runs before the ability's own pass, not after
+
+**Status:** FIXED 2026-09-24 on branch `throwitem-pass`. Closes class 1 of the
+114-case trajectory sweep - all six cases now report `FIRST any none / FIRST
+discrete none` for the whole episode - and, more usefully, **retires the
+"misplaced pass boundary" hypothesis that class 1 and fixture #8 together
+seemed to support**. See "What this says about fixture #8" below.
+
+Before, rebuilt from committed source at `847d7c9b`:
+
+```
+mjolnir-early  465 NUMERIC  entity[0].x ref -164235558265 (-38.239071) cand -164371638025 (-38.270754)
+                            entity[0].y gap 545057382 (0.126906)
+mjolnir-late   393 NUMERIC  entity[0].x ref -172798692450 (-40.232831) cand -172934698609 (-40.264497)
+poke_ball-early 465 NUMERIC entity[1].x  same gaps
+poke_ball-late  393 NUMERIC entity[1].x  same gaps
+tack-early     465 DISCRETE entity[1].owner ref 1 cand 0, plus the same x/y gaps
+tack-late      393 DISCRETE entity[1].owner ref 1 cand 0, plus the same x/y gaps
+```
+
+After: `FIRST any none / FIRST discrete none` on all six, at the reference's own
+death tick. Two defects, not one, and they are independent - the position fix
+alone left tack's `owner` as the sole remaining field on both tack phases, which
+is how they are attributed here.
+
+### 1. The ordering was simply backwards on the prefab
+
+The port called `ability_boundary_kill` at the *end* of `throw_item_tick`, under
+a comment asserting "ThrowItem2's DestroyIfOutsideSceneBounds runs after the
+item logic and before PlayerBody integrates this pass". The first half of that
+is false. All five ThrowItem2 prefabs - `Mjolnir.prefab`, `Poke ball.prefab`,
+`Banana peel.prefab` (Tack), `Smoke.prefab`, `Grenade_0.prefab` - carry the
+byte-identical component order:
+
+```
+1 SpriteAnimator  2 Ability  3 PlayerCollision  4 PlayerPhysics
+5 DestroyIfOutsideSceneBounds  6 ThrowItem2  7 PlayerBody  8 DPhysicsBox
+```
+
+DestroyIfOutsideSceneBounds is **5** and ThrowItem2 is **6**, so the boundary
+component runs ahead of the *entire* ability component, not merely ahead of the
+integration. On the pass it fires, `ThrowItem2.UpdateSim` never runs at all.
+
+That matters because `ThrowItem2.OldUpdate` - the first thing `UpdateSim` calls -
+republishes the held payload every pass:
+
+```csharp
+else if (!hasFired && !grenade.hasBeenThrown)
+{
+    grenadeBody.position = dummyPos();          // ThrowItem2.cs:282-285
+}
+...
+private Vec2 dummyPos()                          // ThrowItem2.cs:288-293
+{
+    ...
+    return Vec2.ComplexMul(new Vec2(body.rotation), u) + body.position;
+}
+```
+
+So the held payload's position is a per-pass write from `body.position`, and
+`body.position` is a live property over `fixTransform.position`
+(PlayerBody.cs:42-51), not a cached field. On the death pass that write is
+skipped, and the payload is released carrying the position written on the
+*previous* pass. `DestroyIfOutsideSceneBounds.selfDestruct` resolves
+`IAbilityComponent` and calls `ExitAbility` directly
+(DestroyIfOutsideSceneBounds.cs:129-141), reaching `ThrowItem2.ExitAbility`,
+which calls `ManualInit` and `AddForce` on the payload and never touches its
+position (ThrowItem2.cs:179-193).
+
+That closes the arithmetic the sweep recorded. At `early`, player 0 exports
+(-39.939071, -11.182124) on tick 464 and (-39.970754, -11.309030) on 465, the
+tick it dies; Mjolnir's release offset is (1.7, 1.068889):
+
+```
+reference   -38.239071  =  -39.939071 + 1.7    the tick-464 exported position
+candidate   -38.270754  =  -39.970754 + 1.7    the tick-465 exported position
+```
+
+The exported player position for tick N is published by `Ability` at
+hierarchyNumber 2, before PlayerBody at 7, so it *is* the pre-integration
+position of pass N - which is exactly the value `dummyPos()` reads at
+hierarchyNumber 6 of that same pass. Reference = the payload's pass-464 write.
+Port = its own pass-465 write, because the port ran its boundary check last.
+
+**The fix** (`native/src/rollout/mod.rs`) moves the single
+`ability_boundary_kill(index, false)` call from the end of `throw_item_tick` to
+the top, immediately after the `Ability`-ordered `reported_position` publish and
+ahead of every piece of ThrowItem2 logic. No new state, no history field, no
+shim. The kill *tick* and kill *position* are unchanged by construction: nothing
+between the top of the function and the old call site writes `base.position` on
+any path that reached the old call site, which is why `bounds-ability-ab` reports
+the identical 38 cases at the identical ticks and positions.
+
+Everything else ThrowItem2 does on the death pass is now skipped as well - the
+grounded-exit test, the aim/facing update, the fire-button edge, the tick and
+`timePassed` counters, the held-payload spawn and the phase-1 exit. Only the
+position was measurable in these six cases; the rest follow from the same
+ordering and were wrong for the same reason.
+
+### 2. Tack's released row lost the owner it had already earned
+
+`tack` carried one extra differing field the other two kits did not:
+`entity[].owner`, reference 1 and port 0. It is a real second defect and it does
+not share a cause with the position, but it is the same *event* - what the
+release publishes - so it is fixed here.
+
+The exported `owner` is `transform.GetComponent<IPlayerIdHolder>().GetPlayerId()`
+(`sim/Gameplay/RlObservation.cs:110,118`). For the Tack payload that id is bound
+in BananaPeel's first updater pass, which the port models with `ThrownItem::
+launched`. `tack_items_tick` takes that edge for a *held* payload - unlike
+`mjolnir_items_tick` and the Poke ball pass, both of which skip an item whose
+collider does not exist yet - so by release time `launched` is already true and
+the `self.entities[entity].owner = item.owner + 1` write inside the edge has
+been spent while `entity` was still `None`. `release_held_throw_item_on_exit`
+then built the row from `CEntity::default()`, i.e. owner 0, and nothing ever set
+it again.
+
+Letting Tack launch while held is correct and must not be "fixed": the same edge
+sets `angular_velocity = 4`, and the released row carries `rot 0.066667` = 4/60
+in **both** backends, so the reference's held banana peel does go through that
+pass. What was missing is only the publication. The fix gives
+`release_held_throw_item_on_exit` the owner expression `fire_thrown_item`
+already uses verbatim - `if ability == ABILITY_TACK && item.launched { base_id }
+else { 0 }` - under the rule its own comment states: a payload held through
+BananaPeel's first pass is already bound when `ManualInit` registers the
+collider.
+
+Mjolnir and Poke ball need nothing here, and the measurement says so: both
+report `owner 1/1` even before this change. Their item passes gate the `launched`
+edge on the collider existing, so the edge is still unspent at release and fires
+later in the same tick, after `release_held_throw_item_on_exit` has allocated
+the row.
+
+### What this says about fixture #8, which was the point of the exercise
+
+**It dissolves the shared-cause argument, and fixture #8's own question stays
+open.** The sweep's class-1 note concluded that because the port already
+implemented a pre-integration read here and was *still* one pass late, "this
+port integrates the body a pass ahead of where the oracle does", and that
+fixture #8's `spawn_origin` and whatever landed here were paying for one
+underlying offset. That is not what happened. The port's pre-integration read
+was correct and irrelevant: the position in question is not read at the kill
+site at all, it is written once per pass by a component that the boundary
+pre-empts. An ordinary in-pass ordering error, fixed by moving one call, with no
+extra pass of history anywhere.
+
+So the "two independent abilities need one pass further back" coincidence is
+down to one. Black hole is again alone, and the pass boundary is **not**
+implicated by this evidence. Do not carry class 1 forward as corroboration.
+
+One hypothesis for fixture #8 is also closed on the way past, because it is the
+obvious next guess: `PlayerBody.position` is **not** a cached field that would
+lag its transform. It is a property that reads and writes
+`fixTransform.position` directly (PlayerBody.cs:42-51), so reading `body.position`
+from an animator callback at hierarchyNumber 1 gives the live value, and "the
+spawn read a stale PlayerBody copy" cannot be the explanation for Black hole.
+
+### Negative results worth keeping
+
+- **Lead 1 as originally framed was half right.** The brief asked to find "what
+  else publishes the held row each pass", on the theory that `spawn_held_item`'s
+  one-time `position:` write could not explain a moving row. The per-pass write
+  does exist and is the right object - `throw_item_tick`'s
+  `self.thrown_items[item_index].position = slot.base.position + dummy.complex_mul(...)`
+  block - but it was never running "after the body integrates". It runs before,
+  correctly. The defect was that on the death pass it ran *at all*.
+- **Lead 2, the misplaced pass boundary, was not needed and is not supported.**
+  No broad change was attempted and none is warranted by these six cases.
+- **The offsets are not part of the bug**, as the brief said. (1.7, 1.068889) for
+  Mjolnir against (1.7, 0.968889) for the other two is two throw configs, and the
+  identical raw gaps across the three kits are just "one tick of the same
+  player's motion" at a shared death tick.
+
+### The ordering is worth checking on the other forms
+
+Resolving `hierarchyNumber` against the script guids on every ability prefab
+gives the boundary component's position relative to the ability's own script.
+The port's call sites carry comments in both directions, and the gun family's
+comment - "GunTransform's DestroyIfOutsideSceneBounds runs after the fire test"
+- is **correct**: on `Blink gun`, `Duplicator`, `Freeze ray`, `Growth ray`,
+`Shrink ray` and `Magnet gun` the gun script is hierarchyNumber 2 and the
+boundary is 6. The ThrowItem2 comment looks like that one copied to a prefab
+where it does not hold.
+
+Forms where the boundary runs **before** the ability script, i.e. where the
+port's kill must come first: Mjolnir/Poke ball/Banana peel/Smoke/Grenade_0
+(5 < 6, fixed here), Black hole (5 < 6), Bow (5 < 6), Mine (5 < 6),
+Missile (5 < 6), Gust (4 < 6), Engine (4 < 6), Push (4 < 6), Spike (4 < 6),
+Revival (4 < 6), Tesla coil (4 < 6), Throw (5 < 8), Beam (4 < 8), Drill (3 < 7).
+
+Forms where it runs after: the six guns above, plus Meteor (3 < 5),
+Platform (2 < 5), Roll (4 < 5), Time stop (1 < 5), Dash (1 < 5).
+
+**Sweep class 2, `missile-early`, is almost certainly this same defect and is
+deliberately left unfixed here.** `Missile.prefab` is DestroyIfOutsideSceneBounds
+5, `SparkShot` 6, PlayerBody 8, so the boundary again precedes the ability's own
+logic - but `missile_form_tick` calls `steer_active_missile` *before*
+`ability_boundary_kill`, so on the death pass the port advances the live
+projectile one step that the oracle never takes. That is exactly what class 2
+records: the reference publishes the released object at rest and upright
+(rotation 0.000057, vx -0.000824) and the port publishes it at -0.041660 rad and
+vx 0.748645, one ordinary step of an ordinary angular velocity. The fix looks
+like one line - move the `ability_boundary_kill` call above the
+`steer_active_missile` call - but it can move a death tick, `bounds-ability-ab`
+scores `missile` on exactly that, and it was outside this change's scope, so it
+is recorded rather than attempted. It deserves its own measurement and its own
+gate run.
+
+`native/src/rollout/mod.rs:18404` carries the same reversed claim for Mine
+("ThrowItem's DestroyIfOutsideSceneBounds runs after the mine logic") against a
+prefab where the boundary is 5 and the Mine script is 6. It is **not** fixed
+here and no case currently measures it: `mine` is clean on all three phases in
+the 114-case sweep, before and after. Whoever picks it up should find a case
+where the mine form publishes something on its death pass first, rather than
+reorder on the strength of the prefab alone.
+
+### The whole 114 re-run against the base, which is the regression evidence
+
+The eight gates are green, but none of them reads a mid-flight trajectory, so
+they cannot by themselves say this change moved only what it was aimed at. So
+the 114-case sweep was run twice on the same machine and the same oracle: once
+on `847d7c9b` rebuilt from source, once on this change, with identical
+parameters.
+
+```
+base    clean=70  divergent=44  total=114
+fixed   clean=76  divergent=38  total=114
+```
+
+The divergent **sets** differ by exactly the six cases this fixture is about -
+`mjolnir`, `poke_ball` and `tack` at `early` and `late` - and by nothing else.
+Every one of the 38 surviving divergences reports a **byte-identical**
+`FIRST any` line before and after, so no other case moved even in its last bit.
+
+One caveat on the numbers, because they do not match the 84/114 recorded in the
+sweep section above: this pair was run at `BCT_AIM=0`, which is what the sweep's
+own "Reproduce" block and the class-1 measurements use, while the prose there
+says the aim column comes from the case table in `bounds_ability_ab.c`, where it
+is 64. The two parameterizations give different totals - the aimed-gun family of
+fixture #1 is aim-sensitive, and at `BCT_AIM=0` `plain`, `duplicator`, `blink`,
+`freeze`, `growth_ray`, `shrink_ray` and `magnet` pick up entity-basis
+divergences that the aim-64 run does not show. **Do not compare 76/114 against
+84/114.** The base-versus-fixed pair above is internally consistent and is the
+claim being made; whoever re-runs the full sweep should settle which aim the
+record means and say so.
+
+### Reproduce
+
+```bash
+BCT_ABILITIES=37,32,36 BCT_SLOT=0 BCT_AIM=0 BCT_ENGAGE_Y=0.0 BCT_ALL=1 \
+  native/artifacts/rl/bounds_case_trace \
+  "$PWD/sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so" \
+  "$PWD/native/target-q32/release/libbopl_sim.so"
+```
+
+The six cases are `BCT_ABILITIES` 37,32,36 (Mjolnir), 33,2,14 (Poke ball) and
+35,2,14 (Tack), each at `BCT_ENGAGE_Y` 0.0 and -8.0.
 
 ## Open items inherited from the deleted porting docs
 
