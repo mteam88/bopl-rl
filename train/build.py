@@ -12,6 +12,9 @@ import sysconfig
 import pybind11
 
 HERE = Path(__file__).resolve().parent
+# bopl_rl.c/.h are the C ABI both simulator backends sit behind; they live with
+# the simulator, not with either consumer.
+ABI = HERE.parent / "sim/abi"
 REVISION = "42f70d6932c30ac977736f861006809c50168ba9"
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
@@ -42,9 +45,9 @@ subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-close.patch")], cwd=
 # pristine-src puffer-overlay).
 subprocess.run(["patch", "-p1", "-i", str(HERE / "pufferlib-bopl.patch")], cwd=overlay, check=True)
 subprocess.run(["cc", "-O3", "-fPIC", "-fopenmp", "-DPRECISION_FLOAT", "-I" + str(overlay),
-                "-I" + str(HERE.parent), "-c", str(HERE / "binding.c"), "-o", str(out / "bopl_binding.o")], check=True)
+                "-I" + str(ABI), "-c", str(HERE / "binding.c"), "-o", str(out / "bopl_binding.o")], check=True)
 subprocess.run(["cc", "-O3", "-std=c11", "-Wall", "-Wextra", "-Werror", "-fPIC", "-c",
-                str(HERE.parent / "bopl_rl.c"), "-o", str(out / "bopl_rl.o")], check=True)
+                str(ABI / "bopl_rl.c"), "-o", str(out / "bopl_rl.o")], check=True)
 target = source / "pufferlib" / ("_C" + sysconfig.get_config_var("EXT_SUFFIX"))
 
 
@@ -109,8 +112,8 @@ else:
     link(["c++", "-shared", "-fPIC", "-fopenmp", str(out / "puffer_cpu.o"),
           str(out / "bopl_binding.o"), str(out / "bopl_rl.o"), str(cuda_runtime),
           "-Wl,-rpath," + str(cuda_runtime.parent), "-lm", "-lpthread"], target)
-link(["cc", "-O3", "-std=c11", "-fPIC", "-shared", "-I" + str(HERE.parent),
-      str(HERE / "eval_binding.c"), str(HERE.parent / "bopl_rl.c"), "-lm"], out / "libbopl_research.so")
+link(["cc", "-O3", "-std=c11", "-fPIC", "-shared", "-I" + str(ABI),
+      str(HERE / "eval_binding.c"), str(ABI / "bopl_rl.c"), "-lm"], out / "libbopl_research.so")
 # policy_eval.c is the CPU forward pass evaluate.py / the pool rater load through
 # native_policy.py; it shares the head layout with the trainer, so rebuild it in
 # lockstep (overnight-7 lost 4 trials to a stale copy missing _create_aim).
