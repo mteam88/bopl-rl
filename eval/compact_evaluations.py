@@ -5,8 +5,9 @@ The physics-state visual JSONs are ~70% of a run directory (1.6 GB of a 1B-step
 trial's 2 GB) and gzip ~12x. Every reader goes through eval/visuals.py, which
 resolves either spelling, so reports keep referring to `game.json` unchanged.
 
-Only runs whose status.json is not "running" (and idle for --min-age hours) are
-touched; the sweep driver's active trial is never archived under it.
+Only runs idle for --min-age hours are touched, and a run still writing is
+never archived under the sweep driver: see run_is_idle for how a killed run
+that left status.json saying "running" is told apart from a live one.
 
   python eval/compact_evaluations.py native/artifacts/rl/sweeps/overnight-6 ...
   python eval/compact_evaluations.py --dry-run --glob 'native/artifacts/rl/sweeps/*'
@@ -31,17 +32,28 @@ def visual_files(run_dir):
         yield path
 
 
+STALE = 24 * 3600   # a killed run keeps status "running" for ever; its files stop moving
+
+
 def run_is_idle(run_dir, min_age):
+    """Idle enough to archive. Same rule as compact_history.run_is_idle.
+
+    A run killed by a crash, an abort or a reboot never rewrites status.json, so
+    "running" alone cannot mean live -- and refusing those runs withheld archival
+    from exactly the directories that keep the most dead weight, since the
+    evaluation replays are ~70% of a run. A status that has not moved for STALE
+    is a dead run, not a trainer to protect. Only the writer's own clock decides.
+    """
     status = run_dir / 'status.json'
     try:
         state = json.loads(status.read_text()).get('status')
     except (OSError, ValueError):
         state = None
-    if state == 'running':
+    stamps = [p.stat().st_mtime for p in (status, packed.resolved(run_dir / 'metrics.jsonl')) if p.is_file()]
+    idle = time.time() - max(stamps, default=0)
+    if state == 'running' and idle < STALE:
         return False
-    newest = max((p.stat().st_mtime for p in (status, packed.resolved(run_dir / 'metrics.jsonl')) if p.is_file()),
-                 default=0)
-    return time.time() - newest >= min_age
+    return idle >= min_age
 
 
 def archive(path, level=1):
