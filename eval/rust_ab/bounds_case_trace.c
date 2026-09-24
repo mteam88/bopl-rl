@@ -20,6 +20,8 @@
  *   BCT_SLOT=0             ability slot held once engaged, -1 to fall plainly
  *   BCT_AIM=64             aim byte held while engaged
  *   BCT_ENGAGE_Y=-10.9     engage once player 0 is below this y ("brink")
+ *   BCT_WALK_TICK=280      tick from which player 0 walks off the left edge;
+ *                          raising it lets a long-cooldown slot come up
  *   BCT_TICKS=1600
  *   BCT_DUMP=a:b           per-tick dump of player 0 / slime 0 / the owned
  *                          entity rows over the inclusive tick range [a,b]
@@ -31,7 +33,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define WALK_TICK 280
 
 static double f(int64_t v) { return (double)v / 4294967296.0; }
 
@@ -77,6 +78,7 @@ int main(int argc, char **argv) {
     uint8_t aim = (uint8_t)env_u("BCT_AIM", 64);
     double engage_y = env_d("BCT_ENGAGE_Y", -10.9);
     unsigned ticks = env_u("BCT_TICKS", 1600);
+    const unsigned walk_tick = env_u("BCT_WALK_TICK", 280);
     unsigned dump_lo = 0, dump_hi = 0;
     const char *dump = getenv("BCT_DUMP");
     if (dump && *dump) sscanf(dump, "%u:%u", &dump_lo, &dump_hi);
@@ -125,7 +127,7 @@ int main(int argc, char **argv) {
         for (int backend = 0; backend < 2; backend++) {
             const BoplRlSlime *slime = &state[backend]->slimes[0];
             unsigned *flag = backend ? &engaged_candidate : &engaged;
-            if (!*flag && slot >= 0 && tick > WALK_TICK &&
+            if (!*flag && slot >= 0 && tick > walk_tick &&
                 slime->timers[slot] > slime->cooldowns[slot] &&
                 state[backend]->players[0].y < (int64_t)(engage_y * 4294967296.0))
                 *flag = tick;
@@ -133,9 +135,9 @@ int main(int argc, char **argv) {
         if (engaged) {
             action[0].angle = aim;
             action[0].buttons = (uint16_t)(2u << slot);
-        } else if (tick > WALK_TICK) {
+        } else if (tick > walk_tick) {
             action[0].angle = 129;
-            if ((tick - WALK_TICK) % 20 == 0) action[0].buttons = 1;
+            if ((tick - walk_tick) % 20 == 0) action[0].buttons = 1;
         }
         int ended = 0;
         for (int backend = 0; backend < 2; backend++) {

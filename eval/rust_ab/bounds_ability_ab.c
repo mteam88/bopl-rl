@@ -21,7 +21,9 @@
 
 #define WATER_HEIGHT (-11.3)
 #define TICKS 1600
-/* Stand still until every slot is off cooldown, then walk off the left side. */
+/* Stand still until every slot is off cooldown, then walk off the left side.
+ * A slot whose cooldown outlasts the walk never comes up before the body is
+ * past the plane, so a case may push this later (`walk_tick` below). */
 #define WALK_TICK 280
 
 static double f(int64_t v) { return (double)v / 4294967296.0; }
@@ -42,7 +44,8 @@ struct outcome {
  * identical states up to the divergence under test, so both receive the same
  * script. */
 static int play(BoplRl *world, BoplRlConfig *config, int slot, uint8_t aim,
-                double engage_y, struct outcome *out, const char *label) {
+                double engage_y, unsigned walk_tick, struct outcome *out,
+                const char *label) {
     int status = bopl_rl_reset(world, config);
     if (status != BOPL_RL_OK) {
         fprintf(stderr, "%s reset failed (%d): %s\n", label, status,
@@ -57,7 +60,7 @@ static int play(BoplRl *world, BoplRlConfig *config, int slot, uint8_t aim,
     for (unsigned tick = 1; tick <= TICKS; tick++) {
         BoplRlAction action[2] = {{0}};
         const BoplRlSlime *slime = &state->slimes[0];
-        if (!engaged && slot >= 0 && tick > WALK_TICK &&
+        if (!engaged && slot >= 0 && tick > walk_tick &&
             slime->timers[slot] > slime->cooldowns[slot] &&
             state->players[0].y < (int64_t)(engage_y * 4294967296.0)) {
             engaged = tick;
@@ -66,9 +69,9 @@ static int play(BoplRl *world, BoplRlConfig *config, int slot, uint8_t aim,
         if (engaged) {
             action[0].angle = aim;
             action[0].buttons = (uint16_t)(2u << slot);
-        } else if (tick > WALK_TICK) {
+        } else if (tick > walk_tick) {
             action[0].angle = 129; /* left */
-            if ((tick - WALK_TICK) % 20 == 0) action[0].buttons = 1;
+            if ((tick - walk_tick) % 20 == 0) action[0].buttons = 1;
         }
         status = bopl_rl_step(world, action, 2, 1);
         if (status == BOPL_RL_ENDED) break;
@@ -108,6 +111,11 @@ struct ability_case {
      *               port does not run on that form.
      * Owned elsewhere; this probe's subject is when the boundary kills. */
     int known_trajectory_divergence;
+    /* 0 for the shared WALK_TICK. Revival's 10-second cooldown does not come
+     * up before the default walk carries the body past the plane, so its slot
+     * was never pressed and the case silently tested nothing; it stands still
+     * long enough for the slot to be ready instead. */
+    unsigned walk_tick;
 };
 
 int main(int argc, char **argv) {
@@ -131,44 +139,44 @@ int main(int argc, char **argv) {
 
     /* Slot 0 carries the form under test; slots 1/2 pad the loadout. */
     static const struct ability_case cases[] = {
-        {"plain",        {29, 6, 18}, -1, 0, 0},
-        {"duplicator",   {29, 6, 18},  0, 64, 0},
-        {"blackhole",    {18, 6, 29},  0, 64, 1},
-        {"blink",        { 6, 29, 18},  0, 64, 0},
-        {"bow",          { 4, 2, 14},  0, 64, 0},
-        {"beam",         {28, 27, 9},  0, 64, 0},
-        {"missile",      {10, 2, 14},  0, 64, 0},
-        {"rock",         { 9, 27, 28},  0, 64, 0},
-        {"magnet",       {30, 26, 21},  0, 64, 0},
-        {"drill",        {26, 30, 21},  0, 64, 0},
-        {"platform",     {14, 2, 10},  0, 64, 0},
-        {"roll",         {16, 3, 13},  0, 64, 0},
-        {"grapple",      {27, 28, 9},  0, 64, 0},
-        {"freeze",       {36, 32, 37},  0, 64, 0},
-        {"web",          {32, 37, 36},  0, 64, 0},
-        {"mjolnir",      {37, 32, 36},  0, 64, 0},
-        {"teleport",     {25, 24, 23},  0, 64, 0},
-        {"mine",         {24, 25, 23},  0, 64, 0},
-        {"tesla",        {23, 25, 24},  0, 64, 0},
-        {"throw",        {21, 26, 30},  0, 64, 0},
-        {"grenade",      { 3, 16, 13},  0, 64, 0},
-        {"smoke",        {13, 16, 3},  0, 64, 0},
-        {"dash",         { 2, 4, 14},  0, 64, 0},
-        {"engine",       { 5, 2, 14},  0, 64, 0},
-        {"gust",         { 7, 2, 14},  0, 64, 0},
-        {"growth_ray",   { 8, 2, 14},  0, 64, 0},
-        {"shrink_ray",   {17, 2, 14},  0, 64, 0},
-        {"spike",        {11, 2, 14},  0, 64, 0},
-        {"time_stop",    {12, 2, 14},  0, 64, 0},
-        {"revival",      {15, 2, 14},  0, 64, 0},
-        {"invisibility", {19, 2, 14},  0, 64, 0},
-        {"meteor",       {20, 2, 14},  0, 64, 0},
-        {"push",         {22, 2, 14},  0, 64, 0},
-        {"rewind",       {31, 2, 14},  0, 64, 0},
-        {"poke_ball",    {33, 2, 14},  0, 64, 0},
-        {"gold_mushroom",{34, 2, 14},  0, 64, 0},
-        {"tack",         {35, 2, 14},  0, 64, 0},
-        {"portal_gun",   {38, 2, 14},  0, 64, 0},
+        {"plain",        {29, 6, 18}, -1, 0, 0, 0},
+        {"duplicator",   {29, 6, 18},  0, 64, 0, 0},
+        {"blackhole",    {18, 6, 29},  0, 64, 1, 0},
+        {"blink",        { 6, 29, 18},  0, 64, 0, 0},
+        {"bow",          { 4, 2, 14},  0, 64, 0, 0},
+        {"beam",         {28, 27, 9},  0, 64, 0, 0},
+        {"missile",      {10, 2, 14},  0, 64, 0, 0},
+        {"rock",         { 9, 27, 28},  0, 64, 0, 0},
+        {"magnet",       {30, 26, 21},  0, 64, 0, 0},
+        {"drill",        {26, 30, 21},  0, 64, 0, 0},
+        {"platform",     {14, 2, 10},  0, 64, 0, 0},
+        {"roll",         {16, 3, 13},  0, 64, 0, 0},
+        {"grapple",      {27, 28, 9},  0, 64, 0, 0},
+        {"freeze",       {36, 32, 37},  0, 64, 0, 0},
+        {"web",          {32, 37, 36},  0, 64, 0, 0},
+        {"mjolnir",      {37, 32, 36},  0, 64, 0, 0},
+        {"teleport",     {25, 24, 23},  0, 64, 0, 0},
+        {"mine",         {24, 25, 23},  0, 64, 0, 0},
+        {"tesla",        {23, 25, 24},  0, 64, 0, 0},
+        {"throw",        {21, 26, 30},  0, 64, 0, 0},
+        {"grenade",      { 3, 16, 13},  0, 64, 0, 0},
+        {"smoke",        {13, 16, 3},  0, 64, 0, 0},
+        {"dash",         { 2, 4, 14},  0, 64, 0, 0},
+        {"engine",       { 5, 2, 14},  0, 64, 0, 0},
+        {"gust",         { 7, 2, 14},  0, 64, 0, 0},
+        {"growth_ray",   { 8, 2, 14},  0, 64, 0, 0},
+        {"shrink_ray",   {17, 2, 14},  0, 64, 0, 0},
+        {"spike",        {11, 2, 14},  0, 64, 0, 0},
+        {"time_stop",    {12, 2, 14},  0, 64, 0, 0},
+        {"revival",      {15, 2, 14},  0, 64, 0, 520},
+        {"invisibility", {19, 2, 14},  0, 64, 0, 0},
+        {"meteor",       {20, 2, 14},  0, 64, 0, 0},
+        {"push",         {22, 2, 14},  0, 64, 0, 0},
+        {"rewind",       {31, 2, 14},  0, 64, 0, 0},
+        {"poke_ball",    {33, 2, 14},  0, 64, 0, 0},
+        {"gold_mushroom",{34, 2, 14},  0, 64, 0, 0},
+        {"tack",         {35, 2, 14},  0, 64, 0, 0},
+        {"portal_gun",   {38, 2, 14},  0, 64, 0, 0},
     };
     const unsigned case_count = sizeof cases / sizeof cases[0];
     /* "early" holds the button as soon as the body clears the platform, which
@@ -192,10 +200,11 @@ int main(int argc, char **argv) {
             for (int i = 0; i < 3; i++)
                 config.player[player].abilities[i] = cases[c].abilities[i];
         struct outcome got[2];
+        unsigned walk_tick = cases[c].walk_tick ? cases[c].walk_tick : WALK_TICK;
         if (play(world[0], &config, cases[c].slot, cases[c].aim, engage_y,
-                 &got[0], "reference") ||
+                 walk_tick, &got[0], "reference") ||
             play(world[1], &config, cases[c].slot, cases[c].aim, engage_y,
-                 &got[1], "rust"))
+                 walk_tick, &got[1], "rust"))
             return 1;
         int same = got[0].death_tick == got[1].death_tick &&
                    got[0].enter_tick == got[1].enter_tick &&

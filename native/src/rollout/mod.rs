@@ -8144,6 +8144,12 @@ impl RolloutWorld {
                         slot.base.grounded_speed = Fix::ZERO;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
+                        // Revival.prefab places its boundary component at the
+                        // same hierarchyNumber 4 as Gust's, ahead of its own
+                        // QuickSpell (6), so the entry pass tests it here too.
+                        if self.quick_spell_bounds_kill(index, data) {
+                            return;
+                        }
                         self.revival_tick(index, data);
                         return;
                     }
@@ -8569,6 +8575,9 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Revival {
+            if self.quick_spell_bounds_kill(index, data) {
+                return;
+            }
             self.revival_tick(index, data);
             return;
         }
@@ -9873,10 +9882,11 @@ impl RolloutWorld {
     }
 
     /// DestroyIfOutsideSceneBounds as the QuickSpell prefabs carry it. It is
-    /// hierarchyNumber 4 on Gust.prefab, ahead of QuickSpell (6) and of the
-    /// PlayerBody (7) that would advance the transform, so it always reads the
-    /// position the pass started with - including the entry pass, where
-    /// OnEnterAbility has already placed the body.
+    /// hierarchyNumber 4 on both Gust.prefab and Revival.prefab, ahead of
+    /// their QuickSpell (6) and of the PlayerBody that would advance the
+    /// transform, so it always reads the position the pass started with -
+    /// including the entry pass, where OnEnterAbility has already placed the
+    /// body.
     ///
     /// `selfDestruct` finds both an IPlayerIdHolder and an IAbilityComponent on
     /// an ability body, so it leaves through `QuickSpell.ExitAbility` with a

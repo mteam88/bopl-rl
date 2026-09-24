@@ -49,7 +49,10 @@ trace_only="
 # representation check that takes two Rust builds rather than the oracle.
 # `replay_ab` is a differential, but it takes replay-specific arguments
 # rather than two library paths; drive it with `make replay-ab`.
-not_differential=" aim_map bow_test platform_rotation_trace repr_ab replay_ab "
+# `bounds_case_trace` does take two library paths, but it is a diagnostic that
+# reports a first divergence and exits 0 whether or not it found one, so
+# counting it as a pass would inflate the suite with a probe that cannot fail.
+not_differential=" aim_map bounds_case_trace bow_test platform_rotation_trace repr_ab replay_ab "
 
 pass=0; fail=0; skipped=0
 failures=()
