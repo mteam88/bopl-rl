@@ -21,11 +21,16 @@ typedef struct {
     /* Learner-player outcomes, split by opponent kind (each averaged by n like
      * every other field, so win rate = wins/episodes). */
     float learner_episodes, learner_wins, historical_episodes, historical_wins;
-    /* Per frozen bank, the fields PufferLib's selfplay pool reads (n-averaged
-     * like the rest): matches the learner completed against bank b and the
-     * learner's score in them. A match whose opponent weights were swapped
-     * while it ran (see c_step) counts in neither. */
-    float hist_n_bank[8], hist_score_bank[8];
+    /* Per frozen bank, the fields the self-play pool reads (n-averaged like the
+     * rest): matches the learner completed against bank b, the learner's wins
+     * in them, and how many of those matches were decided. A match whose
+     * opponent weights were swapped while it ran (see c_step) counts in none.
+     * wins = hist_score_bank, draws = hist_n_bank - hist_decided_bank,
+     * losses = hist_decided_bank - hist_score_bank: an undecided round (mutual
+     * death) and a timeout are draws in the opponent statistic, not losses.
+     * This is only how the pool CHOOSES opponents; the reward an undecided
+     * round pays is unchanged (bopl_outcome: -1 for everyone in it). */
+    float hist_n_bank[8], hist_score_bank[8], hist_decided_bank[8];
     /* Matches the learner played against a scripted bot in bank b,
      * kept out of hist_*_bank so the pool's swap/Elo statistics only see the
      * bank's frozen weights. */
@@ -1278,7 +1283,14 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
                             env->log.bot_n_entry[env->roster_pick]++; env->log.bot_score_entry[env->roster_pick]+=o.won;
                         }
                     }
-                    else if (env->boundary_reached) { env->log.hist_n_bank[env->active_bank]++; env->log.hist_score_bank[env->active_bank]+=o.won; }
+                    else if (env->boundary_reached) {
+                        /* o.won is already gated on `decided`, so an undecided
+                         * round used to land here as a loss. Count the decided
+                         * matches too and python recovers wins/losses/draws. */
+                        env->log.hist_n_bank[env->active_bank]++;
+                        env->log.hist_score_bank[env->active_bank]+=o.won;
+                        env->log.hist_decided_bank[env->active_bank]+=(float)(decided!=0);
+                    }
                 }
             }
         }

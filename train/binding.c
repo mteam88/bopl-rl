@@ -159,8 +159,10 @@ void my_log(Log *log, Dict *out) {
     dict_set(out, "latched_decisions", log->latched_decisions);
     static const char *bank_n[8]={"hist_n_bank_0","hist_n_bank_1","hist_n_bank_2","hist_n_bank_3","hist_n_bank_4","hist_n_bank_5","hist_n_bank_6","hist_n_bank_7"};
     static const char *bank_score[8]={"hist_score_bank_0","hist_score_bank_1","hist_score_bank_2","hist_score_bank_3","hist_score_bank_4","hist_score_bank_5","hist_score_bank_6","hist_score_bank_7"};
+    static const char *bank_decided[8]={"hist_decided_bank_0","hist_decided_bank_1","hist_decided_bank_2","hist_decided_bank_3","hist_decided_bank_4","hist_decided_bank_5","hist_decided_bank_6","hist_decided_bank_7"};
     for (int bank=0; bank<8; bank++) if (log->hist_n_bank[bank]) {
         dict_set(out, bank_n[bank], log->hist_n_bank[bank]); dict_set(out, bank_score[bank], log->hist_score_bank[bank]);
+        dict_set(out, bank_decided[bank], log->hist_decided_bank[bank]);
     }
     static const char *bot_n[8]={"bot_n_bank_0","bot_n_bank_1","bot_n_bank_2","bot_n_bank_3","bot_n_bank_4","bot_n_bank_5","bot_n_bank_6","bot_n_bank_7"};
     static const char *bot_score[8]={"bot_score_bank_0","bot_score_bank_1","bot_score_bank_2","bot_score_bank_3","bot_score_bank_4","bot_score_bank_5","bot_score_bank_6","bot_score_bank_7"};
