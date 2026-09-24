@@ -547,6 +547,48 @@ kill, and they are not what this fixture fixed:
   in the attraction the hole applies to other bodies - `black_holes_tick`, which
   this change never touches.
 
+**A separate, confirmed fixed-point grouping bug in the hole's size math -
+found, measured, and deliberately NOT fixed here.** `BlackHole.UpdateSize`
+computes the unit first and then scales:
+
+```csharp
+Fix fix = startRadius * (Fix)0.01f;          // BlackHole.cs:198
+if (t * fix < minSize) { return true; }      // :199  leaves radius UNCHANGED
+dCircle.radius = Fix.Max(t * fix, minSize);  // :203
+```
+
+The port groups it the other way, `(size * start_radius) * 0.01`
+(`native/src/rollout/mod.rs`, in `black_holes_tick`). `Fix::operator*` floors
+(`Fix.cs:41447-41464`, mirrored in `fixed_q32.rs:397-399`), and floor-multiply
+is **not associative**, so the two disagree. The port's hole is always slightly
+too large: +68 raw at spawn size 100, +79 at 115, +89 at 130, +137 at 200 -
+the error scales with size. It feeds the influence gate (amplified ~5x by
+`influenceRadiusMultiplier`), the eat-contact tests, and the exported entity
+radius. The port also clamps unconditionally where C# returns early at
+`BlackHole.cs:199-201` and leaves the previous radius in place.
+
+The one-line correction is `let unit = start_radius * Fix::from_f32(0.01);
+hole.radius = (size * unit).max(min_size);`. It is **not** applied on this
+branch: it changes Black hole sizing globally - influence gates and eat
+contacts - so it wants its own change and its own full gate run, and it is
+unrelated to the boundary component this fixture is about. It was tried, and
+**it does not close the player-1 residue above**: the residue's raw values are
+byte-identical with and without it (`cand 54678440797`). Whatever moves player 1
+is not the radius.
+
+The remaining lead, for whoever picks this up: the rounded-rect loop is the only
+*unbounded-range* channel from a hole to a distant body, because the shipped
+boulder exception is inverted - `BlackHole.cs:434` guards the influence cutoff
+with `|| !dCircle.gameObject.CompareTag("boulder")`, and `BlackHole2.prefab` is
+`Untagged`, so every platform in the level is pulled at any distance. The port
+reproduces that faithfully, and the force expression, the `GravityForce`
+grouping and the `platformMultiplier` placement were all checked term by term
+and match. So the next step is runtime, not reading: dump per-tick
+`platform_dynamics[i].body.force` and `surface.center` against the oracle's
+`roundedRects.physicsBodies[k].force` / `colliders[k].box.center`. Note the port
+skips a platform only on `inverse_mass == 0` where C# also skips destroyed and
+inactive parents (`BlackHole.cs:426-430`) - an unverified difference.
+
 **The brief's framing was right about the count but not the content.** It
 predicted two defects and named the second only as "a 0.4-0.56 unit horizontal
 drift, undiagnosed". It also suggested checking whether Black hole's entry path
