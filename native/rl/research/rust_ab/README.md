@@ -576,6 +576,6 @@ The seventeen, as of this writing: `ability_push_ab`, `arrow_bounds_ab`,
 `platform_boundary_ab`, `platform_phase_ab`, `platform_rotation_ab`,
 `recast_ab`, `state_ab`, `stock_respawn_ab`, `sudden_death_ab`.
 
-See RUST_ROLLOUTS.md "Fidelity gate" for the validated scopes and measured
-numeric tolerances. Do not infer fidelity from an all-identical dual-backend
-trace unless `bopl_rl.c` includes the library-identity pool fix (`1cd34b2`).
+Each probe states its own scope and tolerance at the top of its `.c` file.
+Do not infer fidelity from an all-identical dual-backend trace unless
+`bopl_rl.c` includes the library-identity pool fix (`1cd34b2`).

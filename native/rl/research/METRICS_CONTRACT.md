@@ -96,7 +96,8 @@ Required (all currently written by `train.py`):
   `weight` are this update's draw. `scripted_share` is the bot-match
   fraction pushed to C (`clamp(share_min, share_max * I)` with
   `I = max 4p(1-p)`). `scripted_learner_elo` is the pool's learner Elo
-  used for matchmaking. (`native/rl/SCRIPTED_BOTS.md`, `--scripted-roster`).
+  used for matchmaking (`--scripted-roster`; the bots are defined in
+  `native/rl/puffer/bopl_bots.h`).
 
 New — the dashboard renders these once present (per update):
 
@@ -149,7 +150,7 @@ evaluator; adds immutable checkpoint/opponent hashes and per-game explicit
 Written today by `evaluate.py`; keep this shape: top level `schema`, `step`,
 `suite`, `frozen_opponents`, `scripted_opponents` (list of scripted bot names
 like `mixed-hard`, scheduled on evaluation and held-out maps alongside
-`random`; see `native/rl/SCRIPTED_BOTS.md`), `training_maps`, `groups` (per opponent×map:
+`random`; defined in `native/rl/puffer/bopl_bots.h`), `training_maps`, `groups` (per opponent×map:
 `opponent, map, games, wins, win_rate, interval` (Wilson), `timeouts`,
 `undecided`, `behavior_totals`, `mean_duration`), and `games` — per game:
 `opponent, map, seed, side, save, name, win, timeout, undecided, kills, deaths,
