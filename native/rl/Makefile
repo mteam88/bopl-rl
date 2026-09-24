@@ -205,7 +205,7 @@ $(OUT)/divergence_rate: research/divergence/divergence_rate.c research/divergenc
 	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -I. -Ipuffer -Iresearch/divergence \
 	  research/divergence/divergence_rate.c bopl_rl.c -ldl -lm -lpthread -o $@
 
-# Observation-writer microbenchmark + sim ticks/s on one core (THROUGHPUT_V4.md).
+# Observation-writer microbenchmark + sim ticks/s on one core.
 writer-bench: $(OUT)/writer_bench
 
 $(OUT)/writer_bench: writer_bench.c puffer/bopl_puffer.h puffer/bopl_obs_v4.h puffer/bopl_layout_v4.h puffer/bopl_bots.h puffer/bopl_layout.h puffer/bopl_aim.h bopl_rl.c bopl_rl.h
