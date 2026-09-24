@@ -137,37 +137,44 @@ here, the learned members against the scripted/random anchors.
 Condition `sim9f60ac37.lineups-8.map012.t7200.d9`, 18 rated members (9 scripted,
 8 specialist, random), 153/153 pairs, 7344 games, 48 per pair.
 
-**The league is degenerate as a curriculum: one scripted bot is the whole
-equilibrium.** `search-hard` takes Nash mass 1.000, support is 1 of 18 members and
-entropy 0.00 of a possible 2.89 nats. Every other member has negative Nash value,
-from -0.250 (`grapple-beam-rock`) to -0.458 (`random`). Elo agrees and the
-intervals do not overlap: `search-hard` 497 [461, 538] against 261 [228, 296] for
-the best specialist.
+**One scripted bot is the whole equilibrium.** `search-hard` takes Nash mass 1.000;
+support is 1 of 18 members and entropy 0.00 of a possible 2.89 nats. Every other
+member has negative Nash value, from -0.250 (`grapple-beam-rock`) to -0.458
+(`random`). Elo agrees with non-overlapping intervals: `search-hard` 497 [461, 538]
+against 261 [228, 296] for the best specialist. Pairwise it is not close either -
+`search-hard`'s own draw-aware score rate is at or above 0.750 against all
+seventeen opponents, best resistance `grapple-beam-rock` at 0.250, worst
+`teleport-mine-tesla` at 0.062.
 
-It is not close pairwise either. `search-hard`'s own draw-aware score rate is at
-or above 0.750 against all seventeen opponents, best resistance `grapple-beam-rock`
-at 0.250, worst `teleport-mine-tesla` at 0.062. **No learned specialist beats the
-best scripted bot**, and RPP has the learned population's equilibrium mixture
-scoring 0.250 against the scripted/random anchors' — the scripted side is
-currently the stronger population.
+**Read this as an off-kit result, not a verdict on the specialists.** The condition
+is `lineups-8` at `--mirror-share 1`: eight three-ability loadouts, both players
+always holding the same one. Each specialist was trained on exactly one of those
+eight, so it plays its own kit in 1 of 8 lineups and a foreign kit in 7 of 8.
+`search-hard` is a rollout search bot - it plans through `bopl_rl_fork` with
+whatever abilities it happens to hold - so it is the only member that is
+loadout-agnostic by construction. A condition that is 7/8 off-kit for everyone
+else is close to the best case a search bot could be handed. The honest statement
+is that the league measures **generalist** strength and the specialists are weak
+generalists, which is what they were trained to be.
 
 Three things follow.
 
-- **The first exploiter should target `search-hard`.** It is the only member the
-  equilibrium plays, so beating it is the only way to move the mixture; and it is
-  a scripted bot, so the exploit is a policy question rather than a checkpoint
-  quirk.
-- **Adding more members will not help until one of them beats it.** A pool whose
+- **The first exploiter should still target `search-hard`**, because it is the only
+  member the equilibrium plays, so nothing else can move the mixture. But the
+  exploit to look for is a search weakness, not a kit counter.
+- **Adding members will not help until one of them beats it.** A pool whose
   equilibrium is a single strategy gives PFSP nothing to mix, so opponent sampling
-  collapses to that one bot however many members are registered. This is the
+  collapses to that bot however many members are registered. This is the
   saturation Matthew has already seen once.
-- **This is measured on 3 maps of 124.** The condition tag `map012` is the map
-  set 0, 1, 2 (`registry.condition` joins the sorted ids), with one lineup set.
-  Dominance on three maps is not dominance in general, and the generalization axis
-  is maps, so the honest reading is "degenerate on the condition we have rated".
-  `league play --maps` writes a separate condition per map set and counts are never
-  pooled across them, so widening the map set is the cheapest way to find out
-  whether `search-hard` dominates everywhere or only here.
+- **The specialists have never been rated on their own kits against each other.**
+  That measurement does not exist, and it is the one that would say whether
+  training works. It is a separate condition (per-kit lineup file), and counts are
+  never pooled across conditions, so it is additive rather than a revision.
+
+Scope: 3 maps of 124. The condition tag `map012` is the map set 0, 1, 2
+(`registry.condition` joins the sorted ids). `league play --maps` writes a separate
+condition per map set, so widening the map set is the cheapest way to learn whether
+`search-hard` dominates everywhere or only here.
 
 `duplicator-blink-blackhole` and `dash-missile-platform` sit near the bottom, which
 is expected: both lost a boundary-leaving exploit to the 2026-09-23 fidelity fixes
