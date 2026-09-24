@@ -146,12 +146,38 @@ tree - see "What does not move" below for why.
 
 ## Order of work
 
-1. The reorg itself: move to the layout above, execute the deletion inventory.
-2. PFSP into the trainer, replacing the old opponent selection.
-3. Minimal surgery.
+1. ~~The reorg itself: move to the layout above, execute the deletion
+   inventory.~~ **Done 2026-09-24**, merged `c2293d22`, pushed `654dd50e`.
+2. PFSP into the trainer, replacing the old opponent selection. *In progress.*
+3. Minimal surgery. *In progress.*
 
 Then the first generalist run over randomised loadouts, the first random-init
-exploiter, and time-to-exploit as the headline metric.
+exploiter, and time-to-exploit as the headline metric. The board already reports
+time-to-exploit (`683d1fc9`), so that metric needs a run, not code.
+
+### Stage 1, as verified
+
+All seven gates green on the merged commit with **every gate binary deleted and
+rebuilt from source first**, which is not ceremony: the gates live in gitignored
+`native/artifacts/rl/`, `make` only compares mtimes, and `bounds-ability-ab` had
+been running a binary older than its committed source - printing 1 known
+divergence where the rebuilt gate prints 6, under a byte-identical summary line.
+A gate result nobody forced a rebuild for is not evidence.
+
+| gate | result |
+| --- | --- |
+| `check-reward` | pass |
+| `bounds-ability-ab` | `cases=38 water=-11.3 survivors=4`, 6 known divergences |
+| `sudden-death-publication-ab` | `maps_mismatched=0` |
+| `ability-sweep` | 24,800 episodes, 4588/4588 ability-map cells, 0 crashes, 0 divergent |
+| `map-sweep-3000` | 417,009 snapshots, 0 nonexact |
+| `map-sweep-endgame` | 801,501 snapshots, 0 nonexact |
+| `rust-ab-suite` | `pass=211 fail=0 skipped=4` |
+
+`Tools/` was relinked afterwards (`ea57067d`): it had eight dead `native/rl/...`
+references and was skipped during the move because the "do not touch" rule was
+read too broadly. That rule is about `Assets/` and the 5,301 decompiled Unity
+files, not about the four scripts we wrote ourselves.
 
 ## Naming
 
