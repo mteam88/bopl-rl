@@ -9863,15 +9863,18 @@ impl RolloutWorld {
                 slot.base.grounded = false;
                 slot.base.ground = None;
                 slot.base.grounded_speed = Fix::ZERO;
+                // FinishRewind overwrites the cooldowns outright and adds
+                // nothing (RewindRecorder.cs:325-333). SlimeController already
+                // advanced them earlier in this same pass: on Player.prefab
+                // SlimeController is hierarchyNumber 2 while RewindRecorder
+                // forces its own to 8 in Awake (RewindRecorder.cs:91-97), so
+                // the recorder runs last, not first. player_tick likewise runs
+                // ahead of rewind_recorders_tick here, so the sample being
+                // restored is already post-increment and compensating for a
+                // later pass double-counted one tick on every slot except the
+                // Rewind one.
                 slot.timers = destination.cooldowns;
                 slot.timers[slot.rewind.ability_slot] = preserved;
-                for ability_slot in 0..slot.timers.len() {
-                    if ability_slot != slot.rewind.ability_slot {
-                        // RewindRecorder (hierarchy 8) restores these before
-                        // SlimeController advances its ordinary cooldown pass.
-                        slot.timers[ability_slot] += DT;
-                    }
-                }
                 slot.rewind.rewinding = false;
                 slot.rewind.finish_next_tick = false;
                 slot.rewind.attached_ground = None;
