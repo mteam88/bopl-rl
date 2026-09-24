@@ -95,7 +95,7 @@ def segments(name, arch):
     cols = [('', None, 1.0)]
     if name == 'fusion':                     # policy_v4.trunk: [flat, per-set max || mean]
         cols = [('flat', arch['flat_dim'], 1.0)]
-        cols += [(f'{s[0]}_{pool}', arch['set_dim'], 1.0) for s in layout.V4_SETS for pool in ('max', 'mean')]
+        cols += [(f'{name}_{pool}', arch['set_dim'], 1.0) for name, *_ in layout.V4_SETS for pool in ('max', 'mean')]
     elif name == 'critic_in':                # policy_v4.value: [trunk, privileged]
         cols = [('trunk', arch['hidden'], 1.0)]
         if arch['critic_privileged']:
@@ -137,7 +137,7 @@ def aim_segments(arch):
 ZERO_EXTENDED = '.harmonics'
 
 
-def overlaps(target_axis, source_axis, extent):
+def overlaps(target_axis, source_axis, target_span, source_span):
     """(target slice, source slice, factor, zeroed tail) per segment both axes name.
 
     The lone unlabelled segment spans the axis. An aim block the source does not
@@ -146,12 +146,12 @@ def overlaps(target_axis, source_axis, extent):
     """
     source, offset = {}, 0
     for label, size, scale in source_axis:
-        size = extent[1] if size is None else size
+        size = source_span if size is None else size
         source[label] = (offset, size, scale)
         offset += size
     offset = 0
     for label, size, scale in target_axis:
-        size = extent[0] if size is None else size
+        size = target_span if size is None else size
         found = source.get(label)
         if found is None and label.startswith('aim'):
             found = source.get('aim0' + label[label.index('.'):])
@@ -168,8 +168,8 @@ def graft(name, source, target, source_arch, target_arch):
     source_rows, source_cols = segments(name, source_arch)
     target_rows, target_cols = segments(name, target_arch)
     copied = 0
-    for rows, source_rows_slice, row_factor, tail in overlaps(target_rows, source_rows, (target.shape[0], source.shape[0])):
-        for cols, source_cols_slice, col_factor, _ in overlaps(target_cols, source_cols, (target.shape[1], source.shape[1])):
+    for rows, source_rows_slice, row_factor, tail in overlaps(target_rows, source_rows, target.shape[0], source.shape[0]):
+        for cols, source_cols_slice, col_factor, _ in overlaps(target_cols, source_cols, target.shape[1], source.shape[1]):
             block = source[source_rows_slice, source_cols_slice]
             factor = row_factor * col_factor
             target[rows, cols] = block if factor == 1.0 else block * np.float32(factor)
