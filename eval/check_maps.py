@@ -27,17 +27,27 @@ def main():
     # obs[8] carries LevelType.space (bopl_puffer.h BOPL_SPACE_MAPS, compiled
     # in). Assert it through a real episode rather than comparing the constant
     # to the json: that catches a stale rebuild as well as a stale table. Only
-    # layout v4 has the bit -- obs[8] is v3's absolute self_x.
+    # layout v4 has the bit -- obs[8] is v3's absolute self_x - and an
+    # Environment opens at v3, so the layout has to be asked for. It used to be
+    # read under `if env.layout_of(player)==4` inside the main loop, which is
+    # never true there: the assertion could not fail, and never ran once between
+    # the day it was written and 2026-09-24. Its own pass, at v4, so the checks
+    # below keep reading v3 indices (obs[2] delay, obs[5]/obs[7] capacity).
     space=set(map_set.space_maps())
+    with Environment(limit=3600) as env:
+        for player in range(2):
+            env.set_layout(player,4)
+        for map_id in args.maps:
+            env.reset(91001,map_id)
+            for player in range(2):
+                assert env.layout_of(player)==4, f'space bit needs layout v4, got {env.layout_of(player)}'
+                assert float(env.obs[player,8])==float(map_id in space), (
+                    f'map {map_id} space bit {env.obs[player,8]} != {map_id in space}')
     with Environment(limit=3600) as env:
         for map_id in args.maps:
             for game in range(args.games):
                 seed=91001+game;env.reset(seed,map_id)
                 initial=env.obs.copy()
-                for player in range(2):
-                    if env.layout_of(player)==4:
-                        assert float(env.obs[player,8])==float(map_id in space), (
-                            f'map {map_id} space bit {env.obs[player,8]} != {map_id in space}')
                 env.step([[64,4,0],[192,4,0]]);env.reset(seed,map_id)
                 np.testing.assert_array_equal(env.obs,initial)
                 rng=np.random.default_rng(seed);ticks=0;decisions=0;digest=hashlib.sha256()
