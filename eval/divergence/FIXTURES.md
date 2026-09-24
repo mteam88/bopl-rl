@@ -1439,7 +1439,18 @@ into it. What hid them was a stale binary: `native/artifacts/rl/` is gitignored,
 source, so it printed 24 ability lines and 1 divergence where the rebuilt gate
 prints 114 and 6. The summary line is identical either way (`cases=38
 water=-11.3 survivors=4`), so nothing looked wrong. **Delete the gate binaries
-before trusting a gate run.** Rebuilt on `c2293d22`:
+before trusting a gate run** - the binaries, not the directory. `rm -rf
+native/artifacts/rl/` also destroys the 5.9 GB uv-built training venv that lives
+there, which nothing in the Makefile provisions and which `check-routing` and the
+`replay_ab` selfcheck both need (`Makefile:193`, `:324-326`); that cost an agent a
+failed gate on 2026-09-24. `train/venv-snapshot.txt` records what is in it. Use
+something like:
+
+```bash
+find native/artifacts/rl -maxdepth 1 -type f -executable -delete
+```
+
+Rebuilt on `c2293d22`:
 
 ```
 early blackhole  reference 404 (-36.1894,-11.3380) | rust 404 (-36.7478,-11.3380)
