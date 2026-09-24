@@ -664,15 +664,35 @@ path remain open and are recorded under fixture #6's negative results.
 speak.** `Builds/LinuxIL2CPP/BoplBattle.x86_64` was built 2026-09-07. The
 handshake in `sim/abi/bopl_rl.c:488` requires protocol version 3, which landed
 2026-09-14 in `3721f8ae` ("rl: wire observation ABI v3"), so the player is
-rejected with `Unsupported RL protocol` and the process dumps core rather than
-exiting cleanly. Everything that drives the real game is therefore dead until
-the player is rebuilt: `train/check_routing.py`, `Tools/play-vs-agent.sh` and
-`Tools/play-vs-agent-mac.sh`.
+rejected. `Tools/play-vs-agent.sh` and `Tools/play-vs-agent-mac.sh` are dead
+until it is rebuilt, which needs a machine with Unity.
 
-That matters beyond convenience. `check_routing.py` is the only thing that
-verifies per-player routing through PufferLib's agent permutation, the frozen
-bank slices, and the tag / `count_aligned` alignment protocol that decides which
-matches count towards per-bank pool statistics. While it cannot run, that whole
-mechanism has no executing test, so a change to opponent scheduling is verified
-offline or not at all. Rebuilding the player is the fix; the core dump on a
-rejected handshake is a second, smaller bug worth closing at the same time.
+Two claims that used to stand here were measured on 2026-09-24 and are false.
+Both are recorded because each one cost time.
+
+*The rejected handshake does not dump core.* It reports `Unsupported RL
+protocol: Protocol error` and exits 0. Verified with `ulimit -c unlimited` and
+systemd-coredump active, 223 recorded dumps before and after - the first attempt
+at this test ran under `ulimit -c 0`, which would also have suppressed a dump
+from the spawned player, so it proved nothing and had to be redone.
+
+*`check_routing.py` never needed the Unity player.* It takes `--game` and runs
+against either backend library, so the stale player was not what stopped it; it
+was broken on its own terms, and is now fixed (`4dd61e77`, `66fc2a16`). It
+passes 31/31 against both the oracle and the port, so per-player routing through
+PufferLib's agent permutation, the frozen bank slices, and the tag /
+`count_aligned` alignment protocol do have an executing test after all. The
+three bugs it turned out to carry are worth knowing about, because all three
+were in the check rather than the thing checked, and the tell was that the
+oracle and the port failed the *identical* eight checks - two independent
+implementations do not share a bug. They were: reshaping observation rows at
+`OBS_SIZE` when the row pitch is `BOPL_OBS_STRIDE`, which reads row 0 correctly
+and every later row at a sliding offset; calling only PufferLib's reset and not
+the `bopl_vec_reset` that follows it in the trainer, so it inspected a state the
+trainer never trains from; and counting completed matches as `matches-1` when
+the native reset makes the pre-stepping baseline 2.
+
+No gate covers `check_routing.py`, which is how it drifted through an
+observation-layout change unnoticed. It needs no GPU, so it is a cheap gate
+candidate - but by this repo's standard it has to be watched failing on a
+deliberately broken build before it is worth trusting.
