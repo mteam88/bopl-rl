@@ -312,9 +312,17 @@ or local.
 ## Rating the specialists on their own kits: what it takes
 
 This is the design of the condition above, kept because the trap in it is the
-transferable part. It is built: `league play --own-kit` reads
-`native/data/lineups-own-kit.txt` and dispatches through
-`eval/elo_ladder.side_pinned_tasks`.
+transferable part. Since 2026-09-24 it is not a mode but the league's only
+condition, generalised past specialists: every member declares the kits it can
+play (`registry.kits`: scripted bots 2,4,14 because their slot indices are written
+for it, a checkpoint the kits it trained on, random none), each seat plays one of
+its own member's kits, and the two seats may differ as in a real match. A member
+with no kit takes its opponent's; a member with several spreads its games over
+the combinations (`league/__main__.py` `matchup`). Scripted bots also skip space
+maps (`registry.plays_map`). Games run to 10800 ticks so sudden death, which the
+game starts at 7200, decides them; at the old 7200 limit 17.5% of policy-vs-policy
+games in tournament-20260917 ended as timeouts. The committed lineup file is gone:
+the rows are derived from the members, which are immutable.
 
 `lineups-8` at `--mirror-share 1` puts every specialist off-kit in 7 of its 8
 lineups. The measurement wanted is each specialist on *its own* kit against the

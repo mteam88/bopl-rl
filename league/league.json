@@ -2439,6 +2439,46 @@
     "mirror_share": 0.0
    },
    "loadout_sha256": "1190e7840d50849a4f45fdd137dfb5fc5173080f32feba59b567b367ba1d6f49"
+  },
+  "simf0ab99a8.fixed-2-4-14.map0-1-2.t7200.d9": {
+   "key": "simf0ab99a8.fixed-2-4-14.map0-1-2.t7200.d9",
+   "sim_sha256": "f0ab99a89167f3012e62c936a225fe25a71f52f8cb820559392881cac65bd092",
+   "maps": [
+    0,
+    1,
+    2
+   ],
+   "episode_ticks": 7200,
+   "delay": 9,
+   "loadouts": {
+    "mode": "fixed",
+    "fixed": [
+     2,
+     4,
+     14
+    ],
+    "pool": [],
+    "lineups": [],
+    "set_file": null,
+    "no_dup": false,
+    "mirror_share": 0.0
+   },
+   "loadout_sha256": "f7c22b1600d1d163bba0d0511941f2ef6497401146b7960fa7ef0833c7bf18c2"
+  },
+  "simf0ab99a8.own-kit.map0-1-2.t10800.d9": {
+   "key": "simf0ab99a8.own-kit.map0-1-2.t10800.d9",
+   "sim_sha256": "f0ab99a89167f3012e62c936a225fe25a71f52f8cb820559392881cac65bd092",
+   "maps": [
+    0,
+    1,
+    2
+   ],
+   "episode_ticks": 10800,
+   "delay": 9,
+   "loadouts": {
+    "mode": "own"
+   },
+   "loadout_sha256": "1672f00d0bc227bd3fdacd8a12ce6dd52c342d138c9d47c3ccab06748cbb06d1"
   }
  },
  "league_sha256": "b29c66998fb9f1114d9bb47fa462111379cb705d5e63eae0c3aa0747f64804df"

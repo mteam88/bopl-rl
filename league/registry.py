@@ -17,6 +17,7 @@ only counts, and a league that grows for months would otherwise commit millions
 of lines of per-game detail to git permanently. Per-game detail is derived data
 and belongs under native/artifacts/.
 """
+import functools
 import hashlib
 import json
 from pathlib import Path
@@ -27,6 +28,7 @@ ROOT = HERE.parent
 sys.path[:0] = [str(ROOT / 'eval'), str(ROOT / 'native/tools')]
 
 import map_catalogue   # noqa: E402  (after sys.path)
+import map_set   # noqa: E402
 
 # Map sets up to this size are spelled out in a condition key; larger ones hash.
 MAP_TAG_SPELLED = 8
@@ -42,6 +44,8 @@ KINDS = ('main', 'exploiter', 'specialist', 'scripted', 'random', 'human')
 
 def loadout_tag(loadouts):
     """Short human name for a resolved loadout distribution (evaluation_protocol)."""
+    if loadouts['mode'] == 'own':
+        return 'own-kit'
     if loadouts['mode'] == 'set':
         return Path(loadouts['set_file']).stem
     if loadouts['mode'] == 'pool':
@@ -173,9 +177,24 @@ def kits(row):
     return [tuple(kit) for kit in loadouts['kits']]
 
 
-def plays(row, kit):
-    known = kits(row)
-    return known is None or tuple(kit) in known
+# The loadout part of the one condition `play` measures: each seat on a kit its
+# member declares (kits), the two seats free to differ, as in a real match.
+OWN_KIT = dict(mode='own')
+
+
+def plays_map(row, map_id):
+    """Whether a member can meaningfully play a map.
+
+    Scripted bots cannot play space maps: bopl_bots.h hard-codes grass physics,
+    down to "death: water y < -11.3 (non-space maps)", and nothing in either bot
+    file checks which kind of map it is on.
+    """
+    return row['kind'] != 'scripted' or map_id not in _space_maps()
+
+
+@functools.cache
+def _space_maps():
+    return frozenset(map_set.space_maps())
 
 
 def trained_loadouts(config):
