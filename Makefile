@@ -57,6 +57,19 @@ $(OUT)/bounds_ability_ab: eval/rust_ab/bounds_ability_ab.c $(ABI)/bopl_rl.c $(AB
 	mkdir -p $(OUT)
 	$(CC) $(CFLAGS) $(INCLUDES) eval/rust_ab/bounds_ability_ab.c $(ABI)/bopl_rl.c -ldl -lm -o $@
 
+# Diagnostic for a single bounds-ability-ab case: the same script, stepped in
+# lockstep, reporting the first tick at which any exported field differs rather
+# than only the boundary kill. Not a gate - it takes its case from the
+# environment (BCT_ABILITIES, BCT_SLOT, BCT_AIM, BCT_ENGAGE_Y, BCT_DUMP) and is
+# run by hand when bounds-ability-ab reports a kill-tick gap too large to be
+# rounding. See the header of eval/rust_ab/bounds_case_trace.c.
+bounds-case-trace: $(OUT)/bounds_case_trace rust-q32
+	$(abspath $(OUT)/bounds_case_trace) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
+
+$(OUT)/bounds_case_trace: eval/rust_ab/bounds_case_trace.c eval/divergence/divergence_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
+	mkdir -p $(OUT)
+	$(CC) $(CFLAGS) -Wno-unused-function $(INCLUDES) -Ieval/divergence eval/rust_ab/bounds_case_trace.c $(ABI)/bopl_rl.c -ldl -lm -o $@
+
 # Collider-rescale vs entry-pass boundary gate: a grounded player pressing a
 # rescaling ability slot (Dash) while sudden death has carried it under the
 # kill plane. The entry-pass check runs Move on a COPY of the body, and the
@@ -285,7 +298,7 @@ $(OUT)/reset_profile: eval/reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 $(OUT)/frame_profile: eval/frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 -I$(ABI) eval/frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
+.PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab bounds-case-trace scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
 
 # Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.
