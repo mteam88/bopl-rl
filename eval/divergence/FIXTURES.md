@@ -1133,6 +1133,233 @@ reordering and the hurtbox free are all changes that could have moved
 two attempts - the first `rust-ab-suite` failed `dash_grapple_form_ab` at tick
 164 on `flags 12/13`, which is the hook-`activeInHierarchy` mistake described
 above; the numbers here are from the run after that was corrected.
+## Fixture #11 - a dead `hierarchyNumber` inflated the spawn cursor
+
+Found 2026-09-24 working class 4 of the 114-case sweep.
+
+**The symptom.** `gold_mushroom` (`BCT_ABILITIES=34,2,14`) diverged at **tick 0**
+on all three engage heights, in `entity[].hierarchy` and nothing else -
+positions, velocities and the death tick all bit-exact:
+
+```
+entity[0].hierarchy  ref 100000023  cand 100000024   owner 0  source-ability 14
+entity[1].hierarchy  ref 100000046  cand 100000048   owner 0  source-ability 14
+entity[4].hierarchy  ref 100000016  cand 100000017   owner 0  source-ability 2
+entity[5].hierarchy  ref 100000029  cand 100000030   owner 2  source-ability 0
+entity[6].hierarchy  ref 100000039  cand 100000041   owner 0  source-ability 2
+```
+
+**Three rows are +1 and two are +2, and that is the whole diagnosis.** Scene
+setup lays the cursor down player by player: 8 for the slime prefab, then each
+equipped ability's `updatable_count` (`mod.rs`, `hierarchy_cursor`). Player 0's
+Gold mushroom sits in slot 0, so only the slots *after* it are displaced - one
+unit, once. Player 1's entire block starts after all three of player 0's
+abilities, so it carries the same single error twice over by the time its own
+Dash and Platform are placed. Every one of the five values resolves exactly if
+Gold mushroom advances the cursor by 1 instead of 2:
+
+```
+                  reference                        port
+player 0 slot1     8 + 1 = 9,  +7 -> 16            8 + 2 = 10, +7 -> 17
+player 0 slot2     9 + 7 = 16, +7 -> 23            10 + 7 = 17, +7 -> 24
+player 1 base      8 + 1 + 7 + 7 = 23              8 + 2 + 7 + 7 = 24
+player 1 body      23 + 6 = 29                     24 + 6 = 30
+player 1 slot1     31 + 1 = 32, +7 -> 39           34, +7 -> 41
+player 1 slot2     39 + 7 = 46                     41 + 7 = 48
+```
+
+So there is one wrong number, not two, and Dash and Platform are both correct at
+7 - which is worth stating because "some by one, some by two" reads like two
+independent errors and is not.
+
+**Root cause.** Gold mushroom's prefab is `Assets/GameObject/Super star.prefab`
+(the class kept its old `SuperStar` name to preserve asset GUID wiring, per the
+header comment in `SuperStar.cs`). It carries two `MonoUpdatable` subclasses:
+`InstantAbility` with `hierarchyNumber` 1 and `SuperStar` with `hierarchyNumber`
+2. Only the first ever reaches the `Updater`.
+
+Registration is **opt-in per class**. `Updater` never sweeps the scene for
+`MonoUpdatable` - `MonoUpdatable.cs` has no `Awake` at all - and each component
+calls `Updater.RegisterUpdatable(this)` from its own `Awake`
+(`InstantAbility.cs:62-71`). `SuperStar`'s `Awake` only does a `GetComponent`
+(`SuperStar.cs:18-21`), so its serialized `hierarchyNumber: 2` is dead data. It
+is `m_Enabled: 1`, so the `IsEnabled()` skip at `Updater.cs:300` is not what
+excludes it; it is simply never in the list. Its `Init()` and `UpdateSim()` are
+empty stubs and all its behaviour runs off the `funcOnEnter` UnityEvent wired on
+the `InstantAbility`.
+
+And what the cursor advances by is the **count of components that registered**:
+`EndRegisterPrefab` does `prefabsAdded += toBeAddedPrefab.Count`
+(`Updater.cs:143-153`), not the prefab's `hierarchyNumber` span. The generator
+used the span, which is the same number only when every numbered component
+registers.
+
+**The fix** is in `native/tools/extract_rollout_data.py`, not in the port.
+`registering_count` resolves each component's class and asks whether the first
+ancestor that declares `Awake` registers in it - Unity dispatches only the
+most-derived `Awake`, so that is the one that decides. Regenerating moves
+exactly one value in `native/data/rollout.json`,
+`abilities[34].updatable_count` 2 -> 1; the other 37 abilities and every
+non-ability field come back byte-identical.
+
+**It derived the exception it replaced.** `updatable_count` previously read
+`1 if expected_id == 27 else hierarchy_span(prefab)` - a hand-written special
+case for Grappling hook, whose `HookshotInstant` is the same shape
+(`MonoUpdatable`, `hierarchyNumber` 2, no registration). The new rule produces
+that 1 from first principles, so the magic number came out rather than a second
+one going in.
+
+**Negative results worth keeping.** Sweeping the rule across all 39 abilities
+turns up only two prefabs where the span and the registering count disagree, 27
+and 34, both already accounted for. Two more carry a non-registering numbered
+component that happens to be `hierarchyNumber` 0 - `WebSwing` on Web swing and
+`PortalGun` on Portal gun - which changes neither the span nor the count, so
+those abilities are untouched. The other non-ability prefab sites still use the
+older `updater_count` / `hierarchy_span` proxies; nothing measured says they are
+wrong, but they are the same proxy and would break the same way.
+
+All three `gold_mushroom` phases now report `FIRST any none / FIRST discrete none`.
+
+## Fixture #12 - Rewind restored a warmup sample that was seeded a tick short
+
+Found 2026-09-24, class 3 of the same sweep. Recorded at length because the
+obvious fix passes the sweep and breaks a gate, and the reason why is the
+interesting part.
+
+**The symptom.** `rewind` (`BCT_ABILITIES=31,2,14`) on `early` and `late`: two
+`slime[0].timers[]` entries exactly 71582788 raw = 1/60 above the reference,
+first visible at ticks 450 and 465 against engages at 348 and 363.
+
+```
+early  slime[0].timers[]  ref 20401094556 (4.750000)  cand 20472677344 (4.766667)
+late   slime[0].timers[]  ref 21474836376 (5.000000)  cand 21546419164 (5.016667)
+```
+
+Two timers and not three is the shape of `FinishRewind`: it overwrites all three
+cooldowns from the destination sample and then puts the *cast* slot's live value
+back (`RewindRecorder.cs:325-333`), so the Rewind slot cannot diverge. Timers
+count up (`timers[s] += DT`, ready at `timers >= cooldowns`), so the port's
+larger value is one increment too many.
+
+**The wrong fix, and why it looked right.** The port restored the sample and
+then added a tick back, under a comment saying `RewindRecorder` runs *before*
+`SlimeController`'s cooldown pass. That comment is backwards, and demonstrably
+so: on `Assets/GameObject/Player.prefab` the numbered components are
+PlayerPhysics 1, **SlimeController 2**, PlayerCollision 3,
+DestroyIfOutsideSceneBounds 4, PlayerBody 5, DPhysicsBox 6, SpriteAnimator 7,
+and `RewindRecorder` is not on the prefab at all - it is added at runtime and
+forces `HierarchyNumber = 8` in its own `Awake` (`RewindRecorder.cs:91-97`),
+which makes it the eighth and last. (That is also why scene setup strides 8 per
+player over a seven-component prefab.) The port's own pass agrees: `player_tick`
+holds the cooldown advance and runs ahead of `rewind_recorders_tick`.
+
+So the compensation was paying for a pass that had already happened, and
+deleting it cleared all three `rewind` phases. It also turned
+`rewind_ability_ab` red - **in the opposite direction**, the port now one DT
+*below* the reference. A correction that is right in one scenario and wrong in
+another is not a correction; it is a second defect cancelling a first.
+
+**The real root cause.** Dumping both backends through the
+`rewind_ability_ab` scenario puts the finish at tick 196 and the restored value
+at a round number:
+
+```
+tick 195  ref t1=20257928980   port t1=20257928980
+tick 196  ref t1= 2219066404   port t1= 2147483616   <- FinishRewind
+```
+
+2219066404 is exactly 31 x DT and 2147483616 is exactly 30 x DT. The restored
+sample is one increment short in the port, not one long.
+
+The ring is seeded during warmup by `record_warmup_rewind`, which modelled the
+cooldown as `TIMER_START + DT * (warmup_tick - SLIME_AWAKE_TICK)` - counting
+only the ticks strictly *before* `warmup_tick`, i.e. a pre-increment read.
+Solving that formula for the reference's 31 x DT gives `warmup_tick + 1`
+exactly. The live recorder, running after `player_tick`, is post-increment and
+was already correct; only the warmup seed was a tick behind.
+
+**Which sample a cast lands on decides which way the bug shows.**
+`rewind_ability_ab` casts at tick 94 and reaches 150 ticks back, well inside the
+warmup, so it restores a seeded sample - one DT low, and the `+= DT` hid it. The
+sweep's two cases engage at 348 and 363 and reach back into live recording - in
+phase, so the same `+= DT` pushed them one DT high. One defect, two signs,
+depending only on how early the cast is.
+
+**The fix** seeds the warmup sample post-increment and drops the compensation.
+Both the sweep cases and the gate pass together.
+
+**Why positions never diverged, which is what made this hard to see.** The
+sample also carries position, velocity and rotation, and those were seeded
+correctly. During warmup the player is settling in place, so a one-tick phase
+error in the cooldown field is invisible in every other field of the same
+sample - which is exactly why "positions never diverge" read as evidence that
+the history was in phase. It was evidence only that the *other* fields were.
+
+**The sweep's note that nothing downstream had consumed it was wrong.** Both
+cases also carried a discrete divergence at tick 525,
+`slime[0].ability_flags[]` ref 1 cand 7 - the inflated timers crossing their
+cooldown threshold a tick early and reporting two abilities ready when the
+oracle does not. `BCT_ALL=1` prints every differing field of the *first*
+diverging tick, so the numeric hit at 450 ended the walk and the discrete one at
+525 was never printed. The per-case field lists in that sweep are therefore a
+lower bound per case, not an inventory.
+
+All three `rewind` phases now report `FIRST any none / FIRST discrete none`, and
+`rewind_ability_ab` reports `REWIND_ABILITY_GOLDEN_OK ticks=300`.
+
+**The transferable part is not the seed.** It is that a correction which is
+right in one scenario and wrong in another is a second defect cancelling a
+first, and that the sign flip is the evidence which says so. No single-scenario
+fix can produce it: the sweep alone said "remove the `+= DT`", the gate alone
+said "keep it", and only running both said "neither - the sample itself is
+wrong". Whenever a one-tick compensation sits under a comment explaining why it
+is needed, the cheap test is to find a second scenario that reaches the same
+code by a different route and see whether the sign holds.
+
+## Fixture #13 - the spawned platform never joined the updater order
+
+Found 2026-09-24 while checking the second half of sweep class 4, which turns
+out not to belong to it.
+
+**It is not the same defect as fixture #11.** The sweep filed `platform`
+(`BCT_ABILITIES=14,2,10`) under "spawn-hierarchy counter off by one or two"
+together with `gold_mushroom`. The numbers say otherwise: the gap is not one or
+two, it is
+
+```
+entity[15].hierarchy  ref 100000066  cand 300000016   kind 2 layer 11 source-ability 14
+```
+
+a different encoding base entirely, and it appears at ticks 372 and 387 rather
+than at tick 0. Nothing in `gold_mushroom`'s kit spawns a platform and nothing
+in `platform`'s kit holds a Gold mushroom; the two never shared a cause.
+
+**Root cause.** `spawn_ability_platform` stamped a synthetic
+`hierarchy: 300_000_000 + id` on the entity and advanced `next_spawn_hierarchy`
+by nothing at all. A `ResizablePlatform` spawned by the Platform ability is an
+ordinary `FixTransform.InstantiateFixed` prefab: its components register inside
+the `BeginRegisterPrefab`/`EndRegisterPrefab` bracket and take their place in
+the one global updater order like everything else.
+
+`Assets/GameObject/ResizablePlatform.prefab` carries six registering components
+- StickyRoundedRectangle 1, AnimateVelocity 2, ShakablePlatform 3,
+ResizablePlatform 4, BoplBody 5, **DPhysicsRoundedRect 6**. The collider is the
+last of them, and with two players holding 8 + 7 + 7 + 8 each the cursor stands
+at 60 when the platform spawns:
+
+```
+100_000_000 + 60 + 6 = 100000066
+```
+
+which is the oracle's value exactly. The cursor then has to advance by all six,
+which it never did - so the shortfall was inherited by anything spawning after a
+platform, and only stayed invisible because these two cases spawn nothing else.
+
+**The fix** takes both numbers from the prefab through the generator
+(`collider_hierarchy`, `updatable_count` on `prefabs.resizable_platform`)
+instead of writing a constant into the port.
+
+All three `platform` phases now report `FIRST any none / FIRST discrete none`.
 
 ## The 114-case trajectory sweep - what bounds-ability-ab never looked at
 
@@ -1305,16 +1532,41 @@ not proof of - I have not traced the missile's release site.
 
 `late` and `brink` are clean, so it needs the `early` engage height.
 
-### 3. Rewind's slime timer, exactly one tick - 2 cases
+### 3. Rewind's slime timer, exactly one tick - 2 cases - FIXED, fixture #12
 
 `rewind` on `early` and `late`: two `slime[0].timers[]` entries off by 71582788 =
 **0.016667 = 1/60 exactly**. A timer started or decremented one pass apart.
-Positions never diverge, so nothing downstream has consumed it yet. Nobody dies in
+Positions never diverge. Nobody dies in
 these two cases (`death reference 0 candidate 0`), and the divergence appears at
 450 and 465 against an engage at 348, so this one is genuinely mid-flight and not
 part of the death-tick group.
 
-### 4. Spawn-hierarchy counter off by one or two - 5 cases
+Corrected while fixing it: "nothing downstream has consumed it yet" was wrong.
+Both cases also carry a discrete divergence at tick 525,
+`slime[0].ability_flags[]` ref 1 cand 7. The inflated timers report two
+abilities ready a tick early, which is a behavioural divergence, not a cosmetic
+timer. Root cause and fix in fixture #12.
+
+**And the reason it was missed generalises to the whole section.**
+`BCT_ALL=1` reports every differing field *of the first diverging tick*, and
+then the walk stops. It does not report every divergence in the case. The
+numeric hit at 450 ended the walk, so the discrete one at 525 never appeared in
+the log at all.
+
+State that without hedging, because an earlier version of this section bounded
+the problem to the two Rewind cases on the strength of comparing each log's
+`FIRST any` tick against its `FIRST discrete` tick. That test cannot find this:
+nothing after the first diverging tick is in the log, discrete or numeric, so
+there is nothing for it to compare. **Every per-case field list in this section
+is a lower bound. The clean/divergent split is the only number in it that means
+what it says.** Any case listed above may carry further divergences at later
+ticks that nothing has looked at.
+
+Re-running a case to `FIRST any none` *does* clear the whole episode, which is
+why the per-defect verification in fixtures #11, #12 and #13 is trustworthy
+where the original field lists are not.
+
+### 4. Spawn-hierarchy counter off by one or two - 5 cases - FIXED, fixtures #11 and #13
 
 `gold_mushroom` on all three phases, diverging at **tick 0**:
 
@@ -1329,7 +1581,14 @@ entity[6].hierarchy  ref 100000039  cand 100000041
 plus `platform` on `early` and `late`, one field each - and nobody dies in those
 two, so they are not death-tick cases either. Nothing else differs,
 positions included, so `next_spawn_hierarchy` advances by a different amount for
-these prefabs. Do not file it as cosmetic: `Updater` orders a registration batch
+these prefabs.
+
+Corrected while fixing it: these are **two unrelated defects**, not one class.
+`gold_mushroom` is a single wrong `updatable_count` applied once to player 0 and
+twice to player 1 (fixture #11). `platform` is not off by one or two at all - it
+is ref 100000066 against cand 300000016, a different encoding base, at ticks 372
+and 387 rather than tick 0, and it is a spawned prefab that never joined the
+updater order (fixture #13). Do not file it as cosmetic: `Updater` orders a registration batch
 by `hierarchyNumber` (`Updater.cs:271`), which makes this the input to every
 ordering defect in this file - fixtures #6 and #8 both. On these cases it has not
 yet changed an outcome.
@@ -1383,6 +1642,36 @@ day on them. Worth noting that `meteor-early` and `meteor-late` first differ at
 hundred ticks without growing is itself evidence the fixed-point arithmetic is
 sound.
 
+### Where this stands, measured 2026-09-24
+
+On merged main with fixtures #9 through #13 in, the sweep is **110 clean / 4
+divergent**, against 84/30 when it was first run. What is left is
+`missile-early` and `meteor`'s three, and the three `meteor` rows are the
+documented 1-raw-unit cases in class 6 - so the real remaining count is one.
+
+### A second coverage limit: the aim column
+
+The lower-bound warning above is about ticks. There is a second one about
+inputs, found by accident while re-running this sweep. Every casting case in the
+table fires at `aim 64`; only `plain` uses `aim 0`, and `plain` never casts at
+all (`slot -1`). So no row of this sweep ever casts an ability at aim 0.
+
+Running the `plain` kit as a *casting* case - `BCT_ABILITIES=29,6,18 BCT_SLOT=0`
+- makes the difference visible:
+
+```
+aim 64   FIRST any none
+aim  0   FIRST any tick 348 NUMERIC entity[2].x
+         ref -152151208905 (-35.425464)  cand -159624452041 (-37.165464)
+         [kind 1 layer 8 owner 1 source-ability 29 flags 16395]
+```
+
+1.74 world units on the Duplicator's own entity, on a kit the sweep calls clean.
+`duplicator` (`{29, 6, 18}`, slot 0, aim 64) passes; the same kit and slot at aim
+0 does not. Nothing here has been diagnosed - it is recorded so the next person
+knows the aim column is a fixed input, not a swept one, and that at least one
+ability is sensitive to it.
+
 ### Reproduce
 
 ```bash
@@ -1394,7 +1683,14 @@ BCT_ABILITIES=37,32,36 BCT_SLOT=0 BCT_AIM=0 BCT_ENGAGE_Y=-8.0 BCT_ALL=1 \
 
 The ability triples and slot/aim columns are the case table in
 `eval/rust_ab/bounds_ability_ab.c`; the three phases are `BCT_ENGAGE_Y` 0.0,
--8.0 and -10.9. `BCT_DUMP_ALL=1` additionally dumps every exported row of both
+-8.0 and -10.9.
+
+**Do not pipe a gate into `tail` and then read `$?`.** `make $g 2>&1 | tail -25`
+followed by `echo rc=$?` reports *tail's* status, which is 0 whether the gate
+passed or failed - it silently converts a failing gate into a passing one, which
+is the worst direction for a gate to fail in. This was hit here on 2026-09-24
+and the failure was caught only because the summary line said `fail=1`. Write
+the log to a file and check `make`'s own status, or use `PIPESTATUS`. `BCT_DUMP_ALL=1` additionally dumps every exported row of both
 sides, not only the owned ones, which is how the fixture #8 entity was
 identified.
 

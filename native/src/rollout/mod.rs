@@ -4600,8 +4600,16 @@ impl RolloutWorld {
     }
 
     fn record_warmup_rewind(&mut self, warmup_tick: u32) {
+        // RewindRecorder is hierarchyNumber 8 and SlimeController is 2, so the
+        // sample this tick contributes is taken *after* this tick's cooldown
+        // advance (SlimeController.cs:727-731) - the same post-increment read
+        // the live recorder does. Counting only the ticks strictly before
+        // `warmup_tick` seeded every warmup sample one DT low, which a Rewind
+        // whose destination lands in the warmup then restored one tick short.
         let timer = TIMER_START
-            + DT * Fix::from_int(i64::from(warmup_tick.saturating_sub(SLIME_AWAKE_TICK)));
+            + DT * Fix::from_int(i64::from(
+                (warmup_tick + 1).saturating_sub(SLIME_AWAKE_TICK),
+            ));
         for slot in &mut self.players {
             slot.rewind.push(RewindSample {
                 position: slot.base.position,
@@ -9869,15 +9877,18 @@ impl RolloutWorld {
                 slot.base.grounded = false;
                 slot.base.ground = None;
                 slot.base.grounded_speed = Fix::ZERO;
+                // FinishRewind overwrites the cooldowns outright and adds
+                // nothing (RewindRecorder.cs:325-333). SlimeController already
+                // advanced them earlier in this same pass: on Player.prefab
+                // SlimeController is hierarchyNumber 2 while RewindRecorder
+                // forces its own to 8 in Awake (RewindRecorder.cs:91-97), so
+                // the recorder runs last, not first. player_tick likewise runs
+                // ahead of rewind_recorders_tick here, so the sample being
+                // restored is already post-increment and compensating for a
+                // later pass double-counted one tick on every slot except the
+                // Rewind one.
                 slot.timers = destination.cooldowns;
                 slot.timers[slot.rewind.ability_slot] = preserved;
-                for ability_slot in 0..slot.timers.len() {
-                    if ability_slot != slot.rewind.ability_slot {
-                        // RewindRecorder (hierarchy 8) restores these before
-                        // SlimeController advances its ordinary cooldown pass.
-                        slot.timers[ability_slot] += DT;
-                    }
-                }
                 slot.rewind.rewinding = false;
                 slot.rewind.finish_next_tick = false;
                 slot.rewind.attached_ground = None;
@@ -25129,6 +25140,16 @@ impl RolloutWorld {
         let pd = &data::get().platform;
         let entity = self.entities.len();
         let id = self.next_id();
+        // A spawned ResizablePlatform is an ordinary FixTransform.InstantiateFixed
+        // prefab: its six components register inside the Begin/EndRegisterPrefab
+        // bracket and take their place in the one global updater order, so the
+        // collider reports 100_000_000 + cursor + DPhysicsRoundedRect's
+        // hierarchyNumber and the cursor advances by the whole prefab. A
+        // synthetic 300_000_000 + id stood here instead, which both mismatched
+        // the exported value and left the cursor un-advanced for whatever spawns
+        // next.
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += pd.spawn_updatable_count;
         self.entities.push(CEntity {
             id,
             kind: 2,
@@ -25136,7 +25157,7 @@ impl RolloutWorld {
             owner: 0,
             flags: E_ACTIVE | E_ENABLED,
             reserved: [ABILITY_PLATFORM, 0],
-            hierarchy: 300_000_000 + id,
+            hierarchy: 100_000_000 + hierarchy_base + pd.spawn_collider_hierarchy,
             inverse_mass: pd.spawn_body.inverse_mass.raw(),
             ..CEntity::default()
         });

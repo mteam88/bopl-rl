@@ -225,6 +225,8 @@ struct RawPlatformAnims {
 struct RawResizable {
     extents: RawVec2,
     radius: i64,
+    collider_hierarchy: u32,
+    updatable_count: u32,
     mass_per_area: i64,
     remove_curve: Curve,
     animate_velocity: RawAnimateVelocity,
@@ -1459,6 +1461,10 @@ pub struct PlatformAbilityData {
     pub exit_ticks: u32,
     pub spawn_extents: Vec2,
     pub spawn_radius: Fix,
+    /// DPhysicsRoundedRect's hierarchyNumber on ResizablePlatform.prefab, and
+    /// the number of its components that register with the Updater.
+    pub spawn_collider_hierarchy: u32,
+    pub spawn_updatable_count: u32,
     pub spawn_mass_per_area: Fix,
     pub remove_curve: Curve,
     pub spawn_speed: Fix,
@@ -2698,6 +2704,8 @@ pub fn get() -> &'static RolloutData {
                 exit_ticks: ticks(&plat.anims.exit),
                 spawn_extents: raw.prefabs.resizable_platform.extents.get(),
                 spawn_radius: Fix::from_raw(raw.prefabs.resizable_platform.radius),
+                spawn_collider_hierarchy: raw.prefabs.resizable_platform.collider_hierarchy,
+                spawn_updatable_count: raw.prefabs.resizable_platform.updatable_count,
                 spawn_mass_per_area: Fix::from_raw(raw.prefabs.resizable_platform.mass_per_area),
                 remove_curve: raw.prefabs.resizable_platform.remove_curve.clone(),
                 spawn_speed: Fix::from_raw(raw.prefabs.resizable_platform.animate_velocity.speed),

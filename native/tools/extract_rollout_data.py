@@ -58,6 +58,83 @@ def updater_count(prefab):
     )
 
 
+# Updater registration is opt-in per class. Updater never sweeps the scene for
+# MonoUpdatable; each component calls Updater.RegisterUpdatable(this) from its
+# own Awake (InstantAbility.cs:62-71), and EndRegisterPrefab then advances
+# prefabsAdded by the number of components that actually registered -
+# `prefabsAdded += toBeAddedPrefab.Count` (Updater.cs:143-153). So a serialized
+# hierarchyNumber on a class that never registers is dead data, and the
+# prefab's span over-counts the cursor advance. Two ability prefabs are in that
+# position: SuperStar (Gold mushroom, hierarchyNumber 2, SuperStar.cs:18-21) and
+# HookshotInstant (Grappling hook, hierarchyNumber 2). Both derive from
+# MonoUpdatable, both are enabled, and neither ever reaches the Updater.
+CSHARP = ROOT.parent / "Assets" / "Scripts" / "Assembly-CSharp"
+
+
+def _class_table():
+    table = {}
+    for path in sorted(CSHARP.glob("*.cs")):
+        text = path.read_text(errors="replace")
+        decl = re.search(
+            r"^\s*(?:public |internal |abstract |sealed |partial |static )*"
+            r"class\s+(\w+)\s*(?::\s*([^{]+))?",
+            text,
+            re.M,
+        )
+        if decl is None:
+            continue
+        bases = [b.strip() for b in (decl.group(2) or "").split(",") if b.strip()]
+        awake = re.search(r"\bvoid Awake\s*\(\s*\)", text)
+        body = ""
+        if awake is not None:
+            start = text.index("{", awake.end())
+            depth = 0
+            end = start
+            while end < len(text):
+                if text[end] == "{":
+                    depth += 1
+                elif text[end] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                end += 1
+            body = text[start:end]
+        table[decl.group(1)] = (
+            bases[0] if bases else None,
+            awake is not None,
+            "Updater.RegisterUpdatable" in body,
+        )
+    return table
+
+
+CLASSES = _class_table()
+
+
+def registers_with_updater(type_name):
+    # Unity dispatches only the most-derived Awake, so the first ancestor that
+    # declares one decides whether this component ever reaches the Updater.
+    seen = set()
+    while type_name in CLASSES and type_name not in seen:
+        seen.add(type_name)
+        base, declares, registers = CLASSES[type_name]
+        if declares:
+            return registers
+        type_name = base
+    return False
+
+
+def registering_count(prefab):
+    def visit(game_object):
+        own = sum(
+            "hierarchyNumber" in c.get("properties", {})
+            and registers_with_updater(c["type"])
+            for c in game_object.get("components", [])
+        )
+        return own + sum(visit(child) for child in game_object.get("children", []))
+
+    return visit(prefab["data"])
+
+
 def node_component(node, type_name):
     for c in node.get("components", []):
         if c["type"] == type_name:
@@ -461,6 +538,8 @@ def main():
             "sudden_death_y_speed": curve(rp_av, "suddenDeathYSpeed"),
         },
         "body": physics_body(rp_body),
+        "collider_hierarchy": rp_rr["hierarchyNumber"],
+        "updatable_count": registering_count(rp),
         "mass_per_area": fix(rp_res, "MassPerArea"),
         "remove_curve": curve(rp_res, "RemoveAnimation"),
         "resizable_keys": sorted(k for k in rp_res if not k.startswith("m_")),
@@ -1998,11 +2077,12 @@ def main():
             "offensive": icon_props[f"{prefix}.isOffensiveAbility"],
             # Child GameObjects register in the same Updater hierarchy. Roll
             # and Beam each contain one child SpriteAnimator after their root
-            # components, so the prefab's span is larger than the root max.
-            # HookshotInstant has no Awake registration; its serialized
-            # hierarchyNumber is therefore absent from Updater's runtime
-            # numbering even though it is a MonoUpdatable subclass.
-            "updatable_count": 1 if expected_id == 27 else hierarchy_span(prefab),
+            # components, so the count has to walk children, not just the root.
+            # Counting the components that actually register (rather than the
+            # prefab's hierarchyNumber span) is what EndRegisterPrefab advances
+            # prefabsAdded by; it derives the Grappling hook special case that
+            # used to be hard-coded here and fixes Gold mushroom the same way.
+            "updatable_count": registering_count(prefab),
             "effect_cooldown": effect_cooldown,
             "effect_duration": effect_duration,
             "air_jump_strength": air_jump_strength,
