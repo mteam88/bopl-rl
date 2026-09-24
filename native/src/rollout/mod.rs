@@ -8411,6 +8411,13 @@ impl RolloutWorld {
                                 slot.base.grounded_speed = Fix::ZERO;
                             }
                         }
+                        // Beam.OnEnterAbility instantiates the orb itself
+                        // (Beam.cs:261-267), so it exists before any updatable
+                        // of this pass runs - including the form's own bounds
+                        // component, which is hierarchyNumber 4 on Beam.prefab
+                        // against the entry call that Updater has not reached
+                        // yet. A kill on the entry pass still publishes the orb.
+                        self.spawn_beam_orb(index, data);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
                         // before PlayerPhysics.Move (SlimeController.cs:1067,
@@ -8420,7 +8427,6 @@ impl RolloutWorld {
                         if self.ability_boundary_kill(index, false) {
                             return;
                         }
-                        self.spawn_beam_orb(index, data);
                         self.beam_tick(index, action, false, data);
                         return;
                     }
@@ -13781,6 +13787,16 @@ impl RolloutWorld {
                 continue;
             }
             if self.players[orb.owner].active != ActiveAbility::Beam {
+                // Beam.OnEnterAbility holds the orb through
+                // DisableIfNotHeld_deter.HoldThisFrame on the very pass it
+                // creates or revives it (Beam.cs:261-274), so that pass's
+                // UpdateSim sees isHeld and neither deactivates nor destroys
+                // the object (DisableIfNotHeld_deter.cs:22-47). A death on the
+                // entry pass therefore still publishes the orb; it leaves on
+                // the pass after.
+                if orb.born_tick == self.tick {
+                    continue;
+                }
                 if let Some(entity) = orb.entity {
                     if orb.destroy_when_unheld {
                         self.entities[entity].flags = E_REMOVED;
@@ -30817,6 +30833,28 @@ impl RolloutWorld {
         by_callback: bool,
         spawn_effect: bool,
     ) {
+        // PlayerCollision.killPlayer detaches the slime's rope as its very
+        // first action, ahead of the invulnerability early-return, so even a
+        // kill that returns false marks the rope detached
+        // (PlayerCollision.cs:106-114). PlayerBody.AttachRope(null, top) is
+        // the port's attach_player_rope, and RopeBody.Dettach inside it is
+        // where hasBeenDettached lives - the bit RlObservation.cs:89 publishes
+        // as entity flag 32 on every rope node.
+        //
+        // Only the slime's own rope. A player inside an ability form left
+        // PlayerBody.ropeBody null on entry (Ability.cs:139-146,
+        // PlayerBody.cs:275-280) and leaves through Ability.ExitAbility, which
+        // hands the rope on without ever detaching it; the rope such a form
+        // still holds belongs to BounceBall, whose AttachRope has no Dettach
+        // call at all (BounceBall.cs:205-223). Every kill() site that models
+        // ExitAbility rather than killPlayer is reached with a live form, so
+        // the active-ability test separates the two exactly.
+        if self.players[index].active == ActiveAbility::None
+            && self.players[index].rope.is_some()
+        {
+            let top = self.players[index].rope_top;
+            self.attach_player_rope(index, None, top);
+        }
         // Player.Kill itself is a no-op after WinGame, but
         // PlayerCollision.killPlayer still drops abilities and destroys the
         // slime and its ability objects around that call.
@@ -30946,7 +30984,12 @@ impl RolloutWorld {
                 slot.duplicator_entity,
                 slot.magnet_entity,
                 slot.bow_entity,
-                slot.throw_entity,
+                // Every ThrowItem2 slot owns its own hurtbox; `throw_entity`
+                // is only the one currently selected, so removing that alone
+                // leaves the other slots' colliders in the pool for a pass.
+                slot.throw_entities[0],
+                slot.throw_entities[1],
+                slot.throw_entities[2],
                 slot.mine_entity,
                 slot.gust_entity,
                 slot.revival_entity,
@@ -31035,7 +31078,12 @@ impl RolloutWorld {
                 slot.duplicator_entity,
                 slot.magnet_entity,
                 slot.bow_entity,
-                slot.throw_entity,
+                // Every ThrowItem2 slot owns its own hurtbox; `throw_entity`
+                // is only the one currently selected, so removing that alone
+                // leaves the other slots' colliders in the pool for a pass.
+                slot.throw_entities[0],
+                slot.throw_entities[1],
+                slot.throw_entities[2],
                 slot.mine_entity,
                 slot.gust_entity,
                 slot.revival_entity,
@@ -31104,7 +31152,12 @@ impl RolloutWorld {
                 slot.duplicator_entity,
                 slot.magnet_entity,
                 slot.bow_entity,
-                slot.throw_entity,
+                // Every ThrowItem2 slot owns its own hurtbox; `throw_entity`
+                // is only the one currently selected, so removing that alone
+                // leaves the other slots' colliders in the pool for a pass.
+                slot.throw_entities[0],
+                slot.throw_entities[1],
+                slot.throw_entities[2],
                 slot.mine_entity,
                 slot.gust_entity,
                 slot.revival_entity,
