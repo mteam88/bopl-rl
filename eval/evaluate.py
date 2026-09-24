@@ -100,11 +100,16 @@ def main():
     # "Scripted opponents for the Dash/Bow/Platform loadout" and indexes BOT_SLOT_DASH 0,
     # BOT_SLOT_BOW 1, BOT_SLOT_PLATFORM 2. Handed any other kit, "archer" charges a bow
     # that is not in slot 1 and "pursuer" ejects a platform that is not in slot 2, so its
-    # win rate measures nothing the name claims. Their games therefore run on the kit they
-    # were written for - which is DEFAULT_LOADOUT - while every other opponent uses the
-    # run's own draw. Found 2026-09-24 on a generalist whose evaluation reported
-    # archer-v2-hard against Drill/Throw/Magnet gun.
-    bot_loadouts=resolve_loadouts(DEFAULT_LOADOUT)
+    # win rate measures nothing the name claims. The bot's seat therefore always holds the
+    # kit it was written for, DEFAULT_LOADOUT, and the policy's seat one of the run's own
+    # kits (a seed pair shares one). Found 2026-09-24 on a generalist whose evaluation
+    # reported archer-v2-hard against Drill/Throw/Magnet gun.
+    run_kits=(sorted({tuple(row[h:h+3]) for row in loadouts['lineups'] for h in (0,3)})
+              if loadouts['mode']=='set' else [tuple(loadouts['fixed'])])
+    def bot_game(task):
+        kit=list(run_kits[np.random.default_rng(task['seed']).integers(len(run_kits))])
+        row=kit+list(DEFAULT_LOADOUT) if task['side']==0 else list(DEFAULT_LOADOUT)+kit
+        return dict(loadouts,mode='set',lineups=[row],set_file=None,mirror_share=0.)
     observation_delay=config.get('observation_delay_ticks',9)
     if set(args.heldout_maps)&set(config['training_maps']):
         raise ValueError('A held-out map was used for training')
@@ -148,7 +153,7 @@ def main():
                 # the caller's action floats for them are ignored.
                 scripted=scripted_opponent(task['opponent'])
                 # Selected before the reset that draws the episode's kit (Environment.configure_loadouts).
-                env.configure_loadouts(bot_loadouts if scripted is not None else loadouts)
+                env.configure_loadouts(bot_game(task) if scripted is not None else loadouts)
                 env.reset(task['seed'],task['map'])
                 overflow_before=env.observation_overflow
                 episode_loadouts=env.loadouts

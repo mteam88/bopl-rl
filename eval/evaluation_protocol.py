@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 from map_catalogue import MAP_COUNT,parse_map_ids
+import map_set
 
 ABILITY_COUNT = 39
 DEFAULT_LOADOUT = (2, 4, 14)
@@ -104,6 +105,14 @@ def resolve_loadouts(fixed=DEFAULT_LOADOUT, pool=None, lineup_file=None, no_dup=
     if not 0 <= mirror_share <= 1:
         raise ValueError('--mirror-share must be in [0, 1]')
     rows=loadout_lineups(lineup_file) if lineup_file is not None else []
+    if rows and mirror_share<1 and all(row[:3]==row[3:] for row in rows):
+        # A file of three-id lines lists kits, not games: each seat draws its own kit, so
+        # the rows become every ordered pair (the n mirror pairs among them), and
+        # mirror_share only adds games forced onto the same kit.
+        kits=[row[:3] for row in rows]
+        rows=[a+b for a in kits for b in kits]
+        if len(rows)>256:
+            raise ValueError(f'{lineup_file}: {len(kits)} kits make {len(rows)} pairs, at most 256')
     if no_dup:
         candidates=rows or ([fixed] if pool is None else [])
         if any(len(set(row[:3]))<3 or (len(row)>3 and len(set(row[3:6]))<3) for row in candidates):
@@ -198,9 +207,11 @@ def schedule(evaluation_maps,heldout_maps,frozen,games,heldout_games,frozen_game
         raise ValueError('Evaluation and held-out map lists overlap')
     if any(n<2 or n%2 for n in (games,heldout_games,frozen_games)):
         raise ValueError('Evaluation requires positive side-swapped seed pairs')
+    # The bots hard-code grass physics (the death-water line), so a space map has no bot games.
+    space=set(map_set.space_maps())
     tasks=[]; groups=[]
     for map_id in evaluation_maps:
-        for opponent in ['random','initial',*scripted,*[item['name'] for item in frozen]]:
+        for opponent in ['random','initial',*([] if map_id in space else scripted),*[item['name'] for item in frozen]]:
             count=frozen_games if any(opponent==item['name'] for item in frozen) else games
             groups.append((opponent,map_id))
             for game in range(count):
@@ -208,11 +219,11 @@ def schedule(evaluation_maps,heldout_maps,frozen,games,heldout_games,frozen_game
                 tasks.append(dict(opponent=opponent,map=map_id,seed=seed_base+100000*map_id+game//2,
                                   side=game%2,save=game==0,name=name))
     for map_id in heldout_maps:
-        for opponent in ['random',*scripted]:
+        for opponent in ['random',*([] if map_id in space else scripted)]:
             groups.append((opponent,map_id))
             prefix='' if opponent=='random' else f'{opponent}-'
             for game in range(heldout_games):
-                tasks.append(dict(opponent=opponent,map=map_id,seed=heldout_seed_base+game//2,
+                tasks.append(dict(opponent=opponent,map=map_id,seed=heldout_seed_base+100000*map_id+game//2,
                                   side=game%2,save=game==0,name=f'{prefix}map-{map_id}-{game}'))
     tasks.append(dict(opponent='selfplay',map=evaluation_maps[0],seed=selfplay_seed,side=0,save=True,name='selfplay'))
     return tasks,groups
