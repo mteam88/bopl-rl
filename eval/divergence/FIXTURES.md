@@ -426,3 +426,20 @@ difference decides whether it clears the plane at all rather than when. Worth
 confirming against `QuickSpell`'s C# before anyone calls the boundary work
 finished; it is the one case here where the port is not merely imprecise but
 takes a different outcome path.
+
+**The Unity player build is a week older than the observation ABI it must
+speak.** `Builds/LinuxIL2CPP/BoplBattle.x86_64` was built 2026-09-07. The
+handshake in `sim/abi/bopl_rl.c:488` requires protocol version 3, which landed
+2026-09-14 in `3721f8ae` ("rl: wire observation ABI v3"), so the player is
+rejected with `Unsupported RL protocol` and the process dumps core rather than
+exiting cleanly. Everything that drives the real game is therefore dead until
+the player is rebuilt: `train/check_routing.py`, `Tools/play-vs-agent.sh` and
+`Tools/play-vs-agent-mac.sh`.
+
+That matters beyond convenience. `check_routing.py` is the only thing that
+verifies per-player routing through PufferLib's agent permutation, the frozen
+bank slices, and the tag / `count_aligned` alignment protocol that decides which
+matches count towards per-bank pool statistics. While it cannot run, that whole
+mechanism has no executing test, so a change to opponent scheduling is verified
+offline or not at all. Rebuilding the player is the fix; the core dump on a
+rejected handshake is a second, smaller bug worth closing at the same time.
