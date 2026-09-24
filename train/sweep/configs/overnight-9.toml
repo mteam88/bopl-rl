@@ -1,0 +1,159 @@
+# Overnight sweep 9 (2026-09-14 20:40): overnight-8 re-run on observation layout v3.
+# overnight-8 (layout v2) died at trial 003 when the v3 merge (9ddd792) rebuilt the base's
+# libraries under it; Matthew chose to abandon it rather than finish on v2. Same search:
+# overnight-7's boxes with the training budget itself swept, 1B..4B learner steps
+# (fixed_cost=false, cost=learner_steps, 12 log-stratified Sobol trials then GP), trial 000
+# = overnight-7 041's hypers at 1B. Everything below the [sweep] header is overnight-8's,
+# except the pool.
+#
+# Layout v3: 3,690 floats, shared 40x64 ability embedding,
+# per-(slime, slot) rows, 64 entities / 32 slimes, remaining-ticks timers, runtime traits,
+# round clock. Architecture bopl-set-mingru-v3; v2 checkpoints do not load, so no v2 pool
+# member can play a v3 policy and pool v6 is unusable here.
+#
+# Score: Bradley-Terry Elo vs pool v7, IQM over the last 3 evaluations, 480 games per
+# checkpoint. Pool v7 = pool v6's random + 7 scripted members (v1 kinds + search bots, none
+# of them in the Elo-matchmade v2 training roster) + eight v3 anchors: the finals and 500M
+# checkpoints of v3-base-041/059/016/007 (overnight-7's 041, 059, 016 and 007 hypers at 1B
+# on v3, run just before this sweep). Random is anchored at 0; the scale is new, so scores
+# are not comparable to v5/v6 numbers except through the joint ladder (eval/joint_ladder.py).
+# The bridge to v2 is the scripted-only refit: v3-base-* on pool v6-scripted vs overnight-8
+# 000 (041's hypers on v2) refit against the same members.
+#
+# Runs from the pinned rift child ripped/.rifts/ExportedProject/v3-sweep (main 9ddd792 +
+# these configs) with --root pointing at the base's sweeps dir, so a later ABI merge into
+# main cannot kill it (that is what killed overnight-8). Queue: ~/.local/share/
+# bopl-null-hypothesis/queue-overnight-9.sh runs the four baselines, builds pool v7, then
+# execs this driver; unit bopl-sweep-overnight-9.
+#
+# Budget: v3 trains ~1.6% faster than v2 on the smoke; expect ~35 min per 1B trial incl.
+# scoring, ~45 min average over the steps box -> 40 trials ~30 h.
+
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"     # Elo, not a rate
+downsample = 3                     # = [scoring].last_k points per trial
+fixed_cost = false                 # steps is a swept axis; see [params.steps]
+max_suggestion_cost = 4.05e9       # = params.steps.max (learner steps)
+max_runs = 40                      # 9 params: 1 default + 12 Sobol + 27 GP, ~30 h
+num_random_samples = 12
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "6G"
+nice = 10
+max_seconds = 12000                # 4B at overnight-7 013's pace is ~2.5 h; this only guards a hang
+poll_seconds = 60
+
+[scoring]
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"   # v6's scripted members + the four v3-base-* finals and their 500M checkpoints
+last_k = 3                         # eval_every 80M -> the last 240M steps
+games = 480
+first_pass_games = 6
+band = [0.15, 0.85]
+round_games = 96
+workers = 8
+seed_base = 80001
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+
+[fixed]
+steps = 1000000000                 # trial-000 value; swept 1B..4B below
+workers = 128
+buffers = 4
+banks = 4
+seed = 73
+encoder = "set"
+hidden = 128
+layers = 1
+horizon = 128
+learner_passes = 4
+aim_fourier = 4                    # the aim-head study's pick; 0 = absolute bins (overnight-1..6)
+learning_rate = 9.06e-4                # trial-000 = overnight-7 041
+entropy = 2.01e-2
+entropy_floor = 0.001
+entropy_half_life = 166334326
+entropy_head_scale = "0.05,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.909
+reward_timeout = -1
+scripted_roster = "default"        # 12 v2 kind-levels; search bots opt-in (84% sps hit)
+scripted_banks = 1                 # trial-000 value; swept 1..4 below
+scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 20000000
+eval_every = 80000000
+evaluation_games = 8
+heldout_games = 4
+evaluation_workers = 4
+cudagraphs = 1
+
+[params.steps]
+distribution = "log_normal"
+min = 1000000000
+max = 4000000000
+scale = 0.5
+integer = true
+
+[params.learning_rate]
+distribution = "log_normal"
+min = 1e-4
+max = 3e-3
+scale = 0.5
+
+[params.entropy]
+distribution = "log_normal"
+min = 4e-3
+max = 1e-1
+scale = 0.5
+
+[params.entropy_half_life]
+distribution = "log_normal"
+min = 3e7                          # overnight-7 sat at 150..320M against a 1e8 floor
+max = 1e10
+scale = 0.5
+integer = true
+
+[params.reward_kill]
+distribution = "log_normal"
+min = 0.1
+max = 3.0
+scale = 0.5
+
+[params.scripted_banks]
+distribution = "int_uniform"
+min = 1
+max = 4
+
+[params.scripted_share_max]
+distribution = "log_normal"
+min = 0.02
+max = 1.0                          # hard ceiling: a share is a probability
+scale = 0.5
+default = 1.0
+
+[params.scripted_share_min]
+distribution = "log_normal"
+min = 0.002                        # overnight-7 pinned our 0.02 floor
+max = 1.0
+scale = 0.5
+default = 0.0205
+
+[params.head_scale_aim]
+distribution = "log_normal"
+min = 0.005                        # overnight-7 pinned our 0.05 floor
+max = 3.0
+scale = 0.5
+default = 0.05

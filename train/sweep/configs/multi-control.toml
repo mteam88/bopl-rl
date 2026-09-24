@@ -1,0 +1,111 @@
+# Multi-ability feasibility trio, 2026-09-19 (thread "generalized bots" thr_bam5xbkv6z:
+#   specialists -> league -> generalist; this trio is the feasibility gate before
+#   any specialist is trained). Three runs of the frozen campaign-3 recipe
+#   (v4-lite-aim.toml verbatim: v4-lite shape, v4_ablate 10, w256 b4, learner_passes 1,
+#   minibatch_div 2, LR 4.852e-4, seed 73, 1734936776 steps, ~45 min at 645k sps)
+#   that differ only in the loadout draw:
+#     multi-control  --loadout 2,4,14                        (the production loadout; the yardstick)
+#     multi-lineups  --loadout-set native/data/lineups-8.txt --mirror-share 1   (8 canonical mirror lineups)
+#     multi-random   --loadout-pool all --mirror-share 0.5   (36 abilities, half the games mirrored)
+#   Scored on pool v8 (v7 saturates for v4 members; v8 is the wave's primary),
+#   which plays 2/4/14 on maps 0-2: for every run the score IS the 2/4/14 slice.
+#   The other readings (per-ability activations, timeout rate, entity-row
+#   overflow, per-lineup win rate) come from the in-run evaluations' telemetry
+#   and the loadout-aware tournament that the multi-ability rift is adding.
+#   Known confound, kept deliberately so the control is a control: the scripted
+#   banks (3 of 4, share 1.0 -> 0.11) play the Dash/Bow/Platform slot macros
+#   whatever loadout the episode drew, so under lineups/random they are weak
+#   opponents for most episodes. The in-run behaviour flags (no-offense reads
+#   arrows_per_game) will fire on the non-bow lineups; flags never enter the score.
+# THIS RUN: multi-control, --loadout 2,4,14 (train.py default, written explicitly).
+# Flags not listed are layout.V4_DEFAULTS.
+
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"
+downsample = 3
+fixed_cost = true
+max_suggestion_cost = 1.75e9
+max_runs = 1
+num_random_samples = 1
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "10G"
+nice = 0
+max_seconds = 21600                # steps stay 1734936776 (the 024 budget); the comparison is at equal steps (every 20M checkpoint), not equal wall time, so full runs are wanted even at 3x
+poll_seconds = 60
+
+[scoring]
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/pool-v8/pool.json"
+last_k = 3
+games = 480
+first_pass_games = 6
+band = [0.15, 0.85]
+round_games = 96
+workers = 8
+seed_base = 80001
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+
+[fixed]
+# policy v4, width 256, one MinGRU layer; shape flags below
+encoder = "v4"
+hidden = 256
+layers = 1
+v4_set_inner = 64
+v4_ffn_dim = 0
+v4_critic_dim = 384
+v4_ablate = 10
+# the loadout draw (this run)
+loadout = [2, 4, 14]
+# overnight-9 024, verbatim
+steps = 1734936776
+workers = 256                      # b4 recipe (2026-09-19 16:xx, Matthew: adopt): 128 rows per buffer chain
+buffers = 4
+banks = 4
+seed = 73
+horizon = 128
+learner_passes = 1                 # b4: two gradient steps of 24576 prio-drawn rows per 49152-row update (replay 1.0)
+minibatch_div = 2
+aim_fourier = 4
+learning_rate = 0.0004852184640654399   # 3.431e-4 x sqrt(2) for the doubled batch (b2 gate: +50 band over the plain LR at w256)
+entropy = 0.01532588085540654
+entropy_floor = 0.001
+entropy_half_life = 718611646
+entropy_head_scale = "0.028821467398601395,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.2883693237829292
+reward_timeout = -1
+scripted_roster = "default"
+scripted_banks = 3
+scripted_share_max = 1.0
+scripted_share_min = 0.11048204896277423
+scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 20000000
+eval_every = 80000000
+evaluation_games = 8
+heldout_games = 4
+evaluation_workers = 4
+cudagraphs = 1
+
+# sweep_config requires one swept parameter; at its default this is [fixed].learning_rate.
+[params.learning_rate]
+distribution = "log_normal"
+min = 1e-4
+max = 3e-3
+scale = 0.5
+default = 0.0004852184640654399   # must equal [fixed].learning_rate: defaults() prefers this value (2026-09-20 fix; the b4 commit only changed [fixed])

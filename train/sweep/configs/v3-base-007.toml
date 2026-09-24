@@ -1,0 +1,132 @@
+# v3 baseline 007 (2026-09-14 20:30): one 1B trial at overnight-7 007's hypers on observation
+# layout v3 (ABI 3, bopl-set-mingru-v3), the first training on v3.
+# overnight-7 007: banks 3 / share 0.98 / aim 0.66 / reward_kill 0.10, the stylistic outlier anchor, 539 on v6.
+# Purpose: (1) the v2 -> v3 comparison at identical hypers and seed; (2) a v3 anchor for
+# pool v7, which overnight-9 (the steps sweep, 1B..4B) is scored against. Scored on pool
+# v6-scripted: v6's random + scripted members at their v6 ratings (v2 checkpoints cannot
+# play a v3 policy), so the number is on the v6 scale but resolves nothing above ~630
+# except through the search bots; compare with the scripted-only refit of overnight-8 000
+# (the same hypers on v2). max_runs 1: Protein's first suggestion is [fixed]/default.
+# Runs from the pinned rift child v3-sweep (main 9ddd792); results in the base's sweeps dir.
+
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"
+downsample = 3
+fixed_cost = true
+max_suggestion_cost = 1.01e9
+max_runs = 1                       # the default trial only
+num_random_samples = 1
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "6G"
+nice = 10
+max_seconds = 5400
+poll_seconds = 60
+
+[scoring]
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/pool-v6-scripted/pool.json"   # v6's scripted members, v6 ratings
+last_k = 3
+games = 480
+first_pass_games = 6
+band = [0.15, 0.85]
+round_games = 96
+workers = 8
+seed_base = 80001
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+
+[fixed]
+steps = 1000000000
+workers = 128
+buffers = 4
+banks = 4
+seed = 73
+encoder = "set"
+hidden = 128
+layers = 1
+horizon = 128
+learner_passes = 4
+aim_fourier = 4                    # the aim-head study's pick; 0 = absolute bins (overnight-1..6)
+learning_rate = 1.286e-3
+entropy = 8.59e-3
+entropy_floor = 0.001
+entropy_half_life = 1647422266
+entropy_head_scale = "0.658,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.105
+reward_timeout = -1
+scripted_roster = "default"        # 12 v2 kind-levels; search bots opt-in (84% sps hit)
+scripted_banks = 3
+scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 20000000
+eval_every = 80000000
+evaluation_games = 8
+heldout_games = 4
+evaluation_workers = 4
+cudagraphs = 1
+
+[params.learning_rate]
+distribution = "log_normal"
+min = 1e-4
+max = 3e-3
+scale = 0.5
+
+[params.entropy]
+distribution = "log_normal"
+min = 4e-3
+max = 1e-1
+scale = 0.5
+
+[params.entropy_half_life]
+distribution = "log_normal"
+min = 3e7                          # overnight-7 sat at 150..320M against a 1e8 floor
+max = 1e10
+scale = 0.5
+integer = true
+
+[params.reward_kill]
+distribution = "log_normal"
+min = 0.1
+max = 3.0
+scale = 0.5
+
+[params.scripted_banks]
+distribution = "int_uniform"
+min = 1
+max = 4
+
+[params.scripted_share_max]
+distribution = "log_normal"
+min = 0.02
+max = 1.0                          # hard ceiling: a share is a probability
+scale = 0.5
+default = 0.98
+
+[params.scripted_share_min]
+distribution = "log_normal"
+min = 0.002                        # overnight-7 pinned our 0.02 floor
+max = 1.0
+scale = 0.5
+default = 0.0589
+
+[params.head_scale_aim]
+distribution = "log_normal"
+min = 0.005                        # overnight-7 pinned our 0.05 floor
+max = 3.0
+scale = 0.5
+default = 0.658

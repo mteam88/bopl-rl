@@ -11,7 +11,7 @@ using UnityShim;
 
 namespace BoplSim.Native
 {
-	// In-process implementation of native/rl/bopl_rl.h (ABI version 3).
+	// In-process implementation of sim/abi/bopl_rl.h (ABI version 3).
 	//
 	// The socket path is: bopl_rl.c <-> unix socket <-> RlBridge.Pump inside a
 	// Unity player. This library removes the process and the socket: it is the
@@ -20,7 +20,7 @@ namespace BoplSim.Native
 	// InternalsVisibleTo) plus the client-side half of bopl_rl.c (argument
 	// validation, status codes, BoplRlState decoding).
 	//
-	// Many worlds per process (SIM_OVERHAUL.md section 3): every bopl_rl_open
+	// Many worlds per process: every bopl_rl_open
 	// creates an RlWorld (its own UnityShim.World, boot scene and Host); the
 	// export database is loaded once. Gameplay's per-match statics are
 	// [ThreadStatic] and swapped by World.Bind/Unbind (RlWorldState), so calls

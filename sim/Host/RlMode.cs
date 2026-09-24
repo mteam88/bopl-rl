@@ -7,7 +7,7 @@ using UnityShim;
 
 namespace BoplSim.Host
 {
-	// Drop-in replacement for the headless Unity player under native/rl/bopl_rl.c.
+	// Drop-in replacement for the headless Unity player under sim/abi/bopl_rl.c.
 	//
 	// The harness posix_spawns
 	//   <game> -batchmode -nographics -logFile <log> <bootstrap.rep>
@@ -28,7 +28,7 @@ namespace BoplSim.Host
 	// Deliberately NOT done, to stay on the trace-verified path: Update on
 	// other behaviours, coroutine stepping, LateUpdate, Time advance. None of
 	// them run in Program.Run's oracle loop either; gameplay is driven by
-	// Updater.TickSimulation inside RlBridge. See sim/RL.md.
+	// Updater.TickSimulation inside RlBridge.
 	public static class RlMode
 	{
 		private static bool AbilitySpawnsEnabled
@@ -121,7 +121,7 @@ namespace BoplSim.Host
 				// Boot leaves ~110 MiB of dead parse trees (boot scene, built
 				// assets' JSON) behind a ~60 MiB live heap; with 16-32 game
 				// processes per trainer that is worth one blocking compaction
-				// before the harness starts timing us (sim/RL.md).
+				// before the harness starts timing us.
 				GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
 				Console.Error.WriteLine($"[rl] ready: heap {GC.GetTotalMemory(false) >> 20}MiB workingSet {Environment.WorkingSet >> 20}MiB");
 
@@ -183,7 +183,7 @@ namespace BoplSim.Host
 					Console.Error.WriteLine("[rl] cannot read bootstrap replay " + replayPath + ": " + error.Message + "; using the default setup");
 				}
 			}
-			// bopl_rl_default_config for 2 players (native/rl/bopl_rl.c).
+			// bopl_rl_default_config for 2 players (sim/abi/bopl_rl.c).
 			var setup = new ReplayArchive
 			{
 				seed = 37,

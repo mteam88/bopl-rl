@@ -8,8 +8,8 @@ bin/
 *.csproj
 *.sln
 build.log
+__pycache__/
 .claude/ralph-loop.local.md
-native/rl/autoresearch/.env
 # dotnet sim port: keep project files, drop build output
 !sim/BoplSim.sln
 !sim/**/*.csproj

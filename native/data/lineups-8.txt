@@ -3,8 +3,8 @@
 # -> generalist; 2026-09-19: the trio). One shared three-slot loadout per line
 # (both players receive it: --mirror-share 1), ability IDs from
 # native/data/rollout.json. Picked to cover the movement/attack archetypes with
-# every ability fully ported (12 Time stop and 15 Revival, the two partials in
-# ABILITY_PORT_GAPS.md, are left out; 1 Random is a spawn-time replacement,
+# every ability fully ported (12 Time stop and 15 Revival, the two partial
+# ports, are left out; 1 Random is a spawn-time replacement,
 # not a play style). Held out on purpose for later generalisation checks:
 # 5 Engine, 7 Gust, 8 Growth ray, 11 Spike, 17 Shrink ray, 19 Invisibility,
 # 20 Meteor, 22 Push, 31 Rewind, 33 Poke ball, 34 Gold mushroom, 35 Tack,

@@ -8,7 +8,7 @@
 //! The cargo feature `q32` swaps in the bit-exact reference arithmetic
 //! (`fixed_q32.rs`) for the golden-verification tooling.
 //!
-//! What is kept exact (see RUST_ROLLOUTS.md, "Number type"):
+//! What is kept exact:
 //! - Constants are the game's truncated Q32.32 values (`PI`, `HALF_PI`, `TAU`,
 //!   `DT`), not the mathematical ones, so every comparison against them lands
 //!   on the same side as in the reference.

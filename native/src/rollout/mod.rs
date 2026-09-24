@@ -5,7 +5,7 @@
 //! with the full episode lifecycle: warmup, deaths, stocks, respawn, the
 //! episode tick limit, and sudden death. Bow and Platform are ported
 //! approximately from sim/Gameplay for transferable fidelity, not
-//! byte-exactness; the .NET sim stays the reference (native/rl/RUST_ROLLOUTS.md).
+//! byte-exactness; the .NET sim stays the reference.
 use crate::{
     fixed::Fix,
     geometry::{Circle, OrientedBox, RayHit, RoundedRect},

@@ -1,0 +1,159 @@
+# Overnight sweep 3 (2026-09-10): overnight-1 re-run on the fixed sim.
+#
+# HISTORICAL RECORD. Stopped 2026-09-11 12:49 after 47 complete trials
+# (results.jsonl / sweep.json in the sweep directory stay readable). Its
+# `scorer = "anchors"` was removed from the driver on 2026-09-11 (README "Why
+# a reference pool"), so this file no longer loads; overnight-4.toml is the
+# live successor.
+#
+# Identical to overnight-2.toml. overnight-2 was stopped after trial 000
+# (~133M steps, 5 evals) when placed platforms were seen slowly rotating:
+# the spawned-platform rotation spring (prefab rotationSpeed 40, rotationMu
+# 1/6) was missing from rollout.json and serde-defaulted to zero, and resizing
+# re-derived the body orientation each tick. Fixed in main a71e1ee (gate
+# 297/300 winner agreement, loaded-platform deflection 0.02 rad vs .NET 0.01).
+# overnight-2/000 is kept as a record but is not comparable (buggy .so).
+# A first overnight-3 start (17:37, .so ed824afe) completed trials 000-002
+# before the same audit also fixed death-tick timing, dash-vs-arrow and
+# recast-rider detach (main 8821a14, .so 101b017d); it is preserved as
+# sweeps/overnight-3-ed824afe and this sweep restarted fresh at 18:50.
+#
+# overnight-1 (20 trials, 2026-09-10) ran on a Rust sim with static platforms,
+# swept arrows and a dozen phase-order gaps against Unity; its best policies
+# partly exploited that sim (checkpoint 012: 262/360 on the old .so vs 194/360
+# on the .NET oracle). This sweep starts fresh on the f64 sim with dynamic
+# platforms and discrete arrow contacts (gate
+# 296/300 winner agreement with .NET) and the .NET oracle with ability pickups
+# disabled to match. Same scoring as overnight-1 so scores stay comparable in
+# spirit, not in value: the old scores were partly sim exploits.
+#
+# What overnight-1 taught, folded into the space (trial table in
+# native/artifacts/rl/sweeps/overnight-1/summary.md):
+# - workers: every trial at 64 or 256 scored <= 0.42; all nine >= 0.5 ran 128.
+#   Fixed at 128 (and 4 rollout buffers, +11% learner/s over 2).
+# - learning_rate: the top four (0.71-0.73) sit at 1.3e-3..2e-3; 2.3e-3 gave
+#   0.50, 7e-3 gave 0.17, everything <= 4e-4 stayed <= 0.37. Range 5e-4..4e-3.
+# - learner_passes: 4 in all of the top six; 1 never beat 0.37. Range 2..4.
+# - entropy 3.5e-3..7.3e-3 and half-life 2.5e7..6.6e7 in the top four; the
+#   wide 2e-3..3e-2 / 2e7..4e8 ranges wasted trials at the high ends.
+# - scripted bots: every trial >= 0.5 had scripted_banks = 0; Protein pinned it
+#   there from trial 009 on. Kept as 0..1 so the fixed sim gets one more look,
+#   level fixed at hard (irrelevant when banks = 0; two fewer noise dims).
+# - reward_kill: 0..0.22 in the top six (016 = 0). Range 0..0.3.
+# - head_scale_buttons: 0.37..2.4 in the top six. Range 0.25..4.
+# Trial 000 uses the [fixed] point below = overnight-1's best (016) hypers, so
+# it doubles as the direct old-sim vs new-sim comparison.
+
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "percentile"
+downsample = 10                    # one point per evaluation (eval_every 20M)
+fixed_cost = true                  # every trial runs [fixed].steps
+early_stop = false
+max_suggestion_cost = 2.1e8
+max_runs = 60
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1                    # two concurrent trainers measured 134k vs 157k learner/s for one (2026-09-10)
+
+[trial]
+memory_max = "14G"
+nice = 10
+max_seconds = 5400                 # 1.5 h hard wall; a healthy trial is ~20-25 min on the f64 sim
+poll_seconds = 60
+
+[scoring]
+scorer = "anchors"
+opponents = ["mixed-hard", "archer-hard", "pursuer-hard", "evasive-hard", "mixed-medium",
+             "run007-100m", "run007-300m", "run007-final"]
+include_heldout = false
+
+[fixed]
+steps = 200000000
+workers = 128
+buffers = 4
+banks = 4
+seed = 73
+encoder = "set"
+hidden = 128
+layers = 1
+horizon = 128
+learner_passes = 4
+learning_rate = 2e-3
+entropy = 3.5e-3
+entropy_floor = 0.001              # capped to entropy/2 when entropy sweeps lower
+entropy_half_life = 34540010
+entropy_head_scale = "1,1.71,1"
+entropy_free_rows = 1
+reward_kill = 0.0
+reward_timeout = -1
+scripted_bots = ["mixed", "archer"]  # ordered candidates; scripted_banks takes the first N
+scripted_level = "hard"
+scripted_decay = 200000000
+scripted_opponents = "mixed-hard,archer-hard,pursuer-hard,evasive-hard,mixed-medium"
+evaluation_opponents = "native/artifacts/rl/sweeps/anchors/opponents.json"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 10000000
+eval_every = 20000000
+evaluation_games = 8
+heldout_games = 4
+frozen_games = 8
+evaluation_workers = 4
+cudagraphs = 1
+
+[params.learning_rate]
+distribution = "log_normal"
+min = 5e-4
+max = 4e-3
+scale = 0.5
+
+[params.learner_passes]
+distribution = "int_uniform"
+min = 2
+max = 4
+scale = "auto"
+
+[params.entropy]
+distribution = "log_normal"
+min = 2e-3
+max = 1.5e-2
+scale = 0.5
+
+[params.entropy_half_life]
+distribution = "log_normal"
+min = 1.5e7
+max = 1.5e8
+scale = 0.5
+integer = true
+
+[params.head_scale_buttons]
+distribution = "log_normal"
+min = 0.25
+max = 4.0
+scale = 0.5
+
+[params.reward_kill]
+distribution = "uniform"
+min = 0.0
+max = 0.3
+scale = "auto"
+
+[params.scripted_banks]
+distribution = "int_uniform"
+min = 0
+max = 1
+scale = "auto"
+default = 0
+
+[params.scripted_decay]
+distribution = "log_normal"
+min = 2.5e7                        # bots gone after 12.5% of the run
+max = 2e8                          # still playing half their bank's matches at the end
+scale = 0.5
+integer = true

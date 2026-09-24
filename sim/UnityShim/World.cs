@@ -9,7 +9,7 @@ namespace UnityShim
 	//
 	// Current is thread-local: a thread works on exactly one world at a time,
 	// and different threads may drive different worlds of the same runtime
-	// concurrently (many worlds per process, SIM_OVERHAUL.md section 3). All
+	// concurrently (many worlds per process). All
 	// per-world state that Unity keeps in statics (Time, Random, scene events)
 	// lives on the World; gameplay's own per-match statics are swapped in and
 	// out by the onBind/onUnbind hooks (Gameplay's RlWorldState). Anything the
@@ -58,7 +58,7 @@ namespace UnityShim
 		// UnityEngine.Time, per world (see Runtime.cs Time forwarding).
 		public TimeState time = TimeState.Defaults();
 
-		// UnityEngine.Random (presentation-only in this game; System.Random deviation, PORTING.md).
+		// UnityEngine.Random (presentation-only in this game; System.Random deviation).
 		public System.Random random = new System.Random(42);
 
 		// Scene-object singletons Unity exposes statically.
@@ -192,7 +192,7 @@ namespace UnityShim
 		// Start runs. Batch = the whole load; behaviours collected depth-first in
 		// root/file order, then STABLE-sorted by script execution order (the game
 		// uses it heavily: FixTransform -80, PlayerBody 2, SlimeController 269...).
-		// All Awakes run in that order, then all OnEnables (see PORTING.md).
+		// All Awakes run in that order, then all OnEnables.
 		public void ActivateLoadedObjects(List<GameObject> newRoots)
 		{
 			var batch = new List<MonoBehaviour>();

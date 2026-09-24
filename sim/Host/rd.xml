@@ -1,11 +1,11 @@
-<!-- NativeAOT reflection roots (AOT spike - sim/Oracle/AOT-SPIKE.md).
+<!-- NativeAOT reflection roots (AOT spike).
      The Export loader activates gameplay/shim types by exported name
      (ExportDatabase.ResolveType -> Activator.CreateInstance) and resolves
      fields/methods by string (PropertyApplier.ResolveMember,
      MonoBehaviour.MessagesFor, PersistentCall.FindMethod), so ILC cannot see
      the reflected members statically. Root both assemblies wholesale; the
      alternative (per-type [DynamicallyAccessedMembers] annotations or a
-     generated dispatch table) is tracked in sim/Oracle/AOT.md. -->
+     generated dispatch table) is tracked in eval/divergence/FIXTURES.md. -->
 <Directives>
   <Application>
     <Assembly Name="Gameplay" Dynamic="Required All" />

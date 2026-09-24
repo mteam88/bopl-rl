@@ -1,0 +1,148 @@
+"""Sweep reporting: results.jsonl, summary.md (table + Pareto front), launch-best.sh.
+
+Regenerated from the persisted sweep state after every trial, so the files are
+always consistent with sweep.json and safe to delete.
+"""
+import json
+import shlex
+import time
+from pathlib import Path
+
+EPSILON = 1e-6
+
+
+def final_point(trial):
+    observations = trial.get('observations') or []
+    return observations[-1] if observations else None
+
+
+def pareto_front(trials):
+    """Non-dominated (cost, score) trials by their final observation."""
+    scored = [(t, final_point(t)) for t in trials]
+    scored = [(t, p) for t, p in scored if p and not t.get('is_failure')]
+    scored.sort(key=lambda item: item[1]['cost'])
+    front = []
+    best = float('-inf')
+    for trial, point in scored:
+        if point['score'] > best + EPSILON:
+            front.append(trial)
+            best = point['score']
+    return front
+
+
+def best_trial(trials):
+    """Highest final score; ties break toward lower cost."""
+    candidates = [(t, final_point(t)) for t in trials]
+    candidates = [(t, p) for t, p in candidates if p and not t.get('is_failure')]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item[1]['score'], -item[1]['cost']))[0]
+
+
+def _format(value):
+    if isinstance(value, float):
+        return f'{value:.4g}'
+    return str(value)
+
+
+def write_reports(sweep_dir, spec, state, pufferlib_dir=None):
+    sweep_dir = Path(sweep_dir)
+    trials = state['trials']
+
+    with (sweep_dir / 'results.jsonl').open('w') as handle:
+        for trial in trials:
+            handle.write(json.dumps(trial, allow_nan=False) + '\n')
+
+    front = pareto_front(trials)
+    front_ids = {t['id'] for t in front}
+    best = best_trial(trials)
+    columns = list(spec.params)
+    lines = [f'# Sweep {spec.name}', '',
+             f"method {spec.method}, scorer {spec.scoring['scorer']}, "
+             f'cost {spec.cost}, downsample {spec.downsample}, '
+             f'max_runs {spec.max_runs}. '
+             f'Updated {time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())}.', '',
+             '| trial | status | ' + ' | '.join(columns) + ' | cost | score | flags | early stop | pareto |',
+             '|' + '---|' * (len(columns) + 7)]
+    for trial in trials:
+        point = final_point(trial)
+        hypers = trial.get('hypers', {})
+        row = [trial['id'], trial.get('status', '?')]
+        row += [_format(hypers.get(name, '')) for name in columns]
+        row += [_format(point['cost']) if point else '-',
+                _format(point['score']) if point else '-',
+                ' '.join(trial.get('flags') or ()),
+                trial.get('early_stop') or '',
+                '*' if trial['id'] in front_ids else '']
+        lines.append('| ' + ' | '.join(row) + ' |')
+    lines.append('')
+    lines.append('Flags describe behaviour (scoring.flags thresholds); they never change the score.')
+    lines += ['', '## Pareto front (cost vs score, final observations)', '']
+    if front:
+        for trial in front:
+            point = final_point(trial)
+            lines.append(f"- {trial['id']}: score {_format(point['score'])} "
+                         f"at cost {_format(point['cost'])}")
+    else:
+        lines.append('- empty (no successful trials yet)')
+    if best:
+        point = final_point(best)
+        lines += ['', f"## Best trial: {best['id']} "
+                      f"(score {_format(point['score'])}, cost {_format(point['cost'])})", '',
+                  '```'] + [f'{name} = {_format(best["hypers"].get(name, ""))}' for name in columns] + [
+                  '```', '', 'Ready-to-run command: `launch-best.sh` beside this file.']
+    (sweep_dir / 'summary.md').write_text('\n'.join(lines) + '\n')
+
+    if best:
+        _write_launch_script(sweep_dir, spec, best, pufferlib_dir)
+
+
+def _write_launch_script(sweep_dir, spec, trial, pufferlib_dir):
+    """A launch-*.sh in the long-run-1b convention for the best configuration."""
+    point = final_point(trial)
+    arguments = spec.trial_arguments(trial['hypers'], '__OUT__', seed=trial.get('seed'))
+    lines = []
+    index = 0
+    while index < len(arguments):
+        argument = str(arguments[index])
+        if argument == '--output':  # the script owns --output via $OUT
+            index += 2
+            continue
+        if (argument.startswith('--') and index + 1 < len(arguments)
+                and not str(arguments[index + 1]).startswith('--')):
+            lines.append(f'{argument} {shlex.quote(str(arguments[index + 1]))}')
+            index += 2
+        else:
+            lines.append(shlex.quote(argument))
+            index += 1
+    flags = ' \\\n  '.join(lines)
+    pythonpath = ''
+    if pufferlib_dir:
+        pythonpath = f'export PYTHONPATH="$PWD/{Path(pufferlib_dir)}"\n'
+    script = f'''#!/usr/bin/env bash
+# Best configuration of sweep {spec.name}: trial {trial['id']}
+# (score {point['score']:.4g} at cost {point['cost']:.4g}; scorer {spec.scoring['scorer']}).
+# Generated by train/sweep/driver.py; edit --steps/OUT for a real run.
+# Launch:
+#   systemd-run --user --unit bopl-{spec.name}-best -p MemoryMax={spec.memory_max} \\
+#     bash native/artifacts/rl/sweeps/{spec.name}/launch-best.sh
+set -euo pipefail
+cd "$(dirname "$0")/../../../../.."
+
+OUT="${{OUT:-native/artifacts/rl/sweeps/{spec.name}/best-run}}"
+STEPS="${{STEPS:-}}"
+{pythonpath}RESUME=()
+if [ -f "$OUT/pool/state.json" ]; then RESUME=(--resume); fi
+EXTRA=()
+if [ -n "$STEPS" ]; then EXTRA=(--steps "$STEPS"); fi
+ulimit -c 0
+
+exec native/artifacts/rl/venv/bin/python train/train.py \\
+  --output "$OUT" "${{RESUME[@]}}" \\
+  {flags} \\
+  "${{EXTRA[@]}}" \\
+  >> "$OUT.log" 2>&1
+'''
+    path = sweep_dir / 'launch-best.sh'
+    path.write_text(script)
+    path.chmod(0o755)

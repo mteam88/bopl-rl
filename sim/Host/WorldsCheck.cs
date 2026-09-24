@@ -10,7 +10,7 @@ using UnityShim;
 namespace BoplSim.Host
 {
 	// Many-worlds determinism check on the managed build (fast to iterate;
-	// the .so path is native/rl/backend_check.c `worlds`):
+	// the .so path is eval/backend_check.c `worlds`):
 	//
 	//   Host worlds [--n 8] [--serial] [--level 1] [--decisions 400] [--abilities 2,4,14] [--rate 32]
 	//

@@ -1,0 +1,96 @@
+# Policy v4 ablation: v4-lite
+#   the within-2x shape: set inner 64, no FFN, critic 384 (still privileged)
+# One 1.73B trial of overnight-9 024's exact recipe (pool v7 625, seed 73) with the
+# policy v4 encoder / decoder and observation layout 4 in place of the v3 set encoder;
+# capacity-h256 (hidden 256, v3) is the width-only control and the 024 seed-floor runs
+# (seeds 74/75/76) give the spread a difference must exceed. Scored on pool v7 (v3
+# opponents through the per-player observation layout) and, in-run, on the held-out
+# maps 3-4 against the scripted bots. Queue order: v4-full, v4-lite, v4-sym-critic, v4-no-relational, v4-no-rays, v4-rays16, v4-critic-shared, v4-maxpool;
+# v4-lite goes first if the smoke measures v4-full above ~2.5x 024's wall time.
+# Flags not listed are layout.V4_DEFAULTS.
+
+[sweep]
+method = "Protein"
+metric = "score"
+goal = "maximize"
+metric_distribution = "linear"
+downsample = 3
+fixed_cost = true
+max_suggestion_cost = 1.75e9
+max_runs = 1
+num_random_samples = 1
+use_gpu = false
+cost = "learner_steps"
+seeds = "fixed"
+concurrency = 1
+
+[trial]
+memory_max = "10G"
+nice = 0
+max_seconds = 21600                # steps stay 1734936776 (the 024 budget); the comparison is at equal steps (every 20M checkpoint), not equal wall time, so full runs are wanted even at 3x
+poll_seconds = 60
+
+[scoring]
+scorer = "reference"
+pool = "native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"
+last_k = 3
+games = 480
+first_pass_games = 6
+band = [0.15, 0.85]
+round_games = 96
+workers = 8
+seed_base = 80001
+
+[scoring.flags]
+no-offense = "arrows_per_game < 0.05"
+platform-spam = "platforms_per_game > 8"
+stalemate = "timeout_rate > 0.5"
+
+[fixed]
+# policy v4, width 256, one MinGRU layer; shape flags below
+encoder = "v4"
+hidden = 256
+layers = 1
+v4_set_inner = 64
+v4_ffn_dim = 0
+v4_critic_dim = 384
+# overnight-9 024, verbatim
+steps = 1734936776
+workers = 128
+buffers = 4
+banks = 4
+seed = 73
+horizon = 128
+learner_passes = 4
+aim_fourier = 4
+learning_rate = 0.0003431012662975937
+entropy = 0.01532588085540654
+entropy_floor = 0.001
+entropy_half_life = 718611646
+entropy_head_scale = "0.028821467398601395,1.5,1"
+entropy_free_rows = 1
+reward_kill = 0.2883693237829292
+reward_timeout = -1
+scripted_roster = "default"
+scripted_banks = 3
+scripted_share_max = 1.0
+scripted_share_min = 0.11048204896277423
+scripted_opponents = "mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard"
+training_maps = [0, 1, 2]
+evaluation_maps = [0, 1, 2]
+heldout_maps = [3, 4]
+episode_ticks = 7200
+checkpoint_every = 20000000
+eval_every = 80000000
+evaluation_games = 8
+heldout_games = 4
+evaluation_workers = 4
+cudagraphs = 1
+
+# sweep_config requires one swept parameter; at its default this is [fixed].learning_rate.
+[params.learning_rate]
+distribution = "log_normal"
+min = 1e-4
+max = 3e-3
+scale = 0.5
+default = 0.0003431012662975937
