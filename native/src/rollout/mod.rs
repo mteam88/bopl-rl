@@ -18621,6 +18621,18 @@ impl RolloutWorld {
         // PlayerBody advance the live ability body later in this pass.
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
+        // Every ThrowItem2 prefab - Mjolnir, Poke ball, Banana peel, Smoke,
+        // Grenade_0 - orders DestroyIfOutsideSceneBounds 5, ThrowItem2 6,
+        // PlayerBody 7, so the boundary component runs ahead of the whole
+        // ability pass, not merely ahead of the integration. On the pass it
+        // fires, ThrowItem2.UpdateSim never runs, so OldUpdate never
+        // republishes the held payload at `dummyPos()` (ThrowItem2.cs:282-292)
+        // and the released item keeps the position it was given on the
+        // previous pass. ThrowItem2.ExitAbility publishes the attached
+        // position without ungrounding (ThrowItem2.cs:199).
+        if self.ability_boundary_kill(index, false) {
+            return;
+        }
         if self.players[index].throw_item.grounded && !self.players[index].base.grounded {
             let slot = &mut self.players[index];
             slot.active = ActiveAbility::None;
@@ -18731,12 +18743,6 @@ impl RolloutWorld {
                 slot.reported_tick = self.tick;
                 return;
             }
-        }
-        // ThrowItem2's DestroyIfOutsideSceneBounds runs after the item logic
-        // and before PlayerBody integrates this pass. ThrowItem2.ExitAbility
-        // publishes the attached position without ungrounding.
-        if self.ability_boundary_kill(index, false) {
-            return;
         }
         if self.players[index].base.grounded {
             // PlayerPhysics.Move(Vec2.zero) consumes the throw recoil while
@@ -18974,6 +18980,7 @@ impl RolloutWorld {
             .is_none()
             .then(|| self.next_id());
         let scale = self.players[index].player_scale;
+        let base_id = self.players[index].base.id;
         let item = &mut self.thrown_items[item_index];
         item.hurt_owner_delay = config.hurt_owner_delay * scale;
         item.body.force += Vec2::UP * (scale * config.min_force * Fix::from_int(60));
@@ -18985,6 +18992,17 @@ impl RolloutWorld {
                 id: item.id,
                 kind: 0,
                 layer: config.item_layer,
+                // Same rule as Fire: Tack's payload binds its Projectile id in
+                // BananaPeel's first updater pass, which a held payload has
+                // already passed through, so the row is owned the moment
+                // ManualInit registers the collider. Mjolnir and Poke ball
+                // gate that pass on the collider existing, so they take the
+                // owner from their own tick later in this same pass instead.
+                owner: if ability == ABILITY_TACK && item.launched {
+                    base_id
+                } else {
+                    0
+                },
                 flags: E_ACTIVE | E_ENABLED,
                 hierarchy: 100_000_000 + item.hierarchy_base + config.item_collider_hierarchy,
                 x: item.position.x.raw(),
