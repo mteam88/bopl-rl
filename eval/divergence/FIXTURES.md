@@ -789,11 +789,10 @@ of maps, and an `entity[].owner` divergence at median tick ~153-273 on every
 pool, masking everything downstream. Confirmed loadout-independent by running
 `DR_POOL=30` against `DR_POOL=2` at `DR_TICKS=56` and `DR_TICKS=120`: identical
 0/124 and 6/124 counts. Those two are open defects in their own right and are not
-part of this audit. The 114-case sweep below found them again from the other
-direction, on 13 bounds cases, where they present as a *permutation* of the
-exported entity rows with a count difference of one in either sign - see class 5
-there, which also corrects the natural first reading that the port simply spawns
-an extra entity.
+part of this audit. The 114-case sweep below reports `header.entity_count` on 13
+bounds cases too, but on the death tick and only for particular kits, so treat it
+as a separate defect with the same field name until something measures the two
+together - see class 5 there.
 
 ## Fixture #8 - Black hole spawned from the wrong pass's body position
 
@@ -892,8 +891,50 @@ says nothing about the 37 abilities whose trajectories it never reads.
 On 2026-09-24, on the build carrying the fixture #8 fix, I ran
 `bounds_case_trace` with `BCT_ALL=1` over all 38 cases x 3 engage heights and
 read every differing field of the first diverging tick. **84 of 114 clean, 30
-divergent.** Those 30 are not 30 defects - they collapse into six classes, and
-only the first three are unexplained work.
+divergent** - and then the 30 turned out to be far better news than the count
+suggests.
+
+### The one fact worth taking away
+
+**Twenty of the thirty diverge on the death tick itself, and nowhere earlier.**
+
+```
+CASE               FIRST DIVERGENCE   DEATH (reference / candidate)
+roll-early         371                371 / 371
+roll-late          367                367 / 367
+roll-brink         367                367 / 367
+smoke-early        465                465 / 465
+smoke-late         393                393 / 393
+smoke-brink        367                367 / 367
+grenade-early      465                465 / 465
+grenade-late       393                393 / 393
+grenade-brink      367                367 / 367
+beam-brink         367                367 / 367
+grapple-early      383                383 / 383
+grapple-late       378                378 / 378
+grapple-brink      367                367 / 367
+missile-early      371                371 / 371
+mjolnir-early      465                465 / 465
+mjolnir-late       393                393 / 393
+poke_ball-early    465                465 / 465
+poke_ball-late     393                393 / 393
+tack-early         465                465 / 465
+tack-late          393                393 / 393
+```
+
+Every one of those twenty runs bit-exact for 367 to 465 ticks, kills at the
+identical tick, and then disagrees about what the death *released*. The
+trajectory is not the problem; the port's fidelity through the flight is better
+than the raw 30/114 reads. What is wrong is one event surface - the objects a
+dying player drops, and the pass whose state they are built from.
+
+Of the remaining ten: three are a spawn-hierarchy counter at tick 0, two are
+`platform` on cases where nobody dies, two are a Rewind timer, and three are
+last-bit noise.
+
+This is also why `bounds-ability-ab` is green on all of it. That gate reads the
+death tick and the death position, both of which match in all twenty; the
+divergence is in the objects published on the same tick.
 
 Per-case logs land in `/tmp/bct-sweep/<case>-<phase>.txt`, which is scratch and
 not committed; the reproduce recipe is at the end of this section.
@@ -959,20 +1000,34 @@ answering once instead of patching a third spawn site.
 1 and port 0, on the released object. A concrete, reproducible instance of the
 `entity[].owner` divergence that fixture #7 records as a general open defect.
 
-### 2. Missile rotation - 1 case
+### 2. Missile - the released object is published a step further on - 1 case
 
-`missile-early`, tick 371, `entity[5]` (layer 10, kind 1): `rotation` off by
-26807145010 = **6.241525 rad**, `vx` by 0.749469, with sub-0.04 residues on
-position and basis. 6.241525 is 2*pi - 0.041660, so read this as an angle that
-wrapped the other way - a normalisation or `atan2` quadrant difference - before
-concluding the motion is wrong. `late` and `brink` are clean, so it only appears
-at the `early` engage height.
+`missile-early`, tick 371, which is its death tick. `entity[5]` (layer 10,
+`kind 1`):
+
+```
+rotation   ref        245213 (0.000057)   cand   26807390223 (6.241525)
+vx         ref       -3538962 (-0.000824) cand    3215404632 (0.748645)
+```
+
+The reference publishes the object essentially at rest and upright; the port
+publishes it rotated -0.041660 rad (6.241525 is 2*pi - 0.041660, so it wrapped)
+and moving at 0.748645. -0.041660 rad in one tick is -2.5 rad/s, an ordinary
+angular velocity. So this reads as the same one-pass difference as class 1, seen
+in velocity and rotation instead of position: the reference publishes the released
+object before anything integrated it, the port after one step. Consistent with,
+not proof of - I have not traced the missile's release site.
+
+`late` and `brink` are clean, so it needs the `early` engage height.
 
 ### 3. Rewind's slime timer, exactly one tick - 2 cases
 
 `rewind` on `early` and `late`: two `slime[0].timers[]` entries off by 71582788 =
 **0.016667 = 1/60 exactly**. A timer started or decremented one pass apart.
-Positions never diverge, so nothing downstream has consumed it yet.
+Positions never diverge, so nothing downstream has consumed it yet. Nobody dies in
+these two cases (`death reference 0 candidate 0`), and the divergence appears at
+450 and 465 against an engage at 348, so this one is genuinely mid-flight and not
+part of the death-tick group.
 
 ### 4. Spawn-hierarchy counter off by one or two - 5 cases
 
@@ -986,17 +1041,18 @@ entity[5].hierarchy  ref 100000029  cand 100000030
 entity[6].hierarchy  ref 100000039  cand 100000041
 ```
 
-plus `platform` on `early` and `late`, one field each. Nothing else differs,
+plus `platform` on `early` and `late`, one field each - and nobody dies in those
+two, so they are not death-tick cases either. Nothing else differs,
 positions included, so `next_spawn_hierarchy` advances by a different amount for
 these prefabs. Do not file it as cosmetic: `Updater` orders a registration batch
 by `hierarchyNumber` (`Updater.cs:271`), which makes this the input to every
 ordering defect in this file - fixtures #6 and #8 both. On these cases it has not
 yet changed an outcome.
 
-### 5. Entity-pool permutation with +-1 count - 13 cases, and it is the known pair
+### 5. A different number of objects released by the death - 13 cases
 
 The `{3, 13, 16}` kit (Grenade, Smoke, Roll) in all three slot orders x 3 phases,
-plus `beam-brink`, plus `grapple` x 3.
+plus `beam-brink`, plus `grapple` x 3. All thirteen fire on the death tick.
 
 I first read this as "the port spawns an extra entity", and that is wrong.
 `beam-brink` has `header.entity_count` ref 10 / cand 9 while `smoke` and
@@ -1004,25 +1060,34 @@ I first read this as "the port spawns an extra entity", and that is wrong.
 not shifted, they are **permuted**: `grenade-late` rows 3, 4, 5 carry
 `source_ability` 0, 3, 13 in the reference and 13, 0, 3 in the port, the same
 objects in a different order, several with `owner` swapped 2/0. Exported rows are
-a reused pool, so row order is the pool's allocation history. A permutation plus
-a count difference of one is that history diverging - which is the
-`header.entity_count` and `entity[].owner` pair recorded under fixture #7 as the
-reason `divergence_rate` is too noisy to be a fine instrument.
-The 76 to 82 "differing fields" are one diverging allocation counted once per
-field of every row it displaced, which is exactly the inflation `dr_report_all`
-was built to make visible rather than to hide.
+a reused pool, so row order is the pool's allocation history; a permutation plus a
+count difference of one is that history diverging on the tick of the death. The
+76 to 82 "differing fields" are one diverging allocation counted once per field of
+every row it displaced, which is exactly the inflation `dr_report_all` was built
+to make visible rather than to hide.
+
+**This is probably not the `header.entity_count` defect fixture #7 records**, and
+I should not have written that it was. That one fires at ticks 57-112 on ~5% of
+maps and was measured loadout-independent (`DR_POOL=30` against `DR_POOL=2`,
+identical 0/124 and 6/124). These thirteen fire on the death tick and only for
+particular kits. Same field, different defect, until something measures them
+together.
 
 `grapple` is the same kit as `beam` (`{27, 28, 9}` against `{28, 27, 9}`) and
 shows only a tail of it: 11 to 39 rope-node rows (`kind 3`, `layer 0`,
 `owner 1`) where `flags` is 35 in the reference and 3 in the port. 35 - 3 = 32,
 one bit, set on every node and on no other field, so it is a single per-node flag
-the port never sets - worth fixing on its own and independent of the permutation.
+the port never sets on the tick the rope's owner dies - worth fixing on its own
+and independent of the permutation.
 
 ### 6. Last-bit noise, not defects - 3 cases
 
 `meteor` early and late (`entity[4].x`, `.y`) and `meteor-brink`
 (`player[0].x`, `.y`): gap of **exactly 1 raw unit**. Recorded so nobody spends a
-day on them.
+day on them. Worth noting that `meteor-early` and `meteor-late` first differ at
+348 and 363 while the death is at 469 and 484 - a last-bit residue that rides a
+hundred ticks without growing is itself evidence the fixed-point arithmetic is
+sound.
 
 ### Reproduce
 
