@@ -37,8 +37,8 @@ class LineupReport(unittest.TestCase):
         rows = lineup_report.lineup_rows(report(self.ROWS))
         self.assertEqual(sorted(rows), [('16,3,13', 'random'), ('16,3,13', 'scripted'),
                                         ('2,4,14', 'random'), ('2,4,14', 'scripted')])
-        self.assertEqual(rows[('2,4,14', 'scripted')], dict(games=1, wins=1, timeouts=0))
-        self.assertEqual(rows[('16,3,13', 'scripted')], dict(games=1, wins=0, timeouts=0))
+        self.assertEqual(rows[('2,4,14', 'scripted')], dict(games=1, wins=1, timeouts=0, undecided=0))
+        self.assertEqual(rows[('16,3,13', 'scripted')], dict(games=1, wins=0, timeouts=0, undecided=0))
 
     def test_asymmetric_episodes_keep_both_halves(self):
         rows = lineup_report.lineup_rows(report([[[2, 4, 14], [16, 3, 13]]]))
