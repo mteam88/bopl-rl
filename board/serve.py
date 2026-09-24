@@ -508,9 +508,9 @@ def opponent_distribution(directory):
         'pfsp_f': 'var' if hopeless else 'hard',
         # Intended is a wish; drawn is every PFSP draw the run ever made; the
         # bars above are games. All three collapse differently, so show all three.
-        'pfsp_divergence': pfsp.divergence(intended, drawn),
+        'pfsp_divergence': pfsp.divergence(intended, drawn) if pool.get('picks') else None,
         'pfsp_intended_entropy': pfsp.entropy(intended),
-        'pfsp_drawn_entropy': pfsp.entropy(drawn),
+        'pfsp_drawn_entropy': pfsp.entropy(drawn) if pool.get('picks') else None,
         'pfsp_draws': len(pool.get('picks') or []),
         'snapshot_interval': pool.get('snapshot_interval') or policy.get('snapshot_interval'),
         'events': dict(events),

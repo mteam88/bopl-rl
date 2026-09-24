@@ -189,18 +189,24 @@ def _saturation(pool, ledger, table):
     total = sum(row['games'] for row in ledger.values())
     played = {path: (row['games'] / total if total else 0.0) for path, row in ledger.items()}
     ranked = sorted(played.values(), reverse=True)
+    # Before the first draw, and before the first game, the realized
+    # distributions are empty rather than collapsed. Reporting 0 entropy and a
+    # 0.5 divergence there would read as a saturated pool for the opening
+    # stretch of every run, so those are null until there is a sample.
+    drawn, staked = bool(pool['picks']), bool(total)
     return dict(p=pool['pfsp_p'], f='var' if used_f_var else 'hard', candidates=len(paths),
                 draws=len(pool['picks']), games=total,
                 intended=weights, realized=observed, played=played,
                 # Intended is what the pool wants NOW; realized is every draw it
                 # ever made. A pool whose intention keeps saying "spread" while
                 # the draws keep landing on two members holds this high.
-                divergence=pfsp.divergence(weights, observed),
-                entropy=dict(intended=pfsp.entropy(weights), realized=pfsp.entropy(observed),
-                             played=pfsp.entropy(played)),
+                divergence=pfsp.divergence(weights, observed) if drawn else None,
+                entropy=dict(intended=pfsp.entropy(weights),
+                             realized=pfsp.entropy(observed) if drawn else None,
+                             played=pfsp.entropy(played) if staked else None),
                 # The blunt collapse signature: games share of the top two
                 # opponents, and how many distinct opponents the banks serve.
-                played_top2=sum(ranked[:2]),
+                played_top2=sum(ranked[:2]) if staked else None,
                 serving=len({bank['cur_opp_path'] for bank in pool['banks']}))
 
 

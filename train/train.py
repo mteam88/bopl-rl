@@ -965,16 +965,18 @@ def main():
                     events.write(json.dumps(event, allow_nan=False)+'\n')
                 events.flush()
                 saturation = after_pool['pfsp']
+                # Null until the pool has drawn/played anything; see _saturation.
+                digits = lambda value: None if value is None else round(value, 3)
                 console = dict(step=record['step'], learner_steps=record['learner_steps'],
                                learner_sps=record['learner_sps'], matches=record['matches'],
                                pool=after_pool['size'],
                                # The saturation line: how concentrated the curriculum
                                # actually is, next to what the pool currently intends.
                                pfsp=dict(f=saturation['f'], serving=saturation['serving'],
-                                         top2=round(saturation['played_top2'], 3),
-                                         played_entropy=round(saturation['entropy']['played'], 3),
-                                         intended_entropy=round(saturation['entropy']['intended'], 3),
-                                         divergence=round(saturation['divergence'], 3)))
+                                         top2=digits(saturation['played_top2']),
+                                         played_entropy=digits(saturation['entropy']['played']),
+                                         intended_entropy=digits(saturation['entropy']['intended']),
+                                         divergence=digits(saturation['divergence'])))
                 if roster_entries:
                     console['scripted'] = dict(
                         share=round(share, 3),

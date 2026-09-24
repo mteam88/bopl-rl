@@ -283,6 +283,17 @@ class Saturation(PoolHarness):
         self.assertEqual(series, sorted(series), f'divergence must not fall as draws collapse: {series}')
         self.assertGreater(series[-1] - series[0], 0.5)
 
+    def test_an_unsampled_pool_reports_null_not_a_collapsed_one(self):
+        # Zero games and zero draws is "unknown", and 0 entropy / 0.5 divergence
+        # would read as a saturated pool for the opening stretch of every run.
+        fresh = self.summary()['pfsp']
+        self.assertIsNone(fresh['divergence'])
+        self.assertIsNone(fresh['entropy']['realized'])
+        self.assertIsNone(fresh['entropy']['played'])
+        self.assertIsNone(fresh['played_top2'])
+        self.assertEqual((fresh['draws'], fresh['games']), (0, 0))
+        self.assertIsNotNone(fresh['entropy']['intended'], 'the intention is known from the start')
+
     def test_serving_counts_distinct_opponents_across_banks(self):
         other = self.add_member('other.bin')
         summary = self.summary()

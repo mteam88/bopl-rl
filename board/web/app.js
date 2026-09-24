@@ -509,9 +509,10 @@
       + stat("Live pool never played", `${o.live_unplayed ?? "—"} / ${o.live ?? "—"}`,
         o.live_unplayed ? "these are in the pool but contribute nothing" : "every live member is being played")
       + stat("Top 4 share", pct(o.top_share, 1), "of all games")
-      + stat("Intended vs drawn", (o.pfsp_divergence ?? 0).toFixed(3),
+      + stat("Intended vs drawn", o.pfsp_divergence == null ? "—" : o.pfsp_divergence.toFixed(3),
         "total variation — 0 is the pool getting the curriculum it asked for")
-      + stat("Draw entropy", `${(o.pfsp_drawn_entropy ?? 0).toFixed(2)} / ${(o.pfsp_intended_entropy ?? 0).toFixed(2)}`,
+      + stat("Draw entropy",
+        `${o.pfsp_drawn_entropy == null ? "—" : o.pfsp_drawn_entropy.toFixed(2)} / ${(o.pfsp_intended_entropy ?? 0).toFixed(2)}`,
         "realized vs intended, nats — a collapsing pool loses the left number first")
       + stat("Scripted realized", pct(o.scripted_realized_lifetime, 1), "lifetime")
       + stat("Scripted intended", pct(o.scripted_intended_final, 1), "final value — adaptive, not a lifetime target");

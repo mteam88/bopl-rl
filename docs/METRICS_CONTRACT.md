@@ -96,12 +96,22 @@ Required (all currently written by `train.py`):
   PFSP draw the run ever made; `played` is the share of games actually played,
   restricted to live members with the evicted remainder in `played_evicted`.
   `divergence` is the total variation distance between `intended` and
-  `realized`. `played_top2` is the games share of the two most-played
+  `realized`. `divergence`, `entropy.realized`, `entropy.played` and
+  `played_top2` are **null until there is a sample** — before the first draw
+  and the first game those distributions are empty, not collapsed, and a
+  confident 0 there would read as saturation for the opening stretch of every
+  run. `played_top2` is the games share of the two most-played
   opponents and `serving` the number of distinct opponents the banks currently
   hold — a pool collapsing onto two opponents shows up as `played_top2` near 1,
   `entropy.played` falling toward ln 2, `serving` below the bank count, and a
   `divergence` that stays high while `entropy.intended` still looks healthy.
   The same numbers are on the per-update console line under `pfsp`.
+
+  `python -m league status --run <run>` feeds the same realized distribution
+  (pool ledger plus scripted roster, by games played) into
+  `league/rating.saturation`'s `opponent_shares`, which fills
+  `opponent_entropy` / `opponent_entropy_max` / `opponent_top_share`. Without
+  `--run` that field stays None: unrecorded, not a confident zero.
 
   `<run>/pool.jsonl` holds the corresponding events (`snapshot`, `evicted` with
   lifetime stats, `armed` with the `score` that freed the slot, `loaded` with
