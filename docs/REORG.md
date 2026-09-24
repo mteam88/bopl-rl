@@ -149,8 +149,10 @@ tree - see "What does not move" below for why.
 
 1. ~~The reorg itself: move to the layout above, execute the deletion
    inventory.~~ **Done 2026-09-24**, merged `c2293d22`, pushed `654dd50e`.
-2. PFSP into the trainer, replacing the old opponent selection. *In progress.*
-3. Minimal surgery. *In progress.*
+2. ~~PFSP into the trainer, replacing the old opponent selection.~~
+   **Done 2026-09-24**, merged `2604ca85`.
+3. ~~Minimal surgery.~~ **Done 2026-09-24**, merged `6b88b84f` as
+   `train/surgery.py`.
 
 Then the first generalist run over randomised loadouts, the first random-init
 exploiter, and time-to-exploit as the headline metric. The board already reports
@@ -174,6 +176,40 @@ A gate result nobody forced a rebuild for is not evidence.
 | `map-sweep-3000` | 417,009 snapshots, 0 nonexact |
 | `map-sweep-endgame` | 801,501 snapshots, 0 nonexact |
 | `rust-ab-suite` | `pass=211 fail=0 skipped=4` |
+
+### What PFSP and surgery each turned up
+
+Neither landed as a clean drop-in, and both times the obstacle was worth more
+than the feature.
+
+**PFSP exposed a defect in the statistic it was about to consume.**
+`hist_score_bank` accumulated `o.won`, which is gated on `decided`, so an
+undecided round counted as a **loss** in the numbers that choose opponents -
+while the scripted-roster accumulator three lines above it deliberately excluded
+undecided rounds, with a comment saying so. `f_hard(x) = (1-x)^p` would have read
+a draw-heavy matchup as a hard one and spent CPU on it. A new `hist_decided_bank`
+counter now lets python recover wins, losses and draws exactly. The reward is
+untouched: an undecided round still pays -1.0 to everyone in it. A timeout is
+counted as a draw in the opponent statistic rather than excluded, which is a
+semantic choice and easily revisited - the counters support either reading.
+
+Removing the online Elo also turned out to reach further than the trainer: the
+pool's Elo was doubling as the scripted roster's learner anchor, so the roster
+now rates its bots against a fixed learner origin. And the saturation telemetry
+had somewhere to go already - `league/rating.py:saturation(opponent_shares=...)`
+and `board/serve.py:opponent_distribution` were both written and neither had
+ever been fed, which is why the board's saturation panel was permanently dark.
+
+**Surgery was harder than the file that describes the weights suggests.**
+`layout.policy_v4_tensors` gives a named segmentation of the flat blob, but v4
+weight *axes* are concatenations: mingru rows are three stacked gates, fusion
+columns are `[flat, four x (max || mean)]`, `critic_in` columns are `[trunk,
+privileged]`, actor rows are `[aim, buttons, hold]`. Copying `old[:rows, :cols]`
+lands the highway gate on the update gate and slides privileged inputs into the
+trunk - a checkpoint that loads, runs, and is quietly wrong. `eval/policy_v4.py`,
+the torch reference forward pass, is the authority on what an axis means;
+`layout.py` only says where the tensor sits. Identity surgery reproduces its
+source byte for byte, which is the cheap test that catches any offset error.
 
 `Tools/` was relinked afterwards (`ea57067d`): it had eight dead `native/rl/...`
 references and was skipped during the move because the "do not touch" rule was
