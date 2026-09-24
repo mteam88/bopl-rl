@@ -85,8 +85,9 @@ Deleting is most of the work. Verified dead, to be removed as the reorg lands:
   approaches that were abandoned, carried version numbers in their names, or
   recorded one-off spikes and reviews that had already landed. Six documents
   survive, and each is either a live contract or actively used:
-  `REORG.md` (this file), `rl/README.md`, `league/README.md`,
-  `eval/METRICS_CONTRACT.md` (asserted by `check_routing.py`),
+  `docs/REORG.md` (this file), `docs/README.md`, `docs/LEAGUE.md`,
+  `docs/METRICS_CONTRACT.md` (the observation/reward field contract - prose
+  only, nothing asserts it in code),
   `eval/divergence/FIXTURES.md` (open defects and their repro recipes),
   `eval/rust_ab/README.md` (the probe suite behind `rust-ab-suite`).
 
@@ -125,7 +126,7 @@ tree - see "What does not move" below for why.
 | `sim/abi/bopl_rl.c`, `sim/abi/bopl_rl.h` | `sim/abi/` - the C ABI both backends sit behind, so it belongs with the simulator rather than with either consumer |
 | `Makefile` | `Makefile` at the repo root, so the command is `make ability-sweep`, not `make -C native/rl ability-sweep` |
 | the six surviving docs | `docs/` |
-| `native/rl/autoresearch/` | deleted - accretion era. `check_routing.py` and `smoke.py` reference it and must be repointed, and `.gitignore` needs the entry dropped |
+| `native/rl/autoresearch/` | deleted - accretion era. `check_routing.py` and `smoke.py` were repointed and the `.gitignore` entry dropped |
 
 `native/rl/` should not exist when this is done.
 

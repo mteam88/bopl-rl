@@ -395,3 +395,34 @@ must come back perfectly identical.
 **AOT residual risk in the coordinator.** Serialized `List<T>` fields without
 inline initializers, on maps and loadouts not yet exercised, may need `rd.xml`
 entries. A serialized-field scan that generates `rd.xml` would close it.
+
+**Six latent trajectory divergences in `bounds-ability-ab`, five of them
+invisible until 2026-09-24.** The gate has always reported them - the case table
+marks Black hole and Gust `known_trajectory_divergence` and prints without
+failing, because the probe's subject is *when the boundary kills*, not the
+trajectory into it. What hid them was a stale binary: `native/artifacts/rl/` is
+gitignored, `make` compares mtimes, and the compiled gate was older than its
+committed source, so it printed 24 ability lines and 1 divergence where the
+rebuilt gate prints 114 and 6. The summary line is identical either way
+(`cases=38 water=-11.3 survivors=4`), so nothing looked wrong. Rebuilt on
+`c2293d22`:
+
+```
+early blackhole  reference 404 (-36.1894,-11.3380) | rust 404 (-36.7478,-11.3380)
+early gust       reference 400 (-36.1016,-11.7544) | rust 400 (-36.1999,-11.7727)
+late  blackhole  reference 391 (-41.0446,-11.3957) | rust 391 (-41.4578,-11.3957)
+late  gust       reference 395 (-40.9649,-11.5982) | rust 394 (-41.0592,-11.3426)
+brink blackhole  reference 367 (-42.2811,-11.6208) | rust 368 (-42.2970,-11.6558)
+brink gust       reference 367 (-42.2811,-11.6208) | rust 385 (-42.3677,-11.6709)
+```
+
+Black hole matches the source comment: y is bit-identical in all three phases and
+the kill tick matches in two, with x drifting 0.4-0.56 world units. **Gust does
+not.** The comment says the port "crosses the plane one tick early", which
+describes `late` only; on `brink` the port survives **18 ticks longer** than the
+reference (367 vs 385) - fifty times the documented gap, in the opposite
+direction. That phase starts the form already at the boundary, so a small arc
+difference decides whether it clears the plane at all rather than when. Worth
+confirming against `QuickSpell`'s C# before anyone calls the boundary work
+finished; it is the one case here where the port is not merely imprecise but
+takes a different outcome path.

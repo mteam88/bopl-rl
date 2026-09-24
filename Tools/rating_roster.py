@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write a .roster for a human rating session (Tools/play-vs-agent-mac.sh <roster>).
 
-The shim (native/rl/puffer/bopl_agent.h) draws one roster member per round,
+The shim (train/bopl_agent.h) draws one roster member per round,
 so ~100 rounds against this file spread over the pool and every round is a
 Bradley-Terry observation of the human against a rated opponent. Members are
 the pool's scripted bots (minus search-*, which the shim cannot run) and its
@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT / 'native/rl/sweep'), str(ROOT / 'native/rl/research')]
+sys.path[:0] = [str(ROOT / 'train/sweep'), str(ROOT / 'eval')]
 import reference_pool  # noqa: E402
 
 DEFAULT_MAC_ROOT = '/Users/mte/Documents/Coding/bopl-re/ripped/ExportedProject'

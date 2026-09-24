@@ -1,6 +1,6 @@
 #!/bin/bash
 # Play the real Unity game against a trained policy or a scripted bot
-# (native/rl/PLAY_UNITY.md).
+# through the libbopl_agent.so shim Unity loads in place of a human controller.
 #
 #   Tools/play-vs-agent.sh <policy-*.bin | mixed-v2-hard | ... | <name>.roster> [--seed N] [--headless [:DISPLAY]]
 #   Tools/play-vs-agent.sh                      # default agent (see below)
@@ -68,7 +68,7 @@ esac
 if pgrep -f 'BoplBattle\.x86_64' >/dev/null; then echo "BoplBattle is already running; not launching a second instance" >&2; exit 3; fi
 
 # The agent shim: build if missing, then place it where Mono's DllImport("bopl_agent") looks.
-[ -f "$LIB" ] || make -C "$ROOT/native/rl" agent >/dev/null || { echo "could not build libbopl_agent.so" >&2; exit 2; }
+[ -f "$LIB" ] || make -C "$ROOT" agent >/dev/null || { echo "could not build libbopl_agent.so" >&2; exit 2; }
 mkdir -p "$BUILD/BoplBattle_Data/Plugins/x86_64"
 cp -f "$LIB" "$BUILD/BoplBattle_Data/Plugins/x86_64/libbopl_agent.so"
 export LD_LIBRARY_PATH="$BUILD/BoplBattle_Data/Plugins/x86_64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

@@ -11,7 +11,7 @@
 # BOPL_AGENT_RESULTS contract with RlAgent.cs, same result archive
 # (Tools/play_vs_agent_results.py -> native/artifacts/rl/human). Differences:
 # the game is Builds/macOS/BoplBattle.app (just sync-mac + just build-mac on
-# the PowerSpec), the shim is libbopl_agent.dylib (`make -C native/rl agent-mac`,
+# the PowerSpec), the shim is libbopl_agent.dylib (`make agent-mac`,
 # built here with clang) placed in the bundle's Contents/Plugins, and the
 # game is launched with `open -n --env` so it runs in the GUI session (controller
 # input) with the environment intact.
@@ -48,7 +48,7 @@ esac
 # `open` would only focus a running copy; a second exec'd instance would fight over the save dir.
 if pgrep -x BoplBattle >/dev/null; then echo "BoplBattle is already running; quit it first" >&2; exit 3; fi
 
-[ -f "$LIB" ] || make -C "$ROOT/native/rl" agent-mac >/dev/null || { echo "could not build libbopl_agent.dylib" >&2; exit 2; }
+[ -f "$LIB" ] || make -C "$ROOT" agent-mac >/dev/null || { echo "could not build libbopl_agent.dylib" >&2; exit 2; }
 mkdir -p "$APP/Contents/Plugins"
 cp -f "$LIB" "$APP/Contents/Plugins/libbopl_agent.dylib"
 codesign -s - -f "$APP/Contents/Plugins/libbopl_agent.dylib" 2>/dev/null
@@ -64,7 +64,7 @@ export BOPL_AGENT=$AGENT BOPL_AGENT_SEED=$SEED BOPL_AGENT_RESULTS=$RESULTS BOPL_
 # ids, a named map set, or a campaign role. map_set.py validates/translates the
 # selection; the identity-124 catalogue maps every RL id 0-123 to the same level.
 if [ -n "$MAPS" ]; then
-  LEVELS=$("$PYTHON" "$ROOT/native/rl/research/map_set.py" levels "$MAPS") || { echo "bad --maps $MAPS" >&2; exit 2; }
+  LEVELS=$("$PYTHON" "$ROOT/eval/map_set.py" levels "$MAPS") || { echo "bad --maps $MAPS" >&2; exit 2; }
   export BOPL_LEVEL_SET=$LEVELS
 fi
 echo "agent $AGENT  seed $SEED  maps ${MAPS:-all}${LEVELS:+ (levels $LEVELS)}  results $RESULTS"
