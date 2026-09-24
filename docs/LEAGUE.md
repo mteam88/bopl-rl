@@ -131,3 +131,45 @@ The single-population "Nash value" `n·A·nᵀ` is identically zero for any
 antisymmetric `A`, so it is not a readout; `rate` prints it only as an identity.
 The scalar that carries information is RPP between two *different* populations —
 here, the learned members against the scripted/random anchors.
+
+## State of the league, measured 2026-09-24
+
+Condition `sim9f60ac37.lineups-8.map012.t7200.d9`, 18 rated members (9 scripted,
+8 specialist, random), 153/153 pairs, 7344 games, 48 per pair.
+
+**The league is degenerate as a curriculum: one scripted bot is the whole
+equilibrium.** `search-hard` takes Nash mass 1.000, support is 1 of 18 members and
+entropy 0.00 of a possible 2.89 nats. Every other member has negative Nash value,
+from -0.250 (`grapple-beam-rock`) to -0.458 (`random`). Elo agrees and the
+intervals do not overlap: `search-hard` 497 [461, 538] against 261 [228, 296] for
+the best specialist.
+
+It is not close pairwise either. `search-hard`'s own draw-aware score rate is at
+or above 0.750 against all seventeen opponents, best resistance `grapple-beam-rock`
+at 0.250, worst `teleport-mine-tesla` at 0.062. **No learned specialist beats the
+best scripted bot**, and RPP has the learned population's equilibrium mixture
+scoring 0.250 against the scripted/random anchors' — the scripted side is
+currently the stronger population.
+
+Three things follow.
+
+- **The first exploiter should target `search-hard`.** It is the only member the
+  equilibrium plays, so beating it is the only way to move the mixture; and it is
+  a scripted bot, so the exploit is a policy question rather than a checkpoint
+  quirk.
+- **Adding more members will not help until one of them beats it.** A pool whose
+  equilibrium is a single strategy gives PFSP nothing to mix, so opponent sampling
+  collapses to that one bot however many members are registered. This is the
+  saturation Matthew has already seen once.
+- **This is measured on 3 maps of 124.** The condition tag `map012` is the map
+  set 0, 1, 2 (`registry.condition` joins the sorted ids), with one lineup set.
+  Dominance on three maps is not dominance in general, and the generalization axis
+  is maps, so the honest reading is "degenerate on the condition we have rated".
+  `league play --maps` writes a separate condition per map set and counts are never
+  pooled across them, so widening the map set is the cheapest way to find out
+  whether `search-hard` dominates everywhere or only here.
+
+`duplicator-blink-blackhole` and `dash-missile-platform` sit near the bottom, which
+is expected: both lost a boundary-leaving exploit to the 2026-09-23 fidelity fixes
+and are pending retrain. Their ratings here were measured post-fix and are honest,
+so the degeneracy is not an artifact of carrying them.
