@@ -1320,14 +1320,21 @@ comment - "GunTransform's DestroyIfOutsideSceneBounds runs after the fire test"
 boundary is 6. The ThrowItem2 comment looks like that one copied to a prefab
 where it does not hold.
 
+Read the pairs below as `boundary/ability`, always in that order, never as
+"smaller first" - the two lists run in opposite directions and a bare inequality
+is exactly the ambiguity that produced this bug. Spot-checked against the prefab
+YAML by resolving guid `6e66898249f8b2c751f742b36806036a`: Gust boundary 4,
+Roll boundary 5, Meteor boundary 5, all three as listed.
+
 Forms where the boundary runs **before** the ability script, i.e. where the
 port's kill must come first: Mjolnir/Poke ball/Banana peel/Smoke/Grenade_0
-(5 < 6, fixed here), Black hole (5 < 6), Bow (5 < 6), Mine (5 < 6),
-Missile (5 < 6), Gust (4 < 6), Engine (4 < 6), Push (4 < 6), Spike (4 < 6),
-Revival (4 < 6), Tesla coil (4 < 6), Throw (5 < 8), Beam (4 < 8), Drill (3 < 7).
+(5/6, fixed here), Black hole (5/6), Bow (5/6), Mine (5/6), Missile (5/6),
+Gust (4/6), Engine (4/6), Push (4/6), Spike (4/6), Revival (4/6),
+Tesla coil (4/6), Throw (5/8), Beam (4/8), Drill (3/7).
 
-Forms where it runs after: the six guns above, plus Meteor (3 < 5),
-Platform (2 < 5), Roll (4 < 5), Time stop (1 < 5), Dash (1 < 5).
+Forms where it runs **after**, i.e. where the ability's own update must run
+first: the six guns above (6/2), plus Meteor (5/3), Platform (5/2), Roll (5/4),
+Time stop (5/1), Dash (5/1).
 
 **Sweep class 2, `missile-early`, is almost certainly this same defect and is
 deliberately left unfixed here.** `Missile.prefab` is DestroyIfOutsideSceneBounds
