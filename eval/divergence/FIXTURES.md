@@ -898,26 +898,66 @@ only the first three are unexplained work.
 Per-case logs land in `/tmp/bct-sweep/<case>-<phase>.txt`, which is scratch and
 not committed; the reproduce recipe is at the end of this section.
 
-### 1. One-pass skew on a held item - 6 cases, and the real find
+### 1. The dying player's released ability object spawns a pass late - 6 cases
 
 `mjolnir`, `poke_ball`, `tack`, each on `early` and `late`. The diverging row is
-a layer-10 (item) entity, `kind 0`, `owner 1`, `flags 2307`, and the gaps are
-**byte-identical across all three kits**:
+a layer-10 (item) entity, `kind 0`, `flags 2307`, appearing on the death tick
+itself, and the gaps are **byte-identical across all three kits**:
 
 ```
 early   entity[].x gap 136079760 (0.031684)   entity[].y gap 545057382 (0.126906)
 late    entity[].x gap 136006159 (0.031666)   entity[].y gap 348763201 (0.081203)
 ```
 
-Mjolnir is `{37, 32, 36}` (Mjolnir, Web swing, Freeze ray) and shares no ability
-with Poke ball `{33, 2, 14}` or Tack `{35, 2, 14}`, so the object cannot be any
-of their projectiles - it is the same scene item in each case, and it is one pass
-out of step with the body it is attached to.
+I first read the identical gaps as evidence of a single shared scene item, since
+Mjolnir is `{37, 32, 36}` and shares no ability with Poke ball `{33, 2, 14}` or
+Tack `{35, 2, 14}`. That was wrong, and `BCT_DUMP_ALL=1` says so: the object is
+kit-specific, radius 0.55 for Mjolnir, 0.93 for Poke ball, 0.50 for Tack, with
+Tack alone carrying `rot 0.066667`. It is each ability's own object, released
+when the ability exits because its holder died. The gaps agree only because all
+three kits die at the same tick, so "one tick of that player's motion" is the
+same number in each - which is the useful part of the finding, not the
+coincidence.
 
-The y gap, 0.081203, is one tick of the caster's fall at that height. Fixture #8
-measured 0.082048 at tick 364 and 0.085823 at 379 for the same reason. This is
-the generalisation fixture #8 asked the next person to check for, and it is real:
-three unrelated kits cannot agree to the raw unit by coincidence.
+The spawn position is the one that is stale. At `early`, player 0 is at
+(-39.939071, -11.182124) on tick 464 and (-39.970754, -11.309030) on 465, the
+tick it dies. Every release offset is a fixed vector from a body position -
+(1.7, 1.068889) for Mjolnir, (1.7, 0.968889) for the other two - and:
+
+```
+reference   -38.239071  =  -39.939071 + 1.7    the tick-464 position
+candidate   -38.270754  =  -39.970754 + 1.7    the tick-465 position
+```
+
+So the reference releases from the body position *before* this pass integrated it
+and the port releases from the position after. Two candidate C# sites both read
+`body.position` and both fire on a death: `SlimeController.cs:302`, which drops
+the slot's `abilityPickupPrefab` as a `DynamicAbilityPickup` (kit-specific, which
+fits the differing radii), and `PlayerCollision.cs:117-127`, whose
+`AbilityExitInfo { position = body.position, isDead = true }` reaches the ability.
+The kill itself is `DestroyIfOutsideSceneBounds` (cause 5,
+`DestroyIfOutsideSceneBounds.cs:129-141`), and on `Player.prefab` that component
+is `hierarchyNumber` 4 while `PlayerBody` is 5 - **the boundary component runs
+before the body moves**, which is a mechanism for reading a pre-integration
+position without any extra pass of history.
+
+What I have *not* explained, and whoever fixes this should: the offset from the
+player row is (1.7, 1.068889) for Mjolnir and (1.7, 0.968889) for the other two.
+If both kits released from the same `body.position` the y offsets would agree, so
+either the exported player row is not the body that drops the pickup - the row
+carries `owner 1` while the case's other entities carry `owner 2` - or there is a
+second per-ability offset. Pin the site before changing it; do not assume it is
+the same call fixture #8 patched.
+
+Either way this is the same class as fixture #8, reached from a different ability
+and a different spawn site, and it reframes the question that fixture left open:
+not "why is Black hole one pass ahead" but "does this port integrate the body
+earlier in the pass than the prefab ordering says it should". That is worth
+answering once instead of patching a third spawn site.
+
+`tack` carries one extra field the other two do not: `entity[1].owner`, reference
+1 and port 0, on the released object. A concrete, reproducible instance of the
+`entity[].owner` divergence that fixture #7 records as a general open defect.
 
 ### 2. Missile rotation - 1 case
 
