@@ -30,6 +30,7 @@ import numpy as np  # noqa: E402
 import registry  # noqa: E402
 import pfsp  # noqa: E402
 import rating  # noqa: E402
+import map_catalogue  # noqa: E402
 
 SIM = ROOT / 'native/target/release/libbopl_sim.so'
 SWEEPS = ROOT / 'native/artifacts/rl/sweeps'
@@ -515,7 +516,11 @@ def main(argv=None):
 
     play = sub.add_parser('play', help='play matchups and append aggregated counts')
     play.add_argument('--members', default='all')
-    play.add_argument('--maps', type=lambda s: [int(x) for x in s.split(',')], default=[0, 1, 2])
+    play.add_argument('--maps', type=map_catalogue.parse_map_ids, default=[0, 1, 2],
+                      help='identity IDs, inclusive ranges, all, or a named set from '
+                           'native/data/map-sets.json (heldout-13, training-111). Every (map, lineup) '
+                           'cell is played for every pair, so the map count multiplies the bill: 13 maps '
+                           'and 8 lineups at the default 2 games per cell is 208 games per pair.')
     play.add_argument('--games-per-cell', type=int, default=2,
                       help='side-swapped games per (map, lineup) cell; must be even')
     play.add_argument('--own-kit', action='store_true',
