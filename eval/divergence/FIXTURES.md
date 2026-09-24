@@ -982,19 +982,41 @@ is `hierarchyNumber` 4 while `PlayerBody` is 5 - **the boundary component runs
 before the body moves**, which is a mechanism for reading a pre-integration
 position without any extra pass of history.
 
-What I have *not* explained, and whoever fixes this should: the offset from the
-player row is (1.7, 1.068889) for Mjolnir and (1.7, 0.968889) for the other two.
-If both kits released from the same `body.position` the y offsets would agree, so
-either the exported player row is not the body that drops the pickup - the row
-carries `owner 1` while the case's other entities carry `owner 2` - or there is a
-second per-ability offset. Pin the site before changing it; do not assume it is
-the same call fixture #8 patched.
+The site is pinned, and it is not the pickup drop. `flags 2307` is
+`E_ACTIVE | E_ENABLED | E_PROJECTILE | E_EXPLOSIVE`, and the five abilities
+`release_held_throw_item_on_exit` handles -
+`ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_POKE_BALL` -
+are exactly the abilities held in the divergent kits. It is the `ThrowItem2`
+payload, released because the holder died before `Fire`. The differing y offsets
+resolve too: the held position is
+`slot.base.position + local.complex_mul(basis)` where `local` is `gd.ground_position`
+or `gd.air_position` from each ability's own throw config, so (1.7, 1.068889) for
+Mjolnir and (1.7, 0.968889) for the other two is simply two different configs.
+Nothing unexplained there after all.
 
-Either way this is the same class as fixture #8, reached from a different ability
-and a different spawn site, and it reframes the question that fixture left open:
-not "why is Black hole one pass ahead" but "does this port integrate the body
-earlier in the pass than the prefab ordering says it should". That is worth
-answering once instead of patching a third spawn site.
+**And this is where it gets interesting, because the port already does the thing
+the obvious fix would do.** `throw_item_tick` calls `ability_boundary_kill` *before*
+either of its two `slot.base.position +=` integrations, under a comment that says
+so: "ThrowItem2's DestroyIfOutsideSceneBounds runs after the item logic and before
+PlayerBody integrates this pass." The kill returns early, so nothing moves the body
+afterwards, and `reported_position` is the pre-integration position of this pass.
+That is already correct by the prefab ordering - and it is still one pass too late
+to match.
+
+Read against the exported rows: the reference releases from the position exported
+at tick 464 and the port from the one exported at 465, and the exported player
+position is itself published at the *start* of `throw_item_tick`. So the reference
+is reading a position from before the *previous* pass integrated, not merely before
+this one. That is precisely the residual fixture #8 could not explain, arrived at
+independently, from a different ability, a different spawn site, and a code path
+that already implements the pre-integration read correctly.
+
+Two independent abilities needing "one pass further back than pre-integration" is
+no longer a quirk of Black hole. It says this port integrates the body a pass ahead
+of where the oracle does, and the local fixes - fixture #8's `spawn_origin` and
+whatever lands here - are each paying for the same underlying offset. Worth
+answering once. Do not patch a third spawn site without first testing whether the
+pass boundary itself is misplaced.
 
 `tack` carries one extra field the other two do not: `entity[1].owner`, reference
 1 and port 0, on the released object. A concrete, reproducible instance of the
