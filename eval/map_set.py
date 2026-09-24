@@ -43,6 +43,27 @@ def role_of_level(level, table=None):
     return 'unported'
 
 
+def level_types(table=None):
+    """RL index -> LevelType: grass 0, snow 1, space 2.
+
+    Only space is mechanical. It halves the gravity modifier on players
+    (PlayerPhysics.AddGravityFactor) and on ropes (DetPhysics.cs:374), removes
+    water entirely (the water checks at DetPhysics.cs:1137,1180 are skipped) and
+    puts the lower blast boundary at Camera_YMin instead of the water plane.
+    Generic physics bodies are NOT affected - gravityAccel is a constant with no
+    level-type factor - so projectile arcs are the same on every map. Snow
+    differs from grass only cosmetically: no LevelType.snow test exists in the
+    game's C# or in the port, so nothing should branch on 1 versus 0.
+    """
+    table = table or load()
+    return {m['rl']: m['level_type'] for m in table['maps']}
+
+
+def space_maps(table=None):
+    """RL indices whose level type is space."""
+    return [rl for rl, kind in level_types(table).items() if kind == 2]
+
+
 def split(table=None):
     table = table or load()
     return {k: list(v) for k, v in table['split'].items()}

@@ -2168,6 +2168,11 @@ def main():
                 "level": m["level"],
                 "scene": m["path"],
                 "platforms": len(m["platforms"]),
+                # LevelType: grass 0, snow 1, space 2. Only space is mechanical
+                # (half gravity, no water, Camera_YMin as the lower blast
+                # boundary); snow differs from grass only cosmetically, so
+                # nothing downstream should branch on 1 versus 0.
+                "level_type": m["session"]["level_type"],
                 "role": "held-out" if m["level"] in held_out else "training",
             }
             for m in out["maps"]
@@ -2179,7 +2184,9 @@ def main():
     }
     map_set_target = ROOT / "data" / "map-set.json"
     with open(map_set_target, "w") as fh:
-        json.dump(map_set, fh, indent=1)
+        # indent=2 matches the committed file. It used to write indent=1, so
+        # every regeneration produced a ~2000-line semantically identical diff.
+        json.dump(map_set, fh, indent=2)
         fh.write("\n")
     print(f"wrote {map_set_target} ({len(map_set['maps'])} maps)")
 

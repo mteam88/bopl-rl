@@ -62,6 +62,20 @@ static void bopl_map_select(BoplMapMask *mask, uint32_t map) {
     if (map<64) mask->lo|=1ull<<map; else if (map<128) mask->hi|=1ull<<(map-64);
 }
 static int bopl_maps_selected(BoplMapMask mask) { return mask.lo!=0 || mask.hi!=0; }
+/* The LevelType.space maps, from native/data/map-set.json's level_type field
+ * (22 of 124; eval/map_set.space_maps is the same set, and
+ * eval/check_maps.py asserts they agree). Baked game data, as fixed as
+ * BOPL_COUNTER_MAPS, so it is compiled in rather than passed per env: an
+ * evaluation path that forgot to pass it would silently tell every policy it
+ * was on a grass map. Read at the point of use from env->config.map, never
+ * cached on the env: env->config is the live world's config on every path
+ * (c_reset promotes spare_config into it on takeover), but a cached flag would
+ * be wrong three ways - the spare pre-draws the NEXT episode's map over it, the
+ * takeover path draws no config at all, and research_reset sets config.map
+ * directly without drawing one. Space halves the gravity modifier on players and on
+ * ropes, removes water, and moves the lower blast boundary to Camera_YMin;
+ * snow is mechanically identical to grass, so only space is represented. */
+static const BoplMapMask BOPL_SPACE_MAPS={0xfc00007e00000000ull, 0x0ffc000000000000ull};
 typedef struct {
     double learner_steps;            /* learner decisions (self-play: every player; historical: the learner side) */
     double game_steps;               /* physical decisions of every player, learner or frozen */

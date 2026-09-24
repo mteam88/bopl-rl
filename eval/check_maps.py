@@ -8,6 +8,7 @@ import numpy as np
 from environment import Environment,configure
 from evaluation_protocol import map_ids
 import map_catalogue
+import map_set
 from layout import ACT_AIM,ACT_BUTTONS
 from telemetry import FIELDS
 
@@ -23,11 +24,20 @@ def main():
         args.maps=[map_catalogue.to_identity(args.run,map_id) for map_id in args.maps]
     args.output.mkdir(parents=True,exist_ok=False)
     configure(args.output/'workers');results=[]
+    # obs[8] carries LevelType.space (bopl_puffer.h BOPL_SPACE_MAPS, compiled
+    # in). Assert it through a real episode rather than comparing the constant
+    # to the json: that catches a stale rebuild as well as a stale table. Only
+    # layout v4 has the bit -- obs[8] is v3's absolute self_x.
+    space=set(map_set.space_maps())
     with Environment(limit=3600) as env:
         for map_id in args.maps:
             for game in range(args.games):
                 seed=91001+game;env.reset(seed,map_id)
                 initial=env.obs.copy()
+                for player in range(2):
+                    if env.layout_of(player)==4:
+                        assert float(env.obs[player,8])==float(map_id in space), (
+                            f'map {map_id} space bit {env.obs[player,8]} != {map_id in space}')
                 env.step([[64,4,0],[192,4,0]]);env.reset(seed,map_id)
                 np.testing.assert_array_equal(env.obs,initial)
                 rng=np.random.default_rng(seed);ticks=0;decisions=0;digest=hashlib.sha256()

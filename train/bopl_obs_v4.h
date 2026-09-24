@@ -676,7 +676,15 @@ static void bopl_encode_v4_row(BoplPuffer *env, const BoplRlState *state, int a,
     obs[5]=bopl_clip((double)(active_count-count)/BOPL4_ENTITIES);
     obs[6]=bopl_clip((double)visible_slimes/BOPL4_SLIMES);
     obs[7]=bopl_clip((double)(visible_slimes>BOPL4_SLIMES?visible_slimes-BOPL4_SLIMES:0)/BOPL4_SLIMES);
-    obs[8]=0; obs[9]=0;   /* v3's absolute self position: a map lookup key, dropped (terrain block instead) */
+    /* v3's absolute self position was a map lookup key and is dropped (the
+     * terrain block replaces it). obs[8] reuses the first dead column for the
+     * one mechanical map property: LevelType.space, which halves the gravity
+     * modifier on players and ropes, removes water and moves the lower blast
+     * boundary. Every non-space map leaves it 0, exactly as the dead column
+     * was, so nothing measured on grass or snow changes. Projectile arcs are
+     * NOT affected by space (gravityAccel carries no level-type factor), so
+     * BOPL4_GRAVITY stays one constant. */
+    obs[8]=(float)bopl_map_selected(BOPL_SPACE_MAPS, env->config.map); obs[9]=0;
     double level_time=bopl_fix(state->header.simulation_time_since_level_loaded);
     obs[10]=bopl_clip(fmax(0.0, 120.0-level_time)/120.0);
     obs[11]=state->header.sudden_death!=0;
