@@ -18211,6 +18211,17 @@ impl RolloutWorld {
         // DPhysicsBox publishes the basis from the start of SparkShot's pass;
         // PlayerPhysics may align the live transform later in that pass.
         self.players[index].missile.collider_rotation = self.players[index].base.rotation;
+        // Missile.prefab is boundary/ability 5/6 - DestroyIfOutsideSceneBounds
+        // 5, SparkShot 6, PlayerBody 8 - so the boundary runs ahead of the
+        // whole of SparkShot's update, not just ahead of the integration. On
+        // the pass it fires, SparkShot never spawns the projectile, never
+        // advances its phase counters and never steers the live one, which is
+        // what the port used to do a step too many of. The Ability-ordered
+        // Player.Position publish already happened before this function ran.
+        // SparkShot's ExitAbility does not unground.
+        if self.ability_boundary_kill(index, false) {
+            return;
+        }
         let state = &mut self.players[index].missile;
         state.ticks += 1;
         match state.phase {
@@ -18267,12 +18278,6 @@ impl RolloutWorld {
         // own landing-exit check; SparkShot then observes a grounded body,
         // calls Move(zero), and still steers the live projectile this pass.
         self.steer_active_missile(index, action, DT, data);
-
-        // SparkShot's DestroyIfOutsideSceneBounds runs before PlayerBody
-        // integrates this pass; its ExitAbility does not unground.
-        if self.ability_boundary_kill(index, false) {
-            return;
-        }
 
         if self.players[index].base.grounded {
             self.players[index]
@@ -18341,6 +18346,16 @@ impl RolloutWorld {
     /// and grounded throws are forced along the attached surface normal.
     fn mine_throw_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         self.players[index].throw_item.collider_rotation = self.players[index].base.rotation;
+        // Mine.prefab is boundary/ability 5/6 - DestroyIfOutsideSceneBounds 5,
+        // ThrowItem 6, PlayerBody 8 - so the boundary runs *before* ThrowItem's
+        // own update. This comment used to claim the reverse, which is the same
+        // error that produced the ThrowItem2 defect in fixture #9. The
+        // Ability-ordered Player.Position publish already happened before this
+        // function ran, so the kill may take it directly. ThrowItem.ExitAbility
+        // publishes the attached position without ungrounding (ThrowItem.cs:165).
+        if self.ability_boundary_kill(index, false) {
+            return;
+        }
         let button = 2u8 << self.players[index].active_slot;
         let released = action.buttons & button == 0;
         let aim = action.direction();
@@ -18428,13 +18443,6 @@ impl RolloutWorld {
             }
         }
 
-        // ThrowItem's DestroyIfOutsideSceneBounds runs after the mine logic
-        // and before PlayerBody integrates this pass. ThrowItem.ExitAbility
-        // publishes the attached position without ungrounding
-        // (ThrowItem.cs:165).
-        if self.ability_boundary_kill(index, false) {
-            return;
-        }
         if self.players[index].base.grounded {
             let before_player_physics = self.players[index].base.position;
             self.players[index]
