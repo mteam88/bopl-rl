@@ -297,18 +297,87 @@ also confirms the simulator itself is deterministic and the comparator sound.
 The control script now runs both: `selfcheck-q32` (symmetric, must be 0) and
 `leakprobe-q32` (asymmetric, measures the leak).
 
+## The gate that now covers #2, #3 and #4
+
+`make -C native/rl ability-sweep`
+(`research/divergence/run_ability_sweep.sh`). Loadouts drawn uniformly from all
+38 abilities, maps assigned by `index % 124` so every authored map is covered
+exactly equally, seed pinned at 24601. Four cells, 12,400 distinct episodes
+played twice under two handle policies, 43 s wall on four workers:
+
+| cell | games | players | `DR_FRESH` |
+|---|---|---|---|
+| leak-2p | 9920 | 2 | 1 |
+| selfcheck-2p | 9920 | 2 | 0 |
+| leak-6p | 2480 | 6 | 1 |
+| selfcheck-6p | 2480 | 6 | 0 |
+
+No oracle: the q32 library plays against two more copies of itself, so crashes
+and self-disagreement must both be exactly zero. That also keeps the oracle's
+own full-pool crash (the map-27 `ShootDuplicator` case above) out of a gate
+about the port.
+
+The cell sizes are set by ability x map coverage, measured rather than assumed
+- the gate asserts 4588/4588 cells and fails if it ever narrows:
+
+| games | per map | ability x map equipped | ability x map activated |
+|---|---|---|---|
+| 1240 | 10 | 81.08% | 66.24% |
+| 2480 | 20 | 96.16% | 84.87% |
+| 4960 | 40 | 99.85% | 93.94% |
+| 7440 | 60 | **100%** | 96.36% |
+| 9920 | 80 | **100%** | 97.41% |
+
+2p closes the grid at 60 games/map, so 80 is taken for margin. 6p closes it at
+20 because it draws 18 slots a game instead of 6. The old `leakprobe-q32` cell
+at 1240 games covered only 81% of the grid, which is why it is not the size the
+gate uses.
+
+**Measured against both fixed defects.** Each revert rebuilt, both libraries,
+all six pre-existing gates re-run:
+
+| build | ability-sweep | the six existing gates |
+|---|---|---|
+| `72d983d3` (both fixes in) | **OK** crashes=0 divergent=0 | all pass |
+| `vector_fields.retain` block removed | **FAIL** crashes 5/9920 (2p), 15/2480 (6p) | all six pass |
+| rope-pool fix `d4c1474c` reverted | **FAIL** divergent 2772/9920 (2p), 486/2480 (6p); selfcheck cells 0 | all six pass |
+
+The five 2p crashes are exactly the five *port* crashes listed under fixture #4
+- i1398 map 34, i2934 map 82, i3926 map 82, i4994 map 34, i9188 map 12 - and
+the gate correctly does not reproduce i3251, which is the oracle's defect. All
+36 crashes across the four cells land on maps 11, 12, 34, 51, 58 and 82, the
+six carrying a VectorFieldPlatform.
+
+**Not seed luck.** The same broken build re-run at
+`ABILITY_SWEEP_SEED=1`, `999983` and `20260923` fails on all three: 2p crashes
+6, 15 and 12 against 5 at the pinned seed, 6p crashes 15, 15 and 11 against 15.
+
+**Six players are 12x more sensitive to the vector-field panic** than two:
+0.605% of episodes (15/2480) against 0.050% (5/9920). Fixture #4's 0.15%
+headline is an average over heterogeneous study cells, not a per-episode rate
+that holds at any one player count.
+
+All 2772 rope-pool divergences are `header.entity_count` and nothing else,
+across all 124 maps, and the symmetric `selfcheck-*` cells stay at 0 on the
+same games - which is what distinguishes a cross-episode state leak from
+simulator nondeterminism, and the reason both halves of the pair are kept.
+
+**What this gate cannot see.** A port-vs-oracle *logic* divergence that is
+neither a crash nor a self-inconsistency - fixtures #1 and #1b - is invisible
+to it by construction. That is what `divergence-rate` is for. And a defect
+firing in under ~0.024% of episodes can pass: 12,400 distinct episodes catch a
+rate of 0.024% with 95% probability over the choice of pinned seed, 0.05% with
+99.8%.
+
 ## Open items inherited from the deleted porting docs
 
 Not found by this sweep, but this is where open defects live now. The 2026-09-23
 reorganization deleted `sim/PORTING.md`, which carried these as unticked
 checklist entries; they are recoverable in full from git history.
 
-**The oracle throws on one recorded game.** `i3251` (map 27, seed 3933741779,
-loadout `[[38,29,4],[10,17,16]]`) fails on the *oracle* with a .NET
-`System.NullReferenceException` in `ShootDuplicator.ApplyDuplicationEffect` at
-tick 193. The port plays the same game cleanly in all three backend slots: 274
-ticks, terminal, zero self-divergence. See fixture #4, which this was long
-misattributed to.
+**The oracle throws on one recorded game** - the map-27 `ShootDuplicator`
+NullReferenceException. Documented under fixture #4, where it was long
+misattributed to the port.
 
 **Determinism flake, 1 in ~17 runs, never reproduced.** One `checkpoint.sh` l4
 replay diverged at tick 0 on `playerDied` + `updatables` and 16 retries failed to
