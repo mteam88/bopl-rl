@@ -3,11 +3,11 @@
 //
 // Build (RL venv, CUDA 13 from the nvidia wheels):
 //   V=native/artifacts/rl/venv/lib/python3.11/site-packages/nvidia/cu13
-//   g++ -O2 -shared -fPIC -I$V/include native/rl/puffer/cupti_profile.cpp \
+//   g++ -O2 -shared -fPIC -I$V/include train/cupti_profile.cpp \
 //       -L$V/lib -l:libcupti.so.13 -Wl,-rpath,$V/lib -o /tmp/libcuptiprof.so
 // Run:
 //   CUDA_INJECTION64_PATH=/tmp/libcuptiprof.so BOPL_CUPTI_OUT=/tmp/prof.txt \
-//       python native/rl/puffer/train.py ...
+//       python train/train.py ...
 // Output: one table per stream (busy = union of kernel intervals on that
 // stream; sum = sum of kernel durations), rows sorted by total time. The
 // trainer's train phase runs on the legacy default stream; the rollout
@@ -25,7 +25,7 @@
 // BOPL_CUPTI_TRACE=<path> additionally keeps the last BOPL_CUPTI_TRACE_N
 // (default 400000) records and writes them at exit as
 // "start_ns end_ns stream kind name" lines (kind K kernel, H HtoD, D DtoH,
-// C DtoD, S memset), for a per-step timeline (native/rl/puffer/cupti_timeline.py).
+// C DtoD, S memset), for a per-step timeline (train/cupti_timeline.py).
 namespace {
 struct Agg { uint64_t count = 0, total = 0, mn = ~0ull, mx = 0; };
 struct Rec { uint64_t start, end; uint32_t stream; char kind; const char* name; };

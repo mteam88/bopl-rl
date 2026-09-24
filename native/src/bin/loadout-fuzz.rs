@@ -8,7 +8,7 @@
 use bopl_sim::rollout::{CAction, CConfig, CPlayerConfig, RolloutWorld};
 
 const ABILITY_COUNT: u32 = 39;
-const EXCLUDED: [u32; 2] = [12, 15]; // ABILITY_PORT_GAPS.md partial ports
+const EXCLUDED: [u32; 2] = [12, 15]; // partial ports
 
 struct Lcg(u64);
 impl Lcg {

@@ -46,7 +46,7 @@
 # Disk: /home is btrfs with compress=zstd:1, so a 1B trial's 2 GB apparent is
 # ~0.7 GB on disk (compsize: the JSON/metrics compress 12x; the 19 MB-per-evaluation
 # mind logs, checkpoints and pool are the incompressible 540 MB). 40 trials at ~2.5B
-# ~ 70 GB real against 140 GB free at queue time. research/compact_evaluations.py
+# ~ 70 GB real against 140 GB free at queue time. eval/compact_evaluations.py
 # (json -> json.gz) exists for plain filesystems and gains nothing here.
 #
 # Budget: 1B ~18.5 min train+score (overnight-7), 4B ~70 min; expect ~45 min per

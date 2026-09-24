@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Policy v4 throughput smoke (POLICY_V4_PLAN.md section 6): the 024 recipe's
+# Policy v4 throughput smoke: the 024 recipe's
 # rollout shape (128 workers x 4 buffers, 4 banks, 3 scripted, horizon 128,
 # learner passes 4) for three policies, back to back, no evaluation:
 #   set-024   the v3 set encoder at 024's shape (hidden 128, 1 layer): control
@@ -16,7 +16,7 @@
 # (default 7000) up to $WAIT_S seconds (default 600) so a co-tenant does not
 # turn the smoke into an out-of-memory crash.
 # Meant to run from the GPU queue (one job at a time):
-#   bash native/rl/puffer/bench_v4_smoke.sh [updates]
+#   bash train/bench_v4_smoke.sh [updates]
 #   WORKERS=16 BUFFERS=1 NEED_MB=1500 bash ... 10     scaled-down end-to-end check
 #   ONLY="v4-full v4-lite" bash ...                    a subset of the configurations
 set -uo pipefail
@@ -26,7 +26,7 @@ BUFFERS=${BUFFERS:-4}
 NEED_MB=${NEED_MB:-7000}
 ONLY=${ONLY:-}                     # space-separated configuration names to run (default: all)
 WAIT_S=${WAIT_S:-600}
-R=$(cd "$(dirname "$0")/../../.." && pwd)
+R=$(cd "$(dirname "$0")/.." && pwd)
 cd "$R"
 OUT=${OUT:-$R/native/artifacts/rl/v4-smoke}
 mkdir -p "$OUT"
@@ -65,13 +65,13 @@ run() {
     failed=1; return
   fi
   echo "$(date -Is) $name ($(free_mb) MB free)"
-  native/artifacts/rl/venv/bin/python native/rl/puffer/train.py --output "$dir" "${COMMON[@]}" "$@" > "$dir.log" 2>&1 || rc=$?
+  native/artifacts/rl/venv/bin/python train/train.py --output "$dir" "${COMMON[@]}" "$@" > "$dir.log" 2>&1 || rc=$?
   [ "$rc" -ne 0 ] && { echo "$(date -Is) $name exited $rc"; grep -v '^\s*$' "$dir.log" | tail -4 | cut -c1-300; failed=1; }
   python3 - "$dir" "$name" "$rc" >> "$OUT/results.jsonl" <<'EOF'
 import json, statistics as st, sys, os
 d, name, rc = sys.argv[1:]
 rc = int(rc)
-def metrics_open(d):  # plain, or packed by research/compact_history.py
+def metrics_open(d):  # plain, or packed by eval/compact_history.py
     p = os.path.join(d, 'metrics.jsonl')
     return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
 def tail():

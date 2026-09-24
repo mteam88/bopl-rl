@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path[:0] = [str(HERE), str(HERE.parent / 'sweep')]
+sys.path[:0] = [str(HERE), str(HERE.parent / 'train/sweep')]
 
 import elo_ladder
 import joint_ladder as jl

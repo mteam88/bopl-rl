@@ -5,7 +5,7 @@
  * Resets with the run-007 training loadout (2 players, abilities 2/4/14,
  * stocks 0, warmup 240, limit 7200), prints the reset state, then steps
  * `ticks` decisions of 4 ticks with zero actions, printing every `every`-th
- * state. Ground truth for the Rust rollout backend (native/rl/RUST_ROLLOUTS.md).
+ * state. Ground truth for the Rust rollout backend.
  *
  *   cc -O2 -o dump_state dump_state.c bopl_rl.c -ldl -lm
  */

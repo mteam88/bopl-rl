@@ -1,5 +1,5 @@
 /* SlimeController state A/B: idle, run right, turn, stop; print flags/timers/state.
- * cc -O2 -I. -o /tmp/state_ab /tmp/state_ab.c bopl_rl.c -ldl -lm */
+ * cc -O2 -I sim/abi -o /tmp/state_ab /tmp/state_ab.c bopl_rl.c -ldl -lm */
 #include "bopl_rl.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,5 +1,5 @@
-"""ctypes view of the in-game agent shim (native/rl/puffer/bopl_agent.h,
-native/artifacts/rl/libbopl_agent.so; build with `make -C native/rl agent`).
+"""ctypes view of the in-game agent shim (train/bopl_agent.h,
+native/artifacts/rl/libbopl_agent.so; build with `make agent`).
 
 The same library the Unity build loads (RlAgent.cs): one tick() per simulation
 tick with the game state in the RlObservation.cs wire format, an InputPacket
@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import layout
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 LIBRARY = Path(os.environ.get('BOPL_AGENT_LIBRARY') or ROOT/'native/artifacts/rl/libbopl_agent.so')
 
 class Action(C.Structure):
@@ -40,7 +40,7 @@ def library():
     lib.bopl_agent_observation_size.argtypes = [C.c_void_p]; lib.bopl_agent_observation_size.restype = C.c_int
     if lib.bopl_agent_abi_version() != 1: raise RuntimeError('agent shim ABI')
     if lib.bopl_agent_obs_size() != layout.OBS_SIZE or lib.bopl_agent_logits_size() != layout.LOGITS:
-        raise RuntimeError('agent shim layout differs from research/layout.py; rebuild it')
+        raise RuntimeError('agent shim layout differs from eval/layout.py; rebuild it')
     _lib = lib
     return lib
 

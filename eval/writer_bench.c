@@ -1,4 +1,4 @@
-/* Observation-writer microbenchmark and sim ticks/s on one core (THROUGHPUT_V4.md).
+/* Observation-writer microbenchmark and sim ticks/s on one core.
  *
  * Phase 1 plays 2-player episodes on the Rust sim with random held inputs (the
  * benchmark.c convention: 4-tick decisions, new inputs every few decisions,
@@ -30,9 +30,9 @@
  * random = binding.c's random_loadouts draw per episode. Pin and nice it
  * (taskset -c 11 nice -n 19), Q32 build (just build-q32). One JSON line per
  * result plus a summary line; the load average travels with every line.
- * Build: make -C native/rl writer-bench. */
+ * Build: make writer-bench. */
 #define _GNU_SOURCE
-#include "puffer/bopl_puffer.h"
+#include "bopl_puffer.h"
 #include <inttypes.h>
 #include <time.h>
 

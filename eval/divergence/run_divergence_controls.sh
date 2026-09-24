@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The two controls the headline numbers stand or fall on.
 #
-#   research/divergence/run_divergence_controls.sh <output-dir> [workers]
+#   eval/divergence/run_divergence_controls.sh <output-dir> [workers]
 #
 # selfcheck-*   The oracle played against itself, at bit-exact tolerance, over
 #               the same maps and the same random loadouts as the study. Any

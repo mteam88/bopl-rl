@@ -13,8 +13,8 @@
  * and the clock each one had there, so the offset is a number rather than an
  * argument. Exit status 1 when they disagree.
  *
- * cc -O2 -I. -o ../target/release/sudden_death_publication_ab \
- *   research/rust_ab/sudden_death_publication_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -I sim/abi -o ../target/release/sudden_death_publication_ab \
+ *   eval/rust_ab/sudden_death_publication_ab.c sim/abi/bopl_rl.c -ldl -lm
  *
  * Usage: sudden_death_publication_ab <BoplSimNative.so> <libbopl_sim.so> */
 #include "bopl_rl.h"

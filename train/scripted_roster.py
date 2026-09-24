@@ -1,6 +1,6 @@
 """Elo-matchmade scripted-bot roster for train.py (--scripted-roster).
 
-Names are the public `kind-level` strings in evaluation_protocol / SCRIPTED_BOTS.md.
+Names are the public `kind-level` strings in evaluation_protocol.
 The default roster is the four v2 kinds at easy/medium/hard (12 entries). The
 search bots are opt-in (`--scripted-roster default,search-medium,search-hard`):
 at ~1.2 ms per decision they straggle the shared env pool and cut learner sps
@@ -35,7 +35,7 @@ POOL_V5_RATINGS = {
     'search-hard': 668.328,
     'search-medium': 660.603,
 }
-ANCHOR_POOL = Path(__file__).resolve().parents[2] / 'artifacts/rl/sweeps/anchors/pool-v5/pool.json'
+ANCHOR_POOL = Path(__file__).resolve().parents[1] / 'native/artifacts/rl/sweeps/anchors/pool-v5/pool.json'
 
 
 def parse_roster(value):

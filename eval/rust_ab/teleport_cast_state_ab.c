@@ -19,7 +19,7 @@
  * teleport_ability_ab.c casts with a neutral aim and cannot see it.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/teleport_cast_state_ab \
- *   research/rust_ab/teleport_cast_state_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/teleport_cast_state_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

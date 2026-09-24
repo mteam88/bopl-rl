@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The randomised-loadout gate: every ability, on every map, with no oracle.
 #
-#   research/divergence/run_ability_sweep.sh <output-dir> [workers]
+#   eval/divergence/run_ability_sweep.sh <output-dir> [workers]
 #
 # Why this exists. Every other gate in the suite plays the hardcoded
-# Dash/Bow/Platform kit (puffer/bopl_bots.h:143-149, DR_POOL=fixed), so the
+# Dash/Bow/Platform kit (train/bopl_bots.h:143-149, DR_POOL=fixed), so the
 # whole suite only ever exercises 3 of the 38 abilities. Three distinct real
 # defects were found in that blind spot and none of them was reachable from the
 # gate loadout: the cross-episode rope-pool leak (FIXTURES.md #2, 15.0% of

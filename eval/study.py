@@ -27,7 +27,7 @@ from common import atomic_json
 import decision_dump
 import layout
 from evaluation_protocol import checkpoint_identity, resolve_loadouts, scripted_opponent
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'sweep'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'train/sweep'))
 import reference_pool
 
 CAUSE = {0: 'other', 1: 'squished', 2: 'accident', 3: 'eaten', 4: 'beamed', 5: 'alive'}
@@ -167,7 +167,7 @@ def main():
         suite='diagnostic', checkpoint=a_path.name, evaluation_maps=maps,
         heldout_maps=[m for m in (3, 4) if m not in maps], training_maps=maps,
         frozen_opponents=[], scripted_opponents=[], groups=[],
-        note=f'study: {a_name} vs {b_name} on loadout {args.loadout} (rl/research/study.py)',
+        note=f'study: {a_name} vs {b_name} on loadout {args.loadout} (rl/eval/study.py)',
         games=rows))
     atomic_json(run / 'status.json', dict(status='complete', step=step, learner_steps=0))
     atomic_json(run / 'config.json', dict(

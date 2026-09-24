@@ -10,8 +10,8 @@ import subprocess
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parents[3]
-sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools'), str(ROOT / 'native/rl/sweep')]
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT / 'eval'), str(ROOT / 'native/tools'), str(ROOT / 'train/sweep')]
 from common import atomic_json
 import counters
 from evaluation_protocol import (SCRIPTED_KINDS, SCRIPTED_LEVELS, checkpoint_identity, opponents,
@@ -134,7 +134,7 @@ RESUME_HYPERS = ('workers', 'buffers', 'banks', 'seed', 'encoder', 'hidden', 'la
                  'opponent_timeout', 'elo_init', 'elo_k', 'pool_seed', 'head_scale', 'entropy_free_rows',
                  'scripted_bots', 'scripted_level', 'scripted_roster', 'scripted_share_min',
                  'scripted_share_max', 'n_scripted', 'aim_fourier', 'aim_ar', 'v4_shape', 'loadouts')
-# Policy v4 (POLICY_V4_PLAN.md, puffer/bopl_v4.cu) network shape: flag name -> (env var the
+# Policy v4 (train/bopl_v4.cu) network shape: flag name -> (env var the
 # CUDA module reads, layout.V4_DEFAULTS key). Recorded in config.json / the checkpoint sidecar.
 V4_SHAPE = dict(set_dim=('BOPL4_SET_DIM', 'set_dim'), set_inner=('BOPL4_SET_INNER', 'set_inner'),
                 flat_dim=('BOPL4_FLAT_DIM', 'flat_dim'), ffn_dim=('BOPL4_FFN_DIM', 'ffn_dim'),
@@ -228,14 +228,14 @@ def arguments():
     p.add_argument('--banks', type=int, choices=range(2, 9), default=4)
     p.add_argument('--seed', type=int, default=73)
     p.add_argument('--encoder', choices=('linear', 'set', 'v4'), default='linear',
-                   help='v4: observation layout 4 and the policy v4 encoder/decoder (POLICY_V4_PLAN.md, puffer/bopl_v4.cu)')
+                   help='v4: observation layout 4 and the policy v4 encoder/decoder (train/bopl_v4.cu)')
     for name, (_, key) in V4_SHAPE.items():
         p.add_argument('--v4-' + name.replace('_', '-'), type=int, default=layout.V4_DEFAULTS[key], dest='v4_' + name,
                        help=f'policy v4 shape (encoder v4 only; default {layout.V4_DEFAULTS[key]})')
     p.add_argument('--dump-rows', type=Path, default=None, metavar='NPZ',
                    help='after the first rollout, save the observations and the trainer\'s own decoder rows for '
                         '64 learner rows of buffer 0 at step 0 (zero recurrent state; _C.bopl_policy_rows) next to '
-                        'the initial checkpoint and stop: the fixture puffer/check_dump.py holds the CPU evaluator '
+                        'the initial checkpoint and stop: the fixture train/check_dump.py holds the CPU evaluator '
                         'and the torch reference to. Also saves the batched rollout chain\'s rows on the same '
                         'observations (_C.bopl_chain_rows)')
     p.add_argument('--chain-reference', type=Path, default=None, metavar='NPZ',
@@ -268,7 +268,7 @@ def arguments():
                         'divided by the previous rollout\'s free-decision fraction (latched rows carry no entropy)')
     p.add_argument('--aim-fourier', type=int, default=0, choices=range(0, layout.AIM_MAX_HARMONICS + 1), metavar='K',
                    help='Aim head as a Fourier series over angle: the decoder emits a neutral logit and K cos/sin '
-                        'harmonics per aim block instead of 256 bins (puffer/bopl_aim.h); 0 keeps raw bins')
+                        'harmonics per aim block instead of 256 bins (train/bopl_aim.h); 0 keeps raw bins')
     p.add_argument('--aim-ar', type=int, choices=(0, 1), default=0,
                    help='1 conditions the aim head on the sampled button combo: one aim block per combo, buttons '
                         'sampled before aim (in the trainer, the CPU evaluator and the in-game agent)')
@@ -422,7 +422,7 @@ def main():
         os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', str(1 << 20))
     else:
         game = reference.resolve_game(a.game)
-    # The NativeAOT sim (sim/RL.md) is one self-contained binary: only the
+    # The NativeAOT sim is one self-contained binary: only the
     # player_binary entry exists for it, the Unity-specific files do not.
     runtime = {key: hashlib.sha256(path.read_bytes()).hexdigest()
                for key, path in reference.player_sources(game).items() if path.exists()}
@@ -445,12 +445,12 @@ def main():
     frozen_manifest = output/'evaluation-opponents.json' if frozen else None
     if frozen_manifest and not resume:
         atomic_json(frozen_manifest, dict(schema=2, opponents=frozen))
-    # SIM_OVERHAUL.md section 4: one GC heap under every world costs 25-45%
+    # One GC heap under every world costs 25-45%
     # of throughput (each gen0 collection suspends every world); four worlds
     # per runtime measured within 5-15% of one runtime per world at a
     # fraction of the memory. Honour an explicit setting.
     os.environ.setdefault('BOPL_RL_WORLDS_PER_RUNTIME', '4')
-    # The rollout steps games on vecenv.h's own env pool (THROUGHPUT.md 3.D), not
+    # The rollout steps games on vecenv.h's own env pool, not
     # OpenMP: BOPL_ENV_THREADS stepping threads in total (buffer threads
     # included; default CPUs - 1, i.e. 11 on the 12-thread box: at w256 b4 the
     # rollout is CPU-bound on c_step x threads and 11 beat 9 by 4% (2026-09-19);
@@ -466,7 +466,7 @@ def main():
     # rollout and train streams (green contexts; auto = one half, 24/24 on
     # the 48-SM 5070; 0 shares the SMs on stream priority alone) and
     # BOPL_TRAIN_WAIT=block|spin picks how the trainer waits for its stream.
-    # Rollout forward (THROUGHPUT.md 3.C, bopl_rollout.cu): BOPL_BATCHED_FWD=1
+    # Rollout forward (bopl_rollout.cu): BOPL_BATCHED_FWD=1
     # (default) runs one grouped chain per buffer over the live rows with
     # per-bank weights (0 = the per-bank cuBLAS chain); BOPL_TF32=1 also picks
     # its tensor-core GEMM (0 = fp32 FMAs, bit-identical across runs);
@@ -490,7 +490,7 @@ def main():
     # green-context split of 'auto' each is SM-bound (v4-lite, w128 b4: train
     # 0.107 -> 0.090 s, rollout 0.120 -> 0.114 s, +5% sps when shared; 32/16
     # and 16/32 are worse either way). v3 keeps the measured 'auto'
-    # (THROUGHPUT.md 3.B). Scheduling only: the numbers do not change.
+    # Scheduling only: the numbers do not change.
     os.environ.setdefault('BOPL_GPU_SPLIT', '0' if a.encoder == 'v4' else 'auto')
     v4_shape = a.v4_shape
     if a.encoder == 'v4':
@@ -514,13 +514,13 @@ def main():
     binding = Path(_C.__file__).resolve()
     if not binding.is_relative_to(ROOT):
         raise RuntimeError(f'pufferlib._C resolves to {binding}, outside {ROOT}: fix the venv editable finder and rebuild')
-    puffer_dir = ROOT/'native/rl/puffer'
+    puffer_dir = ROOT/'train'
     sources = [puffer_dir/name for name in ('bopl_puffer.h', 'binding.c', 'bopl_rollout.cu', 'bopl_set_encoder.cu',
                                            'bopl_aim.h', 'bopl_layout.h', 'bopl_v4.cu', 'bopl_obs_v4.h', 'bopl_layout_v4.h',
-                                           'pufferlib-bopl.patch')] + [ROOT/'native/rl/bopl_rl.c']
+                                           'pufferlib-bopl.patch')] + [ROOT/'sim/abi/bopl_rl.c']
     stale = [path.name for path in sources if path.exists() and path.stat().st_mtime > binding.stat().st_mtime]
     if stale:
-        raise RuntimeError(f'pufferlib._C ({binding}) is older than {stale}; run native/rl/puffer/build.py --device cuda')
+        raise RuntimeError(f'pufferlib._C ({binding}) is older than {stale}; run train/build.py --device cuda')
     torch.cuda.init()
     torch.manual_seed(a.seed)
     torch.set_num_threads(1)
@@ -540,7 +540,7 @@ def main():
     args.update(seed=a.seed, reset_state=False, cudagraphs=a.cudagraphs)
     # Compact layout (NativeVector.compact): each bank's slice holds only its
     # live opponent rows and primary_rows fixes the learner slice, so the
-    # trainer's bank_layout ends before the idle tail (THROUGHPUT.md 3.C).
+    # trainer's bank_layout ends before the idle tail.
     args['vec'].update(total_agents=vector.total_agents, num_buffers=a.buffers,
                        num_threads=a.workers, num_frozen_banks=a.banks,
                        frozen_bank_pct=(vector.live_per_bank + .000001) / vector.agents_per_buffer,
@@ -748,7 +748,7 @@ def main():
                     or opponents(frozen_manifest) != frozen):
                 raise RuntimeError('Frozen evaluation checkpoint identity changed during training')
             finish_evaluation()
-            command = [sys.executable, str(ROOT/'native/rl/research/evaluate.py'), '--run', str(output),
+            command = [sys.executable, str(ROOT/'eval/evaluate.py'), '--run', str(output),
                        '--checkpoint', str(checkpoint), '--initial', config['evaluation_baseline'],
                        '--evaluation-maps', ','.join(map(str, a.evaluation_maps)),
                        '--heldout-maps', ','.join(map(str, a.heldout_maps)),
@@ -785,7 +785,7 @@ def main():
             for process, log in rating:
                 log.close()
             rating.clear()
-            command = ['nice', '-n', '19', sys.executable, str(ROOT/'native/rl/sweep/reference_pool.py'), 'rate',
+            command = ['nice', '-n', '19', sys.executable, str(ROOT/'train/sweep/reference_pool.py'), 'rate',
                        '--pool', str(a.evaluation_pool or DEFAULT_POOL), '--checkpoint', str(checkpoint),
                        '--games', str(a.in_run_pool_games), '--first-pass-games', '10', '--workers', '2',
                        '--game', str(game), '--source', 'in-run']
@@ -801,7 +801,7 @@ def main():
         next_eval = (counts['learner_steps']//a.eval_every+1)*a.eval_every
         previous, previous_elapsed = counts, elapsed_before
         free, applied_scale = None, list(a.head_scale)
-        # Overlap (THROUGHPUT.md 3.A, BOPL_ASYNC=1 default; 0 restores the
+        # Overlap (BOPL_ASYNC=1 default; 0 restores the
         # serial trainer bit for bit): the native trainer keeps two rollout
         # slots, so each update collects the next batch on the buffer threads
         # while the GPU trains the previous one, and the update's wall time is

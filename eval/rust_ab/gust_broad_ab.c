@@ -2,7 +2,7 @@
  * ordinary player/platform targets, and a Gust-forced Macho boulder.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/gust_broad_ab \
- *   research/rust_ab/gust_broad_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/gust_broad_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

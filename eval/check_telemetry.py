@@ -14,7 +14,7 @@ import sys
 import numpy as np
 
 HERE=Path(__file__).resolve().parent
-ROOT=HERE.parents[2]
+ROOT=HERE.parent
 
 def capture(out,games,game=None):
     import environment as E
@@ -61,7 +61,7 @@ def capture(out,games,game=None):
                 # The game awards WonThisRound to every side that died on the
                 # final tick, so the flag reaching more than one team means the
                 # round was left undecided; the reward pays nobody for that
-                # (bopl_undecided, native/rl/puffer/bopl_puffer.h).
+                # (bopl_undecided, train/bopl_puffer.h).
                 players=env.state.players[:2]
                 undecided=len({p.team for p in players if p.flags&2})>1
                 expected=[-0.5 if truncated else (1 if p.flags&2 and not undecided else -1) for p in players]

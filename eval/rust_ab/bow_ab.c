@@ -1,5 +1,5 @@
 /* Scripted bow A/B: hold arrow N decisions then release; print slime slot 1.
- * cc -O2 -I. -o /tmp/bow_ab /tmp/bow_ab.c bopl_rl.c -ldl -lm */
+ * cc -O2 -I sim/abi -o /tmp/bow_ab /tmp/bow_ab.c bopl_rl.c -ldl -lm */
 #include "bopl_rl.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,5 +1,5 @@
 """Qualify the policy v4 CUDA encoder + decoder (bopl_v4.cu) against the torch
-reference (research/policy_v4.py): forward rows, weight gradients, the row
+reference (eval/policy_v4.py): forward rows, weight gradients, the row
 budget's deterministic overflow, gather mode and CUDA-graph replay.
 
 The set path runs in bf16 on tensor cores (fp32 accumulation), so the
@@ -19,8 +19,8 @@ import numpy as np
 import torch
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-sys.path.insert(0, str(ROOT / "native/rl/research"))
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT / "eval"))
 import layout  # noqa: E402
 import policy_v4  # noqa: E402
 
@@ -68,7 +68,7 @@ def trainer_offsets(hidden):
 
 
 def to_checkpoint(flat_trainer, hidden):
-    """Trainer-order buffer -> research/policy_v4.py buffer (with a zero MinGRU)."""
+    """Trainer-order buffer -> eval/policy_v4.py buffer (with a zero MinGRU)."""
     offsets, _ = trainer_offsets(hidden)
     out = np.zeros(layout.policy_v4_weights(hidden, 1, aim_fourier=4, aim_ar=0, **SHAPE), np.float32)
     pos = 0
@@ -150,8 +150,8 @@ def random_obs(rng, batch, density=0.5):
 def crowded_fixture(output):
     executable = output / "check_observations"
     data = output / "crowded-v4.f32"
-    subprocess.run(["cc", "-O2", "-std=gnu11", "-I" + str(ROOT / "native/rl"), "-I" + str(HERE),
-                    str(ROOT / "native/rl/research/check_observations.c"), "-lm", "-o", str(executable)], check=True)
+    subprocess.run(["cc", "-O2", "-std=gnu11", "-I" + str(ROOT / "sim/abi"), "-I" + str(HERE),
+                    str(ROOT / "eval/check_observations.c"), "-lm", "-o", str(executable)], check=True)
     subprocess.run([str(executable), "--dump-v4", str(data)], check=True)
     rows = np.fromfile(data, np.float32).reshape(2, layout.V4_OBS_SIZE)
     obs = np.zeros((2, layout.OBS_STRIDE), np.float32)
@@ -383,7 +383,7 @@ def main():
     library_path = args.output / "check_v4.so"
     # The harness is rebuilt when any source it compiles in is newer than it:
     # a stale harness passed pass_all for two commits whose kernels the
-    # trainer build never launched (notes-v4.md, the fused set kernels).
+    # trainer build never launched (the fused set kernels).
     sources = [HERE / name for name in ("check_v4.cu", "bopl_v4.cu", "bopl_layout_v4.h", "bopl_layout.h", "bopl_aim.h")]
     stale = library_path.exists() and any(p.exists() and p.stat().st_mtime > library_path.stat().st_mtime for p in sources)
     if args.build or args.build_only or stale or not library_path.exists():

@@ -2,7 +2,7 @@
 
 An A/B of one frozen checkpoint against itself: same weights, same opponents, same
 maps, same seeds, same side-swaps -- only the sim library differs. `run` plays the
-grid through research/evaluate.py (which is the training-era evaluation protocol);
+grid through eval/evaluate.py (which is the training-era evaluation protocol);
 `report` pairs the games and prints per-kit deltas with cluster-bootstrap intervals.
 
     python checkpoint_transfer.py run    --out DIR --libs base=A.so main=B.so [--kits ...]
@@ -33,7 +33,7 @@ import sys
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 SWEEPS = ROOT / 'native/artifacts/rl/sweeps'
 VENV = ROOT / 'native/artifacts/rl/venv/bin/python'
 

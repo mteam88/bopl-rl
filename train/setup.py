@@ -5,7 +5,7 @@ import subprocess
 import tarfile
 import urllib.request
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 OUT = ROOT / "native/artifacts/rl"
 REVISION = "42f70d6932c30ac977736f861006809c50168ba9"

@@ -6,7 +6,7 @@ per-decision traces side by side. Each takes `<BoplSimNative.so>
 `/tmp/gate_bootstrap.rep`. Build like the fidelity gate:
 
 ```sh
-cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c -ldl -lm
+cc -O2 -I sim/abi -o /tmp/move_ab eval/rust_ab/move_ab.c sim/abi/bopl_rl.c -ldl -lm
 ```
 
 - `move_ab.c`: fixed-action angle sweep, positions per decision.
@@ -449,7 +449,7 @@ cd native/rl && cc -O2 -I. -o /tmp/move_ab research/rust_ab/move_ab.c bopl_rl.c 
   map). Sudden death begins at level tick 7200 and `map-sweep-3000` stops
   4,200 ticks short of it, so before this probe nothing in the collapsing
   endgame -- or in round resolution itself -- was covered by any gate.
-  `make -C native/rl sudden-death-chunk-ab`.
+  `make sudden-death-chunk-ab`.
 
   What it caught: map 2's `AntiLockPlatform` orbiter (entity 18, hierarchy
   162, the one platform in the set with an `OrbitPath`). `WinGame` opens with
@@ -490,11 +490,11 @@ For those probes the comparison lives in `trace_compare.py`, and it is not
 optional:
 
 ```sh
-cc -O2 -I. -o /tmp/platform_rotation_ab \
-  research/rust_ab/platform_rotation_ab.c bopl_rl.c -ldl -lm
+cc -O2 -I sim/abi -o /tmp/platform_rotation_ab \
+  eval/rust_ab/platform_rotation_ab.c sim/abi/bopl_rl.c -ldl -lm
 ( cd ../.. && /tmp/platform_rotation_ab 4 200 400 900 \
     net=<BoplSimNative.so> rust=<libbopl_sim.so> ) > /tmp/out.csv
-python3 research/rust_ab/trace_compare.py /tmp/out.csv   # <- the real verdict
+python3 eval/rust_ab/trace_compare.py /tmp/out.csv   # <- the real verdict
 ```
 
 ## The endgame was outside every gate
@@ -505,7 +505,7 @@ structurally blind to everything after level tick 3000, and sudden death does
 not start until 7200. Two of the three divergences found in one session lived
 past that line.
 
-`make -C native/rl map-sweep-endgame` is the same probe run to 8,200 ticks, so
+`make map-sweep-endgame` is the same probe run to 8,200 ticks, so
 every map reaches sudden death and resolves its round. It costs about three
 times the runtime, which is why both targets exist: keep 3000 as the quick
 gate and run the endgame sweep before claiming a build is clean.
@@ -543,7 +543,7 @@ never sets it and never reaches the flag.
 Run the whole suite, comparator included, with
 
 ```sh
-research/rust_ab/run_suite.sh          # or: make -C native/rl rust-ab-suite
+eval/rust_ab/run_suite.sh          # or: make rust-ab-suite
 ```
 
 which exits non-zero if anything fails. `run_suite.sh` carries the list of

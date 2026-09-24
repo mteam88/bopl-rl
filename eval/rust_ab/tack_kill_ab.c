@@ -2,7 +2,7 @@
  * updater-phase collider removal, death effect, and stock-choice prefix.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/tack_kill_ab \
- *   research/rust_ab/tack_kill_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/tack_kill_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

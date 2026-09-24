@@ -18,7 +18,7 @@ The scripted bots (bopl_bots.h) reach for the Dash / Bow / Platform slots by
 index, so on any other lineup they press whatever sits in those slots. Their
 win rates off 2,4,14 are a property of the opponent, not only of the policy.
 
-    python native/rl/research/lineup_report.py --run <run dir> [--last-k 3]
+    python eval/lineup_report.py --run <run dir> [--last-k 3]
 """
 import argparse
 import json

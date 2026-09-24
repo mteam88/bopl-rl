@@ -32,8 +32,8 @@
  * single raw Q32 unit fails. Growth/Shrink of the caster itself can only come
  * from an opponent's ray and is not constructed here; see README.
  *
- * cc -O2 -I. -o ../target/release/scale_boundary_ab \
- *   research/rust_ab/scale_boundary_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -I sim/abi -o ../target/release/scale_boundary_ab \
+ *   eval/rust_ab/scale_boundary_ab.c sim/abi/bopl_rl.c -ldl -lm
  *
  * Usage: scale_boundary_ab <BoplSimNative.so> <libbopl_sim.so> */
 #include "bopl_rl.h"

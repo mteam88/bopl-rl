@@ -2,7 +2,7 @@
  * stall-triggered return acceleration, speed clamp, and owner catch.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/mjolnir_ability_ab \
- *   research/rust_ab/mjolnir_ability_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/mjolnir_ability_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

@@ -2,7 +2,7 @@
  * hit by Shrink through the complete RigidBodyAffector branch.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/shrink_broad_ab \
- *   research/rust_ab/shrink_broad_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/shrink_broad_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

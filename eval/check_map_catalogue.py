@@ -1,4 +1,4 @@
-"""Per-map smoke of the Rust sim's level catalogue (POLICY_V4_PLAN.md "More maps").
+"""Per-map smoke of the Rust sim's level catalogue.
 
 For every RL map index (default: all the backend reports) and a few seeds:
 
@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import layout
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 WATER_Y = -18.95            # WaterHitBox on every grass level
 WALL_LAYERS = (11, 16, 21)  # bopl_obs_v4.h: the platform layers the writer treats as walls
 PAIRINGS = []               # (kind, level) of the bots that face the --bot on odd seeds

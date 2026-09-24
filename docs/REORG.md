@@ -69,7 +69,7 @@ learns.
   exactness that both builds rely on, so that knowledge lives in code, not here.
 - After editing anything under `native/src/`, rebuild **both**:
   `cargo build --release --manifest-path native/Cargo.toml` (f64, which the
-  divergence harness loads as backend 2) and `make -C native/rl rust-q32`.
+  divergence harness loads as backend 2) and `make rust-q32`.
   Rebuilding one leaves the other stale and a working fix measures as broken.
 
 ## Deletion inventory
@@ -86,16 +86,16 @@ Deleting is most of the work. Verified dead, to be removed as the reorg lands:
   recorded one-off spikes and reviews that had already landed. Six documents
   survive, and each is either a live contract or actively used:
   `REORG.md` (this file), `rl/README.md`, `league/README.md`,
-  `research/METRICS_CONTRACT.md` (asserted by `check_routing.py`),
-  `research/divergence/FIXTURES.md` (open defects and their repro recipes),
-  `research/rust_ab/README.md` (the probe suite behind `rust-ab-suite`).
+  `eval/METRICS_CONTRACT.md` (asserted by `check_routing.py`),
+  `eval/divergence/FIXTURES.md` (open defects and their repro recipes),
+  `eval/rust_ab/README.md` (the probe suite behind `rust-ab-suite`).
 
 All of it is recoverable: everything was committed and pushed to the private
 origin before deletion. `git log --diff-filter=D --name-only` finds it.
 
 Two things were lifted out before the docs went, because they were the only
 record of something still open: the q32 decision above, and three open defects
-now recorded at the end of `research/divergence/FIXTURES.md` (the oracle's
+now recorded at the end of `eval/divergence/FIXTURES.md` (the oracle's
 `ShootDuplicator` NullReferenceException, the 1-in-17 determinism flake, and the
 AOT `rd.xml` residual risk).
 
@@ -105,7 +105,7 @@ no longer exists is worse than no pointer. Strip the reference and keep the
 substantive text: `# SIM_OVERHAUL.md section 4: one GC heap under every world
 costs 25-45%` becomes `# One GC heap under every world costs 25-45%`. This is
 deliberately folded into the reorg rather than done separately, because the reorg
-moves nearly all of those files anyway. `native/rl/sweep/configs/*.toml` is the
+moves nearly all of those files anyway. `train/sweep/configs/*.toml` is the
 bulk of it.
 
 ## The mapping, concretely
@@ -116,14 +116,14 @@ tree - see "What does not move" below for why.
 
 | from | to |
 |---|---|
-| `native/rl/research/` (minus the dashboard parts) | `eval/` |
-| `native/rl/research/web/`, `research/serve.py`, `research/start-dashboard.example.sh` | `board/` |
-| `native/rl/puffer/` | `train/` |
-| `native/rl/sweep/` | `train/sweep/` |
-| `native/rl/league/` | `league/` |
+| `eval/` (minus the dashboard parts) | `eval/` |
+| `board/web/`, `board/serve.py`, `eval/start-dashboard.example.sh` | `board/` |
+| `train/` | `train/` |
+| `train/sweep/` | `train/sweep/` |
+| `league/` | `league/` |
 | the gate and benchmark C programs at `native/rl/*.c` - `fidelity_gate`, `backend_check`, `native_check`, `coverage`, `dump_state`, `sampled_check`, `reset_check`, `reset_profile`, `frame_profile`, `record`, `benchmark`, `writer_bench`, plus `verify_replay.py` | `eval/` |
-| `native/rl/bopl_rl.c`, `native/rl/bopl_rl.h` | `sim/abi/` - the C ABI both backends sit behind, so it belongs with the simulator rather than with either consumer |
-| `native/rl/Makefile` | `Makefile` at the repo root, so the command is `make ability-sweep`, not `make -C native/rl ability-sweep` |
+| `sim/abi/bopl_rl.c`, `sim/abi/bopl_rl.h` | `sim/abi/` - the C ABI both backends sit behind, so it belongs with the simulator rather than with either consumer |
+| `Makefile` | `Makefile` at the repo root, so the command is `make ability-sweep`, not `make -C native/rl ability-sweep` |
 | the six surviving docs | `docs/` |
 | `native/rl/autoresearch/` | deleted - accretion era. `check_routing.py` and `smoke.py` reference it and must be repointed, and `.gitignore` needs the entry dropped |
 

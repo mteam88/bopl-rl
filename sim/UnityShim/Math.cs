@@ -892,7 +892,7 @@ namespace UnityEngine
 
 	// Presentation-only in this game (gameplay randomness goes through
 	// Updater's Unity.Mathematics.Random). Backed by System.Random; NOT
-	// Unity's Xorshift128 - documented deviation in sim/PORTING.md.
+	// Unity's Xorshift128 - a documented deviation.
 	public static class Random
 	{
 		// Per world (World.random): a world's draws follow its own history,

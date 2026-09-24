@@ -1,7 +1,7 @@
 /* Synthetic crowded layout-v3 fixture: duplicated grenades, clone inventories,
  * rope collapse, invisibility, live disabled smoke and a far pickup. */
 #define bopl_rl_state observation_test_state
-#include "../puffer/bopl_puffer.h"
+#include "bopl_puffer.h"
 #undef bopl_rl_state
 #include <assert.h>
 

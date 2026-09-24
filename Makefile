@@ -1,13 +1,14 @@
 CC ?= cc
 CFLAGS ?= -O3 -std=c11 -Wall -Wextra -Werror
-OUT ?= ../artifacts/rl
-# Probes under research/rust_ab resolve their fixture and log through
-# /proc/self/cwd/native/..., so a recipe that runs one has to change into the
-# project root first - make's own working directory is native/rl, where that
-# path does not exist and the failure is a bare `open:` with an empty message.
-# `rust-ab-suite` already does this through run_suite.sh, which is why the
-# standalone targets went for a while without anyone noticing.
-PROJECT_ROOT := $(abspath ../..)
+OUT ?= native/artifacts/rl
+# Probes under eval/rust_ab resolve their fixture and log through
+# /proc/self/cwd/native/..., so they have to run from the project root. This
+# Makefile lives at the root, so make's working directory already is that -
+# which is why no recipe below changes directory. It was not always so: the
+# Makefile used to sit in native/rl and the standalone targets silently failed
+# with a bare `open:` and an empty message until someone added a cd.
+ABI := sim/abi
+INCLUDES := -I$(ABI) -Itrain
 
 all: $(OUT)/libbopl_rl.so $(OUT)/benchmark $(OUT)/coverage $(OUT)/record $(OUT)/reset_check $(OUT)/sampled_check $(OUT)/reset_profile $(OUT)/frame_profile
 
@@ -19,8 +20,8 @@ map-ab: $(OUT)/map_ab
 # `dotnet publish` refreshes publish/; the sibling native/ directory keeps whatever
 # an earlier build left there, so pointing at it silently compares against a stale
 # oracle - it held an ABI 2 library for nine days after ABI 3 landed.
-REFERENCE ?= ../../sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so
-RUST_ROLLOUT ?= ../target/release/libbopl_sim.so
+REFERENCE ?= sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so
+RUST_ROLLOUT ?= native/target/release/libbopl_sim.so
 # The default `cargo build --release` stores `Fix` as an f64 (native/src/fixed.rs)
 # and is what training uses. It is NOT bit-comparable with the .NET oracle: its
 # multiplications and divisions round to the nearest double instead of
@@ -29,19 +30,19 @@ RUST_ROLLOUT ?= ../target/release/libbopl_sim.so
 # subject. Every A/B gate must therefore run the `q32` library, which is the
 # reference's exact Q32.32 arithmetic. It is built into its own target
 # directory so it does not fight the f64 build for `native/target`.
-RUST_ROLLOUT_Q32 ?= ../target-q32/release/libbopl_sim.so
+RUST_ROLLOUT_Q32 ?= native/target-q32/release/libbopl_sim.so
 
 rust-q32:
-	cargo build --release --features q32 --manifest-path ../Cargo.toml --target-dir ../target-q32
+	cargo build --release --features q32 --manifest-path native/Cargo.toml --target-dir native/target-q32
 
 # Exhaustive authored-map gate: all 124 maps, both 2- and 6-player layouts,
 # 3000 ticks per live case, with discrete player/slime state required exact.
 map-sweep-3000: $(OUT)/map_ab rust-q32
 	MAP_AB_STRICT_ACTORS=1 $(abspath $(OUT)/map_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32)) 3000
 
-$(OUT)/map_ab: research/rust_ab/map_ab.c bopl_rl.c bopl_rl.h
+$(OUT)/map_ab: eval/rust_ab/map_ab.c $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -I. research/rust_ab/map_ab.c bopl_rl.c -ldl -lm -o $@
+	$(CC) $(CFLAGS) $(INCLUDES) eval/rust_ab/map_ab.c $(ABI)/bopl_rl.c -ldl -lm -o $@
 
 # DestroyIfOutsideSceneBounds gate: walks a player off the edge of map 0 and
 # engages each ability form at three depths relative to the kill plane, then
@@ -52,9 +53,9 @@ $(OUT)/map_ab: research/rust_ab/map_ab.c bopl_rl.c bopl_rl.h
 bounds-ability-ab: $(OUT)/bounds_ability_ab rust-q32
 	$(abspath $(OUT)/bounds_ability_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
 
-$(OUT)/bounds_ability_ab: research/rust_ab/bounds_ability_ab.c bopl_rl.c bopl_rl.h
+$(OUT)/bounds_ability_ab: eval/rust_ab/bounds_ability_ab.c $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -I. research/rust_ab/bounds_ability_ab.c bopl_rl.c -ldl -lm -o $@
+	$(CC) $(CFLAGS) $(INCLUDES) eval/rust_ab/bounds_ability_ab.c $(ABI)/bopl_rl.c -ldl -lm -o $@
 
 # Collider-rescale vs entry-pass boundary gate: a grounded player pressing a
 # rescaling ability slot (Dash) while sudden death has carried it under the
@@ -64,11 +65,11 @@ $(OUT)/bounds_ability_ab: research/rust_ab/bounds_ability_ab.c bopl_rl.c bopl_rl
 # it as an ability body (cause Other, ungrounded 0.05 off the surface) while
 # the port pre-empts and kills the ordinary slime (cause Accident).
 scale-boundary-ab: $(OUT)/scale_boundary_ab rust-q32
-	cd $(PROJECT_ROOT) && $(abspath $(OUT)/scale_boundary_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
+	$(abspath $(OUT)/scale_boundary_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
 
-$(OUT)/scale_boundary_ab: research/rust_ab/scale_boundary_ab.c bopl_rl.c bopl_rl.h
+$(OUT)/scale_boundary_ab: eval/rust_ab/scale_boundary_ab.c $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -I. research/rust_ab/scale_boundary_ab.c bopl_rl.c -ldl -lm -o $@
+	$(CC) $(CFLAGS) $(INCLUDES) eval/rust_ab/scale_boundary_ab.c $(ABI)/bopl_rl.c -ldl -lm -o $@
 
 # Sudden-death publication gate: the tick each backend first PUBLISHES
 # header.sudden_death, on maps 0..4. GameSessionHandler raises the flag from
@@ -78,9 +79,9 @@ $(OUT)/scale_boundary_ab: research/rust_ab/scale_boundary_ab.c bopl_rl.c bopl_rl
 sudden-death-publication-ab: $(OUT)/sudden_death_publication_ab rust-q32
 	$(abspath $(OUT)/sudden_death_publication_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
 
-$(OUT)/sudden_death_publication_ab: research/rust_ab/sudden_death_publication_ab.c bopl_rl.c bopl_rl.h
+$(OUT)/sudden_death_publication_ab: eval/rust_ab/sudden_death_publication_ab.c $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -I. research/rust_ab/sudden_death_publication_ab.c bopl_rl.c -ldl -lm -o $@
+	$(CC) $(CFLAGS) $(INCLUDES) eval/rust_ab/sudden_death_publication_ab.c $(ABI)/bopl_rl.c -ldl -lm -o $@
 
 # Sudden-death endgame gate: maps 0-4 played out with no input at all, every
 # entity, slime and player field compared exactly from reset through the tick
@@ -91,11 +92,11 @@ $(OUT)/sudden_death_publication_ab: research/rust_ab/sudden_death_publication_ab
 # authored level updaters run, so map 2's AntiLockPlatform orbiter takes one
 # more waypoint kick on the deciding tick.
 sudden-death-chunk-ab: $(OUT)/sudden_death_chunk_ab rust-q32
-	cd $(PROJECT_ROOT) && BOPL_RL_ABILITY_SPAWNS=1 $(abspath $(OUT)/sudden_death_chunk_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
+	BOPL_RL_ABILITY_SPAWNS=1 $(abspath $(OUT)/sudden_death_chunk_ab) $(abspath $(REFERENCE)) $(abspath $(RUST_ROLLOUT_Q32))
 
-$(OUT)/sudden_death_chunk_ab: research/rust_ab/sudden_death_chunk_ab.c bopl_rl.c bopl_rl.h
+$(OUT)/sudden_death_chunk_ab: eval/rust_ab/sudden_death_chunk_ab.c $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -I. research/rust_ab/sudden_death_chunk_ab.c bopl_rl.c -ldl -lm -o $@
+	$(CC) $(CFLAGS) $(INCLUDES) eval/rust_ab/sudden_death_chunk_ab.c $(ABI)/bopl_rl.c -ldl -lm -o $@
 
 # The same authored-map gate as map-sweep-3000, run long enough that every
 # map reaches sudden death and the round resolves. Strictly wider coverage at
@@ -108,8 +109,8 @@ map-sweep-endgame: $(OUT)/map_ab rust-q32
 
 # Randomised-loadout gate: all 38 abilities, stratified over all 124 maps.
 # Every other gate here plays the hardcoded Dash/Bow/Platform kit
-# (puffer/bopl_bots.h:143-149), so the suite only ever exercises 3 of the 38
-# abilities - and all three defects in research/divergence/FIXTURES.md were
+# (train/bopl_bots.h:143-149), so the suite only ever exercises 3 of the 38
+# abilities - and all three defects in eval/divergence/FIXTURES.md were
 # found in that blind spot, none of them reachable from the gate loadout. This
 # runs the port against two more copies of itself, so it needs no oracle and
 # has no known-divergence baseline to drift against: crashes and self-
@@ -117,38 +118,38 @@ map-sweep-endgame: $(OUT)/map_ab rust-q32
 # workers. Subsumes and supersedes the leakprobe-q32/selfcheck-q32 control
 # cells, which stay in run_divergence_controls.sh at the study's 1240 games
 # because FIXTURES.md quotes those numbers.
-ABILITY_SWEEP_OUT ?= ../artifacts/rl/ability-sweep
+ABILITY_SWEEP_OUT ?= native/artifacts/rl/ability-sweep
 ABILITY_SWEEP_WORKERS ?= 4
 ability-sweep: $(OUT)/divergence_rate rust-q32
 	DR_BIN=$(abspath $(OUT)/divergence_rate) RUST_ROLLOUT_Q32=$(abspath $(RUST_ROLLOUT_Q32)) \
-	  research/divergence/run_ability_sweep.sh $(abspath $(ABILITY_SWEEP_OUT)) $(ABILITY_SWEEP_WORKERS)
+	  eval/divergence/run_ability_sweep.sh $(abspath $(ABILITY_SWEEP_OUT)) $(ABILITY_SWEEP_WORKERS)
 
 # Whole rust_ab differential suite, comparator included. Seventeen probes in
-# research/rust_ab only *print* a per-backend trace and always exit 0, so
+# eval/rust_ab only *print* a per-backend trace and always exit 0, so
 # checking exit status alone reports them as passing unconditionally; this
 # target runs trace_compare.py over their output and fails on any difference.
-# See research/rust_ab/README.md "Trace-only probes".
+# See eval/rust_ab/README.md "Trace-only probes".
 rust-ab-suite: rust-q32
 	REFERENCE=$(abspath $(REFERENCE)) RUST=$(abspath $(RUST_ROLLOUT_Q32)) \
-	  research/rust_ab/run_suite.sh $(PROBE)
+	  eval/rust_ab/run_suite.sh $(PROBE)
 
 # The comparator on its own, for a capture you already have:
-#   make -C native/rl rust-ab-trace CAPTURE=/tmp/out.csv
+#   make rust-ab-trace CAPTURE=/tmp/out.csv
 rust-ab-trace:
-	$(PYTHON) research/rust_ab/trace_compare.py $(CAPTURE)
+	$(PYTHON) eval/rust_ab/trace_compare.py $(CAPTURE)
 
 # Real-game replay differential: re-steps saved evaluation games (the .rep
 # recordings beside every evaluations/*.json) in both backends with the
 # recorded per-tick inputs and reports the first divergence per game.
 replay-ab: $(OUT)/replay_ab
 
-$(OUT)/replay_ab: research/rust_ab/replay_ab.c bopl_rl.c bopl_rl.h
+$(OUT)/replay_ab: eval/rust_ab/replay_ab.c $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -I. research/rust_ab/replay_ab.c bopl_rl.c -ldl -lm -o $@
+	$(CC) $(CFLAGS) $(INCLUDES) eval/rust_ab/replay_ab.c $(ABI)/bopl_rl.c -ldl -lm -o $@
 
 # Whole-directory sweep over one study or sweep evaluation directory:
-#   make -C native/rl replay-sweep GAMES=../artifacts/rl/study-grenade/evaluations
-GAMES ?= ../artifacts/rl/study-grenade/evaluations
+#   make replay-sweep GAMES=native/artifacts/rl/study-grenade/evaluations
+GAMES ?= native/artifacts/rl/study-grenade/evaluations
 # `REPLAY_RUST=$(RUST_ROLLOUT)` compares the shipping f64 build instead, which
 # only makes sense with a loose REPLAY_AB_TOL. The default 1 raw unit (2.3e-10)
 # absorbs the one-ulp residue q32 leaves on statically authored extents at tick
@@ -171,12 +172,12 @@ replay-selfcheck: $(OUT)/replay_ab rust-q32
 # The stronger half of the self check: the recorded inputs, replayed in the
 # backend that produced the recording, must reproduce the saved <game>.json.
 # LIBRARY must be a build of the commit the corpus was recorded with - the
-# prebuilt `../target/release` in a working checkout is not reliably that, and
+# prebuilt `native/target/release` in a working checkout is not reliably that, and
 # replaying a corpus in a later build fails this by design.
 PYTHON ?= python3
 LIBRARY ?= $(RUST_ROLLOUT)
 replay-roundtrip: $(OUT)/replay_ab
-	../artifacts/rl/venv/bin/python research/rust_ab/replay_ab_selfcheck.py \
+	native/artifacts/rl/venv/bin/python eval/rust_ab/replay_ab_selfcheck.py \
 	  --binary $(abspath $(OUT)/replay_ab) --library $(abspath $(LIBRARY)) $(GAMES)/*/*.rep
 
 # How long does the port agree with the oracle, and about what?
@@ -188,111 +189,111 @@ replay-roundtrip: $(OUT)/replay_ab
 # survival curve of ticks-to-first-divergence. The product is a rate, and a
 # regression metric to re-measure after any change.
 #
-# It deliberately lives in research/divergence and not research/rust_ab:
+# It deliberately lives in eval/divergence and not eval/rust_ab:
 # run_suite.sh globs that directory, so a probe added there changes the gate
 # result for everybody. This target is not a gate and never fails a build.
 #
-#   make -C native/rl divergence-rate            # the full study (~1 h, 4 workers)
-#   make -C native/rl divergence-report          # curves + attribution + coverage
-#   DIVERGENCE_WORKERS=2 make -C native/rl divergence-rate   # on a busy machine
-DIVERGENCE_OUT ?= ../artifacts/rl/divergence-rate
+#   make divergence-rate            # the full study (~1 h, 4 workers)
+#   make divergence-report          # curves + attribution + coverage
+#   DIVERGENCE_WORKERS=2 make divergence-rate   # on a busy machine
+DIVERGENCE_OUT ?= native/artifacts/rl/divergence-rate
 DIVERGENCE_WORKERS ?= 4
 
 divergence-rate: $(OUT)/divergence_rate rust-q32 $(RUST_ROLLOUT)
 	DR_BIN=$(abspath $(OUT)/divergence_rate) REFERENCE=$(abspath $(REFERENCE)) \
 	  RUST_ROLLOUT_Q32=$(abspath $(RUST_ROLLOUT_Q32)) RUST_ROLLOUT=$(abspath $(RUST_ROLLOUT)) \
-	  research/divergence/run_divergence_rate.sh $(abspath $(DIVERGENCE_OUT)) $(DIVERGENCE_WORKERS)
+	  eval/divergence/run_divergence_rate.sh $(abspath $(DIVERGENCE_OUT)) $(DIVERGENCE_WORKERS)
 
 # The controls the study's numbers depend on: the instrument measured against
 # itself, and the narrow loadout the existing gates use.
 divergence-controls: $(OUT)/divergence_rate rust-q32 $(RUST_ROLLOUT)
 	DR_BIN=$(abspath $(OUT)/divergence_rate) REFERENCE=$(abspath $(REFERENCE)) \
 	  RUST_ROLLOUT_Q32=$(abspath $(RUST_ROLLOUT_Q32)) RUST_ROLLOUT=$(abspath $(RUST_ROLLOUT)) \
-	  research/divergence/run_divergence_controls.sh $(abspath $(DIVERGENCE_OUT))-controls $(DIVERGENCE_WORKERS)
+	  eval/divergence/run_divergence_controls.sh $(abspath $(DIVERGENCE_OUT))-controls $(DIVERGENCE_WORKERS)
 
 divergence-report:
-	$(PYTHON) research/divergence/divergence_summary.py $(abspath $(DIVERGENCE_OUT))
+	$(PYTHON) eval/divergence/divergence_summary.py $(abspath $(DIVERGENCE_OUT))
 
 # The f64 build the library actually trains in; the q32 one is `rust-q32`.
 $(RUST_ROLLOUT):
-	cargo build --release --manifest-path ../Cargo.toml
+	cargo build --release --manifest-path native/Cargo.toml
 
-$(OUT)/divergence_rate: research/divergence/divergence_rate.c research/divergence/divergence_compare.h bopl_rl.c bopl_rl.h puffer/bopl_bots.h puffer/bopl_bots_v2.h puffer/bopl_bots_v2_play.h puffer/bopl_layout.h
+$(OUT)/divergence_rate: eval/divergence/divergence_rate.c eval/divergence/divergence_compare.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -I. -Ipuffer -Iresearch/divergence \
-	  research/divergence/divergence_rate.c bopl_rl.c -ldl -lm -lpthread -o $@
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) -Ieval/divergence \
+	  eval/divergence/divergence_rate.c $(ABI)/bopl_rl.c -ldl -lm -lpthread -o $@
 
 # Observation-writer microbenchmark + sim ticks/s on one core.
 writer-bench: $(OUT)/writer_bench
 
-$(OUT)/writer_bench: writer_bench.c puffer/bopl_puffer.h puffer/bopl_obs_v4.h puffer/bopl_layout_v4.h puffer/bopl_bots.h puffer/bopl_layout.h puffer/bopl_aim.h bopl_rl.c bopl_rl.h
+$(OUT)/writer_bench: writer_bench.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -I. writer_bench.c bopl_rl.c -lm -lpthread -o $@
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) writer_bench.c $(ABI)/bopl_rl.c -lm -lpthread -o $@
 
-$(OUT)/libbopl_research.so: puffer/eval_binding.c puffer/bopl_puffer.h puffer/bopl_obs_v4.h puffer/bopl_layout_v4.h puffer/bopl_bots.h puffer/bopl_bots_v2.h puffer/bopl_bots_v2_play.h puffer/bopl_layout.h puffer/bopl_aim.h bopl_rl.c bopl_rl.h
+$(OUT)/libbopl_research.so: train/eval_binding.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -shared -I. puffer/eval_binding.c bopl_rl.c -lm -o $@
+	$(CC) $(CFLAGS) -Wno-unused-function -fPIC -shared $(INCLUDES) train/eval_binding.c $(ABI)/bopl_rl.c -lm -o $@
 
-# In-game agent shim (puffer/bopl_agent.h): the training decision loop fed by
+# In-game agent shim (train/bopl_agent.h): the training decision loop fed by
 # a running game, plus the CPU policy evaluator. Loaded by the Unity build
-# (Assets/Scripts/Assembly-CSharp/RlAgent.cs) and research/agent_shim.py.
+# (Assets/Scripts/Assembly-CSharp/RlAgent.cs) and eval/agent_shim.py.
 PUFFERLIB ?= $(OUT)/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9/src
 agent: $(OUT)/libbopl_agent.so
 
-$(OUT)/libbopl_agent.so: puffer/bopl_agent.c puffer/bopl_agent.h puffer/policy_eval.c puffer/bopl_set_encoder.h puffer/bopl_v4_eval.h puffer/bopl_obs_v4.h puffer/bopl_puffer.h puffer/bopl_bots.h puffer/bopl_bots_v2.h puffer/bopl_bots_v2_play.h puffer/bopl_layout.h puffer/bopl_layout_v4.h puffer/bopl_aim.h bopl_rl.c bopl_rl.h
+$(OUT)/libbopl_agent.so: train/bopl_agent.c train/bopl_agent.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c -I. -Ipuffer puffer/bopl_agent.c -o $(OUT)/bopl_agent.o
-	$(CC) $(CFLAGS) -fPIC -c bopl_rl.c -o $(OUT)/bopl_agent_rl.o
-	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Ipuffer puffer/policy_eval.c -o $(OUT)/bopl_agent_policy.o
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c $(INCLUDES) -Ipuffer train/bopl_agent.c -o $(OUT)/bopl_agent.o
+	$(CC) $(CFLAGS) -fPIC -c $(ABI)/bopl_rl.c -o $(OUT)/bopl_agent_rl.o
+	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Ipuffer train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
 	$(CC) -shared $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o -lm -lpthread -o $@
 	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o
 
-# The same shim for the macOS player (arm64, run on the Mac: `make -C native/rl agent-mac`);
+# The same shim for the macOS player (arm64, run on the Mac: `make agent-mac`);
 # Mono resolves DllImport("bopl_agent") to BoplBattle.app/Contents/Plugins/libbopl_agent.dylib.
 agent-mac: $(OUT)/libbopl_agent.dylib
 
-$(OUT)/libbopl_agent.dylib: puffer/bopl_agent.c puffer/bopl_agent.h puffer/policy_eval.c puffer/bopl_set_encoder.h puffer/bopl_v4_eval.h puffer/bopl_obs_v4.h puffer/bopl_puffer.h puffer/bopl_bots.h puffer/bopl_bots_v2.h puffer/bopl_bots_v2_play.h puffer/bopl_layout.h puffer/bopl_layout_v4.h puffer/bopl_aim.h bopl_rl.c bopl_rl.h
+$(OUT)/libbopl_agent.dylib: train/bopl_agent.c train/bopl_agent.h train/policy_eval.c train/bopl_set_encoder.h train/bopl_v4_eval.h train/bopl_obs_v4.h train/bopl_puffer.h train/bopl_bots.h train/bopl_bots_v2.h train/bopl_bots_v2_play.h train/bopl_layout.h train/bopl_layout_v4.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c -I. -Ipuffer puffer/bopl_agent.c -o $(OUT)/bopl_agent.o
-	$(CC) $(CFLAGS) -fPIC -c bopl_rl.c -o $(OUT)/bopl_agent_rl.o
-	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Ipuffer puffer/policy_eval.c -o $(OUT)/bopl_agent_policy.o
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -fPIC -c $(INCLUDES) -Ipuffer train/bopl_agent.c -o $(OUT)/bopl_agent.o
+	$(CC) $(CFLAGS) -fPIC -c $(ABI)/bopl_rl.c -o $(OUT)/bopl_agent_rl.o
+	$(CC) -O3 -std=gnu11 -fPIC -c -I$(PUFFERLIB) -Ipuffer train/policy_eval.c -o $(OUT)/bopl_agent_policy.o
 	$(CC) -dynamiclib $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o -lm -lpthread -install_name @rpath/libbopl_agent.dylib -o $@
 	rm -f $(OUT)/bopl_agent.o $(OUT)/bopl_agent_rl.o $(OUT)/bopl_agent_policy.o
 
-$(OUT)/libbopl_rl.so: bopl_rl.c bopl_rl.h
+$(OUT)/libbopl_rl.so: $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -fPIC -shared bopl_rl.c -o $@
+	$(CC) $(CFLAGS) -fPIC -shared $(ABI)/bopl_rl.c -o $@
 
-$(OUT)/benchmark: benchmark.c bopl_rl.h $(OUT)/libbopl_rl.so
+$(OUT)/benchmark: benchmark.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) benchmark.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/coverage: coverage.c bopl_rl.h $(OUT)/libbopl_rl.so
+$(OUT)/coverage: coverage.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) coverage.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/record: record.c bopl_rl.h $(OUT)/libbopl_rl.so
+$(OUT)/record: record.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) record.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/reset_check: reset_check.c bopl_rl.h $(OUT)/libbopl_rl.so
+$(OUT)/reset_check: reset_check.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) reset_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/sampled_check: sampled_check.c bopl_rl.h $(OUT)/libbopl_rl.so
+$(OUT)/sampled_check: sampled_check.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) sampled_check.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/reset_profile: reset_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
+$(OUT)/reset_profile: reset_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 reset_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
-$(OUT)/frame_profile: frame_profile.c bopl_rl.h $(OUT)/libbopl_rl.so
+$(OUT)/frame_profile: frame_profile.c $(ABI)/bopl_rl.h $(OUT)/libbopl_rl.so
 	$(CC) $(CFLAGS) -std=gnu11 frame_profile.c -L$(OUT) -lbopl_rl -Wl,-rpath,'$$ORIGIN' -o $@
 
 .PHONY: divergence-rate divergence-controls divergence-report ability-sweep all research map-ab map-sweep-3000 map-sweep-endgame bounds-ability-ab scale-boundary-ab sudden-death-chunk-ab sudden-death-publication-ab rust-ab-suite rust-ab-trace replay-ab replay-sweep replay-visible replay-selfcheck replay-roundtrip rust-q32 writer-bench agent agent-mac check-reward
 
-# Reward semantics on hand-built terminal states (research/check_reward.c):
+# Reward semantics on hand-built terminal states (eval/check_reward.c):
 # the five outcomes a match can have, and the incentive ordering between them.
 # No game process and no oracle - both backends already agree on the counters
 # this reads, so what is under test is only what the reward makes of them.
 check-reward: $(OUT)/check_reward
 	$(OUT)/check_reward
 
-$(OUT)/check_reward: research/check_reward.c puffer/bopl_puffer.h puffer/bopl_obs_v4.h puffer/bopl_layout_v4.h puffer/bopl_bots.h puffer/bopl_layout.h puffer/bopl_aim.h bopl_rl.c bopl_rl.h
+$(OUT)/check_reward: eval/check_reward.c train/bopl_puffer.h train/bopl_obs_v4.h train/bopl_layout_v4.h train/bopl_bots.h train/bopl_layout.h train/bopl_aim.h $(ABI)/bopl_rl.c $(ABI)/bopl_rl.h
 	mkdir -p $(OUT)
-	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function -I. research/check_reward.c bopl_rl.c -ldl -lm -lpthread -o $@
+	$(CC) $(CFLAGS) -std=gnu11 -Wno-unused-function $(INCLUDES) eval/check_reward.c $(ABI)/bopl_rl.c -ldl -lm -lpthread -o $@

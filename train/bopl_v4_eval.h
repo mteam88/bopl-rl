@@ -1,5 +1,5 @@
-/* CPU reference forward for policy v4 (POLICY_V4_PLAN.md section 3,
- * research/policy_v4.py is the torch twin, puffer/bopl_v4.cu the trainer).
+/* CPU reference forward for policy v4 (eval/policy_v4.py is the torch
+ * twin, train/bopl_v4.cu the trainer).
  * Include after upstream puffernet.h. Weights are the trainer's flat dump read
  * back to back (every tensor is a multiple of 4 floats, bopl_v4.cu
  * reg_aligned): per set W1 (inner, features) and W2 (set_dim, inner), the

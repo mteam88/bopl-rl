@@ -3,7 +3,7 @@
  * clone failure prefixes are covered by native/fixtures/null-ability-clones.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/null_ability_ab \
- *   research/rust_ab/null_ability_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/null_ability_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <stdio.h>

@@ -11,7 +11,7 @@ them. Thresholds live in the sweep TOML:
     stalemate = "timeout_rate > 0.5"
     heldout-gap = "heldout_gap > 8"        # training-map minus held-out-map win rate, points
 
-Metrics come from evaluate.py's per-group behavior_totals (research/telemetry.py
+Metrics come from evaluate.py's per-group behavior_totals (eval/telemetry.py
 FIELDS) pooled over every non-selfplay group on the evaluation maps.
 """
 import json
@@ -19,7 +19,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'research'))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'eval'))
 import map_catalogue  # noqa: E402
 
 DEFAULT_RULES = {
@@ -31,7 +31,7 @@ DEFAULT_RULES = {
 METRICS = ('arrows_per_game', 'arrow_hits_per_game', 'arrow_hit_rate', 'platforms_per_game',
            'dashes_per_game', 'bows_per_game', 'kills_per_game', 'deaths_per_game',
            'timeout_rate', 'win_rate', 'mean_duration_seconds', 'games',
-           # the held-out-map band (POLICY_V4_PLAN.md "More maps"): scripted-bot win rate on
+           # the held-out-map band: scripted-bot win rate on
            # the report's held-out maps and its shortfall against the training maps, in points
            'heldout_games', 'heldout_win_rate', 'heldout_gap')
 

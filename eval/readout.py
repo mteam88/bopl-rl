@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """One-shot readout of a training run against baselines.
 
-    python native/rl/research/readout.py <run dir> [--baseline NAME=<run dir>]... [--json out.json]
+    python eval/readout.py <run dir> [--baseline NAME=<run dir>]... [--json out.json]
 
 A run dir is a sweep trial (.../sweeps/<sweep>/<trial>) holding config.json,
 metrics.jsonl, evaluation.log, evaluations/<step>/ and reference/<pool>/.
@@ -38,7 +38,7 @@ from pathlib import Path
 import map_catalogue
 import packed
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def sweeps_dirs():
@@ -70,7 +70,7 @@ def resolve(path):
             return root / path
     return SWEEPS / path
 DEFAULT_BASELINES = [("024", "overnight-9/024")]
-GAMMA = 0.995   # puffer/bopl.ini; per decision, the unit the critic is trained in
+GAMMA = 0.995   # train/bopl.ini; per decision, the unit the critic is trained in
 ROLE = {"trained": "trained", "untrained": "heldout", "heldout": "heldout"}   # the diagnostic suite's map_role
 
 
@@ -333,7 +333,7 @@ def pool_scores(runs, pool_name):
 
 def anchor_pool(name):
     """reference_pool's loaded pool for anchors/<name>/pool.json under the sweeps dirs."""
-    sys.path.insert(0, str(ROOT / "native/rl/sweep"))
+    sys.path.insert(0, str(ROOT / "train/sweep"))
     import reference_pool
     for root in SWEEPS_DIRS:
         path = root / "anchors" / name / "pool.json"

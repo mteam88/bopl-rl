@@ -1,7 +1,7 @@
 /* Aim head parameterisations (experiment of 2026-09-12), shared by the CUDA
  * trainer (pufferlib.cu, bopl_rollout.cu), the CPU evaluator (policy_eval.c)
  * and the in-game agent (bopl_agent.c). Python mirrors the widths in
- * research/layout.py. Both are off by default and selected per run:
+ * eval/layout.py. Both are off by default and selected per run:
  *
  *   BOPL_AIM_FOURIER=K  (train.py --aim-fourier K)
  *     The 256 aim logits are not decoder outputs. The decoder emits one aim

@@ -1,8 +1,8 @@
 """Replay the same evaluation N times on one backend and count how often it disagrees.
 
-sim/PORTING.md carries an open TODO: a determinism flake seen once in ~17 runs of
+A determinism flake was seen once in ~17 runs of
 sim/Oracle/checkpoint.sh, suspected to be a `Dictionary<string,_>` iteration-order
-leak (.NET randomizes string hash seeds per process). SIM_OVERHAUL.md:229 later
+leak (.NET randomizes string hash seeds per process). A later note
 guessed it was "likely a socket-path artefact". Both statements rest on a single
 observation that 16 retries failed to reproduce, so nobody knows the rate on the
 in-process path the RL evaluation actually uses.

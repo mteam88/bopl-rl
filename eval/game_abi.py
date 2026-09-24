@@ -4,8 +4,8 @@ Two libraries can only host the same evaluation if they agree on the ABI
 version, the ability/map catalogue and the catalogue hash; a difference in any
 of them means the policies are reading a different observation stream or the
 loadout ids mean different abilities. This opens each game through the very
-same host path the evaluation uses (research/environment.py's libbopl_research.so,
-which links native/rl/bopl_rl.c), so what it reports is what an evaluation would
+same host path the evaluation uses (eval/environment.py's libbopl_research.so,
+which links sim/abi/bopl_rl.c), so what it reports is what an evaluation would
 actually get -- not a static guess from `nm`.
 
     python game_abi.py <game.so> [<game2.so> ...]
@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 import sys
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 

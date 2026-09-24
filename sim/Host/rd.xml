@@ -5,7 +5,7 @@
      MonoBehaviour.MessagesFor, PersistentCall.FindMethod), so ILC cannot see
      the reflected members statically. Root both assemblies wholesale; the
      alternative (per-type [DynamicallyAccessedMembers] annotations or a
-     generated dispatch table) is tracked in sim/Oracle/AOT.md. -->
+     generated dispatch table) is tracked in eval/divergence/FIXTURES.md. -->
 <Directives>
   <Application>
     <Assembly Name="Gameplay" Dynamic="Required All" />

@@ -2,7 +2,7 @@
  * Grappling Hook rope.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/dash_grapple_rope_ab \
- *   research/rust_ab/dash_grapple_rope_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/dash_grapple_rope_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

@@ -3,8 +3,8 @@
 # vs pool v3) and the behaviour flags. ~6 minutes on a quiet box. Numbers are
 # noise at this scale; the point is suggest -> launch -> score -> observe ->
 # report. Run it outside the artifacts tree:
-#   native/artifacts/rl/venv/bin/python native/rl/sweep/driver.py \
-#     --config native/rl/sweep/configs/smoke.toml --root /tmp/sweeps
+#   native/artifacts/rl/venv/bin/python train/sweep/driver.py \
+#     --config train/sweep/configs/smoke.toml --root /tmp/sweeps
 
 [sweep]
 method = "Protein"

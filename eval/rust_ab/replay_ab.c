@@ -56,7 +56,7 @@
  * Exit status: 0 when every game agrees, 1 when any diverges, 2 on usage or
  * I/O failure.
  *
- *   cc -O3 -std=c11 -I. -o replay_ab research/rust_ab/replay_ab.c bopl_rl.c -ldl -lm
+ *   cc -O3 -std=c11 -I. -o replay_ab eval/rust_ab/replay_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <dirent.h>
@@ -606,7 +606,7 @@ int main(int argc, char **argv) {
     uint32_t limit = (uint32_t)(getenv("REPLAY_AB_LIMIT") ? atoi(getenv("REPLAY_AB_LIMIT")) : 7200);
     /* 8192 raw = 1.9e-6 world units: above the largest static authored-geometry
      * gap measured at reset (1.06e-6 on a map trigger half-extent, the
-     * separately rounded rounded-rectangle geometry RUST_ROLLOUTS.md records)
+     * separately rounded rounded-rectangle geometry)
      * and far below any real physics drift. */
     int64_t tolerance = getenv("REPLAY_AB_TOL") ? strtoll(getenv("REPLAY_AB_TOL"), NULL, 10) : 8192;
     unsigned max_ticks = (unsigned)(getenv("REPLAY_AB_MAX_TICKS") ? atoi(getenv("REPLAY_AB_MAX_TICKS")) : 0);

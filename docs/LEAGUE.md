@@ -94,26 +94,26 @@ into halves that could never be pooled and cost twice the CPU to fill.
 ## Scoring
 
 Draw-aware, always: a win is 1, a draw 0.5, a loss 0, computed from each game's
-final player flags via `research/elo_ladder.play_games`. The legacy `win` field
+final player flags via `eval/elo_ladder.play_games`. The legacy `win` field
 counted a mutual death as a win for whichever side wrote the report and is never
 read. Games are always side-swapped pairs on fixed seeds.
 
 ## Commands
 
 ```
-python native/rl/league seed     # write league.json: specialists, scripted roster, anchor
-python native/rl/league play     # play matchups, append counts   (the only verb that costs CPU)
-python native/rl/league rate     # Bradley-Terry Elo, Nash averaging, RPP
-python native/rl/league status   # members, matrix coverage, saturation
-python native/rl/league add      # append one immutable member
-python native/rl/league check    # prove the estimators on matrices with known answers
+python league seed     # write league.json: specialists, scripted roster, anchor
+python league play     # play matchups, append counts   (the only verb that costs CPU)
+python league rate     # Bradley-Terry Elo, Nash averaging, RPP
+python league status   # members, matrix coverage, saturation
+python league add      # append one immutable member
+python league check    # prove the estimators on matrices with known answers
 ```
 
 `play` gates matchups it has already decided: a pair whose whole confidence
 interval sits outside 15–85% is skipped as uninformative, which is where the
 throughput goes. Re-running `play` deepens only what is still in doubt.
 
-There is exactly one rating scale in the repo: `research/elo_ladder.py`'s
+There is exactly one rating scale in the repo: `eval/elo_ladder.py`'s
 `bradley_terry_fit` (draw-aware, `random` anchored at 0 Elo, with intervals).
 This package calls it and does not reimplement it.
 

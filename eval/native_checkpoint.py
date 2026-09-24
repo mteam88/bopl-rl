@@ -20,7 +20,7 @@ def write_checkpoint(path, save_weights, *, obs_size, hidden, num_layers,
 
     Pass lambda name: _C.save_weights(trainer, name) as save_weights. Steps are
     actual environment counters, never PufferLib's padded native agent count.
-    aim_fourier/aim_ar (puffer/bopl_aim.h) size the decoder and are recorded
+    aim_fourier/aim_ar (train/bopl_aim.h) size the decoder and are recorded
     for the evaluators.
     """
     dimensions = dict(obs_size=obs_size, hidden=hidden, num_layers=num_layers)
@@ -33,7 +33,7 @@ def write_checkpoint(path, save_weights, *, obs_size, hidden, num_layers,
     if aim_fourier > layout.AIM_MAX_HARMONICS or aim_ar > 1:
         raise ValueError("Invalid native checkpoint aim head parameterisation")
     if architecture == layout.V4_ARCHITECTURE and obs_size == layout.V4_OBS_SIZE:
-        # Policy v4 (POLICY_V4_PLAN.md): the whole network is described by the shape dict.
+        # Policy v4: the whole network is described by the shape dict.
         v4_shape = {**layout.V4_DEFAULTS, **(v4_shape or {})}
         expected = layout.policy_v4_weights(hidden, num_layers, aim_fourier=aim_fourier, aim_ar=aim_ar, **v4_shape)
     else:

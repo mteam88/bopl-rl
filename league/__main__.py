@@ -1,15 +1,15 @@
 """The league CLI: seed, add, play, rate, status, check.
 
-    python native/rl/league seed
-    python native/rl/league play  --members specialist,random,scripted:hard --games 48
-    python native/rl/league rate
-    python native/rl/league status
-    python native/rl/league add --name X --kind exploiter --weights policy.bin --run DIR --step N
-    python native/rl/league check
+    python league seed
+    python league play  --members specialist,random,scripted:hard --games 48
+    python league rate
+    python league status
+    python league add --name X --kind exploiter --weights policy.bin --run DIR --step N
+    python league check
 
 `play` is the only verb that costs CPU. Everything else reads the two committed
 files. Games are always side-swapped pairs on fixed seeds and are scored off the
-simulator's own end-of-episode flags (research/elo_ladder.play_games), never off
+simulator's own end-of-episode flags (eval/elo_ladder.play_games), never off
 a stored `win` field -- the legacy field recorded a mutual death as a win for
 whichever side wrote the report.
 """
@@ -22,8 +22,8 @@ import sys
 import time
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-sys.path[:0] = [str(HERE), str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
+ROOT = HERE.parent
+sys.path[:0] = [str(HERE), str(ROOT / 'eval'), str(ROOT / 'native/tools')]
 
 import numpy as np  # noqa: E402
 
@@ -38,7 +38,7 @@ SPECIALISTS = ['dash-bow-platform', 'roll-grenade-smoke', 'teleport-mine-tesla',
                'dash-missile-platform', 'grapple-beam-rock', 'duplicator-blink-blackhole', 'drill-throw-magnet']
 SEED_STEP = 9253158912
 # Reward semantics live in the training binding, not the simulator: f65c33b7
-# changed native/rl/puffer/bopl_agent.c and bopl_puffer.h only. A run's
+# changed train/bopl_agent.c and bopl_puffer.h only. A run's
 # native_binding_sha256 therefore names which semantics it trained under, and is
 # the one field that actually discriminates them -- config.json's `reward` dict
 # holds the same numbers either side of the change.

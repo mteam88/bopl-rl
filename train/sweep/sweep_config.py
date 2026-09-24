@@ -27,7 +27,7 @@ from pathlib import Path
 
 import flags
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 
 # Reserved keys PufferLib's _params_from_puffer_sweep skips; parameters may not
 # use these names (they live in their own [params.*] tables, but the flattened
@@ -38,7 +38,7 @@ RESERVED = ('method', 'metric', 'metric_distribution', 'goal', 'downsample',
 
 DISTRIBUTIONS = ('uniform', 'int_uniform', 'uniform_pow2', 'log_normal', 'logit_normal')
 
-# train.py argparse destinations (native/rl/puffer/train.py arguments()).
+# train.py argparse destinations (train/train.py arguments()).
 # output/resume are driver-owned; seed is driver-owned when [sweep].seeds != fixed.
 TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder',
                'hidden', 'layers', 'horizon', 'learner_passes', 'minibatch_div', 'learning_rate',
@@ -54,11 +54,11 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder'
                'frozen_games', 'evaluation_workers', 'evaluation_pool', 'scripted_bots', 'scripted_level',
                'scripted_roster', 'scripted_banks', 'scripted_share_min', 'scripted_share_max',
                'scripted_opponents', 'aim_fourier', 'aim_ar',
-               # policy v4 (POLICY_V4_PLAN.md): --encoder v4 shape flags and the writer ablation
+               # policy v4: --encoder v4 shape flags and the writer ablation
                'v4_set_dim', 'v4_set_inner', 'v4_flat_dim', 'v4_ffn_dim', 'v4_critic_dim',
                'v4_critic_privileged', 'v4_critic_detach', 'v4_mean_pool', 'v4_ablate', 'v4_row_budget')
 STORE_TRUE = ('no_eval', 'loadout_no_dup')
-# Virtual swept parameters for the scripted-bot curriculum (SCRIPTED_BOTS.md):
+# Virtual swept parameters for the scripted-bot curriculum:
 # scripted_banks = how many banks draw from [fixed].scripted_roster (passed
 # through as --scripted-banks), or without a roster how many of
 # [fixed].scripted_bots (an ordered candidate list) take over banks;

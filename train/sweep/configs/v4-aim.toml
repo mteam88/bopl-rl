@@ -1,4 +1,4 @@
-# Policy v4 layout increment (POLICY_V4_PLAN.md section 7b, ablation 19): v4-aim
+# Policy v4 layout increment (ablation 19): v4-aim
 #   layout v4.1: v4-full with the aim ray and the line of sight to the opponent in the two duplicate down-ray slots (writer bit 8, same shapes)
 # One 1.73B trial of overnight-9 024's exact recipe (pool v7 625, seed 73) with the
 # policy v4 encoder / decoder and observation layout 4 in place of the v3 set encoder;
@@ -47,7 +47,7 @@ platform-spam = "platforms_per_game > 8"
 stalemate = "timeout_rate > 0.5"
 
 [fixed]
-# policy v4 (POLICY_V4_PLAN.md), width 256, one MinGRU layer; shape flags below
+# policy v4, width 256, one MinGRU layer; shape flags below
 encoder = "v4"
 hidden = 256
 layers = 1

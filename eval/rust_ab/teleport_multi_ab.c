@@ -3,7 +3,7 @@
  * It also covers both hidden-object effects and their exact reactivation.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/teleport_ability_ab \
- *   research/rust_ab/teleport_multi_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/teleport_multi_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

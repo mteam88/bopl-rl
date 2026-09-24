@@ -1,4 +1,4 @@
-/* Observation layout v4 (POLICY_V4_PLAN.md section 2), next to layout v3
+/* Observation layout v4, next to layout v3
  * (bopl_layout.h). Both are written from the same wire state (bopl_rl.h,
  * version 3); which one a player's row holds is selected per player
  * (BoplPuffer.layout), so a v3 checkpoint and a v4 checkpoint can share an
@@ -41,7 +41,7 @@ enum {
      * wall blocks instead, height above the water, distance to lethal terrain,
      * ground within one dash, SDF at the body and its gradient. */
     BOPL4_TERRAIN=12,
-    /* Rays from the body (the primary geometry channel; PROBES.md section 5:
+    /* Rays from the body (the primary geometry channel:
      * 32+4 rays alone beat the whole v3 observation on falls and geometry):
      * BOPL4_RAYS_AROUND uniform rays, angle 2 pi k / BOPL4_RAYS_AROUND from +x,
      * then BOPL4_RAYS_DOWN in a 120-degree fan about straight down (-135,
@@ -79,7 +79,7 @@ static_assert(BOPL4_OBS_SIZE==4812, "layout v4 size");
 _Static_assert(BOPL4_OBS_SIZE==4812, "layout v4 size");
 #endif
 
-/* Network shape defaults (POLICY_V4_PLAN.md section 3); the trainer flags and
+/* Network shape defaults; the trainer flags and
  * the checkpoint sidecar override them, the evaluator reads the sidecar. */
 enum { BOPL4_SET_DIM=128, BOPL4_SET_INNER=128, BOPL4_FLAT_DIM=256, BOPL4_FFN_DIM=512, BOPL4_CRITIC_DIM=512 };
 

@@ -3,7 +3,7 @@
  * instantiated in callback order and register together on the next pass.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/grenade_multi_kill_ab \
- *   research/rust_ab/grenade_multi_kill_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/grenade_multi_kill_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

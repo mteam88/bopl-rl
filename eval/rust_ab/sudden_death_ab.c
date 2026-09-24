@@ -1,7 +1,7 @@
 /* Sudden-death A/B: print authored platform positions around activation.
  *
- * cc -O2 -I. -o ../target/release/sudden_death_ab \
- *   research/rust_ab/sudden_death_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -I sim/abi -o ../target/release/sudden_death_ab \
+ *   eval/rust_ab/sudden_death_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <stdio.h>

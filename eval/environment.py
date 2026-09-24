@@ -10,7 +10,7 @@ import layout
 from layout import ACTION_SIZES,NUM_ATNS
 from evaluation_protocol import DEFAULT_LOADOUT,resolve_loadouts
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'native/tools'))
 from reference import resolve_game
 
@@ -48,11 +48,11 @@ if LIB.research_telemetry_size()!=len(FIELDS): raise RuntimeError('Rebuild the r
 _fields = (C.c_int*len(layout.LAYOUT_FIELDS))()
 if (LIB.research_layout(_fields,len(_fields))!=len(layout.LAYOUT_FIELDS) or tuple(_fields)!=layout.LAYOUT_FIELDS
         or LIB.research_num_atns()!=NUM_ATNS or LIB.research_obs_size()!=layout.OBS_SIZE):
-    raise RuntimeError(f'Research library layout {tuple(_fields)} differs from research/layout.py {layout.LAYOUT_FIELDS}; rebuild it')
+    raise RuntimeError(f'Research library layout {tuple(_fields)} differs from eval/layout.py {layout.LAYOUT_FIELDS}; rebuild it')
 _fields4 = (C.c_int*len(layout.V4_LAYOUT_FIELDS))()
 if (LIB.research_layout_v4(_fields4,len(_fields4))!=len(layout.V4_LAYOUT_FIELDS) or tuple(_fields4)!=layout.V4_LAYOUT_FIELDS
         or LIB.research_obs_stride()!=layout.OBS_STRIDE):
-    raise RuntimeError(f'Research library layout v4 {tuple(_fields4)} differs from research/layout.py {layout.V4_LAYOUT_FIELDS}; rebuild it')
+    raise RuntimeError(f'Research library layout v4 {tuple(_fields4)} differs from eval/layout.py {layout.V4_LAYOUT_FIELDS}; rebuild it')
 LIB.research_open.argtypes = [C.c_uint32,C.c_uint32,C.c_uint32,C.c_int]
 LIB.research_open.restype = C.c_void_p
 LIB.research_reset.argtypes = [C.c_void_p,C.c_uint32,C.c_uint32]
@@ -100,7 +100,7 @@ def game_identity(game=None):
         payload['game_assembly']=native
         metadata=data/'il2cpp_data/Metadata/global-metadata.dat'
         if metadata.exists(): payload['metadata']=metadata
-    # The NativeAOT .NET sim (sim/RL.md) compiles the game code into the executable
+    # The NativeAOT .NET sim compiles the game code into the executable
     # itself and ships no payload files: the player hash alone identifies the build.
     backend='il2cpp' if 'game_assembly' in payload else 'mono' if payload else 'dotnet-aot'
     digests={name:hashlib.sha256(path.read_bytes()).hexdigest() for name,path in payload.items()}

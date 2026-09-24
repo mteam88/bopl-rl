@@ -10,7 +10,7 @@
 # build are flagged game_mismatch, not refused. After a sim or bot change with
 # gameplay impact, build the next pool (same members, ~15 min) and point `pool` at it:
 #   systemd-run --user --unit bopl-pool-vN -p CPUQuota=1100% --nice=10 -- env BOPL_RL_BACKEND=rust \
-#     native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py build \
+#     native/artifacts/rl/venv/bin/python train/sweep/reference_pool.py build \
 #     --out native/artifacts/rl/sweeps/anchors/pool-vN/pool.json --games-per-pair 48 --workers 10 --slow-workers 12 \
 #     --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,mixed-v2-hard,search-hard,search-medium \
 #     $(for n in o3-001 o3-002 o3-009 o3-012 o3-017 o3-019 run007; do echo --checkpoint $n-final=native/artifacts/rl/sweeps/anchors/overnight-3-v3/$n-final.bin; done)
@@ -48,7 +48,7 @@
 # 0.15, so the new trial 000 is the direct A/B against the 469-Elo baseline.
 #
 # Bots: the training bank plays mixed-v2-hard, not mixed-hard. v1 bots lost
-# 66% of their games to platform squishes (SCRIPTED_BOTS.md loss taxonomy),
+# 66% of their games to platform squishes (loss taxonomy),
 # the exploit the no-offense trials learned; v2 cut squishes 221->29 and rates
 # 592 Elo vs 342 at equal cost (125k vs 128k learner/s median, 128 workers,
 # 12M-step smoke 2026-09-11 under CPUQuota 800%; a search-medium bank: 31k).

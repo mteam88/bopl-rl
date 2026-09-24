@@ -2,7 +2,7 @@
  * deferred explosion, stock clone/choice, and complete respawn recovery.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/grenade_ability_ab \
- *   research/rust_ab/grenade_ability_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/grenade_ability_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

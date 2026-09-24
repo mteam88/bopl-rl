@@ -62,7 +62,7 @@ def extract(path, output, player, origin=240, episode_limit=3600, repeat=4):
         alive_decisions=int(sum(alive)), action_resampling_mismatch=changed/max(1,total),
         final_arrows_fired=int(final_events[0]),final_arrow_hits=int(final_events[1]),
         game_runtime=runtime,
-        encoder_sha256=hashlib.sha256((ROOT/'native/rl/puffer/bopl_puffer.h').read_bytes()).hexdigest())
+        encoder_sha256=hashlib.sha256((ROOT/'train/bopl_puffer.h').read_bytes()).hexdigest())
     np.savez_compressed(destination, observations=np.stack(rows), actions=labels,
                         ticks=np.asarray(ticks), alive=np.asarray(alive), events=np.asarray(events),
                         metadata=json.dumps(metadata))

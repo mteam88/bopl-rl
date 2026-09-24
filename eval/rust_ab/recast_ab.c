@@ -1,8 +1,8 @@
 /* Platform recast A/B: cast twice and retain the evicted platform while its
  * authored removal curve shrinks the still-collidable body.
  *
- * cc -O2 -I. -o ../target/release/recast_ab \
- *   research/rust_ab/recast_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -I sim/abi -o ../target/release/recast_ab \
+ *   eval/rust_ab/recast_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <math.h>

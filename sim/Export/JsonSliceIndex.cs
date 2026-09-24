@@ -12,7 +12,7 @@ namespace BoplSim.Export
 	// key -> byte-range index, so one entry at a time is parsed into a Newtonsoft
 	// tree on demand. assets.json is 37 MB on disk but ~300 MB as a JObject tree,
 	// of which a few hundred entries are ever built; keeping the tree resident
-	// cost every RL game process ~350 MB (sim/RL.md "Known gaps").
+	// cost every RL game process ~350 MB (a known gap).
 	//
 	// Parsing goes through the same JsonTextReader defaults JObject.Parse uses,
 	// so the produced tokens are identical to a whole-file parse; only the line

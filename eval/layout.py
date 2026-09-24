@@ -1,4 +1,4 @@
-"""Observation layout v3, mirrored from native/rl/puffer/bopl_layout.h."""
+"""Observation layout v3, mirrored from train/bopl_layout.h."""
 ARCHITECTURE = "bopl-set-mingru-v3"
 
 ABILITY_COUNT = 39
@@ -78,7 +78,7 @@ def policy_weights(hidden, num_layers, architecture, aim_fourier=0, aim_ar=0):
     return encoder + (decoder_logits(aim_fourier, aim_ar) + 1) * hidden + num_layers * 3 * hidden ** 2
 
 
-# ---- Observation layout v4 (native/rl/puffer/bopl_layout_v4.h, POLICY_V4_PLAN.md) ----
+# ---- Observation layout v4 (train/bopl_layout_v4.h) ----
 V4_ARCHITECTURE = "bopl-v4-mingru"
 V4_LAYOUT_VERSION = 4
 V4_GLOBAL = 66

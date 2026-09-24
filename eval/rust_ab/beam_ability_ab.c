@@ -2,7 +2,7 @@
  * cancellation, maximum duration, retained air-orb recast, and beam crossings.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/beam_ability_ab \
- *   research/rust_ab/beam_ability_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/beam_ability_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

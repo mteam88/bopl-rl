@@ -22,7 +22,7 @@
 # swept arrows and a dozen phase-order gaps against Unity; its best policies
 # partly exploited that sim (checkpoint 012: 262/360 on the old .so vs 194/360
 # on the .NET oracle). This sweep starts fresh on the f64 sim with dynamic
-# platforms and discrete arrow contacts (native/rl/RUST_ROLLOUTS.md; gate
+# platforms and discrete arrow contacts (gate
 # 296/300 winner agreement with .NET) and the .NET oracle with ability pickups
 # disabled to match. Same scoring as overnight-1 so scores stay comparable in
 # spirit, not in value: the old scores were partly sim exploits.

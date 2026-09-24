@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Learning gate for the policy v4 throughput campaign (THROUGHPUT_V4.md), the
-# v4 counterpart of the 150M sanity run in THROUGHPUT.md section 4: the
-# v4-lite-aim recipe (sweep/configs/v4-lite-aim.toml [fixed], the production
+# Learning gate for the policy v4 throughput campaign, the
+# v4 counterpart of the earlier 150M sanity run: the
+# v4-lite-aim recipe (train/sweep/configs/v4-lite-aim.toml [fixed], the production
 # shape the campaign optimises: encoder v4, hidden 256, set inner 64, no FFN,
 # critic 384, writer bits 10, aim Fourier 4, 256 workers x 4 buffers, the b4
 # recipe of 2026-09-19 (learner_passes 1, minibatch_div 2: two gradient steps
@@ -16,7 +16,7 @@
 # in-run records in reference/d48f4b64/ say 399 [352, 447] and 570 [528, 611]):
 #   80M learner (physical step 106692608)   379  [245, 516]
 #   160M learner (physical step 213352448)  646  [504, 898]
-# Same-shape pool-v7 seed spread is ~75 Elo (POLICY_V4_PLAN.md 7c), so the
+# Same-shape pool-v7 seed spread is ~75 Elo, so the
 # gate is: refit Elo at 80M >= 304 and at 160M >= 571 (reference minus the
 # spread), the band rating (240 games, the sweep scorer's rater) of the 160M
 # checkpoint >= the reference's 160M band rating minus 75, and the trainer's
@@ -24,17 +24,17 @@
 # metrics.jsonl at the same learner step (0.299 / 3.97 / 0.0034 at 160M).
 # The in-run intervals are wide (+-135); the band rating is the number that
 # decides, the in-run curve the early warning. A candidate that trades
-# exactness for speed (THROUGHPUT_V4.md's "learning gate" levers) must pass
+# exactness for speed (a "learning gate" lever) must pass
 # this before it is kept; an exact lever (bit-identical rows) needs only the
-# CPU-side row check (puffer/check_dump.py) and the throughput A/B.
+# CPU-side row check (train/check_dump.py) and the throughput A/B.
 #
-#   bash native/rl/puffer/sanity_v4.sh run <label> [-- extra train.py args]
+#   bash train/sanity_v4.sh run <label> [-- extra train.py args]
 #       trains into native/artifacts/rl/sanity/<label> (log <label>.log next to
 #       it), in its own systemd scope under the GPU bench flock (bench_shape.sh
 #       shares it), nice 5. About 16 min at the reference's 167k learner/s plus
 #       four evaluations; the v4 trainer takes ~6 GB of device memory.
-#   bash native/rl/puffer/sanity_v4.sh report <label>
-#       research/readout.py of the run against the v4-aim reference (in-run
+#   bash train/sanity_v4.sh report <label>
+#       eval/readout.py of the run against the v4-aim reference (in-run
 #       Elo curve at the shared evaluation steps, wins on training vs held-out
 #       maps, value-head explained variance, death taxonomy) followed by the
 #       gate verdict as one JSON line (also appended to sanity/results.jsonl).
@@ -57,7 +57,7 @@
 set -euo pipefail
 MODE=${1:?run|report}; LABEL=${2:?label}; shift 2
 [ "${1:-}" = "--" ] && shift
-R=$(cd "$(dirname "$0")/../../.." && pwd)
+R=$(cd "$(dirname "$0")/.." && pwd)
 cd "$R"
 OUT=${OUT:-$R/native/artifacts/rl/sanity}
 DIR="$OUT/$LABEL"
@@ -81,12 +81,12 @@ run)
   flock 9
   echo "$(date -u '+%F %T UTC') $LABEL: v4-aim recipe to $STEPS learner steps, eval every $EVAL_EVERY, seed $SEED, load $(cut -d' ' -f1-3 /proc/loadavg)" >&2
   set +e
-  # sweep/configs/v4-lite-aim.toml [fixed], verbatim except steps / eval_every / seed
+  # train/sweep/configs/v4-lite-aim.toml [fixed], verbatim except steps / eval_every / seed
   # (the driver passes the toml keys as flags; evaluation_pool = [scoring].pool).
   env BOPL_RL_BACKEND=rust PYTHONPATH="$PUF" \
     BOPL_OMP_THREADS=${BOPL_OMP_THREADS:-12} OMP_WAIT_POLICY=${OMP_WAIT_POLICY:-passive} BOPL_ENV_THREADS=${BOPL_ENV_THREADS:-8} \
   systemd-run --user --scope --collect --quiet -p MemoryMax=10G --unit "bopl-sanity-$(echo "$LABEL" | tr -c 'a-zA-Z0-9\n' '-')-$$" -- \
-    nice -n 5 "$PY" native/rl/puffer/train.py --output "$DIR" \
+    nice -n 5 "$PY" train/train.py --output "$DIR" \
     --aim-fourier 4 --banks 4 --buffers 4 --checkpoint-every 20000000 --cudagraphs 1 \
     --encoder v4 --hidden 256 --layers 1 --v4-ablate 10 --v4-set-inner 64 --v4-ffn-dim 0 --v4-critic-dim 384 \
     --entropy 0.01532588085540654 --entropy-floor 0.001 --entropy-free-rows 1 --entropy-half-life 718611646 \
@@ -105,7 +105,7 @@ run)
   ;;
 report)
   [ -d "$DIR" ] || { echo "no run at $DIR" >&2; exit 1; }
-  BOPL_RL_BACKEND=rust "$PY" native/rl/research/readout.py "$DIR" --name "$LABEL" --baseline "$REF_NAME=$REFERENCE" --json "$DIR/readout.json" || true
+  BOPL_RL_BACKEND=rust "$PY" eval/readout.py "$DIR" --name "$LABEL" --baseline "$REF_NAME=$REFERENCE" --json "$DIR/readout.json" || true
   # Band rating of the 160M checkpoints (the sweep scorer's rater: 240 games
   # on 15-85% matchups, CPU only, ~10 min per checkpoint at 3 workers) for the
   # run and, once, for the reference; the in-run 48-game refit's interval is
@@ -122,7 +122,7 @@ best = min(files, key=lambda p: abs(step(p) - 213352448), default="")
 print(best if best and abs(step(best) - 213352448) <= 2133524 else "")')
       if [ -n "$ck" ] && [ -f "$ck" ] && ! ls "$DIR/band/$side"/*.json >/dev/null 2>&1; then
         mkdir -p "$DIR/band/$side"
-        BOPL_RL_BACKEND=rust "$PY" native/rl/sweep/reference_pool.py rate --pool "$POOL" --checkpoint "$ck" \
+        BOPL_RL_BACKEND=rust "$PY" train/sweep/reference_pool.py rate --pool "$POOL" --checkpoint "$ck" \
           --out "$DIR/band/$side" --games "${BAND_GAMES:-240}" --workers "${BAND_WORKERS:-3}" > "$DIR/band/$side.log" 2>&1 || echo "band rating of $side failed: $(tail -1 "$DIR/band/$side.log")" >&2
       fi
     done
@@ -132,7 +132,7 @@ print(best if best and abs(step(best) - 213352448) <= 2133524 else "")')
     wall_step=$(python3 - "$DIR" "$WALL_SECONDS" <<'PY'
 import json, sys, glob, os
 d, wall = sys.argv[1], float(sys.argv[2])
-def metrics_open(d):  # plain, or packed by research/compact_history.py
+def metrics_open(d):  # plain, or packed by eval/compact_history.py
     p = os.path.join(d, 'metrics.jsonl')
     return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
 evals = {int(os.path.basename(p)) for p in glob.glob(os.path.join(d, 'evaluations', '*')) if os.path.basename(p).isdigit()}
@@ -146,17 +146,17 @@ PY
     ck="$DIR/checkpoints/policy-$(printf '%09d' "${wall_step:-0}").bin"
     if [ -n "$wall_step" ] && [ -f "$ck" ] && [ "${BAND_GAMES:-240}" -gt 0 ] && ! ls "$DIR"/band/wall/*.json >/dev/null 2>&1; then
       mkdir -p "$DIR/band/wall"
-      BOPL_RL_BACKEND=rust "$PY" native/rl/sweep/reference_pool.py rate --pool "$POOL" --checkpoint "$ck" \
+      BOPL_RL_BACKEND=rust "$PY" train/sweep/reference_pool.py rate --pool "$POOL" --checkpoint "$ck" \
         --out "$DIR/band/wall" --games "${BAND_GAMES:-240}" --workers "${BAND_WORKERS:-3}" > "$DIR/band/wall.log" 2>&1 || echo "band rating of the wall checkpoint failed: $(tail -1 "$DIR/band/wall.log")" >&2
     fi
   fi
   python3 - "$DIR" "$LABEL" "$REFERENCE" "$REF_NAME" "${WALL_SECONDS:-}" <<'PY' | tee -a "$OUT/results.jsonl"
 import glob, json, os, re, sys
 d, label, reference, ref_name, wall_seconds = sys.argv[1:]
-def metrics_open(d):  # plain, or packed by research/compact_history.py
+def metrics_open(d):  # plain, or packed by eval/compact_history.py
     p = os.path.join(d, 'metrics.jsonl')
     return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
-SPREAD = 75            # same-shape pool-v7 seed spread, POLICY_V4_PLAN.md 7c
+SPREAD = 75            # same-shape pool-v7 seed spread
 # The evaluation steps the gate reads, in the trainer's physical step count
 # (checkpoint names): 80M and 160M learner decisions of the v4-aim recipe.
 GATE_STEPS = {80_000_000: 106_692_608, 160_000_000: 213_352_448}

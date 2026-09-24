@@ -19,9 +19,9 @@ def identity(game):
     from pufferlib import _C
     paths=[ROOT/'native/artifacts/rl/libbopl_research.so',
            ROOT/'native/artifacts/rl/libbopl_policy_eval.so',Path(_C.__file__)]
-    for directory in (HERE,ROOT/'native/rl/puffer'):
+    for directory in (HERE,ROOT/'train'):
         paths.extend(p for p in directory.rglob('*') if p.suffix in ('.py','.c','.h','.cu','.cuh','.ini','.patch'))
-    paths.extend(p for p in (ROOT/'native/rl').iterdir() if p.suffix in ('.c','.h'))
+    paths.extend(p for p in (ROOT/'sim/abi').iterdir() if p.suffix in ('.c','.h'))
     sources={str(p.resolve()):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(paths)}
     sources.update({key:hashlib.sha256(p.read_bytes()).hexdigest() for key,p in player_sources(game).items()})
     return sources
@@ -123,7 +123,7 @@ def run(plan_path):
                 raise ValueError('Training implementation changed during the series')
             check_opponents()
             phase='training'; status('running')
-            execute([sys.executable,str(ROOT/'native/rl/puffer/train.py'),'--output',str(directory),
+            execute([sys.executable,str(ROOT/'train/train.py'),'--output',str(directory),
                      '--steps',str(plan['steps']),'--workers',str(plan['workers']),'--seed',str(item['seed']),
                      '--encoder',plan['encoder'],'--banks',str(plan['banks']),
                      '--cudagraphs',str(plan['cudagraphs']),'--game',str(game),

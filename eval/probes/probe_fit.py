@@ -1,6 +1,6 @@
 """Fit linear and 2-layer MLP probes from feature sets to labels; write metrics.
 
-    native/artifacts/rl/venv/bin/python native/rl/research/probes/probe_fit.py --features raw fused gru_state
+    native/artifacts/rl/venv/bin/python eval/probes/probe_fit.py --features raw fused gru_state
 
 Feature sets (see FEATURES): the raw compact observation (`raw`, and `raw_now` = the
 undelayed encode, `raw_nopos` = raw with the absolute position obs[8:10] zeroed), the

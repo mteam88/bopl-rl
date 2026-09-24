@@ -10,7 +10,7 @@ candidate's per-tick player positions, then compares every decision boundary
 with the recorded frames.
 
     native/artifacts/rl/venv/bin/python \\
-        native/rl/research/rust_ab/replay_ab_selfcheck.py \\
+        eval/rust_ab/replay_ab_selfcheck.py \\
         --binary native/artifacts/rl/replay_ab \\
         --library native/target/release/libbopl_sim.so \\
         native/artifacts/rl/study-grenade/evaluations/*/map0-s0-ab.rep

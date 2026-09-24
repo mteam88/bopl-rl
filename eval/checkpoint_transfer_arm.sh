@@ -23,7 +23,7 @@ SCRIPTED=${7:-mixed-hard,mixed-v2-hard,archer-v2-hard,pursuer-v2-hard,evasive-v2
 shift 7 || shift $#
 KITS=${*:-"dash-bow-platform roll-grenade-smoke teleport-mine-tesla web-mjolnir-freeze
            dash-missile-platform grapple-beam-rock duplicator-blink-blackhole drill-throw-magnet"}
-PY=$(cd "$HERE/../../.." && pwd)/native/artifacts/rl/venv/bin/python
+PY=$(cd "$HERE/.." && pwd)/native/artifacts/rl/venv/bin/python
 mkdir -p "$OUT/logs"
 printf '%s\n' $KITS |
   xargs -P "$P" -n 1 bash -c '

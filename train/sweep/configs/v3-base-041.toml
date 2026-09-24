@@ -1,5 +1,5 @@
 # v3 baseline 041 (2026-09-14 20:30): one 1B trial at overnight-7 041's hypers on observation
-# layout v3 (ABI 3, bopl-set-mingru-v3, LAYOUT_V3_PLAN.md), the first training on v3.
+# layout v3 (ABI 3, bopl-set-mingru-v3), the first training on v3.
 # overnight-7 041: banks 1 / share 1.0 / aim 0.05 cell, 724 on v5, 639 on v6, the o8-000 anchor (624 on v6 at 1B, layout v2).
 # Purpose: (1) the v2 -> v3 comparison at identical hypers and seed; (2) a v3 anchor for
 # pool v7, which overnight-9 (the steps sweep, 1B..4B) is scored against. Scored on pool

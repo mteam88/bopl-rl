@@ -2,7 +2,7 @@
  * observe four-second expiry/five-second cooldown restoration, then recast.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/gold_mushroom_ab \
- *   research/rust_ab/gold_mushroom_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/gold_mushroom_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

@@ -7,7 +7,7 @@
 #define bopl_rl_reset_pending sampling_reset_pending
 #define bopl_rl_reset_begin sampling_reset_begin
 #define bopl_rl_reset_finish sampling_reset_finish
-#include "../puffer/bopl_puffer.h"
+#include "bopl_puffer.h"
 #include <assert.h>
 
 static BoplRlState state;

@@ -10,10 +10,10 @@ from pathlib import Path
 import sys
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[3]
+ROOT = HERE.parents[1]
 LIBRARY = ROOT / "native/artifacts/rl/probes/libbopl_probe.so"
 if not LIBRARY.exists():
-    raise RuntimeError(f"{LIBRARY} missing; run research/probes/build.py")
+    raise RuntimeError(f"{LIBRARY} missing; run eval/probes/build.py")
 os.environ["BOPL_RESEARCH_LIBRARY"] = str(LIBRARY)
 sys.path.insert(0, str(HERE.parent))
 import numpy as np  # noqa: E402

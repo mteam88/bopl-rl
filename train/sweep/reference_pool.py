@@ -2,7 +2,7 @@
 
 The pool is a fixed set of reference agents (the random policy, scripted bots,
 frozen checkpoints) whose Elo ratings come from one full round robin fitted
-by Bradley-Terry maximum likelihood (research/elo_ladder.py, random = 0 Elo,
+by Bradley-Terry maximum likelihood (eval/elo_ladder.py, random = 0 Elo,
 timeouts = draws). Once written, pool.json is immutable: every checkpoint's
 SHA-256 and a hash over (name, kind, sha256, rating) are recorded, and both
 are re-checked whenever the pool is loaded. New references are appended by
@@ -28,12 +28,12 @@ well as pooled; because that is a different question about the same checkpoint,
 it is cached beside the default under reference/<pool_sha8>/loadout-<sha8>/ and
 never becomes the run's score.
 
-    python native/rl/sweep/reference_pool.py build --out DIR/pool.json ...
-    python native/rl/sweep/reference_pool.py verify DIR/pool.json
-    python native/rl/sweep/reference_pool.py rate --pool DIR/pool.json --checkpoint policy.bin
-    python native/rl/sweep/reference_pool.py rate-runs --pool DIR/pool.json --run DIR [--sweep DIR]
+    python train/sweep/reference_pool.py build --out DIR/pool.json ...
+    python train/sweep/reference_pool.py verify DIR/pool.json
+    python train/sweep/reference_pool.py rate --pool DIR/pool.json --checkpoint policy.bin
+    python train/sweep/reference_pool.py rate-runs --pool DIR/pool.json --run DIR [--sweep DIR]
         [--loadout 2,4,14 | --loadout-set native/data/lineups-8.txt]
-    python native/rl/sweep/reference_pool.py human --pool DIR/pool.json
+    python train/sweep/reference_pool.py human --pool DIR/pool.json
 """
 import argparse
 import hashlib
@@ -47,8 +47,8 @@ import time
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[3]
-sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
+ROOT = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(ROOT / 'eval'), str(ROOT / 'native/tools')]
 
 import elo_ladder  # noqa: E402  (pure until games are played)
 import map_catalogue  # noqa: E402
@@ -59,7 +59,7 @@ SCHEMA = 1
 RUST_SIM = ROOT / 'native/target/release/libbopl_sim.so'
 # The pool evaluate.py rates in-run evaluations on when --pool is not given.
 # Pool v7 since 2026-09-16 (v4-lite onwards); runs before that (024, the
-# seed-024-s7x floor, v4-full) logged pool v5 (sha8 ec5bd5ae): research/
+# seed-024-s7x floor, v4-full) logged pool v5 (sha8 ec5bd5ae): eval/
 # readout.py refits their stored games on v7 so curves stay comparable.
 DEFAULT_POOL = ROOT / 'native/artifacts/rl/sweeps/anchors/pool-v7/pool.json'
 DEFAULT_HUMAN = ROOT / 'native/artifacts/rl/human/mac'
@@ -275,7 +275,7 @@ def cache_hit(previous, identity, pool, games, loadouts=None):
 def rate_command(run_dir, pool_path=None):
     pool_path = pool_path or DEFAULT_POOL
     python = ROOT / 'native/artifacts/rl/venv/bin/python'
-    script = ROOT / 'native/rl/sweep/reference_pool.py'
+    script = ROOT / 'train/sweep/reference_pool.py'
     return (f'BOPL_RL_BACKEND=rust {python} {script} rate-runs '
             f'--pool {pool_path} --run {run_dir} --workers 3')
 

@@ -2,7 +2,7 @@
  * observe restoration, then recast after the six-second restored cooldown.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/invisibility_ab \
- *   research/rust_ab/invisibility_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/invisibility_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

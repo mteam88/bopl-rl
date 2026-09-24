@@ -3,7 +3,7 @@ import copy
 import json
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 IDENTITY = 'identity-124'
 LEGACY = 'legacy-curated-54'
 LEGACY_PATH = Path(__file__).with_name('legacy_map_index.json')

@@ -61,7 +61,7 @@ platform-spam = "platforms_per_game > 8"
 stalemate = "timeout_rate > 0.5"
 
 [fixed]
-# policy v4 (POLICY_V4_PLAN.md), width 256, one MinGRU layer; shape flags below
+# policy v4, width 256, one MinGRU layer; shape flags below
 encoder = "v4"
 hidden = 256
 layers = 1
@@ -73,7 +73,7 @@ v4_ablate = 10
 loadout = [16, 3, 13]
 # overnight-9 024, verbatim
 steps = 1734936776
-workers = 256                      # b4 recipe (2026-09-19 16:xx, Matthew: adopt): 128 rows per buffer chain; notes-v4.md recipe table
+workers = 256                      # b4 recipe (2026-09-19 16:xx, Matthew: adopt): 128 rows per buffer chain
 buffers = 4
 banks = 4
 seed = 73

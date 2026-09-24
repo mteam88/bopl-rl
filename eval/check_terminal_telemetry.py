@@ -29,7 +29,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 FIELDS = ('deaths_self', 'deaths_opponent', 'deaths_environment', 'arrows_fired',
           'dash_activations', 'bow_activations', 'platform_activations')

@@ -1,6 +1,6 @@
-"""Markdown tables and PNG plots from the probe results (results/*.json) for PROBES.md.
+"""Markdown tables and PNG plots from the probe results (results/*.json).
 
-    native/artifacts/rl/venv/bin/python native/rl/research/probes/report.py > /tmp/tables.md
+    native/artifacts/rl/venv/bin/python eval/probes/report.py > /tmp/tables.md
 """
 import argparse
 import json

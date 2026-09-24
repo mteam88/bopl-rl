@@ -90,7 +90,7 @@ int research_layout(int *out, int capacity) {
     if (capacity<count) return -count;
     memcpy(out, values, sizeof(values)); return count;
 }
-/* The compiled layout v4 (bopl_layout_v4.h), checked against research/layout.py. */
+/* The compiled layout v4 (bopl_layout_v4.h), checked against eval/layout.py. */
 int research_layout_v4(int *out, int capacity) {
     int values[]={BOPL4_OBS_SIZE, BOPL4_GLOBAL, BOPL4_SELF, BOPL4_OPPONENT, BOPL4_PREVIOUS, BOPL4_TERRAIN, BOPL4_RAYS, BOPL4_RAY_FEATURES,
                   BOPL4_FLAT, BOPL4_PLAYERS, BOPL4_PLAYER_FEATURES, BOPL4_SLOTS, BOPL4_SLOT_FEATURES,

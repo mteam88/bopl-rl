@@ -194,7 +194,7 @@ def main():
                 # An undecided round -- both sides eliminated on the same tick
                 # -- carries the win flag for everyone, and is a win for nobody,
                 # exactly as the reward scores it (bopl_undecided in
-                # native/rl/puffer/bopl_puffer.h). These matches are 1v1, so a
+                # train/bopl_puffer.h). These matches are 1v1, so a
                 # second flagged player is a second team.
                 timeout=bool(final['flags']&2)
                 undecided=sum(bool(p['flags']&2) for p in final['players'])>1
@@ -275,7 +275,7 @@ def main():
 
 
 def emit_elo(args, report):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'sweep'))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'train/sweep'))
     import reference_pool
     pool_path = args.pool or (reference_pool.DEFAULT_POOL if reference_pool.DEFAULT_POOL.is_file() else None)
     if not pool_path:

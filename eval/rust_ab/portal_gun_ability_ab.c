@@ -2,7 +2,7 @@
  * wall landing, pair linking/replacement, player transit and rigid-body transit.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/portal_gun_ability_ab \
- *   research/rust_ab/portal_gun_ability_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/portal_gun_ability_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

@@ -5,7 +5,7 @@
  *
  * The field set, the tolerance semantics, the inactive-prefab ENABLED-bit
  * exclusion and the policy-visible lens are the same ones
- * research/rust_ab/replay_ab.c uses, and the two must stay in step: this
+ * eval/rust_ab/replay_ab.c uses, and the two must stay in step: this
  * header is the same comparison rewritten so that a tick with no divergence
  * costs no string formatting at all (replay_ab.c snprintf's every field name
  * of every entity on every tick, which is affordable for a few hundred

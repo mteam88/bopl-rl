@@ -8,8 +8,7 @@ fi
 
 reference=$1
 rust=$2
-here=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-project=$(CDPATH= cd -- "$here/../.." && pwd)
+project=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
@@ -18,8 +17,8 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 for scenario in tack_ability_ab tack_kill_ab duplicator_tack_ab scale_tack_ab \
     tack_arrow_ab gust_tack_ab magnet_tack_ab time_stop_released_items_ab
 do
-    cc -O2 -I"$here" -o "$tmp/$scenario" \
-        "$here/research/rust_ab/$scenario.c" "$here/bopl_rl.c" -ldl -lm
+    cc -O2 -I"$project/sim/abi" -o "$tmp/$scenario" \
+        "$project/eval/rust_ab/$scenario.c" "$project/sim/abi/bopl_rl.c" -ldl -lm
     (cd "$project" && "$tmp/$scenario" "$reference" "$rust")
 done
 

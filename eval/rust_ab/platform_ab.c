@@ -1,8 +1,8 @@
 /* Platform-body A/B: grounded transform overlapping terrain, then a cold
  * spawn falling onto an authored platform. One output row per simulation tick.
  *
- * cc -O2 -I. -o ../target/release/platform_ab \
- *   research/rust_ab/platform_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -I sim/abi -o ../target/release/platform_ab \
+ *   eval/rust_ab/platform_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <math.h>

@@ -7,7 +7,7 @@
  * and/or one aim block per button combo. bopl_policy_eval_step_raw returns
  * the row; bopl_policy_eval_game_logits turns it into the BOPL_LOGITS game
  * logits (plus the value) for a button combo, the one materialisation the
- * CPU evaluator (research/native_policy.py) and the in-game agent
+ * CPU evaluator (eval/native_policy.py) and the in-game agent
  * (bopl_agent.c) share, so their logits are bit-identical. */
 #include <stdlib.h>
 #include <stdint.h>

@@ -2,9 +2,9 @@
  * translation unit so the environment globals exist once) plus privileged
  * labels computed from the full sim state, the observation-row -> entity
  * mapping, relational geometry and raycast features. Everything here is
- * research tooling; nothing is read by the trainer. See PROBES.md.
+ * research tooling; nothing is read by the trainer.
  *
- * Build: research/probes/build.py (cc -I native/rl -I native/rl/puffer). */
+ * Build: eval/probes/build.py (cc -I sim/abi -I train). */
 #include "eval_binding.c"
 #include <time.h>
 

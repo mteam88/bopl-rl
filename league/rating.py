@@ -1,6 +1,6 @@
 """Everything read off the payoff matrix: ratings, Nash, and league health.
 
-Bradley-Terry is NOT reimplemented here. research/elo_ladder.py already fits it
+Bradley-Terry is NOT reimplemented here. eval/elo_ladder.py already fits it
 (random anchored at 0 Elo, one virtual draw per played pair, Wald intervals) and
 is the fit the rest of the repo uses; this module calls it. What it adds is the
 thing Elo structurally cannot do.
@@ -21,8 +21,8 @@ import sys
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-sys.path[:0] = [str(ROOT / 'native/rl/research')]
+ROOT = HERE.parent
+sys.path[:0] = [str(ROOT / 'eval')]
 
 import elo_ladder  # noqa: E402  (pure until games are played)
 

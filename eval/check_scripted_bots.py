@@ -45,7 +45,7 @@ def play(env, policy, kind, map_id, seed, bot_side, generator=None):
     timeout = bool(final.header.flags & 2)
     # Both sides eliminated on the same tick carries the win flag for everyone
     # and is a win for nobody, as the reward scores it (bopl_undecided in
-    # native/rl/puffer/bopl_puffer.h).
+    # train/bopl_puffer.h).
     undecided = len({p.team for p in final.players[:2] if p.flags & 2}) > 1
     win = bool(final.players[bot_side].flags & 2) and not timeout and not undecided
     return win, timeout, stats

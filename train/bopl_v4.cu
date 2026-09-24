@@ -1,6 +1,6 @@
-/* Policy v4 for the PufferLib CUDA trainer (POLICY_V4_PLAN.md sections 3, 5):
+/* Policy v4 for the PufferLib CUDA trainer:
  * the observation encoder and the decoder, selected by BOPL_NATIVE_ENCODER=v4
- * (ocean.cu). research/policy_v4.py is the oracle; puffer/check_v4.py the
+ * (ocean.cu). eval/policy_v4.py is the oracle; train/check_v4.py the
  * parity harness.
  *
  * Encoder (in_dim = BOPL_OBS_STRIDE rows of layout v4, out_dim = hidden):
@@ -108,7 +108,7 @@ __device__ __forceinline__ bf16 tobf(float v) { return __float2bfloat16(v); }
 
 /* ---- packing ---------------------------------------------------------- */
 /* Valid rows (column 0 != 0) of each set per sample. (A warp-per-sample form
- * with ballots measured +0.2%, inside the noise: notes-v4.md.) */
+ * with ballots measured +0.2%, inside the noise.) */
 __global__ void count_rows(const float* input, Gather g, int B, int* counts /* (SETS, B) */) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= B * SETS) return;
@@ -640,8 +640,7 @@ static void ln_bwd(const float* dy, const float* x, const float* mean, const flo
 }
 
 /* ---- attention hook ------------------------------------------------------
- * Insertion point between the row MLP and the pool (POLICY_V4_PLAN.md,
- * section 3). A stage receives every set's packed rows and must transform
+ * Insertion point between the row MLP and the pool. A stage receives every set's packed rows and must transform
  * them in place:
  *   rows     bf16 (cap, D) row-major, the valid rows are [0, *total)
  *   sample   int (cap): the minibatch sample of each packed row; rows of one
@@ -883,7 +882,7 @@ static int enc_prepass(void* activations, PrecisionTensor input, cudaStream_t st
 /* Every custom launch in the encoder is checked once per pass: a kernel
  * whose launch fails (invalid device function, resources) otherwise skips
  * its work silently and the pass keeps going on stale activations (the
- * fused set kernels of 698cd3d7 ran zero times; notes-v4.md). One host call
+ * fused set kernels of 698cd3d7 ran zero times). One host call
  * per forward / backward; never under the trainer's graph capture failing. */
 static void launch_check(const char* what) {
     cudaError_t e = cudaGetLastError();
@@ -1005,7 +1004,7 @@ static void enc_init(void* weights, ulong* seed, cudaStream_t stream) {
 }
 /* save_weights dumps the allocator's total_elems floats back to back while the
  * device offsets are 16-byte aligned: every tensor must be a multiple of 4
- * floats for the file and the device to agree (research/layout.py aligned). */
+ * floats for the file and the device to agree (eval/layout.py aligned). */
 static void reg_aligned(Allocator* alloc, PrecisionTensor* t) {
     if (numel(t->shape) % 4) throw std::runtime_error("Bopl v4: a weight tensor of " + std::to_string(numel(t->shape)) + " floats is not 16-byte aligned");
     alloc_register(alloc, t);

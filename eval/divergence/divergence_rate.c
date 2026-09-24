@@ -2,7 +2,7 @@
  *
  *   divergence_rate <oracle.so> <q32.so> <f64.so>
  *
- * Every existing differential in research/rust_ab checks something somebody
+ * Every existing differential in eval/rust_ab checks something somebody
  * thought to check. This one checks nothing in particular: it plays whole
  * games from randomly drawn seeds, maps and loadouts, drives the .NET oracle
  * and BOTH Rust builds in lockstep off one action stream, and records the
@@ -34,7 +34,7 @@
  *                   decision cadence the trainer uses (writer_bench.c:135).
  *                   Broad and unrealistic: it reaches state a played game
  *                   never visits.
- *   bot:<kind>:<lv> the scripted opponents (puffer/bopl_bots.h), driven
+ *   bot:<kind>:<lv> the scripted opponents (train/bopl_bots.h), driven
  *                   through the environment's exact latch and forced-release
  *                   contract. Realistic play, which concentrates in a very
  *                   different part of the state space.
@@ -61,8 +61,7 @@
  *   DR_POOL      train | all | fixed | <comma-separated ids>
  *                train = 1..38 less Time Stop (12) and Revival (15), the
  *                        exclusions evaluation_protocol.DEFAULT_POOL_EXCLUSIONS
- *                        applies because ABILITY_PORT_GAPS.md documents them as
- *                        unfinished; this is the pool training actually uses.
+ *                        applies because they are unfinished ports; this is the pool training actually uses.
  *                all   = 1..38, the documented gaps included.
  *                fixed = Dash/Bow/Platform {2,4,14}, which is the only loadout
  *                        the scripted bots are written for (bopl_bots.h:143).
@@ -183,7 +182,7 @@ static void dr_decide(DrDriver *d, BoplRl *pilot, const BoplRlState *state, int 
 static unsigned dr_dump_from = 0, dr_dump_to = 0;
 static int dr_dump_entity = -1;
 /* DR_REPLAY_OUT=<dir> writes each game's lossless BOPLREP2 recording, so the
- * same games can be re-compared by research/rust_ab/replay_ab.c - an
+ * same games can be re-compared by eval/rust_ab/replay_ab.c - an
  * independently written comparator - and the two made to agree. */
 static const char *dr_replay_out = NULL;
 

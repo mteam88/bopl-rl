@@ -1,6 +1,6 @@
 """The checkpoint's encoder intermediates for every dataset row.
 
-Re-implements the CPU reference forward (puffer/bopl_set_encoder.h,
+Re-implements the CPU reference forward (train/bopl_set_encoder.h,
 puffernet.h MinGRU, policy_eval.c decoder) in numpy/torch from the exported
 weights, runs it over each (game, player) observation sequence in order and
 writes <dataset>/acts-<tag>.npy with, per row:
@@ -20,7 +20,7 @@ The file is float16 (the f32 online value is labels.value_online).
 `--check` also runs the native CPU policy on a few sequences and reports the
 largest value / state difference (float16 storage of the observations bounds it).
 
-    native/artifacts/rl/venv/bin/python native/rl/research/probes/activations.py --check
+    native/artifacts/rl/venv/bin/python eval/probes/activations.py --check
 """
 import argparse
 import json

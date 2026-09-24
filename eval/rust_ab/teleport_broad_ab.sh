@@ -8,8 +8,7 @@ fi
 
 reference=$1
 rust=$2
-here=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-project=$(CDPATH= cd -- "$here/../.." && pwd)
+project=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
@@ -19,8 +18,8 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 # aim, and subsequent ordinary airborne movement.
 for scenario in teleport_ability_ab teleport_multi_ab teleport_cast_state_ab
 do
-    cc -O2 -I"$here" -o "$tmp/$scenario" \
-        "$here/research/rust_ab/$scenario.c" "$here/bopl_rl.c" -ldl -lm
+    cc -O2 -I"$project/sim/abi" -o "$tmp/$scenario" \
+        "$project/eval/rust_ab/$scenario.c" "$project/sim/abi/bopl_rl.c" -ldl -lm
     (cd "$project" && "$tmp/$scenario" "$reference" "$rust")
 done
 

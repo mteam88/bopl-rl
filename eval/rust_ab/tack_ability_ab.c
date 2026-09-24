@@ -2,7 +2,7 @@
  * binding, ballistic landing, stable trap pinning, and 20-second expiry.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/tack_ability_ab \
- *   research/rust_ab/tack_ability_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/tack_ability_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

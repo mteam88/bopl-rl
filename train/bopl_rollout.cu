@@ -1,4 +1,4 @@
-// Bopl batched rollout forward (THROUGHPUT.md 3.C, BOPL_BATCHED_FWD=1).
+// Bopl batched rollout forward (BOPL_BATCHED_FWD=1).
 //
 // One buffer step used to run 1 + banks separate policy chains (~15 kernels
 // and 3-4 cuBLAS split-K launches each, ~80 records per step) plus four H2D

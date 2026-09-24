@@ -67,7 +67,7 @@ typedef struct {
  * packed into runtimes up to that (or BOPL_RL_WORLDS_PER_RUNTIME, if lower).
  * Further runtimes dlopen private copies of the file (glibc de-duplicates by
  * device/inode; the copy is a reflink where the filesystem supports it and
- * is unlinked once mapped). Verified by native/rl/backend_check.c. */
+ * is unlinked once mapped). Verified by eval/backend_check.c. */
 typedef struct InprocLib {
     struct InprocLib *next;
     dev_t device;

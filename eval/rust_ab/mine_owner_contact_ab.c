@@ -26,11 +26,11 @@
  * two objects created on the fatal tick (the explosion and the dead player's
  * dropped ability pickup) receive swapped ids because deferred prefab
  * initialization is drained in the port's type-category order instead of
- * Updater's global hierarchy order (native/rl/ABILITY_PORT_GAPS.md). Every
+ * Updater's global hierarchy order. Every
  * other field, including both objects' own state, is compared exactly.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/mine_owner_contact_ab \
- *   research/rust_ab/mine_owner_contact_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/mine_owner_contact_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

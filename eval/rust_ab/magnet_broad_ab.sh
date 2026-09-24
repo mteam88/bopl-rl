@@ -8,7 +8,7 @@ fi
 
 reference=$1
 rust=$2
-here=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+project=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
@@ -29,8 +29,8 @@ for scenario in \
     magnet_time_stop_ab \
     gust_magnet_form_ab
 do
-    cc -O2 -I"$here" -o "$tmp/$scenario" \
-        "$here/research/rust_ab/$scenario.c" "$here/bopl_rl.c" -ldl -lm
+    cc -O2 -I"$project/sim/abi" -o "$tmp/$scenario" \
+        "$project/eval/rust_ab/$scenario.c" "$project/sim/abi/bopl_rl.c" -ldl -lm
     "$tmp/$scenario" "$reference" "$rust"
 done
 

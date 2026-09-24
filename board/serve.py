@@ -8,7 +8,7 @@ Four pages, served as one no-build single-page app from `web/`.
   /watch       a match       the replay arena
 
 The league is the centre: a durable population that runs join and are measured
-against. Everything is read from `native/rl/league/` (members and aggregated
+against. Everything is read from `league/` (members and aggregated
 payoff counts) and `native/artifacts/rl/` (per-run training artifacts).
 
 Counts are never pooled across `condition` values; see payoff.py.
@@ -29,6 +29,10 @@ import time
 from functools import lru_cache
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse, parse_qs
+
+# The dashboard reads the evaluation tree's stores and catalogues; those modules
+# live in eval/, which used to be this file's own directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'eval'))
 
 from metrics_store import store
 import packed
@@ -689,7 +693,7 @@ def specialist_regret(agent_id, table):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--root', type=Path, default=HERE.parents[1] / 'artifacts/rl',
+    parser.add_argument('--root', type=Path, default=HERE.parent / 'native/artifacts/rl',
                         help='training artifacts (per-run directories)')
     parser.add_argument('--league', type=Path, default=HERE.parent / 'league',
                         help='league.json + payoff.jsonl')

@@ -27,7 +27,7 @@ trainer.
 ```
 
 Checkpoint loading: native `.bin` is the only checkpoint format, loaded via
-`research/native_policy.py load(path) -> policy, meta` with
+`eval/native_policy.py load(path) -> policy, meta` with
 `policy.initial(batch, 'cpu')` and `policy.step(obs, state) -> logits, values,
 state`. New runs never write `.pt`; the files exist only in prior experiments,
 where the dashboard lists and serves them as read-only evidence (the old torch
@@ -97,7 +97,7 @@ Required (all currently written by `train.py`):
   fraction pushed to C (`clamp(share_min, share_max * I)` with
   `I = max 4p(1-p)`). `scripted_learner_elo` is the pool's learner Elo
   used for matchmaking (`--scripted-roster`; the bots are defined in
-  `native/rl/puffer/bopl_bots.h`).
+  `train/bopl_bots.h`).
 
 New — the dashboard renders these once present (per update):
 
@@ -150,7 +150,7 @@ evaluator; adds immutable checkpoint/opponent hashes and per-game explicit
 Written today by `evaluate.py`; keep this shape: top level `schema`, `step`,
 `suite`, `frozen_opponents`, `scripted_opponents` (list of scripted bot names
 like `mixed-hard`, scheduled on evaluation and held-out maps alongside
-`random`; defined in `native/rl/puffer/bopl_bots.h`), `training_maps`, `groups` (per opponent×map:
+`random`; defined in `train/bopl_bots.h`), `training_maps`, `groups` (per opponent×map:
 `opponent, map, games, wins, win_rate, interval` (Wilson), `timeouts`,
 `undecided`, `behavior_totals`, `mean_duration`), and `games` — per game:
 `opponent, map, seed, side, save, name, win, timeout, undecided, kills, deaths,
@@ -281,8 +281,8 @@ metrics request; file replacement or truncation resets the reader.
 Large JSON payloads gzip over the wire. The browser keeps a stale-while-revalidate
 cache of view JSON and sends `If-None-Match`.
 
-Reader regression check: `python3 native/rl/research/check_metrics_store.py`.
+Reader regression check: `python3 eval/check_metrics_store.py`.
 
 Note: this document still describes the sweep-centric dashboard. The board is
-now league-centric (`research/serve.py` + `research/payoff.py`, four pages:
+now league-centric (`board/serve.py` + `eval/payoff.py`, four pages:
 league / agent / run / watch) and this file needs a pass to match.

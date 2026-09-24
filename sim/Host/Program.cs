@@ -32,7 +32,7 @@ namespace BoplSim.Host
 
 		private static int Run(string[] args)
 		{
-			// Headless-player replacement under native/rl/bopl_rl.c (BOPL_RL_SOCKET set, or "rl").
+			// Headless-player replacement under sim/abi/bopl_rl.c (BOPL_RL_SOCKET set, or "rl").
 			if (RlMode.Requested(args)) return RlMode.Run(args);
 			if (args.Length > 0 && args[0] == "worlds") return WorldsCheck.Run(args);
 			string mode = args.Length > 0 ? args[0] : "reset";
@@ -78,7 +78,7 @@ namespace BoplSim.Host
 			}
 			else
 			{
-				// Mirrors RlBridge.Reset with bopl_rl_default_config (native/rl/bopl_rl.c):
+				// Mirrors RlBridge.Reset with bopl_rl_default_config (sim/abi/bopl_rl.c):
 				// color=i%4, team=i, abilities Dash/Gust/Invisibility, zero-input first frame.
 				setup = new ReplayArchive
 				{

@@ -1,5 +1,5 @@
 /* Packed transport of the policy v4 observation row between the env
- * workers and the GPU (THROUGHPUT_V4.md, notes-v4.md 2026-09-19).
+ * workers and the GPU (2026-09-19).
  *
  * The dense row is BOPL_OBS_STRIDE = 4812 floats of which the four set blocks
  * are 4272 floats of slot capacity (6 players, 24 slots, 48 entities, 32

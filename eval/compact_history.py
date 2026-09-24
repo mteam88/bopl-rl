@@ -3,15 +3,15 @@
 
 `metrics.jsonl` is the bulk of a finished run (1.5 GB of a 1B-step trial) and zstd
 -19 packs it ~10x; the worker `game-logs/*.log` are repetitive engine chatter and
-pack far harder. Every reader goes through research/packed.py, which resolves
+pack far harder. Every reader goes through eval/packed.py, which resolves
 either spelling, so reports keep referring to `metrics.jsonl` unchanged.
 
 A live run appends to `metrics.jsonl` and a zstd frame cannot be appended to, so
 only runs whose status.json is not "running" (and idle for --min-age hours) are
 touched; the sweep driver's active trial is never archived under it.
 
-  python native/rl/research/compact_history.py native/artifacts/rl/sweeps/overnight-6 ...
-  python native/rl/research/compact_history.py --dry-run --glob 'native/artifacts/rl/*'
+  python eval/compact_history.py native/artifacts/rl/sweeps/overnight-6 ...
+  python eval/compact_history.py --dry-run --glob 'native/artifacts/rl/*'
 """
 import argparse
 import glob

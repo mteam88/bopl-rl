@@ -8,16 +8,15 @@ fi
 
 reference=$1
 rust=$2
-here=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-project=$(CDPATH= cd -- "$here/../.." && pwd)
+project=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
 # One broad Duplicator differential command. Together these scenarios cover
 # grounded/airborne form use, platform duplication, every modeled Item fan,
 # guided Missile, pickup-driven replacement, Poke Ball capture, Gust, Time
-# Stop and Dash interaction. Newly source-ported target classes stay listed in
-# ABILITY_PORT_GAPS.md until their broad public capture is added.
+# Stop and Dash interaction. Newly source-ported target classes stay
+# provisional until their broad public capture is added.
 for scenario in \
     duplicator_ability_ab \
     duplicator_platform_lifetime_ab \
@@ -34,8 +33,8 @@ for scenario in \
     time_stop_gun_forms_ab \
     dash_gun_forms_ab
 do
-    cc -O2 -I"$here" -o "$tmp/$scenario" \
-        "$here/research/rust_ab/$scenario.c" "$here/bopl_rl.c" -ldl -lm
+    cc -O2 -I"$project/sim/abi" -o "$tmp/$scenario" \
+        "$project/eval/rust_ab/$scenario.c" "$project/sim/abi/bopl_rl.c" -ldl -lm
     if [ "$scenario" = duplicator_pickup_ab ]; then
         (cd "$project" && BOPL_RL_ABILITY_SPAWNS=1 \
             "$tmp/$scenario" "$reference" "$rust")

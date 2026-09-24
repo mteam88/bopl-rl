@@ -22,12 +22,12 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / 'native/tools'))
 import reference  # noqa: E402  (player selection: explicit > BOPL_RL_GAME > IL2CPP)
 sys.path.insert(0, str(HERE))
 import counters  # noqa: E402
-sys.path.insert(0, str(ROOT / 'native/rl/research'))
+sys.path.insert(0, str(ROOT / 'eval'))
 import layout  # noqa: E402  (bopl_layout.h mirror: observation offsets and action heads)
 
 OBS = layout.OBS_SIZE
@@ -74,7 +74,7 @@ def build_perm(envs, num_buffers, banks):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', type=Path, default=ROOT/'native/artifacts/rl/autoresearch/native-routing')
+    parser.add_argument('--output', type=Path, default=ROOT/'native/artifacts/rl/native-routing')
     parser.add_argument('--steps', type=int, default=400)
     parser.add_argument('--episode-ticks', type=int, default=160)
     parser.add_argument('--game', type=Path)

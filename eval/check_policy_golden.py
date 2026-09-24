@@ -7,8 +7,8 @@ layout-v3 code before policy v4 existed (commit f0131c9, sim
 a73a3f25...): a v3 checkpoint must keep producing exactly these bytes through
 every v4 change to the observation writer, the CPU evaluator and the loader.
 
-    venv/bin/python research/check_policy_golden.py                 # verify
-    venv/bin/python research/check_policy_golden.py --record        # re-record (only with a reason)
+    venv/bin/python eval/check_policy_golden.py                 # verify
+    venv/bin/python eval/check_policy_golden.py --record        # re-record (only with a reason)
 """
 import argparse
 import hashlib
@@ -21,7 +21,7 @@ import numpy as np
 import torch
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
 DEFAULT_CHECKPOINT = ROOT / 'native/artifacts/rl/sweeps/anchors/pool-v7/v3b-007-final.bin'

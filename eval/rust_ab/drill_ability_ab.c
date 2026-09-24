@@ -2,7 +2,7 @@
  * spawned combo hitboxes, air steering, burrowing, bounds death, and stock reconstruction.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/drill_ability_ab \
- *   research/rust_ab/drill_ability_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/drill_ability_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

@@ -2,7 +2,7 @@
  * stop, pinned invisible ragdoll and item state, then restored expiry/ejection.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/poke_ball_capture_ab \
- *   research/rust_ab/poke_ball_capture_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/poke_ball_capture_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

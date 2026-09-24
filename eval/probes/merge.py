@@ -1,6 +1,6 @@
 """Merge per-game npz files into memmapped arrays plus an index.
 
-    native/artifacts/rl/venv/bin/python native/rl/research/probes/merge.py
+    native/artifacts/rl/venv/bin/python eval/probes/merge.py
 
 Writes <dataset>/{obs,obs_now,meta,labels,rays16,rays32,rays32x3}.npy (rows in
 game order, player-major inside a game) and <dataset>/index.json. The split

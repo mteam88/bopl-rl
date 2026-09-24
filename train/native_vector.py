@@ -18,7 +18,7 @@ class NativeVector:
         self.total_agents = self.agents_per_buffer * buffers
         self.learner_rows = workers * 3 // 2
         self.historical_per_bank = workers // 2 // banks
-        # Compact row layout (THROUGHPUT.md 3.C): a historical environment's
+        # Compact row layout: a historical environment's
         # opponent plays on one of its `banks` slots for the environment's whole
         # life, so 3 of 4 opponent rows never hold a decision. When every
         # buffer deals its historical games evenly to the banks, each buffer's

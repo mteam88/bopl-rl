@@ -1,7 +1,7 @@
 /* Keyboard-input ABI A/B. A keyboard-configured player receives movement from
  * W/A/S/D while its joystick byte remains an independent ability aim.
  *
- * cc -O2 -I. -o /tmp/keyboard_ab research/rust_ab/keyboard_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -I sim/abi -o /tmp/keyboard_ab eval/rust_ab/keyboard_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <stdio.h>

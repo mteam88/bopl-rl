@@ -2,7 +2,7 @@
  * allocation, marker travel/removal, respawn animation, and re-entry.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/revival_death_ab \
- *   research/rust_ab/revival_death_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/revival_death_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

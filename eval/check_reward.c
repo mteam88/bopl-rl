@@ -13,8 +13,8 @@
  * and the published terminal is exactly the `double drowning` row -- both
  * flagged winners, one environment death each, on opposing teams.
  *
- * Build and run: make -C native/rl check-reward */
-#include "../puffer/bopl_puffer.h"
+ * Build and run: make check-reward */
+#include "bopl_puffer.h"
 #include <assert.h>
 
 #define REWARD_KILL 0.1f

@@ -4,14 +4,14 @@
 # IQM over the last 3 evaluations, 480 games per checkpoint (240 gave a 95% CI
 # of +-45 Elo on the overnight-3 re-score; trial effects there were ~30-50).
 # Pool v5 was played on libbopl_sim.so d0a170e5. The trainer sim is now
-# 50fc427b (THROUGHPUT.md 3.F: lto=fat, target-cpu=native, fdlibm sine; the
+# 50fc427b (lto=fat, target-cpu=native, fdlibm sine; the
 # sine is the only trajectory change and evaluate.py replayed 216/217 games
 # identically), so every rating carries game_mismatch=true; that flag is
 # informational and the pool stays v5 (its ratings moved within CI between
 # v3, v4 and v5 with no tier change, so a v6 rebuild would only reshuffle
 # noise). Rebuild recipe when a change with gameplay impact lands:
 #   systemd-run --user --unit bopl-pool-vN -p CPUQuota=1100% --nice=10 -- env BOPL_RL_BACKEND=rust \
-#     native/artifacts/rl/venv/bin/python native/rl/sweep/reference_pool.py build \
+#     native/artifacts/rl/venv/bin/python train/sweep/reference_pool.py build \
 #     --out native/artifacts/rl/sweeps/anchors/pool-vN/pool.json --games-per-pair 48 --workers 10 --slow-workers 12 \
 #     --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,mixed-v2-hard,search-hard,search-medium \
 #     $(for n in o3-001 o3-002 o3-009 o3-012 o3-017 o3-019 run007; do echo --checkpoint $n-final=native/artifacts/rl/sweeps/anchors/overnight-3-v3/$n-final.bin; done)
@@ -52,7 +52,7 @@
 # most of the entropy bonus. head_scale_aim is swept log-uniform 0.03-1.
 #
 # Bots: the training bank plays mixed-v2-hard, not mixed-hard. v1 bots lost
-# 66% of their games to platform squishes (SCRIPTED_BOTS.md loss taxonomy),
+# 66% of their games to platform squishes (loss taxonomy),
 # the exploit the no-offense trials learned; v2 cut squishes 221->29 and rates
 # 592 Elo vs 342 at equal cost. Evaluations play mixed-hard (overnight-3
 # continuity) and the four v2 hard bots: 216 games per evaluation.

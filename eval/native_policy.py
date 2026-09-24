@@ -13,7 +13,7 @@ player decisions, matching dashboard metrics and evaluation reports). Record
 learner_steps separately for checkpoint cadence and the training budget.
 Optional aim_fourier (harmonics, 0 = raw bins) and aim_ar (1 = one aim block
 per button combo, buttons sampled first) select the aim head parameterisation
-(puffer/bopl_aim.h); absent means 0.
+(train/bopl_aim.h); absent means 0.
 
 step() returns layout.LOGITS policy logits (heads concatenated in
 layout.ACTION_SIZES order), the value, and the next recurrent state. With
@@ -35,7 +35,7 @@ import torch
 
 import layout
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 REVISION = "42f70d6932c30ac977736f861006809c50168ba9"
 LIBRARY = ROOT / "native/artifacts/rl/libbopl_policy_eval.so"
 ARCHITECTURES = {"puffernet-mingru", layout.ARCHITECTURE, layout.V4_ARCHITECTURE}
@@ -57,7 +57,7 @@ def build(output=LIBRARY):
     include = ROOT / "native/artifacts/rl/dependencies" / f"PufferLib-{REVISION}" / "src"
     temporary = output.with_name(output.name + ".tmp")   # link then rename: a loaded copy keeps its inode
     subprocess.run(["cc", "-O3", "-std=gnu11", "-fPIC", "-shared",
-                    "-I" + str(include), str(ROOT / "native/rl/puffer/policy_eval.c"),
+                    "-I" + str(include), str(ROOT / "train/policy_eval.c"),
                     "-lm", "-o", str(temporary)], check=True)
     os.replace(temporary, output)
     return output
@@ -65,12 +65,12 @@ def build(output=LIBRARY):
 
 def _library(path):
     path = Path(path)
-    source = ROOT / "native/rl/puffer/policy_eval.c"
+    source = ROOT / "train/policy_eval.c"
     if not path.exists():
-        raise RuntimeError(f"{path} is missing; run native_policy.build() (or puffer/build.py)")
+        raise RuntimeError(f"{path} is missing; run native_policy.build() (or train/build.py)")
     if source.exists() and source.stat().st_mtime > path.stat().st_mtime:
         # overnight-7 lost its first trials to a copy that predated the Fourier aim head.
-        raise RuntimeError(f"{path} is older than {source}; run native_policy.build() (or puffer/build.py)")
+        raise RuntimeError(f"{path} is older than {source}; run native_policy.build() (or train/build.py)")
     lib = ctypes.CDLL(str(path))
     array = np.ctypeslib.ndpointer(dtype=np.float32, flags="C_CONTIGUOUS")
     ints = np.ctypeslib.ndpointer(dtype=np.int32, flags="C_CONTIGUOUS")
@@ -124,7 +124,7 @@ class NativePolicy:
         self.width = layout.decoder_logits(self.aim_fourier, self.aim_ar)  # decoder logit columns; the row is width + 1
         self.v4_shape = None
         if self.architecture == layout.V4_ARCHITECTURE:
-            # Policy v4 (POLICY_V4_PLAN.md): layout v4 rows, the sidecar's v4_shape sizes the network.
+            # Policy v4: layout v4 rows, the sidecar's v4_shape sizes the network.
             if self.obs_size != layout.V4_OBS_SIZE:
                 raise ValueError(f"Bopl v4 checkpoints require {layout.V4_OBS_SIZE} observation features")
             self.v4_shape = {**layout.V4_DEFAULTS, **{k: int(v) for k, v in (v4_shape or {}).items() if k in layout.V4_DEFAULTS}}

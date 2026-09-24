@@ -1,5 +1,5 @@
-/* Gate 0 checks for the in-process backend (native/rl/SIM_OVERHAUL.md, 1.3
- * and 1.4). Runs one fixed input sequence through the bopl_rl.h ABI and prints
+/* Gate 0 checks for the in-process backend, cases 1.3
+ * and 1.4. Runs one fixed input sequence through the bopl_rl.h ABI and prints
  * FNV-1a checksums over every post-step state, via either backend:
  *
  *   backend_check socket <Host-or-player binary> <bootstrap .rep> [copies]
@@ -15,7 +15,7 @@
  * runs the sequence on its own thread at the same time - several NativeAOT
  * runtimes in one process. worlds dlopens the library once and opens n
  * handles in that one runtime, each sequence on its own thread concurrently
- * (many worlds per runtime, SIM_OVERHAUL.md section 3). Every copy/world must
+ * (many worlds per runtime). Every copy/world must
  * print the checksums of a single copy, which must equal the socket
  * backend's.
  *

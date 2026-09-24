@@ -7,7 +7,7 @@ would produce a full set of plausible-looking results under the wrong simulator.
 
 The backends leave different fingerprints. evaluate.py points BOPL_RL_LOG_DIR at
 <cell>/workers, and the C# oracle treats that as its -logFile: every oracle process
-writes the three boot lines sim/RL.md calls expected (Steam unavailable, the
+writes the three expected boot lines (Steam unavailable, the
 unexported Replay scene, a ParticleSystem.randomSeed overflow) plus its scene
 export warnings. The Rust sim writes no such file at all. So a non-empty worker log
 carrying SteamManager.Awake distinguishes them without trusting any metadata.
@@ -30,7 +30,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from checkpoint_transfer import KITS, final_checkpoint
 
-# Lines only the .NET/Unity game code can emit (sim/RL.md "three expected [error] lines").
+# Lines only the .NET/Unity game code can emit (the three expected [error] lines).
 ORACLE_MARKS = ('SteamManager.Awake', 'Steam unavailable in sim', 'Export[scene')
 
 

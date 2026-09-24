@@ -17,8 +17,8 @@ import numpy as np
 import torch
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-sys.path.insert(0, str(ROOT / "native/rl/research"))
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT / "eval"))
 import layout
 
 OBS = layout.OBS_SIZE
@@ -169,8 +169,8 @@ def random_obs(rng, batch, packed=False):
 def crowded_fixture(output):
     executable = output / "check_observations"
     data = output / "crowded-observations.f32"
-    subprocess.run(["cc", "-O2", "-std=gnu11", "-I" + str(ROOT / "native/rl"),
-                    "-I" + str(HERE), str(ROOT / "native/rl/research/check_observations.c"),
+    subprocess.run(["cc", "-O2", "-std=gnu11", "-I" + str(ROOT / "sim/abi"),
+                    "-I" + str(HERE), str(ROOT / "eval/check_observations.c"),
                     "-lm", "-o", str(executable)], check=True)
     subprocess.run([str(executable), "--dump", str(data)], check=True)
     rows = np.fromfile(data, np.float32)

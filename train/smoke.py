@@ -25,15 +25,15 @@ from types import SimpleNamespace
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-sys.path[:0] = [str(ROOT/'native/tools'), str(ROOT/'native/rl/research'), str(HERE)]
+ROOT = HERE.parent
+sys.path[:0] = [str(ROOT/'native/tools'), str(ROOT/'eval'), str(HERE)]
 import reference  # noqa: E402
 import counters  # noqa: E402
 from check_routing import layout, build_perm, OBS, PLAYER0, PLAYER  # noqa: E402
-import layout as policy_layout  # noqa: E402  (research/layout.py: architecture string, heads)
+import layout as policy_layout  # noqa: E402  (eval/layout.py: architecture string, heads)
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument('--output', type=Path, default=ROOT/'native/artifacts/rl/autoresearch/native-smoke')
+parser.add_argument('--output', type=Path, default=ROOT/'native/artifacts/rl/native-smoke')
 parser.add_argument('--games', type=int, default=4, help='games; every second one is historical (multiple of 2*buffers)')
 parser.add_argument('--buffers', type=int, default=2)
 parser.add_argument('--banks', type=int, default=2, help='frozen opponent banks per historical game')

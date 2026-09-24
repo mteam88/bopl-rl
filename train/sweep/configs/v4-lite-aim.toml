@@ -5,12 +5,12 @@
 #   off (bit 2: no fan, no terrain block; the two casts alone, v4_ablate = 10,
 #   the v4-aim-only ablation, which sat inside or above v4-aim's seed spread
 #   at 1.7B on seeds 73/74/75 and passed the campaign's band gate on the lite
-#   shape: notes-v4.md, 2026-09-19). v4-lite.toml + v4_ablate = 10;
+#   shape: 2026-09-19). v4-lite.toml + v4_ablate = 10;
 #   the recipe is otherwise overnight-9 024's / v4-aim's verbatim (pool v7 625,
 #   seed 73) except learner_passes = 2: at equal wall-clock (955 s) p2 rated
-#   572.8 against p4's 549.4 and the reference's 523.5 (notes-v4.md, the
+#   572.8 against p4's 549.4 and the reference's 523.5 (the
 #   recipe table); at equal samples it costs ~60 band. Matthew reviews before merge. References: sweeps/v4-lite/000 (shape) and sweeps/v4-aim/000
-#   (layout); the throughput campaign's learning gate (puffer/sanity_v4.sh)
+#   (layout); the throughput campaign's learning gate (train/sanity_v4.sh)
 #   reads the first 160M learner decisions against them.
 # Flags not listed are layout.V4_DEFAULTS.
 
@@ -52,7 +52,7 @@ platform-spam = "platforms_per_game > 8"
 stalemate = "timeout_rate > 0.5"
 
 [fixed]
-# policy v4 (POLICY_V4_PLAN.md), width 256, one MinGRU layer; shape flags below
+# policy v4, width 256, one MinGRU layer; shape flags below
 encoder = "v4"
 hidden = 256
 layers = 1
@@ -62,7 +62,7 @@ v4_critic_dim = 384
 v4_ablate = 10
 # overnight-9 024, verbatim
 steps = 1734936776
-workers = 256                      # b4 recipe (2026-09-19 16:xx, Matthew: adopt): 128 rows per buffer chain; notes-v4.md recipe table
+workers = 256                      # b4 recipe (2026-09-19 16:xx, Matthew: adopt): 128 rows per buffer chain
 buffers = 4
 banks = 4
 seed = 73

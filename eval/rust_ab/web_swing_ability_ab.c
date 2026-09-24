@@ -2,7 +2,7 @@
  * latch, swing, release boost, detached-strand observation, and cleanup.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/web_swing_ability_ab \
- *   research/rust_ab/web_swing_ability_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/web_swing_ability_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

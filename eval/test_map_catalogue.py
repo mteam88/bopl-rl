@@ -7,8 +7,8 @@ import map_catalogue
 import map_set
 
 
-ROOT = Path(__file__).resolve().parents[3]
-CONFIGS = ROOT / 'native/rl/sweep/configs'
+ROOT = Path(__file__).resolve().parents[1]
+CONFIGS = ROOT / 'train/sweep/configs'
 
 
 class MapCatalogueTests(unittest.TestCase):

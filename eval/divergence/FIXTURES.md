@@ -118,7 +118,7 @@ depending on how many `.rep` files it is handed - see FIXTURES.md #3.
 shared. The order-sensitivity below should no longer reproduce; the measurement
 is kept as the regression recipe.
 
-`research/rust_ab/replay_ab.c` reuses one handle per backend across every
+`eval/rust_ab/replay_ab.c` reuses one handle per backend across every
 `.rep` it is handed, so it inherits the cross-episode leak above. The same
 replay therefore gets a different verdict depending on its position in the
 batch:
@@ -299,8 +299,8 @@ The control script now runs both: `selfcheck-q32` (symmetric, must be 0) and
 
 ## The gate that now covers #2, #3 and #4
 
-`make -C native/rl ability-sweep`
-(`research/divergence/run_ability_sweep.sh`). Loadouts drawn uniformly from all
+`make ability-sweep`
+(`eval/divergence/run_ability_sweep.sh`). Loadouts drawn uniformly from all
 38 abilities, maps assigned by `index % 124` so every authored map is covered
 exactly equally, seed pinned at 24601. Four cells, 12,400 distinct episodes
 played twice under two handle policies, 43 s wall on four workers:
@@ -387,7 +387,7 @@ later guess was a socket-path artefact. Both rest on that single observation, so
 the rate on the in-process path the RL evaluation actually uses is unknown. This
 matters for any oracle-hosted measurement: if the backend is not reproducible
 across processes then per-game comparisons are noise and only large-N averages
-mean anything. `research/backend_determinism.py` is the instrument that measures
+mean anything. `eval/backend_determinism.py` is the instrument that measures
 it - each repeat is a separate `evaluate.py` process, which is the unit the
 hypothesis is about - and it should be run on the Rust sim too, where the arm
 must come back perfectly identical.

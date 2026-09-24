@@ -9,7 +9,7 @@ A member is immutable once added. Its `id` is the sha256 of its weights for a
 checkpoint, the bot name for a scripted bot, and `random` for the anchor, so a
 member cannot change under its name without the id changing; `league_sha256`
 hashes the member list so the file cannot be edited after it was written. Both
-are re-checked on every load. The precedent is sweep/reference_pool.py, which
+are re-checked on every load. The precedent is train/sweep/reference_pool.py, which
 froze a rated pool the same way.
 
 payoff.jsonl stores counts, never per-game rows. Bradley-Terry and Nash read
@@ -23,8 +23,8 @@ from pathlib import Path
 import sys
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-sys.path[:0] = [str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
+ROOT = HERE.parent
+sys.path[:0] = [str(ROOT / 'eval'), str(ROOT / 'native/tools')]
 
 LEAGUE = HERE / 'league.json'
 PAYOFF = HERE / 'payoff.jsonl'
@@ -61,7 +61,7 @@ def condition(sim_sha256, loadouts, maps, episode_ticks=7200, delay=9):
     maximise, not who wins a game that is played: `play` reads the winner off
     the simulator's own end-of-episode flags and never consults a reward.
     f65c33b7 ("reward: stop paying for trades") changed only the training
-    binding (native/rl/puffer/bopl_agent.c, bopl_puffer.h) and states of the
+    binding (train/bopl_agent.c, bopl_puffer.h) and states of the
     simulator "Nothing in native/src/rollout or sim/ moves". Games played
     either side of it under one library are therefore directly comparable, and
     keying them apart would split this matrix into halves that could never be

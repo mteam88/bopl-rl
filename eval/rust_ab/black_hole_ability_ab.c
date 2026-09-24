@@ -2,7 +2,7 @@
  * player callback death, and stock reconstruction.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/black_hole_ability_ab \
- *   research/rust_ab/black_hole_ability_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/black_hole_ability_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

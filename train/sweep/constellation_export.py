@@ -10,7 +10,7 @@ resources/constellation/experiments.json (one point per band-scored checkpoint o
 every complete trial), the resources it loads, and a build script that skips the
 x86-only SIMD flags so it compiles on Apple Silicon.
 
-    python native/rl/sweep/constellation_export.py --out /tmp/constellation \
+    python train/sweep/constellation_export.py --out /tmp/constellation \
         native/artifacts/rl/sweeps/overnight-7 native/artifacts/rl/sweeps/overnight-9
     rsync -a /tmp/constellation/ mac:constellation/ && ssh mac 'cd constellation && bash build.sh && ./seethestars'
 
@@ -37,7 +37,7 @@ import statistics
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+ROOT = HERE.parents[1]
 DEPS = ROOT / 'native/artifacts/rl/dependencies'
 
 HYPERS = ['steps', 'learning_rate', 'entropy', 'entropy_half_life', 'reward_kill',

@@ -1,7 +1,7 @@
-"""Policy v4 reference forward pass in torch (POLICY_V4_PLAN.md section 3).
+"""Policy v4 reference forward pass in torch.
 
-The oracle for the CUDA trainer (puffer/check_v4_encoder.py) and the CPU
-evaluator (puffer/policy_eval.c, through native_policy.py): one flat float
+The oracle for the CUDA trainer (train/check_v4.py) and the CPU
+evaluator (train/policy_eval.c, through native_policy.py): one flat float
 buffer in layout.policy_v4_tensors order, one decision step at a time, the
 decoder row [aim block(s), buttons, hold, value] exactly as v3 emits it.
 
@@ -101,7 +101,7 @@ class PolicyV4:
         self.obs_size = layout.V4_OBS_SIZE
         # The trainer runs the row MLPs in bf16 on tensor cores (fp32 accumulation,
         # bf16 activations); set to torch.bfloat16 to round the same values so max
-        # pooling picks the same winners (puffer/check_v4.py). None: fp32 throughout.
+        # pooling picks the same winners (train/check_v4.py). None: fp32 throughout.
         self.set_dtype = None
         # The trainer's critic GEMMs (critic_in, critic_b1, critic_b2) take bf16
         # operands with fp32 accumulation, forward and backward; torch.bfloat16

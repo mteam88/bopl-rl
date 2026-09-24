@@ -1,5 +1,5 @@
 //! C exports implementing the bopl_rl.h in-process ABI (the same one
-//! BoplSimNative.so exports), so native/rl/bopl_rl.c can dlopen this cdylib
+//! BoplSimNative.so exports), so sim/abi/bopl_rl.c can dlopen this cdylib
 //! as a game backend. Calls for one handle are serialized by the client;
 //! separate handles may run on different threads concurrently.
 use super::{CAction, CConfig, CState, RolloutWorld};

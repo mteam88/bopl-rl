@@ -1,4 +1,4 @@
-# Policy v4 layout increment (POLICY_V4_PLAN.md section 7b): v4-aim-s75
+# Policy v4 layout increment: v4-aim-s75
 #   v4-aim verbatim with seed 75: the production shape's seed spread (rays + aim/LOS, writer bit 8)
 # One 1.73B trial of overnight-9 024's exact recipe (pool v7 625, seed 73) with the
 # policy v4 encoder / decoder and observation layout 4 in place of the v3 set encoder;
@@ -47,7 +47,7 @@ platform-spam = "platforms_per_game > 8"
 stalemate = "timeout_rate > 0.5"
 
 [fixed]
-# policy v4 (POLICY_V4_PLAN.md), width 256, one MinGRU layer; shape flags below
+# policy v4, width 256, one MinGRU layer; shape flags below
 encoder = "v4"
 hidden = 256
 layers = 1

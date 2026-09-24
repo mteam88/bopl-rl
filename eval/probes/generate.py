@@ -4,7 +4,7 @@ Each game is written as one .npz under <out>/games; `merge.py` turns them
 into the memmapped dataset the probes read. Deterministic: a game is a
 function of (seed, map, controllers).
 
-    nice -n 15 native/artifacts/rl/venv/bin/python native/rl/research/probes/generate.py --workers 4
+    nice -n 15 native/artifacts/rl/venv/bin/python eval/probes/generate.py --workers 4
 """
 import argparse
 import json
@@ -15,7 +15,7 @@ import sys
 import time
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE)); sys.path.insert(0, str(HERE.parent)); sys.path.insert(0, str(HERE.parents[1] / "sweep"))
+sys.path.insert(0, str(HERE)); sys.path.insert(0, str(HERE.parent)); sys.path.insert(0, str(HERE.parents[1] / "train/sweep"))
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
@@ -28,7 +28,7 @@ import layout  # noqa: E402
 import schema  # noqa: E402
 from telemetry import FIELDS  # noqa: E402
 
-ROOT = HERE.parents[3]
+ROOT = HERE.parents[1]
 ART = ROOT / "native/artifacts/rl"
 GAME = ROOT / "native/target/release/libbopl_sim.so"
 POOL = ART / "sweeps/anchors/pool-v7/pool.json"

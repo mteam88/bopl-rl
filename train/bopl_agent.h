@@ -6,7 +6,7 @@
  * evaluator (policy_eval.c) and a categorical sampler, driven by states a
  * RUNNING GAME hands it once per simulation tick instead of by a world the
  * shim steps itself. The real Unity game (RlAgent.cs) and the fidelity check
- * (research/check_agent_fidelity.py) both go through this one library.
+ * (eval/check_agent_fidelity.py) both go through this one library.
  *
  * Usage, per match round:
  *   a = bopl_agent_open(spec, players, player, error, capacity);

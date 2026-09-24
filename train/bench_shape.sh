@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Canonical throughput benchmark at the overnight-4 training shape (THROUGHPUT.md),
-# with a policy v4 arm (THROUGHPUT_V4.md). Runs train.py for a fixed number of
+# Canonical throughput benchmark at the overnight-4 training shape,
+# with a policy v4 arm. Runs train.py for a fixed number of
 # updates on the Rust sim, in its own systemd scope (never inside the bb/peace
 # cgroup), serialized across rifts with a flock so two benches never share the
 # GPU, and prints one JSON line: median sps / learner_sps, the update's
@@ -14,14 +14,14 @@
 # Usage: bench_shape.sh <label> [updates=300] [-- extra train.py args...]
 #   BOPL_BENCH_WORKERS=256 BOPL_BENCH_BUFFERS=4 BOPL_BENCH_PASSES=1 BOPL_BENCH_MINIBATCH_DIV=2
 #     override the recipe (the defaults are the b4 recipe of 2026-09-19: w256 b4,
-#     two gradient steps of half the learner rows per update; notes-v4.md).
+#     two gradient steps of half the learner rows per update).
 #   BOPL_BENCH_ENCODER=set|v4 (default set = the v3 set encoder at hidden 128).
-#     v4 is policy v4 at the production shape (sweep/configs/v4-lite-aim.toml:
+#     v4 is policy v4 at the production shape (train/sweep/configs/v4-lite-aim.toml:
 #     hidden 256, set inner 64, no FFN, critic 384, writer bits
 #     BOPL_BENCH_V4_ABLATE=10, aim Fourier 4); BOPL_BENCH_HIDDEN overrides the
 #     width of either arm, later -- args override the shape flags.
 #   BOPL_BENCH_PROF=1 sets BOPL_ENV_PROF=2 BOPL_GPU_PROF=1 for the run (both
-#     arms of an A/B share it; 0 for rows comparable to THROUGHPUT.md's tables).
+#     arms of an A/B share it; 0 for rows comparable across runs).
 #   OUT=<dir> (default native/artifacts/rl/bench-shape in this checkout).
 # Results: $OUT/<label>/ (run dir, log) and $OUT/results.jsonl (appended).
 #
@@ -42,7 +42,7 @@ set -euo pipefail
 LABEL=${1:?label}; shift
 UPDATES=${1:-300}; [ $# -gt 0 ] && shift
 [ "${1:-}" = "--" ] && shift
-R=$(cd "$(dirname "$0")/../../.." && pwd)
+R=$(cd "$(dirname "$0")/.." && pwd)
 cd "$R"
 OUT=${OUT:-$R/native/artifacts/rl/bench-shape}
 mkdir -p "$OUT"
@@ -82,7 +82,7 @@ run_one() {
   env BOPL_RL_BACKEND=rust PYTHONPATH="$PUF" \
     BOPL_OMP_THREADS=${BOPL_OMP_THREADS:-12} OMP_WAIT_POLICY=${OMP_WAIT_POLICY:-passive} "${PROF_ENV[@]}" $ab_env \
   systemd-run --user --scope --collect --quiet -p MemoryMax=20G --unit "$unit" -- \
-    nice -n 5 native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
+    nice -n 5 native/artifacts/rl/venv/bin/python train/train.py \
     --output "$dir" --banks 4 --buffers "$BUFFERS" --checkpoint-every 1000000000 --cudagraphs 1 \
     "${ENCODER_ARGS[@]}" --entropy 0.008 --entropy-floor 0.001 --entropy-free-rows 1 \
     --entropy-half-life 200000000 --entropy-head-scale 0.15,1.5,1 --episode-ticks 7200 \
@@ -102,7 +102,7 @@ run_one() {
   python3 - "$dir" "$label" "$WORKERS" "$BUFFERS" "$PASSES" "$HORIZON" "$ENCODER" "$ab_env" <<'PY' | tee -a "$OUT/results.jsonl"
 import json, re, statistics as st, sys, os
 d, label, workers, buffers, passes, horizon, encoder, ab_env = sys.argv[1:]
-def metrics_open(d):  # plain, or packed by research/compact_history.py
+def metrics_open(d):  # plain, or packed by eval/compact_history.py
     p = os.path.join(d, 'metrics.jsonl')
     return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
 rows = [json.loads(l) for l in metrics_open(d)]
@@ -195,7 +195,7 @@ for arm, v in arms.items():
                                    for p in ('rollout', 'eval_gpu', 'eval_env') if any(p in r['ms_per_step'] for r in v)}
 if arms['inc'] and arms['cand']:
     out['cand_over_inc'] = {k: round(out['cand'][k][0] / out['inc'][k][0], 4) for k in keys if out['inc'][k][0]}
-    # Does every candidate repeat beat every incumbent repeat (the bar THROUGHPUT.md's kept rows met)?
+    # Does every candidate repeat beat every incumbent repeat (the bar a kept row has to meet)?
     out['cand_sps_all_above_inc'] = min(r['sps'] for r in arms['cand']) > max(r['sps'] for r in arms['inc'])
 print(json.dumps(out))
 PY

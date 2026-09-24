@@ -6,7 +6,7 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=$1; BASE=$2; MAIN=$3; G=${4:-192}; H=${5:-288}; P=${6:-6}
-PY=$(cd "$HERE/../../.." && pwd)/native/artifacts/rl/venv/bin/python
+PY=$(cd "$HERE/.." && pwd)/native/artifacts/rl/venv/bin/python
 KITS="dash-bow-platform roll-grenade-smoke teleport-mine-tesla web-mjolnir-freeze
       dash-missile-platform grapple-beam-rock duplicator-blink-blackhole drill-throw-magnet"
 mkdir -p "$OUT/logs"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The whole divergence-rate study: every cell, sharded across a few workers.
 #
-#   research/divergence/run_divergence_rate.sh <output-dir> [workers]
+#   eval/divergence/run_divergence_rate.sh <output-dir> [workers]
 #
 # Reads REFERENCE / RUST_ROLLOUT / RUST_ROLLOUT_Q32 from the environment (the
 # Makefile target supplies them). Writes one .jsonl per cell; nothing per-tick
@@ -12,8 +12,7 @@
 #   random-all      random actions, loadouts drawn from all 38 usable abilities.
 #                   The broad unbiased sample. Reaches state no played game does.
 #   random-train    the same with the training pool (less Time Stop and
-#                   Revival, which ABILITY_PORT_GAPS.md documents as
-#                   unfinished): the number that describes training today.
+#                   Revival, both unfinished ports): the number that describes training today.
 #   random-6p       six players, for the interaction density two never reach.
 #   random-stocks5  five stocks, so games last long enough to measure the
 #                   1000- and 3600-tick tail instead of censoring it away.

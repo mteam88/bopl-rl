@@ -3,7 +3,7 @@
  * correction until the following tick.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/grapple_player_attach_ab \
- *   research/rust_ab/grapple_player_attach_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/grapple_player_attach_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

@@ -1,7 +1,7 @@
 /* Exact authored-map-state NativeAOT/Rust differential.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/map_ab \
- *   research/rust_ab/map_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/map_ab.c sim/abi/bopl_rl.c -ldl -lm
  * /tmp/map_ab BoplSimNative.so libbopl_sim.so [ticks]
  *
  * The ordinary actor and spawned-ability rows have their own focused gates.

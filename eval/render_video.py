@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-ROOT=Path(__file__).resolve().parents[3]
+ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "native/tools"))
 from reference import resolve_game
 

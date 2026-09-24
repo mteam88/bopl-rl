@@ -2,14 +2,14 @@
 """Archive finished runs' evaluation replays in place: `game.json` -> `game.json.gz`.
 
 The physics-state visual JSONs are ~70% of a run directory (1.6 GB of a 1B-step
-trial's 2 GB) and gzip ~12x. Every reader goes through research/visuals.py, which
+trial's 2 GB) and gzip ~12x. Every reader goes through eval/visuals.py, which
 resolves either spelling, so reports keep referring to `game.json` unchanged.
 
 Only runs whose status.json is not "running" (and idle for --min-age hours) are
 touched; the sweep driver's active trial is never archived under it.
 
-  python native/rl/research/compact_evaluations.py native/artifacts/rl/sweeps/overnight-6 ...
-  python native/rl/research/compact_evaluations.py --dry-run --glob 'native/artifacts/rl/sweeps/*'
+  python eval/compact_evaluations.py native/artifacts/rl/sweeps/overnight-6 ...
+  python eval/compact_evaluations.py --dry-run --glob 'native/artifacts/rl/sweeps/*'
 """
 import argparse
 import glob

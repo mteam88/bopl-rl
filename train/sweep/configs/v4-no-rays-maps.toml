@@ -1,4 +1,4 @@
-# Policy v4, more maps (POLICY_V4_PLAN.md 7d, claim 3): v4-no-rays-maps
+# Policy v4, more maps (claim 3): v4-no-rays-maps
 #   The geometry-channel control of v4-aim-maps: writer bits 2|8 = fan and terrain
 #   block off, aim ray and line of sight kept (v4-aim-only's rows), so the two runs
 #   differ only in the egocentric geometry. Same split, seed and budget. Otherwise:
@@ -55,7 +55,7 @@ stalemate = "timeout_rate > 0.5"
 heldout-gap = "heldout_gap > 8"
 
 [fixed]
-# policy v4 (POLICY_V4_PLAN.md), width 256, one MinGRU layer; shape flags below
+# policy v4, width 256, one MinGRU layer; shape flags below
 encoder = "v4"
 hidden = 256
 layers = 1

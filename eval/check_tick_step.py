@@ -13,7 +13,7 @@ divergence would change its inputs and the replay; the checkpoint samples from
 observations with a fixed torch generator, so any observation divergence would
 change its actions.
 
-    BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python native/rl/research/check_tick_step.py \
+    BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python eval/check_tick_step.py \
         --checkpoint .../anchors/run007-final.bin [--seed N ...] [--map M ...]
 
 Prints one JSON line per game and TICK_STEP_OK when every comparison holds.
@@ -28,7 +28,7 @@ from evaluation_protocol import scripted_opponent
 import layout, native_policy
 from native_policy import decide
 
-ROOT = HERE.parents[2]
+ROOT = HERE.parent
 RUST_SIM = ROOT / 'native/target/release/libbopl_sim.so'
 
 

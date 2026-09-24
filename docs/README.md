@@ -44,7 +44,7 @@ remain exact integers but do not enter the policy.
 
 ## Native trainer
 
-`puffer/train.py` drives native recurrent PPO. Rollout collection, the minGRU
+`train/train.py` drives native recurrent PPO. Rollout collection, the minGRU
 policy, loss, backward pass and optimizer run in native code. Python configures
 the run, publishes checkpoints and metrics, and invokes evaluation between
 updates. The linear encoder and layout-v3 set encoder share the native minGRU
@@ -54,7 +54,7 @@ rows, then fuses those four 64-wide pools with the flat prefix/self/action path.
 
 Half the games use current-policy self-play. The other half pair a learner with
 a frozen opponent from PufferLib's Elo-rated self-play pool
-(`pufferlib/selfplay.py`, driven by `puffer/native_selfplay.py`). Each
+(`pufferlib/selfplay.py`, driven by `train/native_selfplay.py`). Each
 historical game is pinned to one of the frozen banks (four by default) and draws
 its side at match reset. A bank retires its opponent when the learner's win rate
 against it reaches `--swap-winrate` over at least `--min-games` games, or after
@@ -127,10 +127,10 @@ The video worker is separate so rendering can be scheduled around training.
 
 ### Archiving and retention
 
-A finished run's bulk is archivable in place: `research/compact_evaluations.py`
-gzips the evaluation replays, `research/compact_history.py` packs `metrics.jsonl`
+A finished run's bulk is archivable in place: `eval/compact_evaluations.py`
+gzips the evaluation replays, `eval/compact_history.py` packs `metrics.jsonl`
 and the run logs with zstd (metrics ~10x, the repetitive worker `game-logs`
-~1000x). Readers resolve either spelling through `research/packed.py`, so reports
+~1000x). Readers resolve either spelling through `eval/packed.py`, so reports
 keep naming `metrics.jsonl`. Neither tool touches a live run; because a killed run
 keeps `status: running` for ever, compact_history treats a status that has not
 moved for a day as dead rather than as a writer to protect.
@@ -153,9 +153,9 @@ directory alongside `artifacts/rl`, and keep an unattributable name in every run
 Run from the Unity project root, the directory containing `Assets/` and `native/`.
 
 ```sh
-python3 native/rl/puffer/setup.py
-native/artifacts/rl/venv/bin/python native/rl/puffer/build.py --device cuda
-native/artifacts/rl/venv/bin/python native/rl/research/native_policy.py --build
+python3 train/setup.py
+native/artifacts/rl/venv/bin/python train/build.py --device cuda
+native/artifacts/rl/venv/bin/python eval/native_policy.py --build
 ```
 
 Select the exact reconstructed player for the experiment; its hashes are saved
@@ -164,17 +164,17 @@ parallel startup are always enabled. Headless rendering work is skipped when
 Unity uses its null graphics device; replay video keeps normal rendering.
 
 ```sh
-native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
+native/artifacts/rl/venv/bin/python train/train.py \
   --output native/artifacts/rl/native-smoke \
   --game Builds/LinuxIL2CPP/BoplBattle.x86_64 \
   --encoder set --workers 16 --banks 4 --steps 100000 \
   --training-maps 0,1,2 --heldout-maps 3,4 --episode-ticks 7200
 ```
 
-To declare a sequential series, use `research/series.py prepare` with an explicit
+To declare a sequential series, use `eval/series.py prepare` with an explicit
 native `--baseline`, output, learner budget, seeds, encoder and maps. Preparation
 records source, runtime, baseline and frozen-opponent identities. Run the emitted
-plan with `research/series.py run path/to/plan.json`. A changed identity requires
+plan with `eval/series.py run path/to/plan.json`. A changed identity requires
 a new plan; incomplete runs are not silently resumed.
 
 The native frozen-opponent manifest uses schema 2 and entries with `name`, `path`,
@@ -184,16 +184,16 @@ Historical artifacts remain available as evidence; they are not converted by the
 training command.
 
 ```sh
-native/artifacts/rl/venv/bin/python native/rl/research/serve.py \
+native/artifacts/rl/venv/bin/python eval/serve.py \
   --host 127.0.0.1 --port 8876 \
   --root native/artifacts/rl \
   --pool native/artifacts/rl/sweeps/anchors/pool-v6/pool.json \
   --human native/artifacts/rl/human/mac
-native/artifacts/rl/venv/bin/python native/rl/research/watch_videos.py \
+native/artifacts/rl/venv/bin/python eval/watch_videos.py \
   --run native/artifacts/rl/native-smoke
 ```
 
-`--root` auto-discovers every run (a directory with `metrics.jsonl` or `checkpoints/`). `--run-root NAME=PATH` and `--run-root-glob NAME=GLOB` remain for isolated workspaces; they are not required to list sweep trials. `--pool` is the **primary frozen-pool label** (sweep-objective IQM, run-page side cards), not the joint scale; if omitted, the dashboard prefers pool v6 when `sweeps/anchors/pool-v6/pool.json` exists. `--human` defaults to `human/mac`. Views: `/` all runs, `/ladder` joint Elo, `/lineups` runs × lineups, `/run/<name>`, `/sweep/<name>`. Copy `research/start-dashboard.example.sh` over the 8876 launcher to drop the old glob list.
+`--root` auto-discovers every run (a directory with `metrics.jsonl` or `checkpoints/`). `--run-root NAME=PATH` and `--run-root-glob NAME=GLOB` remain for isolated workspaces; they are not required to list sweep trials. `--pool` is the **primary frozen-pool label** (sweep-objective IQM, run-page side cards), not the joint scale; if omitted, the dashboard prefers pool v6 when `sweeps/anchors/pool-v6/pool.json` exists. `--human` defaults to `human/mac`. Views: `/` all runs, `/ladder` joint Elo, `/lineups` runs × lineups, `/run/<name>`, `/sweep/<name>`. Copy `eval/start-dashboard.example.sh` over the 8876 launcher to drop the old glob list.
 
 Every run carries its loadout selection (`config.json["loadouts"]`, mirrored in each
 evaluation's `loadout_selection`), so the board and the sweep table badge it —
@@ -213,7 +213,7 @@ matrix for the runs whose config declares a selection. **The scripted bots press
 ability slots** (slot 0 as Dash, 1 as Bow, 2 as Platform — `bopl_bots.h`), so off
 2,4,14 they are degraded and their win rate is not comparable across lineups; the
 UI labels that column and the 2,4,14 row stays marked as the one comparable to the
-pool score. The aggregation is `research/lineup_report.py` (also a CLI:
+pool score. The aggregation is `eval/lineup_report.py` (also a CLI:
 `lineup_report.py --run <dir> [--last-k K] [--json]`), digested once per
 `result.json` and cached on the evaluation stamps, so a live run costs one parse
 per new evaluation. (The loadout view moved onto the agent page when the board
@@ -228,7 +228,7 @@ success. Qualification and long-run results belong in the experiment evidence.
 
 ## Hyperparameter / reward sweeps
 
-`sweep/driver.py` runs many short `train.py` trials under PufferLib's Protein
+`train/sweep/driver.py` runs many short `train.py` trials under PufferLib's Protein
 (cost-aware Bayesian search over a Pareto front of cost vs score) instead of
 one long run at a time. One TOML per sweep declares fixed flags, swept
 parameters as PufferLib spaces, and the scorer's settings — an external
@@ -240,9 +240,8 @@ whole sweep kill-and-resume safe, and `summary.md`/`launch-best.sh` are
 regenerated after every trial. The dashboard discovers those trial directories
 under `--root` and shows each trial's labelled frozen-pool IQM plus its joint
 Elo; the sweep page's score column stays the objective written in `sweep.json`.
-See `sweep/README.md`.
 
 ```sh
-native/artifacts/rl/venv/bin/python native/rl/sweep/driver.py \
-  --config native/rl/sweep/configs/smoke.toml --dry-run 3
+native/artifacts/rl/venv/bin/python train/sweep/driver.py \
+  --config train/sweep/configs/smoke.toml --dry-run 3
 ```

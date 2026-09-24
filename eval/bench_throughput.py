@@ -1,4 +1,4 @@
-"""Matched throughput benchmark for the native trainer (puffer/train.py) with GPU and CPU sampling.
+"""Matched throughput benchmark for the native trainer (train/train.py) with GPU and CPU sampling.
 
 Runs the actual training loop (`--no-eval`) for a fixed learner-decision
 budget at each worker count, interleaving worker counts across repeats so that
@@ -26,7 +26,7 @@ import threading
 import time
 
 HERE=Path(__file__).resolve().parent
-TRAINER=HERE.parent/'puffer'/'train.py'
+TRAINER=HERE.parent/'train'/'train.py'
 sys.path.insert(0, str(HERE))
 import packed  # noqa: E402
 
@@ -78,11 +78,11 @@ def summarize(values):
 def run_once(python,out,workers,decisions,seed,extra,env):
     metrics=out/'metrics.jsonl'
     # Leading KEY=VALUE tokens of an arm set environment variables for that arm
-    # (game runtime toggles, BOPL_RL_GAME); the rest are puffer/train.py flags.
+    # (game runtime toggles, BOPL_RL_GAME); the rest are train/train.py flags.
     env=dict(env); extra=list(extra)
     while extra and '=' in extra[0] and not extra[0].startswith('-'):
         key,value=extra.pop(0).split('=',1); env[key]=value
-    # puffer/train.py's --steps is the learner-decision budget of a fresh run.
+    # train/train.py's --steps is the learner-decision budget of a fresh run.
     command=[python,str(TRAINER),'--output',str(out),'--workers',str(workers),'--steps',str(decisions),
              '--seed',str(seed),'--no-eval',*extra]
     log=out.with_suffix('.log').open('w')
@@ -135,11 +135,11 @@ def main():
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--workers',default='16,24,32')
     parser.add_argument('--repeats',type=int,default=3)
-    parser.add_argument('--decisions',type=int,default=98304,help='Learner decisions per run (puffer/train.py --steps)')
+    parser.add_argument('--decisions',type=int,default=98304,help='Learner decisions per run (train/train.py --steps)')
     parser.add_argument('--seed',type=int,default=73)
     parser.add_argument('--label',default='')
-    parser.add_argument('--arms',default='',help='name=extra puffer/train.py args; comma separated, e.g. "p1=--learner-passes 1,p3=--learner-passes 3". Leading KEY=VALUE tokens set environment variables for the arm. Pass flags explicitly; an empty arm uses train.py defaults')
-    parser.add_argument('extra',nargs='*',help='extra puffer/train.py arguments for every run (after --)')
+    parser.add_argument('--arms',default='',help='name=extra train/train.py args; comma separated, e.g. "p1=--learner-passes 1,p3=--learner-passes 3". Leading KEY=VALUE tokens set environment variables for the arm. Pass flags explicitly; an empty arm uses train.py defaults')
+    parser.add_argument('extra',nargs='*',help='extra train/train.py arguments for every run (after --)')
     opt=parser.parse_args()
     out=opt.output.resolve(); out.mkdir(parents=True,exist_ok=False)
     workers=[int(x) for x in opt.workers.split(',')]

@@ -26,8 +26,8 @@
  * to restrict the dump to the neighbourhood of one entity (SD_CHUNK_SLACK
  * widens that neighbourhood beyond the two bodies' radii, default 2.0).
  *
- * cc -O2 -I. -o ../target/release/sudden_death_chunk_ab \
- *   research/rust_ab/sudden_death_chunk_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -I sim/abi -o ../target/release/sudden_death_chunk_ab \
+ *   eval/rust_ab/sudden_death_chunk_ab.c sim/abi/bopl_rl.c -ldl -lm
  *
  * Usage: sudden_death_chunk_ab <BoplSimNative.so> <libbopl_sim.so> [map] [ticks]
  * With no [map] it sweeps maps 0-4. */

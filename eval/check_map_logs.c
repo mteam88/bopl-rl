@@ -1,5 +1,5 @@
 /* The pinned vector Dict retains key pointers and has an initial capacity of 32. */
-#include "../puffer/binding.c"
+#include "binding.c"
 #include <assert.h>
 int main(void) {
     Log log={0};log.perf=0.75f;

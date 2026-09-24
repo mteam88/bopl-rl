@@ -3,7 +3,7 @@
  * and toss the item from the collision callback before stock reconstruction.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/grenade_forced_exit_ab \
- *   research/rust_ab/grenade_forced_exit_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/grenade_forced_exit_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

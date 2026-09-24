@@ -17,10 +17,10 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
 parser.add_argument("--binding-only", action="store_true", help="Reuse the existing CUDA object when only environment code changed")
 parser.add_argument("--cuda-host-compiler", default="g++-15")
-parser.add_argument("--puffer", type=Path, default=HERE.parents[1] / "artifacts/rl/dependencies" / f"PufferLib-{REVISION}")
+parser.add_argument("--puffer", type=Path, default=HERE.parent / "native/artifacts/rl/dependencies" / f"PufferLib-{REVISION}")
 args = parser.parse_args()
 source = args.puffer.resolve()
-out = HERE.parents[1] / "artifacts/rl"
+out = HERE.parent / "native/artifacts/rl"
 out.mkdir(parents=True, exist_ok=True)
 # Keep the pinned dependency tree unchanged. Upstream dereferences a null
 # graph array during teardown when cudagraphs=-1; apply the small fix only

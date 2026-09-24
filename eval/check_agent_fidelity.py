@@ -1,6 +1,6 @@
 """Fidelity of the in-game agent shim (bopl_agent.h) against the research environment.
 
-Two checks (native/rl/PLAY_UNITY.md "Fidelity proof"):
+Two checks:
 
   sim    Drive a research Environment (eval_binding.c, any backend) decision by
          decision; hand every tick's state to the shim as the game would. At
@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 import layout
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 
 def sample_masked(rng, mask):

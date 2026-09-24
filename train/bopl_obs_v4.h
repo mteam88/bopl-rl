@@ -1,4 +1,4 @@
-/* Observation writer for layout v4 (bopl_layout_v4.h, POLICY_V4_PLAN.md).
+/* Observation writer for layout v4 (bopl_layout_v4.h).
  * Included by bopl_puffer.h after the v3 writer's helpers; shares its
  * visibility, delay and truncation rules (bopl_spatial_hidden,
  * bopl_entity_visible, bopl_nearest, rope thinning). Nothing here is read by
@@ -6,11 +6,11 @@
 #ifndef BOPL_OBS_V4_H
 #define BOPL_OBS_V4_H
 
-/* Writer ablations (POLICY_V4_PLAN.md section 7), a bitmask in BOPL4_ABLATE
+/* Writer ablations, a bitmask in BOPL4_ABLATE
  * read once per process (train.py --v4-ablate, recorded in the checkpoint's
  * v4_shape so the evaluator applies the same one). The row keeps its shape;
  * the ablated block is zero. */
-/* BOPL4_ABLATE_AIM is layout v4.1 (POLICY_V4_PLAN.md 7b), not an ablation:
+/* BOPL4_ABLATE_AIM is layout v4.1, not an ablation:
  * the two down rays that duplicate around rays (-135 and -45 degrees are
  * around rays 20 and 28) carry the aim ray and the line of sight instead. */
 enum { BOPL4_ABLATE_RELATIONAL=1, BOPL4_ABLATE_RAYS=2, BOPL4_ABLATE_RAYS16=4, BOPL4_ABLATE_AIM=8 };

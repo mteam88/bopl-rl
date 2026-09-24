@@ -26,7 +26,7 @@ typedef struct {
      * learner's score in them. A match whose opponent weights were swapped
      * while it ran (see c_step) counts in neither. */
     float hist_n_bank[8], hist_score_bank[8];
-    /* Matches the learner played against a scripted bot in bank b (SCRIPTED_BOTS.md),
+    /* Matches the learner played against a scripted bot in bank b,
      * kept out of hist_*_bank so the pool's swap/Elo statistics only see the
      * bank's frozen weights. */
     float bot_n_bank[8], bot_score_bank[8];
@@ -152,7 +152,7 @@ typedef struct {
     unsigned int side_rng;
     unsigned long matches, stepped;
     /* Player-ordered output block for standalone encoders (research_pack,
-     * research/check_observations.c). NULL in an environment: its rows are
+     * eval/check_observations.c). NULL in an environment: its rows are
      * encoded straight into the routed slots (bopl_obs_row), once. */
     float *scratch;
     unsigned int rng;
@@ -229,7 +229,7 @@ typedef struct {
     /* The decision applied this step, set before the rows are encoded: layout
      * v4.1's aim ray (bopl_obs_v4.h bopl4_aim_rays). Zero at the episode start. */
     BoplRlAction applied[6];
-    /* Scripted opponents (bopl_bots.h, SCRIPTED_BOTS.md). Training: banks whose
+    /* Scripted opponents (bopl_bots.h). Training: banks whose
      * nibble in scripted_kinds is set play a bot instead of frozen weights (the
      * bank's GPU rows still run; their sampled actions are ignored). Evaluation:
      * research_bot pins a bot on a player. bot_select is the per-player

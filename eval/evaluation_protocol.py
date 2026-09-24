@@ -9,7 +9,7 @@ from map_catalogue import MAP_COUNT,parse_map_ids
 
 ABILITY_COUNT = 39
 DEFAULT_LOADOUT = (2, 4, 14)
-# ABILITY_PORT_GAPS.md: Time Stop still needs per-updatable clock coverage and
+# Time Stop still needs per-updatable clock coverage and
 # Revival still lacks its full multi-actor model. Explicit pools may opt in.
 DEFAULT_POOL_EXCLUSIONS = (12, 15)
 
@@ -31,7 +31,7 @@ def ability_names():
     Telemetry and loadouts are ability IDs everywhere; only reports resolve them,
     so this stays out of the hot paths.
     """
-    rows=json.loads((Path(__file__).resolve().parents[3]/'native/data/rollout.json').read_text())['abilities']
+    rows=json.loads((Path(__file__).resolve().parents[1]/'native/data/rollout.json').read_text())['abilities']
     return {int(row['id']):row['name'] for row in rows}
 
 
@@ -49,7 +49,7 @@ def loadout_ids(value):
 def loadout_pool(value):
     """Explicit IDs, ``all``, or ``all-<excluded IDs>``.
 
-    ``all`` always excludes the partial abilities in ABILITY_PORT_GAPS.md;
+    ``all`` always excludes the partial abilities;
     ``all-...`` adds exclusions. An explicit list may intentionally include
     those abilities.
     """
@@ -116,11 +116,11 @@ def resolve_loadouts(fixed=DEFAULT_LOADOUT, pool=None, lineup_file=None, no_dup=
                 no_dup=bool(no_dup),mirror_share=float(mirror_share))
 
 
-# Scripted opponents (native/rl/puffer/bopl_bots.h): hand-coded bots that read
+# Scripted opponents (train/bopl_bots.h): hand-coded bots that read
 # the true game state through the same C environment. Names are `kind-level`;
 # the numeric IDs match BOPL_BOT_* in the header.
 #
-# Kind table — append-only (SCRIPTED_BOTS.md "Versioning"): a bot's behaviour
+# Kind table — append-only: a bot's behaviour
 # is never changed under an existing name, so scores stay comparable across
 # time; an improved bot is a new kind with a version suffix (`mixed-v2`) or a
 # new family (`search`). The level is always the last token of the public

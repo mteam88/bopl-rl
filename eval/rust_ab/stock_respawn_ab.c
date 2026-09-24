@@ -1,8 +1,8 @@
 /* Stock respawn A/B: walk player 1 into the water, select the right-hand
  * point, and confirm early with a jump edge.
  *
- * cc -O2 -I. -o ../target/release/stock_respawn_ab \
- *   research/rust_ab/stock_respawn_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -I sim/abi -o ../target/release/stock_respawn_ab \
+ *   eval/rust_ab/stock_respawn_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <math.h>

@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from map_catalogue import parse_map_ids
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 TABLE = ROOT / 'native/data/map-set.json'
 
 

@@ -2,7 +2,7 @@
 
 Both backends report `bopl_rl_ability_count() == 39`, and that count is the ONLY
 cross-backend ability check anywhere in the tree (rust_ab/null_ability_ab.c:26,
-puffer/bopl_puffer.h:848). Identity -- that index 7 is Gust on both sides, not
+train/bopl_puffer.h:848). Identity -- that index 7 is Gust on both sides, not
 merely that both have 39 entries -- is asserted nowhere: `bopl_rl_catalog_hash`
 is a hard-coded sentinel on the Rust side (mod.rs SOURCE_HASH/CATALOG_HASH), so
 comparing the two hashes directly is meaningless and nothing does it.
@@ -33,7 +33,7 @@ import re
 import subprocess
 import sys
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[1]
 HERE = Path(__file__).resolve().parent
 
 

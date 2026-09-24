@@ -8,8 +8,8 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-ROOT=Path(__file__).resolve().parents[3]
-sys.path.insert(0,str(ROOT/'native/rl/research'))
+ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'eval'))
 from native_policy import NativePolicy,REVISION
 from layout import DECODER,OBS_SIZE
 

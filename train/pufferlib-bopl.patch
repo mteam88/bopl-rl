@@ -54,7 +54,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
  }
  
 -void rollouts(pybind11::object pufferl_obj) {
-+// Bopl async (THROUGHPUT.md 3.A). rollouts_start kicks a rollout into the
++// Bopl async. rollouts_start kicks a rollout into the
 +// write slot and returns; rollouts_finish waits for it, accounts its time and
 +// hands the slot to train. train consumes the ready slot and advances
 +// global_step by the batch it trained, so global_step counts trained data
@@ -132,7 +132,7 @@ diff -ruN pristine-src/bindings.cu puffer-overlay/bindings.cu
 +// `count` learner rows of buffer 0 at rollout step t of the slot last
 +// collected, recomputed from a zero recurrent state with policy_forward (the
 +// per-bank chain the trainer trains against), together with the observations
-+// they were computed from. puffer/check_dump.py holds the CPU evaluator and
++// they were computed from. train/check_dump.py holds the CPU evaluator and
 +// the torch reference to these rows on a checkpoint the trainer wrote, so a
 +// reader that walks the dump in another order than create_params registers
 +// it (encoder, decoder, recurrent core) fails a test instead of an evaluation.
@@ -939,7 +939,7 @@ diff -ruN pristine-src/muon.cu puffer-overlay/muon.cu
 +// per-matrix cuBLAS path bit for bit. Policy v4 has 19 matrices, over this
 +// cap, so it runs the per-matrix TF32 cuBLAS path (~530 launches, ~12 ms per
 +// update at w128); the grouped fp32 path at a cap of 32 measured the same
-+// 11 ms (notes-v4.md), so v4 keeps the numerics its runs were trained with.
++// 11 ms, so v4 keeps the numerics its runs were trained with.
 +#define MUON_MAX_MATS 16
 +#define MUON_MAX_SPLITK 8
 +#define MUON_MAX_LANES 8
@@ -1716,7 +1716,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +    // Bopl compact layout: vec_kwargs primary_rows > 0 fixes the primary
 +    // slice, so bank_layout[num_banks] may end BEFORE agents_per_buffer; the
 +    // rows past it are idle opponent slots (never decided) that no forward
-+    // computes and no upload carries (THROUGHPUT.md 3.C).
++    // computes and no upload carries.
 +    int primary_rows;
 +    // Bopl batched rollout forward plan (bopl_rollout.cu); nullptr = per-bank chain.
 +    struct BrPlan* br;
@@ -1729,7 +1729,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +    cudaStream_t* bank_streams;
 +    cudaEvent_t* bank_fork_events;  // [num_buffers]
 +    cudaEvent_t* bank_join_events;  // [num_buffers][BOPL_MAX_BANK_STREAMS]
-+    // Bopl async (THROUGHPUT.md 3.A, Cleanba two-slot): the rollout tensors
++    // Bopl async (Cleanba two-slot): the rollout tensors
 +    // and rollout_start_states carry a leading slot dimension (rollouts as
 +    // num_slots x horizon along T, like 5.0's rollout_time_view). The buffer
 +    // threads write slot write_slot while train_impl reads ready_slot on its
@@ -3145,7 +3145,7 @@ diff -ruN pristine-src/pufferlib.cu puffer-overlay/pufferlib.cu
 +    // auto|spin|yield|blocking). torch.cuda.init() runs before this call, so
 +    // the primary context exists; cudaSetDeviceFlags overwrites its flags.
 +    // Default `auto` spins when threads <= cores, which is where the 35% of
-+    // cycles in cuStreamSynchronize came from (THROUGHPUT.md).
++    // cycles in cuStreamSynchronize came from.
 +    if (const char* sched = std::getenv("BOPL_CUDA_SCHED")) {
 +        unsigned flags = cudaDeviceScheduleAuto;
 +        if (strcmp(sched, "spin") == 0) flags = cudaDeviceScheduleSpin;
@@ -3547,7 +3547,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
      // Optional permutation: agent_perm[slot] = physical agent index in global buffers.
      // NULL = identity (current behavior). Only valid when env defines MY_USES_PERM.
      int* agent_perm;
-+    // Bopl (THROUGHPUT.md 3.C): the pinned host buffers are mapped into the
++    // Bopl: the pinned host buffers are mapped into the
 +    // device address space (dev_* = device aliases, mapped = 1 when every
 +    // alias resolved) so the batched rollout forward can read observations /
 +    // rewards / terminals / masks from host memory and write actions back
@@ -3629,7 +3629,7 @@ diff -ruN pristine-src/vecenv.h puffer-overlay/vecenv.h
  #endif
  
  
-+// Bopl env pool (THROUGHPUT.md 3.D). Upstream stepped each buffer's envs with
++// Bopl env pool. Upstream stepped each buffer's envs with
 +// `#pragma omp parallel for num_threads(num_threads / buffers)`: a fork/join of
 +// 32 OMP threads per buffer-step (128 threads on 12 hardware threads), and the
 +// buffer thread spun in cuStreamSynchronize while the GPU ran. Here:

@@ -2,7 +2,7 @@
  * consumption, and hole growth.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/black_hole_arrow_ab \
- *   research/rust_ab/black_hole_arrow_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/black_hole_arrow_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

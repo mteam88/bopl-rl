@@ -23,7 +23,7 @@ import time
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
+ROOT = HERE.parent
 REVISION = "42f70d6932c30ac977736f861006809c50168ba9"
 
 

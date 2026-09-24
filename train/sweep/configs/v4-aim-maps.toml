@@ -1,4 +1,4 @@
-# Policy v4, more maps (POLICY_V4_PLAN.md 7d, claims 1-3): v4-aim-maps
+# Policy v4, more maps (claims 1-3): v4-aim-maps
 #   v4-aim (rays + aim/LOS, writer bit 8, the production shape) trained on 23 of the
 #   31-level catalogue (native/data/map-set.json): maps 0-2 plus 20 new grass levels;
 #   held out: 3-4 (continuity with the five-map runs) plus six new levels (RL
@@ -52,7 +52,7 @@ stalemate = "timeout_rate > 0.5"
 heldout-gap = "heldout_gap > 8"
 
 [fixed]
-# policy v4 (POLICY_V4_PLAN.md), width 256, one MinGRU layer; shape flags below
+# policy v4, width 256, one MinGRU layer; shape flags below
 encoder = "v4"
 hidden = 256
 layers = 1

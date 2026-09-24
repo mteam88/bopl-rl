@@ -1,5 +1,5 @@
 /* Fire a full-charge arrow at each angle byte; print arrow velocity.
- * cc -O2 -I. -o /tmp/aim_map /tmp/aim_map.c bopl_rl.c -ldl -lm */
+ * cc -O2 -I sim/abi -o /tmp/aim_map /tmp/aim_map.c bopl_rl.c -ldl -lm */
 #include "bopl_rl.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,6 +1,6 @@
 """The league: members, the all-pairs payoff matrix, and what it says.
 
-Reads `native/rl/league/` — `league.json` (members) and `payoff.jsonl`
+Reads `league/` — `league.json` (members) and `payoff.jsonl`
 (append-only aggregated counts, one row per ordered pair per condition).
 
 The hard rule here is that counts are NEVER pooled across `condition` values.

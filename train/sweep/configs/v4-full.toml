@@ -1,4 +1,4 @@
-# Policy v4 ablation (POLICY_V4_PLAN.md section 7): v4-full
+# Policy v4 ablation: v4-full
 #   everything: 32+4 rays, relational columns, max||mean pooling, FFN 512, wide privileged critic 512
 # One 1.73B trial of overnight-9 024's exact recipe (pool v7 625, seed 73) with the
 # policy v4 encoder / decoder and observation layout 4 in place of the v3 set encoder;
@@ -47,7 +47,7 @@ platform-spam = "platforms_per_game > 8"
 stalemate = "timeout_rate > 0.5"
 
 [fixed]
-# policy v4 (POLICY_V4_PLAN.md), width 256, one MinGRU layer; shape flags below
+# policy v4, width 256, one MinGRU layer; shape flags below
 encoder = "v4"
 hidden = 256
 layers = 1

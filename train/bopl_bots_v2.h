@@ -1,6 +1,6 @@
 #ifndef BOPL_BOTS_V2_H
 #define BOPL_BOTS_V2_H
-/* Scripted bot kinds after the frozen v1 set (SCRIPTED_BOTS.md "Versioning").
+/* Scripted bot kinds after the frozen v1 set.
  * Included at the end of bopl_bots.h, so the v1 helpers (BotView, ballistic
  * solver, navigation) are available to build on; the v1 functions themselves
  * are never edited. Adding a kind: append its id to the enum and its name to
@@ -34,9 +34,9 @@
  * foe model shoots once, then its arrow is gone and its dash spent), so a
  * candidate that merely looks further ahead scores higher - six random
  * sequences whose arrows ran to H + charge + 60 caused half of search-hard's
- * losses that way (SCRIPTED_BOTS.md, Levels). Deterministic: no RNG drawn.
+ * losses that way (Levels). Deterministic: no RNG drawn.
  * Levels are the horizon: hard 128 ticks, medium 64, easy 32 (longer is
- * stronger against policies; SCRIPTED_BOTS.md, Levels). Requires a backend
+ * stronger against policies). Requires a backend
  * with bopl_rl_fork (the Rust sim); anything else aborts. */
 #include "bopl_layout.h"
 #include "bopl_bots_v2_play.h"
@@ -363,7 +363,7 @@ static void bot_search(BoplBot *bot, const BoplRlState *state, int me, int hold_
         search_add(cands, &n, bot_aim_byte(dx>=0?0.3:-0.3, 1), BOT_JUMP, 0, BOT_AIM_UP, SEARCH_HOLD, H);
         if (view.dash_ready && !view.morphing) {
             /* Up, down-diagonal and straight-down dashes plus sideways
-             * dash-then-shoot candidates cost 130 Elo (SCRIPTED_BOTS.md). */
+             * dash-then-shoot candidates cost 130 Elo. */
             static const double dirs[4][2]={{1,0},{-1,0},{1,1},{-1,1}};
             for (int i=0; i<4; i++) search_add(cands, &n, bot_aim_byte(dirs[i][0], dirs[i][1]), BOT_DASH, 0, BOT_AIM_UP, SEARCH_HOLD, H);
             search_add(cands, &n, bot_aim_byte(dx, dy), BOT_DASH, 0, BOT_AIM_UP, SEARCH_HOLD, H);

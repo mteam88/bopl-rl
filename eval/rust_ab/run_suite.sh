@@ -3,19 +3,18 @@
 # the trace comparator so that the trace-only probes -- which always exit 0 --
 # can actually fail. See README.md "Trace-only probes".
 #
-#   research/rust_ab/run_suite.sh [name-filter]
+#   eval/rust_ab/run_suite.sh [name-filter]
 #
 # Environment:
 #   REFERENCE  .NET oracle .so   (default: the publish/ tree)
 #   RUST       Rust backend .so  (default: target-q32, the bit-exact build)
-#   OUTDIR     where captures land (default: ../target/rust_ab_suite)
+#   OUTDIR     where captures land (default: native/target/rust_ab_suite)
 #
 # Exits non-zero if any probe fails, which is the whole point: a suite that
 # only checks exit status reports the trace-only probes as passing forever.
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-rl=$(cd "$here/../.." && pwd)
-root=$(cd "$rl/../.." && pwd)
+root=$(cd "$here/../.." && pwd)
 REFERENCE=${REFERENCE:-$root/sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so}
 RUST=${RUST:-$root/native/target-q32/release/libbopl_sim.so}
 OUTDIR=${OUTDIR:-$root/native/target/rust_ab_suite}
@@ -72,8 +71,8 @@ run_probe() {
   ( cd "$root" && "$bin/$name" "$REFERENCE" "$RUST" ) > "$capture" 2>&1
 }
 
-cd "$rl" || exit 1
-for source in research/rust_ab/*.c research/rust_ab/*.sh; do
+cd "$root" || exit 1
+for source in eval/rust_ab/*.c eval/rust_ab/*.sh; do
   name=$(basename "$source"); name=${name%.*}
   [ "$name" = run_suite ] && continue
   if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then continue; fi
@@ -83,12 +82,12 @@ for source in research/rust_ab/*.c research/rust_ab/*.sh; do
   capture="$OUTDIR/$name.out"
 
   if [[ "$source" == *.sh ]]; then
-    ( cd "$rl" && REFERENCE="$REFERENCE" RUST_ROLLOUT="$RUST" \
+    ( cd "$root" && REFERENCE="$REFERENCE" RUST_ROLLOUT="$RUST" \
       bash "$source" "$REFERENCE" "$RUST" ) > "$capture" 2>&1
     rc=$?
   else
-    if [ ! -x "$bin/$name" ] || [ "$source" -nt "$bin/$name" ] || [ bopl_rl.c -nt "$bin/$name" ]; then
-      if ! cc -O2 -I. -o "$bin/$name" "$source" bopl_rl.c -ldl -lm > "$OUTDIR/$name.build" 2>&1; then
+    if [ ! -x "$bin/$name" ] || [ "$source" -nt "$bin/$name" ] || [ sim/abi/bopl_rl.c -nt "$bin/$name" ]; then
+      if ! cc -O2 -I sim/abi -o "$bin/$name" "$source" sim/abi/bopl_rl.c -ldl -lm > "$OUTDIR/$name.build" 2>&1; then
         echo "BUILD $name (see $OUTDIR/$name.build)"; fail=$((fail+1)); failures+=("$name (build)"); continue
       fi
     fi

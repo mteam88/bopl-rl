@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Survival curves, attribution and coverage from divergence_rate's JSONL.
 
-    research/divergence/divergence_summary.py <dir-or-file>... [--json out.json]
+    eval/divergence/divergence_summary.py <dir-or-file>... [--json out.json]
 
 Ticks-to-first-divergence is a survival time, and most games end (somebody
 wins) long before the comparison horizon, so a game that was still exact when
@@ -415,7 +415,7 @@ def main(argv):
     if not paths:
         print(__doc__); return 2
     try:
-        catalogue = json.loads((Path(__file__).resolve().parents[3] / 'data/rollout.json').read_text())
+        catalogue = json.loads((Path(__file__).resolve().parents[2] / 'native/data/rollout.json').read_text())
         ABILITY_NAMES.update({int(r['id']): r['name'] for r in catalogue['abilities']})
     except Exception as error:                      # noqa: BLE001 - reporting only
         print(f'(ability names unavailable: {error})')

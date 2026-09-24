@@ -8,7 +8,7 @@ policy_forward produced for them from a zero recurrent state
 (_C.bopl_policy_rows). This script loads that checkpoint the way the
 evaluators do (native_policy.load: policy_eval.c, the CPU evaluator behind
 evaluate.py, elo_ladder, the reference scorer and the in-game agent) and,
-for policy v4, with the torch reference (research/policy_v4.py), and
+for policy v4, with the torch reference (eval/policy_v4.py), and
 asserts both reproduce the trainer's rows on the same observations. A reader
 that walks the dump in another order than create_params registers it
 (encoder, decoder, recurrent core) fails here rather than in a trial's
@@ -17,8 +17,8 @@ evaluations (the v4 MinGRU/decoder swap of 2026-09-16 was found by a trial).
 Tolerance: the trainer runs TF32 GEMMs and bf16 set MLPs, the readers fp32;
 the rows agree to ~1e-2 relative, a swapped or shifted reader is off by O(1).
 
-    python native/rl/puffer/check_dump.py            # v3 (set) and v4, ~1 min, <2 GB GPU
-    python native/rl/puffer/check_dump.py --only v4 --keep /tmp/dump
+    python train/check_dump.py            # v3 (set) and v4, ~1 min, <2 GB GPU
+    python train/check_dump.py --only v4 --keep /tmp/dump
 """
 import argparse
 import json
@@ -32,8 +32,8 @@ import tempfile
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-sys.path.insert(0, str(ROOT / 'native/rl/research'))
+ROOT = HERE.parent
+sys.path.insert(0, str(ROOT / 'eval'))
 import layout  # noqa: E402
 
 PUFFERLIB = ROOT / 'native/artifacts/rl/dependencies/PufferLib-42f70d6932c30ac977736f861006809c50168ba9'
@@ -47,7 +47,7 @@ CONFIGS = {
     'v3': ['--encoder', 'set', '--hidden', '128', '--layers', '1'],
     # v4 at 16 games: 24 learner rows x 16 steps for the rollout chain compare.
     'v4': ['--encoder', 'v4', '--hidden', '256', '--layers', '1', '--workers', '16'],
-    # The production shape (sweep/configs/v4-lite-aim.toml): set inner 64, no FFN, critic 384, aim-only writer.
+    # The production shape (train/sweep/configs/v4-lite-aim.toml): set inner 64, no FFN, critic 384, aim-only writer.
     'v4-lite': ['--encoder', 'v4', '--hidden', '256', '--layers', '1', '--workers', '16', '--v4-ablate', '10',
                 '--v4-set-inner', '64', '--v4-ffn-dim', '0', '--v4-critic-dim', '384'],
 }

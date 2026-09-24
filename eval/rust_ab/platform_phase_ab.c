@@ -1,8 +1,8 @@
 /* Platform ability phase A/B: one row per tick around button registration,
  * anticipation callback, initial resize, and transformed-player following.
  *
- * cc -O2 -I. -o ../target/release/platform_phase_ab \
- *   research/rust_ab/platform_phase_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -I sim/abi -o ../target/release/platform_phase_ab \
+ *   eval/rust_ab/platform_phase_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <math.h>

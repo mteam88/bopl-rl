@@ -1,4 +1,4 @@
-//! Internal companion to `research/rust_ab/platform_rotation_ab.c`: exposes
+//! Internal companion to `eval/rust_ab/platform_rotation_ab.c`: exposes
 //! the platform spring's private home rotation without extending the RL ABI.
 use bopl_sim::rollout::{CAction, CConfig, CPlayerConfig, RolloutWorld};
 use bopl_sim::{fixed::Fix, physics::contact::rounded_rounded, vector::Vec2};

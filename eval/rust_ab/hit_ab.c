@@ -1,5 +1,5 @@
 /* p0 charges and fires toward p1; report hit outcome, death tick and cause.
- * cc -O2 -I. -o /tmp/hit_ab /tmp/hit_ab.c bopl_rl.c -ldl -lm */
+ * cc -O2 -I sim/abi -o /tmp/hit_ab /tmp/hit_ab.c bopl_rl.c -ldl -lm */
 #include "bopl_rl.h"
 #include <stdio.h>
 #include <stdlib.h>

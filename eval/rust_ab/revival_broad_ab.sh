@@ -8,8 +8,7 @@ fi
 
 reference=$1
 rust=$2
-here=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-project=$(CDPATH= cd -- "$here/../.." && pwd)
+project=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
@@ -18,8 +17,8 @@ trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 # by an immediate airborne cast of the newly equipped prefab.
 for scenario in revival_ability_ab revival_death_ab ability_pickup_cast_ab
 do
-    cc -O2 -Wall -Wextra -Werror -I"$here" -o "$tmp/$scenario" \
-        "$here/research/rust_ab/$scenario.c" "$here/bopl_rl.c" -ldl -lm
+    cc -O2 -Wall -Wextra -Werror -I"$project/sim/abi" -o "$tmp/$scenario" \
+        "$project/eval/rust_ab/$scenario.c" "$project/sim/abi/bopl_rl.c" -ldl -lm
     if [ "$scenario" = ability_pickup_cast_ab ]; then
         (cd "$project" && BOPL_RL_ABILITY_SPAWNS=1 \
             "$tmp/$scenario" "$reference" "$rust")

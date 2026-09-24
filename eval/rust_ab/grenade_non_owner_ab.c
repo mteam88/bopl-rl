@@ -4,7 +4,7 @@
  * gate, deferred explosion registration, and the victim's stock respawn.
  *
  * cc -O2 -Wall -Wextra -Werror -I. -o /tmp/grenade_non_owner_ab \
- *   research/rust_ab/grenade_non_owner_ab.c bopl_rl.c -ldl -lm
+ *   eval/rust_ab/grenade_non_owner_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
 #include "bopl_rl.h"
 #include <inttypes.h>

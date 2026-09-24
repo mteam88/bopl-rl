@@ -2,12 +2,12 @@
 
 Runs many short train.py trials the way PufferLib's sweep() loop does:
 suggest hyperparameters (pufferlib.sweep.Protein / Random / ParetoGenetic),
-launch native/rl/puffer/train.py in its own run directory and systemd scope,
+launch train/train.py in its own run directory and systemd scope,
 score the run with an external yardstick (scoring.py), downsample the score
 curve and feed every (cost, score) point back with observe().
 
-    native/artifacts/rl/venv/bin/python native/rl/sweep/driver.py \
-        --config native/rl/sweep/configs/<name>.toml
+    native/artifacts/rl/venv/bin/python train/sweep/driver.py \
+        --config train/sweep/configs/<name>.toml
 
 The driver persists every suggestion and observation in
 native/artifacts/rl/sweeps/<name>/sweep.json, so it can be killed and
@@ -29,9 +29,9 @@ import subprocess
 import sys
 import time
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-sys.path[:0] = [str(HERE), str(ROOT / 'native/rl/research'), str(ROOT / 'native/tools')]
+sys.path[:0] = [str(HERE), str(ROOT / 'eval'), str(ROOT / 'native/tools')]
 
 # The rift's venv may carry an editable pufferlib install pointing at another
 # checkout; resolve PufferLib (and its native _C) inside this tree instead.
@@ -44,7 +44,7 @@ import scoring
 import report
 
 VENV_PYTHON = ROOT / 'native/artifacts/rl/venv/bin/python'
-TRAIN = ROOT / 'native/rl/puffer/train.py'
+TRAIN = ROOT / 'train/train.py'
 # Sweeps run on the Rust sim (native/target/release/libbopl_sim.so): trials
 # through train.py, the reference scorer's games through reference_pool.py.
 os.environ.setdefault('BOPL_RL_BACKEND', 'rust')
@@ -200,7 +200,7 @@ class Driver:
         env.setdefault('BOPL_OMP_THREADS', str(os.cpu_count() or 12))
         env.setdefault('OMP_WAIT_POLICY', 'passive')
         # Since 2026-09-12 the rollout steps games on its own env pool
-        # (THROUGHPUT.md 3.D); OpenMP only governs the single-buffer path. 8
+        #; OpenMP only governs the single-buffer path. 8
         # stepping threads on the 12-thread box tie 9-10 at 128 workers and
         # leave the trainer's main thread and the eval workers a core.
         env.setdefault('BOPL_ENV_THREADS', str(max(2, (os.cpu_count() or 12) - 4)))

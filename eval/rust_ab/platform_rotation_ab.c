@@ -1,8 +1,8 @@
 /* Spawned-platform rotation trace. Opens any number of ABI-compatible
  * backends and prints the newest live rounded rectangle after a Platform cast.
  *
- * cc -O2 -I. -o ../target/release/platform_rotation_ab \
- *   research/rust_ab/platform_rotation_ab.c bopl_rl.c -ldl -lm
+ * cc -O2 -I sim/abi -o ../target/release/platform_rotation_ab \
+ *   eval/rust_ab/platform_rotation_ab.c sim/abi/bopl_rl.c -ldl -lm
  *
  * Usage: platform_rotation_ab <map> <angle> <release_tick> <end_tick>
  *        <label=library> [<label=library> ...]

@@ -13,8 +13,8 @@ import sys
 import time
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-sys.path[:0] = [str(HERE), str(HERE.parent / 'sweep'), str(ROOT / 'native/tools')]
+ROOT = HERE.parent
+sys.path[:0] = [str(HERE), str(HERE.parent / 'train/sweep'), str(ROOT / 'native/tools')]
 
 import elo_ladder
 import joint_ladder

@@ -16,10 +16,10 @@ prints the pre-registered judgement per arm:
 
   * aim-head entropy at 50M and 100M learner decisions (metrics.jsonl);
   * arrow hit rate over the evaluation-map groups of each evaluation
-    (sweep/flags.evaluation_metrics), pooled over the evaluations at or
+    (train/sweep/flags.evaluation_metrics), pooled over the evaluations at or
     after 100M;
   * median 15 Hz aim change in degrees from the saved evaluation replays
-    (research/run_insights), same pooling;
+    (eval/run_insights), same pooling;
   * Elo vs pool v5 (reference rating written by evaluate.py), last evaluation
     and IQM-free mean of the last three, as the tiebreaker.
 """
@@ -33,13 +33,13 @@ import sys
 import time
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-sys.path[:0] = [str(HERE), str(ROOT / 'native/rl/sweep')]
+ROOT = HERE.parent
+sys.path[:0] = [str(HERE), str(ROOT / 'train/sweep')]
 import packed  # noqa: E402
 PUFFERLIB_DIR = sorted((ROOT / 'native/artifacts/rl/dependencies').glob('PufferLib-*'))[-1]
 VENV_PYTHON = ROOT / 'native/artifacts/rl/venv/bin/python'
-TRAIN = ROOT / 'native/rl/puffer/train.py'
-BASE_CONFIG = ROOT / 'native/rl/sweep/configs/overnight-6.toml'
+TRAIN = ROOT / 'train/train.py'
+BASE_CONFIG = ROOT / 'train/sweep/configs/overnight-6.toml'
 DEFAULT_ROOT = ROOT / 'native/artifacts/rl/sweeps/aim-ar-fourier'
 
 ARMS = {'baseline': (0, 0), 'ar': (0, 1), 'fourier': (16, 0), 'both': (16, 1),

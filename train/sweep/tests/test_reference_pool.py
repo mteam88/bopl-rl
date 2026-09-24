@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import reference_pool as rp  # adds research/ to sys.path for elo_ladder
+import reference_pool as rp  # adds eval/ to sys.path for elo_ladder
 import elo_ladder
 import scoring
 

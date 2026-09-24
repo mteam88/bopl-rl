@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# RUST_ROLLOUTS.md "Throughput": trainer-scale Rust vs .NET A/B at the run-007
+# Trainer-scale Rust vs .NET A/B at the run-007
 # training shape (set encoder, hidden 128, 4 banks, horizon 128, buffers 2),
 # interleaved over two rounds so drift in background load hits both sides.
 # Rust hosts every world in one runtime and needs no spare (train.py sets that
 # from BOPL_RL_BACKEND=rust); .NET runs at its train.py default of four worlds
-# per runtime (SIM_OVERHAUL.md section 4). Waits for the live training unit
+# per runtime. Waits for the live training unit
 # (and any other bopl-*bench* unit) to go inactive first.
 #
 # Run as its own unit, never inside the bb service cgroup:
 #   systemd-run --user --unit bopl-rust-headline-bench -p MemoryMax=16G \
-#     -p WorkingDirectory=$PWD /usr/bin/bash $PWD/native/rl/puffer/bench_rust_headline.sh
+#     -p WorkingDirectory=$PWD /usr/bin/bash $PWD/train/bench_rust_headline.sh
 # Results: native/artifacts/rl/scale-quiet-{rust,dotnet}/summary.txt
 set -euo pipefail
-R=$(cd "$(dirname "$0")/../../.." && pwd)
+R=$(cd "$(dirname "$0")/.." && pwd)
 cd "$R"
 UPDATES=${UPDATES:-300}
 ROUNDS=${ROUNDS:-2}
 WAIT_FOR=${WAIT_FOR:-bopl-long-run-1b-007}
 ME=${ME:-bopl-rust-headline-bench}
-BENCH=$R/native/rl/puffer/bench_scale.sh
+BENCH=$R/train/bench_scale.sh
 [ -f native/target/release/libbopl_sim.so ] || { echo "libbopl_sim.so missing: cargo build --release in native/" >&2; exit 1; }
 [ -f sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so ] || { echo "BoplSimNative.so missing" >&2; exit 1; }
 busy() {

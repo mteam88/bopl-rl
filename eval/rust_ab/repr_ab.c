@@ -4,7 +4,7 @@
  * report the first tick where any field differs by more than a tolerance, then
  * how the divergence grows. Also usable against .NET as the first library.
  *
- *   cc -O2 -I. -o /tmp/repr_ab research/rust_ab/repr_ab.c bopl_rl.c -ldl -lm
+ *   cc -O2 -I sim/abi -o /tmp/repr_ab eval/rust_ab/repr_ab.c sim/abi/bopl_rl.c -ldl -lm
  *   /tmp/repr_ab <a.so> <b.so> [episodes=10] [seed0=1000] [tol_raw=4096] [warmup=240] [map_a] [map_b]
  *
  * Episodes rotate over maps 0-4 unless map_a/map_b pin one map per backend:

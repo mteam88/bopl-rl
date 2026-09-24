@@ -6,7 +6,7 @@
 # "non-comprehensive but these are decent".
 #
 # Two notes on the mapping:
-#  - "revive" is 15 Revival, a partial port (ABILITY_PORT_GAPS.md: multi-marker
+#  - "revive" is 15 Revival, a partial port (multi-marker
 #    actors, clone cap). Explicit sets may include it; --loadout-pool all
 #    still excludes it. Drop that line if Revival turns out to misbehave.
 #  - "move platform" is 22 Push (Matthew confirmed 2026-09-20); "arrow" is

@@ -3,8 +3,8 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[4]
-sys.path[:0] = [str(ROOT / 'native/rl/puffer'), str(ROOT / 'native/rl/research'), str(ROOT / 'native/rl/sweep')]
+ROOT = Path(__file__).resolve().parents[3]
+sys.path[:0] = [str(ROOT / 'train'), str(ROOT / 'eval'), str(ROOT / 'train/sweep')]
 import scripted_roster
 import sweep_config
 
@@ -91,7 +91,7 @@ class EloMath(unittest.TestCase):
 
 class Overnight7(unittest.TestCase):
     def test_config_validates_without_decay(self):
-        path = ROOT / 'native/rl/sweep/configs/overnight-7.toml'
+        path = ROOT / 'train/sweep/configs/overnight-7.toml'
         spec = sweep_config.load(path)
         self.assertNotIn('scripted_decay', spec.fixed)
         self.assertNotIn('scripted_decay', spec.params)

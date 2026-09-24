@@ -1,5 +1,5 @@
-// Bopl batched rollout forward for policy v4 (POLICY_V4_PLAN.md section 3,
-// bopl_v4.cu is the per-policy trainer path and the parity reference).
+// Bopl batched rollout forward for policy v4 (train/bopl_v4.cu is the
+// per-policy trainer path and the parity reference).
 //
 // Included by bopl_rollout.cu. The v3 chain's machinery is reused unchanged:
 // the row groups [learner | bank 0 | ...] (BrGroups), the grouped small-M

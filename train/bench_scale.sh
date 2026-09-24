@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SIM_OVERHAUL.md section 4: how far does the lockstep scale with games now
+# How far does the lockstep scale with games now
 # that many worlds fit in one runtime? Sweeps --workers at --buffers 2 on the
 # in-process .so (all worlds in one runtime) and, where memory allows, the
 # socket Host for reference. One JSON line per run in $OUT/results.jsonl.
@@ -7,10 +7,10 @@
 # Usage: bench_scale.sh [updates] [-- "<workers> <omp-threads> <wait-policy> <mode> [worlds-per-runtime]" ...]
 # Run as its own unit (never inside the bb service cgroup):
 #   systemd-run --user --unit bopl-scale-bench -p MemoryMax=16G \
-#     -p WorkingDirectory=$PWD /usr/bin/bash $PWD/native/rl/puffer/bench_scale.sh
+#     -p WorkingDirectory=$PWD /usr/bin/bash $PWD/train/bench_scale.sh
 set -euo pipefail
 UPDATES=${1:-300}
-R=$(cd "$(dirname "$0")/../../.." && pwd)
+R=$(cd "$(dirname "$0")/.." && pwd)
 cd "$R"
 export BOPL_SIM_EXPORT=$R
 OUT=${OUT:-$R/native/artifacts/rl/scale}
@@ -27,7 +27,7 @@ run() { # workers omp-threads wait-policy mode(so|socket) [worlds-per-runtime, d
   local steps=$((UPDATES * workers * 3 / 2 * 128))
   rm -rf "$dir"
   if ! BOPL_BANK_BRANCHES=1 BOPL_OMP_THREADS=$omp OMP_WAIT_POLICY=$wait BOPL_RL_WORLDS_PER_RUNTIME=$per \
-    native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
+    native/artifacts/rl/venv/bin/python train/train.py \
     --output "$dir" --game "$game" --encoder set --hidden 128 --layers 1 \
     --steps "$steps" --seed 73 --workers "$workers" --buffers 2 --banks 4 --horizon 128 \
     --learner-passes 1 --learning-rate 0.0003 --training-maps 0,1,2 --episode-ticks 7200 --stocks 0 \
@@ -38,7 +38,7 @@ run() { # workers omp-threads wait-policy mode(so|socket) [worlds-per-runtime, d
   python3 - "$dir" "$tag" "$workers" "$omp" "$wait" "$mode" "$per" >> "$OUT/results.jsonl" <<'PY'
 import json, statistics as st, sys, os
 d, tag, workers, omp, wait, mode, wpr = sys.argv[1:]
-def metrics_open(d):  # plain, or packed by research/compact_history.py
+def metrics_open(d):  # plain, or packed by eval/compact_history.py
     p = os.path.join(d, 'metrics.jsonl')
     return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
 rows = [json.loads(l) for l in metrics_open(d)][20:]

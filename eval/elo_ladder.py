@@ -14,7 +14,7 @@ from evaluation_protocol import scripted_opponent
 import layout
 # environment.py loads the research library on import; it is imported where games
 # are played so the Bradley-Terry fits and participants stay importable without it
-# (sweep/reference_pool.py and its tests).
+# (train/sweep/reference_pool.py and its tests).
 
 HEAD_BOUNDS=[sum(layout.ACTION_SIZES[:i]) for i in range(layout.NUM_ATNS+1)]  # logits row offsets per head
 ELO_SCALE=400/math.log(10)
@@ -25,7 +25,7 @@ def as_numpy(value):
 
 
 class Model:
-    """A native checkpoint participant (research/native_policy.py contract)."""
+    """A native checkpoint participant (eval/native_policy.py contract)."""
     def __init__(self,name,path,kind,step=None,library=None):
         from native_policy import load
         self.name=name; self.kind=kind; self.step=step; self.path=Path(path)

@@ -1,4 +1,4 @@
-"""Cumulative learner counters of a native vector, in the shape research/native_metrics.py consumes.
+"""Cumulative learner counters of a native vector, in the shape eval/native_metrics.py consumes.
 
 The C environment keeps process-lifetime counters over the decisions it actually
 played (bopl_vec_counters in binding.c): warmup never reaches the environment

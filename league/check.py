@@ -11,7 +11,7 @@ league confidently wrong rather than obviously broken.
 It reports how many checks were REACHED, not only how many failed, so a check
 that silently stopped running cannot look like a pass.
 
-    python native/rl/league check
+    python league check
 """
 import json
 import math

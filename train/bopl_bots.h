@@ -1,6 +1,6 @@
 #ifndef BOPL_BOTS_H
 #define BOPL_BOTS_H
-/* Scripted opponents for the Dash/Bow/Platform loadout (SCRIPTED_BOTS.md).
+/* Scripted opponents for the Dash/Bow/Platform loadout.
  *
  * A bot replaces one player's policy: it reads the true current BoplRlState
  * (perfect information, no observation delay - deliberate cheating for a
@@ -9,7 +9,7 @@
  * the same bopl_latch, so button holds pin its buttons and an arrow press is a
  * charge that fires when the latch expires (bopl_write_mask's release rule).
  *
- * Game facts the bots rely on (measured in-sim, native/rl/SCRIPTED_BOTS.md):
+ * Game facts the bots rely on (measured in-sim):
  *   arrows   kill on contact; launch speed (charge+1)*15 with charge = held
  *            ticks mapped {<32:0, 32:1, 64:4} by the hold head (only holds of
  *            1|2|4, 8 and 16 decisions exist), gravity 40 u/s^2, no drag,
@@ -46,7 +46,7 @@
  * arithmetic is the scalar code's operations in the scalar code's order
  * (sub, mul, add, abs, max, sqrt, no fused multiply-add: fp-contract is off
  * for the kernels), so the vector and scalar paths return the same bits and
- * the frozen v1 fingerprints (SCRIPTED_BOTS.md, Versioning) are unchanged.
+ * the frozen v1 fingerprints (Versioning) are unchanged.
  * Other targets, and CPUs without AVX-512, run the scalar loops
  * (-DBOT_SDF_AVX512=0 forces them, to check the two agree). */
 #ifndef BOT_SDF_AVX512
@@ -61,7 +61,7 @@
 static int bot_cpu_avx512=-1;
 #endif
 
-/* Kind table (SCRIPTED_BOTS.md "Versioning"). Ids, names and behaviour are
+/* Kind table. Ids, names and behaviour are
  * append-only: kinds 1..BOPL_BOT_V1_KINDS are the frozen v1 personalities
  * whose code paths (everything up to bopl_bot_decide's v1 body) never change
  * again, so scores against them stay comparable across time. An improved or

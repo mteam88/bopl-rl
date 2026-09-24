@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# A/B the rollout-step changes on branch trainer-step (see sim/RL.md,
-# "Trainer step latency", and native/rl/SIM_OVERHAUL.md section 2), interleaved,
+# A/B the rollout-step changes on branch trainer-step, interleaved,
 # at the 500M run's shape (16 workers x 2 buffers, set encoder, 4 banks):
 #   m0  BOPL_BANK_BRANCHES=0, socket Host   (upstream serial bank chain)
 #   m1  BOPL_BANK_BRANCHES=1, socket Host   (parallel graph branches)
@@ -16,11 +15,11 @@
 # Run it from its own unit so it is not in the peace.service cgroup (systemd-run
 # does not inherit cwd: absolute paths):
 #   systemd-run --user --unit bopl-trainer-step-bench -p MemoryMax=14G \
-#     -p WorkingDirectory=$PWD /usr/bin/bash $PWD/native/rl/puffer/bench_trainer_step.sh
+#     -p WorkingDirectory=$PWD /usr/bin/bash $PWD/train/bench_trainer_step.sh
 set -euo pipefail
 ROUNDS=${1:-2}
 UPDATES=${2:-300}
-R=$(cd "$(dirname "$0")/../../.." && pwd)
+R=$(cd "$(dirname "$0")/.." && pwd)
 cd "$R"
 OUT=${OUT:-$R/native/artifacts/rl/trainer-step}
 mkdir -p "$OUT"
@@ -40,7 +39,7 @@ run() {
   [ "$mode" = 2 ] && game="$LIB"
   [ "$mode" = 3 ] && game="$LIB" && per_runtime=1
   rm -rf "$dir"
-  BOPL_BANK_BRANCHES=$branches BOPL_RL_WORLDS_PER_RUNTIME=$per_runtime native/artifacts/rl/venv/bin/python native/rl/puffer/train.py \
+  BOPL_BANK_BRANCHES=$branches BOPL_RL_WORLDS_PER_RUNTIME=$per_runtime native/artifacts/rl/venv/bin/python train/train.py \
     --output "$dir" --game "$game" --encoder set --hidden 128 --layers 1 \
     --steps "$STEPS" --seed 73 --workers 16 --buffers 2 --banks 4 --horizon 128 \
     --learner-passes 1 --learning-rate 0.0003 --training-maps 0,1,2 --episode-ticks 7200 --stocks 0 \
@@ -49,7 +48,7 @@ run() {
   python3 - "$dir" "$mode" "$tag" >> "$OUT/results.jsonl" <<'EOF'
 import json, statistics as st, sys, os
 d, mode, tag = sys.argv[1:]
-def metrics_open(d):  # plain, or packed by research/compact_history.py
+def metrics_open(d):  # plain, or packed by eval/compact_history.py
     p = os.path.join(d, 'metrics.jsonl')
     return os.popen(f"zstd -dcq '{p}.zst'") if not os.path.exists(p) and os.path.exists(p + '.zst') else open(p)
 rows = [json.loads(l) for l in metrics_open(d)][20:]
