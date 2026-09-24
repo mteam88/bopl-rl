@@ -74,19 +74,24 @@ Required (all currently written by `train.py`):
   platform_activations, arrows_fired, arrow_hits, deaths_environment,
   deaths_opponent, deaths_self, deaths_other, reward_outcome, reward_kills,
   reward_deaths, episodes, wins, timeouts, ticks}}`
-- `pool_opponents` (the name each frozen bank currently serves, sorted -
+- `pool_opponents` (the name each opponent slot currently serves, sorted -
   `self@<physical decisions>` for this run's own snapshots, the member name for
   a league member), `opponent_game_decisions`, `script_assignments`
 - `cuda_memory_mb`, `rollout_seconds`, `train_seconds`
-- `pool` — PFSP self-play pool state after this update:
-  `{schema:2, size, winrate (learner vs all banks since their last swaps,
-  nullable), entries:[{step, learner_steps, games, winrate, score}],
+- `pool` — the run's opponent population after this update. `entries` are the
+  PFSP candidates (the run's own snapshots plus the league members `--opponents`
+  named); `banks` are the opponent slots, one row each, in slot order:
+  `{schema:2, size, winrate (learner vs all slots since their last swaps,
+  nullable), entries:[{name, step, learner_steps, games, winrate, score}],
   banks:[{opponent, games, winrate, score, draws, pending,
-  score_at_swap, epochs_to_align}], pfsp:{...}}`. `opponent` and `pending` are
-  names, not steps. `winrate` is wins/games;
+  score_at_swap, epochs_to_align}], pfsp:{...}}`. Everything that identifies an
+  opponent is a **name**: a member's own name, or `self@<physical decisions>` for
+  a snapshot. A league member has no step in this run, which is why the key is
+  the name and not the step it once was; on a member row `step` and
+  `learner_steps` are null. `winrate` is wins/games;
   `score` is the draw-aware score PFSP actually weights on (a draw is half a
   win, and an undecided round or a timeout is a draw). On entries these are
-  lifetime totals for that snapshot as an opponent; on banks they cover the
+  lifetime totals for that candidate as an opponent; on slots they cover the
   current opponent only. There is no Elo here: ratings are `league/rating.py`'s,
   measured post-hoc under a fixed condition.
 
@@ -94,19 +99,19 @@ Required (all currently written by `train.py`):
   `{p, f ("hard"|"var"), candidates, draws, games, intended:{name: weight},
   realized:{name: share}, played:{name: share}, played_evicted, divergence,
   entropy:{intended, realized, played}, played_top2, serving}`.
-  `intended` is what the pool wants *now*; `realized` is the share of every
+  `intended` is what PFSP wants *now*; `realized` is the share of every
   PFSP draw the run ever made; `played` is the share of games actually played,
-  restricted to live members with the evicted remainder in `played_evicted`.
+  restricted to live candidates with the evicted remainder in `played_evicted`.
   `divergence` is the total variation distance between `intended` and
   `realized`. `divergence`, `entropy.realized`, `entropy.played` and
   `played_top2` are **null until there is a sample** — before the first draw
   and the first game those distributions are empty, not collapsed, and a
   confident 0 there would read as saturation for the opening stretch of every
   run. `played_top2` is the games share of the two most-played
-  opponents and `serving` the number of distinct opponents the banks currently
-  hold — a pool collapsing onto two opponents shows up as `played_top2` near 1,
-  `entropy.played` falling toward ln 2, `serving` below the bank count, and a
-  `divergence` that stays high while `entropy.intended` still looks healthy.
+  opponents and `serving` the number of distinct opponents the slots currently
+  hold — a population collapsing onto two opponents shows up as `played_top2`
+  near 1, `entropy.played` falling toward ln 2, `serving` below the slot count,
+  and a `divergence` that stays high while `entropy.intended` still looks healthy.
   The same numbers are on the per-update console line under `pfsp`.
 
   `python -m league status --run <run>` feeds the same realized distribution

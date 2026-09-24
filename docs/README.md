@@ -55,31 +55,48 @@ The set encoder independently max-pools player, ability-slot, entity and slime
 rows, then fuses those four 64-wide pools with the flat prefix/self/action path.
 
 Half the games use current-policy self-play. The other half pair a learner with
-a frozen opponent from the prioritized fictitious self-play pool (`league/pfsp.py`,
-driven by `train/native_selfplay.py`). Each historical game is pinned to one of
-the frozen banks (four by default) and draws its side at match reset.
+a frozen opponent drawn by prioritized fictitious self-play (`league/pfsp.py`,
+driven by `train/native_selfplay.py`) and played in one of the run's **opponent
+slots** (four by default; `bank` is what the C environment calls one). A slot
+holds one opponent at a time and draws its side at match reset.
 
-A bank retires its opponent when the matchup is **settled** — the Wilson interval
+The candidates PFSP draws from are the run's own frozen snapshots and the league
+members named by `--opponents` (`league` for every member with weights, `self`
+for none, or a comma list of member names - which is all an exploiter is). They
+are one population weighted on one statistic; there is no share to set between
+them. Members are permanent candidates and snapshots are evictable ones, so
+`--pool-size` bounds the snapshots rather than the candidate set. A member can
+only be drawn by a run whose policy architecture matches the one it was trained
+with, and `league/registry.py` refuses the run outright otherwise - a frozen
+slot is a flat float32 array the learner's own kernel indexes, so mismatched
+weights load without complaint and play at chance.
+
+A slot retires its opponent when the matchup is **settled** — the Wilson interval
 on the learner's draw-aware score against it lies entirely outside 15–85% — over
 at least `--min-games` games, or after `--opponent-timeout` learner decisions.
 Winning is not by itself a reason to stop; a lopsided result from a handful of
 games buys more games rather than an early exit. The replacement is drawn from
-the whole pool with probability proportional to `f_hard(x) = (1 - x)^p`, where
-`x` is the learner's own draw-aware score against that member and `p` is
-`--pfsp-p` (default 1). When the learner can beat nothing in the pool `f_hard`
+every candidate with probability proportional to `f_hard(x) = (1 - x)^p`, where
+`x` is the learner's own draw-aware score against that candidate and `p` is
+`--pfsp-p` (default 1). When the learner can beat nothing `f_hard`
 is degenerate — it would pour every game into a matchup lost 100-0 — so the draw
 falls back to `f_var(x) = x(1 - x)`, which peaks on coin-flips.
 
-The pool grows every `--snapshot-interval` learner decisions, and when a bank
-retires a matchup it has provably outgrown (the interval sits above the band),
-which is a new curriculum rung. Settling the other way, or merely timing out, is
-not progress and does not grow the pool. Past `--pool-size` it evicts every other
-entry of the older half, so the initial policy is never evicted and old opponents
-stay represented. Raw snapshots live in `<run>/pool/` (evicted files stay on
-disk). A swap loads the new weights in place as soon as every game of that bank
+A new snapshot joins the candidates every `--snapshot-interval` learner
+decisions, and whenever a slot retires a matchup it has provably outgrown (the
+interval sits above the band), which is a new curriculum rung. Settling the other
+way, or merely timing out, is not progress and adds nothing. Past `--pool-size`
+snapshots, it evicts every other snapshot of the older half, so the initial
+policy is never evicted and old opponents stay represented; league members are
+never evicted. Raw snapshots live in `<run>/pool/` (evicted files stay on
+disk). A swap loads the new weights in place as soon as every game of that slot
 has started a match since the previous swap, so at most one in-flight match per
-historical game sees its opponent change mid-match; that match is excluded from
-the bank's statistics.
+frozen game sees its opponent change mid-match; that match is excluded from
+the slot's statistics.
+
+Everything the run reports about opponents is keyed by name: a league member by
+its member name, a snapshot as `self@<physical decisions>`. A member has no step
+in this run, which is why the key is the name and not the step it used to be.
 
 Undecided rounds (mutual death) and timeouts are **draws** in the opponent
 statistic, worth half a win — the environment reports `hist_decided_bank_{b}`
@@ -89,9 +106,9 @@ round *pays* is unchanged (-1 for everyone in it).
 
 There is no online Elo in the training loop. Ratings are measured post-hoc under
 one fixed condition by `league/rating.py`; an Elo updated inside the loop
-conflates every condition it ever saw. Pool state is recorded per update under
-`pool` in `metrics.jsonl` (including the PFSP saturation block) and as events in
-`pool.jsonl`.
+conflates every condition it ever saw. Opponent state is recorded per update
+under `pool` in `metrics.jsonl` (including the PFSP saturation block) and as
+events in `pool.jsonl`.
 
 Rewards are +1 for a win, -1 for a loss, and -0.5 for each player at timeout.
 A round the game leaves undecided -- both sides eliminated on the same tick, so
