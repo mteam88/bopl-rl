@@ -275,6 +275,24 @@ def run():
         else:
             check.skip('league-detects-weight-swap', 'fewer than two checkpoint members seeded')
 
+    # Two map sets that differ must not key to the same condition. The original
+    # tag concatenated the IDs with no separator, so [1, 12] and [11, 2] both
+    # read "112" and their counts would have been pooled.
+    check.ok('map-tag-distinguishes-ambiguous-sets',
+             registry.map_tag([1, 12]) != registry.map_tag([11, 2]),
+             f'{registry.map_tag([1, 12])} vs {registry.map_tag([11, 2])}')
+    check.ok('map-tag-names-a-named-set', registry.map_tag(range(124)) == 'mapall-124',
+             'a set that is exactly one of map-sets.json\'s stays readable at any size')
+    big = registry.map_tag(list(range(40)))
+    check.ok('map-tag-stays-short', len(big) <= 12 and big == registry.map_tag(list(reversed(range(40)))),
+             f'40 unnamed maps key as {big}, order-independent')
+    stored = {json_row['condition'] for json_row in
+              (json.loads(line) for line in registry.PAYOFF.read_text().splitlines() if line.strip())}
+    check.ok('payoff-conditions-are-registered', not stored - set(league['conditions']),
+             f'{len(stored)} condition keys in payoff.jsonl, all registered in league.json'
+             if not stored - set(league['conditions'])
+             else f'unregistered: {sorted(stored - set(league["conditions"]))}')
+
     # A condition's fingerprint must not depend on where the league was cloned.
     moved = dict(league['conditions'][sorted(league['conditions'])[0]]['loadouts'])
     here = registry.loadout_sha256(moved)

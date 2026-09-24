@@ -720,8 +720,8 @@
   }
  ],
  "conditions": {
-  "sim9f60ac37.lineups-8.map012.t7200.d9": {
-   "key": "sim9f60ac37.lineups-8.map012.t7200.d9",
+  "sim9f60ac37.lineups-8.map0-1-2.t7200.d9": {
+   "key": "sim9f60ac37.lineups-8.map0-1-2.t7200.d9",
    "sim_sha256": "9f60ac376ec71290eee4c7473046da8458d2ba82e52520be86f5eac96a34333d",
    "maps": [
     0,
@@ -810,8 +810,8 @@
    },
    "loadout_sha256": "d9e3107a7b2d40db679c1a6f0b1825c0088f78e7f8122c47e56c6968564ec816"
   },
-  "simf0ab99a8.lineups-own-kit.map012.t7200.d9": {
-   "key": "simf0ab99a8.lineups-own-kit.map012.t7200.d9",
+  "simf0ab99a8.lineups-own-kit.map0-1-2.t7200.d9": {
+   "key": "simf0ab99a8.lineups-own-kit.map0-1-2.t7200.d9",
    "sim_sha256": "f0ab99a89167f3012e62c936a225fe25a71f52f8cb820559392881cac65bd092",
    "maps": [
     0,

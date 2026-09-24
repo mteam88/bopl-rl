@@ -79,9 +79,19 @@ Counts are **never summed across conditions**.
 
 ## What a condition is
 
-`sim<sha8>.<loadouts>.map<ids>.t<ticks>.d<delay>` — the simulator library, the
+`sim<sha8>.<loadouts>.<maps>.t<ticks>.d<delay>` — the simulator library, the
 loadout distribution, the map set, the episode limit and the observation delay.
 That is everything that can change who wins a game.
+
+The map part is a label, not the data: the full list is recorded in the
+condition. A set that is exactly one of `native/data/map-sets.json`'s named sets
+is named (`maptraining-111`), up to eight maps are spelled out with separators
+(`map0-1-2`), and anything larger is an 8-hex digest of the list (`map8168a8f1`).
+The separators are not decoration - the first form concatenated the IDs, so
+`[1, 12]` and `[11, 2]` both read `map112` and two different conditions would
+have pooled their counts, which is the one thing a condition exists to prevent.
+The two conditions measured before this was fixed were renamed from `map012` to
+`map0-1-2` in league.json and in all 189 payoff rows; no count moved.
 
 The reward function is deliberately **not** part of it, though it is recorded on
 every member. Reward decides what a policy was trained to maximise, not who wins
@@ -180,7 +190,7 @@ here, the learned members against the scripted/random anchors.
 
 ## State of the league, measured 2026-09-24
 
-Condition `sim9f60ac37.lineups-8.map012.t7200.d9`, 18 rated members (9 scripted,
+Condition `sim9f60ac37.lineups-8.map0-1-2.t7200.d9`, 18 rated members (9 scripted,
 8 specialist, random), 153/153 pairs, 7344 games, 48 per pair.
 
 **One scripted bot is the whole equilibrium.** `search-hard` takes Nash mass 1.000;
@@ -218,7 +228,7 @@ Three things follow.
   it. The short version: on their own kits the specialists are strong, and the
   equilibrium is still a single member.
 
-Scope: 3 maps of 124. The condition tag `map012` is the map set 0, 1, 2
+Scope: 3 maps of 124. The condition tag `map0-1-2` is the map set 0, 1, 2
 (`registry.condition` joins the sorted ids). `league play --maps` writes a separate
 condition per map set, so widening the map set is the cheapest way to learn whether
 `search-hard` dominates everywhere or only here.
@@ -231,7 +241,7 @@ both are mid-pack in the own-kit condition below.
 
 ## The own-kit condition, measured 2026-09-24
 
-Condition `simf0ab99a8.lineups-own-kit.map012.t7200.d9`, 9 rated members (8
+Condition `simf0ab99a8.lineups-own-kit.map0-1-2.t7200.d9`, 9 rated members (8
 specialists, random), 36/36 pairs, 1728 games, 48 per pair, every game played on
 the participant's own three abilities and asserted as such from `lineup_ids`.
 

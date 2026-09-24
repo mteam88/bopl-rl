@@ -26,6 +26,11 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path[:0] = [str(ROOT / 'eval'), str(ROOT / 'native/tools')]
 
+import map_catalogue   # noqa: E402  (after sys.path)
+
+# Map sets up to this size are spelled out in a condition key; larger ones hash.
+MAP_TAG_SPELLED = 8
+
 LEAGUE = HERE / 'league.json'
 PAYOFF = HERE / 'payoff.jsonl'
 SCHEMA = 1
@@ -58,6 +63,29 @@ def loadout_sha256(loadouts):
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
+def map_tag(maps):
+    """Short, unambiguous label for a map set: the named set, or the IDs, or a hash.
+
+    The first form was the IDs concatenated with no separator, which is ambiguous
+    the moment any ID reaches two digits - [1, 12] and [11, 2] both read "112" -
+    and two conditions that collided on one key would be pooled, which is the one
+    thing a condition exists to prevent. It also does not survive scale: the 111
+    training maps would put a 250-character key on every payoff row.
+
+    So: a set that is exactly one of native/data/map-sets.json's named sets is
+    named (maptraining-111), a short set is spelled out with separators
+    (map0-1-2), and anything larger is the sha256 of the canonical list
+    (map8a1b2c3d) with the full list recorded beside it in the condition.
+    """
+    maps = sorted(int(m) for m in maps)
+    for name, ids in map_catalogue.named_sets().items():
+        if sorted(int(m) for m in ids) == maps:
+            return 'map' + name
+    if len(maps) <= MAP_TAG_SPELLED:
+        return 'map' + '-'.join(str(m) for m in maps)
+    return 'map' + hashlib.sha256(','.join(str(m) for m in maps).encode()).hexdigest()[:8]
+
+
 def condition(sim_sha256, loadouts, maps, episode_ticks=7200, delay=9):
     """A measurement condition: everything that can change who wins a game.
 
@@ -79,7 +107,7 @@ def condition(sim_sha256, loadouts, maps, episode_ticks=7200, delay=9):
     """
     maps = sorted(int(m) for m in maps)
     key = (f"sim{sim_sha256[:8]}.{loadout_tag(loadouts)}"
-           f".map{''.join(str(m) for m in maps)}.t{int(episode_ticks)}.d{int(delay)}")
+           f".{map_tag(maps)}.t{int(episode_ticks)}.d{int(delay)}")
     return key, dict(key=key, sim_sha256=sim_sha256, maps=maps,
                      episode_ticks=int(episode_ticks), delay=int(delay),
                      loadouts=loadouts, loadout_sha256=loadout_sha256(loadouts))
