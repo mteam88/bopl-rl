@@ -369,6 +369,70 @@ firing in under ~0.024% of episodes can pass: 12,400 distinct episodes catch a
 rate of 0.024% with 95% probability over the choice of pinned seed, 0.05% with
 99.8%.
 
+## Fixture #5 - the QuickSpell forms ignored their own boundary component
+
+**Status:** FIXED 2026-09-24 in `a5d3fd9d` (Gust) and `5f905b76` (Revival). All
+three gust phases now agree with the reference in every exported field for the
+whole episode, and gust has lost its `known_trajectory_divergence` flag, so the
+gate protects it. Black hole is unchanged and still flagged.
+
+The instrument was `eval/rust_ab/bounds_case_trace.c` (`make bounds-case-trace`),
+which replays one `bounds_ability_ab` case in lockstep and reports the first
+differing field instead of only the kill:
+
+```
+BCT_ENGAGE_Y=-10.9 bounds_case_trace <oracle.so> <q32.so>
+  FIRST any tick 367 DISCRETE header.entity_count ref 11 cand 15
+```
+
+Not near the kill at all - the *entry* tick, and the same for `early` (348) and
+`late` (363). Two causes, both with the arrow pointing from the C# to the port.
+
+**The 0.05 nudge on an airborne cast.** On `early` the first divergence is
+`player[0].x`, 0.05 world units apart, which is `PlayerPhysics.UnGround`'s
+separation (PlayerPhysics.cs:366-370). `QuickSpell.OnEnterAbility` calls
+`physics.SyncPhysicsTo(playerInfo)` *before* `physics.UnGround()`
+(QuickSpell.cs:78-83), and `SyncPhysicsTo` assigns `attachedGround` only on its
+grounded branch - the airborne branch assigns null (PlayerPhysics.cs:531
+vs :549). The ability body is a separate `PlayerPhysics`, so a cast started
+mid-air reaches `UnGround` with nothing to push off from and is not displaced.
+The port reuses one body and read the slime's own retained `base.ground`, which
+survives a walk-off-the-edge fall, so it nudged along a stale normal - at entry
+and again at the exit `UnGround`. Revival already went through
+`retained_ground`; Gust now does too.
+
+**The form's own DestroyIfOutsideSceneBounds.** Gust.prefab and Revival.prefab
+both carry it at hierarchyNumber 4, behind the SlimeController that enters the
+ability (Player.prefab, 2) and ahead of their QuickSpell (6) and PlayerBody.
+`Updater` sorts a registration batch by that number (Updater.cs:271) and skips
+disabled components (Updater.cs:300), so on the entry pass the *slime's*
+component at the same 4 is skipped - `onEnterAbility` deactivated it
+(SlimeController.cs:190) - and the freshly enabled *form's* component runs
+instead, in that same pass. Casting from below the water plane therefore kills
+on the entry tick. The port ran the component for the plain slime and for
+Rock/Roll/Drill/Platform/Bow but not for either QuickSpell form, so the cast
+body - which is frozen for the cast, in both backends - hovered under the plane
+for the whole 18-tick cast+exit animation and died only when the slime returned.
+
+Black hole is the same class and is not fixed: `Black hole.prefab` carries the
+component at hierarchyNumber 5, also ahead of `BlackHoleClap` (6), and `brink
+blackhole` is exactly the entry-pass signature (reference 367, port 368). It
+would still be flagged afterwards for its separate 0.4-0.56 unit x drift, so the
+two want fixing together.
+
+### Negative result worth keeping
+
+`revival` had been a case in `bounds_ability_ab` since the probe was written and
+tested nothing. The probe walks off the edge at tick 280 and presses the slot
+only once it is off cooldown; Revival's cooldown is 10 s and the body is past the
+plane long before then, so the button was never pressed and all three phases
+reported a plain unarmed fall that matched trivially. A case can now set its own
+walk tick. Measured before the fix: reference 607, port 625 - the identical
+18-tick hover. Any case whose slot cooldown outlasts the walk is silently inert;
+`revival` was the only one, but the failure mode is invisible in the gate output,
+which prints `ok` either way.
+
+
 ## Open items inherited from the deleted porting docs
 
 Not found by this sweep, but this is where open defects live now. The 2026-09-23
@@ -396,16 +460,17 @@ must come back perfectly identical.
 inline initializers, on maps and loadouts not yet exercised, may need `rd.xml`
 entries. A serialized-field scan that generates `rd.xml` would close it.
 
-**Six latent trajectory divergences in `bounds-ability-ab`, five of them
-invisible until 2026-09-24.** The gate has always reported them - the case table
-marks Black hole and Gust `known_trajectory_divergence` and prints without
-failing, because the probe's subject is *when the boundary kills*, not the
-trajectory into it. What hid them was a stale binary: `native/artifacts/rl/` is
-gitignored, `make` compares mtimes, and the compiled gate was older than its
-committed source, so it printed 24 ability lines and 1 divergence where the
-rebuilt gate prints 114 and 6. The summary line is identical either way
-(`cases=38 water=-11.3 survivors=4`), so nothing looked wrong. Rebuilt on
-`c2293d22`:
+**Three latent trajectory divergences in `bounds-ability-ab`** (the three Gust
+lines below are fixture #5 above, fixed 2026-09-24; the three Black hole ones
+are still open). **Five of the six were invisible until 2026-09-24.** The gate
+has always reported them - the case table marked Black hole and Gust
+`known_trajectory_divergence` and printed them without failing, because the
+probe's subject is *when the boundary kills*, not the trajectory into it. What
+hid them was a stale binary: `native/artifacts/rl/` is gitignored, `make`
+compares mtimes, and the compiled gate was older than its committed source, so
+it printed 24 ability lines and 1 divergence where the rebuilt gate prints 114
+and 6. The summary line is identical either way (`cases=38 water=-11.3
+survivors=4`), so nothing looked wrong. Rebuilt on `c2293d22`:
 
 ```
 early blackhole  reference 404 (-36.1894,-11.3380) | rust 404 (-36.7478,-11.3380)
@@ -422,10 +487,9 @@ not.** The comment says the port "crosses the plane one tick early", which
 describes `late` only; on `brink` the port survives **18 ticks longer** than the
 reference (367 vs 385) - fifty times the documented gap, in the opposite
 direction. That phase starts the form already at the boundary, so a small arc
-difference decides whether it clears the plane at all rather than when. Worth
-confirming against `QuickSpell`'s C# before anyone calls the boundary work
-finished; it is the one case here where the port is not merely imprecise but
-takes a different outcome path.
+difference decides whether it clears the plane at all rather than when. That
+turned out to be two defects in the port, both resolved in fixture #5; Black
+hole shares the second of them and remains open.
 
 **The Unity player build is a week older than the observation ABI it must
 speak.** `Builds/LinuxIL2CPP/BoplBattle.x86_64` was built 2026-09-07. The

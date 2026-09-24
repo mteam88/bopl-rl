@@ -8063,10 +8063,20 @@ impl RolloutWorld {
                         return;
                     }
                     ABILITY_GUST => {
-                        let attached_ground = self.players[index].base.ground;
-                        let detach_normal = self.players[index]
-                            .base
-                            .ground
+                        // The QuickSpell body has its own PlayerPhysics, and
+                        // SyncPhysicsTo copies the slime's attachedGround into
+                        // it only on the grounded branch - the airborne branch
+                        // assigns null (PlayerPhysics.cs:531 vs :549). The
+                        // UnGround that OnEnterAbility calls next therefore has
+                        // nothing to push off from when the cast started
+                        // mid-air, and skips its 0.05-unit separation
+                        // (PlayerPhysics.cs:366-370). Reading the slime's own
+                        // retained reference instead displaced every airborne
+                        // cast 0.05 units along a stale normal. Revival, the
+                        // other QuickSpell form, already reads it this way.
+                        let attached_ground =
+                            retained_ground(&self.players[index], &self.platforms);
+                        let detach_normal = attached_ground
                             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
                             .map(|platform| {
                                 platform.surface.normal(self.players[index].base.position)
@@ -8093,6 +8103,17 @@ impl RolloutWorld {
                         slot.base.grounded_speed = Fix::ZERO;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
+                        // The Gust body's own boundary component is enabled by
+                        // this entry and still takes its turn in this same
+                        // updater pass: it sits at hierarchyNumber 4, behind
+                        // the SlimeController that entered the ability
+                        // (Player.prefab, 2) and ahead of QuickSpell
+                        // (Gust.prefab, 6). The slime's component, at the same
+                        // 4, is skipped instead - onEnterAbility deactivated
+                        // it (SlimeController.cs:190).
+                        if self.quick_spell_bounds_kill(index, data) {
+                            return;
+                        }
                         self.gust_tick(index, data);
                         return;
                     }
@@ -8123,6 +8144,12 @@ impl RolloutWorld {
                         slot.base.grounded_speed = Fix::ZERO;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
+                        // Revival.prefab places its boundary component at the
+                        // same hierarchyNumber 4 as Gust's, ahead of its own
+                        // QuickSpell (6), so the entry pass tests it here too.
+                        if self.quick_spell_bounds_kill(index, data) {
+                            return;
+                        }
                         self.revival_tick(index, data);
                         return;
                     }
@@ -8541,10 +8568,16 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Gust {
+            if self.quick_spell_bounds_kill(index, data) {
+                return;
+            }
             self.gust_tick(index, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Revival {
+            if self.quick_spell_bounds_kill(index, data) {
+                return;
+            }
             self.revival_tick(index, data);
             return;
         }
@@ -9846,6 +9879,30 @@ impl RolloutWorld {
                 slot.rewind.finish_next_tick = true;
             }
         }
+    }
+
+    /// DestroyIfOutsideSceneBounds as the QuickSpell prefabs carry it. It is
+    /// hierarchyNumber 4 on both Gust.prefab and Revival.prefab, ahead of
+    /// their QuickSpell (6) and of the PlayerBody that would advance the
+    /// transform, so it always reads the position the pass started with -
+    /// including the entry pass, where OnEnterAbility has already placed the
+    /// body.
+    ///
+    /// `selfDestruct` finds both an IPlayerIdHolder and an IAbilityComponent on
+    /// an ability body, so it leaves through `QuickSpell.ExitAbility` with a
+    /// default AbilityExitInfo whose causeOfDeath is Other, rather than through
+    /// the ordinary slime's `killPlayer` with Accident
+    /// (DestroyIfOutsideSceneBounds.cs:135-141, SlimeController.cs:219).
+    ///
+    /// Returns true when the form died and the caller must not run it.
+    fn quick_spell_bounds_kill(&mut self, index: usize, data: &data::RolloutData) -> bool {
+        if !self.players[index].base.alive || !self.players[index].base.outside_bounds() {
+            return false;
+        }
+        self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+        self.players[index].reported_position = self.players[index].base.position;
+        self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+        true
     }
 
     fn gust_tick(&mut self, index: usize, data: &data::RolloutData) {
