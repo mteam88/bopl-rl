@@ -40,12 +40,12 @@ class ParseRoster(unittest.TestCase):
 class EloMath(unittest.TestCase):
     def test_rated_and_unrated_init(self):
         ratings = scripted_roster.POOL_V5_RATINGS
-        self.assertEqual(scripted_roster.initial_elo('evasive-v2-hard', ratings, 0), ratings['evasive-v2-hard'])
-        self.assertEqual(scripted_roster.initial_elo('mixed-medium', ratings, 10), 10 + ratings['mixed-medium'])
+        self.assertEqual(scripted_roster.initial_elo('evasive-v2-hard', ratings), ratings['evasive-v2-hard'])
+        self.assertEqual(scripted_roster.initial_elo('mixed-medium', ratings), ratings['mixed-medium'])
         self.assertAlmostEqual(scripted_roster.initial_elo('mixed-v2-medium', ratings),
                                ratings['mixed-v2-hard'] - 75)
-        self.assertAlmostEqual(scripted_roster.initial_elo('archer-v2-easy', ratings, 5),
-                               5 + ratings['archer-v2-hard'] - 150)
+        self.assertAlmostEqual(scripted_roster.initial_elo('archer-v2-easy', ratings),
+                               ratings['archer-v2-hard'] - 150)
 
     def test_coin_flip_weight_and_share(self):
         # Learner Elo = entry Elo -> p=0.5, I=1, share=share_max.
@@ -76,10 +76,10 @@ class EloMath(unittest.TestCase):
     def test_resume_state_roundtrip(self):
         ratings = scripted_roster.POOL_V5_RATINGS
         names = ['mixed-v2-hard', 'search-hard']
-        entries = scripted_roster.entries_from_names(names, ratings, elo_init=0)
+        entries = scripted_roster.entries_from_names(names, ratings)
         scripted_roster.apply_window(entries, [(10, 3), (4, 4)], learner_elo=0.0, k=16)
         payload = scripted_roster.state_dict(entries, share=0.4, learner_elo=12.5)
-        again = scripted_roster.entries_from_names(names, ratings, elo_init=0)
+        again = scripted_roster.entries_from_names(names, ratings)
         scripted_roster.restore_counts(again, payload)
         self.assertEqual([e['games'] for e in again], [10, 4])
         self.assertEqual([e['wins'] for e in again], [3, 4])

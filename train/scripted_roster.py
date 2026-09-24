@@ -88,16 +88,21 @@ def load_anchor_ratings(path=None):
     return ratings
 
 
-def initial_elo(name, ratings, elo_init=0.0):
-    """elo_init + pool rating, or hard rating minus LEVEL_GAP per step for unrated levels."""
+def initial_elo(name, ratings):
+    """The pool rating, or the hard rating minus LEVEL_GAP per step for unrated levels.
+
+    Ratings are relative to LEARNER_ELO, the fixed origin, so there is no offset
+    to add: the self-play pool's online Elo used to be passed in here and it no
+    longer exists.
+    """
     if name in ratings:
-        return float(elo_init) + float(ratings[name])
+        return float(ratings[name])
     kind_name, level_name, _, _ = split_name(name)
     hard = f'{kind_name}-hard'
     if hard not in ratings:
         raise ValueError(f'No pool-v5 rating for {name!r} or {hard!r}')
     steps = {'hard': 0, 'medium': 1, 'easy': 2}[level_name]
-    return float(elo_init) + float(ratings[hard]) - LEVEL_GAP * steps
+    return float(ratings[hard]) - LEVEL_GAP * steps
 
 
 # The roster rates its bots RELATIVE TO THE LEARNER, with the learner fixed at
@@ -161,12 +166,12 @@ def rate_entry(entry_elo, learner_elo, wins, games, k):
     return float(entry_elo) - float(k) * (score_rate - expected)
 
 
-def entries_from_names(names, ratings, elo_init=0.0):
+def entries_from_names(names, ratings):
     out = []
     for name in names:
         kind_name, level_name, kind, level = split_name(name)
         out.append(dict(name=name, kind_name=kind_name, level_name=level_name,
-                        kind=kind, level=level, elo=initial_elo(name, ratings, elo_init),
+                        kind=kind, level=level, elo=initial_elo(name, ratings),
                         games=0, wins=0))
     return out
 
