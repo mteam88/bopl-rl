@@ -25098,6 +25098,16 @@ impl RolloutWorld {
         let pd = &data::get().platform;
         let entity = self.entities.len();
         let id = self.next_id();
+        // A spawned ResizablePlatform is an ordinary FixTransform.InstantiateFixed
+        // prefab: its six components register inside the Begin/EndRegisterPrefab
+        // bracket and take their place in the one global updater order, so the
+        // collider reports 100_000_000 + cursor + DPhysicsRoundedRect's
+        // hierarchyNumber and the cursor advances by the whole prefab. A
+        // synthetic 300_000_000 + id stood here instead, which both mismatched
+        // the exported value and left the cursor un-advanced for whatever spawns
+        // next.
+        let hierarchy_base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += pd.spawn_updatable_count;
         self.entities.push(CEntity {
             id,
             kind: 2,
@@ -25105,7 +25115,7 @@ impl RolloutWorld {
             owner: 0,
             flags: E_ACTIVE | E_ENABLED,
             reserved: [ABILITY_PLATFORM, 0],
-            hierarchy: 300_000_000 + id,
+            hierarchy: 100_000_000 + hierarchy_base + pd.spawn_collider_hierarchy,
             inverse_mass: pd.spawn_body.inverse_mass.raw(),
             ..CEntity::default()
         });

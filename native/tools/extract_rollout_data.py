@@ -538,6 +538,8 @@ def main():
             "sudden_death_y_speed": curve(rp_av, "suddenDeathYSpeed"),
         },
         "body": physics_body(rp_body),
+        "collider_hierarchy": rp_rr["hierarchyNumber"],
+        "updatable_count": registering_count(rp),
         "mass_per_area": fix(rp_res, "MassPerArea"),
         "remove_curve": curve(rp_res, "RemoveAnimation"),
         "resizable_keys": sorted(k for k in rp_res if not k.startswith("m_")),
