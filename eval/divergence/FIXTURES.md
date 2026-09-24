@@ -613,6 +613,164 @@ and the port's entry arm already clears `ground` without a separation nudge. Tha
 line of inquiry is closed.
 
 
+## Fixture #7 - reassociated fixed-point products: an audit, and thirteen sites
+
+**Status:** FIXED 2026-09-24 on branch `fix-grouping`. **No gate number moved**,
+and that is the headline finding, not an aside - see "Why no gate sees any of
+this" below. This entry exists so the audit is not repeated and so the *reason*
+the gates are blind to this class is on the record.
+
+`Fix` multiplication is `(a * b) >> 32` with an arithmetic shift, i.e. **floor**
+(Fix.cs:41447-41464, `native/src/fixed_q32.rs:397-399`). Floor-multiply is
+commutative but **not associative** and **not sign-symmetric**: `mul(a, mul(b,
+c))` and `mul(mul(a, b), c)` differ whenever an intermediate product is not a
+multiple of 2^32, and `-mul(a, b) != mul(-a, b)` for the same reason. So a
+product the C# writes as `a * (b * c)` and the port writes as `(a * b) * c` is a
+silent low-bit divergence, and a `Vec2` scaled twice is floored twice per
+component where the C# floors a scalar once.
+
+This followed the 2026-09-24 `BlackHole.UpdateSize` fix, which was the first
+known member of the class (`startRadius * 0.01` folded first in C#, grouped
+`(size * startRadius) * 0.01` in the port; +68 raw at size 100, +137 at 200).
+
+### Method
+
+Every candidate was settled by arithmetic before any code moved: both groupings
+evaluated on the **shipped raw constants** under a five-line Python model of
+`Fix` multiply and divide. That is both faster and more conclusive than a build -
+and note that a build can only ever show this in the **q32** library. The f64
+library cannot exhibit a grouping bug at all, because f64 multiply is associative
+to within rounding, so a negative f64 result is worth nothing here.
+
+### Correction to the brief, and to `SCOUT.md`
+
+**`Fix` division does not floor.** `Fix.operator/` (Fix.cs:41474) computes
+`q = floor(|x| * 2^33 / |y|)` and returns `(q + 1) >> 1` with the sign applied
+afterwards: it **rounds the magnitude half-up and is sign-symmetric**.
+`checked_div` in `native/src/fixed_q32.rs` matches it. The brief and the shared
+scout notes both said division floors too; it does not, and the difference
+decides several of the calls below - it is why the magnet fix had to move the
+multiplies but not the divides, and why the macho round-trip below is a *rounding*
+round trip rather than a flooring one.
+
+### The greps
+
+```bash
+# multi-factor products, the brief's starting point
+grep -nE "=\s*[a-z_][a-z_0-9.]*\s*\*\s*[a-z_][a-z_0-9.()]*\s*\*\s*" native/src/rollout/mod.rs
+# widened: any three-factor chain anywhere under native/src, continuations included
+grep -rnE "\*\s*[A-Za-z_][A-Za-z_0-9.:()]*\s*\*" native/src/
+grep -rnE "^\s*\*\s" native/src/rollout/mod.rs          # broken-line operand chains
+# divisions mixed with multiplications (the a*b/c vs a*(b/c) half of the class)
+grep -rnE "\*[^;]*\/|\/[^;]*\*" native/src/ --include=*.rs
+# Vec2 scaled more than once
+grep -rnE "(complex_mul|normalized_safe|perp|perp_cw)\([^)]*\)\s*\*[^;]*\*" native/src/
+```
+
+Everything under `native/src/` was covered, not only `rollout/mod.rs`.
+`vector.rs`, `curve.rs`, `physics/mod.rs`, `physics/scene.rs` and `world.rs` were
+read in full against their C# counterparts and are clean.
+
+### Fixed
+
+| # | Site | C# authority | Port had | C# has | Error, shipped constants |
+|---|------|--------------|----------|--------|--------------------------|
+| 1 | `magnet_pull`, 11 expressions | MagnetGun.cs:527,539,546,558,568,572 | `-(direction * pull * strength)` | `((-pullStr) * fix3) * vec2` | 1 raw for the integer pull strengths (sign placement alone), up to 8 raw for `playerPullStr` / `MachoSlimePullStr` |
+| 2 | `arrows_integrate` | DetPhysics.cs:1643 | `(force * invMass + UP * g) * physics_dt` | two separately floored terms, and the force term scaled by the **constant** step | 1 raw on ~18% of forces; also dropped the whole impulse while time is stopped |
+| 3 | `detonate_smoke` | SmokeGrenadeExplode2.cs:57 | `(offset + noise) * spread * scale` | `Scale * (offset + noise) * spread` | up to 5 raw once `item.scale` is off 1.0 |
+| 4 | black hole spawn radius | BlackHole.cs:172-180, DPhysicsCircle.cs:195-204 | registered `startRadius` | `Init` runs `UpdateSize()` **before** `ManualInit()`, so `t * (startRadius * 0.01)` | 188 raw (5325759300 vs 5325759488) |
+| 5 | roll substep speed | Roll.cs:259-261 | `speed / n` | `(Fix)1 / n * speed` | differs on 87% of (n, speed) pairs in range, up to 29 raw |
+| 6 | roll exit position | Roll.cs:219, 238-241 | `normal * (r_phys - r_player) * scale` | difference of two **already scaled** radii | up to 3 raw off unit scale |
+| 7 | meteor smear | MeteorSmash.cs:314 | `off.y * extents.y / y` | `off.y *= extents.y / y` | ~78% of lengths, up to 2 raw |
+| 8 | spike relative centre, 2 sites | DPhysicsBox.cs:456, FixTransform.cs:100-103 | `offset.complex_mul(right) * scale` | `FixTransform.offset` is already scaled, so scale goes **inside** | up to 5 raw |
+| 9 | rocket engine fire point | RocketEngine.cs:70, FixTransform.cs:73 | `(offset * scale).complex_mul(right)` | `pos + up * (off.y * S) + right * (off.x * S)`, and `up = MulByI(right) = (-r.y, r.x)` | 1 raw on essentially every rotation, **at scale 1 included** - this one is pure sign-asymmetry, not grouping |
+| 10 | gust shockwave, 6 target pools | Shockwave.cs:200-213 | `dir * (force / dist) * scale` | `fix3 = force / fix2;` then `fix3 *= scale;` | 1 raw per component pre-impulse, 60 raw after `ForceMode2D.Impulse` |
+| 11 | macho boulder throw | MachoThrow2.cs:217, PlayerPhysics.cs:407 (`inverseMass01 = 35` at :67) | `externalVelocity += velocity * forceFromBoulder` | `AddForce(v * ffb / 35)` then `+= force * 35` | up to 17 raw per component - the `/35 * 35` round trip is **not** the identity because the divide rounds and the multiply floors |
+| 12 | mine throw position | ThrowItem.cs:213-216 | `side * p.x * scale + up * p.y * scale` | `vec = throwPosition * Scale` first, then `vec.y * up + vec.x * side` | up to 4 raw on the spawn position at off-unit scale |
+| 13 | ThrowItem2 throw impulse | ThrowItem2.cs:229 | `direction * scale * force * 60` | `Scale * fix * vec` - scalar first | up to 159 raw per component pre-impulse, 9540 after |
+
+Note that #11 is the same class seen from the other side: the port had *dropped*
+a round trip the C# performs. "Copy the C# grouping literally, not the algebra"
+cuts both ways.
+
+### Cleared, with the citation
+
+| Site | Verdict |
+|------|---------|
+| `GravityForce` (BlackHole.cs:278) | `G * fix * mass`, left-associative, port matches. Re-checked, not re-derived. |
+| `distance * distance * distance` | C# groups it the same way. Clean. |
+| gust platform branch (`* wave.scale` on the **scalar**) | Already the C# form - `fix3 *= scale` before the vector multiply. Not touched. |
+| gust player branch, `(scale + 1) / 2` (Shockwave.cs:150-154) | Different quantity (`fix10`), different C#, matches. |
+| `local.complex_mul(basis)` in `fire_thrown_item` | `ComplexMul(v, u)` and `ComplexMul(u, v)` are bit-identical - same four products, the two sums merely reordered, and integer addition is commutative. Clean. |
+| `dead_zone_dist_squared` | Flagged by a scout as a squared-vs-unsquared mixup. Refuted: `native/tools/extract_rollout_data.py:234` reads `DeadZoneDist` verbatim; the field name is only descriptive. No change. |
+| `player_body.rs`, `world.rs`, `curve.rs`, `physics/*.rs` | Swept; no reassociated product found. |
+
+### Why no gate sees any of this
+
+All eight gates were re-run from binaries deleted first (`native/artifacts/rl/`
+is gitignored and `make` compares mtimes, so a stale gate binary is the default
+failure mode), against both libraries rebuilt from the fixed source. Every number
+is **unchanged**: `check_reward: pass`, `ROUTING PASS` x2,
+`BOUNDS_ABILITY_GOLDEN_OK cases=38`, `SUDDEN_DEATH_PUBLICATION_OK
+maps_mismatched=0`, `pass=211 fail=0 skipped=5`, `compared_snapshots=417009`,
+`compared_snapshots=801501`, `ABILITY_SWEEP_OK episodes=24800 ... divergent=0`.
+
+That is expected, and it is structural:
+
+- **`ability-sweep` has no oracle.** It runs the port against two more copies of
+  itself (leak / selfcheck cells). It can catch a crash or self-disagreement. It
+  can never catch a grouping bug, because all three copies compute the same wrong
+  product.
+- **Every other gate plays the hardcoded Dash/Bow/Platform kit**
+  (`train/bopl_bots.h:143`). Magnet (30), Roll (16), Macho, Mine, Smoke, Spike,
+  Rocket engine, Meteor and Black hole are all outside it. Ten of the thirteen
+  sites are unreachable from the gate loadout at all.
+- **`dr_compare` reports only the first differing field**, walking header ->
+  players -> slimes -> entities, and within an entity row `right_x` comes before
+  `radius` (`eval/divergence/divergence_compare.h`). An entity-radius divergence
+  is invisible unless nothing earlier differs.
+
+So the whole class is argued from the C# and from exact arithmetic, and is *not*
+measured by the suite. That is the honest status.
+
+### Negative results
+
+**The brief's black-hole spawn-radius lead is real in the C# but not observable
+in the export.** Finding #4 above is genuine - `Init` does register
+`t * (startRadius * 0.01)`, 188 raw below `startRadius` - but the exported row is
+not where it shows. A zero-tolerance scratch probe driving the oracle and the q32
+port through `black_hole_ability_ab`'s action script and printing the layer-23
+entity radius every tick measured **delta 0 at every tick, including the first
+published one (199)**: the hole's time-zero `UpdateSim` runs later in the same
+updater pass, so the published radius is already the post-tick value in both
+backends. (`black_hole_ability_ab.c` uses `SPATIAL_TOLERANCE 70000000`, ~0.0163
+world units, so it could not have caught 188 raw in any case.) The real latent
+window is narrower and has nothing to do with the export: `magnet_pull` and
+`magnet_try_pickup_item` read `hole.radius` from **inside the player loop**,
+ahead of `black_holes_tick` (`native/src/rollout/mod.rs:5240`), so a Magnet
+player ordered after the caster queried the wrong circle on the cast tick. Fixed
+anyway, because the value was wrong.
+
+**A clean "hole spawns and survives with nothing earlier diverging" case is not
+constructible with the instruments that exist.** `bounds_case_trace` with
+`BCT_ABILITIES=18,6,29` holds the ability button for the rest of the run, so the
+hole is never released and never survives; and at the cast tick it already
+reports a pre-existing 329-raw `entity[2].right_x`, which is fixture #1's aimed-
+gun class and is compared *before* `radius` regardless. Turning this class from
+argued into measured needs one of: a comparator that reports **all** differing
+fields rather than the first (or a per-field mask), a probe that can release a
+cast and then idle, or an ability-sweep variant with an oracle. The comparator
+change is the cheapest and would pay for itself across fixtures #1, #6 and this
+one.
+
+**`divergence_rate` is too noisy to measure any of these.** A pre-existing,
+loadout-independent `header.entity_count` divergence fires at ticks 57-112 on ~5%
+of maps, and an `entity[].owner` divergence at median tick ~153-273 on every
+pool, masking everything downstream. Confirmed loadout-independent by running
+`DR_POOL=30` against `DR_POOL=2` at `DR_TICKS=56` and `DR_TICKS=120`: identical
+0/124 and 6/124 counts. Those two are open defects in their own right and are not
+part of this audit.
+
 ## Open items inherited from the deleted porting docs
 
 Not found by this sweep, but this is where open defects live now. The 2026-09-23

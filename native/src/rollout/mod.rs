@@ -8870,7 +8870,12 @@ impl RolloutWorld {
             .to_int()
             .max(0) as usize
             + 1;
-        let step_speed = speed / Fix::from_int((count + 1) as i64);
+        // Roll.Move takes the reciprocal first: `Fix fix = (Fix)num + (Fix)1L;`
+        // then `Fix fix2 = (Fix)1L / fix * speed;` (Roll.cs:259-261). `Fix`
+        // division rounds the magnitude half-up and the following multiply
+        // floors, so `(1/n) * speed` and `speed / n` are different numbers -
+        // they disagree on 87% of (n, speed) pairs in range, by up to 29 raw.
+        let step_speed = Fix::ONE / Fix::from_int((count + 1) as i64) * speed;
         let mut visited = [u32::MAX; 5];
         for substep in 0..count {
             self.roll_hop_step(index, step_speed, &mut visited, data);
@@ -8989,9 +8994,15 @@ impl RolloutWorld {
                 ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
         {
             let scale = self.players[index].player_scale;
+            // Roll.ExitAbility is `body.position - vec * PlayerAbilityRadiusDiff()`
+            // (Roll.cs:219), and PlayerAbilityRadiusDiff is
+            // `playerPhysics.radius - playerInfo.radius` (Roll.cs:238-241) - a
+            // difference of two ALREADY scaled radii, multiplied into the normal
+            // once. Scaling the unscaled difference instead adds a second
+            // per-component floor and moves the exit point by up to 3 raw
+            // whenever the player is not at scale 1.
             exit_position -= platform.surface.normal(exit_position)
-                * (data.roll.physics_radius - data.player.radius)
-                * scale;
+                * (data.roll.physics_radius * scale - data.player.radius * scale);
         }
         let slot = &mut self.players[index];
         slot.active = ActiveAbility::None;
@@ -9567,7 +9578,10 @@ impl RolloutWorld {
         );
         let offset = Vec2::new(
             data.meteor.smear_offset.x,
-            data.meteor.smear_offset.y * extents.y / data.meteor.smear_extents.y,
+            // MeteorSmash.cs:314 is `offset.y *= extents.y / y;` - the ratio is
+            // formed first. `a * (b / c)` and `(a * b) / c` disagree on ~78% of
+            // smear lengths, by up to 2 raw.
+            data.meteor.smear_offset.y * (extents.y / data.meteor.smear_extents.y),
         );
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.meteor.smear_updatable_count;
@@ -10717,12 +10731,16 @@ impl RolloutWorld {
             .position(local, Fix::ZERO)
             + normal * surface_offset;
         let relative_right = spike_right.complex_mul(parent_inverse_basis);
+        // DPhysicsBox.SetRelativePositionOfChildBody folds in
+        // `ComplexMul(relativeRightVector, fixTrans.offset)`
+        // (DPhysicsBox.cs:456) and FixTransform.offset is already scaled
+        // (FixTransform.cs:100-103), so the scale belongs INSIDE the complex
+        // multiply - which is also what every other offset site in this port
+        // does (Drill.cs:175 is the same convention). Scaling the product
+        // instead floors twice and moves the hitbox by up to 5 raw at
+        // off-unit scale.
         let relative_center = (root_position - parent_position).complex_mul(parent_inverse_basis)
-            + data
-                .spike
-                .attack_collider_offset
-                .complex_mul(relative_right)
-                * scale;
+            + (data.spike.attack_collider_offset * scale).complex_mul(relative_right);
         let relative_rotation = spike_rotation - parent_rotation;
 
         self.attach_spike_body(platform_index, data.spike.attack_body);
@@ -10930,13 +10948,11 @@ impl RolloutWorld {
                 + spike_right.perp() * attack.surface_offset;
             let inverse_basis = Vec2::angle(-parent_rotation);
             let relative_right = spike_right.complex_mul(inverse_basis);
+            // Scale inside the complex multiply, per DPhysicsBox.cs:456 and
+            // FixTransform.cs:100-103; see cast_spike.
             attack.relative_center = (root_position - platform.surface.center)
                 .complex_mul(inverse_basis)
-                + data
-                    .spike
-                    .attack_collider_offset
-                    .complex_mul(relative_right)
-                    * attack.scale;
+                + (data.spike.attack_collider_offset * attack.scale).complex_mul(relative_right);
         }
     }
 
@@ -10986,8 +11002,18 @@ impl RolloutWorld {
                     let root = engine.collider_center
                         - (data.engine.rocket_collider_offset * engine.scale)
                             .complex_mul(rocket_right);
-                    let fire =
-                        root + (data.engine.fire_offset * engine.scale).complex_mul(rocket_right);
+                    // RocketEngine.BlowUpSmokeTouchingTheFire (RocketEngine.cs:70)
+                    // is `position + up * (offset.y * Scale) + right * (offset.x
+                    // * Scale)`, and FixTransform.up is MulByI(right) = (-r.y,
+                    // r.x) (FixTransform.cs:73). So the C# forms
+                    // `mul(offset.y * S, -r.y)` where ComplexMul forms
+                    // `-mul(offset.y * S, r.y)`; floor-multiply is not
+                    // sign-symmetric, so those differ by 1 raw on essentially
+                    // every rotation, at scale 1 included.
+                    let rocket_up = rocket_right.perp();
+                    let fire = root
+                        + rocket_up * (data.engine.fire_offset.y * engine.scale)
+                        + rocket_right * (data.engine.fire_offset.x * engine.scale);
                     let flame = Circle {
                         center: fire,
                         radius: data.engine.fire_radius * engine.scale,
@@ -11723,6 +11749,25 @@ impl RolloutWorld {
         slot.reported_tick = self.tick;
     }
 
+    /// The collider radius `BlackHole.Init` registers. `Init` calls
+    /// `UpdateSize()` before `dCircle.ManualInit()` (BlackHole.cs:172-180), and
+    /// `UpdateSize` at timeSinceLastGrowth = 0 evaluates `SizeGrowthAnim` at
+    /// zero and lerps from prevTargetSize = 100, so the registered circle is
+    /// `size * (startRadius * 0.01)`, not `startRadius`.
+    fn black_hole_initial_radius(target_size: Fix, data: &data::RolloutData) -> Fix {
+        let t = data.black_hole.size_curve.evaluate(Fix::ZERO);
+        let size =
+            (Fix::from_int(100) * (Fix::ONE - t) + target_size * t).max(data.black_hole.min_size);
+        let candidate = size * (data.black_hole.start_radius * Fix::from_f32(0.01));
+        // UpdateSize returns early and leaves the collider alone when the
+        // candidate is under minSize (BlackHole.cs:199-201).
+        if candidate >= data.black_hole.min_size {
+            candidate
+        } else {
+            data.black_hole.start_radius
+        }
+    }
+
     fn spawn_black_hole(&mut self, owner: usize, data: &data::RolloutData) {
         let ability_slot = self.players[owner].active_slot;
         self.players[owner].black_hole_castable[ability_slot] = false;
@@ -11740,6 +11785,24 @@ impl RolloutWorld {
         let position = slot.base.position + scale * slot.base.up.perp_cw().complex_mul(local);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.black_hole.updatable_count;
+        let target_size =
+            Fix::from_int(100) + data.black_hole.starting_mass.abs() * data.black_hole.growth;
+        // BlackHole.Init runs UpdateSize() BEFORE dCircle.ManualInit()
+        // (BlackHole.cs:172-180), and while initHasBeenCalled is still false the
+        // DPhysicsCircle radius setter writes startRadius
+        // (DPhysicsCircle.cs:195-204), which Circle() then registers
+        // (DPhysicsCircle.cs:292-299). The hole is therefore born with
+        // `t * (startRadius * 0.01)` - raw 5325759300 with the shipped
+        // constants, 188 raw BELOW startRadius (5325759488), because the 0.01
+        // unit floors - and not with startRadius itself, which is what this used
+        // to register. That is invisible in the exported row (the hole's
+        // time-zero UpdateSim runs later in the same updater pass, so the
+        // published radius is already the post-tick value, measured identical to
+        // the oracle), but magnet_pull and magnet_try_pickup_item read
+        // hole.radius from inside the player loop, ahead of black_holes_tick, so
+        // a Magnet player ordered after the caster queried the wrong circle on
+        // the cast tick.
+        let initial_radius = Self::black_hole_initial_radius(target_size, data);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -11753,12 +11816,10 @@ impl RolloutWorld {
             hierarchy: 100_000_000 + hierarchy_base + data.black_hole.hole_collider_hierarchy,
             x: position.x.raw(),
             y: position.y.raw(),
-            radius: data.black_hole.start_radius.raw(),
+            radius: initial_radius.raw(),
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
         });
-        let target_size =
-            Fix::from_int(100) + data.black_hole.starting_mass.abs() * data.black_hole.growth;
         let hole = BlackHoleState {
             active: true,
             born_tick: self.tick,
@@ -11771,7 +11832,7 @@ impl RolloutWorld {
             time_since_growth: Fix::ZERO,
             previous_target_size: Fix::from_int(100),
             target_size,
-            radius: data.black_hole.start_radius,
+            radius: initial_radius,
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
@@ -14223,8 +14284,13 @@ impl RolloutWorld {
         }
         self.platform_dynamics[platform_index].body.velocity = Vec2::ZERO;
         self.platform_dynamics[platform_index].body.angular_velocity = Fix::ZERO;
+        // `physics.AddForce(velocity * forceFromBoulder / physics.inverseMass01)`
+        // (MachoThrow2.cs:217) and `externalVelocity += force * inverseMass01`
+        // (PlayerPhysics.cs:407, inverseMass01 = 35 at :67). The divide rounds
+        // and the multiply floors, so the round trip is not the identity - it
+        // moves the result by up to 17 raw per component.
         self.players[index].base.external_velocity +=
-            velocity * data.macho_throw.force_from_boulder;
+            velocity * data.macho_throw.force_from_boulder / Fix::from_int(35) * Fix::from_int(35);
     }
 
     fn macho_shrink_ground(&mut self, index: usize, data: &data::RolloutData) {
@@ -17396,8 +17462,8 @@ impl RolloutWorld {
             let direction = item.position - wave.position;
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
-                * (data.gust.default_force / distance)
-                * wave.scale
+                // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
+                * ((data.gust.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
             if defer_mjolnir && item.ability == ABILITY_MJOLNIR {
@@ -17428,8 +17494,8 @@ impl RolloutWorld {
             let direction = arrow.position - wave.position;
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
-                * (data.gust.default_force / distance)
-                * wave.scale
+                // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
+                * ((data.gust.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
             arrow.velocity += impulse * data.arrow.body.inverse_mass;
@@ -17445,8 +17511,8 @@ impl RolloutWorld {
             let direction = missile.position - wave.position;
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
-                * (data.gust.default_force / distance)
-                * wave.scale
+                // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
+                * ((data.gust.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
             missile.body.apply_impulse(impulse, Vec2::ZERO);
@@ -17462,8 +17528,8 @@ impl RolloutWorld {
             let direction = shot.position - wave.position;
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
-                * (data.gust.default_force / distance)
-                * wave.scale
+                // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
+                * ((data.gust.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
             shot.body.apply_impulse(impulse, Vec2::ZERO);
@@ -17479,8 +17545,8 @@ impl RolloutWorld {
             let direction = cloud.position - wave.position;
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
-                * (data.gust.default_force / distance)
-                * wave.scale
+                // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
+                * ((data.gust.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
             cloud.body.apply_impulse(impulse, Vec2::ZERO);
@@ -17496,8 +17562,8 @@ impl RolloutWorld {
             let direction = hole.position - wave.position;
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let force = direction.normalized_safe()
-                * (data.gust.default_force / distance)
-                * wave.scale
+                // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
+                * ((data.gust.default_force / distance) * wave.scale)
                 * strength;
             // BlackHole.AddForce divides by signed mass and deliberately does
             // not apply ForceMode2D's sixty-fold impulse conversion.
@@ -18388,9 +18454,13 @@ impl RolloutWorld {
             } else {
                 Fix::ONE
             };
-        let position = self.players[index].base.position
-            + side * data.mine.throw_position.x * self.players[index].player_scale
-            + up * data.mine.throw_position.y * self.players[index].player_scale;
+        // `Vec2 vec = throwPosition * body.fixtrans.Scale;` then
+        // `body.position + vec.y * vec2 + vec.x * vec3` (ThrowItem.cs:213-216):
+        // the offset is scaled as a Vec2 once, and each basis vector is then
+        // multiplied by a plain scalar. Scaling after the basis multiply floors
+        // each component a second time, moving the spawn by up to 4 raw.
+        let offset = data.mine.throw_position * self.players[index].player_scale;
+        let position = self.players[index].base.position + up * offset.y + side * offset.x;
         let velocity = if grounded {
             let strength = if self.players[index].throw_item.direction.dot(up) < Fix::ZERO {
                 data.mine.min_throw_strength
@@ -18791,7 +18861,11 @@ impl RolloutWorld {
             .max(Fix::ZERO)
             .min(Fix::ONE);
         let force = gd.min_force + (gd.max_force - gd.min_force) * charge;
-        let impulse_force = direction * slot.player_scale * force * Fix::from_int(60);
+        // `grenadeBody.AddForce(body.fixtrans.Scale * fix * vec, Impulse)`
+        // (ThrowItem2.cs:229) forms the scalar `Scale * fix` first, so the
+        // direction is floored once. Scaling the direction first costs up to
+        // 159 raw per component before the sixty-fold impulse conversion.
+        let impulse_force = direction * (slot.player_scale * force) * Fix::from_int(60);
         if self.thrown_items[item_index].active {
             let item = &mut self.thrown_items[item_index];
             item.position = position;
@@ -19606,6 +19680,20 @@ impl RolloutWorld {
     /// ray distance, then applies an immediate off-centre impulse to every
     /// wall in that box. Dynamic item/player branches are handled alongside
     /// their respective pools.
+    ///
+    /// Every pull below forms its vector the way the source writes it:
+    /// `-pullStr * fix3 * vec2` (MagnetGun.cs:527,539,546,558,568,572), which
+    /// C# parses as `((-pullStr) * fix3) * vec2` - one scalar product, then one
+    /// multiply per component. The port used to write `direction * pull *
+    /// strength` and subtract it, which floors each component twice in the
+    /// other order and negates the product instead of the scalar. `Fix`
+    /// multiply floors, so neither rearrangement is free: with the shipped
+    /// constants the two orders differ on essentially every pull, by 1 raw for
+    /// pullStr/projectilePullStr/wallPullStr (exact integers, so only the sign
+    /// placement bites) and by up to 8 raw for playerPullStr and
+    /// MachoSlimePullStr, where the grouping bites as well. Division is
+    /// sign-symmetric in this `Fix` (it negates after dividing magnitudes), so
+    /// only the multiplies had to move.
     fn magnet_pull(&mut self, index: usize, data: &data::RolloutData) {
         let magnet = &data.magnet;
         let slot = &self.players[index];
@@ -19655,7 +19743,7 @@ impl RolloutWorld {
             let arm = (application - position).normalized_safe();
             self.platform_dynamics[platform_index]
                 .body
-                .apply_impulse(-direction * magnet.wall_pull_strength * multiplier, arm);
+                .apply_impulse((-magnet.wall_pull_strength * multiplier) * direction, arm);
             changed = true;
         }
         for player_index in 0..self.players.len() {
@@ -19693,15 +19781,15 @@ impl RolloutWorld {
                 strength *= magnet.close_pull_multiplier;
             }
             if target.active == ActiveAbility::Rock {
-                self.players[player_index].rock.body.force -=
-                    direction * magnet.pull_strength * strength;
+                self.players[player_index].rock.body.force +=
+                    (-magnet.pull_strength * strength) * direction;
             } else {
                 let pull = if target.active == ActiveAbility::Throw {
                     magnet.macho_pull_strength
                 } else {
                     magnet.player_pull_strength
                 };
-                self.players[player_index].base.external_velocity -= direction * pull * strength;
+                self.players[player_index].base.external_velocity -= (pull * strength) * direction;
             }
         }
         for item in &mut self.thrown_items {
@@ -19732,7 +19820,7 @@ impl RolloutWorld {
             {
                 strength *= magnet.close_pull_multiplier;
             }
-            item.body.force -= direction * magnet.pull_strength * strength;
+            item.body.force += (-magnet.pull_strength * strength) * direction;
         }
         for missile in &mut self.guided_missiles {
             if !missile.active || !missile.registered || missile.magnet_holder.is_some() {
@@ -19755,7 +19843,7 @@ impl RolloutWorld {
             {
                 strength *= magnet.close_pull_multiplier;
             }
-            missile.body.force -= direction * magnet.pull_strength * strength;
+            missile.body.force += (-magnet.pull_strength * strength) * direction;
         }
         for arrow in &mut self.arrows {
             if !arrow.active || !arrow.registered || arrow.magnet_holder.is_some() {
@@ -19777,7 +19865,7 @@ impl RolloutWorld {
             {
                 strength *= magnet.close_pull_multiplier;
             }
-            arrow.force -= direction * magnet.projectile_pull_strength * strength;
+            arrow.force += (-magnet.projectile_pull_strength * strength) * direction;
         }
         for pickup_index in 0..self.ability_pickups.len() {
             let pickup = self.ability_pickups[pickup_index];
@@ -19797,8 +19885,8 @@ impl RolloutWorld {
             {
                 strength *= magnet.close_pull_multiplier;
             }
-            self.ability_pickups[pickup_index].body.force -=
-                direction * magnet.pull_strength * strength;
+            self.ability_pickups[pickup_index].body.force +=
+                (-magnet.pull_strength * strength) * direction;
         }
         for shot_index in 0..self.portal_shots.len() {
             let shot = self.portal_shots[shot_index];
@@ -19822,7 +19910,8 @@ impl RolloutWorld {
             {
                 strength *= magnet.close_pull_multiplier;
             }
-            self.portal_shots[shot_index].body.force -= direction * magnet.pull_strength * strength;
+            self.portal_shots[shot_index].body.force +=
+                (-magnet.pull_strength * strength) * direction;
         }
         for marker_index in 0..self.revival_marker_pool.len() {
             let marker = self.revival_marker_pool[marker_index];
@@ -19850,8 +19939,8 @@ impl RolloutWorld {
             {
                 strength *= magnet.close_pull_multiplier;
             }
-            self.revival_marker_pool[marker_index].body.force -=
-                direction * magnet.pull_strength * strength;
+            self.revival_marker_pool[marker_index].body.force +=
+                (-magnet.pull_strength * strength) * direction;
         }
         for marker_index in 0..self.teleport_marker_pool.len() {
             let marker = self.teleport_marker_pool[marker_index];
@@ -19875,8 +19964,8 @@ impl RolloutWorld {
             {
                 strength *= magnet.close_pull_multiplier;
             }
-            self.teleport_marker_pool[marker_index].body.force -=
-                direction * magnet.pull_strength * strength;
+            self.teleport_marker_pool[marker_index].body.force +=
+                (-magnet.pull_strength * strength) * direction;
         }
         for hole_index in 0..self.black_holes.len() {
             let hole = self.black_holes[hole_index];
@@ -19896,8 +19985,8 @@ impl RolloutWorld {
             }
             // BlackHole.AddForce divides by signed mass.
             if hole.mass != Fix::ZERO {
-                self.black_holes[hole_index].velocity -=
-                    direction * magnet.black_hole_pull_strength / hole.mass;
+                self.black_holes[hole_index].velocity +=
+                    (-magnet.black_hole_pull_strength * direction) / hole.mass;
             }
         }
         if changed {
@@ -25763,8 +25852,20 @@ impl RolloutWorld {
                 arrow.rotation = up.perp_cw().normalized_angle();
                 arrow.updater_tick = self.tick;
             }
-            arrow.velocity +=
-                (arrow.force * data.arrow.body.inverse_mass + Vec2::UP * gravity) * physics_dt;
+            // DetPhysics.IntegrateBody (DetPhysics.cs:1643) is
+            //   velocity += deltaTime * new Vec2(Zero, gravityAccel * gravityScale)
+            //             + GameTime.FixedTimeStep * force * inverseMass;
+            // Two separately floored terms, and the force term is scaled by the
+            // CONSTANT step, not by the possibly-zeroed deltaTime. This copy used
+            // to sum the terms before the single `* physics_dt`, which floors the
+            // force term in the wrong order (1 raw apart on ~18% of forces, and
+            // arrows carry force from BlackHole gravity, magnet pull and magnet
+            // fire), and it used physics_dt for the force term, which silently
+            // drops the whole impulse while time is stopped. `Body::integrate`
+            // (native/src/physics/mod.rs:38) already has the right form; this
+            // inlined arrow copy had drifted from it.
+            arrow.velocity += physics_dt * Vec2::new(Fix::ZERO, gravity)
+                + DT * arrow.force * data.arrow.body.inverse_mass;
             arrow.position += arrow.velocity * physics_dt;
             arrow.rotation = (arrow.rotation + arrow.angular_velocity * physics_dt)
                 .checked_rem(Fix::TAU, true)
@@ -26857,7 +26958,14 @@ impl RolloutWorld {
             let noise_radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
             let noise = Vec2::angle(noise_angle) * noise_radius * data.smoke.noise;
             let rotation = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-            let offset = (authored_offset + noise) * data.smoke.spread * item.scale;
+            // SmokeGrenadeExplode2.SpawnCloud (SmokeGrenadeExplode2.cs:57) is
+            // `fixTrans.Scale * (cloudOffsets[i] + noise) * spread`: the scale
+            // multiply comes FIRST. `spread` ships as exactly 6.0, so that
+            // multiply is lossless either way, but `6 * floor(scale * v)` and
+            // `floor(6 * scale * v)` are not the same number - up to 5 raw apart
+            // for the shipped offsets once a Growth/Shrink ray has moved
+            // item.scale off 1.0.
+            let offset = (item.scale * (authored_offset + noise)) * data.smoke.spread;
 
             let active_for_ability = self
                 .smoke_clouds
