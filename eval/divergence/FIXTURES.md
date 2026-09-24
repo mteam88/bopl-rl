@@ -530,13 +530,23 @@ The boundary kill hid this in the gate, because the kill rewrites
 
 **Two small residues in the Black hole path are real, pre-existing, and were not
 touched.** They are invisible to `bounds-ability-ab`, which compares player 0's
-kill, and they are not what this fixture fixed:
+kill, and they are not what this fixture fixed. The second of them turned out
+not to be a residue at all - see fixture #8, which closes it - and the lead
+chased below (the rounded-rect loop as an unbounded-range channel to a distant
+body) was the wrong tree: player 1 moves because the *hole* is 0.082 units out
+of place, not because of how its pull reaches player 1:
 
 - A *grounded* cast diverges on the entry tick at `entity[2].right_x`, the
   hurtbox orientation, by 329 raw units (~7.7e-8). Reproduce with
   `BCT_ABILITIES=18,6,29 BCT_ENGAGE_Y=100`. This was confirmed pre-existing by
   building the unmodified base and running the same case: both builds emit the
-  byte-identical `cand 5411486426` against `ref 5411486755`.
+  byte-identical `cand 5411486426` against `ref 5411486755`. Re-checked with
+  `BCT_ALL=1` on 2026-09-24 (fixture #8's instrument): the tick contains exactly
+  four differing fields, all of them entity 2's basis, and nothing larger hides
+  behind them - so unlike the second residue this one really is small. It is a
+  rotation error of order 1e-5 rad, and the field the first-hit walk reports,
+  `right_x` at 329 raw, is the *smallest* of the four (`up_x` 26213,
+  `right_y` 41287, `up_y` 208).
 - On `early` and `late`, a *distant idle* player 1 diverges by ~71 raw units
   (~1.6e-8) on the tick the hole spawns - 16 passes after the cast, `early` 364
   and `late` 379. Attribution is rigorous even though the base build cannot show
@@ -589,7 +599,9 @@ floor-multiply. They come out exactly, and only when `0.01` truncates to raw
 
 It **does not** close the player-1 residue above: the residue's raw values are
 byte-identical with and without it (`cand 54678440797`). Whatever moves player 1
-is not the radius, and that remains open.
+is not the radius - correct, and fixture #8 names it: the hole's spawn *position*
+read the wrong pass's body position, which is also why `cand 54678440797` never
+budged for any change to the radius.
 
 The remaining lead, for whoever picks this up: the rounded-rect loop is the only
 *unbounded-range* channel from a hole to a distant body, because the shipped
@@ -763,13 +775,232 @@ cast and then idle, or an ability-sweep variant with an oracle. The comparator
 change is the cheapest and would pay for itself across fixtures #1, #6 and this
 one.
 
+**The comparator change was made** (`dr_report_all` in
+`eval/divergence/divergence_compare.h`, exposed as `BCT_ALL=1` in
+`bounds_case_trace`; `BCT_IGNORE` exposes the mask and `BCT_DUMP_ALL=1` widens
+the per-tick dump past owned rows). It found a real defect on the first case it
+was pointed at - see fixture #8 - so this entry's two open residues were not
+residue. It is NULL by default, so `divergence_rate` still pays no formatting
+cost on a clean tick.
+
 **`divergence_rate` is too noisy to measure any of these.** A pre-existing,
 loadout-independent `header.entity_count` divergence fires at ticks 57-112 on ~5%
 of maps, and an `entity[].owner` divergence at median tick ~153-273 on every
 pool, masking everything downstream. Confirmed loadout-independent by running
 `DR_POOL=30` against `DR_POOL=2` at `DR_TICKS=56` and `DR_TICKS=120`: identical
 0/124 and 6/124 counts. Those two are open defects in their own right and are not
-part of this audit.
+part of this audit. The 114-case sweep below found them again from the other
+direction, on 13 bounds cases, where they present as a *permutation* of the
+exported entity rows with a count difference of one in either sign - see class 5
+there, which also corrects the natural first reading that the port simply spawns
+an extra entity.
+
+## Fixture #8 - Black hole spawned from the wrong pass's body position
+
+Found 2026-09-24 by the first case the new report-all comparator mode was
+pointed at, which is the whole argument for having built it.
+
+**The symptom, as it had always read.** `bounds_case_trace` on the Black hole
+kit reported one differing field on the `early` phase:
+
+```
+FIRST any tick 364 NUMERIC slime[1].x ref 54678440726 cand 54678440797
+```
+
+71 raw on the *opponent's* slime. That reads as last-bit rounding residue, and
+fixture #6 recorded it as exactly that: a small pre-existing residue, left open.
+
+**What the tick actually contained.** `BCT_ALL=1` prints every differing field
+of the first diverging tick instead of the first one the accumulator keeps. The
+tick is 28 fields over slime 1 and entities 0 and 10-15, and ranked by raw gap
+the picture is not subtle:
+
+```
+entity[0].y   gap 352392313 (0.082048)   <- the hole
+entity[14].vx gap   1352507 (0.000315)
+entity[14].vy gap    512558 (0.000119)
+entity[11].vy gap    379952 (0.000088)
+...
+slime[1].x    gap        71 (0.000000)   <- the field that was being reported
+```
+
+Four orders of magnitude between the cause and the field the first-hit walk
+happened to reach first. `dr_compare` compares header, then players, then
+slimes, then entities, so the 71-raw slime always won.
+
+**What entity 0 is.** Row 0 is a reused pool slot: it holds the water (id 1,
+layer 4) through tick 363 and at 364 holds a new row, id 16, kind 0, layer 23 -
+`RigidBodyAffector` in `ProjectSettings/TagManager.asset` - radius 1.263317
+growing to 1.284967 the next tick. That is the Black hole itself, appearing in
+both backends on the same tick with the same radius, so the spawn *timing* was
+never wrong.
+
+**Root cause.** `BlackHoleClap.FireCommon` (BlackHoleClap.cs:85-91) places it at
+`body.position + Fix.Clamp(body.fixtrans.Scale / 3, 1, 2) * ComplexMul(body.right, blackholeOffset)`,
+with `blackholeOffset` raw 25769803776 / 12884901888 = exactly (6, 3)
+(`Assets/GameObject/Black hole.prefab:236`). Subtracting the offset from the
+published hole position gives each backend's `body.position` at the spawn:
+
+```
+reference  (-36.293827, -1.458210)   = the caster's position at tick 363
+port       (-36.293845, -1.540258)   = the caster's position at tick 364
+```
+
+One pass apart, and the gap is exactly that pass's fall: the caster's per-tick
+y displacement is 0.078784 at 363, **0.082048 at 364**, 0.085282 at 365. The
+`late` phase gap, 0.085823, is its own tick's displacement. Not rounding at all.
+
+The ordering is on the prefab. Resolving every `hierarchyNumber` on
+`Black hole.prefab` against the script guids gives 1 SpriteAnimator, 2 Ability,
+3 PlayerCollision, 4 PlayerPhysics, 5 DestroyIfOutsideSceneBounds,
+6 BlackHoleClap, 7 DPhysicsBox, **8 PlayerBody**. The spawn runs from an
+animator callback (`beginAnimThenDoAction(... FireAir)`), and the form's own
+`PlayerBody` - which integrates the fall - is the *last* component in the pass.
+The slime's own components never compete for the ordering: entering the cast
+deactivates that GameObject and `Updater` skips disabled components
+(Updater.cs:300).
+
+**The fix** (`native/src/rollout/mod.rs`) keeps one extra Vec2 on
+`BlackHoleCastState`, `spawn_origin`, shifted at the top of every cast tick
+before anything can spawn from it, and `spawn_black_hole` takes it as an
+argument instead of reading `slot.base.position`. All three phases then report
+`FIRST any none / FIRST discrete none` for the whole episode, where before the
+fix `early` and `late` diverged at 364 and 379.
+
+**Honest limit, recorded because the next person will ask.** The offset needed
+is one pass older than the position this port has integrated to when its cast
+tick runs - not the pre-motion position of the current pass, which is what
+`base.position` already is there (`black_hole_form_motion` runs at the *end* of
+`black_hole_cast_tick`, and nothing moves the body earlier in the pass). Tried
+and measured as no-ops first: `slot.reported_position` and a one-deep
+`pre_pass_position` stored after the motion, both of which equal
+`base.position` at that point. Only the two-deep shift matches, and it matches
+exactly. So *what* the correct origin is has been measured on three phases; the
+remaining question is why this port's form motion sits one pass ahead of the
+oracle's for this ability, which needs the Updater registration order for a
+`PlayerBody` enabled mid-cast. Whoever picks that up should check whether other
+ability forms that spawn something from an animator callback have the same
+one-pass skew, since the fix here is local to Black hole.
+
+## The 114-case trajectory sweep - what bounds-ability-ab never looked at
+
+`bounds-ability-ab` compares the boundary kill and nothing else. Fixture #8 was
+half a world unit of horizontal drift and it sat behind that gate for the whole
+project, because the kill tick and the kill y still matched. So the gate passing
+says nothing about the 37 abilities whose trajectories it never reads.
+
+On 2026-09-24, on the build carrying the fixture #8 fix, I ran
+`bounds_case_trace` with `BCT_ALL=1` over all 38 cases x 3 engage heights and
+read every differing field of the first diverging tick. **84 of 114 clean, 30
+divergent.** Those 30 are not 30 defects - they collapse into six classes, and
+only the first three are unexplained work.
+
+Per-case logs land in `/tmp/bct-sweep/<case>-<phase>.txt`, which is scratch and
+not committed; the reproduce recipe is at the end of this section.
+
+### 1. One-pass skew on a held item - 6 cases, and the real find
+
+`mjolnir`, `poke_ball`, `tack`, each on `early` and `late`. The diverging row is
+a layer-10 (item) entity, `kind 0`, `owner 1`, `flags 2307`, and the gaps are
+**byte-identical across all three kits**:
+
+```
+early   entity[].x gap 136079760 (0.031684)   entity[].y gap 545057382 (0.126906)
+late    entity[].x gap 136006159 (0.031666)   entity[].y gap 348763201 (0.081203)
+```
+
+Mjolnir is `{37, 32, 36}` (Mjolnir, Web swing, Freeze ray) and shares no ability
+with Poke ball `{33, 2, 14}` or Tack `{35, 2, 14}`, so the object cannot be any
+of their projectiles - it is the same scene item in each case, and it is one pass
+out of step with the body it is attached to.
+
+The y gap, 0.081203, is one tick of the caster's fall at that height. Fixture #8
+measured 0.082048 at tick 364 and 0.085823 at 379 for the same reason. This is
+the generalisation fixture #8 asked the next person to check for, and it is real:
+three unrelated kits cannot agree to the raw unit by coincidence.
+
+### 2. Missile rotation - 1 case
+
+`missile-early`, tick 371, `entity[5]` (layer 10, kind 1): `rotation` off by
+26807145010 = **6.241525 rad**, `vx` by 0.749469, with sub-0.04 residues on
+position and basis. 6.241525 is 2*pi - 0.041660, so read this as an angle that
+wrapped the other way - a normalisation or `atan2` quadrant difference - before
+concluding the motion is wrong. `late` and `brink` are clean, so it only appears
+at the `early` engage height.
+
+### 3. Rewind's slime timer, exactly one tick - 2 cases
+
+`rewind` on `early` and `late`: two `slime[0].timers[]` entries off by 71582788 =
+**0.016667 = 1/60 exactly**. A timer started or decremented one pass apart.
+Positions never diverge, so nothing downstream has consumed it yet.
+
+### 4. Spawn-hierarchy counter off by one or two - 5 cases
+
+`gold_mushroom` on all three phases, diverging at **tick 0**:
+
+```
+entity[0].hierarchy  ref 100000023  cand 100000024
+entity[1].hierarchy  ref 100000046  cand 100000048
+entity[4].hierarchy  ref 100000016  cand 100000017
+entity[5].hierarchy  ref 100000029  cand 100000030
+entity[6].hierarchy  ref 100000039  cand 100000041
+```
+
+plus `platform` on `early` and `late`, one field each. Nothing else differs,
+positions included, so `next_spawn_hierarchy` advances by a different amount for
+these prefabs. Do not file it as cosmetic: `Updater` orders a registration batch
+by `hierarchyNumber` (`Updater.cs:271`), which makes this the input to every
+ordering defect in this file - fixtures #6 and #8 both. On these cases it has not
+yet changed an outcome.
+
+### 5. Entity-pool permutation with +-1 count - 13 cases, and it is the known pair
+
+The `{3, 13, 16}` kit (Grenade, Smoke, Roll) in all three slot orders x 3 phases,
+plus `beam-brink`, plus `grapple` x 3.
+
+I first read this as "the port spawns an extra entity", and that is wrong.
+`beam-brink` has `header.entity_count` ref 10 / cand 9 while `smoke` and
+`grenade` have ref 12 / cand 13 - the sign is not consistent. And the rows are
+not shifted, they are **permuted**: `grenade-late` rows 3, 4, 5 carry
+`source_ability` 0, 3, 13 in the reference and 13, 0, 3 in the port, the same
+objects in a different order, several with `owner` swapped 2/0. Exported rows are
+a reused pool, so row order is the pool's allocation history. A permutation plus
+a count difference of one is that history diverging - which is the
+`header.entity_count` and `entity[].owner` pair recorded under fixture #7 as the
+reason `divergence_rate` is too noisy to be a fine instrument.
+The 76 to 82 "differing fields" are one diverging allocation counted once per
+field of every row it displaced, which is exactly the inflation `dr_report_all`
+was built to make visible rather than to hide.
+
+`grapple` is the same kit as `beam` (`{27, 28, 9}` against `{28, 27, 9}`) and
+shows only a tail of it: 11 to 39 rope-node rows (`kind 3`, `layer 0`,
+`owner 1`) where `flags` is 35 in the reference and 3 in the port. 35 - 3 = 32,
+one bit, set on every node and on no other field, so it is a single per-node flag
+the port never sets - worth fixing on its own and independent of the permutation.
+
+### 6. Last-bit noise, not defects - 3 cases
+
+`meteor` early and late (`entity[4].x`, `.y`) and `meteor-brink`
+(`player[0].x`, `.y`): gap of **exactly 1 raw unit**. Recorded so nobody spends a
+day on them.
+
+### Reproduce
+
+```bash
+BCT_ABILITIES=37,32,36 BCT_SLOT=0 BCT_AIM=0 BCT_ENGAGE_Y=-8.0 BCT_ALL=1 \
+  native/artifacts/rl/bounds_case_trace \
+  "$PWD/sim/Native/bin/Release/net8.0/linux-x64/publish/BoplSimNative.so" \
+  "$PWD/native/target-q32/release/libbopl_sim.so"
+```
+
+The ability triples and slot/aim columns are the case table in
+`eval/rust_ab/bounds_ability_ab.c`; the three phases are `BCT_ENGAGE_Y` 0.0,
+-8.0 and -10.9. `BCT_DUMP_ALL=1` additionally dumps every exported row of both
+sides, not only the owned ones, which is how the fixture #8 entity was
+identified.
+
+This sweep is deliberately **not** a gate. Making it one means deciding which of
+these six classes is allowed to stay, and four of them should be fixed instead.
 
 ## Open items inherited from the deleted porting docs
 
@@ -830,8 +1061,10 @@ ticks longer** than the reference (367 vs 385), fifty times the documented gap
 and in the opposite direction. Both forms turned out to carry two defects each,
 sharing the entry-pass boundary component. No case carries
 `known_trajectory_divergence` now, so a regression in any of the 38 fails the
-gate rather than printing. Two small pre-existing residues in the Black hole
-path remain open and are recorded under fixture #6's negative results.
+gate rather than printing. One of the two residues left behind in the Black hole
+path turned out to be a third defect, not rounding - fixture #8. The other, a
+~1e-5 rad rotation error on a grounded cast, is still open under fixture #6's
+negative results.
 
 **The Unity player build is a week older than the observation ABI it must
 speak.** `Builds/LinuxIL2CPP/BoplBattle.x86_64` was built 2026-09-07. The

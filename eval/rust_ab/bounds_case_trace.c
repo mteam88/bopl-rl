@@ -25,6 +25,7 @@
  *   BCT_TICKS=1600
  *   BCT_DUMP=a:b           per-tick dump of player 0 / slime 0 / the owned
  *                          entity rows over the inclusive tick range [a,b]
+ *   BCT_DUMP_ALL=1         dump every active entity row, not just owned ones
  *   BCT_ALL=1              every differing field of the first diverging tick,
  *                          not just the first one the accumulator keeps
  *   BCT_IGNORE=a,b         generalized field names to exclude from the FIRST
@@ -77,6 +78,11 @@ static double env_d(const char *name, double fallback) {
     return v && *v ? strtod(v, NULL) : fallback;
 }
 
+/* 1 = dump every active entity row, not only the ones the case player owns.
+ * A divergence the report-all mode finds on an unowned row (a level affector,
+ * a moving wall) is invisible otherwise. */
+static int dump_all_rows;
+
 static void dump_side(const char *tag, const BoplRlState *s) {
     const BoplRlPlayer *p = &s->players[0];
     const BoplRlSlime *m = &s->slimes[0];
@@ -88,12 +94,12 @@ static void dump_side(const char *tag, const BoplRlState *s) {
     for (uint32_t i = 0; i < s->header.entity_count; i++) {
         const BoplRlEntity *e = &s->entities[i];
         if (!(e->flags & BOPL_ENTITY_ACTIVE)) continue;
-        if (e->owner != p->id && e->reserved[0] == 0) continue;
+        if (!dump_all_rows && e->owner != p->id && e->reserved[0] == 0) continue;
         printf("      e%-3u id %-4u kind %u layer %u owner %u ab %u flags %u timer %u "
-               "(%.6f,%.6f) v(%.6f,%.6f) r %.6f rot %.6f\n",
+               "(%.6f,%.6f) v(%.6f,%.6f) r %.6f rot %.6f right(%.6f,%.6f) up(%.6f,%.6f)\n",
                i, e->id, e->kind, e->layer, e->owner, e->reserved[0], e->flags,
                e->reserved[1], f(e->x), f(e->y), f(e->vx), f(e->vy), f(e->radius),
-               f(e->rotation));
+               f(e->rotation), f(e->right_x), f(e->right_y), f(e->up_x), f(e->up_y));
     }
 }
 
@@ -117,6 +123,7 @@ int main(int argc, char **argv) {
     const char *ignore = getenv("BCT_IGNORE");
     if (ignore && *ignore) dr_ignore_list = ignore;
     if (env_u("BCT_ALL", 0)) dr_report_all = bct_report_all;
+    dump_all_rows = (int)env_u("BCT_DUMP_ALL", 0);
 
     char error[512] = {0};
     BoplRl *world[2];
