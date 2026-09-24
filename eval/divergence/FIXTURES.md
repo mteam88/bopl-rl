@@ -374,7 +374,8 @@ rate of 0.024% with 95% probability over the choice of pinned seed, 0.05% with
 **Status:** FIXED 2026-09-24 in `a5d3fd9d` (Gust) and `5f905b76` (Revival). All
 three gust phases now agree with the reference in every exported field for the
 whole episode, and gust has lost its `known_trajectory_divergence` flag, so the
-gate protects it. Black hole is unchanged and still flagged.
+gate protects it. Black hole was still flagged when this was written; it was
+fixed later the same day - see fixture #6.
 
 The instrument was `eval/rust_ab/bounds_case_trace.c` (`make bounds-case-trace`),
 which replays one `bounds_ability_ab` case in lockstep and reports the first
@@ -414,11 +415,13 @@ Rock/Roll/Drill/Platform/Bow but not for either QuickSpell form, so the cast
 body - which is frozen for the cast, in both backends - hovered under the plane
 for the whole 18-tick cast+exit animation and died only when the slime returned.
 
-Black hole is the same class and is not fixed: `Black hole.prefab` carries the
-component at hierarchyNumber 5, also ahead of `BlackHoleClap` (6), and `brink
-blackhole` is exactly the entry-pass signature (reference 367, port 368). It
-would still be flagged afterwards for its separate 0.4-0.56 unit x drift, so the
-two want fixing together.
+Black hole is the same class: `Black hole.prefab` carries the component at
+hierarchyNumber 5, also ahead of `BlackHoleClap` (6), and `brink blackhole` is
+exactly the entry-pass signature (reference 367, port 368). That prediction held
+- and the guess that the two wanted fixing together was right, because the
+separate 0.4-0.56 unit x drift did keep the flag on by itself. Both are fixed in
+fixture #6, where the drift turned out to be a missing per-pass
+`AirealMovement`.
 
 ### Negative result worth keeping
 
@@ -431,6 +434,126 @@ walk tick. Measured before the fix: reference 607, port 625 - the identical
 18-tick hover. Any case whose slot cooldown outlasts the walk is silently inert;
 `revival` was the only one, but the failure mode is invisible in the gate output,
 which prints `ok` either way.
+
+
+## Fixture #6 - Black hole: the cast form never ran AirealMovement, and published its pose a pass out of step
+
+**Status:** FIXED 2026-09-24. All three `blackhole` phases now agree with the
+reference in every exported field for the whole episode, and `blackhole` has
+lost its `known_trajectory_divergence` flag. **No case in
+`bounds_ability_ab.c` carries that flag any more**, so the gate now holds all
+38 to the full comparison.
+
+Before, rebuilt from committed source:
+
+```
+early blackhole  KNOWN-DIVERGENCE reference 404 (-36.1894,-11.3380) | rust 404 (-36.7478,-11.3380)
+late  blackhole  KNOWN-DIVERGENCE reference 391 (-41.0446,-11.3957) | rust 391 (-41.4578,-11.3957)
+brink blackhole  KNOWN-DIVERGENCE reference 367 (-42.2811,-11.6208) | rust 368 (-42.2970,-11.6558)
+```
+
+After: `ok` on all three, at the reference's own tick and position.
+
+The instrument was again `eval/rust_ab/bounds_case_trace.c`. As with Gust, the
+first divergence is the *entry* tick, not the kill - tick 348 on `early`, 363
+on `late`, 367 on `brink`, each the tick the button went down. Three defects,
+not the two that were expected.
+
+**AirealMovement never ran on the cast form.** This is the 0.4-0.56 unit drift,
+and it had not been diagnosed before. Dumping the entry window shows the
+reference decelerating horizontally and the port not:
+
+```
+reference  x steps after entry: -0.010379 -0.006801 -0.004455 -0.002919 -0.001912
+port       x steps after entry: -0.015842 -0.015842 -0.015842 -0.015842 -0.015842
+```
+
+The reference's ratio is a constant 0.655172 per pass. `BlackHoleClap.UpdateSim`
+ends with `physics.Move(Vec2.zero, simDeltaTime)` (BlackHoleClap.cs:150), and
+the airborne branch of `Move` runs `AirealMovement` before its raycasts
+(PlayerPhysics.cs:232-240). `AirealMovement` adds the input term and then damps
+the horizontal component unconditionally:
+
+```csharp
+body.selfImposedVelocity += new Vec2(inputHorz * airAccel, Fix.Zero);
+Fix fix = airAccel / (maxSpeed + airAccel);
+body.selfImposedVelocity += Vec2.left * fix * body.selfImposedVelocity.x;   // PlayerPhysics.cs:398-403
+```
+
+so x keeps `maxSpeed / (maxSpeed + airAccel)` of itself every pass even with
+zero input, and with **no delta-time factor** - it is per-pass, not per-second.
+The form carries its own `PlayerPhysics`: `Assets/GameObject/Black hole.prefab`
+serializes `maxSpeed` 19 and `airAccel` 10, giving exactly 19/29 = 0.655172.
+The port's `black_hole_form_motion` applied gravity and integrated but never
+called the `air_movement` helper it already had in
+`native/src/player_physics.rs`, so the velocity the cast inherits was integrated
+undamped and the body kept sliding.
+
+The arithmetic closes exactly. `BlackHoleClap.OnEnterAbility` scales an airborne
+cast's velocity by 0.05 (BlackHoleClap.cs:62-66); the slime's pre-entry x
+velocity is -19.010123, so the reference's first step is
+`0.05 * 19.010123 * (19/29) / 60 = 0.01037925` against a measured 0.010379,
+while the port's undamped `0.05 * 19.010123 / 60 = 0.015842` is its measured
+constant. The damped series converges after about 0.03 units; the undamped one
+never does, which is where 0.4-0.56 comes from by the time the boundary catches
+the body.
+
+**The form's own DestroyIfOutsideSceneBounds.** Same class as fixture #5.
+`Black hole.prefab` carries the component at hierarchyNumber 5, behind the
+SlimeController that enters the ability (Player.prefab, 2) and ahead of its
+`BlackHoleClap` (6), so on the entry pass the slime's own component is skipped -
+`onEnterAbility` deactivated it (SlimeController.cs:190) - and the form's runs
+in that same pass, before the form has moved (Updater.cs:271, 300). The port ran
+it for Black hole's steady state but not on entry, so `brink` survived a pass
+and died at 368 where the reference dies at 367. Unlike Gust this one did not
+need the QuickSpell helper: Black hole stays `active` for the whole cast, so the
+ordinary `ability_boundary_kill` marker is converted to a death with cause
+`Other` by the shared pass that already handles Beam and Platform.
+
+**The pose was published a pass out of step, in both directions.** Not
+predicted, and it survived the first two fixes. `Ability.UpdateSim` publishes
+`Player.Position` from hierarchyNumber 2, ahead of `PlayerPhysics` (4),
+`BlackHoleClap` (6) and the `PlayerBody` (8) that actually advances the
+transform, so the position a pass publishes is the one it *started* with. The
+port published after integrating. The hurtbox is the mirror image:
+`DPhysicsBox.UpdateSim` is empty (DPhysicsBox.cs:374-376), so its
+hierarchyNumber 7 does nothing per pass and the collider follows the body
+through `UpdatePhysicsPositions`, which reads `fixTrans.position`
+(DPhysicsBox.cs:287-288) and is driven by DetPhysics *after* the pass - so the
+exported box sits where `PlayerBody` just integrated to. The port had snapshotted
+it *before* the motion. The two rows were therefore swapped relative to the
+oracle: the port's player row ran a pass ahead and its entity row a pass behind.
+The boundary kill hid this in the gate, because the kill rewrites
+`reported_position` and resynchronises both.
+
+### Negative results worth keeping
+
+**Two small residues in the Black hole path are real, pre-existing, and were not
+touched.** They are invisible to `bounds-ability-ab`, which compares player 0's
+kill, and they are not what this fixture fixed:
+
+- A *grounded* cast diverges on the entry tick at `entity[2].right_x`, the
+  hurtbox orientation, by 329 raw units (~7.7e-8). Reproduce with
+  `BCT_ABILITIES=18,6,29 BCT_ENGAGE_Y=100`. This was confirmed pre-existing by
+  building the unmodified base and running the same case: both builds emit the
+  byte-identical `cand 5411486426` against `ref 5411486755`.
+- On `early` and `late`, a *distant idle* player 1 diverges by ~71 raw units
+  (~1.6e-8) on the tick the hole spawns - 16 passes after the cast, `early` 364
+  and `late` 379. Attribution is rigorous even though the base build cannot show
+  it directly (its own entry-tick divergence masks it): `dr_compare` walks
+  header, then players, then slimes, so `header.entity_count`, `player[0].x/y`
+  and `player[0].scale` all matching at that tick proves the hole spawned on the
+  same pass from a bit-identical position and scale. The difference is therefore
+  in the attraction the hole applies to other bodies - `black_holes_tick`, which
+  this change never touches.
+
+**The brief's framing was right about the count but not the content.** It
+predicted two defects and named the second only as "a 0.4-0.56 unit horizontal
+drift, undiagnosed". It also suggested checking whether Black hole's entry path
+repeats Gust's stale-`attachedGround` `UnGround` bug. It does not:
+`BlackHoleClap.OnEnterAbility` never calls `UnGround` at all (BlackHoleClap.cs:52-76),
+and the port's entry arm already clears `ground` without a separation nudge. That
+line of inquiry is closed.
 
 
 ## Open items inherited from the deleted porting docs
@@ -460,17 +583,18 @@ must come back perfectly identical.
 inline initializers, on maps and loadouts not yet exercised, may need `rd.xml`
 entries. A serialized-field scan that generates `rd.xml` would close it.
 
-**Three latent trajectory divergences in `bounds-ability-ab`** (the three Gust
-lines below are fixture #5 above, fixed 2026-09-24; the three Black hole ones
-are still open). **Five of the six were invisible until 2026-09-24.** The gate
-has always reported them - the case table marked Black hole and Gust
-`known_trajectory_divergence` and printed them without failing, because the
-probe's subject is *when the boundary kills*, not the trajectory into it. What
-hid them was a stale binary: `native/artifacts/rl/` is gitignored, `make`
-compares mtimes, and the compiled gate was older than its committed source, so
-it printed 24 ability lines and 1 divergence where the rebuilt gate prints 114
-and 6. The summary line is identical either way (`cases=38 water=-11.3
-survivors=4`), so nothing looked wrong. Rebuilt on `c2293d22`:
+**Six latent trajectory divergences in `bounds-ability-ab` - all now closed.**
+The three Gust lines are fixture #5 (fixed 2026-09-24); the three Black hole
+ones are fixture #6 (fixed 2026-09-24). **Five of the six were invisible until
+2026-09-24.** The gate had always reported them - the case table marked Black
+hole and Gust `known_trajectory_divergence` and printed them without failing,
+because the probe's subject is *when the boundary kills*, not the trajectory
+into it. What hid them was a stale binary: `native/artifacts/rl/` is gitignored,
+`make` compares mtimes, and the compiled gate was older than its committed
+source, so it printed 24 ability lines and 1 divergence where the rebuilt gate
+prints 114 and 6. The summary line is identical either way (`cases=38
+water=-11.3 survivors=4`), so nothing looked wrong. **Delete the gate binaries
+before trusting a gate run.** Rebuilt on `c2293d22`:
 
 ```
 early blackhole  reference 404 (-36.1894,-11.3380) | rust 404 (-36.7478,-11.3380)
@@ -481,15 +605,18 @@ brink blackhole  reference 367 (-42.2811,-11.6208) | rust 368 (-42.2970,-11.6558
 brink gust       reference 367 (-42.2811,-11.6208) | rust 385 (-42.3677,-11.6709)
 ```
 
-Black hole matches the source comment: y is bit-identical in all three phases and
-the kill tick matches in two, with x drifting 0.4-0.56 world units. **Gust does
-not.** The comment says the port "crosses the plane one tick early", which
-describes `late` only; on `brink` the port survives **18 ticks longer** than the
-reference (367 vs 385) - fifty times the documented gap, in the opposite
-direction. That phase starts the form already at the boundary, so a small arc
-difference decides whether it clears the plane at all rather than when. That
-turned out to be two defects in the port, both resolved in fixture #5; Black
-hole shares the second of them and remains open.
+The source comment's reading of Black hole - y bit-identical in all three
+phases, kill tick matching in two, x drifting 0.4-0.56 - was accurate but
+described a symptom; the cause was the missing per-pass `AirealMovement` damping
+on the cast form, plus a swapped publication order that the kill had been
+hiding. **Gust's comment was wrong**: it said the port "crosses the plane one
+tick early", which describes `late` only; on `brink` the port survived **18
+ticks longer** than the reference (367 vs 385), fifty times the documented gap
+and in the opposite direction. Both forms turned out to carry two defects each,
+sharing the entry-pass boundary component. No case carries
+`known_trajectory_divergence` now, so a regression in any of the 38 fails the
+gate rather than printing. Two small pre-existing residues in the Black hole
+path remain open and are recorded under fixture #6's negative results.
 
 **The Unity player build is a week older than the observation ABI it must
 speak.** `Builds/LinuxIL2CPP/BoplBattle.x86_64` was built 2026-09-07. The
