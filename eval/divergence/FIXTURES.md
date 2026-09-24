@@ -1642,6 +1642,36 @@ day on them. Worth noting that `meteor-early` and `meteor-late` first differ at
 hundred ticks without growing is itself evidence the fixed-point arithmetic is
 sound.
 
+### Where this stands, measured 2026-09-24
+
+On merged main with fixtures #9 through #13 in, the sweep is **110 clean / 4
+divergent**, against 84/30 when it was first run. What is left is
+`missile-early` and `meteor`'s three, and the three `meteor` rows are the
+documented 1-raw-unit cases in class 6 - so the real remaining count is one.
+
+### A second coverage limit: the aim column
+
+The lower-bound warning above is about ticks. There is a second one about
+inputs, found by accident while re-running this sweep. Every casting case in the
+table fires at `aim 64`; only `plain` uses `aim 0`, and `plain` never casts at
+all (`slot -1`). So no row of this sweep ever casts an ability at aim 0.
+
+Running the `plain` kit as a *casting* case - `BCT_ABILITIES=29,6,18 BCT_SLOT=0`
+- makes the difference visible:
+
+```
+aim 64   FIRST any none
+aim  0   FIRST any tick 348 NUMERIC entity[2].x
+         ref -152151208905 (-35.425464)  cand -159624452041 (-37.165464)
+         [kind 1 layer 8 owner 1 source-ability 29 flags 16395]
+```
+
+1.74 world units on the Duplicator's own entity, on a kit the sweep calls clean.
+`duplicator` (`{29, 6, 18}`, slot 0, aim 64) passes; the same kit and slot at aim
+0 does not. Nothing here has been diagnosed - it is recorded so the next person
+knows the aim column is a fixed input, not a swept one, and that at least one
+ability is sensitive to it.
+
 ### Reproduce
 
 ```bash
