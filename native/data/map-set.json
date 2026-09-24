@@ -1,1002 +1,1002 @@
 {
- "maps": [
-  {
-   "rl": 0,
-   "level": 0,
-   "scene": "Assets/Scenes/FFA/Level1.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 1,
-   "level": 1,
-   "scene": "Assets/Scenes/FFA/Level2.unity",
-   "platforms": 4,
-   "role": "training"
-  },
-  {
-   "rl": 2,
-   "level": 2,
-   "scene": "Assets/Scenes/FFA/Level3.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 3,
-   "level": 3,
-   "scene": "Assets/Scenes/FFA/Level4.unity",
-   "platforms": 8,
-   "role": "held-out"
-  },
-  {
-   "rl": 4,
-   "level": 4,
-   "scene": "Assets/Scenes/FFA/Level5.unity",
-   "platforms": 6,
-   "role": "held-out"
-  },
-  {
-   "rl": 5,
-   "level": 5,
-   "scene": "Assets/Scenes/FFA/Level6.unity",
-   "platforms": 10,
-   "role": "training"
-  },
-  {
-   "rl": 6,
-   "level": 6,
-   "scene": "Assets/Scenes/FFA/Level7.unity",
-   "platforms": 15,
-   "role": "training"
-  },
-  {
-   "rl": 7,
-   "level": 7,
-   "scene": "Assets/Scenes/FFA/Level8.unity",
-   "platforms": 11,
-   "role": "training"
-  },
-  {
-   "rl": 8,
-   "level": 8,
-   "scene": "Assets/Scenes/FFA/Level9.unity",
-   "platforms": 12,
-   "role": "held-out"
-  },
-  {
-   "rl": 9,
-   "level": 9,
-   "scene": "Assets/Scenes/FFA/Level10.unity",
-   "platforms": 10,
-   "role": "training"
-  },
-  {
-   "rl": 10,
-   "level": 10,
-   "scene": "Assets/Scenes/FFA/Level11.unity",
-   "platforms": 11,
-   "role": "held-out"
-  },
-  {
-   "rl": 11,
-   "level": 11,
-   "scene": "Assets/Scenes/FFA/Level12.unity",
-   "platforms": 10,
-   "role": "training"
-  },
-  {
-   "rl": 12,
-   "level": 12,
-   "scene": "Assets/Scenes/FFA/Level13.unity",
-   "platforms": 18,
-   "role": "training"
-  },
-  {
-   "rl": 13,
-   "level": 13,
-   "scene": "Assets/Scenes/FFA/Level14.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 14,
-   "level": 14,
-   "scene": "Assets/Scenes/FFA/Level15.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 15,
-   "level": 15,
-   "scene": "Assets/Scenes/FFA/Level16.unity",
-   "platforms": 10,
-   "role": "training"
-  },
-  {
-   "rl": 16,
-   "level": 16,
-   "scene": "Assets/Scenes/FFA/Level17.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 17,
-   "level": 17,
-   "scene": "Assets/Scenes/FFA/Level18.unity",
-   "platforms": 6,
-   "role": "held-out"
-  },
-  {
-   "rl": 18,
-   "level": 18,
-   "scene": "Assets/Scenes/FFA/Level19.unity",
-   "platforms": 15,
-   "role": "training"
-  },
-  {
-   "rl": 19,
-   "level": 19,
-   "scene": "Assets/Scenes/FFA/Level20.unity",
-   "platforms": 11,
-   "role": "held-out"
-  },
-  {
-   "rl": 20,
-   "level": 20,
-   "scene": "Assets/Scenes/FFA/Level21.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 21,
-   "level": 21,
-   "scene": "Assets/Scenes/FFA/Snow/Level14.unity",
-   "platforms": 11,
-   "role": "training"
-  },
-  {
-   "rl": 22,
-   "level": 22,
-   "scene": "Assets/Scenes/FFA/Snow/Level15.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 23,
-   "level": 23,
-   "scene": "Assets/Scenes/FFA/Snow/Level17.unity",
-   "platforms": 8,
-   "role": "held-out"
-  },
-  {
-   "rl": 24,
-   "level": 24,
-   "scene": "Assets/Scenes/FFA/Snow/Level18.unity",
-   "platforms": 10,
-   "role": "training"
-  },
-  {
-   "rl": 25,
-   "level": 25,
-   "scene": "Assets/Scenes/FFA/Snow/Level19.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 26,
-   "level": 26,
-   "scene": "Assets/Scenes/FFA/Snow/Level20.unity",
-   "platforms": 11,
-   "role": "training"
-  },
-  {
-   "rl": 27,
-   "level": 27,
-   "scene": "Assets/Scenes/FFA/Snow/Level21.unity",
-   "platforms": 10,
-   "role": "training"
-  },
-  {
-   "rl": 28,
-   "level": 28,
-   "scene": "Assets/Scenes/FFA/Snow/Level22.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 29,
-   "level": 29,
-   "scene": "Assets/Scenes/FFA/Snow/Level23.unity",
-   "platforms": 10,
-   "role": "held-out"
-  },
-  {
-   "rl": 30,
-   "level": 30,
-   "scene": "Assets/Scenes/FFA/Snow/Level24.unity",
-   "platforms": 13,
-   "role": "training"
-  },
-  {
-   "rl": 31,
-   "level": 31,
-   "scene": "Assets/Scenes/FFA/Snow/Level25.unity",
-   "platforms": 12,
-   "role": "training"
-  },
-  {
-   "rl": 32,
-   "level": 32,
-   "scene": "Assets/Scenes/FFA/Snow/Level26.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 33,
-   "level": 33,
-   "scene": "Assets/Scenes/FFA/Space/Level35.unity",
-   "platforms": 19,
-   "role": "training"
-  },
-  {
-   "rl": 34,
-   "level": 34,
-   "scene": "Assets/Scenes/FFA/Space/Level37.unity",
-   "platforms": 11,
-   "role": "training"
-  },
-  {
-   "rl": 35,
-   "level": 35,
-   "scene": "Assets/Scenes/FFA/Space/Level39.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 36,
-   "level": 36,
-   "scene": "Assets/Scenes/FFA/Space/Level40.unity",
-   "platforms": 7,
-   "role": "held-out"
-  },
-  {
-   "rl": 37,
-   "level": 37,
-   "scene": "Assets/Scenes/FFA/Space/Level41.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 38,
-   "level": 38,
-   "scene": "Assets/Scenes/FFA/Space/Level42.unity",
-   "platforms": 13,
-   "role": "training"
-  },
-  {
-   "rl": 39,
-   "level": 39,
-   "scene": "Assets/Scenes/2v2/TLevel1.unity",
-   "platforms": 9,
-   "role": "held-out"
-  },
-  {
-   "rl": 40,
-   "level": 40,
-   "scene": "Assets/Scenes/2v2/TLevel2.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 41,
-   "level": 41,
-   "scene": "Assets/Scenes/2v2/TLevel3.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 42,
-   "level": 42,
-   "scene": "Assets/Scenes/2v2/TLevel4.unity",
-   "platforms": 9,
-   "role": "held-out"
-  },
-  {
-   "rl": 43,
-   "level": 43,
-   "scene": "Assets/Scenes/2v2/TLevel5.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 44,
-   "level": 44,
-   "scene": "Assets/Scenes/2v2/TLevel6.unity",
-   "platforms": 14,
-   "role": "held-out"
-  },
-  {
-   "rl": 45,
-   "level": 45,
-   "scene": "Assets/Scenes/2v2/TLevel7.unity",
-   "platforms": 4,
-   "role": "training"
-  },
-  {
-   "rl": 46,
-   "level": 46,
-   "scene": "Assets/Scenes/2v2/TLevel8.unity",
-   "platforms": 10,
-   "role": "training"
-  },
-  {
-   "rl": 47,
-   "level": 47,
-   "scene": "Assets/Scenes/2v2/TLevel9.unity",
-   "platforms": 13,
-   "role": "training"
-  },
-  {
-   "rl": 48,
-   "level": 48,
-   "scene": "Assets/Scenes/2v2/TLevel10.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 49,
-   "level": 49,
-   "scene": "Assets/Scenes/2v2/TLevel11.unity",
-   "platforms": 10,
-   "role": "training"
-  },
-  {
-   "rl": 50,
-   "level": 50,
-   "scene": "Assets/Scenes/2v2/TLevel12.unity",
-   "platforms": 2,
-   "role": "training"
-  },
-  {
-   "rl": 51,
-   "level": 51,
-   "scene": "Assets/Scenes/2v2/TLevel13.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 52,
-   "level": 52,
-   "scene": "Assets/Scenes/2v2/Snow/Level21.unity",
-   "platforms": 10,
-   "role": "training"
-  },
-  {
-   "rl": 53,
-   "level": 53,
-   "scene": "Assets/Scenes/2v2/Snow/Level22.unity",
-   "platforms": 10,
-   "role": "held-out"
-  },
-  {
-   "rl": 54,
-   "level": 54,
-   "scene": "Assets/Scenes/2v2/Snow/Level23.unity",
-   "platforms": 12,
-   "role": "training"
-  },
-  {
-   "rl": 55,
-   "level": 55,
-   "scene": "Assets/Scenes/2v2/Snow/Level24.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 56,
-   "level": 56,
-   "scene": "Assets/Scenes/2v2/Snow/Level26.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 57,
-   "level": 57,
-   "scene": "Assets/Scenes/2v2/Snow/Level27.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 58,
-   "level": 58,
-   "scene": "Assets/Scenes/2v2/Space/Level28.unity",
-   "platforms": 29,
-   "role": "training"
-  },
-  {
-   "rl": 59,
-   "level": 59,
-   "scene": "Assets/Scenes/2v2/Space/Level29.unity",
-   "platforms": 14,
-   "role": "training"
-  },
-  {
-   "rl": 60,
-   "level": 60,
-   "scene": "Assets/Scenes/2v2/Space/Level32.unity",
-   "platforms": 13,
-   "role": "training"
-  },
-  {
-   "rl": 61,
-   "level": 61,
-   "scene": "Assets/Scenes/2v2/Space/Level34.unity",
-   "platforms": 12,
-   "role": "training"
-  },
-  {
-   "rl": 62,
-   "level": 62,
-   "scene": "Assets/Scenes/FFA/Space/Level_new1.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 63,
-   "level": 63,
-   "scene": "Assets/Scenes/FFA/Space/Level_new2.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 64,
-   "level": 64,
-   "scene": "Assets/Scenes/extraLevels/e 1.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 65,
-   "level": 65,
-   "scene": "Assets/Scenes/extraLevels/e 2.unity",
-   "platforms": 4,
-   "role": "training"
-  },
-  {
-   "rl": 66,
-   "level": 66,
-   "scene": "Assets/Scenes/extraLevels/e 3.unity",
-   "platforms": 4,
-   "role": "training"
-  },
-  {
-   "rl": 67,
-   "level": 67,
-   "scene": "Assets/Scenes/extraLevels/e 4.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 68,
-   "level": 68,
-   "scene": "Assets/Scenes/extraLevels/e 5.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 69,
-   "level": 69,
-   "scene": "Assets/Scenes/extraLevels/e 6.unity",
-   "platforms": 5,
-   "role": "training"
-  },
-  {
-   "rl": 70,
-   "level": 70,
-   "scene": "Assets/Scenes/extraLevels/e 7.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 71,
-   "level": 71,
-   "scene": "Assets/Scenes/extraLevels/e 8.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 72,
-   "level": 72,
-   "scene": "Assets/Scenes/extraLevels/e 9.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 73,
-   "level": 73,
-   "scene": "Assets/Scenes/extraLevels/e 10.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 74,
-   "level": 74,
-   "scene": "Assets/Scenes/extraLevels/e 11.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 75,
-   "level": 75,
-   "scene": "Assets/Scenes/extraLevels/e 12.unity",
-   "platforms": 4,
-   "role": "training"
-  },
-  {
-   "rl": 76,
-   "level": 76,
-   "scene": "Assets/Scenes/extraLevels/e 13.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 77,
-   "level": 77,
-   "scene": "Assets/Scenes/extraLevels/e 14.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 78,
-   "level": 78,
-   "scene": "Assets/Scenes/extraLevels/e 15.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 79,
-   "level": 79,
-   "scene": "Assets/Scenes/extraLevels/e 16.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 80,
-   "level": 80,
-   "scene": "Assets/Scenes/extraLevels/e 17.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 81,
-   "level": 81,
-   "scene": "Assets/Scenes/extraLevels/e 18.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 82,
-   "level": 82,
-   "scene": "Assets/Scenes/extraLevels/e 19.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 83,
-   "level": 83,
-   "scene": "Assets/Scenes/extraLevels/e 20.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 84,
-   "level": 84,
-   "scene": "Assets/Scenes/extraLevels/e 21.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 85,
-   "level": 85,
-   "scene": "Assets/Scenes/extraLevels/e 22.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 86,
-   "level": 86,
-   "scene": "Assets/Scenes/extraLevels/e 23.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 87,
-   "level": 87,
-   "scene": "Assets/Scenes/extraLevels/e 24.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 88,
-   "level": 88,
-   "scene": "Assets/Scenes/extraLevels/e 25.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 89,
-   "level": 89,
-   "scene": "Assets/Scenes/extraLevels/e 26.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 90,
-   "level": 90,
-   "scene": "Assets/Scenes/extraLevels/e 27.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 91,
-   "level": 91,
-   "scene": "Assets/Scenes/extraLevels/e 28.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 92,
-   "level": 92,
-   "scene": "Assets/Scenes/extraLevels/e 29.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 93,
-   "level": 93,
-   "scene": "Assets/Scenes/extraLevels/e 30.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 94,
-   "level": 94,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 1.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 95,
-   "level": 95,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 2.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 96,
-   "level": 96,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 3.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 97,
-   "level": 97,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 4.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 98,
-   "level": 98,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 5.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 99,
-   "level": 99,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 6.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 100,
-   "level": 100,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 7.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 101,
-   "level": 101,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 8.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 102,
-   "level": 102,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 9.unity",
-   "platforms": 11,
-   "role": "training"
-  },
-  {
-   "rl": 103,
-   "level": 103,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 10.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 104,
-   "level": 104,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 11.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 105,
-   "level": 105,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 12.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 106,
-   "level": 106,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 13.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 107,
-   "level": 107,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 14.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 108,
-   "level": 108,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 15.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 109,
-   "level": 109,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 16.unity",
-   "platforms": 7,
-   "role": "training"
-  },
-  {
-   "rl": 110,
-   "level": 110,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 17.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 111,
-   "level": 111,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 18.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 112,
-   "level": 112,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 19.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 113,
-   "level": 113,
-   "scene": "Assets/Scenes/extraLevels/snow/esnow 20.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 114,
-   "level": 114,
-   "scene": "Assets/Scenes/extraLevels/space/espace 1.unity",
-   "platforms": 4,
-   "role": "training"
-  },
-  {
-   "rl": 115,
-   "level": 115,
-   "scene": "Assets/Scenes/extraLevels/space/espace 2.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 116,
-   "level": 116,
-   "scene": "Assets/Scenes/extraLevels/space/espace 3.unity",
-   "platforms": 12,
-   "role": "training"
-  },
-  {
-   "rl": 117,
-   "level": 117,
-   "scene": "Assets/Scenes/extraLevels/space/espace 4.unity",
-   "platforms": 13,
-   "role": "training"
-  },
-  {
-   "rl": 118,
-   "level": 118,
-   "scene": "Assets/Scenes/extraLevels/space/espace 5.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 119,
-   "level": 119,
-   "scene": "Assets/Scenes/extraLevels/space/espace 6.unity",
-   "platforms": 8,
-   "role": "training"
-  },
-  {
-   "rl": 120,
-   "level": 120,
-   "scene": "Assets/Scenes/extraLevels/space/espace 7.unity",
-   "platforms": 5,
-   "role": "training"
-  },
-  {
-   "rl": 121,
-   "level": 121,
-   "scene": "Assets/Scenes/extraLevels/space/espace 8.unity",
-   "platforms": 9,
-   "role": "training"
-  },
-  {
-   "rl": 122,
-   "level": 122,
-   "scene": "Assets/Scenes/extraLevels/space/espace 9.unity",
-   "platforms": 6,
-   "role": "training"
-  },
-  {
-   "rl": 123,
-   "level": 123,
-   "scene": "Assets/Scenes/extraLevels/space/espace 10.unity",
-   "platforms": 8,
-   "role": "training"
-  }
- ],
- "split": {
-  "training": [
-   0,
-   1,
-   2,
-   5,
-   6,
-   7,
-   9,
-   11,
-   12,
-   13,
-   14,
-   15,
-   16,
-   18,
-   20,
-   21,
-   22,
-   24,
-   25,
-   26,
-   27,
-   28,
-   30,
-   31,
-   32,
-   33,
-   34,
-   35,
-   37,
-   38,
-   40,
-   41,
-   43,
-   45,
-   46,
-   47,
-   48,
-   49,
-   50,
-   51,
-   52,
-   54,
-   55,
-   56,
-   57,
-   58,
-   59,
-   60,
-   61,
-   62,
-   63,
-   64,
-   65,
-   66,
-   67,
-   68,
-   69,
-   70,
-   71,
-   72,
-   73,
-   74,
-   75,
-   76,
-   77,
-   78,
-   79,
-   80,
-   81,
-   82,
-   83,
-   84,
-   85,
-   86,
-   87,
-   88,
-   89,
-   90,
-   91,
-   92,
-   93,
-   94,
-   95,
-   96,
-   97,
-   98,
-   99,
-   100,
-   101,
-   102,
-   103,
-   104,
-   105,
-   106,
-   107,
-   108,
-   109,
-   110,
-   111,
-   112,
-   113,
-   114,
-   115,
-   116,
-   117,
-   118,
-   119,
-   120,
-   121,
-   122,
-   123
+  "maps": [
+    {
+      "rl": 0,
+      "level": 0,
+      "scene": "Assets/Scenes/FFA/Level1.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 1,
+      "level": 1,
+      "scene": "Assets/Scenes/FFA/Level2.unity",
+      "platforms": 4,
+      "role": "training"
+    },
+    {
+      "rl": 2,
+      "level": 2,
+      "scene": "Assets/Scenes/FFA/Level3.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 3,
+      "level": 3,
+      "scene": "Assets/Scenes/FFA/Level4.unity",
+      "platforms": 8,
+      "role": "held-out"
+    },
+    {
+      "rl": 4,
+      "level": 4,
+      "scene": "Assets/Scenes/FFA/Level5.unity",
+      "platforms": 6,
+      "role": "held-out"
+    },
+    {
+      "rl": 5,
+      "level": 5,
+      "scene": "Assets/Scenes/FFA/Level6.unity",
+      "platforms": 10,
+      "role": "training"
+    },
+    {
+      "rl": 6,
+      "level": 6,
+      "scene": "Assets/Scenes/FFA/Level7.unity",
+      "platforms": 15,
+      "role": "training"
+    },
+    {
+      "rl": 7,
+      "level": 7,
+      "scene": "Assets/Scenes/FFA/Level8.unity",
+      "platforms": 11,
+      "role": "training"
+    },
+    {
+      "rl": 8,
+      "level": 8,
+      "scene": "Assets/Scenes/FFA/Level9.unity",
+      "platforms": 12,
+      "role": "held-out"
+    },
+    {
+      "rl": 9,
+      "level": 9,
+      "scene": "Assets/Scenes/FFA/Level10.unity",
+      "platforms": 10,
+      "role": "training"
+    },
+    {
+      "rl": 10,
+      "level": 10,
+      "scene": "Assets/Scenes/FFA/Level11.unity",
+      "platforms": 11,
+      "role": "held-out"
+    },
+    {
+      "rl": 11,
+      "level": 11,
+      "scene": "Assets/Scenes/FFA/Level12.unity",
+      "platforms": 10,
+      "role": "training"
+    },
+    {
+      "rl": 12,
+      "level": 12,
+      "scene": "Assets/Scenes/FFA/Level13.unity",
+      "platforms": 18,
+      "role": "training"
+    },
+    {
+      "rl": 13,
+      "level": 13,
+      "scene": "Assets/Scenes/FFA/Level14.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 14,
+      "level": 14,
+      "scene": "Assets/Scenes/FFA/Level15.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 15,
+      "level": 15,
+      "scene": "Assets/Scenes/FFA/Level16.unity",
+      "platforms": 10,
+      "role": "training"
+    },
+    {
+      "rl": 16,
+      "level": 16,
+      "scene": "Assets/Scenes/FFA/Level17.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 17,
+      "level": 17,
+      "scene": "Assets/Scenes/FFA/Level18.unity",
+      "platforms": 6,
+      "role": "held-out"
+    },
+    {
+      "rl": 18,
+      "level": 18,
+      "scene": "Assets/Scenes/FFA/Level19.unity",
+      "platforms": 15,
+      "role": "training"
+    },
+    {
+      "rl": 19,
+      "level": 19,
+      "scene": "Assets/Scenes/FFA/Level20.unity",
+      "platforms": 11,
+      "role": "held-out"
+    },
+    {
+      "rl": 20,
+      "level": 20,
+      "scene": "Assets/Scenes/FFA/Level21.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 21,
+      "level": 21,
+      "scene": "Assets/Scenes/FFA/Snow/Level14.unity",
+      "platforms": 11,
+      "role": "training"
+    },
+    {
+      "rl": 22,
+      "level": 22,
+      "scene": "Assets/Scenes/FFA/Snow/Level15.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 23,
+      "level": 23,
+      "scene": "Assets/Scenes/FFA/Snow/Level17.unity",
+      "platforms": 8,
+      "role": "held-out"
+    },
+    {
+      "rl": 24,
+      "level": 24,
+      "scene": "Assets/Scenes/FFA/Snow/Level18.unity",
+      "platforms": 10,
+      "role": "training"
+    },
+    {
+      "rl": 25,
+      "level": 25,
+      "scene": "Assets/Scenes/FFA/Snow/Level19.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 26,
+      "level": 26,
+      "scene": "Assets/Scenes/FFA/Snow/Level20.unity",
+      "platforms": 11,
+      "role": "training"
+    },
+    {
+      "rl": 27,
+      "level": 27,
+      "scene": "Assets/Scenes/FFA/Snow/Level21.unity",
+      "platforms": 10,
+      "role": "training"
+    },
+    {
+      "rl": 28,
+      "level": 28,
+      "scene": "Assets/Scenes/FFA/Snow/Level22.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 29,
+      "level": 29,
+      "scene": "Assets/Scenes/FFA/Snow/Level23.unity",
+      "platforms": 10,
+      "role": "held-out"
+    },
+    {
+      "rl": 30,
+      "level": 30,
+      "scene": "Assets/Scenes/FFA/Snow/Level24.unity",
+      "platforms": 13,
+      "role": "training"
+    },
+    {
+      "rl": 31,
+      "level": 31,
+      "scene": "Assets/Scenes/FFA/Snow/Level25.unity",
+      "platforms": 12,
+      "role": "training"
+    },
+    {
+      "rl": 32,
+      "level": 32,
+      "scene": "Assets/Scenes/FFA/Snow/Level26.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 33,
+      "level": 33,
+      "scene": "Assets/Scenes/FFA/Space/Level35.unity",
+      "platforms": 19,
+      "role": "training"
+    },
+    {
+      "rl": 34,
+      "level": 34,
+      "scene": "Assets/Scenes/FFA/Space/Level37.unity",
+      "platforms": 11,
+      "role": "training"
+    },
+    {
+      "rl": 35,
+      "level": 35,
+      "scene": "Assets/Scenes/FFA/Space/Level39.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 36,
+      "level": 36,
+      "scene": "Assets/Scenes/FFA/Space/Level40.unity",
+      "platforms": 7,
+      "role": "held-out"
+    },
+    {
+      "rl": 37,
+      "level": 37,
+      "scene": "Assets/Scenes/FFA/Space/Level41.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 38,
+      "level": 38,
+      "scene": "Assets/Scenes/FFA/Space/Level42.unity",
+      "platforms": 13,
+      "role": "training"
+    },
+    {
+      "rl": 39,
+      "level": 39,
+      "scene": "Assets/Scenes/2v2/TLevel1.unity",
+      "platforms": 9,
+      "role": "held-out"
+    },
+    {
+      "rl": 40,
+      "level": 40,
+      "scene": "Assets/Scenes/2v2/TLevel2.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 41,
+      "level": 41,
+      "scene": "Assets/Scenes/2v2/TLevel3.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 42,
+      "level": 42,
+      "scene": "Assets/Scenes/2v2/TLevel4.unity",
+      "platforms": 9,
+      "role": "held-out"
+    },
+    {
+      "rl": 43,
+      "level": 43,
+      "scene": "Assets/Scenes/2v2/TLevel5.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 44,
+      "level": 44,
+      "scene": "Assets/Scenes/2v2/TLevel6.unity",
+      "platforms": 14,
+      "role": "held-out"
+    },
+    {
+      "rl": 45,
+      "level": 45,
+      "scene": "Assets/Scenes/2v2/TLevel7.unity",
+      "platforms": 4,
+      "role": "training"
+    },
+    {
+      "rl": 46,
+      "level": 46,
+      "scene": "Assets/Scenes/2v2/TLevel8.unity",
+      "platforms": 10,
+      "role": "training"
+    },
+    {
+      "rl": 47,
+      "level": 47,
+      "scene": "Assets/Scenes/2v2/TLevel9.unity",
+      "platforms": 13,
+      "role": "training"
+    },
+    {
+      "rl": 48,
+      "level": 48,
+      "scene": "Assets/Scenes/2v2/TLevel10.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 49,
+      "level": 49,
+      "scene": "Assets/Scenes/2v2/TLevel11.unity",
+      "platforms": 10,
+      "role": "training"
+    },
+    {
+      "rl": 50,
+      "level": 50,
+      "scene": "Assets/Scenes/2v2/TLevel12.unity",
+      "platforms": 2,
+      "role": "training"
+    },
+    {
+      "rl": 51,
+      "level": 51,
+      "scene": "Assets/Scenes/2v2/TLevel13.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 52,
+      "level": 52,
+      "scene": "Assets/Scenes/2v2/Snow/Level21.unity",
+      "platforms": 10,
+      "role": "training"
+    },
+    {
+      "rl": 53,
+      "level": 53,
+      "scene": "Assets/Scenes/2v2/Snow/Level22.unity",
+      "platforms": 10,
+      "role": "held-out"
+    },
+    {
+      "rl": 54,
+      "level": 54,
+      "scene": "Assets/Scenes/2v2/Snow/Level23.unity",
+      "platforms": 12,
+      "role": "training"
+    },
+    {
+      "rl": 55,
+      "level": 55,
+      "scene": "Assets/Scenes/2v2/Snow/Level24.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 56,
+      "level": 56,
+      "scene": "Assets/Scenes/2v2/Snow/Level26.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 57,
+      "level": 57,
+      "scene": "Assets/Scenes/2v2/Snow/Level27.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 58,
+      "level": 58,
+      "scene": "Assets/Scenes/2v2/Space/Level28.unity",
+      "platforms": 29,
+      "role": "training"
+    },
+    {
+      "rl": 59,
+      "level": 59,
+      "scene": "Assets/Scenes/2v2/Space/Level29.unity",
+      "platforms": 14,
+      "role": "training"
+    },
+    {
+      "rl": 60,
+      "level": 60,
+      "scene": "Assets/Scenes/2v2/Space/Level32.unity",
+      "platforms": 13,
+      "role": "training"
+    },
+    {
+      "rl": 61,
+      "level": 61,
+      "scene": "Assets/Scenes/2v2/Space/Level34.unity",
+      "platforms": 12,
+      "role": "training"
+    },
+    {
+      "rl": 62,
+      "level": 62,
+      "scene": "Assets/Scenes/FFA/Space/Level_new1.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 63,
+      "level": 63,
+      "scene": "Assets/Scenes/FFA/Space/Level_new2.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 64,
+      "level": 64,
+      "scene": "Assets/Scenes/extraLevels/e 1.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 65,
+      "level": 65,
+      "scene": "Assets/Scenes/extraLevels/e 2.unity",
+      "platforms": 4,
+      "role": "training"
+    },
+    {
+      "rl": 66,
+      "level": 66,
+      "scene": "Assets/Scenes/extraLevels/e 3.unity",
+      "platforms": 4,
+      "role": "training"
+    },
+    {
+      "rl": 67,
+      "level": 67,
+      "scene": "Assets/Scenes/extraLevels/e 4.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 68,
+      "level": 68,
+      "scene": "Assets/Scenes/extraLevels/e 5.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 69,
+      "level": 69,
+      "scene": "Assets/Scenes/extraLevels/e 6.unity",
+      "platforms": 5,
+      "role": "training"
+    },
+    {
+      "rl": 70,
+      "level": 70,
+      "scene": "Assets/Scenes/extraLevels/e 7.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 71,
+      "level": 71,
+      "scene": "Assets/Scenes/extraLevels/e 8.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 72,
+      "level": 72,
+      "scene": "Assets/Scenes/extraLevels/e 9.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 73,
+      "level": 73,
+      "scene": "Assets/Scenes/extraLevels/e 10.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 74,
+      "level": 74,
+      "scene": "Assets/Scenes/extraLevels/e 11.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 75,
+      "level": 75,
+      "scene": "Assets/Scenes/extraLevels/e 12.unity",
+      "platforms": 4,
+      "role": "training"
+    },
+    {
+      "rl": 76,
+      "level": 76,
+      "scene": "Assets/Scenes/extraLevels/e 13.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 77,
+      "level": 77,
+      "scene": "Assets/Scenes/extraLevels/e 14.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 78,
+      "level": 78,
+      "scene": "Assets/Scenes/extraLevels/e 15.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 79,
+      "level": 79,
+      "scene": "Assets/Scenes/extraLevels/e 16.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 80,
+      "level": 80,
+      "scene": "Assets/Scenes/extraLevels/e 17.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 81,
+      "level": 81,
+      "scene": "Assets/Scenes/extraLevels/e 18.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 82,
+      "level": 82,
+      "scene": "Assets/Scenes/extraLevels/e 19.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 83,
+      "level": 83,
+      "scene": "Assets/Scenes/extraLevels/e 20.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 84,
+      "level": 84,
+      "scene": "Assets/Scenes/extraLevels/e 21.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 85,
+      "level": 85,
+      "scene": "Assets/Scenes/extraLevels/e 22.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 86,
+      "level": 86,
+      "scene": "Assets/Scenes/extraLevels/e 23.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 87,
+      "level": 87,
+      "scene": "Assets/Scenes/extraLevels/e 24.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 88,
+      "level": 88,
+      "scene": "Assets/Scenes/extraLevels/e 25.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 89,
+      "level": 89,
+      "scene": "Assets/Scenes/extraLevels/e 26.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 90,
+      "level": 90,
+      "scene": "Assets/Scenes/extraLevels/e 27.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 91,
+      "level": 91,
+      "scene": "Assets/Scenes/extraLevels/e 28.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 92,
+      "level": 92,
+      "scene": "Assets/Scenes/extraLevels/e 29.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 93,
+      "level": 93,
+      "scene": "Assets/Scenes/extraLevels/e 30.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 94,
+      "level": 94,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 1.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 95,
+      "level": 95,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 2.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 96,
+      "level": 96,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 3.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 97,
+      "level": 97,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 4.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 98,
+      "level": 98,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 5.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 99,
+      "level": 99,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 6.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 100,
+      "level": 100,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 7.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 101,
+      "level": 101,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 8.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 102,
+      "level": 102,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 9.unity",
+      "platforms": 11,
+      "role": "training"
+    },
+    {
+      "rl": 103,
+      "level": 103,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 10.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 104,
+      "level": 104,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 11.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 105,
+      "level": 105,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 12.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 106,
+      "level": 106,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 13.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 107,
+      "level": 107,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 14.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 108,
+      "level": 108,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 15.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 109,
+      "level": 109,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 16.unity",
+      "platforms": 7,
+      "role": "training"
+    },
+    {
+      "rl": 110,
+      "level": 110,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 17.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 111,
+      "level": 111,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 18.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 112,
+      "level": 112,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 19.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 113,
+      "level": 113,
+      "scene": "Assets/Scenes/extraLevels/snow/esnow 20.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 114,
+      "level": 114,
+      "scene": "Assets/Scenes/extraLevels/space/espace 1.unity",
+      "platforms": 4,
+      "role": "training"
+    },
+    {
+      "rl": 115,
+      "level": 115,
+      "scene": "Assets/Scenes/extraLevels/space/espace 2.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 116,
+      "level": 116,
+      "scene": "Assets/Scenes/extraLevels/space/espace 3.unity",
+      "platforms": 12,
+      "role": "training"
+    },
+    {
+      "rl": 117,
+      "level": 117,
+      "scene": "Assets/Scenes/extraLevels/space/espace 4.unity",
+      "platforms": 13,
+      "role": "training"
+    },
+    {
+      "rl": 118,
+      "level": 118,
+      "scene": "Assets/Scenes/extraLevels/space/espace 5.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 119,
+      "level": 119,
+      "scene": "Assets/Scenes/extraLevels/space/espace 6.unity",
+      "platforms": 8,
+      "role": "training"
+    },
+    {
+      "rl": 120,
+      "level": 120,
+      "scene": "Assets/Scenes/extraLevels/space/espace 7.unity",
+      "platforms": 5,
+      "role": "training"
+    },
+    {
+      "rl": 121,
+      "level": 121,
+      "scene": "Assets/Scenes/extraLevels/space/espace 8.unity",
+      "platforms": 9,
+      "role": "training"
+    },
+    {
+      "rl": 122,
+      "level": 122,
+      "scene": "Assets/Scenes/extraLevels/space/espace 9.unity",
+      "platforms": 6,
+      "role": "training"
+    },
+    {
+      "rl": 123,
+      "level": 123,
+      "scene": "Assets/Scenes/extraLevels/space/espace 10.unity",
+      "platforms": 8,
+      "role": "training"
+    }
   ],
-  "held_out": [
-   3,
-   4,
-   8,
-   10,
-   17,
-   19,
-   23,
-   29,
-   36,
-   39,
-   42,
-   44,
-   53
-  ]
- }
+  "split": {
+    "training": [
+      0,
+      1,
+      2,
+      5,
+      6,
+      7,
+      9,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      18,
+      20,
+      21,
+      22,
+      24,
+      25,
+      26,
+      27,
+      28,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      37,
+      38,
+      40,
+      41,
+      43,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63,
+      64,
+      65,
+      66,
+      67,
+      68,
+      69,
+      70,
+      71,
+      72,
+      73,
+      74,
+      75,
+      76,
+      77,
+      78,
+      79,
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88,
+      89,
+      90,
+      91,
+      92,
+      93,
+      94,
+      95,
+      96,
+      97,
+      98,
+      99,
+      100,
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108,
+      109,
+      110,
+      111,
+      112,
+      113,
+      114,
+      115,
+      116,
+      117,
+      118,
+      119,
+      120,
+      121,
+      122,
+      123
+    ],
+    "held_out": [
+      3,
+      4,
+      8,
+      10,
+      17,
+      19,
+      23,
+      29,
+      36,
+      39,
+      42,
+      44,
+      53
+    ]
+  }
 }
