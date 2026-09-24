@@ -25,6 +25,11 @@
  *   BCT_TICKS=1600
  *   BCT_DUMP=a:b           per-tick dump of player 0 / slime 0 / the owned
  *                          entity rows over the inclusive tick range [a,b]
+ *   BCT_ALL=1              every differing field of the first diverging tick,
+ *                          not just the first one the accumulator keeps
+ *   BCT_IGNORE=a,b         generalized field names to exclude from the FIRST
+ *                          lines, as DR_IGNORE; the excluded pair is printed
+ *                          alongside so nothing is hidden silently
  */
 #include "bopl_rl.h"
 #include "../divergence/divergence_compare.h"
@@ -35,6 +40,33 @@
 
 
 static double f(int64_t v) { return (double)v / 4294967296.0; }
+
+/* Every differing field of the FIRST diverging tick, under BCT_ALL=1.
+ * dr_compare walks header, then players, then slimes, then entities, and the
+ * accumulator keeps only the first hit, so a header count or an aimed gun's
+ * basis vector hides everything compared after it for the rest of the episode.
+ * Later ticks are dropped: by then the two runs have different state and every
+ * field differs, which says nothing about the cause. */
+static unsigned bct_all_tick;
+static int bct_all_started;
+static void bct_report_all(const DrHit *hit) {
+    if (bct_all_started && hit->tick != bct_all_tick) return;
+    if (!bct_all_started) {
+        bct_all_started = 1;
+        bct_all_tick = hit->tick;
+        printf("ALL tick %u, every differing field:\n", hit->tick);
+    }
+    /* The raw gap is what separates the cause from its wake: a real defect
+     * stands orders of magnitude above the last-bit noise it feeds into
+     * everything downstream of it, and eyeballing two 20-digit columns hides
+     * that. */
+    int64_t gap = hit->left > hit->right ? hit->left - hit->right : hit->right - hit->left;
+    printf("  %-28s %-8s ref %20" PRId64 " cand %20" PRId64 " gap %14" PRId64
+           " (%.6f)%s [%s]\n",
+           hit->field, hit->discrete ? "DISCRETE" : "NUMERIC",
+           hit->left, hit->right, gap, f(gap),
+           hit->ignored ? " ignored" : "", hit->context);
+}
 
 static unsigned env_u(const char *name, unsigned fallback) {
     const char *v = getenv(name);
@@ -82,6 +114,9 @@ int main(int argc, char **argv) {
     unsigned dump_lo = 0, dump_hi = 0;
     const char *dump = getenv("BCT_DUMP");
     if (dump && *dump) sscanf(dump, "%u:%u", &dump_lo, &dump_hi);
+    const char *ignore = getenv("BCT_IGNORE");
+    if (ignore && *ignore) dr_ignore_list = ignore;
+    if (env_u("BCT_ALL", 0)) dr_report_all = bct_report_all;
 
     char error[512] = {0};
     BoplRl *world[2];
@@ -179,6 +214,17 @@ int main(int argc, char **argv) {
                combo.disc.context);
     else
         printf("FIRST discrete none\n");
+    if (dr_ignore_list && *dr_ignore_list) {
+        printf("ignoring %s\n", dr_ignore_list);
+        if (combo.any_ex.found)
+            printf("FIRST kept     tick %u %s %s ref %" PRId64 " (%.6f) cand %" PRId64
+                   " (%.6f) [%s]\n",
+                   combo.any_ex.tick, combo.any_ex.discrete ? "DISCRETE" : "NUMERIC",
+                   combo.any_ex.field, combo.any_ex.left, f(combo.any_ex.left),
+                   combo.any_ex.right, f(combo.any_ex.right), combo.any_ex.context);
+        else
+            printf("FIRST kept     none\n");
+    }
     for (int i = 0; i < 2; i++) bopl_rl_close(world[i]);
     return 0;
 }

@@ -1,7 +1,9 @@
 #ifndef DIVERGENCE_COMPARE_H
 #define DIVERGENCE_COMPARE_H
 /* Field-by-field state comparison between two bopl_rl.h backends, recording
- * the FIRST tick at which they disagree rather than stopping at it.
+ * the FIRST tick at which they disagree rather than stopping at it. Set
+ * `dr_report_all` to also see every field of every diverging tick, which the
+ * first-hit accumulators structurally cannot show.
  *
  * The field set, the tolerance semantics, the inactive-prefab ENABLED-bit
  * exclusion and the policy-visible lens are the same ones
@@ -32,6 +34,7 @@ typedef struct {
     int64_t left, right;      /* reference, candidate */
     int source_ability;       /* ability id responsible, -1 when not attributable */
     int entity_kind;          /* entity kind for entity[] fields, -1 otherwise */
+    int ignored;              /* field is named in dr_ignore_list */
 } DrHit;
 
 /* Per (arm, lens) accumulator. `any` is the first divergence of either class,
@@ -51,6 +54,20 @@ typedef struct {
 /* Comma-separated generalized field names ("entity[].hierarchy"), as
  * REPLAY_AB_IGNORE. */
 static const char *dr_ignore_list = NULL;
+
+/* When set, EVERY differing field is reported through this, not only the four a
+ * DrCombo keeps. dr_compare walks header, then players, then slimes, then
+ * entities, and each accumulator holds the first hit it sees, so a field
+ * compared earlier masks every later one for the rest of the episode - that is
+ * how a wrong entity radius survived months of sweeps behind an aimed gun's
+ * `entity[].right_x`. The hook reports ignored fields too and says so in
+ * `ignored`, because deciding what to discard is the caller's job.
+ *
+ * NULL by default, which is what keeps a clean tick free of any string
+ * formatting at all: divergence_rate runs a hundred thousand games and must not
+ * pay for a name it will not print. A single-case tracer sets it to see a whole
+ * tick at once. */
+static void (*dr_report_all)(const DrHit *hit) = NULL;
 
 static int dr_ignored(const char *field);
 
@@ -133,13 +150,25 @@ static void dr_hit(DrPass *p, int discrete, const char *fmt, unsigned index,
     DrCombo *c = p->out;
     int want = (!c->any.found || (discrete && !c->disc.found));
     int want_ex = (!c->any_ex.found || (discrete && !c->disc_ex.found));
-    if (!want && !want_ex) return;
+    if (!want && !want_ex && !dr_report_all) return;
     char field[64], context[192];
     int source_ability, entity_kind;
     snprintf(field, sizeof field, fmt, index);
     dr_context(p, kind, ctx_index, context, sizeof context, &source_ability, &entity_kind);
     if (slot_ability >= 0) source_ability = slot_ability;
-    if (want_ex && dr_ignored(field)) want_ex = 0;
+    int ignored = dr_ignored(field);
+    if (want_ex && ignored) want_ex = 0;
+    if (dr_report_all) {
+        DrHit hit;
+        memset(&hit, 0, sizeof hit);
+        hit.found = 1; hit.tick = p->tick; hit.discrete = discrete;
+        hit.left = left; hit.right = right;
+        hit.source_ability = source_ability; hit.entity_kind = entity_kind;
+        hit.ignored = ignored;
+        memcpy(hit.field, field, sizeof hit.field);
+        memcpy(hit.context, context, sizeof hit.context);
+        dr_report_all(&hit);
+    }
     if (want && !c->any.found) {
         c->any.found = 1; c->any.tick = p->tick; c->any.discrete = discrete;
         c->any.left = left; c->any.right = right;
