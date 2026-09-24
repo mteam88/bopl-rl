@@ -180,3 +180,40 @@ condition per map set, so widening the map set is the cheapest way to learn whet
 is expected: both lost a boundary-leaving exploit to the 2026-09-23 fidelity fixes
 and are pending retrain. Their ratings here were measured post-fix and are honest,
 so the degeneracy is not an artifact of carrying them.
+
+## Rating the specialists on their own kits: what it takes
+
+The state-of-the-league section above measures generalist strength, not specialist
+strength, because `lineups-8` at `--mirror-share 1` puts every specialist off-kit
+in 7 of its 8 lineups. The missing measurement is each specialist on *its own*
+kit against the others on theirs. The primitives for it already exist; the design
+has one trap that will silently invert the result, so it is written down here
+before anyone runs it.
+
+**The trap.** A loadout-set row is six ability ids: player 0's three then player
+1's three (`evaluation_protocol.resolve_loadouts` validates `row[:3]` and
+`row[3:6]`; `train/bopl_puffer.h:959` iterates `player<2, slot<3` across the
+row). Pinning a row therefore fixes *the kit each side plays*, not the kit each
+participant plays. And `eval/elo_ladder.pair_tasks` emits a `side=0` and a
+`side=1` task for every lineup index (`:272-277`). So pinning one asymmetric row
+`[A|B]` per pair hands A its opponent's kit in exactly half the games, and the
+resulting rating is a blend of on-kit and off-kit play that looks like a clean
+number. `--mirror-share` must be 0 here, unlike `lineups-8`.
+
+**The construction that avoids it.** Two rows per unordered pair, `[A|B]` and
+`[B|A]`, with the side chosen to match: the participant whose kit comes first in
+the row always plays player 0. Side balance then comes from alternating which row
+is used, not from swapping sides under a fixed row. For 8 members that is 56
+rows and 28 pairs.
+
+This needs a task builder that pairs a lineup index with a specific side, since
+`pair_tasks` deliberately couples both sides to each lineup. That is a small,
+contained change next to `pair_tasks` rather than anything in the environment -
+`configure_loadouts` per task is already cheap and uncached (`elo_ladder.py:300-312`
+records the measurement: 96 pinned games cost the same wall clock as 96 unpinned).
+
+**What to check on the way out.** `lineup_ids` is recorded per result
+(`elo_ladder.py:339`, `played[0]+played[1]`), so the run can prove after the fact
+that every participant played its own three abilities in every game. Assert that
+rather than trusting the construction - it is the one cheap check that would have
+caught the trap.
