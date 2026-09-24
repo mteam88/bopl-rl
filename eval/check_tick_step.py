@@ -14,7 +14,7 @@ observations with a fixed torch generator, so any observation divergence would
 change its actions.
 
     BOPL_RL_BACKEND=rust native/artifacts/rl/venv/bin/python eval/check_tick_step.py \
-        --checkpoint .../anchors/run007-final.bin [--seed N ...] [--map M ...]
+        --checkpoint .../checkpoints/policy-<step>.bin [--seed N ...] [--map M ...]
 
 Prints one JSON line per game and TICK_STEP_OK when every comparison holds.
 """

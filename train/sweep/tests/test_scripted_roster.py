@@ -38,15 +38,6 @@ class ParseRoster(unittest.TestCase):
 
 
 class EloMath(unittest.TestCase):
-    def test_rated_and_unrated_init(self):
-        ratings = scripted_roster.POOL_V5_RATINGS
-        self.assertEqual(scripted_roster.initial_elo('evasive-v2-hard', ratings), ratings['evasive-v2-hard'])
-        self.assertEqual(scripted_roster.initial_elo('mixed-medium', ratings), ratings['mixed-medium'])
-        self.assertAlmostEqual(scripted_roster.initial_elo('mixed-v2-medium', ratings),
-                               ratings['mixed-v2-hard'] - 75)
-        self.assertAlmostEqual(scripted_roster.initial_elo('archer-v2-easy', ratings),
-                               ratings['archer-v2-hard'] - 150)
-
     def test_coin_flip_weight_and_share(self):
         # Learner Elo = entry Elo -> p=0.5, I=1, share=share_max.
         elos = [100.0, 100.0]
@@ -90,7 +81,7 @@ class EloMath(unittest.TestCase):
         self.assertLess(strong['elo'], 400.0)
 
     def test_resume_state_roundtrip(self):
-        ratings = scripted_roster.POOL_V5_RATINGS
+        ratings = {'mixed-v2-hard': 598.4, 'search-hard': 668.3}
         names = ['mixed-v2-hard', 'search-hard']
         entries = scripted_roster.entries_from_names(names, ratings)
         scripted_roster.apply_window(entries, [(10, 3, 2), (4, 4, 0)], learner_elo=0.0, k=16)

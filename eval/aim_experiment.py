@@ -20,8 +20,8 @@ prints the pre-registered judgement per arm:
     after 100M;
   * median 15 Hz aim change in degrees from the saved evaluation replays
     (eval/run_insights), same pooling;
-  * Elo vs pool v5 (reference rating written by evaluate.py), last evaluation
-    and IQM-free mean of the last three, as the tiebreaker.
+  * league rating (league candidate, <run>/league/<checkpoint>.json), last
+    evaluation and IQM-free mean of the last three, as the tiebreaker.
 """
 import argparse
 import json
@@ -203,14 +203,14 @@ def evaluations(run_dir):
     return sorted(rows, key=lambda row: row[0])
 
 
-def rating_of(run_dir, report, pool):
-    import reference_pool
+def rating_of(run_dir, report, reference):
+    import candidate
     checkpoint = Path(run_dir) / 'checkpoints' / report['checkpoint']
-    payload = read_json(reference_pool.rating_dir(run_dir, pool) / reference_pool.rating_name(checkpoint))
-    return payload.get('rating') if payload else None
+    payload = candidate.load(candidate.result_path(checkpoint), reference)
+    return payload['rating'] if payload else None
 
 
-def summarize_run(run_dir, pool):
+def summarize_run(run_dir, reference):
     import flags
     import run_insights
     entropy = metrics_at(run_dir, 'entropy_aim', ENTROPY_MARKS)
@@ -219,7 +219,7 @@ def summarize_run(run_dir, pool):
     ratings = []
     pooled = 0
     for steps, directory, report in evaluations(run_dir):
-        rating = rating_of(run_dir, report, pool) if pool else None
+        rating = rating_of(run_dir, report, reference)
         ratings.append((steps, rating))
         if steps < POOL_FROM:
             continue
@@ -270,15 +270,16 @@ def cell(values, digits=3):
 
 
 def report(args):
-    import reference_pool
-    pool = reference_pool.load_pool(args.pool) if args.pool.is_file() else None
+    sys.path.insert(0, str(ROOT / 'league'))
+    import candidate
+    reference = candidate.reference()
     per_run = {}
     for arm, seed in runs(args.arms, args.seeds):
         name = run_name(arm, seed)
         run_dir = args.root / name
         if not run_dir.exists():
             continue
-        per_run[name] = dict(arm=arm, seed=seed, **summarize_run(run_dir, pool))
+        per_run[name] = dict(arm=arm, seed=seed, **summarize_run(run_dir, reference))
     (args.root / 'report.json').write_text(json.dumps(per_run, indent=1) + '\n')
     lines = ['| arm | K | AR | aim H @50M | aim H @100M | aim H @200M | arrow hit rate ≥100M | median aim Δ° ≥100M | Elo last | Elo last-3 | learner/s |',
              '|---|---|---|---|---|---|---|---|---|---|---|']
@@ -326,7 +327,6 @@ def main():
     p.add_argument('--dry-run', action='store_true')
     p.set_defaults(func=launch)
     p = sub.add_parser('report')
-    p.add_argument('--pool', type=Path, default=ROOT / 'native/artifacts/rl/sweeps/anchors/pool-v5/pool.json')
     p.set_defaults(func=report)
     args = parser.parse_args()
     unknown = set(args.arms) - set(ARMS)

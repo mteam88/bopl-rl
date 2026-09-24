@@ -36,6 +36,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'eval'))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from league import pfsp
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'league'))
+import candidate  # noqa: E402
+import registry  # noqa: E402
 from metrics_store import store
 import packed
 import payoff
@@ -562,19 +565,39 @@ def _pool_timeline(directory):
     return out
 
 
-def run_payload(directory, name, members, rated=None):
+def from_run(member, directory):
+    """Whether a member was trained in run `directory` (origin.run is relative to the checkout)."""
+    run = (member.get('origin') or {}).get('run')
+    return bool(run) and (registry.ROOT / run).resolve() == directory.resolve()
+
+
+def league_curve(directory, reference):
+    """The run's rated checkpoints (<run>/league/, league candidate) on the league's
+    current scale, by physical step; [] before the league has games."""
+    if reference is None or not (directory / 'league').is_dir():
+        return []
+    return [{'step': int(Path(row['checkpoint']).stem.split('-')[1]),
+             'learner_steps': row['learner_steps'], 'source': row['source'],
+             'rating': row['rating'], 'interval': row['interval'], 'games': row['games'],
+             'kits': {kit: {key: value[key] for key in ('label', 'rating', 'interval', 'games')}
+                      for kit, value in (row.get('kits') or {}).items()}}
+            for row in candidate.curve(directory, reference, bootstrap=200)]
+
+
+def run_payload(directory, name, members, rated=None, reference=None):
     status = run_status(directory)
     config = map_catalogue.normalize_record(read_json(directory / 'config.json') or {}, status)
     reports = evaluation_results(directory)
     evaluations = [evaluation_record(path) for path in reports]
     joined = [member for member in members
-              if (member.get('origin') or {}).get('run') == name]
+              if from_run(member, directory)]
     joined.sort(key=lambda member: (member.get('origin') or {}).get('step') or 0)
     rated = rated or {}
     return dict(
         name=name, config=config, status=status,
         evaluations=evaluations,
         opponents=opponent_distribution(directory),
+        league=league_curve(directory, reference),
         # The run's own checkpoints as league members, with the league rating
         # each one holds: this run's trajectory on the league's scale.
         members=[{'id': member['id'], 'name': member.get('name'),
@@ -746,7 +769,7 @@ def main():
             parser.error('run_root requires NAME=PATH')
         extra_runs[name] = Path(path).resolve()
 
-    condition_default = None
+    condition_default = registry.rating_condition()[0]
     lock = threading.RLock()
     league_state = {'sig': None, 'members': [], 'rows': []}
     page_state = OrderedDict()
@@ -852,7 +875,7 @@ def main():
                     'steps': status.get('learner_steps'),
                     'evaluations': len(reports),
                     'members': sum(1 for member in members
-                                   if (member.get('origin') or {}).get('run') == name),
+                                   if from_run(member, directory)),
                     'modified': (stamp(directory / 'status.json') or (0, 0, 0))[1],
                 })
             rows.sort(key=lambda item: -item['modified'])
@@ -860,6 +883,20 @@ def main():
         sig = tuple((name, stamp(path / 'status.json'), stamp(path / 'evaluations'))
                     for name, path in sorted(catalog().items()))
         return cached(page_state, ('runs',), sig, build, 8)
+
+    def reference():
+        """The members' ratings a run's checkpoints are rated against, once per league change."""
+        sig = league_sig()
+        with lock:
+            if league_state.get('reference_sig') == sig:
+                return league_state['reference']
+        try:
+            value = candidate.reference()
+        except SystemExit:
+            value = None
+        with lock:
+            league_state.update(reference_sig=sig, reference=value)
+        return value
 
     def rated_members():
         """{id: {rating, nash_value, condition}} for the default condition."""
@@ -878,9 +915,9 @@ def main():
         members, _ = league_data()
         sig = (stamp(directory / 'config.json'), stamp(directory / 'status.json'),
                stamp(directory / 'evaluations'), stamp(directory / 'pool'),
-               stamp(directory / 'pool.jsonl'), league_sig())
+               stamp(directory / 'pool.jsonl'), stamp(directory / 'league'), league_sig())
         return cached(run_state, name, sig,
-                      lambda: run_payload(directory, name, members, rated_members()), 16)
+                      lambda: run_payload(directory, name, members, rated_members(), reference()), 16)
 
     def metrics_encoded(directory, name):
         def build():

@@ -31,7 +31,6 @@ from telemetry import FIELDS  # noqa: E402
 ROOT = HERE.parents[1]
 ART = ROOT / "native/artifacts/rl"
 GAME = ROOT / "native/target/release/libbopl_sim.so"
-POOL = ART / "sweeps/anchors/pool-v7/pool.json"
 FINAL = ART / "sweeps/overnight-9/024/checkpoints/policy-2313256960.bin"
 EARLY = ART / "sweeps/overnight-9/024/checkpoints/policy-320012288.bin"
 OUT = ART / "probes/dataset"
@@ -41,10 +40,13 @@ MAPS = (0, 1, 2)
 CONTROLLERS = [dict(name="random", kind="random"),
                dict(name="024-final", kind="checkpoint", path=str(FINAL)),
                dict(name="024-early-320m", kind="checkpoint", path=str(EARLY))]
-_pool = json.loads(POOL.read_text())
-for member in _pool["members"]:
-    if member["kind"] == "checkpoint":
-        CONTROLLERS.append(dict(name=member["name"], kind="checkpoint", path=str(POOL.parent / member["path"])))
+# The v3 opponents: each run's final (a league member) and its 500M checkpoint, which
+# exists only here (probes/controllers). This order is the dataset's controller index.
+for run in ("041", "059", "016", "007"):
+    CONTROLLERS.append(dict(name=f"v3b-{run}-final", kind="checkpoint",
+                            path=str(ART / f"sweeps/v3-base-{run}/000/checkpoints/policy-1333362688.bin")))
+    CONTROLLERS.append(dict(name=f"v3b-{run}-500m", kind="checkpoint",
+                            path=str(ART / f"probes/controllers/v3b-{run}-500m.bin")))
 for name in ("archer-hard", "pursuer-hard", "evasive-hard", "mixed-hard", "mixed-medium", "search-medium"):
     CONTROLLERS.append(dict(name=name, kind="scripted"))
 INDEX = {c["name"]: i for i, c in enumerate(CONTROLLERS)}
@@ -56,13 +58,13 @@ def schedule(maps=MAPS, scale=1.0, base_game=0, base_seed=500_000):
     The default is the training-map set (maps 0-2). `heldout_schedule` is the same plan at a quarter
     of the volume on maps 3-4, which 024 never trained on, for the map-memorisation probes."""
     games = []
-    pool_names = [c["name"] for c in CONTROLLERS if c["kind"] == "checkpoint" and c["name"].startswith("v3b")]
+    v3_names = [c["name"] for c in CONTROLLERS if c["kind"] == "checkpoint" and c["name"].startswith("v3b")]
     scripted = ["archer-hard", "pursuer-hard", "evasive-hard", "mixed-hard", "mixed-medium"]
-    plan = [("024-final", name, 96) for name in pool_names]
+    plan = [("024-final", name, 96) for name in v3_names]
     plan += [("024-final", name, 96) for name in scripted]
     plan += [("024-final", "search-medium", 48), ("024-final", "random", 24), ("024-final", "024-final", 192),
              ("024-final", "024-early-320m", 192)]
-    plan += [("024-early-320m", name, 24) for name in pool_names]
+    plan += [("024-early-320m", name, 24) for name in v3_names]
     plan += [("024-early-320m", name, 24) for name in scripted]
     seed = base_seed
     for focal, other, count in plan:

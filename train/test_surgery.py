@@ -21,7 +21,7 @@ import policy_v4
 import surgery
 from native_checkpoint import write_checkpoint
 
-ANCHOR = ROOT / 'native/artifacts/rl/sweeps/anchors/pool-v8/v4-full-2313m.bin'
+CHECKPOINT = ROOT / 'native/artifacts/rl/sweeps/v4-full/000/checkpoints/policy-2313256960.bin'
 CONFIG = dict(training_maps=[0, 1, 2], episode_ticks=7200)
 
 
@@ -46,13 +46,13 @@ def actions(report):
     return {row[0]: row[3] for row in report}
 
 
-@unittest.skipUnless(ANCHOR.exists(), f'needs the published anchor {ANCHOR}')
+@unittest.skipUnless(CHECKPOINT.exists(), f'needs the checkpoint {CHECKPOINT}')
 class RealCheckpointTests(unittest.TestCase):
-    """Surgery on native/artifacts/rl/sweeps/anchors/pool-v8/v4-full-2313m.bin."""
+    """Surgery on native/artifacts/rl/sweeps/v4-full/000/checkpoints/policy-2313256960.bin."""
 
     @classmethod
     def setUpClass(cls):
-        cls.arch, cls.metadata, cls.weights = surgery.read_checkpoint(ANCHOR)
+        cls.arch, cls.metadata, cls.weights = surgery.read_checkpoint(CHECKPOINT)
         cls.tensors = surgery.tensors(cls.arch)
 
     def source(self, name):
@@ -68,7 +68,7 @@ class RealCheckpointTests(unittest.TestCase):
     def test_identity_reproduces_the_published_blob_byte_for_byte(self):
         weights, report = surgery.surgery(self.weights, self.arch, dict(self.arch))
         self.assertEqual(set(actions(report).values()), {'copied'})
-        self.assertEqual(weights.tobytes(), ANCHOR.read_bytes())
+        self.assertEqual(weights.tobytes(), CHECKPOINT.read_bytes())
 
     def test_growing_hidden_keeps_every_concatenated_axis_in_register(self):
         """The failure this rules out: old[:rows, :cols] on an axis that is a

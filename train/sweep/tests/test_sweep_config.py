@@ -16,8 +16,7 @@ max_runs = 5
 metric_distribution = "linear"
 
 [scoring]
-scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"
+scorer = "league"
 
 [fixed]
 steps = 3000000
@@ -185,8 +184,7 @@ entropy_floor = 0.004
 no_eval = true
 
 [scoring]
-scorer = "reference"
-pool = "pool.json"
+scorer = "league"
 
 [params.scripted_banks]
 distribution = "int_uniform"
@@ -244,8 +242,8 @@ class ScriptedCurriculum(unittest.TestCase):
         self.assertNotIn('--scripted-decay', argv)
 
 
-REFERENCE = MINIMAL.replace('pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"\n', '''\
-pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"
+LEAGUE = MINIMAL.replace('scorer = "league"\n', '''\
+scorer = "league"
 last_k = 3
 games = 240
 band = [0.15, 0.85]
@@ -256,21 +254,19 @@ stalemate = "timeout_rate > 0.5"
 ''')
 
 
-class ReferenceScoring(unittest.TestCase):
-    def test_reference_scorer_parses(self):
-        spec = load_text(REFERENCE)
-        self.assertEqual(spec.scoring['scorer'], 'reference')
+class LeagueScoring(unittest.TestCase):
+    def test_league_scorer_parses(self):
+        spec = load_text(LEAGUE)
+        self.assertEqual(spec.scoring['scorer'], 'league')
         self.assertEqual(spec.scoring['last_k'], 3)
         self.assertEqual(spec.flag_rules, {'no-offense': 'arrows_per_game < 0.05',
                                            'stalemate': 'timeout_rate > 0.5'})
 
-    def test_reference_requires_pool_and_linear_metric(self):
+    def test_league_requires_linear_metric(self):
         with self.assertRaises(sweep_config.ConfigError):
-            load_text(REFERENCE.replace('pool = "native/artifacts/rl/sweeps/anchors/overnight-3/pool.json"\n', ''))
+            load_text(LEAGUE.replace('metric_distribution = "linear"', 'metric_distribution = "percentile"'))
         with self.assertRaises(sweep_config.ConfigError):
-            load_text(REFERENCE.replace('metric_distribution = "linear"', 'metric_distribution = "percentile"'))
-        with self.assertRaises(sweep_config.ConfigError):
-            load_text(REFERENCE.replace('band = [0.15, 0.85]', 'band = [0.9, 0.1]'))
+            load_text(LEAGUE.replace('band = [0.15, 0.85]', 'band = [0.9, 0.1]'))
 
     def test_default_flags_when_absent(self):
         spec = load_text(MINIMAL)
@@ -278,15 +274,15 @@ class ReferenceScoring(unittest.TestCase):
 
     def test_scorer_required(self):
         with self.assertRaises(sweep_config.ConfigError):
-            load_text(MINIMAL.replace('scorer = "reference"', 'scorer = "anchors"'))
+            load_text(MINIMAL.replace('scorer = "league"', 'scorer = "anchors"'))
         with self.assertRaises(sweep_config.ConfigError):
-            load_text(MINIMAL.replace('scorer = "reference"\n', ''))
+            load_text(MINIMAL.replace('scorer = "league"\n', ''))
 
     def test_bad_flag_rule_rejected(self):
         with self.assertRaises(sweep_config.ConfigError):
-            load_text(REFERENCE.replace('"timeout_rate > 0.5"', '"movement > 0.5"'))
+            load_text(LEAGUE.replace('"timeout_rate > 0.5"', '"movement > 0.5"'))
         with self.assertRaises(sweep_config.ConfigError):
-            load_text(REFERENCE.replace('no-offense =', 'No_Offense ='))
+            load_text(LEAGUE.replace('no-offense =', 'No_Offense ='))
 
 
 if __name__ == '__main__':

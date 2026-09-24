@@ -180,9 +180,11 @@ Python 3.11 with no zstd bindings at all — no `zstandard`, no `pyzstd`, no
 `compression.zstd` — even though the system Python 3.14 does have
 `compression.zstd`, so an import that works in a shell will fail under the venv.
 
-Pruning intermediate `checkpoints/policy-*.bin` cannot break the opponent pools:
-the anchor pool and each run's `pool/` hold their own `.bin` copies, and
-`.mind.json.gz` names a checkpoint by SHA256 rather than by path. It can break
+Pruning intermediate `checkpoints/policy-*.bin` can break the league: a member's
+`path` in `league/league.json` points into its run's `checkpoints/`, and
+`league check` refuses a member whose weights are missing or changed. Each run's
+`pool/` holds its own `.bin` copies and `.mind.json.gz` names a checkpoint by
+SHA256, so neither depends on the checkpoint. Pruning can also break
 `~/.local/share/bopl-null-hypothesis/`, which is an undeclared dependency on
 artifact layout — parked and completed gpu-queue jobs name checkpoints by **bare
 filename** (`policy-2133393408.bin`) with no run to attribute them to. Scan that
@@ -224,16 +226,16 @@ Historical artifacts remain available as evidence; they are not converted by the
 training command.
 
 ```sh
-native/artifacts/rl/venv/bin/python eval/serve.py \
+native/artifacts/rl/venv/bin/python board/serve.py \
   --host 127.0.0.1 --port 8876 \
-  --root native/artifacts/rl \
-  --pool native/artifacts/rl/sweeps/anchors/pool-v6/pool.json \
-  --human native/artifacts/rl/human/mac
+  --root native/artifacts/rl --league league
 native/artifacts/rl/venv/bin/python eval/watch_videos.py \
   --run native/artifacts/rl/native-smoke
 ```
 
-`--root` auto-discovers every run (a directory with `metrics.jsonl` or `checkpoints/`). `--run-root NAME=PATH` and `--run-root-glob NAME=GLOB` remain for isolated workspaces; they are not required to list sweep trials. `--pool` is the **primary frozen-pool label** (sweep-objective IQM, run-page side cards), not the joint scale; if omitted, the dashboard prefers pool v6 when `sweeps/anchors/pool-v6/pool.json` exists. `--human` defaults to `human/mac`. Views: `/` all runs, `/ladder` joint Elo, `/lineups` runs × lineups, `/run/<name>`, `/sweep/<name>`. Copy `board/start-dashboard.example.sh` over the 8876 launcher to drop the old glob list.
+`--root` auto-discovers every run (a directory with `metrics.jsonl` or
+`checkpoints/`); `--league` is the committed league (members and payoff counts,
+docs/LEAGUE.md). `board/start-dashboard.example.sh` is the 8876 launcher.
 
 Every run carries its loadout selection (`config.json["loadouts"]`, mirrored in each
 evaluation's `loadout_selection`), so the board and the sweep table badge it —
@@ -245,15 +247,13 @@ for a set or pool run into (a) a per-ability table over the last `LAST_K`
 evaluations — activations per game the ability was actually drawn in, entity rows,
 dropped rows (overflowing observation budget), and the abilities that were
 available and never pressed; and (b) a per-lineup table: games, win rate vs random
-/ vs scripted / vs frozen, timeout rate, the per-lineup frozen-pool rating when
-`reference_pool.py rate-runs --loadout-set` has written one under
-`<run>/reference/<pool_sha8>/loadout-<loadout_sha8>/`, and a win-rate sparkline per
+/ vs scripted / vs frozen, timeout rate, and a win-rate sparkline per
 lineup over the whole curve. `/lineups` is the same numbers as a runs × lineups
 matrix for the runs whose config declares a selection. **The scripted bots press
 ability slots** (slot 0 as Dash, 1 as Bow, 2 as Platform — `bopl_bots.h`), so off
 2,4,14 they are degraded and their win rate is not comparable across lineups; the
-UI labels that column and the 2,4,14 row stays marked as the one comparable to the
-pool score. The aggregation is `eval/lineup_report.py` (also a CLI:
+UI labels that column and the 2,4,14 row stays marked as the one comparable across
+lineups. The league rating per kit is in `<run>/league/<checkpoint>.json`. The aggregation is `eval/lineup_report.py` (also a CLI:
 `lineup_report.py --run <dir> [--last-k K] [--json]`), digested once per
 `result.json` and cached on the evaluation stamps, so a live run costs one parse
 per new evaluation. (The loadout view moved onto the agent page when the board
@@ -272,14 +272,14 @@ success. Qualification and long-run results belong in the experiment evidence.
 (cost-aware Bayesian search over a Pareto front of cost vs score) instead of
 one long run at a time. One TOML per sweep declares fixed flags, swept
 parameters as PufferLib spaces, and the scorer's settings — an external
-yardstick (Elo against a frozen reference pool), never the self-play win
-rate. Trials are ordinary run directories
+yardstick (the checkpoint's league rating, `league candidate`), never the
+self-play win rate. Trials are ordinary run directories
 under `native/artifacts/rl/sweeps/<name>/`, launched in their own systemd
 scopes with a memory cap and a wall cap; the driver's `sweep.json` makes the
 whole sweep kill-and-resume safe, and `summary.md`/`launch-best.sh` are
 regenerated after every trial. The dashboard discovers those trial directories
-under `--root` and shows each trial's labelled frozen-pool IQM plus its joint
-Elo; the sweep page's score column stays the objective written in `sweep.json`.
+under `--root`; a trial's score is the IQM of its last league ratings, written in
+`sweep.json`.
 
 ```sh
 native/artifacts/rl/venv/bin/python train/sweep/driver.py \

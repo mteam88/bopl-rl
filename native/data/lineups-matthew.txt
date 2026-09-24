@@ -21,7 +21,7 @@
 3,2,4      # grenade + dash + bow            (production 2,4,14 loadout family, reordered and Platform swapped for Grenade)
 26,14,7    # drill + platform + gust
 2,26,3     # dash + drill + grenade          ("best one?")
-15,14,4    # revive + platform + arrow       (Revival: partial port, see above)
+# 15,14,4  # revive + platform + arrow       held back 2026-09-24: Revival is a partial port (see above)
 5,13,14    # rocket + smoke + platform
 23,22,17   # tesla coil + push ("move platform") + shrink ray
 8,3,24     # growth ray + grenade + mine

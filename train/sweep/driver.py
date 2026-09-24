@@ -46,7 +46,7 @@ import report
 VENV_PYTHON = ROOT / 'native/artifacts/rl/venv/bin/python'
 TRAIN = ROOT / 'train/train.py'
 # Sweeps run on the Rust sim (native/target/release/libbopl_sim.so): trials
-# through train.py, the reference scorer's games through reference_pool.py.
+# through train.py, the scorer's league games through league/candidate.py.
 os.environ.setdefault('BOPL_RL_BACKEND', 'rust')
 
 

@@ -4,22 +4,20 @@
     python eval/readout.py <run dir> [--baseline NAME=<run dir>]... [--json out.json]
 
 A run dir is a sweep trial (.../sweeps/<sweep>/<trial>) holding config.json,
-metrics.jsonl, evaluation.log, evaluations/<step>/ and reference/<pool>/.
+metrics.jsonl, evaluation.log, evaluations/<step>/ and league/.
 Prints, for the run and each baseline at the same evaluation steps:
 
-  1. pool-v7 band scores (reference/<pool-v7 sha>/policy-<step>.json): rating,
-     interval, games, and the mean / median / IQM of the last three, which is
-     what the sweep scores;
-  2. the in-run Elo curve from the eval-every hook (evaluation.log's elo lines,
-     rated on the pool the hook uses) at each evaluation step;
-  3. win rates on training maps vs held-out maps at each evaluation (the
+  1. league ratings (league/policy-<step>.json, refitted on the members' current
+     ratings): rating, interval, games, and the mean / median / IQM of the last
+     three 'band' ratings, which is what the sweep scores;
+  2. win rates on training maps vs held-out maps at each evaluation (the
      diagnostic suite's groups, all opponents pooled), per opponent optional;
-  4. the value head: explained variance of the critic vs the realised
+  3. the value head: explained variance of the critic vs the realised
      gamma-return over the evaluation games with decision dumps
      (evaluations/<step>/*.mind.json.gz), next to the trainer's in-run
      explained_variance (vs its bootstrapped TD(lambda) target) at the same
      step, plus value / return standard deviations;
-  5. the death taxonomy of the learner's losses (squish / fall / own arrow /
+  4. the death taxonomy of the learner's losses (squish / fall / own arrow /
      opponent arrow / timeout / other) and of its kills, per evaluation.
 
 Baselines default to 024 (overnight-9/024) and the 024 seed floor runs found
@@ -37,6 +35,9 @@ from pathlib import Path
 
 import map_catalogue
 import packed
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "league"))
+import candidate  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,6 +59,17 @@ def sweeps_dirs():
 
 SWEEPS_DIRS = sweeps_dirs()
 SWEEPS = SWEEPS_DIRS[0]
+
+
+def reference():
+    """The league's current member ratings, fitted once per readout."""
+    global REFERENCE
+    if REFERENCE is None:
+        REFERENCE = candidate.reference()
+    return REFERENCE
+
+
+REFERENCE = None
 
 
 def resolve(path):
@@ -109,15 +121,7 @@ class Run:
         log = [map_catalogue.normalize_record(row, raw_config, raw_status)
                for row in read_jsonl(self.path / "evaluation.log")]
         self.diagnostics = {d["step"]: d for d in log if d.get("suite") == "diagnostic"}
-        # the elo line follows its step's game lines and diagnostic; attach by order
-        self.elo = {}
-        step = None
-        for d in log:
-            if "step" in d:
-                step = d["step"]
-            if "elo" in d and "suite" not in d and step is not None:
-                self.elo[step] = d
-        self.reference = self._reference()
+        self.league = self._league()
         self.results = self._results()
 
     @property
@@ -131,23 +135,11 @@ class Run:
                 return m["learner_steps"] / m["step"]
         return 0.75
 
-    def _reference(self):
-        """{pool name: {step: score record}} from reference/<sha8>/policy-<step>.json."""
-        out = collections.defaultdict(dict)
-        ref = self.path / "reference"
-        if not ref.is_dir():
-            return out
-        for sha in ref.iterdir():
-            if not sha.is_dir():
-                continue
-            for f in sha.glob("policy-*.json"):
-                try:
-                    d = json.loads(f.read_text())
-                except json.JSONDecodeError:
-                    continue
-                pool = Path(d.get("pool", sha.name)).parent.name or sha.name
-                out[pool][int(f.stem.split("-")[1])] = d
-        return out
+    def _league(self):
+        """The run's league curve (league candidate.curve), [] when nothing is rated yet."""
+        if not (self.path / "league").is_dir():
+            return []
+        return candidate.curve(self.path, reference())
 
     def _results(self):
         """The sweep driver's observations for this trial (results.jsonl beside the trial), if any."""
@@ -307,23 +299,20 @@ def section(title):
     print("-" * len(title))
 
 
-def pool_scores(runs, pool_name):
-    section(f"1. Scores on {pool_name} (rating, 95% interval, games, source); the sweep scores the IQM of the last three 'band' ratings")
-    print("  source: band = the scorer's 480-game adaptive rating (headline); in-run = the eval hook's 160-game point on every"
-          " evaluation checkpoint (10 games per member, same code path); evaluation = bots-only fit of the hook's games (not a pool rating)")
+def league_scores(runs):
+    section("1. League rating by checkpoint (rating, 95% interval, games, source); the sweep scores the IQM of the last three 'band' ratings")
+    print("  source: band = the scorer's full adaptive rating (headline); in-run = the trainer's small rating of every"
+          " evaluation checkpoint. Both are refitted on the members' current ratings.")
     for run in runs:
-        scores = {s: d for s, d in run.reference.get(pool_name, {}).items() if d.get("source") != "evaluation"}
-        if not scores:
-            print(f"  {run.name}: none yet" + ("" if pool_name in run.reference or not run.reference else f" (has {', '.join(run.reference)})"))
+        if not run.league:
+            print(f"  {run.name}: none yet")
             continue
-        ratio = run.learner_ratio()
         print(f"  {run.name}:")
-        for step in sorted(scores):
-            d = scores[step]
-            lo, hi = d.get("interval", (None, None))
-            print(f"    learner {step * ratio / 1e6:7.0f}M  rating {fmt(d['rating'], 7, 1)}  [{fmt(lo, 6, 1)}, {fmt(hi, 6, 1)}]"
-                  f"  games {d.get('games', 0):4d}  {d.get('source', 'band')}")
-        band = [scores[s]["rating"] for s in sorted(scores) if scores[s].get("source", "band") == "band"][-3:]
+        for d in run.league:
+            lo, hi = d["interval"]
+            print(f"    learner {(d['learner_steps'] or 0) / 1e6:7.0f}M  rating {fmt(d['rating'], 7, 1)}  [{fmt(lo, 6, 1)}, {fmt(hi, 6, 1)}]"
+                  f"  games {d['games']:4d}  {d['source']}")
+        band = [d["rating"] for d in run.league if d["source"] == "band"][-3:]
         if band:
             print(f"    last {len(band)} band: mean {fmt(statistics.fmean(band), 6, 1)}  median {fmt(statistics.median(band), 6, 1)}  IQM {fmt(iqm(band), 6, 1)}")
         if run.results and run.results.get("observations"):
@@ -331,131 +320,8 @@ def pool_scores(runs, pool_name):
             print(f"    sweep observations: " + ", ".join(f"{o['score']:.1f}@{o['steps'] / 1e6:.0f}M" for o in obs) + f"  status {run.results.get('status')}")
 
 
-def anchor_pool(name):
-    """reference_pool's loaded pool for anchors/<name>/pool.json under the sweeps dirs."""
-    sys.path.insert(0, str(ROOT / "train/sweep"))
-    import reference_pool
-    for root in SWEEPS_DIRS:
-        path = root / "anchors" / name / "pool.json"
-        if path.is_file():
-            return reference_pool.load_pool(path)
-    raise SystemExit(f"no pool {name} under {[str(r) for r in SWEEPS_DIRS]}")
-
-
-def refit_curve(runs, steps, pool, bootstrap=200):
-    """{run name: {step: rating record}}: each stored evaluation's games refitted
-    against `pool` (reference_pool.rating_from_evaluation: the same Bradley-Terry
-    MLE the eval hook runs, with this pool's members and ratings as the anchors).
-    Only games against members of the pool count, so the width of the interval
-    is the honest measure of what the pool can say about the evaluation."""
-    import reference_pool
-    out = {}
-    for r in runs:
-        out[r.name] = {}
-        for step in steps:
-            report = r.diagnostics.get(step)
-            if not report:
-                # A run of another batch geometry evaluates one update off the
-                # step asked for (w256: 65536 physical steps): its nearest
-                # evaluation within 1% stands in, keyed by the asked step.
-                near = min(r.diagnostics, key=lambda s: abs(s - step), default=None)
-                if near is None or abs(near - step) > 0.01 * step:
-                    continue
-                report = r.diagnostics[near]
-            rating = reference_pool.rating_from_evaluation(report, pool, report.get("checkpoint", ""), bootstrap=bootstrap)
-            if rating:
-                out[r.name][step] = rating
-    return out
-
-
-def scale_map(src, dst):
-    """(slope, members) of the least-squares line through the origin from the
-    src pool's ratings to the dst pool's over their shared members (random is
-    the 0 anchor of both). Re-expresses a src-scale rating on the dst scale
-    using every game the src fit used, under the assumption that the shared
-    members' relative strengths are consistent between the pools."""
-    a = {m["name"]: m["rating"] for m in src["members"]}
-    b = {m["name"]: m["rating"] for m in dst["members"]}
-    shared = [n for n in a if n in b and a[n] > 0]
-    slope = sum(a[n] * b[n] for n in shared) / sum(a[n] ** 2 for n in shared)
-    return slope, shared
-
-
-def elo_curve(runs, steps, in_run_pool="pool-v7"):
-    ratio = runs[0].learner_ratio()
-    pool = anchor_pool(in_run_pool)
-    refit = refit_curve(runs, steps, pool)
-    members = sorted({g["opponent"] for r in runs for d in r.diagnostics.values() for g in d.get("games", ())}
-                     & {m["name"] for m in pool["members"]})
-    section(f"2. In-run Elo by evaluation step, refitted on {in_run_pool} from the stored evaluation games"
-            f" (anchors: {', '.join(members)})")
-    # Per run, the scale from the pool its hook logged on to `pool`: 1 when the
-    # hook already rated on `pool`, the shared-member least-squares slope from
-    # v5, nothing for an unknown pool.
-    known = {"ec5bd5ae": "pool-v5"}
-    scales = {}
-    for r in runs:
-        logged = next((e.get("pool_sha8") for e in r.elo.values()), None)
-        if logged == pool["pool_sha256"][:8]:
-            scales[r.name] = (1.0, logged)
-        elif logged in known:
-            slope, shared = scale_map(anchor_pool(known[logged]), pool)
-            scales[r.name] = (slope, logged)
-            print(f"  {r.name}: hook logged {known[logged]} ({logged}); 'mapped' = its 8-anchor rating x {slope:.3f}, the least-squares"
-                  f" scale between the pools' ratings of {len(shared)} shared members (all 144 games count; assumes consistent relative strengths)")
-        elif logged:
-            print(f"  {r.name}: hook logged pool {logged}, no scale to {in_run_pool} known; 'mapped' left blank")
-    mapped = bool(scales)
-    if mapped:
-        native = [r.name for r in runs if scales.get(r.name, (None,))[0] == 1.0]
-        if native:
-            print(f"  {', '.join(native)}: hook rated on {in_run_pool} natively; 'mapped' is the hook's own rating")
-    width = 30 if mapped else 22
-    head = f"  {'learner':>9}  " + "  ".join(f"{r.name:>{width}}" for r in runs) + ("   diff vs " + runs[1].name if len(runs) > 1 else "")
-    print(head)
-    if mapped:
-        print(f"  {'':>9}  " + "  ".join(f"{'refit [95% interval] mapped':>{width}}" for _ in runs))
-    for step in steps:
-        cells, values = [], []
-        for r in runs:
-            e = refit[r.name].get(step)
-            cell = f"{fmt(e['rating'], 6, 0)} [{fmt(e['interval'][0], 6, 0)},{fmt(e['interval'][1], 6, 0)}]" if e else f"{'-':>22}"
-            if mapped:
-                h = r.elo.get(step)
-                scale = scales.get(r.name, (None,))[0]
-                value = h["elo"] * scale if h and scale else None
-                cell += f" {fmt(value, 7, 0)}" if value is not None else f" {'-':>7}"
-                values.append(value)
-            else:
-                values.append(e["rating"] if e else None)
-            cells.append(cell)
-        diff = ""
-        if len(runs) > 1 and values[0] is not None and values[1] is not None:
-            diff = f"   {values[0] - values[1]:+7.0f}"
-        print(f"  {step * ratio / 1e6:8.0f}M  " + "  ".join(cells) + diff)
-    for r in runs:
-        r.refit = refit[r.name]
-
-
-def elo_curve_logged(runs, steps):
-    pool = next((e.get("pool_sha8") for r in runs for e in r.elo.values()), "?")
-    section(f"2b. In-run Elo as logged by the eval-every hook (pool {pool}), by evaluation step")
-    ratio = runs[0].learner_ratio()
-    head = f"  {'learner':>9}  " + "  ".join(f"{r.name:>22}" for r in runs) + ("   diff vs " + runs[1].name if len(runs) > 1 else "")
-    print(head)
-    for step in steps:
-        cells = []
-        for r in runs:
-            e = r.elo.get(step)
-            cells.append(f"{fmt(e['elo'], 6, 0)} [{fmt(e['interval'][0], 6, 0)},{fmt(e['interval'][1], 6, 0)}]" if e else f"{'-':>22}")
-        diff = ""
-        if len(runs) > 1 and step in runs[0].elo and step in runs[1].elo:
-            diff = f"   {runs[0].elo[step]['elo'] - runs[1].elo[step]['elo']:+7.0f}"
-        print(f"  {step * ratio / 1e6:8.0f}M  " + "  ".join(cells) + diff)
-
-
 def win_rates(runs, steps, by_opponent=False):
-    section("3. Win rate, training maps vs held-out maps, all opponents pooled")
+    section("2. Win rate, training maps vs held-out maps, all opponents pooled")
     ratio = runs[0].learner_ratio()
     print(f"  {'learner':>9}  " + "  ".join(f"{r.name:>26}" for r in runs))
     print(f"  {'':>9}  " + "  ".join(f"{'trained  heldout   gap':>26}" for _ in runs))
@@ -482,7 +348,7 @@ def win_rates(runs, steps, by_opponent=False):
 
 
 def value_section(runs, steps, gamma):
-    section(f"4. Value head: explained variance vs the realised gamma-return (gamma {gamma}, evaluation games with decision dumps) | in-run EV vs the bootstrapped target")
+    section(f"3. Value head: explained variance vs the realised gamma-return (gamma {gamma}, evaluation games with decision dumps) | in-run EV vs the bootstrapped target")
     ratio = runs[0].learner_ratio()
     print(f"  {'learner':>9}  " + "  ".join(f"{r.name:>38}" for r in runs))
     print(f"  {'':>9}  " + "  ".join(f"{'realised EV   in-run EV  V std  R std':>38}" for _ in runs))
@@ -499,7 +365,7 @@ def value_section(runs, steps, gamma):
 
 
 def deaths_section(runs, steps):
-    section("5. Death taxonomy over the evaluation games: how the learner lost (per 100 games) and how its kills happened")
+    section("4. Death taxonomy over the evaluation games: how the learner lost (per 100 games) and how its kills happened")
     ratio = runs[0].learner_ratio()
     causes = ["squish", "fall", "own arrow", "opp arrow", "timeout", "other"]
     kill_causes = ["arrow", "squish", "accident", "other"]
@@ -536,9 +402,6 @@ def main():
     p.add_argument("--name", default=None, help="label for the run (default: <sweep>/<trial>)")
     p.add_argument("--baseline", action="append", default=None, metavar="NAME=DIR",
                    help="baseline run(s); default 024=overnight-9/024 plus every seed-024-s*/000")
-    p.add_argument("--pool", default="pool-v7", help="band-score pool name under reference/ (default pool-v7)")
-    p.add_argument("--in-run-pool", default="pool-v7", help="pool the in-run curve is refitted on from the stored games (default pool-v7)")
-    p.add_argument("--logged-elo", action="store_true", help="also print the in-run Elo as the eval hook logged it (pool v5 for runs before the flip)")
     p.add_argument("--gamma", type=float, default=GAMMA)
     p.add_argument("--by-opponent", action="store_true", help="also print per-opponent win rates at the last common evaluation")
     p.add_argument("--all-steps", action="store_true", help="print every baseline evaluation step, not only the run's")
@@ -584,11 +447,8 @@ def main():
             print(f"  {r.name}: resumed at {resumed['at_learner_steps']/1e6:.0f}M learner steps from"
                   f" {Path(resumed['checkpoint']).name} (steps {resumed['steps']}); the optimizer momentum"
                   f" restarted cold there, the one discontinuity of the recipe")
-    pool_scores(runs, a.pool)
+    league_scores(runs)
     if steps:
-        elo_curve(runs, steps, a.in_run_pool)
-        if a.logged_elo:
-            elo_curve_logged(runs, steps)
         win_rates(runs, steps, a.by_opponent)
         value_section(runs, steps, a.gamma)
         deaths_section(runs, steps)
@@ -598,10 +458,8 @@ def main():
         for r in runs:
             out[r.name] = dict(
                 path=str(r.path), status=r.status, config=r.config,
-                band_scores={pool: {str(s): dict(rating=d["rating"], interval=d.get("interval"), games=d.get("games")) for s, d in scores.items()}
-                             for pool, scores in r.reference.items()},
-                elo={str(s): e for s, e in r.elo.items()},
-                elo_refit={str(s): dict(rating=e["rating"], interval=e["interval"], games=e["games"], pool=e["pool"]) for s, e in getattr(r, "refit", {}).items()},
+                league=[dict(learner_steps=d["learner_steps"], rating=d["rating"], interval=d["interval"], games=d["games"],
+                             source=d["source"]) for d in r.league],
                 win_rates={str(s): r.win_rates(s) for s in r.steps},
                 value={str(s): r.value_ev(s, a.gamma) for s in r.steps},
                 deaths={str(s): dict(zip(("learner", "kills", "games"), (dict(m), dict(f), g))) for s in r.steps for m, f, g in [r.deaths(s)]},

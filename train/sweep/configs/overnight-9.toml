@@ -16,7 +16,7 @@
 # of them in the Elo-matchmade v2 training roster) + eight v3 anchors: the finals and 500M
 # checkpoints of v3-base-041/059/016/007 (overnight-7's 041, 059, 016 and 007 hypers at 1B
 # on v3, run just before this sweep). Random is anchored at 0; the scale is new, so scores
-# are not comparable to v5/v6 numbers except through the joint ladder (eval/joint_ladder.py).
+# are not comparable to v5/v6 numbers (the league has since replaced pools).
 # The bridge to v2 is the scripted-only refit: v3-base-* on pool v6-scripted vs overnight-8
 # 000 (041's hypers on v2) refit against the same members.
 #
@@ -51,8 +51,7 @@ max_seconds = 12000                # 4B at overnight-7 013's pace is ~2.5 h; thi
 poll_seconds = 60
 
 [scoring]
-scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"   # v6's scripted members + the four v3-base-* finals and their 500M checkpoints
+scorer = "league"
 last_k = 3                         # eval_every 80M -> the last 240M steps
 games = 480
 first_pass_games = 6

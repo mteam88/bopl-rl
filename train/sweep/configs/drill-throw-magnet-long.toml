@@ -5,8 +5,7 @@
 # to four times the 1x budget: 6939869184 learner steps (~4.5 h). Every step-denominated
 # schedule is stretched with it (entropy half-life, checkpoint and evaluation spacing), so
 # a checkpoint here at fraction f of training matches the 1x run's checkpoint at the same f.
-# The pool-v8 score is the 2,4,14 slice and means little off that kit; the reading is the
-# per-kit head-to-head (reference_pool.py rate) against the 1x specialist and the generalists.
+# The league rates it on its own kit against every member on theirs (league candidate).
 # Flags not listed are layout.V4_DEFAULTS.
 
 [sweep]
@@ -31,8 +30,7 @@ max_seconds = 30000                # ~4.5 h expected; the cap is a safety net, n
 poll_seconds = 60
 
 [scoring]
-scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/pool-v8/pool.json"
+scorer = "league"
 last_k = 3
 games = 480
 first_pass_games = 6

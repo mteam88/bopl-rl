@@ -455,22 +455,29 @@
     $("runHero").innerHTML =
       `<div class="hero-elo"><strong>${big(s.learner_steps || s.step || 0)}</strong><small>learner steps</small></div>`
       + `<div class="hero-side">${stat("Status", esc(s.status || "?"))}${stat("Evaluations", (run.evaluations || []).length)}</div>`
-      + `<div class="hero-side">${stat("League members", (run.members || []).length, "checkpoints admitted")}${stat("Matches", big(s.matches))}</div>`;
+      + `<div class="hero-side">${stat("League rating", run.league?.length ? run.league[run.league.length - 1].rating.toFixed(0) : "—", "latest rated checkpoint")}${stat("League members", (run.members || []).length, "checkpoints admitted")}</div>`;
 
     renderOpponents();
 
     const members = run.members || [];
-    const curve = members.filter((m) => m.step != null && m.rating != null);
-    $("runRatingNote").innerHTML = curve.length
-      ? `This run's checkpoints on the league's scale, in condition <b>${esc(curve[0].condition)}</b>.
-         The band is the 95% interval; where it is wide, the member has not played enough games to place.`
-      : members.length
-        ? `This run has members in the league but none of them has a rating in the default condition yet.`
-        : `Nothing from this run has been admitted to the league, so it has no rating trajectory.`;
-    chart($("runRating"), [{
-      label: "League Elo", color: "#b8e03a",
-      points: curve.map((m) => ({ x: m.step, y: m.rating, lo: m.interval?.[0], hi: m.interval?.[1] })),
-    }], { format: (v) => v.toFixed(0) });
+    const admitted = members.filter((m) => m.step != null && m.rating != null);
+    const rated = run.league || [];
+    const latest = rated[rated.length - 1];
+    $("runRatingNote").innerHTML = rated.length || admitted.length
+      ? `This run's checkpoints on the league's scale: each one plays the members on the kits the run trained on,
+         on random maps, and is rated with the members held fixed (<code>league candidate</code>). The band is the 95%
+         interval. <b>in-run</b> points are the trainer's small rating of every evaluation; <b>band</b> points are the
+         scorer's full one.${latest ? ` Latest: <b>${latest.rating.toFixed(0)}</b> [${latest.interval[0].toFixed(0)},
+         ${latest.interval[1].toFixed(0)}] over ${big(latest.games)} games.` : ""}`
+      : `No checkpoint of this run has been rated against the league yet.`;
+    chart($("runRating"), [
+      { label: "In-run rating", color: "#6b8a2a",
+        points: rated.filter((r) => r.source === "in-run").map((r) => ({ x: r.step, y: r.rating, lo: r.interval[0], hi: r.interval[1] })) },
+      { label: "Band rating", color: "#b8e03a",
+        points: rated.filter((r) => r.source === "band").map((r) => ({ x: r.step, y: r.rating, lo: r.interval[0], hi: r.interval[1] })) },
+      { label: "League member", color: "#3ee0c5",
+        points: admitted.map((m) => ({ x: m.step, y: m.rating, lo: m.interval?.[0], hi: m.interval?.[1] })) },
+    ].filter((series) => series.points.length), { format: (v) => v.toFixed(0) });
 
     $("runMembers").innerHTML = members.length
       ? `<div class="chips">` + members.map((m) =>

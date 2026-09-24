@@ -8,12 +8,8 @@
 # the deterministic search bot (main 63cdb6e: level = horizon 128/64/32; the
 # v3/v4 search members were the old random-candidate bot). Ratings on another
 # build are flagged game_mismatch, not refused. After a sim or bot change with
-# gameplay impact, build the next pool (same members, ~15 min) and point `pool` at it:
-#   systemd-run --user --unit bopl-pool-vN -p CPUQuota=1100% --nice=10 -- env BOPL_RL_BACKEND=rust \
-#     native/artifacts/rl/venv/bin/python train/sweep/reference_pool.py build \
-#     --out native/artifacts/rl/sweeps/anchors/pool-vN/pool.json --games-per-pair 48 --workers 10 --slow-workers 12 \
-#     --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,mixed-v2-hard,search-hard,search-medium \
-#     $(for n in o3-001 o3-002 o3-009 o3-012 o3-017 o3-019 run007; do echo --checkpoint $n-final=native/artifacts/rl/sweeps/anchors/overnight-3-v3/$n-final.bin; done)
+# gameplay impact, re-rate on the league (`league play`).
+
 #
 # Budget (measured): overnight-3 ran 200M-step trials in 22.6 min of wall each
 # (48 trials, 18.1 h; 150k learner/s including background evals); rating a
@@ -78,8 +74,7 @@ max_seconds = 7200                 # a healthy trial is ~50 min
 poll_seconds = 60
 
 [scoring]
-scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/pool-v5/pool.json"   # v5: 19 members, bit-identical sim, deterministic search bot
+scorer = "league"
 last_k = 3                         # eval_every 20M -> the last 60M steps
 games = 480
 first_pass_games = 6

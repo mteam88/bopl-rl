@@ -4,11 +4,12 @@ Names are the public `kind-level` strings in evaluation_protocol.
 The default roster is the four v2 kinds at easy/medium/hard (12 entries). The
 search bots are opt-in (`--scripted-roster default,search-medium,search-hard`):
 at ~1.2 ms per decision they straggle the shared env pool and cut learner sps
-by 84% even at 5-12% of the scripted games (2026-09-13, w128 b4). Anchor Elos
-are pool-v5 ratings (random = 0); unrated levels start at that kind's hard
-rating minus 75 per step down.
+by 84% even at 5-12% of the scripted games (2026-09-13, w128 b4). Entries
+start at their league ratings (random = 0, the level an untrained learner plays
+at) and move with the learner from there.
 """
 from pathlib import Path
+import sys
 
 from evaluation_protocol import SCRIPTED_KINDS, SCRIPTED_LEVELS, scripted_opponent
 
@@ -18,24 +19,7 @@ DEFAULT_ROSTER = tuple(
     for level in ('easy', 'medium', 'hard')
 )
 ROSTER_MAX = 32
-LEVEL_GAP = 75.0
 WEIGHT_FLOOR = 0.1
-# pool-v5 scripted members (native/artifacts/rl/sweeps/anchors/pool-v5/pool.json).
-# random is 0 on that scale, so these are the trainer offsets directly.
-POOL_V5_RATINGS = {
-    'archer-hard': 379.235,
-    'pursuer-hard': 375.653,
-    'evasive-hard': 428.505,
-    'mixed-hard': 424.589,
-    'mixed-medium': 349.295,
-    'archer-v2-hard': 625.266,
-    'pursuer-v2-hard': 632.449,
-    'evasive-v2-hard': 651.931,
-    'mixed-v2-hard': 598.377,
-    'search-hard': 668.328,
-    'search-medium': 660.603,
-}
-ANCHOR_POOL = Path(__file__).resolve().parents[1] / 'native/artifacts/rl/sweeps/anchors/pool-v5/pool.json'
 
 
 def parse_roster(value):
@@ -75,34 +59,19 @@ def split_name(name):
     return kind_name, level_name, ids[0], ids[1]
 
 
-def load_anchor_ratings(path=None):
-    """Scripted name -> pool rating. File wins over the embedded pool-v5 table."""
-    ratings = dict(POOL_V5_RATINGS)
-    path = Path(path) if path is not None else ANCHOR_POOL
-    if path.is_file():
-        import json
-        payload = json.loads(path.read_text())
-        for member in payload.get('members', []):
-            if member.get('kind') == 'scripted' and isinstance(member.get('rating'), (int, float)):
-                ratings[member['name']] = float(member['rating'])
+def league_ratings():
+    """Scripted name -> league Elo under the league's condition (league/candidate.reference)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'league'))
+    import candidate
+    _, ratings = candidate.reference()
     return ratings
 
 
 def initial_elo(name, ratings):
-    """The pool rating, or the hard rating minus LEVEL_GAP per step for unrated levels.
-
-    Ratings are relative to LEARNER_ELO, the fixed origin, so there is no offset
-    to add: the self-play pool's online Elo used to be passed in here and it no
-    longer exists.
-    """
-    if name in ratings:
-        return float(ratings[name])
-    kind_name, level_name, _, _ = split_name(name)
-    hard = f'{kind_name}-hard'
-    if hard not in ratings:
-        raise ValueError(f'No pool-v5 rating for {name!r} or {hard!r}')
-    steps = {'hard': 0, 'medium': 1, 'easy': 2}[level_name]
-    return float(ratings[hard]) - LEVEL_GAP * steps
+    """The bot's league rating: relative to LEARNER_ELO, the fixed origin."""
+    if name not in ratings:
+        raise ValueError(f'{name} has no league rating yet; run `league play` first')
+    return float(ratings[name])
 
 
 # The roster rates its bots RELATIVE TO THE LEARNER, with the learner fixed at

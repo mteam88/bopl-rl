@@ -25,6 +25,7 @@ bitten before:
     and the win-rate delta of 0.000 would be an artefact, not a finding.
 """
 import argparse
+import functools
 import json
 import os
 from pathlib import Path
@@ -102,7 +103,7 @@ def evaluate(run_dir, kit, library, scripted, games, heldout_games, workers, log
                '--heldout-maps', ','.join(map(str, HELDOUT_MAPS)),
                '--games-per-opponent', str(games), '--heldout-games', str(heldout_games),
                '--workers', str(workers), '--game', str(Path(library).resolve()),
-               '--scripted-opponents', ','.join(scripted), '--no-pool-record']
+               '--scripted-opponents', ','.join(scripted)]
     with open(log, 'w') as handle:
         subprocess.run(command, check=True, stdout=handle, stderr=subprocess.STDOUT,
                        env=env_for(library), cwd=str(Path(__file__).resolve().parent))
@@ -259,14 +260,20 @@ def flips(base_games, arm_games, keep):
     return lost, gained
 
 
-# Pool v7 members that appear in this schedule, with their frozen ratings. A
-# fixed-anchor Elo (elo_ladder.bradley_terry_fixed, OpenAI Five's frozen reference
-# rating) turns saturated win rates into one scalar that is not at a ceiling. The
-# schedule is identical under both libraries, so unlike reference_pool.py's band
-# allocation there is no adaptive-opponent confound between the arms. Draws --
-# timeout, undecided and both-dead alike -- are draws in the fit, as in
-# reference_pool.evaluation_games after 25b093f8.
-POOL_ANCHORS = {'random': 0.0, 'mixed-hard': 378.2, 'search-hard': 580.7, 'search-medium': 588.8}
+# League members that appear in this schedule (random and the scripted bots),
+# held at their league ratings. A fixed-anchor Elo (elo_ladder.bradley_terry_fixed,
+# OpenAI Five's frozen reference rating) turns saturated win rates into one scalar
+# that is not at a ceiling. The schedule is identical under both libraries, so there
+# is no adaptive-opponent confound between the arms. Draws -- timeout, undecided and
+# both-dead alike -- are draws in the fit.
+@functools.cache
+def fixed_ratings():
+    sys.path.insert(0, str(ROOT / 'league'))
+    import candidate
+    import registry
+    _, ratings = candidate.reference()
+    return {row['name']: ratings[row['id']] for row in registry.by_id(registry.load(verify=False)).values()
+            if row['kind'] in ('random', 'scripted') and row['id'] in ratings}
 
 
 def anchored_elo(games):
@@ -276,15 +283,15 @@ def anchored_elo(games):
         w, l, d = records.get(opponent, (0, 0, 0))
         records[opponent] = (w + (outcome == 'win'), l + (outcome == 'loss'),
                              d + (outcome in ('undecided', 'timeout', 'both-dead')))
-    records = {k: list(v) for k, v in records.items() if k in POOL_ANCHORS}
-    return elo_ladder.bradley_terry_fixed(records, POOL_ANCHORS) if records else float('nan')
+    records = {k: list(v) for k, v in records.items() if k in fixed_ratings()}
+    return elo_ladder.bradley_terry_fixed(records, fixed_ratings()) if records else float('nan')
 
 
 def elo_pair(base_games, arm_games, keep, resamples=2000, seed=1):
     clusters = {}
     for key, b in base_games.items():
         m = arm_games.get(key)
-        if m is None or not keep(b) or b['opponent'] not in POOL_ANCHORS:
+        if m is None or not keep(b) or b['opponent'] not in fixed_ratings():
             continue
         clusters.setdefault((b['opponent'], b['map'], b['seed']), []).append(
             ((b['opponent'], classify(b)), (m['opponent'], classify(m))))

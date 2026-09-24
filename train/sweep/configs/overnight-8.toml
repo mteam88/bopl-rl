@@ -74,8 +74,7 @@ max_seconds = 12000                # 4B at overnight-7 013's pace is ~2.5 h; thi
 poll_seconds = 60
 
 [scoring]
-scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/pool-v6/pool.json"   # v5 minus the v2 training-roster bots + six overnight-7 anchors
+scorer = "league"
 last_k = 3                         # eval_every 80M -> the last 240M steps
 games = 480
 first_pass_games = 6

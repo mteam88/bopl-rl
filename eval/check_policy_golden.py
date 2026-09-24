@@ -24,7 +24,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
 
-DEFAULT_CHECKPOINT = ROOT / 'native/artifacts/rl/sweeps/anchors/pool-v7/v3b-007-final.bin'
+DEFAULT_CHECKPOINT = ROOT / 'native/artifacts/rl/sweeps/v3-base-007/000/checkpoints/policy-1333362688.bin'
 DEFAULT_FIXTURE = HERE / 'fixtures/policy-golden-v3b-007.npz'
 MAPS = (0, 1, 2)
 SEED_BASE = 50001

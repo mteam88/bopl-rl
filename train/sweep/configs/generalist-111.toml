@@ -1,7 +1,7 @@
-# The first generalist: every training map, the eight canonical kits played against
+# The first generalist: every training map, Matthew's fifteen kits played against
 # each other. The frozen specialist recipe (v4-lite-aim, w256 b4, LR 4.852e-4, seed
 # 73, the 4x budget) with the condition changed - the map set becomes the 111
-# training maps instead of 0,1,2, each seat draws its own kit from lineups-8
+# training maps instead of 0,1,2, each seat draws its own kit from Matthew's fifteen
 # instead of one fixed kit, and games run to 3 min so sudden death is played out.
 # The optimiser settings are those of train/sweep/configs/drill-throw-magnet-long.toml.
 #
@@ -51,8 +51,7 @@ max_seconds = 54000                # 15 h. The full writer runs at ~220k learner
 poll_seconds = 60
 
 [scoring]
-scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/pool-v8/pool.json"
+scorer = "league"
 last_k = 3
 games = 480
 first_pass_games = 6
@@ -75,11 +74,12 @@ v4_set_inner = 64
 v4_ffn_dim = 0
 v4_critic_dim = 384
 v4_ablate = 0                      # THE VARIABLE: full writer (see generalist-111-lite.toml)
-# the loadout draw (this run): each seat draws its own kit from the eight in
-# lineups-8, so 7 games in 8 are two different kits and 1 in 8 a mirror. A 3-id
-# file lists kits, not games (resolve_loadouts expands it to all 64 ordered pairs);
-# the first attempt at mirror_share 1 only ever played a kit against itself.
-loadout_set = "native/data/lineups-8.txt"
+# the loadout draw (this run): each seat draws its own kit from Matthew's fifteen
+# (lineups-matthew, Revival held back), so 14 games in 15 are two different kits.
+# A 3-id file lists kits, not games (resolve_loadouts expands it to all 225
+# ordered pairs); an earlier attempt at mirror_share 1 only ever played a kit
+# against itself. 2,2,20 holds Dash twice on purpose: no loadout_no_dup.
+loadout_set = "native/data/lineups-matthew.txt"
 mirror_share = 0.0
 # overnight-9 024, stretched 4x in steps and every step-denominated schedule
 steps = 6939869184                 # 4 x 1734967296 (the 1x runs' realised step count)

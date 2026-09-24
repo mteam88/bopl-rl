@@ -21,7 +21,6 @@ from native_checkpoint import write_checkpoint
 import layout
 from native_metrics import empty_counters, update
 import native_selfplay
-from reference_pool import DEFAULT_POOL
 from native_vector import NativeVector
 import reference
 import scripted_roster
@@ -338,13 +337,10 @@ def arguments():
     p.add_argument('--heldout-games', type=int, default=4)
     p.add_argument('--frozen-games', type=int, default=16)
     p.add_argument('--evaluation-workers', type=int, default=2)
-    p.add_argument('--no-in-run-pool', action='store_true',
-                   help='do not rate every evaluation checkpoint against the pool in-run (reference_pool.py rate, '
+    p.add_argument('--no-in-run-rating', action='store_true',
+                   help='do not rate every evaluation checkpoint against the league in-run (league candidate, '
                         'nice 19, 2 workers, CPU only, non-blocking; skipped while the previous one runs)')
-    p.add_argument('--in-run-pool-games', type=int, default=160, help='games of each in-run pool rating')
-    p.add_argument('--evaluation-pool', type=Path, default=None,
-                   help='reference pool.json the eval hook rates in-run evaluations on (evaluate.py --pool; '
-                        'default reference_pool.DEFAULT_POOL, pool v7). The sweep driver passes [scoring].pool.')
+    p.add_argument('--in-run-games', type=int, default=160, help='games of each in-run league rating')
     a = p.parse_args()
     for name in ('steps', 'workers', 'horizon', 'layers', 'learner_passes', 'episode_ticks',
                  'checkpoint_every', 'eval_every', 'evaluation_workers', 'entropy_half_life',
@@ -405,6 +401,17 @@ def arguments():
         a.loadouts=resolve_loadouts(a.loadout,a.loadout_pool,a.loadout_set,a.loadout_no_dup,a.mirror_share)
     except (ValueError,OSError) as error:
         p.error(str(error))
+    if a.n_scripted:
+        # A scripted bot only plays the kit and the maps it was written for, the ones
+        # its league member declares (registry.kits, registry.plays_map); anywhere
+        # else it presses whatever sits in the slot it wants.
+        bot = registry.by_name(registry.load(verify=False))[roster_names[0]]
+        dealt = (registry.trained_loadouts(dict(loadouts=a.loadouts)) if a.loadouts['mode'] != 'pool'
+                 else dict(mode='pool'))
+        if dealt['mode'] == 'pool' or registry.kits(dict(loadouts=dealt)) != registry.kits(bot):
+            p.error(f"scripted training banks need every kit dealt to be {registry.kits(bot)}; this run deals {dealt}")
+        if not all(registry.plays_map(bot, m) for m in a.training_maps):
+            p.error('scripted training banks cannot play space maps; drop them from --training-maps')
     return a
 
 
@@ -633,7 +640,7 @@ def main():
     counts = offset_counters(empty_counters(), resume['counts'] if resume else None)
     trainer = None
     pending = []  # background evaluation (process, log) pairs
-    rating = []   # background in-run pool rating, at most one (process, log)
+    rating = []   # background in-run league rating, at most one (process, log)
     stop = False
     def request_stop(signum, frame):
         nonlocal stop
@@ -651,7 +658,7 @@ def main():
     status('starting')
     saved = {}
     roster_entries = (scripted_roster.entries_from_names(
-        a.scripted_roster, scripted_roster.load_anchor_ratings())
+        a.scripted_roster, scripted_roster.league_ratings())
         if a.scripted_roster else [])
     # Resolved before the trainer exists so a typo'd member name, a missing
     # checkpoint or a member from another policy architecture fails here rather
@@ -779,44 +786,33 @@ def main():
                        '--scripted-opponents', a.scripted_opponents]
             if frozen_manifest:
                 command += ['--opponents', str(frozen_manifest)]
-            if a.evaluation_pool:
-                command += ['--pool', str(a.evaluation_pool)]
-            if not a.no_in_run_pool:
-                # The run's pool dir then only ever holds in-run and band rows
-                # (never the bots-only 'evaluation' fit, which would otherwise
-                # stand in for a skipped in-run rating and mix sources in the
-                # dashboard's last-3 IQM); the Elo line is still printed.
-                command.append('--no-pool-record')
             log = (output/'evaluation.log').open('a')
             pending.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
             evaluated_steps.add(counts['game_steps'])
             rate_in_run(checkpoint)
-        # In-run pool curve: every evaluation checkpoint also plays the
-        # reference pool through the scorer's own path (reference_pool.py rate,
-        # source 'in-run', 160 games on 2 workers at nice 19, CPU only) into
-        # <run>/reference/<pool_sha8>/, where the dashboard and readout.py read
-        # per-checkpoint points; the scorer's 480-game band rating of the last
-        # checkpoints overwrites theirs. Non-blocking; skipped while the
-        # previous one still runs.
+        # In-run rating curve: every evaluation checkpoint is also rated against the
+        # league (league candidate, source 'in-run', a small budget on 2 workers at
+        # nice 19, CPU only) into <run>/league/<stem>.json, which the dashboard and
+        # the scorer read; the scorer's full rating of the last checkpoints replaces
+        # theirs. Non-blocking; skipped while the previous one still runs.
         def rate_in_run(checkpoint):
-            if a.no_in_run_pool:
+            if a.no_in_run_rating:
                 return
             if rating and rating[0][0].poll() is None:
-                print(f'in-run pool rating of {checkpoint.name} skipped: the previous one is still running', flush=True)
+                print(f'in-run league rating of {checkpoint.name} skipped: the previous one is still running', flush=True)
                 return
             for process, log in rating:
                 log.close()
             rating.clear()
-            command = ['nice', '-n', '19', sys.executable, str(ROOT/'train/sweep/reference_pool.py'), 'rate',
-                       '--pool', str(a.evaluation_pool or DEFAULT_POOL), '--checkpoint', str(checkpoint),
-                       '--games', str(a.in_run_pool_games), '--first-pass-games', '10', '--workers', '2',
-                       '--game', str(game), '--source', 'in-run']
-            log = (output/'reference.log').open('a')
+            command = ['nice', '-n', '19', sys.executable, str(ROOT/'league'), 'candidate', str(checkpoint),
+                       '--games', str(a.in_run_games), '--first-pass-games', '2', '--workers', '2',
+                       '--source', 'in-run']
+            log = (output/'league.log').open('a')
             rating.append((subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT), log))
         def finish_rating():
             for process, log in rating:
                 if process.wait():
-                    print(f'in-run pool rating exited {process.returncode} (see reference.log)', flush=True)
+                    print(f'in-run league rating exited {process.returncode} (see league.log)', flush=True)
                 log.close()
             rating.clear()
         next_checkpoint = (counts['learner_steps']//a.checkpoint_every+1)*a.checkpoint_every

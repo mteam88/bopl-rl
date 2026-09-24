@@ -21,8 +21,8 @@ trainer.
 <run>/evaluations/%09d/<game>.mind.json.gz  per-decision policy dump (see below)
 <run>/evaluations/%09d/<game>.mp4/.jpg  rendered video + poster (optional)
 <run>/final-evaluations/%09d/result.json, validation/evaluations/%09d/result.json (optional)
-<run>/reference/<pool_sha8>/<checkpoint>.json   derived Elo vs the current pool (evaluate.py + rate-runs)
-<run>/reference/<checkpoint>.json               legacy overnight-4 location, still read
+<run>/league/<checkpoint>.json          league rating of a checkpoint and the games behind it (league candidate)
+<run>/reference/                        historical frozen-pool ratings (read by nothing)
 <run>/video-status.json     optional {status, step, rendered}
 ```
 
@@ -200,8 +200,8 @@ ticks, behavior, action_rates`, plus for saved games `replay`, `replay_sha256`,
 `undecided` is a round the game left undecided: both sides eliminated on the
 same tick, so `WonThisRound` landed on all of them. It is nobody's `win` and it
 is not a `timeout`, so `wins + timeouts + undecided <= games`, the remainder
-being losses. `reference_pool.py` scores it as a draw of kind `both-dead`,
-matching `elo_ladder.play_games`.
+being losses. `elo_ladder.play_games`, and so the league, scores it as a draw
+of kind `both-dead`.
 
 The saved-game physics file `<game>.json` keeps
 `{schema:1, frames:[{t, players, slimes, entities, actions:[[angle,buttons] x2]}],
@@ -258,27 +258,20 @@ one simply don't show the panel (no torch backfill).
 
 ## Checkpoints and the quality numbers
 
-There are two families of numbers. They never share an axis.
+There is one rating: the league's (docs/LEAGUE.md). Members' ratings are fitted
+from `league/payoff.jsonl` under the one rating condition
+(`registry.rating_condition()`: this sim, each seat on its own member's kit, all
+124 maps at random, 3-minute games). A checkpoint is rated by `league candidate`:
+it plays the members on the kits its run trained on, the members' ratings held
+fixed, and its rating is the Bradley-Terry MLE of those games with a 95%
+interval from a bootstrap over side-swapped seed pairs, overall and per kit.
 
-**Frozen-pool IQM** is still the sweep objective: Bradley-Terry Elo vs one
-frozen `pool.json` (members held fixed, random = 0), summarised as the IQM of
-the last three rated checkpoints with a 95% interval. `evaluate.py` and
-`rate-runs` write `<run>/reference/<pool_sha8>/<stem>.json`. The dashboard
-labels each such curve by the pool directory name (`pool v7 IQM3`, `pool v6 IQM3`,
-…) and will not mix pools. The primary label (`--pool`, default pool v7 =
-`sweeps/anchors/pool-v7`, the sweep objective) only picks which curve is the
-run page's headline `iqm`; the index shows one column per pool that rated a run.
-
-**Joint Elo** is one Bradley-Terry over every pool round-robin `matches[]`,
-every on-disk band-rated candidate `records` dict, and human games (excluded
-rounds dropped). Identity is checkpoint sha256 / bot name / `random` / `human`.
-Regularizer is one virtual draw per played pair so 480-game matches keep
-their weight. In-run evaluation fits (`source: evaluation`, ~144 games, no
-band matching, mostly against the scripted training roster) are excluded:
-in a joint fit they rated mid-run checkpoints 900+ through exploited bots
-alone. They still draw the run page's dashed in-run curve. `GET /api/ladder` is this fit; `GET /api/index` lists every
-discovered run. A run payload (`GET /api/run/<name>`) carries both `joint`
-and labelled `pools[]`. There is no `<run>/ladder/ladder.json`.
+`<run>/league/<checkpoint>.json` keeps the games as well as the number, and every
+reader refits the stored games on the members' current ratings, so a run's curve
+stays on the league's scale as the league grows. `source: in-run` is the
+trainer's small rating of every evaluation checkpoint (`--in-run-games`);
+`source: band` is the sweep scorer's full one, which replaces it. The sweep
+objective is the IQM of the last three band ratings.
 
 ## Asks that are trainer configuration (not dashboard code)
 
@@ -291,22 +284,16 @@ and labelled `pools[]`. There is no `<run>/ladder/ladder.json`.
 
 ## Dashboard reader limits
 
-The index, joint ladder, and sweep payloads are assembled from rating files
-(`reference/<pool_sha8>/*.json` and legacy `reference/*.json`), each pool's
-`matches[]`, `status.json`, `result.json` flags, `sweep.json`, and
-`human/mac/games.jsonl` (minus `excluded.json`). They do not parse
-`metrics.jsonl` or evaluation `result.json` bodies to fit Elo. Frozen-pool
-bootstrap intervals already stored in a rating file are reused; they are not
-refit. The joint fit is a new MLE (sparse Newton, diagonal Wald CI) cached by
-the mtimes of those inputs. A background thread keeps the last good index,
-ladder, and sweep JSON warm; responses are ETag'd.
-
-`GET /api/run/<name>` is the first-paint run payload: status, config, labelled
-frozen-pool curves (`pools[]`, `iqm` for the primary pool), the joint curve,
-human records against this run's checkpoints when he played them, flags, an
-evaluation directory list, and the **latest**
-evaluation report (groups + replay metadata). Older evaluation reports load
-from `GET /api/run/<name>/evaluation/<dir>`. Training charts load from
+`board/serve.py` reads the league (`league.json`, `payoff.jsonl`) and the run
+directories; nothing else. `GET /api/league?condition=` is the payoff summary of
+one condition (default: the rating condition) and never pools counts across
+conditions. `GET /api/agent/<id>` is one member. `GET /api/runs` lists every
+discovered run. `GET /api/run/<name>` is the first-paint run payload: status,
+config, an evaluation list, the opponent distribution the learner actually
+played, `league` (the run's rated checkpoints, refitted on the members' current
+ratings, with per-kit ratings) and `members` (its checkpoints admitted to the
+league, with their ratings). Older evaluation reports load from
+`GET /api/run/<name>/evaluation/<dir>`. Training charts load from
 `GET /api/run/<name>/metrics` (not the first paint): at most 360 points with
 the scalar keys the charts draw. The source JSONL remains complete.
 

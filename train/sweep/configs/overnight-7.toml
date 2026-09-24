@@ -55,8 +55,7 @@ max_seconds = 4800                 # a healthy trial is ~21 min
 poll_seconds = 60
 
 [scoring]
-scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/pool-v5/pool.json"
+scorer = "league"
 last_k = 3                         # eval_every 40M -> the last 120M steps
 games = 480
 first_pass_games = 6

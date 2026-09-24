@@ -38,8 +38,7 @@ max_seconds = 21600                # steps stay 1734936776 (the 024 budget); the
 poll_seconds = 60
 
 [scoring]
-scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/pool-v7/pool.json"
+scorer = "league"
 last_k = 3
 games = 480
 first_pass_games = 6

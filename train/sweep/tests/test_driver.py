@@ -34,7 +34,7 @@ class StubSweeper:
 
 
 class TestDriver(driver_module.Driver):
-    """Stub sweeper; the reference scorer plays games, so scoring.curve is stubbed too."""
+    """Stub sweeper; the league scorer plays games, so scoring.curve is stubbed too."""
     curve = [scoring.Point(5001216, 300.0, 100.0), scoring.Point(10002432, 320.0, 200.0)]
 
     def _make_sweeper(self):

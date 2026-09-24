@@ -3,10 +3,10 @@
 The score is an external yardstick, never the training-time self-play win rate
 (which is anchored at ~0.5 by construction). One scorer:
 
-- reference: Bradley-Terry Elo of the last k evaluation checkpoints against a
-  frozen reference pool (reference_pool.py: pool ratings held fixed, games
-  concentrated on 15-85% matchups, bootstrap CI); the final point is the IQM
-  over those k ratings. Unbounded scale: use metric_distribution = "linear".
+- league: the league rating (league/candidate.py: members' ratings held fixed,
+  games on the checkpoint's own kits and random maps, concentrated on 15-85%
+  matchups, bootstrap CI) of the last k evaluation checkpoints; the final point
+  is the IQM over those k ratings. Unbounded scale: use metric_distribution = "linear".
 
 Each curve point carries the learner steps and the wall-clock elapsed at that
 point so the driver can use either as Protein's cost.
@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'eval'))
+sys.path[:0] = [str(ROOT / 'eval'), str(ROOT / 'league')]
 import packed  # noqa: E402
 
 
@@ -109,50 +109,39 @@ def evaluation_checkpoints(run_dir):
     return sorted(rows)
 
 
-def reference_curve(run_dir, pool, last_k=3, games=240, first_pass_games=6, band=(.15, .85),
-                    round_games=48, workers=4, seed_base=70001, workspace=None, rate=None, log=None,
-                    loadouts=None):
-    """Fixed-pool Bradley-Terry ratings of the last k evaluation checkpoints.
+def league_curve(run_dir, last_k=3, games=240, first_pass_games=6, band=(.15, .85),
+                 round_games=48, workers=4, seed_base=70001, rate=None):
+    """League ratings of the last k evaluation checkpoints.
 
-    Each checkpoint is rated against the frozen reference pool (reference_pool
-    .rate_checkpoint, cached in <run>/reference/<pool_sha8>/). Point i's score
-    is the IQM of the ratings up to i within the window, so the final point —
-    the value Protein optimizes — is the IQM over the last k evaluations.
-    Legacy files at <run>/reference/<checkpoint>.json are still read.
+    Each is rated by candidate.rate (cached in <run>/league/, refitted on the
+    members' current ratings). Point i's score is the IQM of the ratings up to i
+    within the window, so the final point - the value Protein optimizes - is the
+    IQM over the last k evaluations.
     """
-    import reference_pool
-    run_dir = Path(run_dir)
+    import candidate
     rows = evaluation_checkpoints(run_dir)[-max(1, int(last_k)):]
-    if not rows:
-        return []
-    if isinstance(pool, (str, Path)):
-        pool = reference_pool.load_pool(pool if Path(pool).is_absolute() else ROOT / pool)
-    # rate_checkpoint nests a loadout selection under its own subdirectory of this one.
-    workspace = Path(workspace) if workspace else reference_pool.rating_dir(run_dir, pool)
-    rate = rate or reference_pool.rate_checkpoint
+    rate = rate or candidate.rate
     elapsed_at = _elapsed_lookup(run_dir)
-    ratings = []
-    points = []
+    ratings, points = [], []
     for learner_steps, checkpoint in rows:
-        result = rate(checkpoint, pool, workspace, games=games, first_pass_games=first_pass_games,
-                      band=tuple(band), round_games=round_games, workers=workers, seed_base=seed_base, log=log,
-                      loadouts=loadouts)
+        result = rate(checkpoint, games=games, first_pass_games=first_pass_games, band=tuple(band),
+                      round_games=round_games, workers=workers, seed_base=seed_base)
         ratings.append(result['rating'])
-        points.append(Point(learner_steps, reference_pool.iqm(ratings), elapsed_at(learner_steps)))
+        points.append(Point(learner_steps, candidate.iqm(ratings), elapsed_at(learner_steps)))
     return points
 
 
 def curve(run_dir, scoring):
     """Dispatch on the [scoring] config section."""
     scorer = scoring['scorer']
-    if scorer == 'reference':
-        return reference_curve(run_dir, scoring['pool'], last_k=int(scoring.get('last_k', 3)),
-                               games=int(scoring.get('games', 240)),
-                               first_pass_games=int(scoring.get('first_pass_games', 6)),
-                               band=tuple(scoring.get('band', (.15, .85))),
-                               round_games=int(scoring.get('round_games', 48)),
-                               workers=int(scoring.get('workers', 4)),
-                               seed_base=int(scoring.get('seed_base', 70001)))
+    if scorer == 'league':
+        return league_curve(run_dir, last_k=int(scoring.get('last_k', 3)),
+                            games=int(scoring.get('games', 240)),
+                            first_pass_games=int(scoring.get('first_pass_games', 6)),
+                            band=tuple(scoring.get('band', (.15, .85))),
+                            round_games=int(scoring.get('round_games', 48)),
+                            workers=int(scoring.get('workers', 4)),
+                            seed_base=int(scoring.get('seed_base', 70001)))
     raise ValueError(f'Unknown scorer {scorer!r}')
 
 

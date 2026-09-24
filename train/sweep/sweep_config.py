@@ -5,7 +5,7 @@ One TOML file declares one sweep (see configs/). Sections:
   [sweep]    method/goal/downsample/early_stop_quantile/max_suggestion_cost/
              max_runs/num_random_samples/use_gpu/cost/seeds/concurrency
   [trial]    per-trial resource limits (MemoryMax, wall cap, poll cadence)
-  [scoring]  the reference-pool scorer's settings (see scoring.py);
+  [scoring]  the league scorer's settings (see scoring.py);
              [scoring.flags] behaviour flag rules (flags.py), labels only
   [fixed]    every fixed train.py argument, snake_case (steps is the budget)
   [params.<name>]  swept parameters as PufferLib spaces:
@@ -51,7 +51,7 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder'
                'pool_seed', 'cudagraphs', 'no_eval', 'eval_every',
                'evaluation_maps', 'heldout_maps', 'evaluation_baseline',
                'evaluation_opponents', 'evaluation_games', 'heldout_games',
-               'frozen_games', 'evaluation_workers', 'evaluation_pool', 'scripted_bots', 'scripted_level',
+               'frozen_games', 'evaluation_workers', 'scripted_bots', 'scripted_level',
                'scripted_roster', 'scripted_banks', 'scripted_share_min', 'scripted_share_max',
                'scripted_opponents', 'opponents', 'aim_fourier', 'aim_ar',
                # policy v4: --encoder v4 shape flags and the writer ablation
@@ -131,14 +131,13 @@ class SweepSpec:
         self.unit_prefix = str(trial.get('unit_prefix', 'bopl-sweep'))
 
         self.scoring = dict(raw.get('scoring', {}))
-        _require(self.scoring.get('scorer') == 'reference',
-                 f"[scoring].scorer must be \"reference\", not {self.scoring.get('scorer')!r}")
-        _require(isinstance(self.scoring.get('pool'), str), '[scoring].pool (a pool.json path) is required')
+        _require(self.scoring.get('scorer') == 'league',
+                 f"[scoring].scorer must be \"league\", not {self.scoring.get('scorer')!r}")
         _require(int(self.scoring.get('last_k', 3)) >= 1, '[scoring].last_k must be positive')
         band = self.scoring.get('band', (.15, .85))
         _require(len(band) == 2 and 0 < band[0] < band[1] < 1, '[scoring].band must be [low, high] in (0, 1)')
         _require(self.metric_distribution == 'linear',
-                 'scorer = "reference" yields Elo, not a rate: set metric_distribution = "linear"')
+                 'scorer = "league" yields Elo, not a rate: set metric_distribution = "linear"')
         # Behaviour flags (flags.py): labels only, never part of the score.
         self.flag_rules = dict(self.scoring.get('flags', flags.DEFAULT_RULES))
         for name, rule in self.flag_rules.items():
@@ -259,11 +258,6 @@ class SweepSpec:
         # trial still runs a decaying schedule instead of crashing.
         if 'entropy' in merged and 'entropy_floor' in merged:
             merged['entropy_floor'] = min(merged['entropy_floor'], merged['entropy'] / 2)
-        # The eval hook rates in-run evaluations on the same pool the final
-        # scorer uses, so the in-run curve and the band score share a scale.
-        if 'evaluation_pool' not in merged and self.scoring.get('pool'):
-            pool = Path(self.scoring['pool'])
-            merged['evaluation_pool'] = str(pool if pool.is_absolute() else ROOT / pool)
         arguments = ['--output', str(output)]
         for name in sorted(merged):
             value = merged[name]

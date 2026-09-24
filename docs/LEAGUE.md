@@ -40,6 +40,11 @@ them.
 - `reward` — `{tag, binding_sha256, shaping}`. Reward semantics live in the
   training binding, not the simulator, so `native_binding_sha256` is what
   actually discriminates them.
+- `loadouts` — the kits the member can legitimately play (`registry.kits`):
+  `null` for any kit (random, and policies trained on a kit draw), `fixed` for
+  one (a specialist's own kit; the scripted bots' 2,4,14, the only kit their
+  slot indices mean anything on), or a `set` of kits. Scheduling takes every
+  game from these, so a member is never handed a kit it cannot play.
 - `added` — `{date, rule}`: when, and which rule admitted it.
 
 Members are immutable. `league_sha256` covers the member list, and every
@@ -50,7 +55,7 @@ checkpoint's weights are re-hashed on load; either mismatch refuses the load.
 One JSON object per line, append-only:
 
 ```
-{"a": "<member name>", "b": "<member name>", "condition": "<key>",
+{"a": "<member id>", "b": "<member id>", "condition": "<key>",
  "wins": <a's wins>, "losses": <a's losses>, "draws": <draws>}
 ```
 
@@ -59,7 +64,7 @@ counts, and a league that grows for months would otherwise commit millions of
 lines to git permanently. Per-game detail is derived data and belongs under
 `native/artifacts/`.
 
-`a` and `b` are member *names*, unique and permanent.
+`a` and `b` are member *ids*, unique and permanent.
 
 **Ordering is canonical: `a < b`, always, with the counts taken from `a`'s
 side.** A matchup therefore appears under exactly one ordering; `(b, a)` rows do
@@ -101,6 +106,40 @@ flags. `f65c33b7` changed only the training binding and says of the simulator
 one library are directly comparable. Keying them apart would split the matrix
 into halves that could never be pooled and cost twice the CPU to fill.
 
+## The rating condition
+
+`registry.rating_condition()` is the one condition ratings are fitted on:
+this simulator, each seat on its own member's kit (`own-kit`), all 124 maps,
+10800-tick games (the game starts sudden death at 120 s, so close games are
+played out rather than cut off as draws) and the 9-tick observation delay.
+Today that is `simf0ab99a8.own-kit.mapall-124.t10800.d9`; a new sim build gives
+a new key and the league is re-played on it.
+
+`league/games.py` is the one place a game's map and kits are chosen. Between two
+members, seed pair i plays kit combination i (every kit of one against every kit
+of the other; a member with no kits of its own takes its opponent's) and map i of
+one fixed random order of the maps both can play (the scripted bots cannot play
+space maps), both shifted by a per-matchup offset. `start` continues from the
+pairs already recorded, since games are deterministic in their seed.
+
+## Rating a checkpoint
+
+`league candidate <checkpoint>` (`candidate.py`) measures a training run. The
+checkpoint plays the members on the kits its run trained on (the checkpoint's
+sidecar config), the members on theirs, under the rating condition; the
+members' ratings are held fixed and the checkpoint's rating is the 1-D
+Bradley-Terry MLE of its games (OpenAI Five's frozen reference rating). Games go
+where they carry information: a first pass against every member, then rounds
+against the members it has a 15-85% chance against. The interval is a
+bootstrap over side-swapped seed pairs, and a run that trained on several kits
+gets a rating per kit beside the overall one.
+
+The result is `<run>/league/<checkpoint stem>.json`, with the games. Members'
+ratings move as the league grows, so readers (`candidate.load`, `curve`) refit
+the stored games on the current ratings. The trainer rates every evaluation
+checkpoint with a small budget (`source: in-run`); the sweep scorer rates the
+last three with the full one (`source: band`) and scores their IQM.
+
 ## Scoring
 
 Draw-aware, always: a win is 1, a draw 0.5, a loss 0, computed from each game's
@@ -112,7 +151,8 @@ read. Games are always side-swapped pairs on fixed seeds.
 
 ```
 python league seed     # write league.json: specialists, scripted roster, anchor
-python league play     # play matchups, append counts   (the only verb that costs CPU)
+python league play     # play matchups, append counts
+python league candidate <checkpoint>   # rate a checkpoint against the members
 python league rate     # Bradley-Terry Elo, Nash averaging, RPP
 python league status   # members, matrix coverage, saturation
 python league add      # append one immutable member
@@ -124,8 +164,10 @@ interval sits outside 15–85% is skipped as uninformative, which is where the
 throughput goes. Re-running `play` deepens only what is still in doubt.
 
 There is exactly one rating scale in the repo: `eval/elo_ladder.py`'s
-`bradley_terry_fit` (draw-aware, `random` anchored at 0 Elo, with intervals).
-This package calls it and does not reimplement it.
+`bradley_terry_fit` (draw-aware, `random` anchored at 0 Elo, with intervals),
+fitted on the rating condition. This package calls it and does not reimplement
+it. The frozen reference pools that came before it (`sweeps/anchors/pool-v*`,
+`reference_pool.py`) are gone; their trained members are league members.
 
 ## Training against the league
 

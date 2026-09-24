@@ -27,8 +27,8 @@ from common import atomic_json
 import decision_dump
 import layout
 from evaluation_protocol import checkpoint_identity, resolve_loadouts, scripted_opponent
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'train/sweep'))
-import reference_pool
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'league'))
+import games as league_games
 
 CAUSE = {0: 'other', 1: 'squished', 2: 'accident', 3: 'eaten', 4: 'beamed', 5: 'alive'}
 
@@ -64,7 +64,7 @@ def main():
     torch.set_num_threads(1)
 
     run = args.out.resolve(); run.mkdir(parents=True, exist_ok=True)
-    reference_pool.configure_games(run, reference_pool.game_library())
+    league_games.configure(run / 'workers')
     loadouts = resolve_loadouts([int(x) for x in args.loadout.split(',')])
     maps = [int(x) for x in args.maps.split(',')]
 

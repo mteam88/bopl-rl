@@ -9,12 +9,8 @@
 # identically), so every rating carries game_mismatch=true; that flag is
 # informational and the pool stays v5 (its ratings moved within CI between
 # v3, v4 and v5 with no tier change, so a v6 rebuild would only reshuffle
-# noise). Rebuild recipe when a change with gameplay impact lands:
-#   systemd-run --user --unit bopl-pool-vN -p CPUQuota=1100% --nice=10 -- env BOPL_RL_BACKEND=rust \
-#     native/artifacts/rl/venv/bin/python train/sweep/reference_pool.py build \
-#     --out native/artifacts/rl/sweeps/anchors/pool-vN/pool.json --games-per-pair 48 --workers 10 --slow-workers 12 \
-#     --scripted archer-hard,pursuer-hard,evasive-hard,mixed-hard,mixed-medium,archer-v2-hard,pursuer-v2-hard,evasive-v2-hard,mixed-v2-hard,search-hard,search-medium \
-#     $(for n in o3-001 o3-002 o3-009 o3-012 o3-017 o3-019 run007; do echo --checkpoint $n-final=native/artifacts/rl/sweeps/anchors/overnight-3-v3/$n-final.bin; done)
+# noise). (Pools were later replaced by the league.)
+
 #
 # Budget (measured 2026-09-12, main 15b5339, w128 b4): 1.15M learner steps/s
 # on an idle box (bench_shape.sh), 815k with the 20M-step evaluations running
@@ -79,8 +75,7 @@ max_seconds = 2400                 # a healthy trial is ~10 min
 poll_seconds = 60
 
 [scoring]
-scorer = "reference"
-pool = "native/artifacts/rl/sweeps/anchors/pool-v5/pool.json"   # v5: 19 members, bit-identical sim, deterministic search bot
+scorer = "league"
 last_k = 3                         # eval_every 20M -> the last 60M steps
 games = 480
 first_pass_games = 6
