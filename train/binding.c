@@ -169,17 +169,19 @@ void my_log(Log *log, Dict *out) {
     for (int bank=0; bank<8; bank++) if (log->bot_n_bank[bank]) {
         dict_set(out, bot_n[bank], log->bot_n_bank[bank]); dict_set(out, bot_score[bank], log->bot_score_bank[bank]);
     }
-    static char entry_n[32][24], entry_score[32][28];
+    static char entry_n[32][24], entry_score[32][28], entry_decided[32][32];
     static int entry_keys;
     if (!entry_keys) {
         for (int i=0; i<32; i++) {
             snprintf(entry_n[i], sizeof(entry_n[i]), "bot_n_entry_%d", i);
             snprintf(entry_score[i], sizeof(entry_score[i]), "bot_score_entry_%d", i);
+            snprintf(entry_decided[i], sizeof(entry_decided[i]), "bot_decided_entry_%d", i);
         }
         entry_keys=1;
     }
     for (int i=0; i<32; i++) if (log->bot_n_entry[i]) {
         dict_set(out, entry_n[i], log->bot_n_entry[i]); dict_set(out, entry_score[i], log->bot_score_entry[i]);
+        dict_set(out, entry_decided[i], log->bot_decided_entry[i]);
     }
     for (int map=0; map<BOPL_COUNTER_MAPS; map++) if (log->map_fraction[map]) {
         dict_set(out, map_keys[map], log->map_fraction[map]);

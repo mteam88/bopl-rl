@@ -68,23 +68,40 @@ class EloMath(unittest.TestCase):
 
     def test_window_elo_matches_pool_sign(self):
         # Learner wins the window against an equal opponent: entry Elo falls.
-        after = scripted_roster.rate_entry(100.0, 100.0, wins=8, games=10, k=16)
+        after = scripted_roster.rate_entry(100.0, 100.0, score=8, games=10, k=16)
         self.assertLess(after, 100.0)
-        # Timeouts are not games: empty window is a no-op.
-        self.assertEqual(scripted_roster.rate_entry(100.0, 50.0, wins=0, games=0, k=16), 100.0)
+        # No games played is a no-op.
+        self.assertEqual(scripted_roster.rate_entry(100.0, 50.0, score=0, games=0, k=16), 100.0)
+
+    def test_a_drawn_window_is_half_a_win(self):
+        # Ten draws against an equal opponent is a 0.5 score rate, which is what
+        # the entry was already expected to hold, so its Elo must not move. A
+        # timeout counted as an absence instead would leave games=0 and look
+        # identical -- these two differ only when the expectation is not 0.5.
+        equal = scripted_roster.apply_window(
+            [dict(elo=0.0, games=0, wins=0, draws=0)], [(10, 0, 10)], learner_elo=0.0, k=16)[0]
+        self.assertAlmostEqual(equal['elo'], 0.0)
+        self.assertEqual((equal['games'], equal['wins'], equal['draws']), (10, 0, 10))
+        self.assertAlmostEqual(scripted_roster.score_rate(equal), 0.5)
+        # Against a bot the learner is expected to lose to, ten draws are an
+        # over-performance and must pull the bot's rating down.
+        strong = scripted_roster.apply_window(
+            [dict(elo=400.0, games=0, wins=0, draws=0)], [(10, 0, 10)], learner_elo=0.0, k=16)[0]
+        self.assertLess(strong['elo'], 400.0)
 
     def test_resume_state_roundtrip(self):
         ratings = scripted_roster.POOL_V5_RATINGS
         names = ['mixed-v2-hard', 'search-hard']
         entries = scripted_roster.entries_from_names(names, ratings)
-        scripted_roster.apply_window(entries, [(10, 3), (4, 4)], learner_elo=0.0, k=16)
+        scripted_roster.apply_window(entries, [(10, 3, 2), (4, 4, 0)], learner_elo=0.0, k=16)
         payload = scripted_roster.state_dict(entries, share=0.4, learner_elo=12.5)
         again = scripted_roster.entries_from_names(names, ratings)
         scripted_roster.restore_counts(again, payload)
         self.assertEqual([e['games'] for e in again], [10, 4])
         self.assertEqual([e['wins'] for e in again], [3, 4])
+        self.assertEqual([e['draws'] for e in again], [2, 0])
         self.assertEqual([e['elo'] for e in again], [e['elo'] for e in entries])
-        scripted_roster.apply_window(again, [(2, 1), (0, 0)], learner_elo=12.5, k=16)
+        scripted_roster.apply_window(again, [(2, 1, 0), (0, 0, 0)], learner_elo=12.5, k=16)
         self.assertEqual(again[0]['games'], 12)
         self.assertEqual(again[1]['games'], 4)
 

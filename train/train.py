@@ -932,7 +932,11 @@ def main():
                     for i in range(len(roster_entries)):
                         games = round(float(flat.get(f'env/bot_n_entry_{i}', 0.0)) * n)
                         wins = round(float(flat.get(f'env/bot_score_entry_{i}', 0.0)) * n)
-                        window.append((games, wins))
+                        decided = round(float(flat.get(f'env/bot_decided_entry_{i}', 0.0)) * n)
+                        # A timeout and a mutual death are draws against the
+                        # entry, so they belong in games with half credit, not
+                        # dropped from the denominator.
+                        window.append((games, wins, max(0, games - decided)))
                     scripted_roster.apply_window(roster_entries, window,
                                                  scripted_roster.LEARNER_ELO, scripted_roster.ELO_K)
                     sync_scripted()
@@ -943,8 +947,11 @@ def main():
                         games = entry['games']
                         scripted[entry['name']] = dict(
                             bank=scripted_first_bank, elo=entry['elo'], games=games,
-                            winrate=(entry['wins']/games if games else None), weight=weights[i],
-                            window_games=window[i][0], window_wins=window[i][1])
+                            wins=entry['wins'], draws=entry['draws'],
+                            winrate=(entry['wins']/games if games else None),
+                            score_rate=scripted_roster.score_rate(entry), weight=weights[i],
+                            window_games=window[i][0], window_wins=window[i][1],
+                            window_draws=window[i][2])
                     record['scripted'] = scripted
                     record['scripted_share'] = share
                 record['free_fraction'] = free
@@ -980,7 +987,7 @@ def main():
                 if roster_entries:
                     console['scripted'] = dict(
                         share=round(share, 3),
-                        **{name: (None if row['winrate'] is None else round(row['winrate'], 3))
+                        **{name: (None if row['score_rate'] is None else round(row['score_rate'], 3))
                            for name, row in record['scripted'].items()})
                 print(json.dumps(console), flush=True)
                 previous, previous_elapsed = counts, elapsed

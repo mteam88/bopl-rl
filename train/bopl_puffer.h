@@ -35,9 +35,14 @@ typedef struct {
      * kept out of hist_*_bank so the pool's swap/Elo statistics only see the
      * bank's frozen weights. */
     float bot_n_bank[8], bot_score_bank[8];
-    /* Decided learner-vs-roster-entry games this window (timeouts excluded).
-     * Index is the process-wide roster slot pushed from train.py. */
-    float bot_n_entry[32], bot_score_entry[32];
+    /* Learner-vs-roster-entry games this window, and how many of them were
+     * decided. Index is the process-wide roster slot pushed from train.py.
+     * Same shape as hist_*_bank above and for the same reason: a timeout and an
+     * undecided round (mutual death) are DRAWS against the entry, not losses
+     * and not absences, so both must reach the denominator. Reading a rate as
+     * score/n with timeouts dropped from n instead scores the entry only on the
+     * games it managed to decide. */
+    float bot_n_entry[32], bot_score_entry[32], bot_decided_entry[32];
     /* Hold head (learner decisions, n-averaged): how often each hold length
      * was chosen when the button state was free, and how many decisions the
      * button head was ignored because a latch was in force. */
@@ -1277,10 +1282,14 @@ static void bopl_step_finish_from(BoplPuffer *env, const BoplStepPhase *phase, c
                     for (int p=0; p<env->players; p++) scripted|=env->bot_select[p];
                     if (scripted) {
                         env->log.bot_n_bank[env->active_bank]++; env->log.bot_score_bank[env->active_bank]+=o.won;
-                        /* Timeouts and undecided rounds are not roster games:
-                         * Elo and per-entry winrate count decided matches only. */
-                        if (decided && env->roster_pick>=0 && env->roster_pick<BOPL_ROSTER_MAX) {
-                            env->log.bot_n_entry[env->roster_pick]++; env->log.bot_score_entry[env->roster_pick]+=o.won;
+                        /* Every roster match counts. o.won is already gated on
+                         * `decided`, so a timeout or a mutual death adds to n
+                         * and to decided's complement, and python reads the
+                         * draw-aware rate (score + 0.5*(n-decided))/n. */
+                        if (env->roster_pick>=0 && env->roster_pick<BOPL_ROSTER_MAX) {
+                            env->log.bot_n_entry[env->roster_pick]++;
+                            env->log.bot_score_entry[env->roster_pick]+=o.won;
+                            env->log.bot_decided_entry[env->roster_pick]+=(float)(decided!=0);
                         }
                     }
                     else if (env->boundary_reached) {

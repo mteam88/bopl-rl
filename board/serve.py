@@ -464,11 +464,13 @@ def opponent_distribution(directory):
     for entry in roster.get('entries') or []:
         games = int(entry.get('games') or 0)
         wins = int(entry.get('wins') or 0)
+        draws = int(entry.get('draws') or 0)
         entries.append({
             'id': entry.get('name'), 'kind': 'scripted', 'step': None,
             'games': games, 'wins': wins,
             'winrate': (wins / games) if games else None,
-            'score': None, 'elo': entry.get('elo'), 'live': True, 'serving': False,
+            'score': pfsp.score(wins, games - wins - draws, draws) if games else None,
+            'elo': entry.get('elo'), 'live': True, 'serving': False,
         })
     total = sum(entry['games'] for entry in entries) or 1
     for entry in entries:

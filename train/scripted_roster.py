@@ -151,17 +151,21 @@ def scripted_share(entry_elos, learner_elo, share_min=0.0, share_max=1.0):
     return min(hi, max(lo, value))
 
 
-def rate_entry(entry_elo, learner_elo, wins, games, k):
+def rate_entry(entry_elo, learner_elo, score, games, k):
     """One log-window Elo update, opponent side.
 
-    Timeouts are not games: `games` is decided matches only. One K-update per
-    log interval, not K per game — a window has dozens. The learner is the fixed
-    origin (LEARNER_ELO); only entries move.
+    `score` is draw-aware from the learner's side — a win 1, a draw 0.5, a loss
+    0 — and `games` is every match played, timeouts and mutual deaths included.
+    Dropping undecided games from `games` instead would rate an entry only on
+    the matches it managed to decide, and a bot that stalls the learner would
+    read as never having been played. One K-update per log interval, not K per
+    game: a window has dozens. The learner is the fixed origin (LEARNER_ELO);
+    only entries move.
     """
     games = int(games)
     if games <= 0:
         return float(entry_elo)
-    score_rate = float(wins) / games
+    score_rate = float(score) / games
     expected = win_prob(learner_elo, entry_elo)
     return float(entry_elo) - float(k) * (score_rate - expected)
 
@@ -172,26 +176,40 @@ def entries_from_names(names, ratings):
         kind_name, level_name, kind, level = split_name(name)
         out.append(dict(name=name, kind_name=kind_name, level_name=level_name,
                         kind=kind, level=level, elo=initial_elo(name, ratings),
-                        games=0, wins=0))
+                        games=0, wins=0, draws=0))
     return out
 
 
 def apply_window(entries, window, learner_elo, k):
-    """Add decided (games, wins) per entry and rate each that played."""
-    for entry, (games, wins) in zip(entries, window):
-        games, wins = int(games), int(wins)
-        if games < 0 or wins < 0 or wins > games:
-            raise ValueError(f'Bad window counts games={games} wins={wins}')
+    """Add (games, wins, draws) per entry and rate each that played.
+
+    `games` counts every match, so `games - wins - draws` is losses. A draw is
+    worth half a win in the rating and in the reported rate.
+    """
+    for entry, (games, wins, draws) in zip(entries, window):
+        games, wins, draws = int(games), int(wins), int(draws)
+        if games < 0 or wins < 0 or draws < 0 or wins + draws > games:
+            raise ValueError(f'Bad window counts games={games} wins={wins} draws={draws}')
         if games:
-            entry['elo'] = rate_entry(entry['elo'], learner_elo, wins, games, k)
+            entry['elo'] = rate_entry(entry['elo'], learner_elo, wins + 0.5 * draws, games, k)
             entry['games'] += games
             entry['wins'] += wins
+            entry['draws'] += draws
     return entries
+
+
+def score_rate(entry):
+    """Draw-aware score rate from the learner's side, or None if unplayed."""
+    games = int(entry['games'])
+    if not games:
+        return None
+    return (int(entry['wins']) + 0.5 * int(entry['draws'])) / games
 
 
 def state_dict(entries, *, share, learner_elo):
     return dict(schema=1, share=float(share), learner_elo=float(learner_elo),
-                entries=[dict(name=e['name'], elo=e['elo'], games=e['games'], wins=e['wins'])
+                entries=[dict(name=e['name'], elo=e['elo'], games=e['games'],
+                              wins=e['wins'], draws=e['draws'])
                          for e in entries])
 
 
@@ -206,4 +224,7 @@ def restore_counts(entries, record):
         entry['elo'] = float(row['elo'])
         entry['games'] = int(row['games'])
         entry['wins'] = int(row['wins'])
+        # Rosters written before draws were counted carry none; their games
+        # field held decided matches only, so 0 is the honest reading of it.
+        entry['draws'] = int(row.get('draws', 0))
     return entries
