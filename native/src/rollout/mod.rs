@@ -8192,6 +8192,20 @@ impl RolloutWorld {
                             slot.base.velocity *= Fix::from_f32(0.05);
                             slot.base.external_velocity *= Fix::from_f32(0.05);
                         }
+                        // Black hole.prefab carries DestroyIfOutsideSceneBounds
+                        // at hierarchyNumber 5, behind the SlimeController that
+                        // entered the ability (Player.prefab, 2) and ahead of
+                        // BlackHoleClap (6). Updater sorts a batch by that
+                        // number and skips disabled components (Updater.cs:271,
+                        // 300), so on the entry pass the slime's own component
+                        // is skipped - onEnterAbility deactivated it
+                        // (SlimeController.cs:190) - and the freshly enabled
+                        // form's runs instead, before the form has moved. A
+                        // cast begun below the plane therefore dies on the
+                        // entry tick rather than surviving the cast.
+                        if self.ability_boundary_kill(index, false) {
+                            return;
+                        }
                         // BlackHoleClap follows the animator. Its first active
                         // UpdateSim runs now, while the enter animation begins
                         // advancing on the next updater pass.
@@ -11579,9 +11593,15 @@ impl RolloutWorld {
     fn black_hole_form_motion(&mut self, index: usize) {
         {
             let slot = &mut self.players[index];
-            slot.black_hole_cast.collider_position = slot.base.position;
-            slot.black_hole_cast.collider_up = slot.base.up;
-            slot.black_hole_cast.collider_rotation = slot.base.rotation;
+            // Ability.UpdateSim publishes Player.Position from the form's
+            // hierarchyNumber 2, ahead of PlayerPhysics (4), BlackHoleClap (6)
+            // and the PlayerBody (8) that actually advances the transform, so
+            // the position a pass publishes is the one it started with. The
+            // port published after integrating instead, which ran the reported
+            // trajectory a full pass ahead of the reference for the whole
+            // cast.
+            slot.reported_position = slot.base.position;
+            slot.reported_tick = self.tick;
         }
         if self.players[index].base.grounded {
             let ground_live = self.players[index]
@@ -11608,12 +11628,41 @@ impl RolloutWorld {
             )
             .expect("valid Black Hole gravity constants");
             slot.base.collision_rays(terrain!(self));
+            // BlackHoleClap.UpdateSim ends with `physics.Move(Vec2.zero,
+            // simDeltaTime)` (BlackHoleClap.cs:150). Airborne, Move runs
+            // AirealMovement before its raycasts (PlayerPhysics.cs:232-240),
+            // and AirealMovement damps selfImposedVelocity.x by
+            // airAccel/(maxSpeed+airAccel) on every pass no matter the input,
+            // with no delta-time factor (PlayerPhysics.cs:398-403). The form
+            // carries its own constants - Black hole.prefab's PlayerPhysics is
+            // maxSpeed 19, airAccel 10 - so the horizontal velocity it
+            // inherits retains 19/29 of itself per pass and the cast drifts
+            // only about a twentieth of a unit before halting. The port
+            // integrated that velocity undamped, so a cast entered at speed
+            // kept sliding and had travelled 0.4-0.56 units too far by the
+            // time the boundary caught it.
+            crate::player_physics::air_movement(
+                &mut slot.base.velocity,
+                Fix::ZERO,
+                slot.base.constants.air_accel,
+                slot.base.constants.max_speed,
+            )
+            .expect("valid Black Hole air constants");
         }
         let slot = &mut self.players[index];
         slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
         slot.base.external_velocity *= Fix::from_f64(0.95);
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
+        // The hurtbox is a DPhysicsBox, and DPhysicsBox.UpdateSim is empty
+        // (DPhysicsBox.cs:374-376) - its hierarchyNumber 7 does nothing. The
+        // collider follows the body through UpdatePhysicsPositions, which
+        // reads fixTrans.position (DPhysicsBox.cs:287-288) and is driven by
+        // DetPhysics after the updater pass has run, so the box the next
+        // observation exports sits at the position PlayerBody just integrated
+        // to, not at the one the pass began with. The port snapshotted it
+        // before the motion and published a hurtbox a pass stale.
+        slot.black_hole_cast.collider_position = slot.base.position;
+        slot.black_hole_cast.collider_up = slot.base.up;
+        slot.black_hole_cast.collider_rotation = slot.base.rotation;
     }
 
     fn black_hole_cast_tick(&mut self, index: usize, data: &data::RolloutData) {

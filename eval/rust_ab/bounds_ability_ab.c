@@ -100,18 +100,16 @@ struct ability_case {
     int slot;
     uint8_t aim;
     /* Set for forms whose *trajectory* still diverges from the reference for
-     * reasons unrelated to the boundary component. Reported but does not fail
-     * the probe:
-     *   blackhole - BlackHoleClap's horizontal drift differs by ~0.4 world
-     *               units before the kill. On `early` and `late` the kill tick
-     *               and y still match; on `brink` they do not - the port
-     *               survives the entry pass and dies at 368 where the
-     *               reference dies at 367, which is the boundary component
-     *               `Assets/GameObject/Black hole.prefab` carries at
-     *               hierarchyNumber 5 - ahead of its BlackHoleClap at 6 - and
-     *               the port does not run on that form. (There is no
-     *               BlackHoleClap.prefab; that name is the script.)
-     * Owned elsewhere; this probe's subject is when the boundary kills. */
+     * reasons unrelated to the boundary component: reported, but does not fail
+     * the probe, because this probe's subject is when the boundary kills and
+     * not how the form got there.
+     *
+     * NO CASE CARRIES THIS ANY MORE. blackhole was the last one and was
+     * cleared by running AirealMovement on the cast form and its own
+     * DestroyIfOutsideSceneBounds on the entry pass; every case above is now
+     * held to the full comparison. Leave the escape hatch in place for the
+     * next form that needs triage, but prefer fixing the port: a case that
+     * carries this flag is a case this gate is not protecting. */
     int known_trajectory_divergence;
     /* 0 for the shared WALK_TICK. Revival's 10-second cooldown does not come
      * up before the default walk carries the body past the plane, so its slot
@@ -143,7 +141,7 @@ int main(int argc, char **argv) {
     static const struct ability_case cases[] = {
         {"plain",        {29, 6, 18}, -1, 0, 0, 0},
         {"duplicator",   {29, 6, 18},  0, 64, 0, 0},
-        {"blackhole",    {18, 6, 29},  0, 64, 1, 0},
+        {"blackhole",    {18, 6, 29},  0, 64, 0, 0},
         {"blink",        { 6, 29, 18},  0, 64, 0, 0},
         {"bow",          { 4, 2, 14},  0, 64, 0, 0},
         {"beam",         {28, 27, 9},  0, 64, 0, 0},
