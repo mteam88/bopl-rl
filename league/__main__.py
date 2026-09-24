@@ -34,6 +34,7 @@ import rating  # noqa: E402
 SIM = ROOT / 'native/target/release/libbopl_sim.so'
 SWEEPS = ROOT / 'native/artifacts/rl/sweeps'
 LINEUPS8 = ROOT / 'native/data/lineups-8.txt'
+OWN_KIT_LINEUPS = ROOT / 'native/data/lineups-own-kit.txt'
 SPECIALISTS = ['dash-bow-platform', 'roll-grenade-smoke', 'teleport-mine-tesla', 'web-mjolnir-freeze',
                'dash-missile-platform', 'grapple-beam-rock', 'duplicator-blink-blackhole', 'drill-throw-magnet']
 SEED_STEP = 9253158912
@@ -62,6 +63,65 @@ def configure_environment(workspace):
 def seed_loadouts():
     from evaluation_protocol import resolve_loadouts
     return resolve_loadouts(lineup_file=str(LINEUPS8), mirror_share=1.0)
+
+
+def own_kit_rows(league, names):
+    """{name: kit or None} and the [A|B]/[B|A] row list, in the committed file's order.
+
+    A member with a three-ability fixed loadout plays it in every game. A member
+    without one is loadout-agnostic and takes its OPPONENT's kit, which keeps the
+    opponent on its own kit — the whole point of the condition — and is the only
+    neutral choice available, since such a member has no kit of its own to hold.
+    `random` is the case that matters: Bradley-Terry has no scale without it, so
+    a condition that excluded it could not be rated at all. It also makes the
+    anchor kit-matched, which is a better floor reference than an off-kit one.
+
+    A scripted bot would qualify on the same rule, but the lineups-8 condition
+    already measures the specialists against that roster, so nothing here adds
+    one.
+    """
+    kits = {}
+    for name in names:
+        member = next(m for m in league['members'] if m['name'] == name)
+        fixed = ((member.get('loadouts') or {}).get('fixed') or [])
+        if fixed and len(fixed) != 3:
+            raise SystemExit(f'{name} has a fixed loadout of {len(fixed)} abilities, expected three')
+        kits[name] = [int(a) for a in fixed] if fixed else None
+    if all(kit is None for kit in kits.values()):
+        raise SystemExit('--own-kit needs at least one member with a fixed loadout')
+    # League member order, never the order the CLI tokens happened to arrive in:
+    # the row list IS the committed file, so `--members specialist,random` and
+    # `--members random,specialist` must produce the same condition.
+    chosen = set(names)
+    ordered = [m['name'] for m in league['members'] if m['name'] in chosen]
+    rows, index = [], {}
+    for i, a in enumerate(ordered):
+        for b in ordered[i + 1:]:
+            if kits[a] is None and kits[b] is None:
+                raise SystemExit(f'--own-kit cannot schedule {a} vs {b}: neither has a kit')
+            for first, second in ((a, b), (b, a)):
+                index[(first, second)] = len(rows)
+                rows.append((kits[first] or kits[second]) + (kits[second] or kits[first]))
+    return kits, rows, index
+
+
+def own_kit_loadouts(league, names):
+    """Resolved loadouts for the own-kit condition, with the committed file checked.
+
+    The file is data the condition key and its loadout hash are built from, so it
+    is committed rather than generated into a workspace. Regenerating it here and
+    comparing means a membership change cannot silently keep an old file: the run
+    stops instead of measuring rows that no longer describe the league.
+    """
+    from evaluation_protocol import resolve_loadouts
+    _, rows, _ = own_kit_rows(league, names)
+    resolved = resolve_loadouts(lineup_file=str(OWN_KIT_LINEUPS), mirror_share=0.0)
+    if resolved['lineups'] != rows:
+        raise SystemExit(
+            f'{OWN_KIT_LINEUPS} does not match the selected members.'
+            f' It holds {len(resolved["lineups"])} rows, this selection needs {len(rows)}.'
+            ' Regenerate it before playing; the file is part of the condition.')
+    return resolved
 
 
 # ---- selection ---------------------------------------------------------------
@@ -167,7 +227,9 @@ def command_play(args):
     print(f"verified {league['verified']['weights_rehashed']} member weights by rehash"
           + (f", missing {league['verified']['missing']}" if league['verified']['missing'] else ''))
     names = select(league, args.members)
-    loadouts = seed_loadouts()
+    own_kit = getattr(args, 'own_kit', False)
+    loadouts = own_kit_loadouts(league, names) if own_kit else seed_loadouts()
+    kit_of, _, row_index = own_kit_rows(league, names) if own_kit else ({}, [], {})
     key, detail = registry.condition(registry.sha256_file(SIM), loadouts, args.maps)
     known = league.get('conditions', {})
     if key in known and known[key]['loadout_sha256'] != detail['loadout_sha256']:
@@ -193,9 +255,16 @@ def command_play(args):
     configure_environment(args.workspace)
     built = participants(league, names)
     lineups = list(range(len(loadouts['lineups'])))
-    total = len(pairs) * len(args.maps) * len(lineups) * args.games_per_cell
-    print(f'{total} games = {len(pairs)} pairs x {len(args.maps)} maps x {len(lineups)} lineups'
-          f' x {args.games_per_cell} (side-swapped); est {total*0.2/60:.0f} min at 0.2 s/game')
+    if own_kit:
+        # Each pair plays exactly its own two rows, [A|B] and [B|A], one per side.
+        total = len(pairs) * len(args.maps) * args.games_per_cell
+        print(f'{total} games = {len(pairs)} pairs x {len(args.maps)} maps x'
+              f' {args.games_per_cell} (side-swapped, each side on its own kit);'
+              f' est {total*0.2/60:.0f} min at 0.2 s/game')
+    else:
+        total = len(pairs) * len(args.maps) * len(lineups) * args.games_per_cell
+        print(f'{total} games = {len(pairs)} pairs x {len(args.maps)} maps x {len(lineups)} lineups'
+              f' x {args.games_per_cell} (side-swapped); est {total*0.2/60:.0f} min at 0.2 s/game')
 
     # Rows are keyed by member id, never by name: payoff.jsonl is append-only and
     # outlives its members, so a reused name would inherit the old agent's record.
@@ -204,10 +273,28 @@ def command_play(args):
     started, played, opponents, cells = time.time(), 0, {}, set()
     with registry.PAYOFF.open('a') as handle:
         for number, (a, b) in enumerate(pairs, 1):
-            tasks = elo_ladder.pair_tasks(a, b, list(args.maps), args.games_per_cell,
-                                          args.seed_base, lineups=lineups)
+            if own_kit:
+                tasks = elo_ladder.side_pinned_tasks(a, b, list(args.maps), args.games_per_cell,
+                                                     args.seed_base,
+                                                     {0: row_index[(a, b)], 1: row_index[(b, a)]})
+            else:
+                tasks = elo_ladder.pair_tasks(a, b, list(args.maps), args.games_per_cell,
+                                              args.seed_base, lineups=lineups)
             games = elo_ladder.play_games(built, tasks, args.episode_ticks, args.workers,
                                           args.seed_base, loadouts=loadouts)
+            if own_kit:
+                # Assert the construction instead of trusting it. lineup_ids is
+                # what the game actually played, so this is the one cheap check
+                # that catches a seat holding its opponent's kit.
+                kit_a, kit_b = kit_of[a] or kit_of[b], kit_of[b] or kit_of[a]
+                for game in games:
+                    seat_a = game['side']
+                    want = (kit_a + kit_b) if seat_a == 0 else (kit_b + kit_a)
+                    got = list(game.get('lineup_ids') or [])
+                    if got != want:
+                        raise SystemExit(
+                            f'own-kit violation on {a} vs {b}, map {game["map"]}, side {seat_a}:'
+                            f' played {got}, expected {want}. Nothing was written for this pair.')
             # wins, losses and draws all come from tally(), which counts each
             # game's own outcome. Never `games - wins`: that silently turns every
             # trade and every timeout into a loss for one side.
@@ -234,7 +321,18 @@ def command_play(args):
     print(f'realized share entropy {pfsp.entropy(shares):.3f} of max {np.log(len(shares)):.3f}')
     maps_hit = sorted({cell[0] for cell in cells})
     kits_hit = sorted({cell[1] for cell in cells})
-    expected = len(args.maps) * len(loadouts['lineups'])
+    if own_kit:
+        # Count distinct (map, row CONTENT) cells, not row indices. A pair with a
+        # kitless member uses two indices whose rows are the same six ids, so an
+        # index-based expectation over-counts and reports a complete run as
+        # incomplete.
+        scheduled = set()
+        for x, y in pairs:
+            scheduled.add(tuple(loadouts['lineups'][row_index[(x, y)]]))
+            scheduled.add(tuple(loadouts['lineups'][row_index[(y, x)]]))
+        expected = len(args.maps) * len(scheduled)
+    else:
+        expected = len(args.maps) * len(loadouts['lineups'])
     print(f'exercised {len(cells)}/{expected} (map, loadout) cells: maps {maps_hit}, '
           f'{len(kits_hit)} distinct loadouts of {len(loadouts["lineups"])}'
           + ('' if len(cells) == expected else '  <-- INCOMPLETE, some cells never played'))
@@ -420,6 +518,9 @@ def main(argv=None):
     play.add_argument('--maps', type=lambda s: [int(x) for x in s.split(',')], default=[0, 1, 2])
     play.add_argument('--games-per-cell', type=int, default=2,
                       help='side-swapped games per (map, lineup) cell; must be even')
+    play.add_argument('--own-kit', action='store_true',
+                      help='each specialist on its own three abilities against the others on theirs'
+                           ' (native/data/lineups-own-kit.txt, mirror-share 0); specialists only')
     play.add_argument('--workers', type=int, default=3)
     play.add_argument('--episode-ticks', type=int, default=7200)
     play.add_argument('--seed-base', type=int, default=700001)

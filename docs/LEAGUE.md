@@ -166,10 +166,11 @@ Three things follow.
   equilibrium is a single strategy gives PFSP nothing to mix, so opponent sampling
   collapses to that bot however many members are registered. This is the
   saturation Matthew has already seen once.
-- **The specialists have never been rated on their own kits against each other.**
-  That measurement does not exist, and it is the one that would say whether
-  training works. It is a separate condition (per-kit lineup file), and counts are
-  never pooled across conditions, so it is additive rather than a revision.
+- **The specialists on their own kits are a separate condition, and it has now
+  been measured** - see "The own-kit condition" below. Counts are never pooled
+  across conditions, so it is additive to this section rather than a revision of
+  it. The short version: on their own kits the specialists are strong, and the
+  equilibrium is still a single member.
 
 Scope: 3 maps of 124. The condition tag `map012` is the map set 0, 1, 2
 (`registry.condition` joins the sorted ids). `league play --maps` writes a separate
@@ -179,16 +180,89 @@ condition per map set, so widening the map set is the cheapest way to learn whet
 `duplicator-blink-blackhole` and `dash-missile-platform` sit near the bottom, which
 is expected: both lost a boundary-leaving exploit to the 2026-09-23 fidelity fixes
 and are pending retrain. Their ratings here were measured post-fix and are honest,
-so the degeneracy is not an artifact of carrying them.
+so the degeneracy is not an artifact of carrying them. It is off-kit position only:
+both are mid-pack in the own-kit condition below.
+
+## The own-kit condition, measured 2026-09-24
+
+Condition `simf0ab99a8.lineups-own-kit.map012.t7200.d9`, 9 rated members (8
+specialists, random), 36/36 pairs, 1728 games, 48 per pair, every game played on
+the participant's own three abilities and asserted as such from `lineup_ids`.
+
+```
+member                           Elo       bootstrap 95%     Nash    score
+drill-throw-magnet               592  [    517,    675]   +0.000    0.743
+grapple-beam-rock                527  [    464,    601]   -0.187    0.658
+roll-grenade-smoke               495  [    432,    575]   -0.094    0.613
+dash-bow-platform                451  [    383,    524]   -0.187    0.549
+dash-missile-platform            448  [    381,    529]   -0.271    0.546
+duplicator-blink-blackhole       393  [    331,    468]   -0.167    0.466
+web-mjolnir-freeze               370  [    311,    443]   -0.333    0.434
+teleport-mine-tesla              366  [    301,    430]   -0.333    0.427
+random                             0  [      0,      0]   -0.375    0.064
+```
+
+`score` is the member's own draw-aware score rate over all 384 of its games,
+random included; 6.3% of games (109/1728) were draws. RPP of the eight against
+the anchor is +0.4792, i.e. 0.979 in score units.
+
+**Training works.** This is what the section above could not say. Every
+specialist sits 366 to 592 Elo above `random` on its own kit, and random takes
+0.064 against the field. Off-kit in `lineups-8` the best specialist was 261, so
+the gap to 592 is large - but do not read it as a clean measurement of the cost of
+playing a foreign kit. The two conditions differ in the simulator library as well
+as the loadouts (`sim9f60ac37` against `simf0ab99a8`, which is post-fixtures
+#9-#14), which is exactly why counts are never pooled across conditions. Both
+scales are anchored at `random` = 0, so the comparison is suggestive and the
+direction is not in doubt; the magnitude is not a number to quote.
+
+**The equilibrium is still one member.** `drill-throw-magnet` takes Nash mass
+1.000 with support 1 of 9. So the own-kit population is saturated the same way the
+generalist condition is saturated by `search-hard` - a different member, the same
+shape. A pool whose equilibrium is a single strategy gives PFSP nothing to mix
+regardless of how many members are registered, and that holds here too. Growing
+this pool means adding something that beats `drill-throw-magnet`, not adding more
+specialists.
+
+**The ordering is near-transitive and the middle is not resolved.** Nash and Elo
+agree on the ends but not in between. `roll-grenade-smoke` has the second-best
+Nash value (-0.094) on the third-best Elo, and `duplicator-blink-blackhole` the
+third-best (-0.167) on the sixth-best Elo, because Nash reads resistance to the
+equilibrium member and Elo reads average strength against everyone. A member that
+is mediocre overall but holds up against `drill-throw-magnet` is exactly what this
+pool needs and exactly what Elo hides. Elo intervals separate top from
+bottom (592 [517, 675] against 366 [301, 430]) and overlap everywhere in the
+middle, so the five members between 393 and 527 are one indistinguishable band at
+48 games per pair. Deepening them is what `play`'s 15-85% gate will spend CPU on
+next.
+
+**What this condition cannot separate: kit from policy.** Each member is one
+policy welded to one kit, so `drill-throw-magnet` on top means the
+drill/throw/magnet *pairing* is strongest, and there is no way here to say whether
+that is a better-trained policy or a stronger set of abilities. Splitting it needs
+either one policy rated across several kits or several policies rated on one kit,
+and neither exists. Read the table as a ranking of specialist-plus-kit units, and
+do not use it to argue any ability is strong.
+
+`duplicator-blink-blackhole` (393) and `dash-missile-platform` (448) are mid-pack
+here rather than at the bottom, which is worth noting because they are the two
+pending retrain after the 2026-09-23 fidelity fixes. Their off-kit position near
+the bottom of the generalist condition is not reproduced on their own kits.
+
+Scope is the same 3 maps of 124 as the section above, and the same caveat applies:
+widening the map set is the cheapest way to learn whether this ordering is general
+or local.
 
 ## Rating the specialists on their own kits: what it takes
 
-The state-of-the-league section above measures generalist strength, not specialist
-strength, because `lineups-8` at `--mirror-share 1` puts every specialist off-kit
-in 7 of its 8 lineups. The missing measurement is each specialist on *its own*
-kit against the others on theirs. The primitives for it already exist; the design
-has one trap that will silently invert the result, so it is written down here
-before anyone runs it.
+This is the design of the condition above, kept because the trap in it is the
+transferable part. It is built: `league play --own-kit` reads
+`native/data/lineups-own-kit.txt` and dispatches through
+`eval/elo_ladder.side_pinned_tasks`.
+
+`lineups-8` at `--mirror-share 1` puts every specialist off-kit in 7 of its 8
+lineups. The measurement wanted is each specialist on *its own* kit against the
+others on theirs, and the obvious way to build it silently inverts the result.
 
 **The trap.** A loadout-set row is six ability ids: player 0's three then player
 1's three (`evaluation_protocol.resolve_loadouts` validates `row[:3]` and
@@ -216,4 +290,24 @@ records the measurement: 96 pinned games cost the same wall clock as 96 unpinned
 (`elo_ladder.py:339`, `played[0]+played[1]`), so the run can prove after the fact
 that every participant played its own three abilities in every game. Assert that
 rather than trusting the construction - it is the one cheap check that would have
-caught the trap.
+caught the trap. `league play --own-kit` does, per game, and aborts before writing
+any counts.
+
+Two things the build found that the design above did not anticipate.
+
+- **The anchor has no kit, and Bradley-Terry needs the anchor in the condition.**
+  Rating the 8 alone fails outright: `anchor 'random' is not among the 8 members
+  being rated; Bradley-Terry has no scale without it`. A kitless member therefore
+  takes *its opponent's* kit, which is the honest reading - a random policy has no
+  kit it was trained for, so mirroring its opponent's is the neutral choice and
+  keeps the row symmetric. That makes it 9 members and 72 rows, not 8 and 56.
+- **Row order must come from the league, not the command line.** The generated
+  file is compared against the committed one and a mismatch is refused, so
+  ordering rows by `--members` token order would make the same member set produce
+  two different files depending on how it was typed, and the second would be
+  rejected. `own_kit_rows` walks league member order.
+
+One reporting subtlety: `expected` counts distinct row *contents*, not row
+indices. The anchor's rows are `[X|X]` for every pair it plays, so eight of them
+are duplicate content and 72 rows resolve to 64 distinct ones. Counting indices
+prints a false `<-- INCOMPLETE` on a run where every scheduled game did play.

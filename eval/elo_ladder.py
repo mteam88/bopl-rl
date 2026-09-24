@@ -278,6 +278,29 @@ def pair_tasks(a,b,maps,games_per_map,seed_base,lineups=()):
     return tasks
 
 
+def side_pinned_tasks(a,b,maps,games_per_map,seed_base,lineup_by_side):
+    """Fixed-seed games where each SIDE carries its own pinned loadout row.
+
+    pair_tasks couples both sides to one lineup, which is right when the row is
+    mirrored and wrong when it is not: a row fixes the kit each seat plays, so
+    swapping sides under one asymmetric row swaps the kits too. Here the caller
+    supplies {0: row_index, 1: row_index} and the side chooses the row, which is
+    what lets both participants keep their own kit in every game.
+
+    Still side-swapped and still even: half the games put `a` in seat 0 under
+    lineup_by_side[0], half put it in seat 1 under lineup_by_side[1].
+    """
+    if games_per_map%2 or games_per_map<2: raise ValueError('games per map must be even and positive')
+    if set(lineup_by_side)!={0,1}: raise ValueError('lineup_by_side needs a row for side 0 and side 1')
+    tasks=[]
+    for map_id in maps:
+        for pair in range(games_per_map//2):
+            for side in (0,1):
+                tasks.append(dict(a=a,b=b,map=map_id,seed=seed_base+pair,side=side,
+                                  lineup=lineup_by_side[side]))
+    return tasks
+
+
 def play_games(by_name,tasks,limit,workers,seed_base,delay=9,on_result=None,loadouts=None):
     """Play tasks (dicts a, b, map, seed, side) between participants keyed by name.
 
