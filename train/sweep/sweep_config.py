@@ -53,7 +53,7 @@ TRAIN_FLAGS = ('game', 'steps', 'workers', 'buffers', 'banks', 'seed', 'encoder'
                'evaluation_opponents', 'evaluation_games', 'heldout_games',
                'frozen_games', 'evaluation_workers', 'evaluation_pool', 'scripted_bots', 'scripted_level',
                'scripted_roster', 'scripted_banks', 'scripted_share_min', 'scripted_share_max',
-               'scripted_opponents', 'aim_fourier', 'aim_ar',
+               'scripted_opponents', 'opponents', 'aim_fourier', 'aim_ar',
                # policy v4: --encoder v4 shape flags and the writer ablation
                'v4_set_dim', 'v4_set_inner', 'v4_flat_dim', 'v4_ffn_dim', 'v4_critic_dim',
                'v4_critic_privileged', 'v4_critic_detach', 'v4_mean_pool', 'v4_ablate', 'v4_row_budget')
