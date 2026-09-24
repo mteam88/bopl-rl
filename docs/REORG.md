@@ -170,12 +170,15 @@ A gate result nobody forced a rebuild for is not evidence.
 | gate | result |
 | --- | --- |
 | `check-reward` | pass |
-| `bounds-ability-ab` | `cases=38 water=-11.3 survivors=4`, 6 known divergences |
+| `bounds-ability-ab` | `cases=38 water=-11.3 survivors=4`, 6 known divergences (3 after the gust fix in `348027e1`) |
 | `sudden-death-publication-ab` | `maps_mismatched=0` |
 | `ability-sweep` | 24,800 episodes, 4588/4588 ability-map cells, 0 crashes, 0 divergent |
 | `map-sweep-3000` | 417,009 snapshots, 0 nonexact |
 | `map-sweep-endgame` | 801,501 snapshots, 0 nonexact |
-| `rust-ab-suite` | `pass=211 fail=0 skipped=4` |
+| `rust-ab-suite` | `pass=211 fail=0 skipped=4` (`skipped=5` after `348027e1` adds a diagnostic) |
+
+That table is the stage-1 baseline and is deliberately not rewritten as later work
+lands; the parenthesised numbers say where it has moved since.
 
 ### What PFSP and surgery each turned up
 
