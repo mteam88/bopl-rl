@@ -5629,6 +5629,12 @@ impl RolloutWorld {
         if has(ABILITY_PORTAL_GUN) && has(ABILITY_ROCK) {
             self.portal_shot_rock_contacts(data);
         }
+        // DetPhysics corrects every Circle/RR pair before any Circle/Circle
+        // one, so an item's wall correction moves it before an arrow's
+        // manifold with it is built.
+        if has_thrown_item {
+            self.thrown_item_platform_contacts(data);
+        }
         if has(ABILITY_BOW) {
             self.arrows_contacts(data);
         }
@@ -5636,7 +5642,6 @@ impl RolloutWorld {
             self.guided_missile_contacts(data);
         }
         if has_thrown_item {
-            self.thrown_item_platform_contacts(data);
             self.thrown_item_pair_contacts(data);
             self.thrown_items_contacts(data);
         }
