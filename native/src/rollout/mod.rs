@@ -432,6 +432,12 @@ pub struct Arrow {
     /// Live FixTransform scale. Ordinary Bow arrows start at one; Duplicator
     /// copies the source transform scale exactly.
     pub scale: Fix,
+    /// BoplBody.prevScale: the scale the DetPhysics mass last followed.
+    /// BoplBody.UpdateSim divides the inverse mass and inertia by each
+    /// scale change, so a grown arrow hits harder.
+    pub mass_scale: Fix,
+    pub inverse_mass: Fix,
+    pub inverse_inertia: Fix,
     pub velocity: Vec2,
     pub force: Vec2,
     pub angular_velocity: Fix,
@@ -449,6 +455,20 @@ pub struct Arrow {
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
+}
+
+impl Arrow {
+    /// The DetPhysics body, with this arrow's own scaled mass.
+    fn body(&self, base: &Body) -> Body {
+        Body {
+            velocity: self.velocity,
+            orientation: self.rotation,
+            angular_velocity: self.angular_velocity,
+            inverse_mass: self.inverse_mass,
+            inverse_inertia: self.inverse_inertia,
+            ..*base
+        }
+    }
 }
 
 /// A live `DynamicAbilityPickup`. The vector is bounded by the authored three
@@ -548,7 +568,19 @@ pub struct GrenadeExplosion {
     pub entity: Option<usize>,
     pub position: Vec2,
     pub owner: usize,
+    /// False for a boundary XEffect/UpEffect, which never assigns
+    /// Explosion.PlayerOwnerId.
+    pub credited_owner: bool,
+    /// GrenadeExplode.Detonate copies the grenade hitbox's Scale onto the
+    /// explosion box.
+    pub scale: Fix,
     pub age: u32,
+}
+
+impl GrenadeExplosion {
+    fn killer(&self) -> u32 {
+        if self.credited_owner { self.owner as u32 + 1 } else { 0 }
+    }
 }
 
 /// SparkShot's guided projectile. The projectile remains live after the
@@ -1252,6 +1284,62 @@ pub const PLATFORM_ANTICIPATION: u32 = 0;
 pub const PLATFORM_ROTATION: u32 = 1;
 pub const PLATFORM_SIZE: u32 = 2;
 pub const PLATFORM_EXIT: u32 = 3;
+
+/// An ability form's box collider and PlayerPhysics follow Player.Scale on
+/// their own. Ability assigns the scale to the box every pass, which divides
+/// its inverse extents by the rounded `(One / old) * new`, and
+/// PlayerPhysics.UpdateScale multiplies the radius by `new / prevScal`. The
+/// form object outlives each use, so its drift carries over. A zero scale
+/// marks a form that has not been entered yet.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FormScale {
+    pub scale: Fix,
+    pub inverse_extents: Vec2,
+    pub radius: Fix,
+    pub physics_scale: Fix,
+}
+
+impl FormScale {
+    /// `potentialCollider.Scale = Player.Scale` (Ability.cs:105, 135).
+    fn set_scale(&mut self, value: Fix, extents: Vec2, radius: Fix) {
+        if self.scale == Fix::ZERO {
+            *self = FormScale {
+                scale: Fix::ONE,
+                inverse_extents: Vec2::new(
+                    (Fix::ONE / extents.x).abs(),
+                    (Fix::ONE / extents.y).abs(),
+                ),
+                radius,
+                physics_scale: Fix::ONE,
+            };
+        }
+        let ratio = (Fix::ONE / self.scale) * value;
+        self.inverse_extents = self.inverse_extents / ratio;
+        self.scale = value;
+    }
+
+    /// PlayerPhysics.UpdateScale.
+    fn physics_radius(&mut self) -> Fix {
+        if self.physics_scale != self.scale {
+            self.radius *= self.scale / self.physics_scale;
+            self.physics_scale = self.scale;
+        }
+        self.radius
+    }
+
+    /// Box.SetRotation from the stored inverse extents.
+    fn hurtbox(&self, center: Vec2, basis: Vec2, extents: Vec2) -> OrientedBox {
+        if self.scale == Fix::ZERO {
+            return OrientedBox::from_basis(center, basis, extents);
+        }
+        OrientedBox {
+            center,
+            right: (Vec2::RIGHT / self.inverse_extents.x).complex_mul(basis),
+            up: (Vec2::UP / self.inverse_extents.y).complex_mul(basis),
+            inverse_extents: self.inverse_extents,
+        }
+    }
+}
 
 /// Per-player bow ability state (BowTransform.cs).
 #[derive(Clone, Copy, Default)]
@@ -2023,11 +2111,16 @@ pub struct PlayerSlot {
     /// PlayerPhysics.prevScal for the ordinary slime body. Its radius follows
     /// FixTransform scale one player-updater pass after the hurtbox does.
     pub physics_scale: Fix,
+    /// The slime's own PlayerPhysics radius, kept while a form's body stands
+    /// in for it.
+    pub slime_radius: Fix,
     /// DPhysicsBox stores inverse extents and updates them by the rounded
     /// old-to-new scale ratio. Keeping that representation reproduces the
     /// few-raw-unit drift that an absolute authored_extents * scale loses.
     pub body_collider_scale: Fix,
     pub body_inverse_extents: Vec2,
+    /// Each ability slot's form object.
+    pub forms: [FormScale; 3],
     /// Player.isInvisible and its two clocks. `was_invisible` belongs to the
     /// currently active SlimeController and drives cooldown restoration.
     pub invisible: bool,
@@ -2039,9 +2132,10 @@ pub struct PlayerSlot {
     pub reported_position: Vec2,
     pub reported_tick: u32,
     /// A platform destroyed later in the previous updater pass. Unity keeps
-    /// the rider grounded until its own next update, then separates it using
-    /// the destroyed StickyRoundedRectangle's last surface normal.
-    pub removed_ground_normal: Option<Vec2>,
+    /// the rider grounded until its own next update, then ungrounds it. The
+    /// pass-end DestroyImmediate already nulled attachedGround, so UnGround
+    /// skips its 0.05 separation.
+    pub ground_destroyed: bool,
     pub bow: BowState,
     pub rock: RockState,
     pub roll: RollState,
@@ -2276,6 +2370,22 @@ impl PlayerSlot {
         ]
     }
 
+    /// SyncPhysicsTo(AbilityExitInfo)'s UpdateScale: the kept slime radius
+    /// catches up to the Player.Scale onExitAbility just gave the hurtbox.
+    fn exit_slime_radius(&self) -> Fix {
+        let scale = self.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+        if scale != self.physics_scale {
+            self.slime_radius * (scale / self.physics_scale)
+        } else {
+            self.slime_radius
+        }
+    }
+
+    fn restore_slime_radius(&mut self) {
+        self.base.radius = self.exit_slime_radius();
+        self.physics_scale = self.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+    }
+
     fn set_ordinary_body_scale(&mut self, scale: Fix) {
         let scale = scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
         // SlimeController assigns hurtBox.Scale every pass even when the
@@ -2328,6 +2438,9 @@ struct PlatformScratch {
     window: Vec<usize>,
     pairs: Vec<[usize; 2]>,
     callback_colliders: Vec<RoundedRect>,
+    /// The walls as the Box/RoundedRect narrow phase copies them, after the
+    /// RoundedRect/RoundedRect positional corrections.
+    box_callback_colliders: Vec<RoundedRect>,
     callback_tick: Option<u32>,
     contacts: Vec<(usize, usize, Contact)>,
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
@@ -3648,6 +3761,7 @@ impl RolloutWorld {
                 abilities,
                 ability_generation: 0,
                 ability_instantiated: [true; 3],
+                forms: [FormScale::default(); 3],
                 pending_ability_hierarchy: [u32::MAX; 3],
                 timers: [timer0; 3],
                 cooldowns,
@@ -3668,6 +3782,7 @@ impl RolloutWorld {
                 ability_entry_action: Action::default(),
                 player_scale: Fix::ONE,
                 physics_scale: Fix::ONE,
+                slime_radius: data.player.radius,
                 body_collider_scale: Fix::ONE,
                 body_inverse_extents: Vec2::new(
                     Fix::ONE / data.player.hurtbox_extents.x,
@@ -3679,7 +3794,7 @@ impl RolloutWorld {
                 ability_time: Fix::ZERO,
                 reported_position: spawn,
                 reported_tick: u32::MAX,
-                removed_ground_normal: None,
+                ground_destroyed: false,
                 bow: BowState::default(),
                 rock: RockState::default(),
                 roll: RollState::default(),
@@ -4412,6 +4527,7 @@ impl RolloutWorld {
                 slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
                 slot.timers[2] = Fix::from_int(100_000);
                 slot.ability_instantiated[2] = false;
+                slot.forms[2] = FormScale::default();
                 slot.drill_hitbox_entities[2] = [usize::MAX; 3];
                 slot.black_hole_castable[2] = true;
                 slot.portal_blue[2] = None;
@@ -5700,7 +5816,7 @@ impl RolloutWorld {
             let slot = &self.players[index];
             if !slot.base.alive
                 || !slot.base.grounded
-                || slot.removed_ground_normal.is_some()
+                || slot.ground_destroyed
                 || slot.rewind.rewinding
             {
                 continue;
@@ -5710,6 +5826,14 @@ impl RolloutWorld {
                     .iter()
                     .position(|platform| platform.id == ground)
             });
+            // A wall DestroyFix'd in this pass's callbacks (a BlackHole eating
+            // it) is already IsDestroyed, so its riders stay where
+            // DetPhysics left them.
+            if let Some(platform_index) = ground_index
+                && self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED != 0
+            {
+                continue;
+            }
             if let Some(platform_index) = ground_index
                 && !self.platforms[platform_index].active
             {
@@ -7050,16 +7174,19 @@ impl RolloutWorld {
         // gravity step below) and Move's raycasts both fire attachToGround,
         // and `update_obs_state` consumes whichever one landed the body.
         self.players[index].base.begin_pass();
-        let leaving_blink_wall = self.players[index].base.ground.is_some_and(|ground| {
-            self.platforms
-                .iter()
-                .position(|platform| platform.id == ground)
-                .is_some_and(|platform_index| {
-                    !self.platforms[platform_index].active
-                        && self.platform_dynamics[platform_index].blink_tunnel_active
-                        && self.platform_dynamics[platform_index].blink_tunnel_initialized
-                })
-        });
+        // An airborne body keeps its stale attachedGround; only a grounded
+        // rider discovers the disabled wall.
+        let leaving_blink_wall = self.players[index].base.grounded
+            && self.players[index].base.ground.is_some_and(|ground| {
+                self.platforms
+                    .iter()
+                    .position(|platform| platform.id == ground)
+                    .is_some_and(|platform_index| {
+                        !self.platforms[platform_index].active
+                            && self.platform_dynamics[platform_index].blink_tunnel_active
+                            && self.platform_dynamics[platform_index].blink_tunnel_initialized
+                    })
+            });
         let in_ability = {
             let slot = &self.players[index];
             slot.active != ActiveAbility::None || slot.base.dash.active
@@ -7101,7 +7228,7 @@ impl RolloutWorld {
         }
         // A Beam form finds its lost ground inside Beam.MovePlayer instead.
         if self.players[index].active != ActiveAbility::Beam
-            && let Some(normal) = self.players[index].removed_ground_normal.take()
+            && std::mem::take(&mut self.players[index].ground_destroyed)
         {
             let slot = &mut self.players[index];
             // Ordinary SlimeController explicitly zeros rotation before
@@ -7113,7 +7240,6 @@ impl RolloutWorld {
                 slot.base.up = Vec2::UP;
                 slot.base.skip_next_gravity = true;
             }
-            slot.base.position += normal * Fix::from_f32(0.05);
             slot.base.grounded = false;
             slot.base.ground = None;
             slot.base.grounded_speed = Fix::ZERO;
@@ -7214,7 +7340,14 @@ impl RolloutWorld {
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
                     slot.ability_origin_rotation = frozen.rotation;
                     slot.ability_origin_state = slot.obs_state;
-                    slot.ability_origin_scale = slot.base.scale;
+                    // SlimeController still writes Player.Scale to its hurtbox
+                    // after OldUpdate on the pass it enters an ability.
+                    let scale = slot.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+                    let ratio = (Fix::ONE / slot.body_collider_scale) * scale;
+                    slot.body_inverse_extents = slot.body_inverse_extents / ratio;
+                    slot.body_collider_scale = scale;
+                    slot.ability_origin_scale = scale;
+                    slot.slime_radius = slot.base.radius;
                     // Ability.EnterAbility scales the enabled form collider
                     // from Player.Scale before invoking its components.
                     slot.base.scale = slot.player_scale;
@@ -7380,6 +7513,12 @@ impl RolloutWorld {
                             angle: action.angle,
                             buttons: (action.buttons & 1) | 2,
                         };
+                        let slot = &mut self.players[index];
+                        let scale = slot.player_scale;
+                        let form = &mut slot.forms[s];
+                        form.set_scale(scale, data.dash.hurtbox_extents, data.player.radius);
+                        slot.base.dash.radius = form.physics_radius();
+                        slot.base.dash.inverse_extents = form.inverse_extents;
                         // Dash is registered after SlimeController in this
                         // prefab, so its freshly enabled UpdateSim runs later
                         // in the same pass. That performs anticipation setup
@@ -7398,17 +7537,21 @@ impl RolloutWorld {
                     | ABILITY_POKE_BALL => {
                         // PlayerPhysics.SyncPhysicsTo re-places a grounded form
                         // from the slime's surface coordinate on the ground's
-                        // current pose (PlayerPhysics.cs:534).
+                        // current pose and aligns it to the normal there; an
+                        // airborne form starts unrotated (PlayerPhysics.cs:525).
                         let base = &self.players[index].base;
-                        let form_position = base
+                        let (form_position, form_rotation) = base
                             .ground
                             .filter(|_| base.grounded)
                             .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
-                            .map_or(base.position, |platform| {
-                                platform.surface.position(base.local, base.radius)
+                            .map_or((base.position, Fix::ZERO), |platform| {
+                                let position = platform.surface.position(base.local, base.radius);
+                                let right = platform.surface.normal(position).perp_cw();
+                                (position, right.normalized_angle())
                             });
                         let slot = &mut self.players[index];
                         slot.base.position = form_position;
+                        slot.base.rotation = form_rotation;
                         slot.timers[s] = Fix::ZERO;
                         slot.active = match ability {
                             ABILITY_TACK => ActiveAbility::Tack,
@@ -8205,6 +8348,13 @@ impl RolloutWorld {
                             },
                             ..BowState::default()
                         };
+                        // Ability.EnterAbility scales the box, then
+                        // SyncPhysicsTo's UpdateScale the radius it places
+                        // the body with.
+                        let scale = slot.player_scale;
+                        let form = &mut slot.forms[s];
+                        form.set_scale(scale, data.bow.hurtbox_extents, data.player.radius);
+                        slot.base.radius = form.physics_radius();
                         if slot.base.grounded {
                             // SyncPhysicsTo(PlayerInfo) re-derives the body
                             // from the surface local with no self-imposed
@@ -8227,6 +8377,10 @@ impl RolloutWorld {
                             // later UnGround has nothing to push off from.
                             slot.base.ground = None;
                         }
+                        // Ability.UpdateSim publishes the body SyncPhysicsTo
+                        // placed; a grown slime's larger radius moves it.
+                        slot.reported_position = slot.base.position;
+                        slot.reported_tick = self.tick;
                         // BowTransform follows Ability in the prefab updater
                         // list, so a newly enabled Bow updates later in this
                         // same pass (like Dash, unlike a newly instantiated
@@ -9611,7 +9765,7 @@ impl RolloutWorld {
             .iter()
             .find(|explosion| explosion.active && explosion.entity == Some(entity))
         {
-            return (explosion.owner as u32 + 1, true, CAUSE_OTHER);
+            return (explosion.killer(), true, CAUSE_OTHER);
         }
         if let Some(explosion) = self
             .missile_explosions
@@ -9677,12 +9831,7 @@ impl RolloutWorld {
             .position(|arrow| arrow.active && arrow.entity == Some(entity))
         {
             let arrow = self.arrows[arrow_index];
-            let body = Body {
-                velocity: arrow.velocity,
-                orientation: arrow.rotation,
-                angular_velocity: arrow.angular_velocity,
-                ..data.arrow.body
-            };
+            let body = arrow.body(&data.arrow.body);
             self.destroy_arrow_contact(arrow_index, near, body);
             return;
         }
@@ -12516,7 +12665,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let mass_force =
-                    data.black_hole.gravity * (Fix::ONE / data.arrow.body.inverse_mass) * mass;
+                    data.black_hole.gravity * (Fix::ONE / arrow.inverse_mass) * mass;
                 arrow.force += vector * mass_force / cube;
             }
 
@@ -12772,7 +12921,7 @@ impl RolloutWorld {
                 }
                 Self::black_hole_grow(
                     &mut self.black_holes[hole_index],
-                    data.arrow.body.inverse_mass,
+                    arrow.inverse_mass,
                     Fix::ZERO,
                     data,
                 );
@@ -14180,20 +14329,15 @@ impl RolloutWorld {
         }
     }
 
-    /// PlayerPhysics.Move on a destroyed ground: UnGround pushes the form 0.05 off the surface
-    /// as it is now, and Beam.OnUngrounded re-reads the staff against the
-    /// zeroed rotation. Nothing else moves the form that pass.
+    /// PlayerPhysics.Move on a destroyed ground: UnGround (with no
+    /// separation, attachedGround is already null) and Beam.OnUngrounded
+    /// re-reads the staff against the zeroed rotation. Nothing else moves the
+    /// form that pass.
     fn beam_lost_ground(&mut self, index: usize) -> bool {
-        let Some(stored) = self.players[index].removed_ground_normal.take() else {
+        if !std::mem::take(&mut self.players[index].ground_destroyed) {
             return false;
-        };
+        }
         let slot = &mut self.players[index];
-        let normal = self
-            .platforms
-            .iter()
-            .find(|platform| Some(platform.id) == slot.base.ground)
-            .map_or(stored, |platform| platform.surface.normal(slot.base.position));
-        slot.base.position += normal * Fix::from_f32(0.05);
         slot.base.grounded = false;
         slot.base.ground = None;
         slot.base.grounded_speed = Fix::ZERO;
@@ -15910,7 +16054,7 @@ impl RolloutWorld {
             let collider = OrientedBox::from_basis(
                 explosion.position,
                 Vec2::RIGHT,
-                data.grenade.explosion_extents,
+                data.grenade.explosion_extents * explosion.scale,
             );
             self.entities[entity] = CEntity {
                 id,
@@ -15950,7 +16094,7 @@ impl RolloutWorld {
             // cloud born below WaterHeight is destroyed before its collider
             // can appear in the public entity rows, instantiating the
             // two-updatable water splash.
-            if cloud.position.y < Fix::from_f32(-11.3) {
+            if cloud.position.y < data::get().maps[self.map].lower_boundary() {
                 self.next_spawn_hierarchy += 2;
                 self.remove_smoke_cloud(cloud_index);
                 continue;
@@ -16123,7 +16267,7 @@ impl RolloutWorld {
                 arrow.velocity += direction.normalized_safe()
                     * (wave.default_force / distance)
                     * Fix::from_int(60)
-                    * Fix::from_f64(0.2);
+                    * arrow.inverse_mass;
             }
             for missile in &mut self.guided_missiles {
                 if !missile.active || !missile.registered {
@@ -16348,10 +16492,12 @@ impl RolloutWorld {
             }
             if self.smoke_clouds[cloud_index].active
                 && self.smoke_clouds[cloud_index].registered
-                && self.smoke_clouds[cloud_index].position.y < Fix::from_f32(-11.3)
+                && self.smoke_clouds[cloud_index].position.y
+                    < data::get().maps[self.map].lower_boundary()
             {
                 // SmokeCircle's DestroyIfOutsideSceneBounds also instantiates
-                // the two-updatable water splash.
+                // the two-updatable water splash (or, in space, the
+                // two-updatable UpEffect).
                 self.next_spawn_hierarchy += 2;
                 self.remove_smoke_cloud(cloud_index);
                 continue;
@@ -17070,6 +17216,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.ability_generation = slot.ability_generation.wrapping_add(1);
             slot.ability_instantiated = [true; 3];
+            slot.forms = [FormScale::default(); 3];
             slot.pending_ability_hierarchy = [u32::MAX; 3];
             slot.base.position = position;
             slot.base.external_velocity = Vec2::ZERO;
@@ -17556,6 +17703,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.ability_generation = slot.ability_generation.wrapping_add(1);
             slot.ability_instantiated = [true; 3];
+            slot.forms = [FormScale::default(); 3];
             slot.pending_ability_hierarchy = [u32::MAX; 3];
             slot.base.radius = data.player.radius;
             slot.physics_scale = Fix::ONE;
@@ -18159,7 +18307,7 @@ impl RolloutWorld {
                 * ((data.gust.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
-            arrow.velocity += impulse * data.arrow.body.inverse_mass;
+            arrow.velocity += impulse * arrow.inverse_mass;
         }
         for target in 0..wave.missile_count {
             let missile_index = wave.missile_indices[target];
@@ -18396,9 +18544,29 @@ impl RolloutWorld {
 
     /// base.step with the dash shove check from World::step.
     fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
+        if self.players[index].active == ActiveAbility::Dash {
+            // onExitAbility sets hurtBox.Scale = Player.Scale, and
+            // SyncPhysicsTo's UpdateScale follows before the exit rays.
+            let slot = &mut self.players[index];
+            let scale = slot.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+            slot.base.dash.exit_radius = if scale != slot.physics_scale {
+                slot.base.radius * (scale / slot.physics_scale)
+            } else {
+                slot.base.radius
+            };
+        }
         self.players[index]
             .base
             .move_step(action, movement_input, terrain!(self));
+        if self.players[index].base.dash.active {
+            // Ability (updater 2) and PlayerPhysics (3) follow Dash.
+            let slot = &mut self.players[index];
+            let scale = slot.player_scale;
+            let form = &mut slot.forms[slot.active_slot];
+            form.set_scale(scale, data::get().dash.hurtbox_extents, data::get().player.radius);
+            slot.base.dash.radius = form.physics_radius();
+            slot.base.dash.inverse_extents = form.inverse_extents;
+        }
         // Dash precedes Ability in the prefab updater order, so the public
         // player position sees Dash's post-update transform on every active
         // pass, including activation and teleport/exit.
@@ -18420,6 +18588,10 @@ impl RolloutWorld {
                 slot.reported_position = slot.base.dash.exit_position;
             }
             if let Some(input) = exit_input {
+                let slot = &mut self.players[index];
+                slot.physics_scale = slot.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+                slot.set_ordinary_body_scale(slot.player_scale);
+                slot.base.sync_collider();
                 self.dash_rope_exit(index, input, data::get().dash.leave_speed);
                 // Dash.ExitAbility: `isFacingRight = Dot(inputVector, right) <= 0`.
                 self.players[index].facing_right = input.x <= Fix::ZERO;
@@ -18638,7 +18810,7 @@ impl RolloutWorld {
                             .iter()
                             .find(|explosion| explosion.active && explosion.entity == Some(entity))
                         {
-                            killer = explosion.owner as u32 + 1;
+                            killer = explosion.killer();
                             can_hurt_owner = true;
                         } else if let Some(explosion) = self
                             .missile_explosions
@@ -19415,17 +19587,17 @@ impl RolloutWorld {
             }
         }
         if self.players[index].base.grounded {
-            // PlayerPhysics.Move(Vec2.zero) consumes the throw recoil while
-            // attached to the authored surface. PlayerBody still integrates
-            // external velocity afterward, which is observable when a moving
-            // platform carried the caster immediately before entry.
+            // PlayerPhysics.Move(Vec2.zero) slides along the authored surface
+            // but leaves Fire's recoil in selfImposedVelocity. PlayerBody
+            // still integrates it with the external velocity, so DetPhysics
+            // sees the drifted body until LateUpdateSim snaps it back.
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
             let this = &mut *self;
             let slot = &mut this.players[index];
-            slot.base.velocity = Vec2::ZERO;
-            slot.base.position += slot.base.external_velocity * DT;
+            slot.throw_item.collider_rotation = slot.base.rotation;
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
         } else {
             // ThrowItem2 keeps its own PlayerBody live throughout the aerial
@@ -20209,7 +20381,7 @@ impl RolloutWorld {
             .expect("valid Duplicator gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                self.exit_duplicator_landing(index, data);
+                self.exit_duplicator_landing(index);
                 return;
             }
         }
@@ -21455,7 +21627,7 @@ impl RolloutWorld {
                         center: position,
                         radius: data.arrow.radius * scale,
                     },
-                    data.arrow.body.inverse_mass,
+                    self.arrows[i].inverse_mass,
                 );
                 let arrow = &mut self.arrows[i];
                 arrow.position = position + correction;
@@ -21783,7 +21955,7 @@ impl RolloutWorld {
                 .find(|platform| platform.id == ground)
                 .expect("landed Magnet ground remains registered")
         });
-        let ordinary_radius = data.player.radius * self.players[index].ability_origin_scale;
+        let ordinary_radius = self.players[index].exit_slime_radius();
         let landed_local = landed_surface.map(|platform| {
             platform
                 .surface
@@ -21802,6 +21974,7 @@ impl RolloutWorld {
         slot.exit_to_fall();
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
+        slot.restore_slime_radius();
         if !landed {
             slot.base.ground = None;
             slot.base.collision_rays(terrain);
@@ -21810,8 +21983,6 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             slot.base.align(platform);
         }
-        slot.physics_scale = slot.ability_origin_scale;
-        slot.base.radius = ordinary_radius;
         slot.base.constants = data.player.constants.clone();
         slot.set_ordinary_body_scale(slot.player_scale);
     }
@@ -21854,7 +22025,7 @@ impl RolloutWorld {
         }
     }
 
-    fn exit_duplicator_landing(&mut self, index: usize, data: &data::RolloutData) {
+    fn exit_duplicator_landing(&mut self, index: usize) {
         let platform_index = self.players[index]
             .base
             .ground
@@ -21865,7 +22036,7 @@ impl RolloutWorld {
         let position = platform
             .surface
             .position(self.players[index].base.local, form_radius);
-        let ordinary_radius = data.player.radius * self.players[index].ability_origin_scale;
+        let ordinary_radius = self.players[index].exit_slime_radius();
         let local = platform
             .surface
             .local_position(position, ordinary_radius)
@@ -21877,11 +22048,10 @@ impl RolloutWorld {
         slot.base.local = local;
         slot.base.position = position;
         slot.base.velocity = Vec2::ZERO;
-        slot.base.radius = ordinary_radius;
+        slot.restore_slime_radius();
         slot.base.align(platform);
         slot.reported_position = position;
         slot.reported_tick = self.tick;
-        slot.physics_scale = slot.ability_origin_scale;
         slot.set_ordinary_body_scale(slot.player_scale);
     }
 
@@ -22232,6 +22402,9 @@ impl RolloutWorld {
                 entity: None,
                 position,
                 scale: source.scale,
+                mass_scale: Fix::ONE,
+                inverse_mass: data.arrow.body.inverse_mass,
+                inverse_inertia: data.arrow.body.inverse_inertia,
                 velocity,
                 force: Vec2::ZERO,
                 angular_velocity: source.angular_velocity,
@@ -25268,9 +25441,8 @@ impl RolloutWorld {
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
         slot.base.ground = None;
+        slot.restore_slime_radius();
         slot.base.collision_rays(terrain);
-        slot.physics_scale = slot.ability_origin_scale;
-        slot.base.radius = data::get().player.radius * slot.ability_origin_scale;
         slot.set_ordinary_body_scale(slot.player_scale);
     }
 
@@ -25287,10 +25459,8 @@ impl RolloutWorld {
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
         slot.base.ground = None;
+        slot.restore_slime_radius();
         slot.base.collision_rays(terrain);
-        // The restored slime receives Player.Scale on its next updater pass.
-        slot.physics_scale = slot.ability_origin_scale;
-        slot.base.radius = data::get().player.radius * slot.ability_origin_scale;
         slot.set_ordinary_body_scale(slot.player_scale);
     }
 
@@ -25310,6 +25480,14 @@ impl RolloutWorld {
                 return;
             }
             b.fire_ticks_left -= 1;
+        }
+        // Ability (updater 2) and PlayerPhysics (3) follow the SpriteAnimator.
+        {
+            let slot = &mut self.players[index];
+            let scale = slot.player_scale;
+            let form = &mut slot.forms[slot.active_slot];
+            form.set_scale(scale, bow.hurtbox_extents, data.player.radius);
+            slot.base.radius = form.physics_radius();
         }
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
@@ -25459,7 +25637,7 @@ impl RolloutWorld {
     /// then recoil the shooter.
     fn fire_bow(&mut self, index: usize, data: &data::RolloutData) {
         let bow = &data.bow;
-        let (position, aim, loading_frame, velocity_before, grounded, owner) = {
+        let (position, aim, loading_frame, velocity_before, grounded, owner, scale) = {
             let slot = &self.players[index];
             (
                 slot.base.position,
@@ -25468,13 +25646,17 @@ impl RolloutWorld {
                 slot.base.velocity,
                 slot.base.grounded,
                 slot.base.id,
+                slot.forms[slot.active_slot].scale,
             )
         };
+        // The arrow takes the form's scale, and flies and arms faster by
+        // half its growth (BowTransform.cs:177-182).
+        let factor = Fix::ONE + (scale - Fix::ONE) / Fix::from_int(2);
         let speed = Fix::from_int(i64::from(loading_frame) + 1) * bow.arrow_speed;
-        let start_velocity = aim * speed + velocity_before;
+        let start_velocity = aim * speed * factor + velocity_before;
         let magnitude = start_velocity.length();
         let hurt_owner_after = if magnitude > Fix::ZERO {
-            bow.time_before_arrows_hurt_owner / magnitude
+            bow.time_before_arrows_hurt_owner * factor / magnitude
         } else {
             Fix::ZERO
         };
@@ -25484,6 +25666,7 @@ impl RolloutWorld {
             start_velocity,
             hurt_owner_after,
             bow.max_arrows,
+            scale,
         );
         self.players[index].telemetry.arrows_fired += 1;
         let this = &mut *self;
@@ -25957,12 +26140,11 @@ impl RolloutWorld {
     /// their own next updater pass.
     fn remove_platform(&mut self, index: usize) {
         let id = self.platforms[index].id;
-        let surface = self.platforms[index].surface.clone();
         for slot in &mut self.players {
             // Every lost-ground check is gated on isGrounded; an airborne
             // body keeps its stale attachedGround.
             if slot.base.alive && slot.base.grounded && slot.base.ground == Some(id) {
-                slot.removed_ground_normal = Some(surface.normal(slot.base.position));
+                slot.ground_destroyed = true;
             }
         }
         let entity = self.platform_entities[index];
@@ -26173,6 +26355,7 @@ impl RolloutWorld {
         velocity: Vec2,
         hurt_owner_after: Fix,
         max_arrows: u32,
+        scale: Fix,
     ) {
         // BowTransform uses a per-owner RingBuffer and destroys its oldest
         // arrow when the authored capacity is reached. Native arrow slots are
@@ -26207,7 +26390,10 @@ impl RolloutWorld {
             owner,
             entity: None,
             position,
-            scale: Fix::ONE,
+            scale,
+            mass_scale: Fix::ONE,
+            inverse_mass: data::get().arrow.body.inverse_mass,
+            inverse_inertia: data::get().arrow.body.inverse_inertia,
             velocity,
             force: Vec2::ZERO,
             angular_velocity: Fix::ZERO,
@@ -26337,7 +26523,7 @@ impl RolloutWorld {
                     + arrow.hierarchy_base
                     + data::get().arrow.collider_hierarchy,
                 radius: (radius * arrow.scale).raw(),
-                inverse_mass: Fix::from_f64(0.2).raw(),
+                inverse_mass: arrow.inverse_mass.raw(),
                 ..CEntity::default()
             };
             arrow.registered = true;
@@ -26514,7 +26700,7 @@ impl RolloutWorld {
             }
             let position = self.guided_missiles[index].position;
             let mut boundary_explosion = None;
-            if position.y < Fix::from_f32(-11.3) {
+            if position.y < data::get().maps[self.map].lower_boundary() {
                 self.destroy_guided_missile(index, false);
                 continue;
             } else if position.y > Fix::from_f64(72.5) {
@@ -26596,9 +26782,11 @@ impl RolloutWorld {
             // before Arrow.UpdateSim (hierarchy 2) and DetPhysics. Its
             // NeverDestroyAbove flag leaves top exits alive.
             let position = self.arrows[i].position;
-            if position.y < Fix::from_f32(-11.3) || position.x.abs() > Fix::from_f64(131.25) {
+            let floor = data.maps[self.map].lower_boundary();
+            if position.y < floor || position.x.abs() > Fix::from_f64(131.25) {
                 // Only the water exit has an effect: the two-updatable splash.
-                if position.y < Fix::from_f32(-11.3) && !data.maps[self.map].is_space() {
+                // In space the floor exit looks for an UpEffect Arrow lacks.
+                if position.y < floor && !data.maps[self.map].is_space() {
                     self.next_spawn_hierarchy += 2;
                 }
                 self.destroy_arrow(i);
@@ -26606,6 +26794,15 @@ impl RolloutWorld {
             }
             let arrow = &mut self.arrows[i];
             arrow.time_passed += updater_dt;
+            if arrow.scale != arrow.mass_scale
+                && arrow.inverse_mass != Fix::ZERO
+                && arrow.inverse_inertia != Fix::ZERO
+            {
+                let ratio = arrow.mass_scale / arrow.scale;
+                arrow.inverse_mass *= ratio;
+                arrow.inverse_inertia *= ratio;
+                arrow.mass_scale = arrow.scale;
+            }
             if !arrow.can_hurt_owner
                 && arrow.hurt_owner_after > Fix::ZERO
                 && arrow.time_passed > arrow.hurt_owner_after
@@ -26651,7 +26848,7 @@ impl RolloutWorld {
             // (native/src/physics/mod.rs:38) already has the right form; this
             // inlined arrow copy had drifted from it.
             arrow.velocity += physics_dt * Vec2::new(Fix::ZERO, gravity)
-                + DT * arrow.force * data.arrow.body.inverse_mass;
+                + DT * arrow.force * arrow.inverse_mass;
             arrow.position += arrow.velocity * physics_dt;
             arrow.rotation = (arrow.rotation + arrow.angular_velocity * physics_dt)
                 .checked_rem(Fix::TAU, true)
@@ -27541,19 +27738,27 @@ impl RolloutWorld {
             }
             let ability = self.thrown_items[item_index].ability;
             // DestroyIfOutsideSceneBounds precedes Grenade/Item updaters.
-            // Grenade, Smoke and Mine instantiate the two-updatable water
-            // splash before removing their collider; the other thrown items
-            // have no DownEffect.
-            if self.thrown_items[item_index].position.y < Fix::from_f32(-11.3) {
-                if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE) {
+            // Below the water Grenade, Smoke and Mine instantiate the
+            // two-updatable splash. Past the space floor or the sides the
+            // grenade's UpEffect/XEffect is XGunExplosion, its own unowned
+            // detonation; Smoke's is a two-updatable animation. The other
+            // thrown items have no effect.
+            let item = self.thrown_items[item_index];
+            let map = &data::get().maps[self.map];
+            let side = Fix::from_f64(131.25);
+            let below = item.position.y < map.lower_boundary();
+            if below || (ability != ABILITY_MINE && item.position.x.abs() > side) {
+                if ability == ABILITY_GRENADE && (map.is_space() || !below) {
+                    let position = if below {
+                        Vec2::new(item.position.x, map.lower_boundary())
+                    } else {
+                        let x = if item.position.x < Fix::ZERO { -side } else { side };
+                        Vec2::new(x, item.position.y)
+                    };
+                    self.spawn_grenade_explosion(position, item.owner, false, Fix::ONE, data);
+                } else if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE) {
                     self.next_spawn_hierarchy += 2;
                 }
-                self.remove_thrown_item(item_index, false);
-                continue;
-            }
-            if ability == ABILITY_MJOLNIR
-                && self.thrown_items[item_index].position.x.abs() > Fix::from_f64(131.25)
-            {
                 self.remove_thrown_item(item_index, false);
                 continue;
             }
@@ -27725,14 +27930,28 @@ impl RolloutWorld {
             return;
         }
         let item = self.thrown_items[item_index];
+        self.spawn_grenade_explosion(item.position, item.owner, true, item.scale, data);
+        self.remove_thrown_item(item_index, by_callback);
+    }
+
+    fn spawn_grenade_explosion(
+        &mut self,
+        position: Vec2,
+        owner: usize,
+        credited_owner: bool,
+        scale: Fix,
+        data: &data::RolloutData,
+    ) {
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.grenade.explosion_updatable_count;
         let explosion = GrenadeExplosion {
             active: true,
             born_tick: self.tick,
             hierarchy_base,
-            position: item.position,
-            owner: item.owner,
+            position,
+            owner,
+            credited_owner,
+            scale,
             ..GrenadeExplosion::default()
         };
         if let Some(free) = self
@@ -27747,7 +27966,6 @@ impl RolloutWorld {
         } else {
             self.grenade_explosions.push(explosion);
         }
-        self.remove_thrown_item(item_index, by_callback);
     }
 
     fn detonate_smoke(&mut self, item_index: usize, by_callback: bool, data: &data::RolloutData) {
@@ -27914,12 +28132,7 @@ impl RolloutWorld {
                 }
             }
             if !contacts.is_empty() {
-                let mut arrow_body = crate::physics::Body {
-                    velocity: arrow.velocity,
-                    orientation: arrow.rotation,
-                    angular_velocity: arrow.angular_velocity,
-                    ..data.arrow.body
-                };
+                let mut arrow_body = arrow.body(&data.arrow.body);
                 let mut center = circle.center;
                 for &(p, contact) in &contacts {
                     let (platform_center, own_inverse_mass) = self.platform_contact_frame(p);
@@ -27995,12 +28208,7 @@ impl RolloutWorld {
                 }
             }
             if item_contact_count > 0 {
-                let mut arrow_body = crate::physics::Body {
-                    velocity: arrow.velocity,
-                    orientation: arrow.rotation,
-                    angular_velocity: arrow.angular_velocity,
-                    ..data.arrow.body
-                };
+                let mut arrow_body = arrow.body(&data.arrow.body);
                 let mut arrow_center = arrow.position;
                 for &(item_index, contact, arrow_first) in &item_contacts[..item_contact_count] {
                     let item = self.thrown_items[item_index];
@@ -28092,12 +28300,7 @@ impl RolloutWorld {
                 }
             }
             if rock_contact_count > 0 {
-                let mut arrow_body = crate::physics::Body {
-                    velocity: arrow.velocity,
-                    orientation: arrow.rotation,
-                    angular_velocity: arrow.angular_velocity,
-                    ..data.arrow.body
-                };
+                let mut arrow_body = arrow.body(&data.arrow.body);
                 let mut arrow_center = arrow.position;
                 for &(player_index, contact) in &rock_contacts[..rock_contact_count] {
                     let rock_center = self.players[player_index].base.position;
@@ -28158,12 +28361,7 @@ impl RolloutWorld {
                 }
             }
             if portal_contact_count > 0 {
-                let mut arrow_body = crate::physics::Body {
-                    velocity: arrow.velocity,
-                    orientation: arrow.rotation,
-                    angular_velocity: arrow.angular_velocity,
-                    ..data.arrow.body
-                };
+                let mut arrow_body = arrow.body(&data.arrow.body);
                 let mut arrow_center = arrow.position;
                 for &(shot_index, contact) in &portal_contacts[..portal_contact_count] {
                     let shot = self.portal_shots[shot_index];
@@ -28226,12 +28424,7 @@ impl RolloutWorld {
                 }
             }
             if missile_contact_count > 0 {
-                let mut arrow_body = crate::physics::Body {
-                    velocity: arrow.velocity,
-                    orientation: arrow.rotation,
-                    angular_velocity: arrow.angular_velocity,
-                    ..data.arrow.body
-                };
+                let mut arrow_body = arrow.body(&data.arrow.body);
                 let mut arrow_center = arrow.position;
                 for &(missile_index, contact) in &missile_contacts[..missile_contact_count] {
                     let missile = self.guided_missiles[missile_index];
@@ -28354,12 +28547,7 @@ impl RolloutWorld {
                 }
             }
             if terrain_contact_count > 0 {
-                let mut arrow_body = crate::physics::Body {
-                    velocity: arrow.velocity,
-                    orientation: arrow.rotation,
-                    angular_velocity: arrow.angular_velocity,
-                    ..data.arrow.body
-                };
+                let mut arrow_body = arrow.body(&data.arrow.body);
                 let mut arrow_center = arrow.position;
                 for &(entity, contact, target_first) in &terrain_contacts[..terrain_contact_count] {
                     // ResolveCollision uses the CompositeBody; PositionalCorrection
@@ -29414,7 +29602,7 @@ impl RolloutWorld {
                             OrientedBox::from_basis(
                                 explosion.position,
                                 Vec2::RIGHT,
-                                data.grenade.explosion_extents,
+                                data.grenade.explosion_extents * explosion.scale,
                             ),
                         )
                         .is_some()
@@ -29493,7 +29681,7 @@ impl RolloutWorld {
                             OrientedBox::from_basis(
                                 explosion.position,
                                 Vec2::RIGHT,
-                                data.grenade.explosion_extents,
+                                data.grenade.explosion_extents * explosion.scale,
                             ),
                         )
                         .is_some()
@@ -29570,21 +29758,16 @@ impl RolloutWorld {
                 } else {
                     let hurtbox = match player.active {
                         ActiveAbility::Bow => {
-                            let extents = data.bow.hurtbox_extents;
                             let up = if player.bow.aim == Vec2::ZERO {
                                 Vec2::UP
                             } else {
                                 player.bow.aim
                             };
-                            OrientedBox {
-                                center: player.base.position,
-                                right: up.perp_cw() * extents.x,
-                                up: up * extents.y,
-                                inverse_extents: Vec2::new(
-                                    Fix::ONE / extents.x,
-                                    Fix::ONE / extents.y,
-                                ),
-                            }
+                            player.forms[player.active_slot].hurtbox(
+                                player.base.position,
+                                up.perp_cw(),
+                                data.bow.hurtbox_extents,
+                            )
                         }
                         ActiveAbility::Grenade
                         | ActiveAbility::Smoke
@@ -29627,7 +29810,7 @@ impl RolloutWorld {
             let hitbox = OrientedBox::from_basis(
                 explosion.position,
                 Vec2::RIGHT,
-                data.grenade.explosion_extents,
+                data.grenade.explosion_extents * explosion.scale,
             );
             let mut victims = [false; MAX_PLAYERS];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
@@ -29661,7 +29844,7 @@ impl RolloutWorld {
                     crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
                 };
             }
-            let killer = explosion.owner as u32 + 1;
+            let killer = explosion.killer();
             for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
                 if victim && self.playable(player_index) {
                     let cause = if self.players[player_index].base.id == killer {
@@ -29750,7 +29933,7 @@ impl RolloutWorld {
             let hitbox = OrientedBox::from_basis(
                 explosion.position,
                 Vec2::RIGHT,
-                data.grenade.explosion_extents,
+                data.grenade.explosion_extents * explosion.scale,
             );
             for cloud in &mut self.smoke_clouds {
                 if !cloud.active || !cloud.registered {
@@ -31433,6 +31616,10 @@ impl RolloutWorld {
                 }
             }
         }
+        scratch.box_callback_colliders.clear();
+        scratch
+            .box_callback_colliders
+            .extend(self.platforms.iter().map(|p| p.collider));
 
         // DetPhysics' Box/RoundedRect group follows RoundedRect/RoundedRect.
         // SpikeAttack boxes are composite children, so impulses and
@@ -31625,8 +31812,10 @@ impl RolloutWorld {
         // PlayerCollision kills a grounded slime when a different wall's
         // rounded rectangle contains its squish point (the stock player
         // prefab uses the body centre). Player boxes are triggers, so this is
-        // a callback effect rather than a rigid-body response.
-        let callback_colliders = &scratch.callback_colliders;
+        // a callback effect rather than a rigid-body response. The Box/RR
+        // group runs after the RR/RR corrections, so its copy of the wall
+        // already carries them.
+        let callback_colliders = &scratch.box_callback_colliders;
         scratch.squished.clear();
         scratch.squished.extend(
             self.players
@@ -33034,6 +33223,8 @@ impl RolloutWorld {
             let anticipating = slot.active == ActiveAbility::Platform
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
             let bow_form_rotation = slot.bow.form_rotation;
+            let bow_form = slot.forms[slot.active_slot];
+            let dash_form = slot.forms[slot.active_slot];
             // Ability.ExitAbility deactivates the ability body where it
             // ended (Ability.cs:151-152) and DetPhysics still syncs that
             // frozen FixTransform every pass (DetPhysics.cs:2498-2530), so
@@ -33138,7 +33329,7 @@ impl RolloutWorld {
                     } else {
                         (exit_position, dash_exit_rotation)
                     };
-                    let collider = OrientedBox::from_basis(
+                    let collider = dash_form.hurtbox(
                         center,
                         Vec2::angle(angle),
                         data.dash.hurtbox_extents,
@@ -33186,7 +33377,7 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO)
                     };
-                    let hurtbox = OrientedBox::from_basis(center, Vec2::angle(rotation), extents);
+                    let hurtbox = bow_form.hurtbox(center, Vec2::angle(rotation), extents);
                     bow_box.x = center.x.raw();
                     bow_box.y = center.y.raw();
                     bow_box.vx = 0;
@@ -33212,18 +33403,9 @@ impl RolloutWorld {
                     let (center, rotation) = if missile_form {
                         (synced, slot.missile.collider_rotation)
                     } else if throwing {
-                        // `Fire` applies the recoil before this pass's
-                        // grounded `PlayerPhysics.Move`. The ability body
-                        // advances once by that velocity while the original
-                        // slime body remains frozen at its pre-cast pose.
-                        let center = if slot.throw_item.grounded && slot.throw_item.has_fired {
-                            // PlayerBody: position += (0 - knockback * dir) * dt,
-                            // negated before the multiply as in the source.
-                            synced + -(slot.throw_item.direction * throw_config.knockback) * DT
-                        } else {
-                            synced
-                        };
-                        (center, slot.throw_item.collider_rotation)
+                        // A grounded form's box keeps this pass's recoil
+                        // drift; LateUpdateSim snaps only the body.
+                        (synced, slot.throw_item.collider_rotation)
                     } else {
                         // A timed air exit leaves the box at the form's
                         // pose; the slime EnterFall lands turns on its own.
@@ -34109,6 +34291,7 @@ impl RolloutWorld {
             e.vy = arrow.velocity.y.raw();
             e.rotation = arrow.rotation.raw();
             e.angular_velocity = arrow.angular_velocity.raw();
+            e.inverse_mass = arrow.inverse_mass.raw();
         }
         for marker in &self.revival_marker_pool {
             if !marker.active || !marker.registered {
@@ -34215,7 +34398,7 @@ impl RolloutWorld {
                     } else {
                         (exit_position, slot.base.dash.exit_rotation)
                     };
-                    let collider = OrientedBox::from_basis(
+                    let collider = slot.forms[slot.active_slot].hurtbox(
                         center,
                         Vec2::angle(angle),
                         data.dash.hurtbox_extents,
@@ -34895,11 +35078,11 @@ fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
             .base
             .platform(platforms)
             .expect("grounded bow has a platform");
-        let radius = slot.base.radius;
-        let position = platform.surface.position(slot.base.local, radius);
+        let position = platform.surface.position(slot.base.local, slot.base.radius);
+        slot.restore_slime_radius();
         slot.base.local = platform
             .surface
-            .local_position(position, radius)
+            .local_position(position, slot.base.radius)
             .expect("exit position lies on the platform");
         slot.base.position = position;
         slot.base.velocity = Vec2::ZERO;
@@ -34916,10 +35099,9 @@ fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
         slot.base.force_unground(platforms);
         slot.reported_position = slot.base.position; // Ability.cs:151
         slot.base.ground = None;
+        slot.restore_slime_radius();
         slot.base.collision_rays(terrain);
     }
-    slot.physics_scale = slot.ability_origin_scale;
-    slot.base.radius = data::get().player.radius * slot.ability_origin_scale;
     slot.set_ordinary_body_scale(slot.player_scale);
 }
 
@@ -37104,7 +37286,6 @@ mod tests {
         let position = world.platforms[platform_index]
             .surface
             .position(Fix::ZERO, world.players[0].base.radius);
-        let normal = world.platforms[platform_index].surface.normal(position);
         {
             let player = &mut world.players[0].base;
             player.position = position;
@@ -37119,16 +37300,13 @@ mod tests {
         world.remove_platform(platform_index);
         assert!(world.players[0].base.grounded);
         assert_eq!(world.players[0].base.ground, Some(platform_id));
-        assert_eq!(world.players[0].removed_ground_normal, Some(normal));
+        assert!(world.players[0].ground_destroyed);
 
         world.player_tick(0, Action::default(), Vec2::ZERO, false, data::get());
         assert!(!world.players[0].base.grounded);
         assert_eq!(world.players[0].base.ground, None);
         assert_eq!(world.players[0].base.rotation, Fix::ZERO);
         assert_eq!(world.players[0].base.velocity, Vec2::ZERO);
-        assert_eq!(
-            world.players[0].base.position,
-            position + normal * Fix::from_f32(0.05)
-        );
+        assert_eq!(world.players[0].base.position, position);
     }
 }

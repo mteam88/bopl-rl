@@ -172,6 +172,17 @@ pub struct DashState {
     /// picks up the ray-corrected body on the next.
     #[serde(default)]
     pub exit_position: Vec2,
+    /// Dash's own PlayerPhysics radius and hurtbox inverse extents, which
+    /// follow the form's scale history rather than the slime's. Set before
+    /// every entry; zero extents mean the authored box at the body's scale.
+    #[serde(default)]
+    pub radius: Fix,
+    #[serde(default)]
+    pub inverse_extents: Vec2,
+    /// The slime's radius once onExitAbility has rescaled it, for the
+    /// velocity rays of the handoff. Zero keeps the current radius.
+    #[serde(default)]
+    pub exit_radius: Fix,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[repr(C)]
@@ -793,6 +804,7 @@ impl Player {
         self.begin_pass();
         if !self.dash.active {
             self.gravity_step(terrain);
+            self.dash.radius = self.radius;
         }
         self.capture_pre_move();
         self.move_step(action, input, terrain);
@@ -908,6 +920,8 @@ impl Player {
         // accumulated reciprocal.
         let inv = if !self.dash.active && self.collider_inverse_extents != Vec2::ZERO {
             self.collider_inverse_extents
+        } else if self.dash.active && self.dash.inverse_extents != Vec2::ZERO {
+            self.dash.inverse_extents
         } else {
             let extents = if self.dash.active {
                 Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))

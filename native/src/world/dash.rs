@@ -23,7 +23,7 @@ impl Player {
                 .platform(platforms)
                 .unwrap()
                 .surface
-                .position(self.local, self.radius);
+                .position(self.local, self.dash.radius);
             self.position += self
                 .platform(platforms)
                 .unwrap()
@@ -91,7 +91,7 @@ impl Player {
                     .surface
                     .local_position(
                         platform.surface.closest_point(position).unwrap(),
-                        self.radius,
+                        self.dash.radius,
                     )
                     .unwrap();
             } else {
@@ -106,8 +106,12 @@ impl Player {
                     .hit_ground
                     .and_then(|id| platforms.iter().find(|p| p.id == id));
                 if let Some(platform) = landing {
-                    self.position = platform.surface.position(self.dash.hit_local, self.radius);
+                    self.position =
+                        platform.surface.position(self.dash.hit_local, self.dash.radius);
+                    // Dash's own PlayerPhysics attaches, with its radius.
+                    let radius = std::mem::replace(&mut self.radius, self.dash.radius);
                     self.attach(platform, self.position);
+                    self.radius = radius;
                     self.dash.local = self.local;
                 } else {
                     let mut position = self.position + self.dash.input * Fix::from_int(13);
@@ -139,6 +143,9 @@ impl Player {
                         Fix::from_int(60)
                     };
                 self.external_velocity = Vec2::ZERO;
+                if self.dash.exit_radius != Fix::ZERO {
+                    self.radius = self.dash.exit_radius;
+                }
                 // SlimeController.onExitAbility immediately runs the returned
                 // slime's velocity rays with Dash's leave velocity. Keep this
                 // physical handoff here so both the scalar World and batched
