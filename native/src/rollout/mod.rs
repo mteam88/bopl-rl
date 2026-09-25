@@ -5448,21 +5448,40 @@ impl RolloutWorld {
             // movement slice's copy must not go stale while an ability runs.
             self.players[index].base.previous_jump = self.players[index].input_jump_was_down;
             self.players[index].input_jump_was_down = jump_down;
-            let in_form = {
+            let (in_form, in_ability) = {
                 let slot = &self.players[index];
-                slot.active != ActiveAbility::None || slot.base.dash.active
+                let in_ability = slot.active != ActiveAbility::None;
+                (in_ability || slot.base.dash.active, in_ability)
             };
             self.player_tick(index, action, movement_input, jump_pressed, data);
+            let exited = {
+                let slot = &self.players[index];
+                in_form
+                    && slot.base.alive
+                    && slot.active == ActiveAbility::None
+                    && !slot.base.dash.active
+            };
+            // An ability exit marked `justlanded` runs attachToGround, which
+            // flips a slime that came out on a ceiling
+            // (SlimeController.cs:238-240, 1131-1134).
+            if exited && in_ability && self.players[index].obs_state == STATE_LAND {
+                let slot = &self.players[index];
+                let upside_down = slot
+                    .base
+                    .ground
+                    .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
+                    .is_some_and(|platform| {
+                        platform.surface.normal(slot.base.position).y < Fix::ZERO
+                    });
+                if upside_down {
+                    self.players[index].facing_right = !self.players[index].facing_right;
+                }
+            }
             // SlimeController.onExitAbility ends by syncing the hurtbox
             // (SlimeController.cs:251), so later updaters this pass (Black
             // Hole's pull, another Magnet) find the slime where it came out.
-            let slot = &mut self.players[index];
-            if in_form
-                && slot.base.alive
-                && slot.active == ActiveAbility::None
-                && !slot.base.dash.active
-            {
-                slot.base.sync_collider();
+            if exited {
+                self.players[index].base.sync_collider();
             }
             if self.players[index].active == ActiveAbility::Roll {
                 self.roll_contacts_for(index, data);
