@@ -1700,6 +1700,8 @@ pub struct BeamOrbState {
     pub position: Vec2,
     pub exit_ticks: u32,
     pub destroy_when_unheld: bool,
+    /// Last pass Beam.UpdateSim called DisableIfNotHeld_deter.HoldThisFrame.
+    pub held_tick: Option<u32>,
 }
 
 #[derive(Clone, Default)]
@@ -13562,6 +13564,7 @@ impl RolloutWorld {
             position,
             exit_ticks: 0,
             destroy_when_unheld: false,
+            held_tick: None,
         });
         self.players[owner].beam_orb_slots[ability_slot] = Some(orb);
         self.players[owner].beam.orb = Some(orb);
@@ -13712,7 +13715,7 @@ impl RolloutWorld {
         }
     }
 
-    fn exit_beam(&mut self, index: usize, data: &data::RolloutData) {
+    fn exit_beam(&mut self, index: usize, enter_jump: bool, data: &data::RolloutData) {
         let grounded = self.players[index].base.grounded
             && self.players[index]
                 .base
@@ -13760,6 +13763,13 @@ impl RolloutWorld {
                 }
                 slot.obs_state = STATE_IDLE;
                 slot.state_ticks = 0;
+                if enter_jump {
+                    // A jump press leaves Beam with enterJump, and the slime
+                    // jumps off the ground it lands on (SlimeController.cs:242).
+                    let strength = slot.base.constants.jump_strength;
+                    slot.base.record_upside_down_jump(&self.platforms);
+                    slot.base.jump_with_strength(&self.platforms, strength);
+                }
             } else {
                 slot.base.rotation = Fix::ZERO;
                 slot.base.up = Vec2::UP;
@@ -13774,15 +13784,6 @@ impl RolloutWorld {
         }
         if !grounded {
             self.players[index].base.collision_rays(terrain!(self));
-        }
-        if let Some(orb) = self.players[index].beam.orb
-            && self.beam_orbs[orb].active
-            && let Some(entity) = self.beam_orbs[orb].entity
-        {
-            // DisableIfNotHeld runs after the form has gone inactive. Air's
-            // six-tick exit beats the orb's twelve-tick whiteExit, leaving
-            // the retained GameObject inactive for this prefab's next cast.
-            self.entities[entity].flags = E_TRIGGER;
         }
     }
 
@@ -13865,8 +13866,21 @@ impl RolloutWorld {
         // the slime's AbilityExitInfo and deactivates the form before its
         // PlayerBody or Beam update this pass.
         if exit_now {
-            self.exit_beam(index, data);
+            self.exit_beam(index, false, data);
+            if let Some(orb) = self.players[index].beam.orb
+                && self.beam_orbs[orb].active
+                && let Some(entity) = self.beam_orbs[orb].entity
+            {
+                // Beam.UpdateSim never runs to hold the orb, so its
+                // DisableIfNotHeld pass hides it now. Air's six-tick exit
+                // beats the orb's twelve-tick whiteExit, leaving the retained
+                // GameObject inactive for this prefab's next cast.
+                self.entities[entity].flags = E_TRIGGER;
+            }
             return;
+        }
+        if let Some(orb) = self.players[index].beam.orb {
+            self.beam_orbs[orb].held_tick = Some(self.tick);
         }
         // PlayerBody precedes Beam on the prefab. Its damping is unscaled,
         // including while time is stopped.
@@ -13914,7 +13928,7 @@ impl RolloutWorld {
             self.players[index].base.collision_rays(terrain!(self));
             if self.players[index].base.grounded {
                 self.stop_beam(index);
-                self.exit_beam(index, data);
+                self.exit_beam(index, false, data);
                 return;
             }
         } else if self.players[index].base.grounded {
@@ -13986,7 +14000,7 @@ impl RolloutWorld {
             self.players[index].beam.time_since_beam += DT;
             if action.buttons & 1 != 0 && !self.players[index].base.previous_jump {
                 self.stop_beam(index);
-                self.exit_beam(index, data);
+                self.exit_beam(index, true, data);
                 return;
             }
             let maximum = if self.players[index].beam.in_air {
@@ -14005,7 +14019,7 @@ impl RolloutWorld {
             && action.buttons & 1 != 0
             && !self.players[index].base.previous_jump
         {
-            self.exit_beam(index, data);
+            self.exit_beam(index, true, data);
             return;
         }
 
@@ -14218,7 +14232,9 @@ impl RolloutWorld {
                 // the object (DisableIfNotHeld_deter.cs:22-47). A death on the
                 // entry pass therefore still publishes the orb; it leaves on
                 // the pass after.
-                if orb.born_tick == self.tick {
+                // Likewise a form that left during its own UpdateSim held
+                // the orb first.
+                if orb.born_tick == self.tick || orb.held_tick == Some(self.tick) {
                     continue;
                 }
                 if let Some(entity) = orb.entity {
