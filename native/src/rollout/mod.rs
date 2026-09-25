@@ -7578,7 +7578,9 @@ impl RolloutWorld {
                         self.dash_move(index, masked, movement_input);
                         // PlayerBody follows Dash in the prefab and is
                         // enabled by the same ability-entry pass.
-                        self.dash_body_move(index, jump_pressed);
+                        if self.players[index].base.dash.active {
+                            self.form_body_move(index, jump_pressed);
+                        }
                         return;
                     }
                     ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
@@ -8496,7 +8498,7 @@ impl RolloutWorld {
                         if self.quick_spell_bounds_kill(index, data) {
                             return;
                         }
-                        self.gust_tick(index, data);
+                        self.quick_spell_tick(index, jump_pressed, data);
                         return;
                     }
                     ABILITY_REVIVAL => {
@@ -8532,7 +8534,7 @@ impl RolloutWorld {
                         if self.quick_spell_bounds_kill(index, data) {
                             return;
                         }
-                        self.revival_tick(index, data);
+                        self.quick_spell_tick(index, jump_pressed, data);
                         return;
                     }
                     ABILITY_BLACK_HOLE => {
@@ -9007,14 +9009,14 @@ impl RolloutWorld {
             if self.quick_spell_bounds_kill(index, data) {
                 return;
             }
-            self.gust_tick(index, data);
+            self.quick_spell_tick(index, jump_pressed, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Revival {
             if self.quick_spell_bounds_kill(index, data) {
                 return;
             }
-            self.revival_tick(index, data);
+            self.quick_spell_tick(index, jump_pressed, data);
             return;
         }
         if self.players[index].active == ActiveAbility::BlackHole {
@@ -9086,7 +9088,9 @@ impl RolloutWorld {
             // PlayerBody follows Dash.UpdateSim in the prefab. Keep the
             // published Dash pose from before this body integration; its
             // position becomes visible on the next pass.
-            self.dash_body_move(index, jump_pressed);
+            if self.players[index].base.dash.active {
+                self.form_body_move(index, jump_pressed);
+            }
             if !self.players[index].base.dash.active {
                 // Dash finished this tick.
                 self.players[index].active = ActiveAbility::None;
@@ -10424,6 +10428,23 @@ impl RolloutWorld {
         self.players[index].reported_position = self.players[index].base.position;
         self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
         true
+    }
+
+    /// Gust.prefab and Revival.prefab run Ability (publishing the pose), then
+    /// the SpriteAnimator that may end the spell, and PlayerBody last.
+    fn quick_spell_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
+        let form = self.players[index].active;
+        let slot = &mut self.players[index];
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+        if form == ActiveAbility::Gust {
+            self.gust_tick(index, data);
+        } else {
+            self.revival_tick(index, data);
+        }
+        if self.players[index].active == form && self.players[index].base.alive {
+            self.form_body_move(index, jump_pressed);
+        }
     }
 
     fn gust_tick(&mut self, index: usize, data: &data::RolloutData) {
@@ -18529,13 +18550,10 @@ impl RolloutWorld {
     }
 
     /// base.step with the dash shove check from World::step.
-    /// PlayerBody.UpdateSim on the Dash prefab: a rope constrains the body,
-    /// otherwise it drifts by its velocity, which a pull such as Black Hole's
-    /// makes nonzero while the Dash waits.
-    fn dash_body_move(&mut self, index: usize, jump_pressed: bool) {
-        if !self.players[index].base.dash.active {
-            return;
-        }
+    /// PlayerBody.UpdateSim on a form that has one (Dash, the QuickSpells): a
+    /// rope constrains the body, otherwise it drifts by its velocity, which a
+    /// pull such as Black Hole's or Magnet's makes nonzero while the form waits.
+    fn form_body_move(&mut self, index: usize, jump_pressed: bool) {
         if self.players[index].rope.is_some() {
             self.rope_body_move(index, jump_pressed);
             return;
