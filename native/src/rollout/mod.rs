@@ -25406,6 +25406,14 @@ impl RolloutWorld {
             if !button_down && !b.has_fired {
                 b.released = true;
             }
+            // OldUpdate fires before UpdateSim refreshes loadingFrame, so it
+            // sees the previous pass's frame. "…|| animator.getNumberOfPassedSprites()
+            // > 2" counts the transform animation's 6 uniform sprites, which pass
+            // index 2 one tick after the second boundary (tick 11 of 30); from
+            // the pass that shows "load" it counts that animation instead, whose
+            // third sprite comes after loadingFrame is already set.
+            let early = b.ticks > bow.transform_ticks / 3 && b.ticks <= bow.transform_ticks;
+            let fire_now = b.released && !b.has_fired && (b.loading_frame > 0 || early);
             // loadingFrame = getNumberOfPassedSprites() of the "load" anim =
             // currentSpriteIndex+1. SpriteAnimator runs after BowTransform, so
             // the Loading callback which ends "transform" is first visible to
@@ -25422,11 +25430,7 @@ impl RolloutWorld {
                     .count() as u32;
                 b.loading_frame = (1 + passed).min(4);
             }
-            // "…|| animator.getNumberOfPassedSprites() > 2" during transform:
-            // its 6 uniform sprites pass index 2 one tick after the second
-            // boundary (tick 11 of the 30-tick animation).
-            let early = b.ticks > bow.transform_ticks / 3;
-            b.released && !b.has_fired && (b.loading_frame > 0 || early)
+            fire_now
         };
         if fire_now {
             self.fire_bow(index, data);
