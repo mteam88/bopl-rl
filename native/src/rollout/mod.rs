@@ -1229,6 +1229,10 @@ pub struct PlatformDynamics {
     pub blink_tunnel_initialized: bool,
     pub blink_tunnel_delay: Fix,
     pub blink_tunnel_age: Fix,
+    /// The tunnel's updater slot: spawned updaters created after it (a
+    /// Black Hole) see the wall it restores on the same pass.
+    pub blink_tunnel_hierarchy: u32,
+    pub blink_tunnel_stepped_tick: Option<u32>,
     /// The deactivation pass still receives the rider's scheduled LateUpdate,
     /// but DetPhysics freezes the inactive platform body immediately.
     pub blink_deactivated_tick: Option<u32>,
@@ -3492,6 +3496,8 @@ impl RolloutWorld {
                 blink_tunnel_initialized: false,
                 blink_tunnel_delay: Fix::ZERO,
                 blink_tunnel_age: Fix::ZERO,
+                blink_tunnel_hierarchy: 0,
+                blink_tunnel_stepped_tick: None,
                 blink_deactivated_tick: None,
                 basis: None,
             });
@@ -5370,7 +5376,7 @@ impl RolloutWorld {
         }
         if has(ABILITY_BLINK) {
             self.blink_tunnels_tick(data, updater_dt);
-            self.blink_platform_tunnels_tick(data, updater_dt);
+            self.blink_platform_tunnels_tick(data, updater_dt, None);
             self.blink_object_tunnels_tick(updater_dt);
         }
         if has(ABILITY_GRENADE) {
@@ -12195,6 +12201,13 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // A wall QuantumTunnel registered before this hole has already
+            // restored or hidden its wall when the hole pulls.
+            self.blink_platform_tunnels_tick(
+                data,
+                dt,
+                Some(self.black_holes[hole_index].hierarchy_base),
+            );
             if !stopped {
                 self.black_holes[hole_index].time_since_growth += dt;
             }
@@ -15173,6 +15186,8 @@ impl RolloutWorld {
             blink_tunnel_initialized: false,
             blink_tunnel_delay: Fix::ZERO,
             blink_tunnel_age: Fix::ZERO,
+            blink_tunnel_hierarchy: 0,
+            blink_tunnel_stepped_tick: None,
             blink_deactivated_tick: None,
             basis: None,
         });
@@ -23721,6 +23736,8 @@ impl RolloutWorld {
             // The map updater already ran this pass, so its first random
             // displacement is sampled on the next pass.
             if !self.platform_dynamics[platform_index].blink_tunnel_active {
+                self.platform_dynamics[platform_index].blink_tunnel_hierarchy =
+                    self.next_spawn_hierarchy;
                 self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
             }
             let dynamics = &mut self.platform_dynamics[platform_index];
@@ -24036,12 +24053,24 @@ impl RolloutWorld {
     /// created after map and player updaters, so its strict delay begins on
     /// the following pass. Inactive colliders remain registered for public
     /// observation while queries and later physics passes ignore them.
-    fn blink_platform_tunnels_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// Steps the wall tunnels registered before `before` (every one when
+    /// None) that have not yet run this pass.
+    fn blink_platform_tunnels_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        before: Option<u32>,
+    ) {
         for platform_index in 0..self.platforms.len() {
-            let state = &self.platform_dynamics[platform_index];
-            if !state.blink_tunnel_active || state.blink_tunnel_born_tick == self.tick {
+            let state = &mut self.platform_dynamics[platform_index];
+            if !state.blink_tunnel_active
+                || state.blink_tunnel_born_tick == self.tick
+                || state.blink_tunnel_stepped_tick == Some(self.tick)
+                || before.is_some_and(|before| state.blink_tunnel_hierarchy >= before)
+            {
                 continue;
             }
+            state.blink_tunnel_stepped_tick = Some(self.tick);
             if !state.blink_tunnel_initialized {
                 let delay = state.blink_tunnel_delay + updater_dt;
                 self.platform_dynamics[platform_index].blink_tunnel_delay = delay;
@@ -25614,6 +25643,8 @@ impl RolloutWorld {
             blink_tunnel_initialized: false,
             blink_tunnel_delay: Fix::ZERO,
             blink_tunnel_age: Fix::ZERO,
+            blink_tunnel_hierarchy: 0,
+            blink_tunnel_stepped_tick: None,
             blink_deactivated_tick: None,
             basis: None,
         });
