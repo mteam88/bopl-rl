@@ -13728,7 +13728,7 @@ impl RolloutWorld {
         // The orb row is its DetPhysics collider, synchronized from the pose
         // Beam.LateUpdateSim gave it last pass: the staff before this aim step.
         let late_staff = self.players[index].beam.staff_dir;
-        let mut exit_after_move = false;
+        let mut exit_now = false;
         if advance_animation {
             let phase = self.players[index].beam.phase;
             self.players[index].beam.phase_ticks += 1;
@@ -13769,11 +13769,7 @@ impl RolloutWorld {
                     data.beam.exit_ground_ticks
                 };
                 if self.players[index].beam.phase_ticks > exit_ticks {
-                    // Beam precedes its SpriteAnimator in the prefab updater
-                    // hierarchy. The last Beam.UpdateSim therefore moves the
-                    // form before the animation callback packages the
-                    // ordinary slime's AbilityExitInfo later in this pass.
-                    exit_after_move = true;
+                    exit_now = true;
                 }
             }
         }
@@ -13794,10 +13790,15 @@ impl RolloutWorld {
         {
             self.beam_zero_time_pass(index, action, undrifted, data);
         }
+        // SpriteAnimator also runs the exit clip's callback, which packages
+        // the slime's AbilityExitInfo and deactivates the form before its
+        // PlayerBody or Beam update this pass.
+        if exit_now {
+            self.exit_beam(index, data);
+            return;
+        }
         // PlayerBody precedes Beam on the prefab. Its damping is unscaled,
-        // including while time is stopped. On the completed-exit pass the
-        // SpriteAnimator has already deactivated PlayerBody before its turn,
-        // while Beam's registered updater still finishes MovePlayer below.
+        // including while time is stopped.
         {
             let body = &mut self.players[index].base;
             body.position += (body.velocity + body.external_velocity) * DT;
@@ -13860,11 +13861,6 @@ impl RolloutWorld {
             )
             .expect("valid Beam gravity constants");
             self.players[index].base.collision_rays(terrain!(self));
-        }
-
-        if exit_after_move {
-            self.exit_beam(index, data);
-            return;
         }
 
         if self.players[index].beam.phase == 1 {
