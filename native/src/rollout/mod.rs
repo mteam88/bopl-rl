@@ -14233,6 +14233,8 @@ impl RolloutWorld {
             .expect("valid Beam aerial constants");
             self.players[index].base.collision_rays(terrain!(self));
             if self.players[index].base.grounded {
+                // The orb collider still syncs to the prior late pose this pass.
+                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
                 self.stop_beam(index);
                 self.exit_beam(index, false, data);
                 return;
@@ -14305,6 +14307,7 @@ impl RolloutWorld {
             }
             self.players[index].beam.time_since_beam += DT;
             if action.buttons & 1 != 0 && !self.players[index].base.previous_jump {
+                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
                 self.stop_beam(index);
                 self.exit_beam(index, true, data);
                 return;
