@@ -11182,6 +11182,30 @@ impl RolloutWorld {
     /// swaps a composite member for CompositeBody.position (and the combined
     /// body), while PositionalCorrection keeps the rounded rect's own
     /// inverse mass.
+    /// Whether DetPhysics' broadphase pairs the circle with the platform. The
+    /// sweep takes its bounding boxes before this pass's platform/platform
+    /// corrections move the wall, so a correction toward the circle does not
+    /// make a pair.
+    fn swept_platform_pairs(&self, index: usize, circle: Circle) -> bool {
+        let Some(swept) = self
+            .scratch
+            .callback_colliders
+            .get(index)
+            .filter(|_| self.scratch.callback_tick == Some(self.tick))
+        else {
+            return true;
+        };
+        let extent = Vec2::new(
+            swept.inner.right.x.abs() + swept.inner.up.x.abs() + swept.radius,
+            swept.inner.right.y.abs() + swept.inner.up.y.abs() + swept.radius,
+        );
+        let (low, high) = (swept.inner.center - extent, swept.inner.center + extent);
+        circle.center.x + circle.radius > low.x
+            && circle.center.x - circle.radius < high.x
+            && circle.center.y + circle.radius > low.y
+            && circle.center.y - circle.radius < high.y
+    }
+
     fn platform_contact_frame(&self, index: usize) -> (Vec2, Fix) {
         let dynamics = &self.platform_dynamics[index];
         if dynamics.attached_children != 0 {
@@ -28283,7 +28307,7 @@ impl RolloutWorld {
             let mut contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
             contacts.clear();
             for (p, platform) in self.platforms.iter().enumerate() {
-                if !platform.active {
+                if !platform.active || !self.swept_platform_pairs(p, circle) {
                     continue;
                 }
                 if let Some(contact) =
@@ -29350,23 +29374,8 @@ impl RolloutWorld {
                 if !platform.active {
                     continue;
                 }
-                // The sweep paired bounding boxes taken before this pass's
-                // platform/platform corrections moved the wall.
-                if self.scratch.callback_tick == Some(self.tick)
-                    && let Some(swept) = self.scratch.callback_colliders.get(platform_index)
-                {
-                    let extent = Vec2::new(
-                        swept.inner.right.x.abs() + swept.inner.up.x.abs() + swept.radius,
-                        swept.inner.right.y.abs() + swept.inner.up.y.abs() + swept.radius,
-                    );
-                    let (low, high) = (swept.inner.center - extent, swept.inner.center + extent);
-                    if circle.center.x + item_radius <= low.x
-                        || circle.center.x - item_radius >= high.x
-                        || circle.center.y + item_radius <= low.y
-                        || circle.center.y - item_radius >= high.y
-                    {
-                        continue;
-                    }
+                if !self.swept_platform_pairs(platform_index, circle) {
+                    continue;
                 }
                 if let Some(contact) =
                     crate::physics::contact::circle_rounded(circle, self.circle_collider(platform_index))
