@@ -31471,6 +31471,15 @@ impl RolloutWorld {
         // game's -40 gravity for completeness.
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active {
+                // SyncAllPhysicsObjectsToFixTransformPosition still resets an
+                // inactive rect's rotation, dropping the rounding a resize
+                // earlier in the pass left in its box.
+                if self.platform_dynamics[i].attached_children == 0 {
+                    let right = self.platforms[i].surface.right;
+                    let inner = &mut self.platforms[i].collider.inner;
+                    inner.right = (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(right);
+                    inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(right);
+                }
                 continue;
             }
             let dynamics = &mut self.platform_dynamics[i];
