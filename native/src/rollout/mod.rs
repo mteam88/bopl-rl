@@ -11999,7 +11999,12 @@ impl RolloutWorld {
             } else {
                 None
             };
+            // Smoke collides with the Explosion-layer line but not with the
+            // node's LethalTerrain or NonLethalTerrain circle.
             for cloud in &mut self.smoke_clouds {
+                let Some(line) = line else {
+                    break;
+                };
                 if !cloud.active || !cloud.registered {
                     continue;
                 }
@@ -12011,11 +12016,7 @@ impl RolloutWorld {
                     center: cloud.position,
                     radius: Fix::from_raw(self.entities[entity].radius),
                 };
-                if crate::physics::contact::circle_circle(node_circle, smoke).is_some()
-                    || line.is_some_and(|line| {
-                        crate::physics::contact::circle_box(smoke, line).is_some()
-                    })
-                {
+                if crate::physics::contact::circle_box(smoke, line).is_some() {
                     cloud.ignition_time = Fix::ZERO;
                     self.entities[entity].flags = E_ACTIVE;
                 }
