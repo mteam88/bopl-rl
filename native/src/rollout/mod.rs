@@ -2401,6 +2401,10 @@ pub struct RolloutWorld {
     pub intro_contacts_pending: bool,
     pub next_platform_id: u32,
     pub next_entity_id: u32,
+    /// Published id per internal entity id (0 = not yet observed), and the
+    /// last one handed out. See `number_observed`.
+    pub observed_ids: Vec<u32>,
+    pub last_observed_id: u32,
     /// Base hierarchy for the next prefab instantiated after player spawn.
     pub next_spawn_hierarchy: u32,
     // Observation buffers. `entities`/`slimes` back the pointers in `state`.
@@ -2545,6 +2549,8 @@ impl RolloutWorld {
             intro_contacts_pending: false,
             next_platform_id: 0,
             next_entity_id: 0,
+            observed_ids: Vec::with_capacity(256),
+            last_observed_id: 0,
             next_spawn_hierarchy: 0,
             entities: Vec::with_capacity(192),
             slimes: Vec::with_capacity(MAX_PLAYERS * 17),
@@ -2659,6 +2665,8 @@ impl RolloutWorld {
         self.intro_contacts_pending = src.intro_contacts_pending;
         self.next_platform_id = src.next_platform_id;
         self.next_entity_id = src.next_entity_id;
+        self.observed_ids.clone_from(&src.observed_ids);
+        self.last_observed_id = src.last_observed_id;
         self.next_spawn_hierarchy = src.next_spawn_hierarchy;
         self.entities.clone_from(&src.entities);
         self.state_entities.clone_from(&src.state_entities);
@@ -2757,6 +2765,8 @@ impl RolloutWorld {
             intro_contacts_pending: _,
             next_platform_id: _,
             next_entity_id: _,
+            observed_ids: _,
+            last_observed_id: _,
             next_spawn_hierarchy: _,
             entities: _,
             slimes: _,
@@ -2942,6 +2952,8 @@ impl RolloutWorld {
         // group registration follows player then equipped-slot order.
         // Dynamic entities (arrows, spawned platforms) append after.
         self.next_entity_id = 0;
+        self.observed_ids.clear();
+        self.last_observed_id = 0;
         let mut player_hierarchy = [0u32; MAX_PLAYERS];
         let mut ability_hierarchy = [[0u32; 3]; MAX_PLAYERS];
         let mut hierarchy_cursor = 0u32;
@@ -18881,11 +18893,15 @@ impl RolloutWorld {
             }
             slot.base.collision_rays(terrain);
             if slot.base.grounded {
-                // VelocityBasedRaycasts immediately exits the aerial ability.
+                // VelocityBasedRaycasts immediately exits the aerial ability,
+                // and ExitAbility tosses a still-held item straight up.
+                self.release_held_throw_item_on_exit(index, data);
+                let slot = &mut self.players[index];
                 slot.active = ActiveAbility::None;
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks = LAND_TICKS + 2;
                 slot.reported_position = slot.base.position;
+                self.sync_exit_to_ground(index, data);
             } else {
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
@@ -31530,6 +31546,7 @@ impl RolloutWorld {
         let mut entities = std::mem::take(&mut self.state_entities);
         self.publish_entities(&mut entities);
         self.gate_published_source_abilities(&mut entities);
+        self.number_observed(&mut entities);
         self.state_entities = entities;
         let mut slimes = std::mem::take(&mut self.slimes);
         self.fill_slimes(&mut slimes);
@@ -31559,6 +31576,7 @@ impl RolloutWorld {
         let mut entities = std::mem::take(&mut self.sample_entities);
         self.publish_entities(&mut entities);
         self.gate_published_source_abilities(&mut entities);
+        self.number_observed(&mut entities);
         self.sample_entities = entities;
         let mut slimes = std::mem::take(&mut self.sample_slimes);
         self.fill_slimes(&mut slimes);
@@ -31581,6 +31599,26 @@ impl RolloutWorld {
         );
         self.sample.entities = self.sample_entities.as_ptr();
         self.sample.slimes = self.sample_slimes.as_ptr();
+    }
+
+    /// RlObservation numbers colliders the first time an observation lists
+    /// them, walking circles, boxes, rounded rectangles, ropes, then beams.
+    /// Objects born in the same pass are therefore numbered in that walk's
+    /// order, not in the order they were created - a pickup dropped by a
+    /// grenade kill (a circle) takes its id before the explosion (a box)
+    /// spawned ahead of it.
+    fn number_observed(&mut self, entities: &mut [CEntity]) {
+        for row in entities {
+            let internal = row.id as usize;
+            if internal >= self.observed_ids.len() {
+                self.observed_ids.resize(internal + 1, 0);
+            }
+            if self.observed_ids[internal] == 0 {
+                self.last_observed_id += 1;
+                self.observed_ids[internal] = self.last_observed_id;
+            }
+            row.id = self.observed_ids[internal];
+        }
     }
 
     /// DetPhysics stores one list per shape and observations enumerate
