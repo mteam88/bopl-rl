@@ -2295,21 +2295,26 @@ impl PlayerSlot {
     /// later than a landing in PlayerPhysics.UpdateSim; `update_obs_state`
     /// adds this marker to LAND_TICKS.
     ///
-    /// An airborne exit's EnterFall first runs AlignTransformAir against
-    /// the slime's stale inputVector (SlimeController.cs:263-266, 967-982).
+    /// An airborne exit's EnterFall first runs AlignTransformAir.
     fn exit_to_fall(&mut self) {
         if !self.base.grounded {
-            if std::mem::take(&mut self.base.was_upside_down) {
-                self.facing_right = !self.facing_right;
-            }
-            if self.slime_input.x < -Fix::from_f32(0.02) {
-                self.facing_right = false;
-            } else if self.slime_input.x > Fix::from_f32(0.02) {
-                self.facing_right = true;
-            }
+            self.align_transform_air();
         }
         self.obs_state = STATE_FALL;
         self.state_ticks = 1;
+    }
+
+    /// EnterFall's AlignTransformAir, against the slime's stale inputVector
+    /// (SlimeController.cs:263-266, 967-982).
+    fn align_transform_air(&mut self) {
+        if std::mem::take(&mut self.base.was_upside_down) {
+            self.facing_right = !self.facing_right;
+        }
+        if self.slime_input.x < -Fix::from_f32(0.02) {
+            self.facing_right = false;
+        } else if self.slime_input.x > Fix::from_f32(0.02) {
+            self.facing_right = true;
+        }
     }
 }
 
@@ -9757,6 +9762,8 @@ impl RolloutWorld {
     /// form's VelocityBasedRaycasts landed it, with no ground speed.
     fn exit_meteor_grounded(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
+        // MeteorSmash exits hand over isFacingRight true.
+        slot.facing_right = true;
         slot.active = ActiveAbility::None;
         slot.base.constants = data.player.constants.clone();
         slot.base.grounded_speed = Fix::ZERO;
@@ -9770,6 +9777,7 @@ impl RolloutWorld {
 
     fn exit_meteor_air(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
+        slot.facing_right = true;
         slot.active = ActiveAbility::None;
         slot.base.radius = data.player.radius;
         slot.base.constants = data.player.constants.clone();
@@ -11185,6 +11193,8 @@ impl RolloutWorld {
         slot.base.external_velocity = Vec2::ZERO;
         slot.base.grounded = false;
         slot.base.grounded_speed = Fix::ZERO;
+        // CastSpell exits with a default AbilityExitInfo: facing left.
+        slot.facing_right = false;
         slot.active = ActiveAbility::None;
         slot.exit_to_fall();
         slot.base.collision_rays(terrain!(self));
@@ -11968,6 +11978,8 @@ impl RolloutWorld {
                     .base
                     .move_only(Vec2::ZERO, terrain!(self));
             } else {
+                // BlackHoleClap's lost-ground exit hands over isFacingRight true.
+                self.players[index].facing_right = true;
                 self.exit_black_hole_form(index, false);
                 return;
             }
@@ -18384,6 +18396,8 @@ impl RolloutWorld {
             }
             if let Some(input) = exit_input {
                 self.dash_rope_exit(index, input, data::get().dash.leave_speed);
+                // Dash.ExitAbility: `isFacingRight = Dot(inputVector, right) <= 0`.
+                self.players[index].facing_right = input.x <= Fix::ZERO;
                 self.players[index].exit_to_fall();
             }
         }
@@ -18885,6 +18899,8 @@ impl RolloutWorld {
                 self.players[index].base.collision_rays(terrain!(self));
                 if self.players[index].base.grounded {
                     let slot = &mut self.players[index];
+                    // SparkShot's landing exit hands over isFacingRight true.
+                    slot.facing_right = true;
                     slot.active = ActiveAbility::None;
                     slot.obs_state = STATE_LAND;
                     slot.state_ticks = LAND_TICKS + 2;
@@ -21750,6 +21766,8 @@ impl RolloutWorld {
                 .expect("Magnet landing position lies on its platform")
         });
         let slot = &mut self.players[index];
+        // MagnetGun.ExitAbility: `isFacingRight = inputVector.x >= 0`.
+        slot.facing_right = slot.magnet.aim.x >= Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         if !landed {
@@ -21828,6 +21846,7 @@ impl RolloutWorld {
             .local_position(position, ordinary_radius)
             .expect("Duplicator exit lies on the platform");
         let slot = &mut self.players[index];
+        slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
         slot.active = ActiveAbility::None;
         slot.exit_to_fall();
         slot.base.local = local;
@@ -24631,6 +24650,10 @@ impl RolloutWorld {
             // FixTransform when a timed ragdoll expires in mid-air.
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
+            if slot.base.grounded {
+                // This EnterFall re-aims even on the ground.
+                slot.align_transform_air();
+            }
             slot.exit_to_fall();
             slot.ragdoll_grounded_fall = held_on_ground;
             slot.base
@@ -25210,6 +25233,8 @@ impl RolloutWorld {
     fn exit_freeze_animation(&mut self, index: usize) {
         let terrain = terrain!(self);
         let slot = &mut self.players[index];
+        // GunTransform.ExitAbility: `isFacingRight = inputVector.x >= 0`.
+        slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.base.force_unground(terrain.platforms);
@@ -25227,6 +25252,8 @@ impl RolloutWorld {
     fn exit_scale_ray_animation(&mut self, index: usize) {
         let terrain = terrain!(self);
         let slot = &mut self.players[index];
+        // GunTransform.ExitAbility: `isFacingRight = inputVector.x >= 0`.
+        slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.base.force_unground(terrain.platforms);
@@ -34819,6 +34846,10 @@ fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radi
 /// fire animation's end (BowTransform.cs:116-130).
 fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
     let platforms = terrain.platforms;
+    // BowTransform and GunTransform exit facing their aim's side
+    // (`isFacingRight = inputVector.x >= 0`).
+    let aim = if slot.active == ActiveAbility::Bow { slot.bow.aim } else { slot.gun.aim };
+    slot.facing_right = aim.x >= Fix::ZERO;
     slot.active = ActiveAbility::None;
     slot.exit_to_fall();
     if slot.base.grounded {
