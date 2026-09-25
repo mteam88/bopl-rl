@@ -19238,7 +19238,8 @@ impl RolloutWorld {
             if self.players[index].throw_item.ticks > exit_ticks {
                 let slot = &mut self.players[index];
                 slot.active = ActiveAbility::None;
-                if slot.base.grounded {
+                let grounded = slot.base.grounded;
+                if grounded {
                     // ThrowItem2 marks a grounded exit as `justlanded`.
                     // SlimeController starts `land` after the slime's own
                     // animator has already updated in this pass.
@@ -19250,9 +19251,10 @@ impl RolloutWorld {
                     slot.base.up = Vec2::UP;
                     slot.base.collision_rays(terrain!(self));
                 }
-                slot.reported_position = slot.base.position;
-                slot.reported_tick = self.tick;
-                if slot.base.grounded {
+                // The exit callback leaves Player.Position where
+                // Ability.UpdateSim published it, and a slime that EnterFall's
+                // raycasts land is attached where it hit, not re-synced.
+                if grounded {
                     self.sync_exit_to_ground(index, data);
                 }
                 return;
@@ -19321,6 +19323,8 @@ impl RolloutWorld {
                 slot.active = ActiveAbility::None;
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks = LAND_TICKS + 2;
+                // The form's own body attached, so its box turns with it.
+                slot.throw_item.collider_rotation = slot.base.rotation;
                 slot.reported_position = slot.base.position;
                 self.sync_exit_to_ground(index, data);
             } else {
@@ -33055,7 +33059,14 @@ impl RolloutWorld {
                         };
                         (center, slot.throw_item.collider_rotation)
                     } else {
-                        (exit_position, slot.base.rotation)
+                        // A timed air exit leaves the box at the form's
+                        // pose; the slime EnterFall lands turns on its own.
+                        let rotation = if missile_row || slot.throw_item.grounded {
+                            slot.base.rotation
+                        } else {
+                            slot.throw_item.collider_rotation
+                        };
+                        (exit_position, rotation)
                     };
                     let hurtbox = OrientedBox::from_basis(
                         center,
