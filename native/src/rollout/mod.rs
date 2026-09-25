@@ -11940,7 +11940,7 @@ impl RolloutWorld {
                     ActiveAbility::Beam => slot.beam_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
-                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                if !self.collides(entity) {
                     continue;
                 }
                 let row = self.entities[entity];
@@ -12083,7 +12083,7 @@ impl RolloutWorld {
                     ActiveAbility::Beam => slot.beam_entity,
                     ActiveAbility::Platform => slot.circle_entity,
                 };
-                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                if !self.collides(entity) {
                     continue;
                 }
                 let row = self.entities[entity];
@@ -13381,7 +13381,7 @@ impl RolloutWorld {
                     ActiveAbility::Beam => player.beam_entity,
                     ActiveAbility::Platform => player.circle_entity,
                 };
-                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                if !self.collides(entity) {
                     continue;
                 }
                 let row = self.entities[entity];
@@ -13781,7 +13781,7 @@ impl RolloutWorld {
                         ActiveAbility::Beam => other.beam_entity,
                         ActiveAbility::Platform => other.circle_entity,
                     };
-                    if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                    if !self.collides(entity) {
                         continue;
                     }
                     let row = self.entities[entity];
@@ -15014,7 +15014,7 @@ impl RolloutWorld {
                     ActiveAbility::Beam => self.players[victim].beam_entity,
                     ActiveAbility::Platform => self.players[victim].circle_entity,
                 };
-                if target == usize::MAX || self.entities[target].flags & E_ACTIVE == 0 {
+                if !self.collides(target) {
                     continue;
                 }
                 let row = self.entities[target];
@@ -16485,7 +16485,7 @@ impl RolloutWorld {
                 ActiveAbility::Beam => player.beam_entity,
                 ActiveAbility::Platform => player.circle_entity,
             };
-            if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+            if !self.collides(entity) {
                 continue;
             }
             let row = self.entities[entity];
@@ -24142,6 +24142,12 @@ impl RolloutWorld {
         self.begin_blink_object_tunnel(entity, data.blink.wall_duration, data);
     }
 
+    /// DetPhysics.IsActive: the GameObject is active and its collider enabled.
+    fn collides(&self, entity: usize) -> bool {
+        entity != usize::MAX
+            && self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
+    }
+
     fn blink_player_entity(slot: &PlayerSlot) -> usize {
         match slot.active {
             ActiveAbility::None => slot.body_entity,
@@ -29061,7 +29067,7 @@ impl RolloutWorld {
                     ActiveAbility::Beam => player.beam_entity,
                     ActiveAbility::Platform => player.circle_entity,
                 };
-                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                if !self.collides(entity) {
                     return false;
                 }
                 let row = self.entities[entity];
