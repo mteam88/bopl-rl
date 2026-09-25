@@ -7344,7 +7344,19 @@ impl RolloutWorld {
                     }
                     ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
                     | ABILITY_POKE_BALL => {
+                        // PlayerPhysics.SyncPhysicsTo re-places a grounded form
+                        // from the slime's surface coordinate on the ground's
+                        // current pose (PlayerPhysics.cs:534).
+                        let base = &self.players[index].base;
+                        let form_position = base
+                            .ground
+                            .filter(|_| base.grounded)
+                            .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
+                            .map_or(base.position, |platform| {
+                                platform.surface.position(base.local, base.radius)
+                            });
                         let slot = &mut self.players[index];
+                        slot.base.position = form_position;
                         slot.timers[s] = Fix::ZERO;
                         slot.active = match ability {
                             ABILITY_TACK => ActiveAbility::Tack,
