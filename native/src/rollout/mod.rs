@@ -30172,6 +30172,29 @@ impl RolloutWorld {
         updater_dt: Fix,
         runtime_spawned: bool,
     ) {
+        // AnimateVelocity.Init (AnimateVelocity.cs:74-79) homes on the current
+        // position and clears inSuddenDeath before any UpdateSim, so an
+        // in-progress sudden death is re-activated with a fresh delay and
+        // sinks the new home on that same pass (AnimateVelocity.cs:126-137).
+        for i in 0..self.platforms.len() {
+            if !self.platforms[i].active
+                || self.platform_dynamics[i].intro_disabled
+                || (self.platform_defs[i] == usize::MAX) != runtime_spawned
+                || self.platform_dynamics[i].init_tick != Some(self.tick)
+            {
+                continue;
+            }
+            self.platform_dynamics[i].init_tick = None;
+            self.platform_dynamics[i].home_position = self.platforms[i].surface.center;
+            if self.sudden_death {
+                let max_delay = data.platform.sudden_death_max_delay;
+                if let Some(spawn) =
+                    self.spawned.iter_mut().find(|s| s.active && s.platform_index == i)
+                {
+                    spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, max_delay);
+                }
+            }
+        }
         // ActivateSuddenDeath moves the spring home; the body follows through
         // the ordinary spring/integration path rather than teleporting. This
         // is `AnimateVelocity.inSuddenDeath`, not the session flag: the
@@ -30184,6 +30207,7 @@ impl RolloutWorld {
             for i in 0..self.platforms.len() {
                 if !self.platforms[i].active
                     || (self.platform_defs[i] == usize::MAX) != runtime_spawned
+                    || self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick)
                 {
                     continue;
                 }
@@ -30238,31 +30262,15 @@ impl RolloutWorld {
         // rounding is observable over long-running springs (notably map 2's
         // orbiter), so simplifying this to `velocity += spring * DT` drifts.
         for i in 0..self.platforms.len() {
+            // A body instantiated this pass joins the Updater on the next.
             if !self.platforms[i].active
                 || self.platform_dynamics[i].intro_disabled
                 || (self.platform_defs[i] == usize::MAX) != runtime_spawned
+                || self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick)
             {
                 continue;
             }
             let position = self.platforms[i].surface.center;
-            if self.platform_dynamics[i].init_tick == Some(self.tick) {
-                // AnimateVelocity.Init (AnimateVelocity.cs:74-79) homes on
-                // the current position and clears inSuddenDeath, so an
-                // in-progress sudden death is re-activated with a fresh delay
-                // (AnimateVelocity.cs:126-129, 111-118).
-                self.platform_dynamics[i].init_tick = None;
-                self.platform_dynamics[i].home_position = position;
-                if self.sudden_death {
-                    let max_delay = data.platform.sudden_death_max_delay;
-                    if let Some(spawn) = self
-                        .spawned
-                        .iter_mut()
-                        .find(|s| s.active && s.platform_index == i)
-                    {
-                        spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, max_delay);
-                    }
-                }
-            }
             let dynamics = &mut self.platform_dynamics[i];
             let spring = if dynamics.float_next_frame {
                 dynamics.float_next_frame = false;
