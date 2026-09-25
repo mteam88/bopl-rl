@@ -7704,6 +7704,13 @@ impl RolloutWorld {
                             ..MeteorState::default()
                         };
                         self.meteor_tick(index, action, data);
+                        // OnEnterAbility places the hitbox at the synced
+                        // form position before this pass's UpdateSim moves it.
+                        if self.players[index].active == ActiveAbility::Meteor
+                            && self.players[index].reported_tick == self.tick
+                        {
+                            self.players[index].reported_position = form_position;
+                        }
                         return;
                     }
                     ABILITY_MINE => {
@@ -9199,16 +9206,20 @@ impl RolloutWorld {
         let button = 2u8 << self.players[index].active_slot;
         let phase = self.players[index].meteor.phase;
         self.players[index].meteor.time += DT;
+        // Anticipation moves PlayerBody.position, which the published
+        // collider follows; the later states write the FixTransform or only
+        // set velocity, so Ability.UpdateSim still sees the synced collider.
+        let mut published = None;
         match phase {
             0 => {
                 self.players[index].meteor.ticks += 1;
-                if self.players[index].base.grounded
-                    && let Some(platform) = self.players[index].base.platform(&self.platforms)
-                {
-                    self.players[index].base.position = platform
-                        .surface
-                        .position(self.players[index].base.local, data.meteor.physics_radius);
+                // Anticipation is PlayerPhysics.Move(zero): the synced
+                // grounded speed keeps sliding under Meteor's friction.
+                if self.players[index].base.grounded {
+                    self.players[index].base.move_only(Vec2::ZERO, terrain!(self));
                 }
+                // The animator's Jump callback runs after Ability.UpdateSim.
+                published = Some(self.players[index].base.position);
                 if self.players[index].meteor.ticks > data.meteor.ground_enter_ticks {
                     let normal = self.players[index]
                         .base
@@ -9283,9 +9294,7 @@ impl RolloutWorld {
         slot.meteor.position = slot.base.position;
         slot.meteor.velocity = slot.base.velocity;
         slot.meteor.external_velocity = slot.base.external_velocity;
-        // Ability.UpdateSim publishes the collider synchronized before this
-        // pass's MeteorSmash/PlayerBody updates.
-        slot.reported_position = slot.base.collider.center;
+        slot.reported_position = published.unwrap_or(slot.base.collider.center);
         slot.reported_tick = self.tick;
     }
 
@@ -32596,6 +32605,12 @@ impl RolloutWorld {
                 body.rotation = angle.raw();
             }
 
+            // Every Dash prefab's box is enabled; only the cast slot's moves.
+            for &row in &slot.dash_entities {
+                if row != usize::MAX && row != dash_e {
+                    self.entities[row].flags |= E_ENABLED;
+                }
+            }
             if dash_e != usize::MAX {
                 let dash_box = &mut self.entities[dash_e];
                 let dash_was_active = dash_box.flags & E_ACTIVE != 0;
@@ -33665,6 +33680,12 @@ impl RolloutWorld {
                 body.rotation = angle.raw();
             }
 
+            // Every Dash prefab's box is enabled; only the cast slot's moves.
+            for &row in &slot.dash_entities {
+                if row != usize::MAX && row != slot.dash_entity {
+                    self.entities[row].flags |= E_ENABLED;
+                }
+            }
             if slot.dash_entity != usize::MAX {
                 let dash_box = &mut self.entities[slot.dash_entity];
                 let dash_was_active = dash_box.flags & E_ACTIVE != 0;
