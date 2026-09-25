@@ -18792,6 +18792,12 @@ impl RolloutWorld {
                 let grounded = self.players[index].base.grounded;
                 let slot = &mut self.players[index];
                 slot.active = ActiveAbility::None;
+                // Ability.ExitAbility publishes before EnterFall's landing
+                // raycasts move the restored slime. The frozen form keeps
+                // the transform a moving ground left it with last pass.
+                slot.reported_position = slot.base.position;
+                slot.throw_item.collider_right = slot.base.up.perp_cw();
+                slot.reported_tick = self.tick;
                 if grounded {
                     slot.obs_state = STATE_LAND;
                     slot.state_ticks = LAND_TICKS + 2;
@@ -18801,8 +18807,6 @@ impl RolloutWorld {
                     slot.base.up = Vec2::UP;
                     slot.base.collision_rays(terrain!(self));
                 }
-                slot.reported_position = slot.base.position;
-                slot.reported_tick = self.tick;
                 if grounded {
                     self.sync_exit_to_ground(index, data);
                 }
@@ -18848,7 +18852,18 @@ impl RolloutWorld {
             });
             if slot.base.grounded {
                 if !slot.throw_item.has_fired {
+                    // A landing before the throw fires it from the ground
+                    // (Direction.DOWN, the gExit animation) and keeps the
+                    // form; PlayerBody then moves it (ThrowItem.cs:404-411).
+                    slot.throw_item.direction = -slot.base.up;
+                    slot.throw_item.grounded = true;
                     self.fire_mine(index, data);
+                    let slot = &mut self.players[index];
+                    slot.base.position += slot.base.external_velocity * DT;
+                    slot.base.external_velocity *= Fix::from_f64(0.95);
+                    slot.throw_item.collider_rotation = slot.base.rotation;
+                    slot.throw_item.collider_right = slot.base.up.perp_cw();
+                    return;
                 }
                 let slot = &mut self.players[index];
                 slot.active = ActiveAbility::None;
