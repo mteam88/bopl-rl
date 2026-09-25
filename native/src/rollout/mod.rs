@@ -5302,6 +5302,14 @@ impl RolloutWorld {
                 self.gold_mushroom_tick(index, jump_pressed, data);
             }
         }
+        // Runtime-spawned platforms register behind the player/ability
+        // prefab that created and steers them, but ahead of the effects that
+        // later hit them: a Gust wave or explosion spawned after the platform
+        // pushes it after its AnimateVelocity spring has read the velocity.
+        self.platform_springs_tick(data, updater_dt, true);
+        // ResizablePlatform sits behind AnimateVelocity in the clone's
+        // prefab, so its unconditional ResizePlatform follows the spring.
+        self.platform_resizable_tick(data);
         if has(ABILITY_GUST) {
             self.gust_waves_update(data, DT);
         }
@@ -5551,14 +5559,6 @@ impl RolloutWorld {
             }
         }
         self.refresh_actor_entities();
-        // Runtime-spawned platforms register behind every player/ability
-        // prefab, so their AnimateVelocity spring runs here, after the
-        // updater that created and steers them.
-        self.platform_springs_tick(data, updater_dt, true);
-        // ResizablePlatform sits behind AnimateVelocity in the clone's
-        // prefab, so its unconditional ResizePlatform lands between the
-        // spring and DetPhysics.
-        self.platform_resizable_tick(data);
         if self.intro_phase == 3 {
             self.platforms_tick(data, updater_dt, physics_dt);
         }
