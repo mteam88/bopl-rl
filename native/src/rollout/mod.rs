@@ -14288,6 +14288,7 @@ impl RolloutWorld {
 
     fn beam_raycast(
         platforms: &[Platform],
+        swept: Option<&[RoundedRect]>,
         platform_entities: &[usize],
         entities: &[CEntity],
         origin: Vec2,
@@ -14300,12 +14301,13 @@ impl RolloutWorld {
             point: Vec2::ZERO,
             distance: Fix::MAX,
         };
-        for (platform, &entity) in platforms.iter().zip(platform_entities) {
+        for (index, (platform, &entity)) in platforms.iter().zip(platform_entities).enumerate() {
             let row = entities[entity];
             if row.flags & E_ACTIVE == 0 || mask & (1u32 << row.layer) == 0 {
                 continue;
             }
-            if let Some(hit) = platform.collider.raycast(origin, direction)
+            let collider = swept.map_or(platform.collider, |swept| swept[index]);
+            if let Some(hit) = collider.raycast(origin, direction)
                 && hit.near < result.distance
                 && hit.near <= maximum
             {
@@ -14361,6 +14363,11 @@ impl RolloutWorld {
 
     fn beam_physics_tick(&mut self, data: &data::RolloutData) {
         let platforms = &self.platforms;
+        // DetPhysics casts beams after integrating every body but before any
+        // narrow phase, so platforms stand where integration left them.
+        let swept = (self.scratch.callback_tick == Some(self.tick)
+            && self.scratch.callback_colliders.len() == platforms.len())
+        .then_some(self.scratch.callback_colliders.as_slice());
         let platform_entities = &self.platform_entities;
         let entities = &self.entities;
         self.beam_graph.step_into(
@@ -14368,6 +14375,7 @@ impl RolloutWorld {
             &mut |origin, direction, distance, mask| {
                 Self::beam_raycast(
                     platforms,
+                    swept,
                     platform_entities,
                     entities,
                     origin,
