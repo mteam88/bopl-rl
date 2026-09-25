@@ -25706,7 +25706,9 @@ impl RolloutWorld {
         let id = self.platforms[index].id;
         let surface = self.platforms[index].surface.clone();
         for slot in &mut self.players {
-            if slot.base.alive && slot.base.ground == Some(id) {
+            // Every lost-ground check is gated on isGrounded; an airborne
+            // body keeps its stale attachedGround.
+            if slot.base.alive && slot.base.grounded && slot.base.ground == Some(id) {
                 slot.removed_ground_normal = Some(surface.normal(slot.base.position));
             }
         }
