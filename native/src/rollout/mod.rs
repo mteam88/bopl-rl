@@ -1610,35 +1610,6 @@ pub struct BlackHoleCastState {
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
-    /// The body position `BlackHoleClap.FireCommon` reads when it instantiates
-    /// the hole (BlackHoleClap.cs:85-91), which is one pass older than the one
-    /// this port holds when its cast tick runs.
-    ///
-    /// The spawn runs from a `SpriteAnimator` callback, and on
-    /// `Black hole.prefab` that animator is `hierarchyNumber` 1 while the
-    /// form's own `PlayerBody` is 8 - the last component of the pass (the
-    /// slime's components never compete: entering the cast deactivates that
-    /// GameObject and `Updater` skips disabled ones, Updater.cs:300). So the
-    /// spawn reads a position the form's motion has not touched yet.
-    ///
-    /// That alone does not explain the whole offset and the comment should not
-    /// pretend it does. `black_hole_form_motion` already runs at the *end* of
-    /// `black_hole_cast_tick` and nothing moves the body earlier in the pass,
-    /// so `slot.base.position` there is *already* pre-motion - and both it and
-    /// a one-deep copy of it measure as exact no-ops. Only shifting one pass
-    /// further back matches, and it matches exactly: the error it removes is
-    /// one tick of the caster's fall in every bounds phase (0.082048 units at
-    /// tick 364, 0.085823 at 379), which fixture #6 had recorded as a rounding
-    /// residue. Why this port's form motion sits a pass ahead of the oracle's
-    /// for this ability is still open; see fixture #8.
-    pub spawn_origin: Vec2,
-    /// The body's up from the same pass as `spawn_origin`; FireCommon's
-    /// `body.right` on a rotating platform is that pass's tilt, not this one's.
-    pub spawn_up: Vec2,
-    /// The hole's place in the spawn order, taken on the pass FireCommon
-    /// instantiates it - the one before this port spawns it - so a spawn later
-    /// in that pass or earlier in the next numbers after it.
-    pub hole_hierarchy: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2213,6 +2184,10 @@ pub struct PlayerSlot {
     pub gust: GustState,
     pub revival: RevivalState,
     pub black_hole_cast: BlackHoleCastState,
+    /// A hole `BlackHoleClap.FireCommon` instantiated last pass, with its
+    /// position and place in the spawn order. It is created on the next pass
+    /// even if the form died later in the pass that fired it.
+    pub pending_black_hole: Option<(Vec2, u32)>,
     pub macho_throw: MachoThrowState,
     pub drill: DrillState,
     pub beam: BeamState,
@@ -3863,6 +3838,7 @@ impl RolloutWorld {
                 gust: GustState::default(),
                 revival: RevivalState::default(),
                 black_hole_cast: BlackHoleCastState::default(),
+                pending_black_hole: None,
                 macho_throw: MachoThrowState::default(),
                 drill: DrillState::default(),
                 beam: BeamState::default(),
@@ -5316,6 +5292,9 @@ impl RolloutWorld {
         }
         let mut jump_pressed_by_player = [false; MAX_PLAYERS];
         for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
+            if let Some((position, hierarchy)) = self.players[index].pending_black_hole.take() {
+                self.spawn_black_hole(index, position, hierarchy, data);
+            }
             if self.playable(index) {
                 self.apply_platform_drop(index, data);
             }
@@ -8553,8 +8532,6 @@ impl RolloutWorld {
                         slot.telemetry.ability_activations[s] += 1;
                         slot.black_hole_cast = BlackHoleCastState {
                             grounded,
-                            spawn_origin: form_position,
-                            spawn_up: slot.base.up,
                             ..BlackHoleCastState::default()
                         };
                         slot.base.position = form_position;
@@ -12277,13 +12254,7 @@ impl RolloutWorld {
 
     fn black_hole_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
-        // Shift the spawn origin before anything can spawn from it, so a hole
-        // cast this pass reads what the pass before last left rather than the
-        // position this port has already integrated to.
-        let live = slot.base.position;
         let cast = &mut slot.black_hole_cast;
-        let spawn_origin = std::mem::replace(&mut cast.spawn_origin, live);
-        let spawn_up = std::mem::replace(&mut cast.spawn_up, slot.base.up);
         cast.ticks += 1;
         let animation_ticks = if cast.phase == 0 {
             if cast.grounded {
@@ -12297,16 +12268,30 @@ impl RolloutWorld {
             data.black_hole.exit_air_ticks
         };
         if cast.phase == 0 && cast.ticks == animation_ticks {
-            cast.hole_hierarchy = self.next_spawn_hierarchy;
+            // FireCommon instantiates the hole from an animator callback that
+            // runs before the form's PlayerBody moves it this pass
+            // (BlackHoleClap.cs:85-91). The hole is created next pass, so a
+            // kill later in this pass cannot take it back.
+            slot.black_hole_castable[slot.active_slot] = false;
+            let facing = if slot.facing_right {
+                Fix::ONE
+            } else {
+                -Fix::ONE
+            };
+            let local = Vec2::new(
+                data.black_hole.spawn_offset.x * facing,
+                data.black_hole.spawn_offset.y,
+            );
+            let scale = (slot.player_scale / Fix::from_int(3)).clamp(Fix::ONE, Fix::from_int(2));
+            let position = slot.base.position + scale * slot.base.up.perp_cw().complex_mul(local);
+            slot.pending_black_hole = Some((position, self.next_spawn_hierarchy));
             self.next_spawn_hierarchy += data.black_hole.updatable_count;
         }
+        let cast = &mut self.players[index].black_hole_cast;
         if (cast.phase == 0 && cast.ticks > animation_ticks)
             || (cast.phase == 1 && cast.ticks >= animation_ticks)
         {
             if cast.phase == 0 {
-                let hierarchy_base = cast.hole_hierarchy;
-                self.spawn_black_hole(index, spawn_origin, spawn_up, hierarchy_base, data);
-                let cast = &mut self.players[index].black_hole_cast;
                 cast.phase = 1;
                 cast.ticks = 0;
             } else {
@@ -12373,25 +12358,10 @@ impl RolloutWorld {
     fn spawn_black_hole(
         &mut self,
         owner: usize,
-        origin: Vec2,
-        up: Vec2,
+        position: Vec2,
         hierarchy_base: u32,
         data: &data::RolloutData,
     ) {
-        let ability_slot = self.players[owner].active_slot;
-        self.players[owner].black_hole_castable[ability_slot] = false;
-        let slot = &self.players[owner];
-        let facing = if slot.facing_right {
-            Fix::ONE
-        } else {
-            -Fix::ONE
-        };
-        let local = Vec2::new(
-            data.black_hole.spawn_offset.x * facing,
-            data.black_hole.spawn_offset.y,
-        );
-        let scale = (slot.player_scale / Fix::from_int(3)).clamp(Fix::ONE, Fix::from_int(2));
-        let position = origin + scale * up.perp_cw().complex_mul(local);
         let target_size =
             Fix::from_int(100) + data.black_hole.starting_mass.abs() * data.black_hole.growth;
         // BlackHole.Init runs UpdateSize() BEFORE dCircle.ManualInit()
