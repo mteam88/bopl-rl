@@ -1748,6 +1748,9 @@ pub struct BeamState {
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
+    /// The hurtbox centre Beam.OnEnterAbility synced: before it sets this
+    /// entry's offset, so with the offset the previous use left behind.
+    pub entry_center: Vec2,
     /// preGlowRen is active: shown by the enter pass, hidden by the loop pass.
     pub glow: bool,
 }
@@ -8727,6 +8730,14 @@ impl RolloutWorld {
                         };
                         {
                             let slot = &mut self.players[index];
+                            let entry_offset = if slot.beam.started || slot.beam.in_air {
+                                data.beam.air_offset
+                            } else {
+                                data.beam.collider_offset
+                            };
+                            let entry_up = if grounded { slot.base.up } else { Vec2::UP };
+                            let entry_center = form_position
+                                + (entry_offset * slot.player_scale).complex_mul(entry_up.perp_cw());
                             slot.timers[s] = Fix::ZERO;
                             slot.active = ActiveAbility::Beam;
                             slot.active_slot = s;
@@ -8745,6 +8756,7 @@ impl RolloutWorld {
                                 collider_position: form_position,
                                 collider_up: slot.base.up,
                                 collider_rotation: slot.base.rotation,
+                                entry_center,
                                 ..BeamState::default()
                             };
                             slot.base.position = form_position;
@@ -12619,6 +12631,8 @@ impl RolloutWorld {
                         | ActiveAbility::Duplicator
                 ) {
                     player.gun.hurtbox_center
+                } else if player.active == ActiveAbility::Beam {
+                    player.beam.entry_center
                 } else {
                     player.base.collider.center
                 };
@@ -35000,6 +35014,9 @@ fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
         slot.base.collision_rays(terrain);
     }
     slot.set_ordinary_body_scale(slot.player_scale);
+    // SlimeController.onExitAbility syncs the hurtbox, so later updaters
+    // this pass (BlackHole's pull) see the exit position.
+    slot.base.sync_collider();
 }
 
 #[cfg(test)]
