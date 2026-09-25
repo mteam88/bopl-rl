@@ -21901,7 +21901,10 @@ impl RolloutWorld {
     }
 
     fn fire_magnet(&mut self, index: usize, data: &data::RolloutData) {
-        let aim = self.players[index].magnet.aim.normalized_safe();
+        // MagnetGun.Fire faces the body along the aim as stored and only
+        // renormalizes it for the shot and the knockback.
+        let facing = self.players[index].magnet.aim;
+        let aim = facing.normalized_safe();
         if self.players[index].magnet.phase == 3 {
             self.magnet_fire_held_item(index, aim, data);
         }
@@ -21916,9 +21919,9 @@ impl RolloutWorld {
         slot.magnet.phase = 5;
         slot.magnet.animation = 3;
         slot.magnet.animation_ticks = 0;
-        slot.magnet.body_right = aim;
-        slot.base.up = aim.perp();
-        slot.base.rotation = aim.normalized_angle();
+        slot.magnet.body_right = facing;
+        slot.base.up = facing.perp();
+        slot.base.rotation = facing.normalized_angle();
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.magnet.knockback);
             slot.base.force_unground(&self.platforms);
