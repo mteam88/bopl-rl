@@ -8561,6 +8561,16 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Push {
+            // Push.prefab carries DestroyIfOutsideSceneBounds (hierarchy 4)
+            // ahead of ControlPlatform (6) and the form's PlayerBody (8), so
+            // it observes the position left by the preceding pass. A player
+            // pushing its own platform under the water drowns with it.
+            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                self.players[index].reported_position = self.players[index].base.position;
+                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+                return;
+            }
             self.push_tick(index, action, data);
             return;
         }
@@ -9921,6 +9931,9 @@ impl RolloutWorld {
                 let mut nearest = Fix::MAX;
                 let mut hit_platform = None;
                 for (platform, body) in self.platforms.iter().enumerate() {
+                    if !body.active {
+                        continue;
+                    }
                     if let Some(hit) = body.collider.raycast_within(from, direction, reach)
                         && hit.near < nearest
                     {
@@ -12349,7 +12362,7 @@ impl RolloutWorld {
             let mut changed = false;
             for platform_index in 0..self.platforms.len() {
                 let inverse_mass = self.platform_dynamics[platform_index].body.inverse_mass;
-                if inverse_mass == Fix::ZERO {
+                if inverse_mass == Fix::ZERO || !self.platforms[platform_index].active {
                     continue;
                 }
                 let vector = position - self.platforms[platform_index].surface.center;
@@ -15482,11 +15495,12 @@ impl RolloutWorld {
         if wave.collision_mask & (1 << 11) != 0 {
             let mut applied = false;
             for platform_index in 0..self.platforms.len() {
-                if crate::physics::contact::circle_rounded(
-                    query,
-                    self.platforms[platform_index].collider,
-                )
-                .is_none()
+                if !self.platforms[platform_index].active
+                    || crate::physics::contact::circle_rounded(
+                        query,
+                        self.platforms[platform_index].collider,
+                    )
+                    .is_none()
                 {
                     continue;
                 }
@@ -19786,7 +19800,7 @@ impl RolloutWorld {
         let firepoint = self.magnet_firepoint(index, data);
         let mut half_length = Fix::from_int(1000);
         let mut nearest = Fix::MAX;
-        for platform in &self.platforms {
+        for platform in self.platforms.iter().filter(|platform| platform.active) {
             if let Some(hit) = platform
                 .collider
                 .raycast(firepoint, direction)
@@ -19814,7 +19828,9 @@ impl RolloutWorld {
         let body_position = slot.base.position;
         let mut changed = false;
         for platform_index in 0..self.platforms.len() {
-            if ground == Some(self.platforms[platform_index].id) {
+            if ground == Some(self.platforms[platform_index].id)
+                || !self.platforms[platform_index].active
+            {
                 continue;
             }
             if !box_rounded_overlaps(query, self.platforms[platform_index].collider) {
@@ -20095,7 +20111,7 @@ impl RolloutWorld {
     ) -> Option<Fix> {
         let mut nearest = Fix::MAX;
         for (platform_index, platform) in self.platforms.iter().enumerate() {
-            if excluded_platform == Some(platform_index) {
+            if excluded_platform == Some(platform_index) || !platform.active {
                 continue;
             }
             if let Some(hit) = platform
@@ -24470,11 +24486,12 @@ impl RolloutWorld {
             query.inner.center = spawn_position;
             query.radius += Fix::ONE;
             for platform_index in 0..self.platforms.len() {
-                if crate::physics::contact::rounded_rounded(
-                    query,
-                    self.platforms[platform_index].collider,
-                )
-                .is_none()
+                if !self.platforms[platform_index].active
+                    || crate::physics::contact::rounded_rounded(
+                        query,
+                        self.platforms[platform_index].collider,
+                    )
+                    .is_none()
                 {
                     continue;
                 }
@@ -27192,6 +27209,9 @@ impl RolloutWorld {
             let mut contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
             contacts.clear();
             for (p, platform) in self.platforms.iter().enumerate() {
+                if !platform.active {
+                    continue;
+                }
                 if let Some(contact) =
                     crate::physics::contact::circle_rounded(circle, platform.collider)
                 {
@@ -27951,6 +27971,9 @@ impl RolloutWorld {
                 if contact_count == contacts.len() {
                     break;
                 }
+                if !platform.active {
+                    continue;
+                }
                 if let Some(contact) =
                     crate::physics::contact::rounded_rounded(missile_shape, platform.collider)
                 {
@@ -28255,6 +28278,9 @@ impl RolloutWorld {
                 radius: item_radius,
             };
             for (platform_index, platform) in self.platforms.iter().enumerate() {
+                if !platform.active {
+                    continue;
+                }
                 if let Some(contact) =
                     crate::physics::contact::circle_rounded(circle, platform.collider)
                 {
@@ -29866,6 +29892,9 @@ impl RolloutWorld {
                 radius: data.rock.radius * self.duplicated_rocks[rock_index].scale,
             };
             for wall_index in 0..self.platforms.len() {
+                if !self.platforms[wall_index].active {
+                    continue;
+                }
                 let Some(contact) = crate::physics::contact::circle_rounded(
                     circle,
                     self.platforms[wall_index].collider,
@@ -29997,6 +30026,9 @@ impl RolloutWorld {
                 radius: slot.rock.collider_radius,
             };
             for (wall_index, platform) in self.platforms.iter().enumerate() {
+                if !platform.active {
+                    continue;
+                }
                 if let Some(contact) =
                     crate::physics::contact::circle_rounded(circle, platform.collider)
                 {
@@ -30625,7 +30657,7 @@ impl RolloutWorld {
                 radius: Fix::ZERO,
             };
             for (wall_index, platform) in self.platforms.iter().enumerate() {
-                if wall_index == parent_index {
+                if wall_index == parent_index || !platform.active {
                     continue;
                 }
                 if let Some(contact) =
@@ -30700,7 +30732,7 @@ impl RolloutWorld {
                 radius: Fix::ZERO,
             };
             for (wall_index, platform) in self.platforms.iter().enumerate() {
-                if wall_index == parent_index {
+                if wall_index == parent_index || !platform.active {
                     continue;
                 }
                 if let Some(contact) =
@@ -30878,9 +30910,7 @@ impl RolloutWorld {
         // call at all (BounceBall.cs:205-223). Every kill() site that models
         // ExitAbility rather than killPlayer is reached with a live form, so
         // the active-ability test separates the two exactly.
-        if self.players[index].active == ActiveAbility::None
-            && self.players[index].rope.is_some()
-        {
+        if self.players[index].active == ActiveAbility::None && self.players[index].rope.is_some() {
             let top = self.players[index].rope_top;
             self.attach_player_rope(index, None, top);
         }
@@ -31701,9 +31731,7 @@ impl RolloutWorld {
                 if !any_platform {
                     row.reserved[0] = ABILITY_NULL;
                 }
-            } else if row.owner != 0
-                && !held[row.owner as usize].contains(&row.reserved[0])
-            {
+            } else if row.owner != 0 && !held[row.owner as usize].contains(&row.reserved[0]) {
                 row.reserved[0] = ABILITY_NULL;
             }
         }
@@ -31889,13 +31917,12 @@ impl RolloutWorld {
                 // 0 and `SourceAbility` can only reach the ability through
                 // `Grenade.thrower` -- which resolves through `AbilityId`, and
                 // so through the thrower's live slime.
-                row.reserved[0] = if held[self.players[item.owner].base.id as usize]
-                    .contains(&item.ability)
-                {
-                    item.ability
-                } else {
-                    ABILITY_NULL
-                };
+                row.reserved[0] =
+                    if held[self.players[item.owner].base.id as usize].contains(&item.ability) {
+                        item.ability
+                    } else {
+                        ABILITY_NULL
+                    };
             }
             // Grenade.Init runs on the updater pass after instantiation. Both
             // ordinary and smoke payloads carry Grenade, but its timer remains
@@ -36304,5 +36331,3 @@ mod tests {
         );
     }
 }
-
-
