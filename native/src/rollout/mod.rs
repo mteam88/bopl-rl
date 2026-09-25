@@ -1635,6 +1635,10 @@ pub struct BlackHoleCastState {
     /// The body's up from the same pass as `spawn_origin`; FireCommon's
     /// `body.right` on a rotating platform is that pass's tilt, not this one's.
     pub spawn_up: Vec2,
+    /// The hole's place in the spawn order, taken on the pass FireCommon
+    /// instantiates it - the one before this port spawns it - so a spawn later
+    /// in that pass or earlier in the next numbers after it.
+    pub hole_hierarchy: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -12292,11 +12296,16 @@ impl RolloutWorld {
         } else {
             data.black_hole.exit_air_ticks
         };
+        if cast.phase == 0 && cast.ticks == animation_ticks {
+            cast.hole_hierarchy = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.black_hole.updatable_count;
+        }
         if (cast.phase == 0 && cast.ticks > animation_ticks)
             || (cast.phase == 1 && cast.ticks >= animation_ticks)
         {
             if cast.phase == 0 {
-                self.spawn_black_hole(index, spawn_origin, spawn_up, data);
+                let hierarchy_base = cast.hole_hierarchy;
+                self.spawn_black_hole(index, spawn_origin, spawn_up, hierarchy_base, data);
                 let cast = &mut self.players[index].black_hole_cast;
                 cast.phase = 1;
                 cast.ticks = 0;
@@ -12361,7 +12370,14 @@ impl RolloutWorld {
         }
     }
 
-    fn spawn_black_hole(&mut self, owner: usize, origin: Vec2, up: Vec2, data: &data::RolloutData) {
+    fn spawn_black_hole(
+        &mut self,
+        owner: usize,
+        origin: Vec2,
+        up: Vec2,
+        hierarchy_base: u32,
+        data: &data::RolloutData,
+    ) {
         let ability_slot = self.players[owner].active_slot;
         self.players[owner].black_hole_castable[ability_slot] = false;
         let slot = &self.players[owner];
@@ -12376,8 +12392,6 @@ impl RolloutWorld {
         );
         let scale = (slot.player_scale / Fix::from_int(3)).clamp(Fix::ONE, Fix::from_int(2));
         let position = origin + scale * up.perp_cw().complex_mul(local);
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.black_hole.updatable_count;
         let target_size =
             Fix::from_int(100) + data.black_hole.starting_mass.abs() * data.black_hole.growth;
         // BlackHole.Init runs UpdateSize() BEFORE dCircle.ManualInit()
