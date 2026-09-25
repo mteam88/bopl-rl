@@ -7563,13 +7563,9 @@ impl RolloutWorld {
                         // in the same pass. That performs anticipation setup
                         // now; platform and bow begin updating next tick.
                         self.dash_move(index, masked, movement_input);
-                        if self.players[index].base.dash.active
-                            && self.players[index].rope.is_some()
-                        {
-                            // PlayerBody follows Dash in the prefab and is
-                            // enabled by the same ability-entry pass.
-                            self.rope_body_move(index, jump_pressed);
-                        }
+                        // PlayerBody follows Dash in the prefab and is
+                        // enabled by the same ability-entry pass.
+                        self.dash_body_move(index, jump_pressed);
                         return;
                     }
                     ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
@@ -9070,12 +9066,10 @@ impl RolloutWorld {
                 buttons: (source.buttons & 1) | if starting { 2 } else { 0 },
             };
             self.dash_move(index, masked, movement_input);
-            if self.players[index].base.dash.active && self.players[index].rope.is_some() {
-                // PlayerBody follows Dash.UpdateSim in the prefab. Keep the
-                // published Dash pose from before this body integration; its
-                // constrained position becomes visible on the next pass.
-                self.rope_body_move(index, jump_pressed);
-            }
+            // PlayerBody follows Dash.UpdateSim in the prefab. Keep the
+            // published Dash pose from before this body integration; its
+            // position becomes visible on the next pass.
+            self.dash_body_move(index, jump_pressed);
             if !self.players[index].base.dash.active {
                 // Dash finished this tick.
                 self.players[index].active = ActiveAbility::None;
@@ -18515,6 +18509,22 @@ impl RolloutWorld {
     }
 
     /// base.step with the dash shove check from World::step.
+    /// PlayerBody.UpdateSim on the Dash prefab: a rope constrains the body,
+    /// otherwise it drifts by its velocity, which a pull such as Black Hole's
+    /// makes nonzero while the Dash waits.
+    fn dash_body_move(&mut self, index: usize, jump_pressed: bool) {
+        if !self.players[index].base.dash.active {
+            return;
+        }
+        if self.players[index].rope.is_some() {
+            self.rope_body_move(index, jump_pressed);
+            return;
+        }
+        let body = &mut self.players[index].base;
+        body.position += (body.velocity + body.external_velocity) * DT;
+        body.external_velocity *= Fix::from_f64(0.95);
+    }
+
     fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
         if self.players[index].active == ActiveAbility::Dash {
             // onExitAbility sets hurtBox.Scale = Player.Scale, and

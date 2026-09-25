@@ -17,6 +17,11 @@ impl Player {
             old.collision_rays(terrain);
         }
         self.dash.saved_local = old.local;
+        // Dash.OnEnterAbility syncs its hitbox to the slime's pose before
+        // readyDash ungrounds the body; DetPhysics moves it onto the body only
+        // at its next sync.
+        self.dash.active = true;
+        self.sync_collider();
         if self.grounded {
             self.dash.local = self.local;
             self.position = self
@@ -40,7 +45,6 @@ impl Player {
         self.up = Vec2::UP;
         self.velocity = Vec2::ZERO;
         self.external_velocity = Vec2::ZERO;
-        self.dash.active = true;
         self.dash.time = Fix::ZERO;
         self.dash.updates = 0;
         self.dash.in_dash = false;
