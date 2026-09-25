@@ -4062,20 +4062,10 @@ impl RolloutWorld {
         }
     }
 
-    /// Weapon-layer pickups ignore walls but collide physically with one
-    /// another. DetPhysics resolves their Circle/Circle manifolds before the
-    /// DynamicAbilityPickup callbacks that may hand one to a slime.
-    fn ability_pickup_pair_contacts(&mut self, data: &data::RolloutData) {
-        if self
-            .ability_pickups
-            .iter()
-            .filter(|pickup| pickup.active && pickup.enabled)
-            .take(2)
-            .count()
-            < 2
-        {
-            return;
-        }
+    /// DetPhysics sweeps its bounding boxes along the axis with the larger
+    /// variance about the mean of the active platforms and non-platform rows;
+    /// each broadphase pair lists the lower-minimum collider first.
+    fn sweep_x(&self) -> bool {
         let mut mean = Vec2::ZERO;
         let mut active_count = 0usize;
         for platform in &self.platforms {
@@ -4108,7 +4098,24 @@ impl RolloutWorld {
             let delta = mean - Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
         }
-        let sweep_x = variance.x > variance.y;
+        variance.x > variance.y
+    }
+
+    /// Weapon-layer pickups ignore walls but collide physically with one
+    /// another. DetPhysics resolves their Circle/Circle manifolds before the
+    /// DynamicAbilityPickup callbacks that may hand one to a slime.
+    fn ability_pickup_pair_contacts(&mut self, data: &data::RolloutData) {
+        if self
+            .ability_pickups
+            .iter()
+            .filter(|pickup| pickup.active && pickup.enabled)
+            .take(2)
+            .count()
+            < 2
+        {
+            return;
+        }
+        let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
         let center = |pickup: AbilityPickup| pickup.position + data.pickup.offset * pickup.scale;
@@ -4223,39 +4230,7 @@ impl RolloutWorld {
         // not prefab registration order. This matters when two death drops
         // overlap one slime on the same pass: AddAdditionalAbility replaces
         // the third slot twice, so the later callback wins.
-        let mut mean = Vec2::ZERO;
-        let mut active_count = 0usize;
-        for platform in &self.platforms {
-            if platform.active {
-                mean += platform.surface.center;
-                active_count += 1;
-            }
-        }
-        for entity in self
-            .entities
-            .iter()
-            .filter(|entity| entity.kind != 2 && entity.flags & 3 == 3)
-        {
-            mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
-            active_count += 1;
-        }
-        if active_count != 0 {
-            mean = mean / Fix::from_int(active_count as i64);
-        }
-        let mut variance = Vec2::ZERO;
-        for platform in &self.platforms {
-            let delta = mean - platform.surface.center;
-            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
-        }
-        for entity in self
-            .entities
-            .iter()
-            .filter(|entity| entity.kind != 2 && entity.flags & E_REMOVED == 0)
-        {
-            let delta = mean - Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
-            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
-        }
-        let sweep_x = variance.x > variance.y;
+        let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let mut order = std::mem::take(&mut self.scratch.pickup_order);
         order.clear();
@@ -5208,15 +5183,7 @@ impl RolloutWorld {
             // TeleportedObjectEffect, so neither state may publish a new
             // Player.Position through Player.SetPosition.
             if self.players[index].base.alive {
-                if !self.players[index].teleport_effect_active
-                    && !self.players[index].blink_tunnel_active
-                    && self.players[index].freeze_form_exit_tick != self.tick
-                {
-                    self.players[index].reported_position = self.players[index].base.position;
-                    self.players[index].reported_tick = self.tick;
-                } else {
-                    self.players[index].reported_tick = self.tick;
-                }
+                self.publish_ability_position(index);
             }
             let action = packet.aim_action();
             self.players[index].last_action = action;
@@ -7801,6 +7768,12 @@ impl RolloutWorld {
                             collider_rotation: slot.base.rotation,
                             ..SpikeCastState::default()
                         };
+                        // Spike follows Ability in the prefab updater list:
+                        // its grounded Move(zero) already runs on the entry
+                        // pass, carrying the slime's grounded speed.
+                        if slot.base.grounded {
+                            slot.base.move_only(Vec2::ZERO, terrain!(self));
+                        }
                         return;
                     }
                     ABILITY_ENGINE => {
@@ -10227,6 +10200,11 @@ impl RolloutWorld {
     }
 
     fn exit_spike_cast(&mut self, index: usize) {
+        // The slime's SyncPhysicsTo(AbilityExitInfo) re-places it from the
+        // form's surface local.
+        if self.players[index].base.grounded {
+            self.sync_exit_to_ground(index, data::get());
+        }
         let grounded_pose = self.players[index].base.ground.and_then(|ground| {
             self.platforms
                 .iter()
@@ -10289,6 +10267,11 @@ impl RolloutWorld {
     }
 
     fn exit_engine_cast(&mut self, index: usize) {
+        // PlantObjectOnPlatform.ExitAbility hands over its surface local like
+        // Spike; the slime's SyncPhysicsTo re-places it from there.
+        if self.players[index].base.grounded {
+            self.sync_exit_to_ground(index, data::get());
+        }
         let grounded_pose = self.players[index].base.ground.and_then(|ground| {
             self.platforms
                 .iter()
@@ -11422,7 +11405,7 @@ impl RolloutWorld {
             let attack_box = OrientedBox {
                 center,
                 right: basis * extents.x,
-                up: basis.perp() * extents.y,
+                up: (Vec2::UP * extents.y).complex_mul(basis),
                 inverse_extents: Vec2::new(
                     Fix::ONE / scaled_extents.x,
                     Fix::ONE / scaled_extents.y,
@@ -18666,6 +18649,18 @@ impl RolloutWorld {
     ///
     /// Returns true when the body died; callers must return immediately so
     /// the rest of the prefab's updaters, PlayerBody included, do not run.
+    /// Player.SetPosition from the live controller: SlimeController, or the
+    /// form's Ability. Nothing publishes while the controller is disabled by
+    /// TeleportedObjectEffect or the Blink tunnel, or on a Freeze exit pass.
+    fn publish_ability_position(&mut self, index: usize) {
+        let tick = self.tick;
+        let slot = &mut self.players[index];
+        if !slot.teleport_effect_active && !slot.blink_tunnel_active && slot.freeze_form_exit_tick != tick {
+            slot.reported_position = slot.base.position;
+        }
+        slot.reported_tick = tick;
+    }
+
     fn ability_boundary_kill(&mut self, index: usize, unground: bool) -> bool {
         if !self.players[index].base.alive || !self.players[index].base.outside_bounds() {
             return false;
@@ -19171,6 +19166,9 @@ impl RolloutWorld {
                 return;
             }
         }
+        // Ability.UpdateSim follows GunTransform: it publishes the pose after
+        // this pass's grounded Move and landing snap, before PlayerBody moves.
+        self.publish_ability_position(index);
 
         let slot = &mut self.players[index];
         if !slot.gun.has_fired {
@@ -19317,6 +19315,9 @@ impl RolloutWorld {
                 return;
             }
         }
+        // Ability.UpdateSim follows GunTransform: it publishes the pose after
+        // this pass's grounded Move and landing snap, before PlayerBody moves.
+        self.publish_ability_position(index);
 
         let slot = &mut self.players[index];
         if !slot.gun.has_fired {
@@ -19461,6 +19462,9 @@ impl RolloutWorld {
                 return;
             }
         }
+        // Ability.UpdateSim follows GunTransform: it publishes the pose after
+        // this pass's grounded Move and landing snap, before PlayerBody moves.
+        self.publish_ability_position(index);
 
         let slot = &mut self.players[index];
         if !slot.gun.has_fired {
@@ -19601,6 +19605,9 @@ impl RolloutWorld {
                 return;
             }
         }
+        // Ability.UpdateSim follows GunTransform: it publishes the pose after
+        // this pass's grounded Move and landing snap, before PlayerBody moves.
+        self.publish_ability_position(index);
 
         let slot = &mut self.players[index];
         if !slot.gun.has_fired {
@@ -23175,8 +23182,8 @@ impl RolloutWorld {
             let extents = data::surface_extents(data.spike.attack_extents * scale);
             self.entities[entity].right_x = (right * extents.x).x.raw();
             self.entities[entity].right_y = (right * extents.x).y.raw();
-            self.entities[entity].up_x = (right.perp() * extents.y).x.raw();
-            self.entities[entity].up_y = (right.perp() * extents.y).y.raw();
+            self.entities[entity].up_x = (Vec2::UP * extents.y).complex_mul(right).x.raw();
+            self.entities[entity].up_y = (Vec2::UP * extents.y).complex_mul(right).y.raw();
             self.entities[entity].x = self.spike_attacks[index].collider_center.x.raw();
             self.entities[entity].y = self.spike_attacks[index].collider_center.y.raw();
             return true;
@@ -23207,8 +23214,8 @@ impl RolloutWorld {
             let extents = data::surface_extents(data.engine.rocket_extents * scale);
             self.entities[entity].right_x = (right * extents.x).x.raw();
             self.entities[entity].right_y = (right * extents.x).y.raw();
-            self.entities[entity].up_x = (right.perp() * extents.y).x.raw();
-            self.entities[entity].up_y = (right.perp() * extents.y).y.raw();
+            self.entities[entity].up_x = (Vec2::UP * extents.y).complex_mul(right).x.raw();
+            self.entities[entity].up_y = (Vec2::UP * extents.y).complex_mul(right).y.raw();
             self.entities[entity].x = self.engines[index].collider_center.x.raw();
             self.entities[entity].y = self.engines[index].collider_center.y.raw();
             return true;
@@ -27310,8 +27317,13 @@ impl RolloutWorld {
             // FixTransform/Projectile. Later item callbacks therefore observe
             // the destroyed transform; in GrenadeExplode's case it can no
             // longer recover an igniting Projectile, so the payload survives.
-            let mut item_contacts = [(usize::MAX, Contact::default()); 64];
+            // The pair lists the circle with the lower bounding-box minimum
+            // on the sweep axis first; the order decides the manifold's
+            // normal and so the rounding of each side's correction.
+            let mut item_contacts = [(usize::MAX, Contact::default(), false); 64];
             let mut item_contact_count = 0;
+            let sweep_x = self.sweep_x();
+            let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
             for (item_index, item) in self.thrown_items.iter().enumerate() {
                 if item_contact_count == item_contacts.len()
                     || !item.active
@@ -27320,15 +27332,19 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let item_radius = thrown_item_radius(data, *item);
-                if let Some(contact) = crate::physics::contact::circle_circle(
-                    Circle {
-                        center: item.position,
-                        radius: item_radius,
-                    },
-                    circle,
-                ) {
-                    item_contacts[item_contact_count] = (item_index, contact);
+                let item_circle = Circle {
+                    center: item.position,
+                    radius: thrown_item_radius(data, *item),
+                };
+                let arrow_first = axis(circle.center) - circle.radius
+                    < axis(item_circle.center) - item_circle.radius;
+                let contact = if arrow_first {
+                    crate::physics::contact::circle_circle(circle, item_circle)
+                } else {
+                    crate::physics::contact::circle_circle(item_circle, circle)
+                };
+                if let Some(contact) = contact {
+                    item_contacts[item_contact_count] = (item_index, contact, arrow_first);
                     item_contact_count += 1;
                 }
             }
@@ -27340,25 +27356,31 @@ impl RolloutWorld {
                     ..data.arrow.body
                 };
                 let mut arrow_center = arrow.position;
-                for &(item_index, contact) in &item_contacts[..item_contact_count] {
+                for &(item_index, contact, arrow_first) in &item_contacts[..item_contact_count] {
                     let item = self.thrown_items[item_index];
                     let mut item_body = item.body;
                     let mut item_center = item.position;
-                    resolve(
-                        contact,
-                        &mut item_body,
-                        &mut arrow_body,
-                        item_center,
-                        arrow_center,
-                    );
-                    let correction = positional_correction(
-                        contact,
-                        item_body.inverse_mass,
-                        arrow_body.inverse_mass,
-                        false,
-                    );
-                    item_center += correction[0];
-                    arrow_center += correction[1];
+                    if arrow_first {
+                        resolve(contact, &mut arrow_body, &mut item_body, arrow_center, item_center);
+                        let correction = positional_correction(
+                            contact,
+                            arrow_body.inverse_mass,
+                            item_body.inverse_mass,
+                            false,
+                        );
+                        arrow_center += correction[0];
+                        item_center += correction[1];
+                    } else {
+                        resolve(contact, &mut item_body, &mut arrow_body, item_center, arrow_center);
+                        let correction = positional_correction(
+                            contact,
+                            item_body.inverse_mass,
+                            arrow_body.inverse_mass,
+                            false,
+                        );
+                        item_center += correction[0];
+                        arrow_center += correction[1];
+                    }
                     let live = &mut self.thrown_items[item_index];
                     live.position = item_center;
                     live.body = item_body;
@@ -28436,39 +28458,7 @@ impl RolloutWorld {
         // fixed-point positional correction gives the remainder to a
         // different body when A and B are exchanged. Compute the same global
         // sweep axis, then retain only the item circles from that ordering.
-        let mut mean = Vec2::ZERO;
-        let mut active_count = 0usize;
-        for platform in &self.platforms {
-            if platform.active {
-                mean += platform.surface.center;
-                active_count += 1;
-            }
-        }
-        for entity in self
-            .entities
-            .iter()
-            .filter(|entity| entity.kind != 2 && entity.flags & 3 == 3)
-        {
-            mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
-            active_count += 1;
-        }
-        if active_count != 0 {
-            mean = mean / Fix::from_int(active_count as i64);
-        }
-        let mut variance = Vec2::ZERO;
-        for platform in &self.platforms {
-            let delta = mean - platform.surface.center;
-            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
-        }
-        for entity in self
-            .entities
-            .iter()
-            .filter(|entity| entity.kind != 2 && entity.flags & E_REMOVED == 0)
-        {
-            let delta = mean - Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
-            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
-        }
-        let sweep_x = variance.x > variance.y;
+        let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
 
@@ -30685,7 +30675,7 @@ impl RolloutWorld {
             let attack_box = OrientedBox {
                 center,
                 right: basis * spike_extents.x,
-                up: basis.perp() * spike_extents.y,
+                up: (Vec2::UP * spike_extents.y).complex_mul(basis),
                 inverse_extents: Vec2::new(
                     Fix::ONE / scaled_extents.x,
                     Fix::ONE / scaled_extents.y,
@@ -30765,7 +30755,7 @@ impl RolloutWorld {
                 inner: OrientedBox {
                     center,
                     right: basis * extents.x,
-                    up: basis.perp() * extents.y,
+                    up: (Vec2::UP * extents.y).complex_mul(basis),
                     inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
                 },
                 radius: Fix::ZERO,
@@ -32182,8 +32172,8 @@ impl RolloutWorld {
                 y: center.y.raw(),
                 right_x: (basis * extents.x).x.raw(),
                 right_y: (basis * extents.x).y.raw(),
-                up_x: (basis.perp() * extents.y).x.raw(),
-                up_y: (basis.perp() * extents.y).y.raw(),
+                up_x: (Vec2::UP * extents.y).complex_mul(basis).x.raw(),
+                up_y: (Vec2::UP * extents.y).complex_mul(basis).y.raw(),
                 rotation: rotation.raw(),
                 inverse_mass: engine.body.inverse_mass.raw(),
                 ..CEntity::default()
@@ -32206,6 +32196,9 @@ impl RolloutWorld {
             let parent = &self.platform_dynamics[spike.platform_index].body;
             let rotation = parent.orientation + spike.relative_rotation;
             let basis = Vec2::angle(rotation);
+            // Box.SetRotation builds `up` as ComplexMul(up * extent, basis):
+            // 0*x - e*y floors e*y before negating, where `perp() * e` would
+            // floor the negative product (1 raw apart).
             let center = self.platform_dynamics[spike.platform_index].composite_position
                 + spike.relative_center.complex_mul(platform.surface.right);
             self.spike_attacks[spike_index].collider_center = center;
@@ -32221,8 +32214,8 @@ impl RolloutWorld {
                 y: center.y.raw(),
                 right_x: (basis * extents.x).x.raw(),
                 right_y: (basis * extents.x).y.raw(),
-                up_x: (basis.perp() * extents.y).x.raw(),
-                up_y: (basis.perp() * extents.y).y.raw(),
+                up_x: (Vec2::UP * extents.y).complex_mul(basis).x.raw(),
+                up_y: (Vec2::UP * extents.y).complex_mul(basis).y.raw(),
                 rotation: rotation.raw(),
                 inverse_mass: spike.body.inverse_mass.raw(),
                 ..CEntity::default()
