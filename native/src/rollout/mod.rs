@@ -5543,6 +5543,9 @@ impl RolloutWorld {
         // ResizablePlatform sits behind AnimateVelocity in the clone's
         // prefab, so its unconditional ResizePlatform follows the spring.
         self.platform_resizable_tick(data);
+        // A spawned platform's ShakablePlatform also runs after them, so a
+        // Beam or Meteor landing on it shakes it on the same pass.
+        self.platform_shakes_tick(data, updater_dt, true);
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT);
         }
@@ -30361,6 +30364,58 @@ impl RolloutWorld {
         }
     }
 
+    fn platform_shakes_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        runtime_spawned: bool,
+    ) {
+        // ShakablePlatform follows AnimateVelocity in each authored platform
+        // prefab. It writes a temporary transform displacement directly;
+        // the spring home remains fixed and pulls the rigid body back while
+        // successive samples replace the previous random offset.
+        let mut shook = false;
+        for i in 0..self.platforms.len() {
+            if !self.platforms[i].active
+                || self.platform_dynamics[i].intro_disabled
+                || (self.platform_defs[i] == usize::MAX) != runtime_spawned
+            {
+                continue;
+            }
+            let duration = self.platform_dynamics[i].shake_duration;
+            if self.platform_dynamics[i].shake_time >= duration || duration == Fix::ZERO {
+                continue;
+            }
+            self.platform_dynamics[i].shake_time += updater_dt;
+            let strength = if self.platform_dynamics[i].meteor_shake_curve {
+                data.meteor
+                    .spin_curve
+                    .evaluate(self.platform_dynamics[i].shake_time)
+                    * self.platform_dynamics[i].shake_amount
+            } else {
+                self.platform_dynamics[i].shake_amount
+            };
+            let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+            let radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+            let offset = Vec2::angle(angle) * radius * strength;
+            let delta = offset - self.platform_dynamics[i].shake_previous;
+            self.platform_dynamics[i].shake_previous = offset;
+            self.platforms[i].surface.center += delta;
+            self.platform_dynamics[i].shake_unsynced += delta;
+            self.platform_dynamics[i].composite_position += delta;
+            shook = true;
+            if self.platform_dynamics[i].shake_time >= duration {
+                self.platform_dynamics[i].shake_time = Fix::ZERO;
+                self.platform_dynamics[i].shake_duration = Fix::ZERO;
+                self.platform_dynamics[i].shake_amount = Fix::ZERO;
+                self.platform_dynamics[i].meteor_shake_curve = false;
+            }
+        }
+        if shook {
+            self.platforms_changed();
+        }
+    }
+
     fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active {
@@ -30403,47 +30458,7 @@ impl RolloutWorld {
         }
         self.platform_springs_tick(data, updater_dt, false);
 
-        // ShakablePlatform follows AnimateVelocity in each authored platform
-        // prefab. It writes a temporary transform displacement directly;
-        // the spring home remains fixed and pulls the rigid body back while
-        // successive samples replace the previous random offset.
-        let mut shook = false;
-        for i in 0..self.platforms.len() {
-            if !self.platforms[i].active || self.platform_dynamics[i].intro_disabled {
-                continue;
-            }
-            let duration = self.platform_dynamics[i].shake_duration;
-            if self.platform_dynamics[i].shake_time >= duration || duration == Fix::ZERO {
-                continue;
-            }
-            self.platform_dynamics[i].shake_time += updater_dt;
-            let strength = if self.platform_dynamics[i].meteor_shake_curve {
-                data.meteor
-                    .spin_curve
-                    .evaluate(self.platform_dynamics[i].shake_time)
-                    * self.platform_dynamics[i].shake_amount
-            } else {
-                self.platform_dynamics[i].shake_amount
-            };
-            let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-            let radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
-            let offset = Vec2::angle(angle) * radius * strength;
-            let delta = offset - self.platform_dynamics[i].shake_previous;
-            self.platform_dynamics[i].shake_previous = offset;
-            self.platforms[i].surface.center += delta;
-            self.platform_dynamics[i].shake_unsynced += delta;
-            self.platform_dynamics[i].composite_position += delta;
-            shook = true;
-            if self.platform_dynamics[i].shake_time >= duration {
-                self.platform_dynamics[i].shake_time = Fix::ZERO;
-                self.platform_dynamics[i].shake_duration = Fix::ZERO;
-                self.platform_dynamics[i].shake_amount = Fix::ZERO;
-                self.platform_dynamics[i].meteor_shake_curve = false;
-            }
-        }
-        if shook {
-            self.platforms_changed();
-        }
+        self.platform_shakes_tick(data, updater_dt, false);
 
         // BoplBody is the last updater on every platform (StickyRR,
         // AnimateVelocity, ShakablePlatform, ..., BoplBody), so the spring
