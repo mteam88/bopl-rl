@@ -12580,10 +12580,10 @@ impl RolloutWorld {
             }
             if let Some(entity) = self.black_holes[hole_index].entity {
                 let row = &mut self.entities[entity];
+                // BlackHole moves dCircle.position with its own velocity;
+                // the DetPhysics body it publishes never gets one.
                 row.x = position.x.raw();
                 row.y = position.y.raw();
-                row.vx = self.black_holes[hole_index].velocity.x.raw();
-                row.vy = self.black_holes[hole_index].velocity.y.raw();
                 row.radius = radius.raw();
             }
         }
@@ -13106,11 +13106,14 @@ impl RolloutWorld {
             if victims[player_index] && self.playable(player_index) {
                 // BlackHole explicitly requests no ordinary death effect,
                 // while still executing from DetPhysics's callback queue.
-                self.kill(
+                // A form gets Ability.ExitAbility at its FixTransform, not
+                // the form's own exit (BlackHole.cs:486-495).
+                self.kill_with(
                     player_index,
                     killers[player_index],
                     CAUSE_OTHER,
                     true,
+                    false,
                     false,
                 );
             }
@@ -20869,8 +20872,8 @@ impl RolloutWorld {
                 )
             }
             MagnetHeld::BlackHole(i) => {
-                let hole = self.black_holes[i];
-                (hole.position, hole.velocity, Fix::ONE, false)
+                // dCircle.velocity: the DetPhysics body, never moved.
+                (self.black_holes[i].position, Vec2::ZERO, Fix::ONE, false)
             }
             MagnetHeld::Boulder(i) => {
                 let platform = self.macho_boulders[i].platform_index;
@@ -31455,6 +31458,20 @@ impl RolloutWorld {
         by_callback: bool,
         spawn_effect: bool,
     ) {
+        self.kill_with(index, killer, cause, by_callback, spawn_effect, true);
+    }
+
+    /// `form_exit` is false when the caller hands the form's Ability an exit
+    /// directly (BlackHole.OnCollide), skipping the form's own ExitAbility.
+    fn kill_with(
+        &mut self,
+        index: usize,
+        killer: u32,
+        cause: u32,
+        by_callback: bool,
+        spawn_effect: bool,
+        form_exit: bool,
+    ) {
         // PlayerCollision.killPlayer detaches the slime's rope as its very
         // first action, ahead of the invulnerability early-return, so even a
         // kill that returns false marks the rope detached
@@ -31515,16 +31532,18 @@ impl RolloutWorld {
         {
             self.beam_orbs[orb].destroy_when_unheld = true;
         }
-        if matches!(
-            self.players[index].active,
-            ActiveAbility::Bow
-                | ActiveAbility::Blink
-                | ActiveAbility::Freeze
-                | ActiveAbility::GrowthRay
-                | ActiveAbility::ShrinkRay
-                | ActiveAbility::Duplicator
-                | ActiveAbility::Magnet
-        ) {
+        if form_exit
+            && matches!(
+                self.players[index].active,
+                ActiveAbility::Bow
+                    | ActiveAbility::Blink
+                    | ActiveAbility::Freeze
+                    | ActiveAbility::GrowthRay
+                    | ActiveAbility::ShrinkRay
+                    | ActiveAbility::Duplicator
+                    | ActiveAbility::Magnet
+            )
+        {
             // PlayerCollision.killPlayer calls the form's ExitAbility
             // (BowTransform, GunTransform, MagnetGun) with isDead=true. Each
             // resets rotation, then PlayerPhysics.UnGround moves the form one
