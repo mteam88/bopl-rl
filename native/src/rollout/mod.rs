@@ -16109,6 +16109,32 @@ impl RolloutWorld {
                 missile.body.apply_impulse(impulse, Vec2::ZERO);
             }
         }
+        if wave.collision_mask & (1 << 23) != 0 {
+            // RigidBodyAffector: BlackHole.AddForce, without the impulse's
+            // sixty-fold conversion.
+            for hole in &mut self.black_holes {
+                if !hole.active
+                    || hole
+                        .entity
+                        .is_none_or(|entity| self.entities[entity].flags & E_ACTIVE == 0)
+                    || crate::physics::contact::circle_circle(
+                        query,
+                        Circle {
+                            center: hole.position,
+                            radius: hole.radius,
+                        },
+                    )
+                    .is_none()
+                {
+                    continue;
+                }
+                let direction = hole.position - position;
+                let distance =
+                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+                hole.velocity +=
+                    direction.normalized_safe() * (wave.default_force / distance) / hole.mass;
+            }
+        }
         if wave.collision_mask & (1 << LAYER_PLAYER) == 0 {
             return;
         }
