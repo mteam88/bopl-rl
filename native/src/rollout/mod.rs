@@ -8297,6 +8297,23 @@ impl RolloutWorld {
                     }
                     ABILITY_DRILL => {
                         self.ensure_drill_hitboxes(index, s, data);
+                        // PlayerInfo.selfImposedVelocity is groundedSpeed along
+                        // MulByNegI(ground normal) when grounded (taken before the
+                        // facing flip, SlimeController.cs:659).
+                        let self_imposed = {
+                            let slot = &self.players[index];
+                            if slot.base.grounded {
+                                slot.base
+                                    .ground
+                                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                                    .map_or(slot.base.velocity, |p| {
+                                        p.surface.normal(slot.base.position).perp_cw()
+                                            * slot.base.grounded_speed
+                                    })
+                            } else {
+                                slot.base.velocity
+                            }
+                        };
                         let (position, rotation, player_up, scale) = {
                             let slot = &self.players[index];
                             (
@@ -8326,6 +8343,7 @@ impl RolloutWorld {
                         };
                         slot.base.position = position
                             + (data.drill.on_enter_offset * scale).complex_mul(player_up.perp_cw());
+                        slot.base.velocity = self_imposed;
                         slot.base.rotation = rotation;
                         let right = Vec2::angle(rotation);
                         slot.base.up = right.perp();
