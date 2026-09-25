@@ -27003,7 +27003,14 @@ impl RolloutWorld {
     }
 
     fn mines_late_tick(&mut self, data: &data::RolloutData) {
-        for item_index in 0..self.thrown_items.len() {
+        // Mine.LateUpdateSim runs in hierarchy order, not item slot order: an
+        // older mine's scan purges destroyed colliders before a newer mine in
+        // an earlier slot detonates.
+        let mut order: Vec<usize> = (0..self.thrown_items.len())
+            .filter(|&index| self.thrown_items[index].ability == ABILITY_MINE)
+            .collect();
+        order.sort_unstable_by_key(|&index| self.thrown_items[index].hierarchy_base);
+        for item_index in order {
             if self.blink_object_hidden(self.thrown_items[item_index].entity) {
                 continue;
             }
