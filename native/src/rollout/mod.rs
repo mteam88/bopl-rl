@@ -13725,6 +13725,9 @@ impl RolloutWorld {
         advance_animation: bool,
         data: &data::RolloutData,
     ) {
+        // The orb row is its DetPhysics collider, synchronized from the pose
+        // Beam.LateUpdateSim gave it last pass: the staff before this aim step.
+        let late_staff = self.players[index].beam.staff_dir;
         let mut exit_after_move = false;
         if advance_animation {
             let phase = self.players[index].beam.phase;
@@ -13817,7 +13820,7 @@ impl RolloutWorld {
         if self.players[index].beam.phase != 2 && action.buttons & button == 0 {
             // DetPhysics has synchronized the orb transform from the prior
             // late phase before Beam starts whiteExit on this pass.
-            self.update_beam_orb_position(index, undrifted);
+            self.update_beam_orb_position(index, undrifted, late_staff);
             self.stop_beam(index);
         }
 
@@ -13915,7 +13918,7 @@ impl RolloutWorld {
                 // The maximum-duration check follows the final loop
                 // LateUpdate pose in the native scheduler. Preserve that
                 // tick's FirePos before whiteExit disables the orb hitbox.
-                self.update_beam_orb_position(index, undrifted);
+                self.update_beam_orb_position(index, undrifted, late_staff);
                 self.stop_beam(index);
             }
         } else if self.players[index].beam.phase == 2
@@ -13930,7 +13933,7 @@ impl RolloutWorld {
         self.players[index].beam.collider_position = self.players[index].base.position;
         self.players[index].beam.collider_up = self.players[index].base.up;
         self.players[index].beam.collider_rotation = self.players[index].base.rotation;
-        self.update_beam_orb_position(index, undrifted);
+        self.update_beam_orb_position(index, undrifted, late_staff);
     }
 
     /// Beam.OnLeftFirstFrame: SetFacingDirection, then UpdateSim(Fix.Zero)
@@ -13959,7 +13962,7 @@ impl RolloutWorld {
         self.beam_shake_ground(index, data);
         let button = (2u8) << self.players[index].active_slot;
         if self.players[index].beam.phase != 2 && action.buttons & button == 0 {
-            self.update_beam_orb_position(index, body_position);
+            self.update_beam_orb_position(index, body_position, self.players[index].beam.staff_dir);
             self.stop_beam(index);
         }
         let input = if self.players[index].beam.phase == 2 {
@@ -13984,7 +13987,7 @@ impl RolloutWorld {
         }
     }
 
-    fn update_beam_orb_position(&mut self, index: usize, body_position: Vec2) {
+    fn update_beam_orb_position(&mut self, index: usize, body_position: Vec2, staff_dir: Vec2) {
         let Some(orb) = self.players[index].beam.orb else {
             return;
         };
@@ -14015,7 +14018,7 @@ impl RolloutWorld {
                 .complex_mul(body.up.perp_cw())
                     * self.players[index].player_scale
         } else if state.phase == 1 {
-            body_position + state.staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
+            body_position + staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
         } else if state.phase == 0 && !state.in_air {
             let facing = if self.players[index].facing_right {
                 Fix::ONE
@@ -14043,7 +14046,7 @@ impl RolloutWorld {
             };
             if state.phase_ticks >= data::get().beam.air_orb_frame10_ticks {
                 body_position
-                    + state.staff_dir * Fix::from_f64(3.1) * self.players[index].player_scale
+                    + staff_dir * Fix::from_f64(3.1) * self.players[index].player_scale
             } else if state.phase_ticks >= data::get().beam.air_orb_frame9_ticks {
                 body_position
                     + Vec2::new(Fix::from_f64(0.1) * facing, Fix::from_int(-2))
@@ -14056,7 +14059,7 @@ impl RolloutWorld {
                         * self.players[index].player_scale
             } else {
                 body_position
-                    + state.staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
+                    + staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
             }
         } else {
             self.beam_orbs[orb].position
