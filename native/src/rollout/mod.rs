@@ -1206,6 +1206,9 @@ pub struct PlatformDynamics {
     pub shake_duration: Fix,
     pub shake_amount: Fix,
     pub shake_previous: Vec2,
+    /// The shake moves the transform only; the DetPhysics collider that
+    /// raycasts read catches up at the next Simulate.
+    pub shake_unsynced: Vec2,
     pub meteor_shake_curve: bool,
     /// Permanent Duplicator copies are keyed by the casting gun hierarchy.
     /// A later copy from the same gun schedules the previous one to expire.
@@ -3476,6 +3479,7 @@ impl RolloutWorld {
                 shake_duration: Fix::ZERO,
                 shake_amount: Fix::ZERO,
                 shake_previous: Vec2::ZERO,
+                shake_unsynced: Vec2::ZERO,
                 meteor_shake_curve: false,
                 duplicate_spawner_hierarchy: None,
                 duplicate_lifespan: 0,
@@ -5566,6 +5570,10 @@ impl RolloutWorld {
                     }
                 }
             }
+        }
+        for i in 0..self.platforms.len() {
+            let unsynced = std::mem::replace(&mut self.platform_dynamics[i].shake_unsynced, Vec2::ZERO);
+            self.platforms[i].collider.inner.center += unsynced;
         }
         self.refresh_actor_entities();
         if self.intro_phase == 3 {
@@ -14989,6 +14997,7 @@ impl RolloutWorld {
             shake_duration: Fix::ZERO,
             shake_amount: Fix::ZERO,
             shake_previous: Vec2::ZERO,
+                shake_unsynced: Vec2::ZERO,
             meteor_shake_curve: false,
             duplicate_spawner_hierarchy: None,
             duplicate_lifespan: 0,
@@ -25429,6 +25438,7 @@ impl RolloutWorld {
             shake_duration: Fix::ZERO,
             shake_amount: Fix::ZERO,
             shake_previous: Vec2::ZERO,
+                shake_unsynced: Vec2::ZERO,
             meteor_shake_curve: false,
             duplicate_spawner_hierarchy: None,
             duplicate_lifespan: 0,
@@ -29780,7 +29790,7 @@ impl RolloutWorld {
             let delta = offset - self.platform_dynamics[i].shake_previous;
             self.platform_dynamics[i].shake_previous = offset;
             self.platforms[i].surface.center += delta;
-            self.platforms[i].collider.inner.center += delta;
+            self.platform_dynamics[i].shake_unsynced += delta;
             self.platform_dynamics[i].composite_position += delta;
             shook = true;
             if self.platform_dynamics[i].shake_time >= duration {
