@@ -1176,6 +1176,10 @@ pub struct PlatformDynamics {
     /// centre. Box/RR positional correction can move the former without
     /// moving the latter until a later operation rebuilds the composite.
     pub composite_position: Vec2,
+    /// A child left the composite. DestroyFix only marks it; DetPhysics
+    /// drops it and rebuilds the composite at the start of the next
+    /// Simulate (RemoveDestroyedColliders).
+    pub composite_rebuild: bool,
     /// FixTransform rotation written by a component this tick.
     /// DetPhysics.Simulate copies it into the body only after AnimateVelocity
     /// has computed its torque against the stale orientation
@@ -3412,6 +3416,7 @@ impl RolloutWorld {
                 root_body: p.body,
                 attached_children: 0,
                 composite_position: intro_surface.center,
+                composite_rebuild: false,
                 home_position: intro_surface.center,
                 transform_rotation: None,
                 init_tick: None,
@@ -10564,7 +10569,7 @@ impl RolloutWorld {
             self.entities[entity].flags = E_REMOVED;
         }
         if platform_index < self.platforms.len() {
-            self.rebuild_platform_attachment_body(platform_index);
+            self.platform_dynamics[platform_index].composite_rebuild = true;
         }
         self.platforms_changed();
     }
@@ -10767,7 +10772,7 @@ impl RolloutWorld {
             self.entities[entity].flags = E_REMOVED;
         }
         if platform_index < self.platforms.len() {
-            self.rebuild_platform_attachment_body(platform_index);
+            self.platform_dynamics[platform_index].composite_rebuild = true;
         }
         self.platforms_changed();
     }
@@ -10825,6 +10830,33 @@ impl RolloutWorld {
         dynamics.attached_children = count;
         dynamics.composite_position = self.platforms[platform_index].surface.center;
         dynamics.basis = None;
+        dynamics.composite_rebuild = false;
+        if count == 0 {
+            return;
+        }
+        // CreateMultiComposite re-attaches every remaining child through
+        // CombineBodies, which re-derives relativePos from the child's
+        // synced collider centre: ComplexMul(relativePos, fixTrans.right)
+        // rotated back by the orientation, rounding on both multiplies.
+        let orientation = dynamics.transform_rotation.unwrap_or(old.orientation);
+        let right = self.platforms[platform_index].surface.right;
+        let inverse = Vec2::angle(-orientation);
+        let refit = |relative: Vec2| relative.complex_mul(right).complex_mul(inverse);
+        for spike in &mut self.spike_attacks {
+            if spike.active && !spike.macho_carried && spike.platform_index == platform_index {
+                spike.relative_center = refit(spike.relative_center);
+            }
+        }
+        for engine in &mut self.engines {
+            if engine.active && !engine.macho_carried && engine.platform_index == platform_index {
+                engine.relative_center = refit(engine.relative_center);
+            }
+        }
+        for node in &mut self.tesla_nodes {
+            if node.active && !node.macho_carried && node.platform_index == platform_index {
+                node.relative_center = refit(node.relative_center);
+            }
+        }
     }
 
     fn spawn_spike(&mut self, index: usize, data: &data::RolloutData) -> bool {
@@ -10961,11 +10993,8 @@ impl RolloutWorld {
         if let Some(entity) = self.spike_attacks[spike_index].entity {
             self.entities[entity].flags = E_REMOVED;
         }
-        // DestroyFix reconstructs the composite from every child still
-        // attached to the platform. This matters when Spike and Engine are
-        // mixed on one parent rather than when only identical spikes remain.
         if platform_index < self.platforms.len() {
-            self.rebuild_platform_attachment_body(platform_index);
+            self.platform_dynamics[platform_index].composite_rebuild = true;
         }
         self.platforms_changed();
     }
@@ -14868,6 +14897,7 @@ impl RolloutWorld {
             root_body: data.macho_throw.boulder_body,
             attached_children: 0,
             composite_position: position,
+            composite_rebuild: false,
             transform_rotation: None,
             init_tick: None,
             float_next_frame: false,
@@ -21644,7 +21674,7 @@ impl RolloutWorld {
             let hierarchy_base = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.arrow.updatable_count;
             let free = self.arrows.iter().position(|arrow| !arrow.active);
-            let entity = free.and_then(|index| self.arrows[index].entity);
+            self.release_arrow_row(free);
             let id = self.next_id();
             let clone = Arrow {
                 active: true,
@@ -21655,7 +21685,7 @@ impl RolloutWorld {
                 // Projectile.playerOwnerId is private and not serialized;
                 // Instantiate therefore creates an environmental copy.
                 owner: 0,
-                entity,
+                entity: None,
                 position,
                 scale: source.scale,
                 velocity,
@@ -25290,6 +25320,7 @@ impl RolloutWorld {
             root_body: pd.spawn_body,
             attached_children: 0,
             composite_position: position,
+            composite_rebuild: false,
             home_position: position,
             transform_rotation: None,
             init_tick: Some(self.tick + 1),
@@ -25608,7 +25639,7 @@ impl RolloutWorld {
             self.destroy_arrow(oldest);
         }
         let free = self.arrows.iter().position(|a| !a.active);
-        let entity = free.and_then(|i| self.arrows[i].entity);
+        self.release_arrow_row(free);
         let id = self.next_id();
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data::get().arrow.updatable_count;
@@ -25619,7 +25650,7 @@ impl RolloutWorld {
             hierarchy_base,
             id,
             owner,
-            entity,
+            entity: None,
             position,
             scale: Fix::ONE,
             velocity,
@@ -25639,6 +25670,14 @@ impl RolloutWorld {
         match free {
             Some(i) => self.arrows[i] = arrow,
             None => self.arrows.push(arrow),
+        }
+    }
+
+    /// A new arrow is a new DetPhysics circle, appended after every live
+    /// collider; the reused slot's old row leaves the table.
+    fn release_arrow_row(&mut self, slot: Option<usize>) {
+        if let Some(entity) = slot.and_then(|i| self.arrows[i].entity) {
+            self.entities[entity].flags = E_REMOVED;
         }
     }
 
@@ -30525,6 +30564,11 @@ impl RolloutWorld {
     /// the updater pass: resize, integration, broad phase, narrow phase,
     /// collision impulse, positional correction, and transform sync.
     fn platforms_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
+        for index in 0..self.platforms.len() {
+            if self.platform_dynamics[index].composite_rebuild {
+                self.rebuild_platform_attachment_body(index);
+            }
+        }
         // ResizablePlatform.UpdateSim runs every tick while an evicted platform
         // remains a normal collidable body. It evaluates before incrementing
         // time and destroys at the final key without applying another resize.
@@ -30923,16 +30967,14 @@ impl RolloutWorld {
                     continue;
                 }
                 let parent_index = self.spike_attacks[spike_index].platform_index;
-                let parent_basis = self.platforms[parent_index].surface.right;
                 let spike_rotation = self.platform_dynamics[parent_index].body.orientation
                     + self.spike_attacks[spike_index].relative_rotation;
                 let spike_right = Vec2::angle(spike_rotation);
-                let spike_center = self.platform_dynamics[parent_index].composite_position
-                    + self.spike_attacks[spike_index]
-                        .relative_center
-                        .complex_mul(parent_basis);
-                let spike_root =
-                    spike_center - data.spike.attack_collider_offset.complex_mul(spike_right);
+                // SyncGameObject places the FixTransform at the box collider's
+                // own corrected centre less its scaled offset.
+                let spike_root = self.spike_attacks[spike_index].collider_center
+                    - (data.spike.attack_collider_offset * self.spike_attacks[spike_index].scale)
+                        .complex_mul(spike_right);
                 let direction = (contact.point - spike_root).normalized_safe();
                 let wall_arm =
                     (contact.point - self.platforms[wall_index].surface.center).normalized_safe();
