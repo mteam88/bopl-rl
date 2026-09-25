@@ -30302,6 +30302,14 @@ impl RolloutWorld {
                 let value = dynamics.scale * (Fix::ONE - updater_dt.clamp(Fix::ZERO, Fix::ONE))
                     + dynamics.base_scale * updater_dt;
                 self.set_platform_scale(i, value);
+                // UpdateBounds closes StickyRoundedRectangle.UpdateSim, so a
+                // slime walking this pass already sees the eased-back shape.
+                let inner = self.platforms[i].collider.inner;
+                self.platforms[i].surface.extents = Vec2::new(
+                    Fix::ONE / inner.inverse_extents.x,
+                    Fix::ONE / inner.inverse_extents.y,
+                );
+                self.platforms[i].surface.radius = self.platforms[i].collider.radius;
             }
             let previous = self.platform_dynamics[i].body_scale;
             let scale = self.platform_dynamics[i].scale;
