@@ -5707,21 +5707,6 @@ impl RolloutWorld {
         if has(ABILITY_ROCK) {
             self.rocks_late_tick(data);
         }
-        // On the following player-updater pass, an attached rider observes
-        // that its StickyRoundedRectangle GameObject is inactive and exits
-        // the ground with the wall's last surface normal.
-        for platform_index in 0..self.platforms.len() {
-            if self.platform_dynamics[platform_index].blink_deactivated_tick != Some(self.tick) {
-                continue;
-            }
-            let id = self.platforms[platform_index].id;
-            let surface = self.platforms[platform_index].surface.clone();
-            for slot in &mut self.players {
-                if slot.base.alive && slot.base.ground == Some(id) {
-                    slot.removed_ground_normal = Some(surface.normal(slot.base.position));
-                }
-            }
-        }
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
@@ -7057,7 +7042,10 @@ impl RolloutWorld {
             slot.base.external_velocity *= Fix::from_f64(0.95);
             return;
         }
-        if let Some(normal) = self.players[index].removed_ground_normal.take() {
+        // A Beam form finds its lost ground inside Beam.MovePlayer instead.
+        if self.players[index].active != ActiveAbility::Beam
+            && let Some(normal) = self.players[index].removed_ground_normal.take()
+        {
             let slot = &mut self.players[index];
             // Ordinary SlimeController explicitly zeros rotation before
             // UnGround(false). PlayerPhysics already skipped gravity earlier
@@ -13827,11 +13815,14 @@ impl RolloutWorld {
             self.stop_beam(index);
         }
 
-        let ground_live = self.players[index]
-            .base
-            .ground
-            .is_some_and(|ground| self.platforms.iter().any(|platform| platform.id == ground));
-        if self.players[index].beam.in_air {
+        // Beam.MovePlayer: only the exit clip steers.
+        let input = if self.players[index].beam.phase == 2 {
+            self.players[index].last_movement_input
+        } else {
+            Vec2::ZERO
+        };
+        if self.beam_lost_ground(index) {
+        } else if self.players[index].beam.in_air {
             crate::player_physics::air_movement(
                 &mut self.players[index].base.velocity,
                 Fix::ZERO,
@@ -13845,14 +13836,14 @@ impl RolloutWorld {
                 self.exit_beam(index, data);
                 return;
             }
-        } else if ground_live {
-            let input = if self.players[index].beam.phase == 2 {
-                self.players[index].last_movement_input
-            } else {
-                Vec2::ZERO
-            };
+        } else if self.players[index].base.grounded {
             self.players[index].base.move_only(input, terrain!(self));
+            if !self.players[index].base.grounded {
+                self.beam_on_ungrounded(index);
+            }
         } else {
+            // A ground form off its ground: AddGravityFactor, then Move's air
+            // branch, whose raycasts may attach it again (Beam.OnGrounded).
             let space = self.players[index].base.space;
             crate::player_physics::apply_gravity(
                 &mut self.players[index].base.velocity,
@@ -13862,7 +13853,17 @@ impl RolloutWorld {
                 space,
             )
             .expect("valid Beam gravity constants");
+            crate::player_physics::air_movement(
+                &mut self.players[index].base.velocity,
+                input.x,
+                data.beam.constants.air_accel,
+                data.beam.constants.max_speed,
+            )
+            .expect("valid Beam aerial constants");
             self.players[index].base.collision_rays(terrain!(self));
+            if self.players[index].base.grounded {
+                self.beam_on_ungrounded(index);
+            }
         }
 
         if self.players[index].beam.phase == 1 {
@@ -13973,6 +13974,9 @@ impl RolloutWorld {
         } else {
             Vec2::ZERO
         };
+        if self.beam_lost_ground(index) {
+            return;
+        }
         let base = &mut self.players[index].base;
         if base.grounded
             && let Some(platform) = self.platforms.iter().find(|p| Some(p.id) == base.ground)
@@ -13987,6 +13991,41 @@ impl RolloutWorld {
                     base.constants.friction
                 };
             }
+        }
+    }
+
+    /// PlayerPhysics.Move on a destroyed ground: UnGround pushes the form 0.05 off the surface
+    /// as it is now, and Beam.OnUngrounded re-reads the staff against the
+    /// zeroed rotation. Nothing else moves the form that pass.
+    fn beam_lost_ground(&mut self, index: usize) -> bool {
+        let Some(stored) = self.players[index].removed_ground_normal.take() else {
+            return false;
+        };
+        let slot = &mut self.players[index];
+        let normal = self
+            .platforms
+            .iter()
+            .find(|platform| Some(platform.id) == slot.base.ground)
+            .map_or(stored, |platform| platform.surface.normal(slot.base.position));
+        slot.base.position += normal * Fix::from_f32(0.05);
+        slot.base.grounded = false;
+        slot.base.ground = None;
+        slot.base.grounded_speed = Fix::ZERO;
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        self.beam_on_ungrounded(index);
+        true
+    }
+
+    /// Beam.OnUngrounded and OnGrounded: a ground form re-reads its staff
+    /// against the body's new rotation and faces along it.
+    fn beam_on_ungrounded(&mut self, index: usize) {
+        let slot = &mut self.players[index];
+        if !slot.beam.in_air {
+            let right = slot.base.up.perp_cw();
+            let staff = slot.beam.staff_dir;
+            slot.beam.relative_staff_dir = staff.complex_mul(Vec2::new(right.x, -right.y));
+            slot.facing_right = staff.dot(right) > Fix::ZERO;
         }
     }
 
