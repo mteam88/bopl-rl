@@ -1552,6 +1552,9 @@ pub struct BlackHoleCastState {
     /// residue. Why this port's form motion sits a pass ahead of the oracle's
     /// for this ability is still open; see fixture #8.
     pub spawn_origin: Vec2,
+    /// The body's up from the same pass as `spawn_origin`; FireCommon's
+    /// `body.right` on a rotating platform is that pass's tilt, not this one's.
+    pub spawn_up: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -8220,6 +8223,7 @@ impl RolloutWorld {
                         slot.black_hole_cast = BlackHoleCastState {
                             grounded,
                             spawn_origin: form_position,
+                            spawn_up: slot.base.up,
                             ..BlackHoleCastState::default()
                         };
                         slot.base.position = form_position;
@@ -11802,6 +11806,7 @@ impl RolloutWorld {
         let live = slot.base.position;
         let cast = &mut slot.black_hole_cast;
         let spawn_origin = std::mem::replace(&mut cast.spawn_origin, live);
+        let spawn_up = std::mem::replace(&mut cast.spawn_up, slot.base.up);
         cast.ticks += 1;
         let animation_ticks = if cast.phase == 0 {
             if cast.grounded {
@@ -11818,7 +11823,7 @@ impl RolloutWorld {
             || (cast.phase == 1 && cast.ticks >= animation_ticks)
         {
             if cast.phase == 0 {
-                self.spawn_black_hole(index, spawn_origin, data);
+                self.spawn_black_hole(index, spawn_origin, spawn_up, data);
                 let cast = &mut self.players[index].black_hole_cast;
                 cast.phase = 1;
                 cast.ticks = 0;
@@ -11883,7 +11888,7 @@ impl RolloutWorld {
         }
     }
 
-    fn spawn_black_hole(&mut self, owner: usize, origin: Vec2, data: &data::RolloutData) {
+    fn spawn_black_hole(&mut self, owner: usize, origin: Vec2, up: Vec2, data: &data::RolloutData) {
         let ability_slot = self.players[owner].active_slot;
         self.players[owner].black_hole_castable[ability_slot] = false;
         let slot = &self.players[owner];
@@ -11897,7 +11902,7 @@ impl RolloutWorld {
             data.black_hole.spawn_offset.y,
         );
         let scale = (slot.player_scale / Fix::from_int(3)).clamp(Fix::ONE, Fix::from_int(2));
-        let position = origin + scale * slot.base.up.perp_cw().complex_mul(local);
+        let position = origin + scale * up.perp_cw().complex_mul(local);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.black_hole.updatable_count;
         let target_size =
