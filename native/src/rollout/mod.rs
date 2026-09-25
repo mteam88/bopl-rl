@@ -2191,6 +2191,10 @@ pub struct PlayerSlot {
     pub gust_entity: usize,
     pub revival_entity: usize,
     pub body_entity: usize,
+    /// Dash hurtbox for each equipped slot: a loadout may hold Dash twice,
+    /// and each Dash prefab owns its own box. `dash_entity` is the one the
+    /// last Dash entry selected.
+    pub dash_entities: [usize; 3],
     pub dash_entity: usize,
     pub bow_entity: usize,
     /// Current thrown-ability prefab for each equipped slot. Grenade, Smoke,
@@ -2982,7 +2986,7 @@ impl RolloutWorld {
         let mut revival_entity = [usize::MAX; MAX_PLAYERS];
         let mut time_stop_entity = [usize::MAX; MAX_PLAYERS];
         let mut body_entity = [usize::MAX; MAX_PLAYERS];
-        let mut dash_entity = [usize::MAX; MAX_PLAYERS];
+        let mut dash_entity = [[usize::MAX; 3]; MAX_PLAYERS];
         let mut bow_entity = [usize::MAX; MAX_PLAYERS];
         let mut throw_entity = [[usize::MAX; 3]; MAX_PLAYERS];
         let mut mine_entity = [usize::MAX; MAX_PLAYERS];
@@ -3095,7 +3099,7 @@ impl RolloutWorld {
                         ABILITY_DASH => (
                             data::surface_extents(data.dash.hurtbox_extents),
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
-                            &mut dash_entity[i],
+                            &mut dash_entity[i][slot_index],
                             false,
                         ),
                         ABILITY_BOW => (
@@ -3684,7 +3688,12 @@ impl RolloutWorld {
                 gust_entity: gust_entity[i],
                 revival_entity: revival_entity[i],
                 body_entity: body_entity[i],
-                dash_entity: dash_entity[i],
+                dash_entities: dash_entity[i],
+                dash_entity: dash_entity[i]
+                    .iter()
+                    .copied()
+                    .find(|&entity| entity != usize::MAX)
+                    .unwrap_or(usize::MAX),
                 bow_entity: bow_entity[i],
                 throw_entities: throw_entity[i],
                 throw_entity: throw_entity[i]
@@ -4567,7 +4576,10 @@ impl RolloutWorld {
         });
         let slot = &mut self.players[player_index];
         match target {
-            0 => slot.dash_entity = entity,
+            0 => {
+                slot.dash_entities[ability_slot] = entity;
+                slot.dash_entity = entity;
+            }
             1 => slot.bow_entity = entity,
             2 => {
                 slot.throw_entities[ability_slot] = entity;
@@ -5501,7 +5513,9 @@ impl RolloutWorld {
             if slot.out {
                 for e in [
                     slot.body_entity,
-                    slot.dash_entity,
+                    slot.dash_entities[0],
+                    slot.dash_entities[1],
+                    slot.dash_entities[2],
                     slot.circle_entity,
                     slot.rock_entity,
                     slot.roll_entity,
@@ -7296,6 +7310,7 @@ impl RolloutWorld {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Dash;
                         self.players[index].active_slot = s;
+                        self.players[index].dash_entity = self.players[index].dash_entities[s];
                         self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let masked = Action {
@@ -16348,7 +16363,7 @@ impl RolloutWorld {
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
             });
-            let mut dash_entity = usize::MAX;
+            let mut dash_entities = [usize::MAX; 3];
             let mut bow_entity = usize::MAX;
             let mut throw_entities = [usize::MAX; 3];
             let mut mine_entity = usize::MAX;
@@ -16372,7 +16387,7 @@ impl RolloutWorld {
                     ABILITY_DASH => (
                         data::surface_extents(data.dash.hurtbox_extents),
                         7,
-                        &mut dash_entity,
+                        &mut dash_entities[slot],
                     ),
                     ABILITY_BOW => (
                         data::surface_extents(data.bow.hurtbox_extents),
@@ -16626,7 +16641,12 @@ impl RolloutWorld {
             slot.portal_orange = [None; 3];
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
-            slot.dash_entity = dash_entity;
+            slot.dash_entities = dash_entities;
+            slot.dash_entity = dash_entities
+                .iter()
+                .copied()
+                .find(|&entity| entity != usize::MAX)
+                .unwrap_or(usize::MAX);
             slot.bow_entity = bow_entity;
             slot.throw_entities = throw_entities;
             slot.throw_entity = throw_entities
@@ -16681,7 +16701,9 @@ impl RolloutWorld {
             }
             for entity in [
                 self.players[index].body_entity,
-                self.players[index].dash_entity,
+                self.players[index].dash_entities[0],
+                self.players[index].dash_entities[1],
+                self.players[index].dash_entities[2],
                 self.players[index].circle_entity,
                 self.players[index].rock_entity,
                 self.players[index].roll_entity,
@@ -16827,7 +16849,7 @@ impl RolloutWorld {
             });
             new_box_entities[new_box_count] = body_entity;
             new_box_count += 1;
-            let mut dash_entity = usize::MAX;
+            let mut dash_entities = [usize::MAX; 3];
             let mut bow_entity = usize::MAX;
             let mut throw_entities = [usize::MAX; 3];
             let mut mine_entity = usize::MAX;
@@ -16851,7 +16873,7 @@ impl RolloutWorld {
                     ABILITY_DASH => (
                         data::surface_extents(data.dash.hurtbox_extents),
                         7,
-                        &mut dash_entity,
+                        &mut dash_entities[slot],
                     ),
                     ABILITY_BOW => (
                         data::surface_extents(data.bow.hurtbox_extents),
@@ -17094,7 +17116,12 @@ impl RolloutWorld {
             slot.portal_orange = [None; 3];
             slot.rewind = RewindState::default();
             slot.body_entity = body_entity;
-            slot.dash_entity = dash_entity;
+            slot.dash_entities = dash_entities;
+            slot.dash_entity = dash_entities
+                .iter()
+                .copied()
+                .find(|&entity| entity != usize::MAX)
+                .unwrap_or(usize::MAX);
             slot.bow_entity = bow_entity;
             slot.throw_entities = throw_entities;
             slot.throw_entity = throw_entities
@@ -31209,7 +31236,9 @@ impl RolloutWorld {
             }
             let rows = [
                 slot.body_entity,
-                slot.dash_entity,
+                slot.dash_entities[0],
+                slot.dash_entities[1],
+                slot.dash_entities[2],
                 slot.circle_entity,
                 slot.rock_entity,
                 slot.roll_entity,
@@ -31303,7 +31332,9 @@ impl RolloutWorld {
             }
             for entity in [
                 slot.body_entity,
-                slot.dash_entity,
+                slot.dash_entities[0],
+                slot.dash_entities[1],
+                slot.dash_entities[2],
                 slot.circle_entity,
                 slot.rock_entity,
                 slot.roll_entity,
@@ -31377,7 +31408,9 @@ impl RolloutWorld {
             // the next pass (DetPhysics.Simulate's remove-destroyed step).
             let rows = [
                 slot.body_entity,
-                slot.dash_entity,
+                slot.dash_entities[0],
+                slot.dash_entities[1],
+                slot.dash_entities[2],
                 slot.circle_entity,
                 slot.rock_entity,
                 slot.roll_entity,
@@ -31951,7 +31984,9 @@ impl RolloutWorld {
         if self.active_subsystems & !simple_mask == 0 {
             for slot in &self.players {
                 for (entity, ability) in [
-                    (slot.dash_entity, ABILITY_DASH),
+                    (slot.dash_entities[0], ABILITY_DASH),
+                    (slot.dash_entities[1], ABILITY_DASH),
+                    (slot.dash_entities[2], ABILITY_DASH),
                     (slot.gust_entity, ABILITY_GUST),
                 ] {
                     if entity != usize::MAX {
