@@ -33109,8 +33109,13 @@ impl RolloutWorld {
                         (exit_position, slot.base.rotation, slot.base.up.perp_cw())
                     };
                     let center = position + basis.complex_mul(data.black_hole.collider_offset);
-                    let collider =
-                        OrientedBox::from_basis(center, basis, data.black_hole.hurtbox_extents);
+                    // DetPhysics rebuilds the box axes from the synced angle
+                    // (Box.SetRotation), not from the body's up vector.
+                    let collider = OrientedBox::from_basis(
+                        center,
+                        Vec2::angle(rotation),
+                        data.black_hole.hurtbox_extents,
+                    );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
                     box_row.vx = 0;
