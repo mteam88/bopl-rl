@@ -12199,6 +12199,24 @@ impl RolloutWorld {
             slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
         }
+        if !self.players[index].base.grounded {
+            // The form's own PlayerPhysics.UpdateSim (hierarchyNumber 4) runs
+            // before BlackHoleClap's: airborne it adds gravity and raycasts with
+            // attach (PlayerPhysics.cs:124-129), so a landing is already made
+            // when BlackHoleClap.UpdateSim looks and its Move slides the new
+            // grounded speed along the surface on that same pass.
+            let slot = &mut self.players[index];
+            let space = slot.base.space;
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                slot.base.constants.gravity_accel,
+                slot.base.constants.gravity_modifier,
+                slot.base.constants.gravity_max_fall_speed,
+                space,
+            )
+            .expect("valid Black Hole gravity constants");
+            slot.base.collision_rays(terrain!(self));
+        }
         if self.players[index].base.grounded {
             let ground_live = self.players[index]
                 .base
@@ -12215,17 +12233,6 @@ impl RolloutWorld {
                 return;
             }
         } else {
-            let slot = &mut self.players[index];
-            let space = slot.base.space;
-            crate::player_physics::apply_gravity(
-                &mut slot.base.velocity,
-                slot.base.constants.gravity_accel,
-                slot.base.constants.gravity_modifier,
-                slot.base.constants.gravity_max_fall_speed,
-                space,
-            )
-            .expect("valid Black Hole gravity constants");
-            slot.base.collision_rays(terrain!(self));
             // BlackHoleClap.UpdateSim ends with `physics.Move(Vec2.zero,
             // simDeltaTime)` (BlackHoleClap.cs:150). Airborne, Move runs
             // AirealMovement before its raycasts (PlayerPhysics.cs:232-240),
@@ -12239,6 +12246,7 @@ impl RolloutWorld {
             // integrated that velocity undamped, so a cast entered at speed
             // kept sliding and had travelled 0.4-0.56 units too far by the
             // time the boundary caught it.
+            let slot = &mut self.players[index];
             crate::player_physics::air_movement(
                 &mut slot.base.velocity,
                 Fix::ZERO,
