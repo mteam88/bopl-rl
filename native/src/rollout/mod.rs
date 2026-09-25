@@ -6933,6 +6933,11 @@ impl RolloutWorld {
 
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
     fn apply_platform_drop(&mut self, index: usize, data: &data::RolloutData) {
+        // DropPlatformTest reads the attachedGround an airborne slime keeps,
+        // but only grounded movement and Roll reach it.
+        if !self.players[index].base.grounded && self.players[index].active != ActiveAbility::Roll {
+            return;
+        }
         let Some(platform_index) = self.players[index].base.ground.and_then(|ground| {
             self.platforms
                 .iter()
@@ -18178,9 +18183,9 @@ impl RolloutWorld {
                     // conversion multiplies the external velocity by 35.
                     player.base.external_velocity += delta * magnitude * Fix::from_int(35);
                 } else if !player.base.grounded {
-                    // PlayerPhysics.AddForce uses its serialized inverseMass01;
-                    // the stock player value is one in the shipped prefab.
-                    player.base.external_velocity += delta * magnitude;
+                    // PlayerPhysics.AddForce scales by inverseMass01, 35 on
+                    // the Player prefab.
+                    player.base.external_velocity += delta * magnitude * Fix::from_int(35);
                 }
             }
             self.meteor_waves[wave_index] = wave;
