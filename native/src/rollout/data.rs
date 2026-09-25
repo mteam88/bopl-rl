@@ -975,6 +975,7 @@ struct RawSmokeExplosion {
     updatable_count: u32,
     collider_hierarchy: u32,
     extents: RawVec2,
+    collider_offset: RawVec2,
     animation_ticks: u32,
 }
 #[derive(Deserialize)]
@@ -2175,6 +2176,7 @@ pub struct SmokeData {
     pub explosion_updatable_count: u32,
     pub explosion_collider_hierarchy: u32,
     pub explosion_extents: Vec2,
+    pub explosion_collider_offset: Vec2,
     pub explosion_animation_ticks: u32,
 }
 pub struct TimeStopData {
@@ -3450,6 +3452,7 @@ pub fn get() -> &'static RolloutData {
                     explosion_updatable_count: smoke.explosion.updatable_count,
                     explosion_collider_hierarchy: smoke.explosion.collider_hierarchy,
                     explosion_extents: smoke.explosion.extents.get(),
+                    explosion_collider_offset: smoke.explosion.collider_offset.get(),
                     explosion_animation_ticks: smoke.explosion.animation_ticks,
                 }
             },

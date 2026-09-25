@@ -1727,9 +1727,10 @@ def main():
         },
         "explosion": {
             "layer": smoke_explosion["data"].get("layer"),
-            "updatable_count": updater_count(smoke_explosion),
+            "updatable_count": registering_count(smoke_explosion),
             "collider_hierarchy": smoke_explosion_box["hierarchyNumber"],
             "extents": vec2(smoke_explosion_box, "startExtents"),
+            "collider_offset": vec2(component(smoke_explosion, "FixTransform"), "offset"),
             "animation_ticks": sum(abs(d) for d in smoke_explosion_anims[next(iter(smoke_explosion_anims))]),
         },
     }

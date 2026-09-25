@@ -15176,6 +15176,31 @@ impl RolloutWorld {
                     killers[victim] = slot.contact_owner_id as u32;
                 }
             }
+            // BeamObject is also an Explosion with igniteFlammables
+            // (BeamObject.prefab), so it lights the smoke it touches.
+            for cloud in &mut self.smoke_clouds {
+                if !cloud.active || !cloud.registered {
+                    continue;
+                }
+                let entity = cloud.entity.expect("registered smoke cloud");
+                if self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
+                    continue;
+                }
+                let radius = Fix::from_raw(self.entities[entity].radius);
+                let center = cloud.position;
+                if swept.max.x <= center.x - radius
+                    || swept.min.x >= center.x + radius
+                    || swept.max.y <= center.y - radius
+                    || swept.min.y >= center.y + radius
+                {
+                    continue;
+                }
+                if crate::physics::contact::circle_box(Circle { center, radius }, hitbox).is_some()
+                {
+                    cloud.ignition_time = Fix::ZERO;
+                    self.entities[entity].flags = E_ACTIVE;
+                }
+            }
         }
         for victim in 0..self.players.len() {
             if victims[victim] && self.playable(victim) {
@@ -16367,7 +16392,9 @@ impl RolloutWorld {
             };
             let id = self.next_id();
             let extents = data.smoke.explosion_extents * explosion.scale;
-            let collider = OrientedBox::from_basis(explosion.position, Vec2::RIGHT, extents);
+            // SmokeExplosion.prefab's FixTransform offsets its box upward.
+            let center = explosion.position + data.smoke.explosion_collider_offset * explosion.scale;
+            let collider = OrientedBox::from_basis(center, Vec2::RIGHT, extents);
             self.entities[entity] = CEntity {
                 id,
                 kind: 1,
@@ -16389,8 +16416,8 @@ impl RolloutWorld {
                 hierarchy: 100_000_000
                     + explosion.hierarchy_base
                     + data.smoke.explosion_collider_hierarchy,
-                x: explosion.position.x.raw(),
-                y: explosion.position.y.raw(),
+                x: center.x.raw(),
+                y: center.y.raw(),
                 right_x: collider.right.x.raw(),
                 right_y: collider.right.y.raw(),
                 up_x: collider.up.x.raw(),
@@ -30237,6 +30264,7 @@ impl RolloutWorld {
     fn smoke_contacts(&mut self, data: &data::RolloutData) {
         // Both grenade and smoke explosions have `igniteFlammables`; their
         // boxes are enabled only on their first registered physics pass.
+        // Ignite disables the cloud's collider, so a lit cloud is not relit.
         for explosion in self.grenade_explosions.iter().copied() {
             if !explosion.active || !explosion.registered || explosion.age != 1 {
                 continue;
@@ -30251,7 +30279,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
-                if self.entities[entity].flags & E_ACTIVE == 0 {
+                if self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
                     continue;
                 }
                 let radius = Fix::from_raw(self.entities[entity].radius);
@@ -30284,7 +30312,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
-                if self.entities[entity].flags & E_ACTIVE == 0 {
+                if self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
                     continue;
                 }
                 let radius = Fix::from_raw(self.entities[entity].radius);
@@ -30309,13 +30337,14 @@ impl RolloutWorld {
                 continue;
             }
             let extents = data.smoke.explosion_extents * explosion.scale;
-            let hitbox = OrientedBox::from_basis(explosion.position, Vec2::RIGHT, extents);
+            let center = explosion.position + data.smoke.explosion_collider_offset * explosion.scale;
+            let hitbox = OrientedBox::from_basis(center, Vec2::RIGHT, extents);
             for cloud in &mut self.smoke_clouds {
                 if !cloud.active || !cloud.registered {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
-                if self.entities[entity].flags & E_ACTIVE == 0 {
+                if self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
                     continue;
                 }
                 let radius = Fix::from_raw(self.entities[entity].radius);
@@ -30374,6 +30403,45 @@ impl RolloutWorld {
                         CAUSE_OTHER
                     };
                     self.kill(player_index, killer, cause, true, true);
+                }
+            }
+        }
+
+        // The Beam's orb is an Explosion that keeps its hitbox
+        // (orbAnim.prefab: hitBoxActiveOnlyFirstFrame 0, igniteFlammables 1).
+        // An ignited cloud has disabled its own collider, so it is lit once.
+        for orb in self.beam_orbs.iter().copied() {
+            let Some(orb_entity) = orb.entity else {
+                continue;
+            };
+            if !orb.active
+                || !orb.enabled
+                || !self.collides(orb_entity)
+                || self.blink_object_hidden(orb.entity)
+            {
+                continue;
+            }
+            let row = self.entities[orb_entity];
+            let hitbox = Circle {
+                center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                radius: Fix::from_raw(row.radius),
+            };
+            for cloud in &mut self.smoke_clouds {
+                if !cloud.active || !cloud.registered {
+                    continue;
+                }
+                let entity = cloud.entity.expect("registered smoke cloud");
+                if self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
+                    continue;
+                }
+                let radius = Fix::from_raw(self.entities[entity].radius);
+                let body = Circle {
+                    center: cloud.position,
+                    radius,
+                };
+                if crate::physics::contact::circle_circle(body, hitbox).is_some() {
+                    cloud.ignition_time = Fix::ZERO;
+                    self.entities[entity].flags = E_ACTIVE;
                 }
             }
         }
