@@ -9167,12 +9167,11 @@ impl RolloutWorld {
                     return;
                 }
 
-                // Updater.RandomInsideUnitCircle samples angle and radius;
-                // Meteor immediately normalizes the vector, so radius has no
-                // numerical effect but its RNG draw remains observable.
+                // Updater.RandomInsideUnitCircle scales the unit vector by a
+                // random radius; Meteor normalizes it again, which rounds.
                 let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-                let _radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
-                let offset = Vec2::angle(angle)
+                let radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+                let offset = (Vec2::angle(angle) * radius).normalized_safe()
                     * data.meteor.vibration_strength
                     * time.max(Fix::from_f32(0.5));
                 let slot = &mut self.players[index];
@@ -9256,8 +9255,8 @@ impl RolloutWorld {
                     return;
                 }
                 let random_angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-                let _random_radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
-                let offset = Vec2::angle(random_angle)
+                let random_radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+                let offset = (Vec2::angle(random_angle) * random_radius).normalized_safe()
                     * data.meteor.vibration_strength
                     * time.max(Fix::from_f32(0.5));
                 let slot = &mut self.players[index];
