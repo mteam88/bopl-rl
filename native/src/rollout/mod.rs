@@ -29862,8 +29862,9 @@ impl RolloutWorld {
                 };
             }
             let killer = explosion.killer();
-            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-                if victim && self.playable(player_index) {
+            let (order, count) = self.victims_in_sweep_order(&victims);
+            for &player_index in &order[..count] {
+                if self.playable(player_index) {
                     let cause = if self.players[player_index].base.id == killer {
                         CAUSE_ACCIDENT
                     } else {
@@ -29927,8 +29928,9 @@ impl RolloutWorld {
             } else {
                 0
             };
-            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-                if victim && self.playable(player_index) {
+            let (order, count) = self.victims_in_sweep_order(&victims);
+            for &player_index in &order[..count] {
+                if self.playable(player_index) {
                     let cause = if killer == self.players[player_index].base.id {
                         CAUSE_ACCIDENT
                     } else {
@@ -29994,6 +29996,46 @@ impl RolloutWorld {
                 }
             }
         }
+    }
+
+    /// The low edge, on the broadphase sweep axis, of the player's registered
+    /// Player-layer shape (PhysTools.ComputeBoundingBox).
+    fn player_sweep_min(&self, player_index: usize, sweep_x: bool) -> Fix {
+        let player = &self.players[player_index];
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
+            let collider = player.base.collider;
+            return axis(collider.center) - axis(collider.right).abs() - axis(collider.up).abs();
+        }
+        let row = self.entities[Self::blink_player_entity(player)];
+        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+        if row.kind == 0 {
+            return axis(center) - Fix::from_raw(row.radius);
+        }
+        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+        axis(center) - axis(right).abs() - axis(up).abs()
+    }
+
+    /// The players flagged in `victims`, in the order DetPhysics dispatches
+    /// their callbacks with one hitbox. SortAndSweep pairs the hitbox with
+    /// each overlapping collider in order of bounding-box minimum on the sweep
+    /// axis, and the callbacks run in manifold order.
+    fn victims_in_sweep_order(
+        &self,
+        victims: &[bool; MAX_PLAYERS],
+    ) -> ([usize; MAX_PLAYERS], usize) {
+        let sweep_x = self.sweep_x();
+        let mut order = [0; MAX_PLAYERS];
+        let mut count = 0;
+        for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
+            if victim {
+                order[count] = player_index;
+                count += 1;
+            }
+        }
+        order[..count].sort_by_key(|&player_index| self.player_sweep_min(player_index, sweep_x));
+        (order, count)
     }
 
     /// `player_hit_by_box` for a circle hitbox.
