@@ -1412,6 +1412,8 @@ pub struct MeteorState {
     pub external_velocity: Vec2,
     pub grounded_entry: bool,
     pub dash_updates: u32,
+    /// FixTransform.up as DetPhysics last synced the hurtbox.
+    pub collider_up: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -5677,6 +5679,8 @@ impl RolloutWorld {
             let frozen =
                 updater_dt < DT * Fix::from_f32(0.01) && !time_stop_protected_at_pass_start[index];
             if self.playable(index) && !frozen {
+                // Meteor's row reads this in the form and on its exit pass.
+                self.players[index].meteor.collider_up = self.players[index].base.up;
                 if self.players[index].active == ActiveAbility::Push {
                     self.players[index].push.collider_up = self.players[index].base.up;
                 } else if matches!(
@@ -33522,11 +33526,10 @@ impl RolloutWorld {
                 }
                 if (alive && meteoring) || was_active {
                     let root = synced;
-                    let rotation = slot.base.rotation;
                     let basis = Vec2::angle(rotation);
                     // DPhysicsBox: position + ComplexMul(fixTrans.right, offset),
                     // with right kept exactly as the surface normal turned.
-                    let right = Vec2::new(slot.base.up.y, -slot.base.up.x);
+                    let right = slot.meteor.collider_up.perp_cw();
                     let center = root + right.complex_mul(data.meteor.collider_offset);
                     let collider = OrientedBox::from_basis(
                         center,
