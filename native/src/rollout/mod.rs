@@ -29807,7 +29807,7 @@ impl RolloutWorld {
                 } else if player.active == ActiveAbility::Platform {
                     false
                 } else {
-                    crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
+                    self.player_hit_by_box(player_index, hitbox)
                 };
             }
             let killer = explosion.killer();
@@ -29868,7 +29868,7 @@ impl RolloutWorld {
                 } else if player.active == ActiveAbility::Platform {
                     false
                 } else {
-                    crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
+                    self.player_hit_by_box(player_index, hitbox)
                 };
             }
             let killer = if explosion.credited_owner {
@@ -29887,6 +29887,31 @@ impl RolloutWorld {
                 }
             }
         }
+    }
+
+    /// Whether a box hitbox overlaps the player's registered Player-layer
+    /// shape. The slime and Dash use their own box; any other form is the row
+    /// its prefab registered, such as Bow's rotated box.
+    fn player_hit_by_box(&self, player_index: usize, hitbox: OrientedBox) -> bool {
+        let player = &self.players[player_index];
+        if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
+            return crate::physics::contact::box_box(player.base.collider, hitbox).is_some();
+        }
+        let entity = Self::blink_player_entity(player);
+        if !self.collides(entity) {
+            return false;
+        }
+        let row = self.entities[entity];
+        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+        if row.kind == 0 {
+            let circle = Circle { center, radius: Fix::from_raw(row.radius) };
+            return crate::physics::contact::circle_box(circle, hitbox).is_some();
+        }
+        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+        let inverse_extents = Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length());
+        let shape = OrientedBox { center, right, up, inverse_extents };
+        crate::physics::contact::box_box(shape, hitbox).is_some()
     }
 
     /// MeteorSmear carries Explosion with its hitbox live for the smear's whole
@@ -30058,7 +30083,7 @@ impl RolloutWorld {
                 } else if player.active == ActiveAbility::Platform {
                     false
                 } else {
-                    crate::physics::contact::box_box(player.base.collider, hitbox).is_some()
+                    self.player_hit_by_box(player_index, hitbox)
                 };
             }
             let killer = explosion.owner as u32 + 1;
