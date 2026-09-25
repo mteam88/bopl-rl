@@ -432,6 +432,12 @@ static void dump_tables(const BoplRlState *a, const BoplRlState *b, unsigned tic
                " | x %" PRId64 " y %" PRId64 " vx %" PRId64 " vy %" PRId64 "\n", i,
                ea->x, ea->y, ea->vx, ea->vy, eb->x, eb->y, eb->vx, eb->vy);
     }
+    for (uint32_t i = 0; i < a->header.player_count && i < b->header.player_count; i++) {
+        const BoplRlPlayer *pa = &a->players[i], *pb = &b->players[i];
+        printf("player %u | flags %u alive %u stocks %u deaths %u cause %u x %.8f y %.8f | flags %u alive %u stocks %u deaths %u cause %u x %.8f y %.8f\n",
+               i, pa->flags, pa->alive_bodies, pa->stocks, pa->deaths, pa->cause_of_death, units(pa->x), units(pa->y),
+               pb->flags, pb->alive_bodies, pb->stocks, pb->deaths, pb->cause_of_death, units(pb->x), units(pb->y));
+    }
     for (uint32_t i = 0; i < a->header.slime_count && i < b->header.slime_count; i++) {
         const BoplRlSlime *sa = &a->slimes[i], *sb = &b->slimes[i];
         printf("slime %u | id %u owner %u flags %u state %u af %u/%u/%u | id %u owner %u flags %u state %u af %u/%u/%u\n",

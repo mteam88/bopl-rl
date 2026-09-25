@@ -32373,6 +32373,11 @@ impl RolloutWorld {
             if slot.out || slot.revival_clone_pending || slot.stock_clone_pending {
                 continue; // rows were settled by `kill`
             }
+            // A Blink tunnel swallows whatever object the ray hit. For a
+            // player inside a form that is the form (QuantumTunnel.Init
+            // deactivates it); the slime stays in its ability, its box frozen
+            // where the form began.
+            let slime_teleporting = teleporting && !(slot.blink_tunnel_active && in_ability);
             let body = &mut self.entities[body_e];
             let body_was_active = body.flags & E_ACTIVE != 0;
             if !alive {
@@ -32395,12 +32400,12 @@ impl RolloutWorld {
             // onEnterAbility deactivates the slime after this pass's Move
             // (SlimeController.cs:1084); its frozen FixTransform is what the
             // hurtbox shows for the rest of the ability.
-            let (center, angle) = if body_active || teleporting {
+            let (center, angle) = if body_active || slime_teleporting {
                 (synced, rotation)
             } else {
                 (slot.ability_origin, slot.ability_origin_rotation)
             };
-            if body_active || body_was_active || teleporting {
+            if body_active || body_was_active || slime_teleporting {
                 body.x = center.x.raw();
                 body.y = center.y.raw();
                 // The hurtbox has PlayerBody movement on the same GameObject
@@ -32416,7 +32421,7 @@ impl RolloutWorld {
                 // avoids two divisions plus a sine-table lookup per row.
                 // Inactive ability-origin rows have no synchronized box and
                 // still need the authored extents reconstructed here.
-                let (right, up) = if body_active || teleporting {
+                let (right, up) = if body_active || slime_teleporting {
                     (slot.base.collider.right, slot.base.collider.up)
                 } else {
                     let basis = Vec2::angle(angle);
@@ -33397,6 +33402,14 @@ impl RolloutWorld {
                 }
             }
         }
+        for slot in &self.players {
+            if slot.base.alive && slot.blink_tunnel_active && slot.active != ActiveAbility::None {
+                let form = Self::blink_player_entity(slot);
+                if form != usize::MAX {
+                    self.entities[form].flags &= !E_ACTIVE;
+                }
+            }
+        }
         for arrow in &self.arrows {
             if !arrow.active || !arrow.registered {
                 continue;
@@ -33629,7 +33642,7 @@ impl RolloutWorld {
                 || slot.respawn_spawn_ticks > 0
                 || slot.revival_effect_ticks > 0;
             let mut flags = S_ACTIVE;
-            if slot.teleport_effect_active || slot.blink_tunnel_active {
+            if slot.teleport_effect_active || (slot.blink_tunnel_active && !in_ability) {
                 flags = S_SPAWNED | S_SIMULATED;
             } else if respawning {
                 flags |= S_SUPPRESS_INPUT;
@@ -33657,7 +33670,9 @@ impl RolloutWorld {
                 if slot.timers[s] > slot.cooldowns[s] {
                     f |= 4;
                 }
-                if in_ability && slot.active_slot == s {
+                // Bit 8 and the Bow charge read the form GameObject's
+                // activeInHierarchy, which a Blink tunnel clears.
+                if in_ability && slot.active_slot == s && !slot.blink_tunnel_active {
                     f |= 8;
                     if slot.active == ActiveAbility::Bow {
                         // RlObservation reflects BowTransform.loadingFrame
