@@ -13719,6 +13719,9 @@ impl RolloutWorld {
         slot.facing_right = (slot.base.velocity + slot.base.external_velocity).x >= Fix::ZERO;
         slot.exit_to_fall();
         slot.base.collision_rays(terrain!(self));
+        // SlimeController.onExitAbility syncs the hurtbox, so later updaters
+        // this pass (BlackHole's pull) see the exit position.
+        slot.base.sync_collider();
         // Ability.ExitAbility publishes the form collider before the slime's
         // offset exit position is synchronized back into PlayerPhysics.
         slot.reported_position = ability_position;
