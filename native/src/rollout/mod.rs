@@ -29376,6 +29376,47 @@ impl RolloutWorld {
             }
         }
 
+        // DetPhysics resolves the pairs in SortAndSweep order: by the rank of
+        // the pair's later bounding box on the sweep axis, then the earlier
+        // one's. A wall two items touch sees the first item's impulse and
+        // correction before the second's.
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let item_min = |item_index: usize| {
+            let item = self.thrown_items[item_index];
+            axis(item.position) - thrown_item_radius(data, item)
+        };
+        let platform_min = |platform_index: usize| {
+            let swept = self
+                .scratch
+                .callback_colliders
+                .get(platform_index)
+                .filter(|_| self.scratch.callback_tick == Some(self.tick))
+                .copied()
+                .unwrap_or_else(|| self.circle_collider(platform_index));
+            axis(swept.inner.center)
+                - axis(swept.inner.right).abs()
+                - axis(swept.inner.up).abs()
+                - swept.radius
+        };
+        all_contacts.sort_by_key(|&(item_index, platform_index, _)| {
+            let (a, b) = (item_min(item_index), platform_min(platform_index));
+            (a.max(b), a.min(b))
+        });
+        for &(item_index, platform_index, contact) in &all_contacts {
+            let (platform_center, own_inverse_mass) = self.platform_contact_frame(platform_index);
+            let item = &mut self.thrown_items[item_index];
+            let platform_body = &mut self.platform_dynamics[platform_index].body;
+            resolve(contact, &mut item.body, platform_body, item.position, platform_center);
+            let correction =
+                positional_correction(contact, item.body.inverse_mass, own_inverse_mass, false);
+            item.position += correction[0];
+            self.shift_platform_collider(platform_index, correction[1]);
+        }
+        if !all_contacts.is_empty() {
+            self.platforms_changed();
+        }
+
         for item_index in 0..self.thrown_items.len() {
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].entity.is_none()
@@ -29401,26 +29442,9 @@ impl RolloutWorld {
                 continue;
             }
 
-            let mut body = item.body;
-            let mut center = item.position;
-            for &(platform_index, contact) in &contacts[..contact_count] {
-                let (platform_center, own_inverse_mass) = self.platform_contact_frame(platform_index);
-                let platform_body = &mut self.platform_dynamics[platform_index].body;
-                resolve(contact, &mut body, platform_body, center, platform_center);
-                let correction = positional_correction(
-                    contact,
-                    body.inverse_mass,
-                    own_inverse_mass,
-                    false,
-                );
-                center += correction[0];
-                self.shift_platform_collider(platform_index, correction[1]);
-            }
-            self.platforms_changed();
-            let thrown = &mut self.thrown_items[item_index];
-            thrown.body = body;
-            thrown.position = center;
-            let entity = thrown.entity.expect("contacting thrown-item collider");
+            let body = item.body;
+            let center = item.position;
+            let entity = item.entity.expect("contacting thrown-item collider");
             {
                 let row = &mut self.entities[entity];
                 row.x = center.x.raw();
