@@ -29886,7 +29886,7 @@ impl RolloutWorld {
                         circle,
                         Circle {
                             center: player.base.position,
-                            radius: data.platform.hurtbox_radius,
+                            radius: data.platform.hurtbox_radius * player.player_scale,
                         },
                     )
                     .is_some()
@@ -29975,7 +29975,7 @@ impl RolloutWorld {
                     crate::physics::contact::circle_box(
                         Circle {
                             center: player.base.position,
-                            radius: data.platform.hurtbox_radius,
+                            radius: data.platform.hurtbox_radius * player.player_scale,
                         },
                         hitbox,
                     )
@@ -30037,7 +30037,7 @@ impl RolloutWorld {
                     crate::physics::contact::circle_box(
                         Circle {
                             center: player.base.position,
-                            radius: data.platform.hurtbox_radius,
+                            radius: data.platform.hurtbox_radius * player.player_scale,
                         },
                         hitbox,
                     )
@@ -30108,7 +30108,7 @@ impl RolloutWorld {
                 {
                     let hurtbox = Circle {
                         center: player.base.position,
-                        radius: data.platform.hurtbox_radius,
+                        radius: data.platform.hurtbox_radius * player.player_scale,
                     };
                     crate::physics::contact::circle_circle(hitbox, hurtbox).is_some()
                 } else if player.active == ActiveAbility::Rock {
@@ -30374,7 +30374,7 @@ impl RolloutWorld {
                     crate::physics::contact::circle_box(
                         Circle {
                             center: player.base.position,
-                            radius: data.platform.hurtbox_radius,
+                            radius: data.platform.hurtbox_radius * player.player_scale,
                         },
                         hitbox,
                     )
@@ -34359,6 +34359,10 @@ impl RolloutWorld {
                     circle.x = center.x.raw();
                     circle.y = center.y.raw();
                     circle.rotation = rotation.raw();
+                }
+                if transforming {
+                    // The hurtbox takes the slime's scale on entry.
+                    circle.radius = (data.platform.hurtbox_radius * slot.player_scale).raw();
                 }
             }
             // Gust's QuickSpell body is a circle with the FixTransform's
