@@ -1164,6 +1164,11 @@ pub struct PlatformDynamics {
     /// colliders/AnimateVelocity until the shared level-intro routine ends.
     pub intro_disabled: bool,
     pub min_scale: Fix,
+    /// StickyRoundedRectangle.baseScaleForPlatform (GrowOnStart.scaleUp) and
+    /// DPhysicsRoundedRect.timeSinceLastScaledUp: a platform grown past its
+    /// base shrinks back ten seconds after its last growth.
+    pub base_scale: Fix,
+    pub time_since_scaled_up: Fix,
     /// StickyRoundedRectangle.UpdateBounds follows its collider updater on
     /// the pass after a later MachoThrow2 scale write.
     pub surface_shape_dirty: bool,
@@ -3469,6 +3474,8 @@ impl RolloutWorld {
                 body_resizable: false,
                 intro_disabled: true,
                 min_scale: p.min_scale,
+                base_scale: p.base_scale,
+                time_since_scaled_up: Fix::ZERO,
                 surface_shape_dirty: false,
                 root_body: p.body,
                 attached_children: 0,
@@ -14233,6 +14240,35 @@ impl RolloutWorld {
         }
     }
 
+    /// DPhysicsRoundedRect.Scale's setter.
+    fn set_platform_scale(&mut self, platform: usize, value: Fix) {
+        let dynamics = &mut self.platform_dynamics[platform];
+        let previous = dynamics.scale;
+        if previous > dynamics.base_scale && previous < value {
+            dynamics.time_since_scaled_up = Fix::ZERO;
+        }
+        let max_scale = if dynamics.body_resizable {
+            Fix::from_int(6)
+        } else {
+            Fix::from_int(5)
+        };
+        let scale = value.clamp(dynamics.min_scale, max_scale);
+        let ratio = (Fix::ONE / previous) * scale;
+        dynamics.scale = scale;
+        dynamics.surface_shape_dirty = true;
+        // DetPhysics resynchronizes the collider from FixTransform at
+        // the end of this pass even though the body did not rotate.
+        // Force the quiet-platform path to rebuild the scaled axes
+        // from the retained body orientation as the source does.
+        dynamics.transform_rotation = Some(dynamics.body.orientation);
+        let collider = &mut self.platforms[platform].collider;
+        collider.radius *= ratio;
+        collider.inner.right *= ratio;
+        collider.inner.up *= ratio;
+        collider.inner.inverse_extents = collider.inner.inverse_extents / ratio;
+        self.platforms_changed();
+    }
+
     fn beam_orbs_tick(&mut self, data: &data::RolloutData) {
         for orb_index in 0..self.beam_orbs.len() {
             if self.blink_object_hidden(self.beam_orbs[orb_index].entity) {
@@ -15263,6 +15299,8 @@ impl RolloutWorld {
             body_resizable: false,
             intro_disabled: false,
             min_scale: data.macho_throw.boulder_min_scale,
+            base_scale: Fix::ONE,
+            time_since_scaled_up: Fix::ZERO,
             surface_shape_dirty: false,
             root_body: data.macho_throw.boulder_body,
             attached_children: 0,
@@ -24831,29 +24869,9 @@ impl RolloutWorld {
                 } else {
                     ray.multiplier
                 };
-                let previous = dynamics.scale;
-                let max_scale = if dynamics.body_resizable {
-                    Fix::from_int(6)
-                } else {
-                    Fix::from_int(5)
-                };
-                let scale = (previous + ray.scale_curve.evaluate(time) * multiplier)
-                    .clamp(dynamics.min_scale, max_scale);
-                let ratio = (Fix::ONE / previous) * scale;
-                dynamics.scale = scale;
-                dynamics.surface_shape_dirty = true;
-                // DetPhysics resynchronizes the collider from FixTransform at
-                // the end of this pass even though the body did not rotate.
-                // Force the quiet-platform path to rebuild the scaled axes
-                // from the retained body orientation as the source does.
-                dynamics.transform_rotation = Some(dynamics.body.orientation);
-                let collider = &mut self.platforms[effect.victim].collider;
-                collider.radius *= ratio;
-                collider.inner.right *= ratio;
-                collider.inner.up *= ratio;
-                collider.inner.inverse_extents = collider.inner.inverse_extents / ratio;
+                let value = dynamics.scale + ray.scale_curve.evaluate(time) * multiplier;
+                self.set_platform_scale(effect.victim, value);
                 self.scale_changers[index].time = time;
-                self.platforms_changed();
                 continue;
             }
             let missile = &mut self.guided_missiles[effect.victim];
@@ -25743,6 +25761,8 @@ impl RolloutWorld {
             body_resizable: true,
             intro_disabled: false,
             min_scale: Fix::from_f32(0.1),
+            base_scale: Fix::ONE,
+            time_since_scaled_up: Fix::ZERO,
             surface_shape_dirty: false,
             root_body: pd.spawn_body,
             attached_children: 0,
@@ -30165,6 +30185,17 @@ impl RolloutWorld {
             }
             if self.platform_dynamics[i].drop_players_frames >= 0 {
                 self.platform_dynamics[i].drop_players_frames -= 1;
+            }
+            // StickyRoundedRectangle.UpdateSim eases a grown platform back.
+            let dynamics = &mut self.platform_dynamics[i];
+            dynamics.time_since_scaled_up += updater_dt * self.player_time_scale;
+            if (dynamics.time_since_scaled_up > Fix::from_int(10) || self.sudden_death)
+                && dynamics.scale > dynamics.base_scale
+                && self.player_time_scale >= Fix::from_f32(0.01)
+            {
+                let value = dynamics.scale * (Fix::ONE - updater_dt.clamp(Fix::ZERO, Fix::ONE))
+                    + dynamics.base_scale * updater_dt;
+                self.set_platform_scale(i, value);
             }
             let previous = self.platform_dynamics[i].body_scale;
             let scale = self.platform_dynamics[i].scale;
