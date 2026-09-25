@@ -5671,7 +5671,11 @@ impl RolloutWorld {
             // more; they resume synchronization on the following pass.
             let frozen =
                 updater_dt < DT * Fix::from_f32(0.01) && !time_stop_protected_at_pass_start[index];
-            if self.playable(index) && !frozen {
+            // A Blink tunnel deactivates what it swallowed, but SyncAll still
+            // moves that collider to the body the updaters left.
+            let swallowed =
+                self.players[index].base.alive && self.players[index].blink_tunnel_active;
+            if (self.playable(index) || swallowed) && !frozen {
                 // Meteor's row reads this in the form and on its exit pass.
                 self.players[index].meteor.collider_up = self.players[index].base.up;
                 if self.players[index].active == ActiveAbility::Push {
@@ -24439,6 +24443,12 @@ impl RolloutWorld {
             {
                 if self.players[victim].base.grounded {
                     self.release_grounded_blink_player(victim);
+                    // AttachToGround aligns the swallowed form's own body,
+                    // which for a Bow is the rotation its box reads.
+                    let slot = &mut self.players[victim];
+                    if slot.active == ActiveAbility::Bow {
+                        slot.bow.form_rotation = slot.base.rotation;
+                    }
                 } else {
                     self.release_airborne_blink_player(victim);
                 }
