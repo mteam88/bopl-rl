@@ -274,7 +274,7 @@ the planet. The current members, none trained on space maps, often walk into it.
 
 ## Rating the specialists on their own kits: what it takes
 
-This is the design of the condition above, kept because the trap in it is the
+This is how the own-kit rating condition came about, kept because the trap in it is the
 transferable part. Since 2026-09-24 it is not a mode but the league's only
 condition, generalised past specialists: every member declares the kits it can
 play (`registry.kits`: scripted bots 2,4,14 because their slot indices are written
