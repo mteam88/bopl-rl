@@ -9834,7 +9834,9 @@ impl RolloutWorld {
             .iter()
             .find(|smear| smear.active && smear.entity == Some(entity))
         {
-            return (smear.owner as u32 + 1, true, CAUSE_OTHER);
+            // SpawnSmearEffect puts the smear in the caster's ignore list, and
+            // every form copies that list on entry (Ability.cs:97).
+            return (smear.owner as u32 + 1, false, CAUSE_OTHER);
         }
         if let Some(orb) = self
             .beam_orbs
@@ -18781,8 +18783,10 @@ impl RolloutWorld {
                             .iter()
                             .find(|smear| smear.active && smear.entity == Some(entity))
                         {
+                            // The caster's PlayerCollision ignores its smear,
+                            // and Dash copies that list on entry (Ability.cs:97).
                             killer = smear.owner as u32 + 1;
-                            can_hurt_owner = true;
+                            can_hurt_owner = false;
                         } else if let Some(orb) = self
                             .beam_orbs
                             .iter()
