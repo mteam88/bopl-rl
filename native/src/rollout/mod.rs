@@ -32036,6 +32036,28 @@ impl RolloutWorld {
             slot.base.up = Vec2::UP;
             slot.base.force_unground(&self.platforms);
         }
+        if form_exit
+            && matches!(self.players[index].active, ActiveAbility::Gust | ActiveAbility::Revival)
+        {
+            // QuickSpell.ExitAbility makes the same UnGround call on a kill as
+            // on its own exit (QuickSpell.cs:93-99), so the ground kept from
+            // entry nudges the form before the slime takes its position.
+            let slot = &mut self.players[index];
+            let ground = if slot.active == ActiveAbility::Gust {
+                slot.gust.attached_ground
+            } else {
+                slot.revival.attached_ground
+            };
+            let normal = ground.and_then(|id| {
+                self.platforms
+                    .iter()
+                    .find(|platform| platform.id == id)
+                    .map(|platform| platform.surface.normal(slot.base.position))
+            });
+            if let Some(normal) = normal {
+                slot.base.position += normal * Fix::from_f32(0.05);
+            }
+        }
         self.deactivate_drill_hitboxes(index);
         let rope_drop_icon_overridden = self.rope_drop_icon_overridden(index, data::get());
         let revival_marker = (!already_won)
