@@ -8402,6 +8402,17 @@ impl RolloutWorld {
                                 self.platforms.iter().any(|platform| platform.id == ground)
                             });
                         let entry_facing_right = self.players[index].facing_right;
+                        // Beam.OnEnterAbility keeps PlayerInfo.selfImposedVelocity
+                        // on a grounded entry: groundedSpeed along the ground
+                        // tangent, which PlayerBody then integrates every pass.
+                        let self_imposed = {
+                            let base = &self.players[index].base;
+                            base.ground
+                                .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                                .map_or(Vec2::ZERO, |p| {
+                                    p.surface.normal(base.position).perp_cw() * base.grounded_speed
+                                })
+                        };
                         let form_position = if grounded {
                             let base = &self.players[index].base;
                             base.ground
@@ -8419,25 +8430,9 @@ impl RolloutWorld {
                         if aim == Vec2::ZERO {
                             aim = if entry_facing_right { right } else { -right };
                         }
-                        let relative = aim.complex_mul(Vec2::new(right.x, -right.y));
-                        let angle = relative.normalized_angle();
                         let local_facing_right = aim.dot(right) > Fix::ZERO;
-                        let relative_staff_dir = if angle < Fix::PI + data.beam.min_grounded_angle
-                            || angle > Fix::TAU - data.beam.min_grounded_angle
-                        {
-                            Vec2::angle(angle)
-                        } else if local_facing_right {
-                            Vec2::angle(Fix::TAU - data.beam.min_grounded_angle)
-                        } else {
-                            Vec2::angle(Fix::PI + data.beam.min_grounded_angle)
-                        };
                         let (staff_dir, relative_staff_dir, aimed_up) = if grounded {
-                            let staff = relative_staff_dir.complex_mul(right);
-                            (
-                                staff,
-                                relative_staff_dir,
-                                relative_staff_dir.dot(Vec2::UP) > data.beam.up_alignment,
-                            )
+                            Self::beam_start_dir(aim, right, local_facing_right, data)
                         } else {
                             let staff = if action.direction() == Vec2::ZERO {
                                 -Vec2::UP
@@ -8471,7 +8466,9 @@ impl RolloutWorld {
                             slot.base.position = form_position;
                             slot.base.radius = data.beam.radius;
                             slot.base.constants = data.beam.constants.clone();
-                            if !grounded {
+                            if grounded {
+                                slot.base.velocity = self_imposed;
+                            } else {
                                 slot.base.velocity = Vec2::ZERO;
                                 slot.base.rotation = Fix::ZERO;
                                 slot.base.up = Vec2::UP;
@@ -13527,6 +13524,96 @@ impl RolloutWorld {
         self.players[owner].beam.orb = Some(orb);
     }
 
+    /// Beam.SetStartDir for a grounded form: the aim relative to the
+    /// ground, clamped out of the downward cone, as (staff, relative, aimed up).
+    fn beam_start_dir(
+        aim: Vec2,
+        right: Vec2,
+        facing_right: bool,
+        data: &data::RolloutData,
+    ) -> (Vec2, Vec2, bool) {
+        let angle = aim.complex_mul(Vec2::new(right.x, -right.y)).normalized_angle();
+        let relative = if angle < Fix::PI + data.beam.min_grounded_angle
+            || angle > Fix::TAU - data.beam.min_grounded_angle
+        {
+            Vec2::angle(angle)
+        } else if facing_right {
+            Vec2::angle(Fix::TAU - data.beam.min_grounded_angle)
+        } else {
+            Vec2::angle(Fix::PI + data.beam.min_grounded_angle)
+        };
+        (
+            relative.complex_mul(right),
+            relative,
+            relative.dot(Vec2::UP) > data.beam.up_alignment,
+        )
+    }
+
+    /// The aim step of Beam.UpdateSim. While `onFirstFrame` is set, a
+    /// grounded form first re-seeds its direction from the stick (InitStartDir).
+    fn beam_aim(&mut self, index: usize, aim: Vec2, first_frame: bool, data: &data::RolloutData) {
+        let angular_increment = data.beam.angular_aim_speed
+            * data
+                .beam
+                .angular_aim_curve
+                .evaluate(self.players[index].beam.time_since_enter);
+        if aim != Vec2::ZERO {
+            if self.players[index].beam.in_air {
+                let current = self.players[index].beam.staff_dir;
+                let next = Self::beam_approach(current, aim, angular_increment);
+                self.players[index].beam.staff_dir = next;
+                self.players[index].beam.relative_staff_dir = next;
+            } else {
+                let right = self.players[index].base.up.perp_cw();
+                if first_frame {
+                    let facing_right = self.players[index].facing_right;
+                    let (staff, relative, aimed_up) =
+                        Self::beam_start_dir(aim, right, facing_right, data);
+                    let beam = &mut self.players[index].beam;
+                    beam.staff_dir = staff;
+                    beam.relative_staff_dir = relative;
+                    beam.aimed_up = aimed_up;
+                }
+                let target = Vec2::new(right.x, -right.y).complex_mul(aim);
+                let current = self.players[index].beam.relative_staff_dir;
+                let next = Self::beam_approach(current, target, angular_increment);
+                let angle = next.normalized_angle();
+                if angle < Fix::PI + data.beam.min_grounded_angle
+                    || angle > Fix::TAU - data.beam.min_grounded_angle
+                {
+                    self.players[index].beam.relative_staff_dir = next;
+                }
+            }
+        }
+        if !self.players[index].beam.in_air {
+            let right = self.players[index].base.up.perp_cw();
+            self.players[index].beam.staff_dir =
+                right.complex_mul(self.players[index].beam.relative_staff_dir);
+        } else {
+            let staff = self.players[index].beam.staff_dir;
+            let up = if staff.y > Fix::ONE || staff.y < -Fix::ONE {
+                Vec2::UP
+            } else {
+                -staff
+            };
+            self.players[index].base.up = up;
+            self.players[index].base.rotation = up.perp_cw().normalized_angle();
+        }
+    }
+
+    fn beam_shake_ground(&mut self, index: usize, data: &data::RolloutData) {
+        if self.players[index].beam.phase == 0
+            && let Some(ground) = self.players[index].beam.current_ground
+            && let Some(platform) = self.platforms.iter().position(|p| p.id == ground)
+        {
+            let dynamics = &mut self.platform_dynamics[platform];
+            dynamics.shake_time = Fix::ZERO;
+            dynamics.shake_duration = data.beam.shake_duration;
+            dynamics.shake_amount = data.beam.shake_strength;
+            dynamics.meteor_shake_curve = false;
+        }
+    }
+
     fn beam_approach(from: Vec2, target: Vec2, increment: Fix) -> Vec2 {
         let cross = from.cross(target);
         let turn = Vec2::angle(if cross < Fix::ZERO {
@@ -13688,6 +13775,22 @@ impl RolloutWorld {
             }
         }
 
+        // Ability heads the prefab: it publishes Player.Position before
+        // PlayerBody moves the form. The orb's collider still holds the pose
+        // Beam.LateUpdateSim gave it from this same body position.
+        let undrifted = self.players[index].base.position;
+        self.players[index].reported_position = undrifted;
+        self.players[index].reported_tick = self.tick;
+        // SpriteAnimator follows Ability: when enterFrame1 ends, its callback
+        // Beam.OnLeftFirstFrame faces the stick and runs UpdateSim(0) before
+        // this pass's own Beam.UpdateSim.
+        if advance_animation
+            && !self.players[index].beam.in_air
+            && self.players[index].beam.phase == 0
+            && self.players[index].beam.phase_ticks == data.beam.enter_first_frame_ticks + 1
+        {
+            self.beam_zero_time_pass(index, action, undrifted, data);
+        }
         // PlayerBody precedes Beam on the prefab. Its damping is unscaled,
         // including while time is stopped. On the completed-exit pass the
         // SpriteAnimator has already deactivated PlayerBody before its turn,
@@ -13703,62 +13806,18 @@ impl RolloutWorld {
         }
 
         let aim = action.direction();
-        let angular_increment = data.beam.angular_aim_speed
-            * data
-                .beam
-                .angular_aim_curve
-                .evaluate(self.players[index].beam.time_since_enter);
+        let first_frame = !self.players[index].beam.in_air
+            && self.players[index].beam.phase == 0
+            && self.players[index].beam.phase_ticks <= data.beam.enter_first_frame_ticks;
+        self.beam_aim(index, aim, first_frame, data);
         self.players[index].beam.time_since_enter += DT;
-        if aim != Vec2::ZERO {
-            if self.players[index].beam.in_air {
-                let current = self.players[index].beam.staff_dir;
-                let next = Self::beam_approach(current, aim, angular_increment);
-                self.players[index].beam.staff_dir = next;
-                self.players[index].beam.relative_staff_dir = next;
-            } else {
-                let right = self.players[index].base.up.perp_cw();
-                let target = Vec2::new(right.x, -right.y).complex_mul(aim);
-                let current = self.players[index].beam.relative_staff_dir;
-                let next = Self::beam_approach(current, target, angular_increment);
-                let angle = next.normalized_angle();
-                if angle < Fix::PI + data.beam.min_grounded_angle
-                    || angle > Fix::TAU - data.beam.min_grounded_angle
-                {
-                    self.players[index].beam.relative_staff_dir = next;
-                }
-            }
-        }
-        if !self.players[index].beam.in_air {
-            let right = self.players[index].base.up.perp_cw();
-            self.players[index].beam.staff_dir =
-                right.complex_mul(self.players[index].beam.relative_staff_dir);
-        } else {
-            let staff = self.players[index].beam.staff_dir;
-            let up = if staff.y > Fix::ONE || staff.y < -Fix::ONE {
-                Vec2::UP
-            } else {
-                -staff
-            };
-            self.players[index].base.up = up;
-            self.players[index].base.rotation = up.perp_cw().normalized_angle();
-        }
-
-        if self.players[index].beam.phase == 0
-            && let Some(ground) = self.players[index].beam.current_ground
-            && let Some(platform) = self.platforms.iter().position(|p| p.id == ground)
-        {
-            let dynamics = &mut self.platform_dynamics[platform];
-            dynamics.shake_time = Fix::ZERO;
-            dynamics.shake_duration = data.beam.shake_duration;
-            dynamics.shake_amount = data.beam.shake_strength;
-            dynamics.meteor_shake_curve = false;
-        }
+        self.beam_shake_ground(index, data);
 
         let button = (2u8) << self.players[index].active_slot;
         if self.players[index].beam.phase != 2 && action.buttons & button == 0 {
             // DetPhysics has synchronized the orb transform from the prior
             // late phase before Beam starts whiteExit on this pass.
-            self.update_beam_orb_position(index);
+            self.update_beam_orb_position(index, undrifted);
             self.stop_beam(index);
         }
 
@@ -13856,7 +13915,7 @@ impl RolloutWorld {
                 // The maximum-duration check follows the final loop
                 // LateUpdate pose in the native scheduler. Preserve that
                 // tick's FirePos before whiteExit disables the orb hitbox.
-                self.update_beam_orb_position(index);
+                self.update_beam_orb_position(index, undrifted);
                 self.stop_beam(index);
             }
         } else if self.players[index].beam.phase == 2
@@ -13868,15 +13927,64 @@ impl RolloutWorld {
         }
 
         self.players[index].base.previous_jump = action.buttons & 1 != 0;
-        self.players[index].reported_position = self.players[index].base.position;
-        self.players[index].reported_tick = self.tick;
         self.players[index].beam.collider_position = self.players[index].base.position;
         self.players[index].beam.collider_up = self.players[index].base.up;
         self.players[index].beam.collider_rotation = self.players[index].base.rotation;
-        self.update_beam_orb_position(index);
+        self.update_beam_orb_position(index, undrifted);
     }
 
-    fn update_beam_orb_position(&mut self, index: usize) {
+    /// Beam.OnLeftFirstFrame: SetFacingDirection, then UpdateSim(Fix.Zero)
+    /// while `onFirstFrame` still holds. Zero time leaves the clock and the
+    /// ground position alone, but the aim still turns, the ground is shaken
+    /// again, a released button stops, and an idle ground speed pays friction.
+    fn beam_zero_time_pass(
+        &mut self,
+        index: usize,
+        action: Action,
+        body_position: Vec2,
+        data: &data::RolloutData,
+    ) {
+        let aim = action.direction();
+        let right = self.players[index].base.up.perp_cw();
+        let facing = if aim == Vec2::ZERO {
+            if self.players[index].beam.entry_facing_right { right } else { -right }
+        } else {
+            aim
+        };
+        self.players[index].facing_right = facing.dot(right) > Fix::ZERO;
+        if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
+            return;
+        }
+        self.beam_aim(index, aim, true, data);
+        self.beam_shake_ground(index, data);
+        let button = (2u8) << self.players[index].active_slot;
+        if self.players[index].beam.phase != 2 && action.buttons & button == 0 {
+            self.update_beam_orb_position(index, body_position);
+            self.stop_beam(index);
+        }
+        let input = if self.players[index].beam.phase == 2 {
+            self.players[index].last_movement_input
+        } else {
+            Vec2::ZERO
+        };
+        let base = &mut self.players[index].base;
+        if base.grounded
+            && let Some(platform) = self.platforms.iter().find(|p| Some(p.id) == base.ground)
+        {
+            // PlayerPhysics.Move with dt 0: only the no-input friction branch
+            // changes anything.
+            let normal = platform.surface.normal(base.position);
+            if base.ground_input_sign(input, normal) == Fix::ZERO {
+                base.grounded_speed *= if platform.ice {
+                    base.constants.ice_friction
+                } else {
+                    base.constants.friction
+                };
+            }
+        }
+    }
+
+    fn update_beam_orb_position(&mut self, index: usize, body_position: Vec2) {
         let Some(orb) = self.players[index].beam.orb else {
             return;
         };
@@ -13895,7 +14003,7 @@ impl RolloutWorld {
             } else {
                 -Fix::ONE
             };
-            body.position
+            body_position
                 + Vec2::new(
                     Fix::from_f64(1.28) * facing,
                     if state.aimed_up {
@@ -13907,7 +14015,7 @@ impl RolloutWorld {
                 .complex_mul(body.up.perp_cw())
                     * self.players[index].player_scale
         } else if state.phase == 1 {
-            body.position + state.staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
+            body_position + state.staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
         } else if state.phase == 0 && !state.in_air {
             let facing = if self.players[index].facing_right {
                 Fix::ONE
@@ -13926,7 +14034,7 @@ impl RolloutWorld {
             } else {
                 Vec2::new(Fix::from_int(2) * facing, Fix::from_f64(-0.05))
             };
-            body.position + local.complex_mul(body.up.perp_cw()) * self.players[index].player_scale
+            body_position + local.complex_mul(body.up.perp_cw()) * self.players[index].player_scale
         } else if state.phase == 0 {
             let facing = if self.players[index].facing_right {
                 Fix::ONE
@@ -13934,20 +14042,20 @@ impl RolloutWorld {
                 -Fix::ONE
             };
             if state.phase_ticks >= data::get().beam.air_orb_frame10_ticks {
-                body.position
+                body_position
                     + state.staff_dir * Fix::from_f64(3.1) * self.players[index].player_scale
             } else if state.phase_ticks >= data::get().beam.air_orb_frame9_ticks {
-                body.position
+                body_position
                     + Vec2::new(Fix::from_f64(0.1) * facing, Fix::from_int(-2))
                         .complex_mul(body.up.perp_cw())
                         * self.players[index].player_scale
             } else if state.phase_ticks >= data::get().beam.air_orb_frame8_ticks {
-                body.position
+                body_position
                     + Vec2::new(Fix::from_f64(0.1) * facing, Fix::from_f64(-2.3))
                         .complex_mul(body.up.perp_cw())
                         * self.players[index].player_scale
             } else {
-                body.position
+                body_position
                     + state.staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
             }
         } else {

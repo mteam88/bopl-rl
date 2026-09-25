@@ -1911,6 +1911,8 @@ def main():
         },
         "enter_ground_ticks": sum(abs(t) for t in beam_anims["enterFrame1"])
                               + sum(abs(t) for t in beam_anims["enter"]),
+        # Beam.OnLeftFirstFrame runs an extra UpdateSim(0) at this boundary.
+        "enter_first_frame_ticks": sum(abs(t) for t in beam_anims["enterFrame1"]),
         "enter_air_ticks": sum(abs(t) for t in beam_anims["enterAir"]),
         # SpriteAnimator's passed-sprite counter becomes visible to Beam's
         # LateUpdateSim two updater positions after each cumulative boundary.

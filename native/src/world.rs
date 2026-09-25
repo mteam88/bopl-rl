@@ -671,6 +671,19 @@ impl Player {
         motion.unground(platform.map(|p| &p.surface), true);
         self.apply_ground_state(motion);
     }
+    /// PlayerPhysics.Move's ground input direction: -1, 0 or 1 along the
+    /// surface tangent.
+    pub(crate) fn ground_input_sign(&mut self, input: Vec2, normal: Vec2) -> Fix {
+        let alignment = self.normalized_input(input).dot(normal.perp_cw());
+        let into_ground = normal.dot(input);
+        if alignment.abs() >= Fix::from_f32(0.2)
+            || (into_ground <= Fix::ZERO && alignment.abs() >= Fix::from_f32(0.01))
+        {
+            Fix::from_int(alignment.sign())
+        } else {
+            Fix::ZERO
+        }
+    }
     fn move_grounded(&mut self, input: Vec2, terrain: Terrain) {
         self.move_grounded_scaled(input, Fix::ONE, terrain);
     }
@@ -695,15 +708,7 @@ impl Player {
         };
         let normal = platform.surface.normal(self.position);
         let forward = normal.perp_cw();
-        let alignment = self.normalized_input(input).dot(forward);
-        let into_ground = normal.dot(input);
-        let sign = if alignment.abs() >= Fix::from_f32(0.2)
-            || (into_ground <= Fix::ZERO && alignment.abs() >= Fix::from_f32(0.01))
-        {
-            Fix::from_int(alignment.sign())
-        } else {
-            Fix::ZERO
-        };
+        let sign = self.ground_input_sign(input, normal);
         if sign == Fix::ZERO {
             self.grounded_speed *= if platform.ice {
                 self.constants.ice_friction
