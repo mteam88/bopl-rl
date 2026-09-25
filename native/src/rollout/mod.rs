@@ -1427,36 +1427,6 @@ pub struct MeteorSmear {
     pub up: Vec2,
 }
 
-#[derive(Clone, Copy)]
-pub struct MeteorWave {
-    pub active: bool,
-    pub registered: bool,
-    pub born_tick: u32,
-    pub position: Vec2,
-    pub time: Fix,
-    pub ignored_platform: u32,
-    pub owner: usize,
-    pub force_scale: Fix,
-    pub platform_count: usize,
-    pub platforms: [u32; 50],
-}
-impl Default for MeteorWave {
-    fn default() -> Self {
-        Self {
-            active: false,
-            registered: false,
-            born_tick: 0,
-            position: Vec2::ZERO,
-            time: Fix::ZERO,
-            ignored_platform: 0,
-            owner: 0,
-            force_scale: Fix::ONE,
-            platform_count: 0,
-            platforms: [0; 50],
-        }
-    }
-}
-
 #[derive(Clone, Copy, Default)]
 pub struct PushState {
     pub ticks: u32,
@@ -1472,6 +1442,9 @@ pub struct GunState {
     pub has_fired: bool,
     pub fire_ticks: u32,
     pub collider_up: Vec2,
+    /// The hurtbox centre GunTransform.OnEnterAbility synced. DetPhysics
+    /// moves it again only at the end of the pass.
+    pub hurtbox_center: Vec2,
     /// Tick on which FreezeRayGun called Ability.ExitAbility directly. That
     /// bypass retains the gun form's aimed FixTransform basis for its final
     /// DetPhysics sync instead of zeroing it through GunTransform.ExitAbility.
@@ -1927,10 +1900,11 @@ pub struct PortalEndpoint {
     pub player_inside: [bool; 8],
 }
 
-/// AirWave_Shockwave has no collider of its own. It captures rigid targets on
-/// initialization and keeps applying its curve to that fixed set.
+/// A Shockwave (AirWave_Shockwave for Gust, meteorShockwave for Meteor) has no
+/// collider of its own. It captures rigid targets on initialization and keeps
+/// applying its curve to that fixed set.
 #[derive(Clone, Copy)]
-pub struct GustWave {
+pub struct Shockwave {
     pub active: bool,
     pub registered: bool,
     pub born_tick: u32,
@@ -1938,6 +1912,14 @@ pub struct GustWave {
     /// QuickSpell scales the spawned collider and Shockwave independently.
     /// The latter affects query radius and every retained-target force.
     pub scale: Fix,
+    pub meteor: bool,
+    /// The caster, which its own wave never pushes.
+    pub owner: usize,
+    /// MeteorSmash's AddObjectToIgnore: the landing platform still takes a
+    /// CircleCastAll slot but is never pushed.
+    pub ignored_platform: Option<u32>,
+    /// MeteorSmash multiplies platformForce and defaultForce by its charge.
+    pub force_scale: Fix,
     pub time: Fix,
     pub target_count: usize,
     pub platform_ids: [u32; 50],
@@ -1954,7 +1936,7 @@ pub struct GustWave {
     pub black_hole_count: usize,
     pub black_hole_indices: [usize; 50],
 }
-impl Default for GustWave {
+impl Default for Shockwave {
     fn default() -> Self {
         Self {
             active: false,
@@ -1962,6 +1944,10 @@ impl Default for GustWave {
             born_tick: 0,
             position: Vec2::ZERO,
             scale: Fix::ONE,
+            meteor: false,
+            owner: 0,
+            ignored_platform: None,
+            force_scale: Fix::ONE,
             time: Fix::ZERO,
             target_count: 0,
             platform_ids: [0; 50],
@@ -1981,21 +1967,42 @@ impl Default for GustWave {
     }
 }
 
-impl GustWave {
+/// The Shockwave prefab fields a wave reads.
+struct ShockwaveConfig<'a> {
+    radius: Fix,
+    mask: u32,
+    default_force: Fix,
+    platform_force: Fix,
+    grounded_multiplier: Fix,
+    curve: &'a crate::curve::Curve,
+}
+
+impl Shockwave {
+    fn config<'a>(&self, data: &'a data::RolloutData) -> ShockwaveConfig<'a> {
+        if self.meteor {
+            let wave = &data.meteor.shockwave;
+            ShockwaveConfig {
+                radius: wave.radius,
+                mask: wave.collision_mask,
+                default_force: wave.default_force * self.force_scale,
+                platform_force: wave.platform_force * self.force_scale,
+                grounded_multiplier: wave.grounded_player_multiplier,
+                curve: &data.meteor.shockwave_curve,
+            }
+        } else {
+            ShockwaveConfig {
+                radius: data.gust.radius,
+                mask: 79_761_152,
+                default_force: data.gust.default_force,
+                platform_force: data.gust.platform_force,
+                grounded_multiplier: data.gust.grounded_multiplier,
+                curve: &data.gust.curve,
+            }
+        }
+    }
+
     fn reset(&mut self) {
-        self.active = false;
-        self.registered = false;
-        self.born_tick = 0;
-        self.position = Vec2::ZERO;
-        self.scale = Fix::ONE;
-        self.time = Fix::ZERO;
-        self.target_count = 0;
-        self.item_count = 0;
-        self.arrow_count = 0;
-        self.missile_count = 0;
-        self.portal_shot_count = 0;
-        self.smoke_count = 0;
-        self.black_hole_count = 0;
+        *self = Self::default();
     }
 }
 
@@ -2329,6 +2336,20 @@ pub struct PlayerSlot {
 }
 
 impl PlayerSlot {
+    /// GunTransform.OnEnterAbility syncs the hurtbox after SyncPhysicsTo has
+    /// zeroed an airborne rotation or aligned a grounded one to the surface.
+    fn sync_gun_hurtbox(&mut self, offset: Vec2) {
+        self.gun.collider_up = if self.base.grounded { self.base.up } else { Vec2::UP };
+        self.gun.hurtbox_center = self.base.position
+            + self.gun.collider_up.perp_cw().complex_mul(offset * self.base.scale);
+    }
+
+    /// The slime object is gone: eliminated, or killed after WinGame, where
+    /// Player.Kill is ignored but PlayerCollision still destroys the slime.
+    fn slime_destroyed(&self) -> bool {
+        self.out || (self.won && !self.base.alive && self.respawn_ticks == 0)
+    }
+
     /// Every collider row the slime and its ability objects own. A dead
     /// slime's rows leave DetPhysics together.
     fn owned_rows(&self) -> [usize; 32] {
@@ -2441,6 +2462,9 @@ struct PlatformScratch {
     /// The walls as the Box/RoundedRect narrow phase copies them, after the
     /// RoundedRect/RoundedRect positional corrections.
     box_callback_colliders: Vec<RoundedRect>,
+    /// The walls when the Circle/RoundedRect narrow phase builds every
+    /// manifold, before any of that group's corrections move them.
+    circle_colliders: Vec<RoundedRect>,
     callback_tick: Option<u32>,
     contacts: Vec<(usize, usize, Contact)>,
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
@@ -2538,13 +2562,13 @@ pub struct RolloutWorld {
     pub destroyed_tesla_lines: Vec<DestroyedTeslaLine>,
     pub retired_tesla_contacts: Vec<SpawnedTeslaNode>,
     pub meteor_smears: Vec<MeteorSmear>,
-    pub meteor_waves: Vec<MeteorWave>,
+    pub meteor_waves: Vec<Shockwave>,
     pub frozen_solids: Vec<FrozenSolidState>,
     pub scale_changers: Vec<ScaleChangerState>,
     pub player_time_scale: Fix,
     pub time_stop_protected: [bool; MAX_PLAYERS],
     pub spawned: Vec<SpawnedPlatform>,
-    pub gust_waves: [GustWave; MAX_PLAYERS * 3],
+    pub gust_waves: [Shockwave; MAX_PLAYERS * 3],
     pub revival_marker_pool: Vec<RevivalMarker>,
     pub teleport_marker_pool: Vec<TeleportMarker>,
     pub portal_shots: Vec<PortalShotState>,
@@ -2718,7 +2742,7 @@ impl RolloutWorld {
             player_time_scale: Fix::ONE,
             time_stop_protected: [false; MAX_PLAYERS],
             spawned: Vec::with_capacity(64),
-            gust_waves: [GustWave::default(); MAX_PLAYERS * 3],
+            gust_waves: [Shockwave::default(); MAX_PLAYERS * 3],
             revival_marker_pool: Vec::with_capacity(64),
             teleport_marker_pool: Vec::with_capacity(64),
             portal_shots: Vec::with_capacity(32),
@@ -5226,10 +5250,10 @@ impl RolloutWorld {
         // wave therefore applies its first time-zero impulse before map home
         // springs, while its same-tick UpdateSim impulse runs after them.
         if has(ABILITY_GUST) {
-            self.gust_waves_init(data);
+            self.shockwaves_init(false, data);
         }
         if has(ABILITY_METEOR) {
-            self.meteor_waves_init(data);
+            self.shockwaves_init(true, data);
         }
         // Platforms moved in the previous tick's physics stage.
         self.rebuild_bounds();
@@ -5512,10 +5536,10 @@ impl RolloutWorld {
         // prefab, so its unconditional ResizePlatform follows the spring.
         self.platform_resizable_tick(data);
         if has(ABILITY_GUST) {
-            self.gust_waves_update(data, DT);
+            self.shockwaves_update(false, data, DT);
         }
         if has(ABILITY_METEOR) {
-            self.meteor_waves_update(data);
+            self.shockwaves_update(true, data, DT);
         }
         if has(ABILITY_REVIVAL) {
             self.revival_effects_tick(data);
@@ -5719,7 +5743,7 @@ impl RolloutWorld {
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
         for slot in &self.players {
-            if slot.out {
+            if slot.slime_destroyed() {
                 for e in slot.owned_rows() {
                     if e != usize::MAX {
                         self.entities[e].flags = E_REMOVED;
@@ -5735,6 +5759,8 @@ impl RolloutWorld {
         if self.intro_phase == 3 {
             self.platforms_tick(data, updater_dt, physics_dt);
         }
+        self.scratch.circle_colliders.clear();
+        self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
         self.ability_pickup_pair_contacts(data);
         if has_rope {
             self.ropes_physics(physics_dt);
@@ -6074,8 +6100,8 @@ impl RolloutWorld {
                 self.platforms
                     .iter()
                     .enumerate()
-                    .find_map(|(wall_index, wall)| {
-                        crate::physics::contact::circle_rounded(circle, wall.collider)
+                    .find_map(|(wall_index, _)| {
+                        crate::physics::contact::circle_rounded(circle, self.circle_collider(wall_index))
                             .map(|contact| (wall_index, contact))
                     })
             else {
@@ -8104,6 +8130,7 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
+                        self.players[index].sync_gun_hurtbox(data.freeze.collider_offset);
                         self.freeze_tick(index, action, data);
                         return;
                     }
@@ -8149,6 +8176,7 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
+                        self.players[index].sync_gun_hurtbox(data.blink.collider_offset);
                         self.blink_tick(index, action, data);
                         return;
                     }
@@ -8198,6 +8226,7 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
+                        self.players[index].sync_gun_hurtbox(ray.collider_offset);
                         self.scale_ray_tick(index, action, data);
                         return;
                     }
@@ -8249,6 +8278,7 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
+                        self.players[index].sync_gun_hurtbox(data.duplicator.collider_offset);
                         self.duplicator_tick(index, action, data);
                         return;
                     }
@@ -10042,14 +10072,15 @@ impl RolloutWorld {
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.meteor.shockwave_updatable_count;
         let _ = hierarchy_base;
-        self.meteor_waves.push(MeteorWave {
+        self.meteor_waves.push(Shockwave {
             active: true,
             born_tick: self.tick,
             position,
-            ignored_platform: self.platforms[ignored_platform].id,
+            meteor: true,
             owner,
+            ignored_platform: Some(self.platforms[ignored_platform].id),
             force_scale,
-            ..MeteorWave::default()
+            ..Shockwave::default()
         });
     }
 
@@ -10368,12 +10399,13 @@ impl RolloutWorld {
         if slot.gust.phase == 0 && slot.gust.ticks > data.gust.cast_ticks {
             let wave = index * 3 + slot.active_slot;
             self.next_spawn_hierarchy += data.gust.shockwave_updatable_count;
-            self.gust_waves[wave] = GustWave {
+            self.gust_waves[wave] = Shockwave {
                 active: true,
                 born_tick: self.tick,
                 position: slot.base.position + data.gust.shockwave_offset * slot.base.scale,
                 scale: slot.base.scale,
-                ..GustWave::default()
+                owner: index,
+                ..Shockwave::default()
             };
             slot.gust.phase = 1;
             slot.gust.ticks = 0;
@@ -12565,17 +12597,30 @@ impl RolloutWorld {
                     continue;
                 }
                 let row = self.entities[entity];
-                // PlayerPhysics updates its live collider centre before the
-                // later BlackHole updater. The observation row is the prior
-                // DetPhysics publication and can lag that body by one pass.
-                // Magnet's PlayerPhysics never moves its hurtbox, so the
-                // box stays where DetPhysics last synced it.
-                let body_position = if row.kind == 1
-                    && self.players[player_index].active != ActiveAbility::Magnet
+                // A form's DPhysicsBox centre moves only in its OnEnterAbility
+                // and in DetPhysics' sync, so BlackHole reads the box where the
+                // last DetPhysics pass published it. On the entry pass it
+                // reads the centre OnEnterAbility synced.
+                let player = &self.players[player_index];
+                let body_position = if row.kind != 1
+                    || row.flags & E_ACTIVE != 0
+                    || player.active == ActiveAbility::Magnet
                 {
-                    self.players[player_index].base.collider.center
-                } else {
                     Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y))
+                } else if player.active == ActiveAbility::Mine {
+                    player.base.collider.center
+                        + player.throw_item.collider_right.complex_mul(data.mine.collider_offset)
+                } else if matches!(
+                    player.active,
+                    ActiveAbility::Freeze
+                        | ActiveAbility::Blink
+                        | ActiveAbility::GrowthRay
+                        | ActiveAbility::ShrinkRay
+                        | ActiveAbility::Duplicator
+                ) {
+                    player.gun.hurtbox_center
+                } else {
+                    player.base.collider.center
                 };
                 if self.players[player_index].active == ActiveAbility::Rock {
                     if let Some(force) = Self::black_hole_force(
@@ -12851,7 +12896,9 @@ impl RolloutWorld {
             while platform_index < self.platforms.len() {
                 let hole = self.black_holes[hole_index];
                 let platform_entity = self.platform_entities[platform_index];
-                if self.entities[platform_entity].flags & E_DESTROYED != 0 {
+                if self.entities[platform_entity].flags & E_DESTROYED != 0
+                    || !self.platforms[platform_index].active
+                {
                     platform_index += 1;
                     continue;
                 }
@@ -14722,8 +14769,15 @@ impl RolloutWorld {
         // DetPhysics creates and initializes every BeamObject during
         // renderBeams. RlObservation then enumerates the completed graph and
         // emits its synthetic trace rows, so all collider ids precede trace
-        // ids when several beams begin in the same pass.
-        for i in 0..count {
+        // ids when several beams begin in the same pass. Water reflections
+        // sit past totalBeamsLastFrame, so they get no trace row.
+        let traced = self.beam_snapshot.total;
+        for slot in &mut self.beam_pool[traced..count] {
+            if let Some(trace) = slot.trace_entity.take() {
+                self.entities[trace].flags = E_REMOVED;
+            }
+        }
+        for i in 0..traced {
             let beam = self.beam_snapshot.bodies[i];
             let role = self.beam_snapshot.roles[i];
             let existing = &self.beam_pool[i];
@@ -17838,22 +17892,29 @@ impl RolloutWorld {
     /// Updater initializes a prefab registered during the preceding pass
     /// before any MonoUpdatable runs. Shockwave.Init captures targets and
     /// performs the curve's first time-zero impulse immediately.
-    fn gust_waves_init(&mut self, data: &data::RolloutData) {
-        for wave_index in 0..self.gust_waves.len() {
-            let current = &self.gust_waves[wave_index];
-            if !current.active || current.registered || current.born_tick >= self.tick {
+    fn shockwaves(&mut self, meteor: bool) -> &mut [Shockwave] {
+        if meteor {
+            &mut self.meteor_waves
+        } else {
+            &mut self.gust_waves
+        }
+    }
+
+    fn shockwaves_init(&mut self, meteor: bool, data: &data::RolloutData) {
+        for wave_index in 0..self.shockwaves(meteor).len() {
+            let mut wave = self.shockwaves(meteor)[wave_index];
+            if !wave.active || wave.registered || wave.born_tick >= self.tick {
                 continue;
             }
-            let mut wave = self.gust_waves[wave_index];
             wave.registered = true;
+            let config = wave.config(data);
             let query = Circle {
                 center: wave.position,
-                radius: data.gust.radius * wave.scale,
+                radius: config.radius * wave.scale,
             };
             // DetPhysics.CircleCastAll fills Shockwave's 50-entry buffer in
             // circle -> box -> rounded-rectangle registration order. Hits
             // that Shockwave later ignores still consume a slot.
-            const GUST_COLLISION_MASK: u32 = 79_761_152;
             let mut hit_entities = [usize::MAX; 50];
             let mut hit_count = 0;
             for kind in 0..=2 {
@@ -17864,7 +17925,7 @@ impl RolloutWorld {
                         if row.kind != kind
                             || row.id <= previous_id
                             || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
-                            || GUST_COLLISION_MASK & (1 << row.layer) == 0
+                            || config.mask & (1 << row.layer) == 0
                         {
                             continue;
                         }
@@ -17908,6 +17969,7 @@ impl RolloutWorld {
                     .is_some_and(|contact| contact.penetration > Fix::ZERO)
                     && dynamics.body.inverse_mass >= Fix::ZERO
                     && retained.contains(&self.platform_entities[platform_index])
+                    && Some(platform.id) != wave.ignored_platform
                 {
                     wave.platform_ids[wave.target_count] = platform.id;
                     wave.target_count += 1;
@@ -18061,13 +18123,13 @@ impl RolloutWorld {
                 let delta = rock.position - wave.position;
                 let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
                 let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
-                let force = scale_force * data.gust.default_force / distance;
+                let force = scale_force * config.default_force / distance;
                 rock.body.force += delta * force * Fix::from_int(9000);
             }
             // Player-layer colliders are processed during activation and are
             // deliberately excluded from the persistent target set.
             for player_index in 0..self.players.len() {
-                if player_index == wave_index / 3 || !self.playable(player_index) {
+                if player_index == wave.owner || !self.playable(player_index) {
                     continue;
                 }
                 if matches!(
@@ -18088,39 +18150,7 @@ impl RolloutWorld {
                 // ability updater. This covers every circle/box form without
                 // rebuilding its offset, aim basis or scale a second time.
                 let player = &self.players[player_index];
-                let entity = match player.active {
-                    ActiveAbility::None => player.body_entity,
-                    ActiveAbility::Dash => player.dash_entity,
-                    ActiveAbility::Bow => player.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => player.throw_entity,
-                    ActiveAbility::Mine => player.mine_entity,
-                    ActiveAbility::Rock => player.rock_entity,
-                    ActiveAbility::Roll => player.roll_entity,
-                    ActiveAbility::Meteor => player.meteor_entity,
-                    ActiveAbility::Push => player.push_entity,
-                    ActiveAbility::Freeze => player.freeze_entity,
-                    ActiveAbility::Blink => player.blink_entity,
-                    ActiveAbility::GrowthRay => player.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
-                    ActiveAbility::Duplicator => player.duplicator_entity,
-                    ActiveAbility::Magnet => player.magnet_entity,
-                    ActiveAbility::Spike => player.spike_entity,
-                    ActiveAbility::Engine => player.engine_entity,
-                    ActiveAbility::Tesla => player.tesla_entity,
-                    ActiveAbility::TimeStop => player.time_stop_entity,
-                    ActiveAbility::Gust => player.gust_entity,
-                    ActiveAbility::Revival => player.revival_entity,
-                    ActiveAbility::BlackHole => player.black_hole_entity,
-                    ActiveAbility::Throw => player.macho_throw_entity,
-                    ActiveAbility::Drill => player.drill_entity,
-                    ActiveAbility::Beam => player.beam_entity,
-                    ActiveAbility::Platform => player.circle_entity,
-                };
+                let entity = Self::blink_player_entity(player);
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
                     continue;
                 }
@@ -18162,7 +18192,7 @@ impl RolloutWorld {
                 let delta = target.base.position - wave.position;
                 let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
                 let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
-                let force = scale_force * data.gust.default_force / distance;
+                let force = scale_force * config.default_force / distance;
                 if target.active == ActiveAbility::Rock {
                     // Rock has BoplBody but neither PlayerPhysics nor
                     // PlayerBody, selecting Shockwave's 9000-force fallback.
@@ -18170,7 +18200,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let force = if target.base.grounded && target.active != ActiveAbility::Drill {
-                    data.gust.grounded_multiplier * delta * force
+                    config.grounded_multiplier * delta * force
                 } else {
                     delta * force
                 };
@@ -18189,43 +18219,46 @@ impl RolloutWorld {
                 let delta = clone.base.position - wave.position;
                 let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
                 let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
-                let force = scale_force * data.gust.default_force / distance;
+                let force = scale_force * config.default_force / distance;
                 let force = if clone.base.grounded {
-                    data.gust.grounded_multiplier * delta * force
+                    config.grounded_multiplier * delta * force
                 } else {
                     delta * force
                 };
                 clone.base.external_velocity += force * Fix::from_int(35);
             }
-            self.gust_waves[wave_index] = wave;
-            self.gust_wave_apply(wave_index, Fix::ZERO, false, data);
+            self.shockwaves(meteor)[wave_index] = wave;
+            self.shockwave_apply(meteor, wave_index, Fix::ZERO, false, data);
         }
     }
 
-    fn gust_waves_update(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        for wave_index in 0..self.gust_waves.len() {
-            if self.gust_waves[wave_index].active && self.gust_waves[wave_index].registered {
+    fn shockwaves_update(&mut self, meteor: bool, data: &data::RolloutData, updater_dt: Fix) {
+        for wave_index in 0..self.shockwaves(meteor).len() {
+            let wave = self.shockwaves(meteor)[wave_index];
+            if wave.active && wave.registered {
                 // Shockwave uses Updater's raw simDeltaTime for its curve
                 // clock; it never opts into GameTime.FixedDeltaTime.
-                self.gust_wave_apply(wave_index, updater_dt, true, data);
+                self.shockwave_apply(meteor, wave_index, updater_dt, true, data);
             }
         }
     }
 
-    fn gust_wave_apply(
+    fn shockwave_apply(
         &mut self,
+        meteor: bool,
         wave_index: usize,
         dt: Fix,
         defer_mjolnir: bool,
         data: &data::RolloutData,
     ) {
-        let mut wave = self.gust_waves[wave_index];
-        let strength = data.gust.curve.evaluate(wave.time);
+        let mut wave = self.shockwaves(meteor)[wave_index];
+        let config = wave.config(data);
+        let strength = config.curve.evaluate(wave.time);
         wave.time += dt;
-        let duration = data.gust.curve.keys.last().expect("Gust force curve").time;
+        let duration = config.curve.keys.last().expect("Shockwave force curve").time;
         if wave.time > duration {
             wave.active = false;
-            self.gust_waves[wave_index] = wave;
+            self.shockwaves(meteor)[wave_index] = wave;
             return;
         }
         let mut applied = false;
@@ -18249,9 +18282,9 @@ impl RolloutWorld {
                 .iter()
                 .any(|boulder| boulder.active && boulder.platform_index == platform_index);
             let force = if boulder {
-                data.gust.default_force / distance
+                config.default_force / distance
             } else {
-                data.gust.platform_force / distance
+                config.platform_force / distance
             } * wave.scale;
             let impulse = direction.normalized_safe() * force * strength * Fix::from_int(60);
             let arm = (point - platform.surface.center).normalized_safe();
@@ -18272,7 +18305,7 @@ impl RolloutWorld {
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
                 // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
-                * ((data.gust.default_force / distance) * wave.scale)
+                * ((config.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
             if defer_mjolnir && item.ability == ABILITY_MJOLNIR {
@@ -18304,7 +18337,7 @@ impl RolloutWorld {
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
                 // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
-                * ((data.gust.default_force / distance) * wave.scale)
+                * ((config.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
             arrow.velocity += impulse * arrow.inverse_mass;
@@ -18321,7 +18354,7 @@ impl RolloutWorld {
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
                 // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
-                * ((data.gust.default_force / distance) * wave.scale)
+                * ((config.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
             missile.body.apply_impulse(impulse, Vec2::ZERO);
@@ -18338,7 +18371,7 @@ impl RolloutWorld {
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
                 // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
-                * ((data.gust.default_force / distance) * wave.scale)
+                * ((config.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
             shot.body.apply_impulse(impulse, Vec2::ZERO);
@@ -18355,7 +18388,7 @@ impl RolloutWorld {
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
                 // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
-                * ((data.gust.default_force / distance) * wave.scale)
+                * ((config.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
             cloud.body.apply_impulse(impulse, Vec2::ZERO);
@@ -18372,171 +18405,13 @@ impl RolloutWorld {
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let force = direction.normalized_safe()
                 // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
-                * ((data.gust.default_force / distance) * wave.scale)
+                * ((config.default_force / distance) * wave.scale)
                 * strength;
             // BlackHole.AddForce divides by signed mass and deliberately does
             // not apply ForceMode2D's sixty-fold impulse conversion.
             hole.velocity += force / hole.mass;
         }
-        self.gust_waves[wave_index] = wave;
-        if applied {
-            self.platforms_changed();
-        }
-    }
-
-    fn meteor_waves_init(&mut self, data: &data::RolloutData) {
-        for wave_index in 0..self.meteor_waves.len() {
-            let mut wave = self.meteor_waves[wave_index];
-            if !wave.active || wave.registered || wave.born_tick >= self.tick {
-                continue;
-            }
-            wave.registered = true;
-            let query = Circle {
-                center: wave.position,
-                radius: data.meteor.shockwave.radius,
-            };
-            for (platform, dynamics) in self.platforms.iter().zip(&self.platform_dynamics) {
-                if platform.id == wave.ignored_platform
-                    || wave.platform_count == wave.platforms.len()
-                {
-                    continue;
-                }
-                if crate::physics::contact::circle_rounded(query, platform.collider).is_some()
-                    && dynamics.body.inverse_mass >= Fix::ZERO
-                {
-                    wave.platforms[wave.platform_count] = platform.id;
-                    wave.platform_count += 1;
-                }
-            }
-            // ActivateShockWave applies its player branch once. The landing
-            // platform keeps the caster grounded, and this prefab's grounded
-            // multiplier is zero, so the owner receives no launch impulse.
-            for player_index in 0..self.players.len() {
-                if !self.playable(player_index) || player_index == wave.owner {
-                    continue;
-                }
-                if matches!(
-                    self.players[player_index].active,
-                    ActiveAbility::Dash
-                        | ActiveAbility::Gust
-                        | ActiveAbility::Meteor
-                        | ActiveAbility::Platform
-                        | ActiveAbility::Push
-                        | ActiveAbility::Revival
-                ) {
-                    // These prefabs serialize Ability.isPushable=false.
-                    continue;
-                }
-
-                let player = &self.players[player_index];
-                let entity = Self::blink_player_entity(player);
-                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
-                    continue;
-                }
-                let row = self.entities[entity];
-                let overlaps = if row.kind == 0 {
-                    crate::physics::contact::circle_circle(
-                        query,
-                        Circle {
-                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                            radius: Fix::from_raw(row.radius),
-                        },
-                    )
-                    .is_some()
-                } else {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    crate::physics::contact::circle_box(
-                        query,
-                        OrientedBox {
-                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                            right,
-                            up,
-                            inverse_extents: Vec2::new(
-                                Fix::ONE / right.length(),
-                                Fix::ONE / up.length(),
-                            ),
-                        },
-                    )
-                    .is_some()
-                };
-                if !overlaps {
-                    continue;
-                }
-
-                let player = &mut self.players[player_index];
-                let delta = player.base.position - wave.position;
-                let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-                let magnitude = wave.force_scale * data.meteor.shockwave.default_force / distance;
-                if player.active == ActiveAbility::Rock {
-                    // Rock has BoplBody but no PlayerPhysics or PlayerBody.
-                    player.rock.body.force += delta * magnitude * Fix::from_int(9000);
-                } else if player.active == ActiveAbility::Drill {
-                    // Drill exposes PlayerBody.AddForce, whose authored force
-                    // conversion multiplies the external velocity by 35.
-                    player.base.external_velocity += delta * magnitude * Fix::from_int(35);
-                } else if !player.base.grounded {
-                    // PlayerPhysics.AddForce scales by inverseMass01, 35 on
-                    // the Player prefab.
-                    player.base.external_velocity += delta * magnitude * Fix::from_int(35);
-                }
-            }
-            self.meteor_waves[wave_index] = wave;
-            self.meteor_wave_apply(wave_index, Fix::ZERO, data);
-        }
-    }
-
-    fn meteor_waves_update(&mut self, data: &data::RolloutData) {
-        for wave_index in 0..self.meteor_waves.len() {
-            if self.meteor_waves[wave_index].active && self.meteor_waves[wave_index].registered {
-                self.meteor_wave_apply(wave_index, DT, data);
-            }
-        }
-    }
-
-    fn meteor_wave_apply(&mut self, wave_index: usize, dt: Fix, data: &data::RolloutData) {
-        let mut wave = self.meteor_waves[wave_index];
-        let strength = data.meteor.shockwave_curve.evaluate(wave.time);
-        wave.time += dt;
-        let duration = data
-            .meteor
-            .shockwave_curve
-            .keys
-            .last()
-            .expect("Meteor shockwave curve")
-            .time;
-        if wave.time > duration {
-            wave.active = false;
-            self.meteor_waves[wave_index] = wave;
-            return;
-        }
-        let mut applied = false;
-        for target in 0..wave.platform_count {
-            let Some(platform_index) = self
-                .platforms
-                .iter()
-                .position(|platform| platform.id == wave.platforms[target])
-            else {
-                continue;
-            };
-            let platform = &self.platforms[platform_index];
-            let Ok(point) = platform.surface.closest_point(wave.position) else {
-                continue;
-            };
-            let direction = -platform.surface.normal(point);
-            let distance = ((wave.position - point).length_squared() / Fix::from_int(10))
-                .max(Fix::from_f64(1.5));
-            let impulse = direction.normalized_safe()
-                * (data.meteor.shockwave.platform_force * wave.force_scale / distance)
-                * strength
-                * Fix::from_int(60);
-            let arm = (point - platform.surface.center).normalized_safe();
-            self.platform_dynamics[platform_index]
-                .body
-                .apply_impulse(impulse, arm);
-            applied = true;
-        }
-        self.meteor_waves[wave_index] = wave;
+        self.shockwaves(meteor)[wave_index] = wave;
         if applied {
             self.platforms_changed();
         }
@@ -19996,8 +19871,10 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
             slot.gun.fire_ticks = data.freeze.fire_ticks;
-            slot.base.up = aim.perp();
-            slot.base.rotation = aim.normalized_angle();
+            // GunTransform.Fire assigns up from inputVector before normalizing
+            // it again for the shot and knockback.
+            slot.base.up = slot.gun.aim.perp();
+            slot.base.rotation = slot.gun.aim.normalized_angle();
         }
         let firepoint = {
             let slot = &self.players[index];
@@ -20145,8 +20022,10 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
             slot.gun.fire_ticks = data.blink.fire_ticks;
-            slot.base.up = aim.perp();
-            slot.base.rotation = aim.normalized_angle();
+            // GunTransform.Fire assigns up from inputVector before normalizing
+            // it again for the shot and knockback.
+            slot.base.up = slot.gun.aim.perp();
+            slot.base.rotation = slot.gun.aim.normalized_angle();
         }
         let firepoint = {
             let slot = &self.players[index];
@@ -20297,8 +20176,10 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
             slot.gun.fire_ticks = ray.fire_ticks;
-            slot.base.up = aim.perp();
-            slot.base.rotation = aim.normalized_angle();
+            // GunTransform.Fire assigns up from inputVector before normalizing
+            // it again for the shot and knockback.
+            slot.base.up = slot.gun.aim.perp();
+            slot.base.rotation = slot.gun.aim.normalized_angle();
         }
         let firepoint = {
             let slot = &self.players[index];
@@ -22004,8 +21885,10 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
             slot.gun.fire_ticks = gun.fire_ticks;
-            slot.base.up = aim.perp();
-            slot.base.rotation = aim.normalized_angle();
+            // GunTransform.Fire assigns up from inputVector before normalizing
+            // it again for the shot and knockback.
+            slot.base.up = slot.gun.aim.perp();
+            slot.base.rotation = slot.gun.aim.normalized_angle();
         }
         let firepoint = {
             let slot = &self.players[index];
@@ -28126,7 +28009,7 @@ impl RolloutWorld {
                     continue;
                 }
                 if let Some(contact) =
-                    crate::physics::contact::circle_rounded(circle, platform.collider)
+                    crate::physics::contact::circle_rounded(circle, self.circle_collider(p))
                 {
                     contacts.push((p, contact));
                 }
@@ -29208,7 +29091,7 @@ impl RolloutWorld {
                     }
                 }
                 if let Some(contact) =
-                    crate::physics::contact::circle_rounded(circle, platform.collider)
+                    crate::physics::contact::circle_rounded(circle, self.circle_collider(platform_index))
                 {
                     all_contacts.push((item_index, platform_index, contact));
                 }
@@ -31003,9 +30886,11 @@ impl RolloutWorld {
                 if !platform.active {
                     continue;
                 }
-                if let Some(contact) =
-                    crate::physics::contact::circle_rounded(circle, platform.collider)
-                {
+                let collider = scratch.circle_colliders.get(wall_index).copied();
+                if let Some(contact) = crate::physics::contact::circle_rounded(
+                    circle,
+                    collider.unwrap_or(platform.collider),
+                ) {
                     scratch
                         .rock_wall_contacts
                         .push((rock_index, wall_index, contact));
@@ -31855,6 +31740,15 @@ impl RolloutWorld {
         // boundary component: it remains a collidable body after that death.
     }
 
+    /// A wall as the Circle/RoundedRect narrow phase saw it this pass.
+    fn circle_collider(&self, platform_index: usize) -> RoundedRect {
+        self.scratch
+            .circle_colliders
+            .get(platform_index)
+            .copied()
+            .unwrap_or(self.platforms[platform_index].collider)
+    }
+
     fn playable_slot(&self, slot: &PlayerSlot) -> bool {
         slot.base.alive && slot.respawn_ticks == 0
     }
@@ -31924,8 +31818,8 @@ impl RolloutWorld {
             self.attach_player_rope(index, None, top);
         }
         // Player.Kill itself is a no-op after WinGame, but
-        // PlayerCollision.killPlayer still drops abilities and destroys the
-        // slime and its ability objects around that call.
+        // PlayerCollision.killPlayer still destroys the slime and its ability
+        // objects around that call (DropAbilities returns once the game ended).
         let already_won = self.players[index].won;
         // Poke Ball sets PlayerCollision's mask 16 while a victim is inside.
         // Scene-boundary deaths explicitly pass ignoreInvulnerability=true;
@@ -32166,12 +32060,15 @@ impl RolloutWorld {
             // it reads the final ability icon, then initializes the same live
             // DynamicAbilityPickup used by the map spawner. With three or
             // more players the match continues and all later flight, reroll
-            // and collection phases remain observable.
-            let dropped_ability = slot.abilities[2];
-            let horizontal = self.rng.fix_range(Fix::from_f32(-0.3), Fix::from_f32(0.3));
-            let direction = (Vec2::UP + Vec2::new(horizontal, Fix::ZERO)).normalized_safe();
-            if !rope_drop_icon_overridden {
-                self.spawn_ability_pickup(drop_position, dropped_ability, direction, data::get());
+            // and collection phases remain observable. Once the match has
+            // ended it returns before drawing anything.
+            if self.game_in_progress {
+                let dropped_ability = slot.abilities[2];
+                let horizontal = self.rng.fix_range(Fix::from_f32(-0.3), Fix::from_f32(0.3));
+                let direction = (Vec2::UP + Vec2::new(horizontal, Fix::ZERO)).normalized_safe();
+                if !rope_drop_icon_overridden {
+                    self.spawn_ability_pickup(drop_position, dropped_ability, direction, data::get());
+                }
             }
         }
     }
@@ -33233,7 +33130,7 @@ impl RolloutWorld {
             let dash_exit_rotation = slot.base.dash.exit_rotation;
             let data = data::get();
 
-            if slot.out || slot.revival_clone_pending || slot.stock_clone_pending {
+            if slot.slime_destroyed() || slot.revival_clone_pending || slot.stock_clone_pending {
                 continue; // rows were settled by `kill`
             }
             // A Blink tunnel swallows whatever object the ray hit. For a
@@ -34324,7 +34221,7 @@ impl RolloutWorld {
     fn refresh_simple_actor_entities(&mut self) {
         let data = data::get();
         for slot in &self.players {
-            if slot.out || slot.revival_clone_pending || slot.stock_clone_pending {
+            if slot.slime_destroyed() || slot.revival_clone_pending || slot.stock_clone_pending {
                 continue;
             }
 
@@ -36701,12 +36598,12 @@ mod tests {
         world.reset(&config).unwrap();
         world.tick = 1;
         let origin = Vec2::new(Fix::ZERO, Fix::from_int(20));
-        world.gust_waves[0] = GustWave {
+        world.gust_waves[0] = Shockwave {
             active: true,
             born_tick: 0,
             position: origin,
             scale: Fix::ONE,
-            ..GustWave::default()
+            ..Shockwave::default()
         };
         world.players[1].active = ActiveAbility::Drill;
         world.players[1].base.grounded = true;
@@ -36717,7 +36614,7 @@ mod tests {
         world.entities[entity].x = world.players[1].base.position.x.raw();
         world.entities[entity].y = world.players[1].base.position.y.raw();
 
-        world.gust_waves_init(data::get());
+        world.shockwaves_init(false, data::get());
 
         assert_ne!(world.players[1].base.external_velocity, Vec2::ZERO);
     }
@@ -36815,14 +36712,14 @@ mod tests {
             scale: Fix::ONE,
             ..SmokeCloud::default()
         });
-        world.gust_waves[0] = GustWave {
+        world.gust_waves[0] = Shockwave {
             active: true,
             born_tick: world.tick.saturating_sub(1),
             position: center,
-            ..GustWave::default()
+            ..Shockwave::default()
         };
 
-        world.gust_waves_init(data::get());
+        world.shockwaves_init(false, data::get());
 
         assert_eq!(world.gust_waves[0].smoke_count, 1);
         assert!(world.smoke_clouds[0].body.velocity.x > Fix::ZERO);
@@ -36853,14 +36750,14 @@ mod tests {
             scale: Fix::ONE,
             ..DuplicatedRock::default()
         });
-        world.gust_waves[0] = GustWave {
+        world.gust_waves[0] = Shockwave {
             active: true,
             born_tick: world.tick.saturating_sub(1),
             position: center,
-            ..GustWave::default()
+            ..Shockwave::default()
         };
 
-        world.gust_waves_init(data::get());
+        world.shockwaves_init(false, data::get());
 
         assert!(world.duplicated_rocks[0].body.force.x > Fix::ZERO);
     }
@@ -36883,14 +36780,14 @@ mod tests {
                 ..CEntity::default()
             });
         }
-        world.gust_waves[0] = GustWave {
+        world.gust_waves[0] = Shockwave {
             active: true,
             born_tick: world.tick.saturating_sub(1),
             position: center,
-            ..GustWave::default()
+            ..Shockwave::default()
         };
 
-        world.gust_waves_init(data::get());
+        world.shockwaves_init(false, data::get());
 
         assert_eq!(world.gust_waves[0].target_count, 0);
     }
@@ -36903,14 +36800,14 @@ mod tests {
         let platform = world.spawn_ability_platform(0, center, Fix::ONE);
         let entity = world.platform_entities[platform];
         world.entities[entity].x = (center.x + Fix::from_int(100)).raw();
-        world.gust_waves[0] = GustWave {
+        world.gust_waves[0] = Shockwave {
             active: true,
             born_tick: world.tick.saturating_sub(1),
             position: center,
-            ..GustWave::default()
+            ..Shockwave::default()
         };
 
-        world.gust_waves_init(data::get());
+        world.shockwaves_init(false, data::get());
 
         assert!(
             world.gust_waves[0].platform_ids[..world.gust_waves[0].target_count]
