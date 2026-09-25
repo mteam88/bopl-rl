@@ -14194,8 +14194,14 @@ impl RolloutWorld {
             && !self.players[index].beam.in_air
             && self.players[index].beam.phase == 0
             && self.players[index].beam.phase_ticks == data.beam.enter_first_frame_ticks + 1
+            && self.beam_zero_time_pass(
+                index,
+                action,
+                (undrifted, late_up, late_staff, late_facing),
+                data,
+            )
         {
-            self.beam_zero_time_pass(index, action, undrifted, data);
+            return;
         }
         // SpriteAnimator also runs the exit clip's callback, which packages
         // the slime's AbilityExitInfo and deactivates the form before its
@@ -14376,9 +14382,13 @@ impl RolloutWorld {
         &mut self,
         index: usize,
         action: Action,
-        body_position: Vec2,
+        late_pose: (Vec2, Vec2, Vec2, bool),
         data: &data::RolloutData,
-    ) {
+    ) -> bool {
+        // UpdateSim(0) holds the orb first like any other pass.
+        if let Some(orb) = self.players[index].beam.orb {
+            self.beam_orbs[orb].held_tick = Some(self.tick);
+        }
         let aim = action.direction();
         let right = self.players[index].base.up.perp_cw();
         let facing = if aim == Vec2::ZERO {
@@ -14388,19 +14398,16 @@ impl RolloutWorld {
         };
         self.players[index].facing_right = facing.dot(right) > Fix::ZERO;
         if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
-            return;
+            return false;
         }
         self.beam_aim(index, aim, true, data);
         self.beam_shake_ground(index, data);
         let button = (2u8) << self.players[index].active_slot;
         if self.players[index].beam.phase != 2 && action.buttons & button == 0 {
-            self.update_beam_orb_position(
-                index,
-                body_position,
-                self.players[index].base.up,
-                self.players[index].beam.staff_dir,
-                self.players[index].facing_right,
-            );
+            // The orb collider still holds last pass's late pose, as in the
+            // ordinary pass's stop.
+            let (position, up, staff, facing) = late_pose;
+            self.update_beam_orb_position(index, position, up, staff, facing);
             self.stop_beam(index);
         }
         let input = if self.players[index].beam.phase == 2 {
@@ -14409,7 +14416,7 @@ impl RolloutWorld {
             Vec2::ZERO
         };
         if self.beam_lost_ground(index) {
-            return;
+            return false;
         }
         let base = &mut self.players[index].base;
         if base.grounded
@@ -14429,6 +14436,16 @@ impl RolloutWorld {
                 base.align_to(normal);
             }
         }
+        // The exit case of Beam.UpdateSim still reads the jump press, so a
+        // cast released and jumped on this pass leaves from inside it.
+        if self.players[index].beam.phase == 2
+            && action.buttons & 1 != 0
+            && !self.players[index].base.previous_jump
+        {
+            self.exit_beam(index, true, data);
+            return true;
+        }
+        false
     }
 
     /// PlayerPhysics.Move on a destroyed ground: UnGround (with no
