@@ -14159,9 +14159,9 @@ impl RolloutWorld {
         }
         let state = self.players[index].beam;
         let position = if state.phase == 1 && state.phase_ticks == 0 && state.in_air {
-            // StartBeam switches the clip during UpdateSim. Beam's air-orb
-            // LateUpdate keeps the last enter pose until the next pass.
-            self.beam_orbs[orb].position
+            // StartBeam switches the clip during UpdateSim; the air orb keeps
+            // the last enter frame's pose.
+            body_position + staff_dir * Fix::from_f64(3.1) * self.players[index].player_scale
         } else if state.phase == 1 && state.phase_ticks == 0 {
             let facing = if facing_right {
                 Fix::ONE
