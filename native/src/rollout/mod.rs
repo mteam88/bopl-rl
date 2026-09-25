@@ -29788,7 +29788,12 @@ impl RolloutWorld {
                             Vec2::angle(player.base.rotation),
                             throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
                         ),
-                        _ => player.base.collider,
+                        // Any other form is hit through the shape its prefab
+                        // registered, such as Growth Ray's box.
+                        _ => {
+                            detonate |= self.player_hit_by_circle(player_index, circle);
+                            continue;
+                        }
                     };
                     crate::physics::contact::circle_box(circle, hurtbox).is_some()
                 };
