@@ -5824,6 +5824,9 @@ impl RolloutWorld {
         if has(ABILITY_METEOR) {
             self.meteor_smear_contacts();
         }
+        if has(ABILITY_BEAM) {
+            self.beam_orb_contacts(data);
+        }
         if has(ABILITY_SMOKE) {
             self.smoke_contacts(data);
         }
@@ -29902,6 +29905,85 @@ impl RolloutWorld {
                 }
             }
         }
+    }
+
+    /// The orb at Beam's staff tip is an Explosion circle (orbAnim.prefab,
+    /// canHurtOwner 0) whose hitbox StartBeam enables and StopOrbAnim
+    /// disables (Beam.cs:344, 395), so it kills any other player it touches.
+    fn beam_orb_contacts(&mut self, data: &data::RolloutData) {
+        for orb_index in 0..self.beam_orbs.len() {
+            let orb = self.beam_orbs[orb_index];
+            let Some(entity) = orb.entity else {
+                continue;
+            };
+            if !orb.active
+                || !orb.enabled
+                || !self.collides(entity)
+                || self.blink_object_hidden(orb.entity)
+            {
+                continue;
+            }
+            let row = self.entities[entity];
+            let hitbox = Circle {
+                center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                radius: Fix::from_raw(row.radius),
+            };
+            let mut victims = [false; MAX_PLAYERS];
+            for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
+                if player_index == orb.owner || !self.playable(player_index) {
+                    continue;
+                }
+                let player = &self.players[player_index];
+                *victim = if player.active == ActiveAbility::Platform
+                    && player.platform.phase == PLATFORM_ANTICIPATION
+                {
+                    let hurtbox = Circle {
+                        center: player.base.position,
+                        radius: data.platform.hurtbox_radius,
+                    };
+                    crate::physics::contact::circle_circle(hitbox, hurtbox).is_some()
+                } else if player.active == ActiveAbility::Rock {
+                    let body = Circle {
+                        center: player.base.position,
+                        radius: player.rock.collider_radius,
+                    };
+                    crate::physics::contact::circle_circle(hitbox, body).is_some()
+                } else if player.active == ActiveAbility::Platform {
+                    false
+                } else {
+                    self.player_hit_by_circle(player_index, hitbox)
+                };
+            }
+            let killer = orb.owner as u32 + 1;
+            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
+                if victim && self.playable(player_index) {
+                    self.kill(player_index, killer, CAUSE_OTHER, true, true);
+                }
+            }
+        }
+    }
+
+    /// `player_hit_by_box` for a circle hitbox.
+    fn player_hit_by_circle(&self, player_index: usize, hitbox: Circle) -> bool {
+        let player = &self.players[player_index];
+        if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
+            return crate::physics::contact::circle_box(hitbox, player.base.collider).is_some();
+        }
+        let entity = Self::blink_player_entity(player);
+        if !self.collides(entity) {
+            return false;
+        }
+        let row = self.entities[entity];
+        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+        if row.kind == 0 {
+            let circle = Circle { center, radius: Fix::from_raw(row.radius) };
+            return crate::physics::contact::circle_circle(hitbox, circle).is_some();
+        }
+        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+        let inverse_extents = Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length());
+        let shape = OrientedBox { center, right, up, inverse_extents };
+        crate::physics::contact::circle_box(hitbox, shape).is_some()
     }
 
     /// Whether a box hitbox overlaps the player's registered Player-layer
