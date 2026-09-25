@@ -18964,9 +18964,10 @@ impl RolloutWorld {
             magnet_holder: None,
             magnet_hold_ticks: -1,
         };
+        // A held payload has no collider until ManualInit, which appends a
+        // fresh row; the free slot's old row stays removed.
         if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
-            let entity = self.thrown_items[free].entity;
-            self.thrown_items[free] = ThrownItem { entity, ..item };
+            self.thrown_items[free] = item;
             free
         } else {
             self.thrown_items.push(item);
