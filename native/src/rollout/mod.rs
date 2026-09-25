@@ -5448,7 +5448,22 @@ impl RolloutWorld {
             // movement slice's copy must not go stale while an ability runs.
             self.players[index].base.previous_jump = self.players[index].input_jump_was_down;
             self.players[index].input_jump_was_down = jump_down;
+            let in_form = {
+                let slot = &self.players[index];
+                slot.active != ActiveAbility::None || slot.base.dash.active
+            };
             self.player_tick(index, action, movement_input, jump_pressed, data);
+            // SlimeController.onExitAbility ends by syncing the hurtbox
+            // (SlimeController.cs:251), so later updaters this pass (Black
+            // Hole's pull, another Magnet) find the slime where it came out.
+            let slot = &mut self.players[index];
+            if in_form
+                && slot.base.alive
+                && slot.active == ActiveAbility::None
+                && !slot.base.dash.active
+            {
+                slot.base.sync_collider();
+            }
             if self.players[index].active == ActiveAbility::Roll {
                 self.roll_contacts_for(index, data);
             }
