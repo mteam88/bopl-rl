@@ -20658,7 +20658,7 @@ impl RolloutWorld {
                 continue;
             }
             let target = &self.players[player_index];
-            let collider = if player_index == index {
+            let hit = if player_index == index {
                 // TryPullItems leaves Magnet's own Player-layer hurtbox
                 // enabled. The forward pull box can overlap it, routing the
                 // caster back through the generic PlayerBody branch. That box
@@ -20666,16 +20666,18 @@ impl RolloutWorld {
                 // entry pose on the entry pass.
                 let row = &self.entities[target.magnet_entity];
                 let extents = data::surface_extents(magnet.hurtbox_extents) * target.base.scale;
-                OrientedBox {
+                let collider = OrientedBox {
                     center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
                     right: Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y)),
                     up: Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)),
                     inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
-                }
+                };
+                crate::physics::contact::box_box(query, collider).is_some()
             } else {
-                target.base.collider
+                // A player in a form is found through that form's own shape.
+                self.player_hit_by_box(player_index, query)
             };
-            if crate::physics::contact::box_box(query, collider).is_none() {
+            if !hit {
                 continue;
             }
             // The shipped code accidentally measures closeness from the raw
