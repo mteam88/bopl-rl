@@ -2460,6 +2460,7 @@ struct PlatformScratch {
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
     engine_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
+    tesla_wall_contacts: Vec<(usize, usize, Contact)>,
     squished: Vec<usize>,
     item_order: Vec<usize>,
     item_window: Vec<usize>,
@@ -5795,6 +5796,9 @@ impl RolloutWorld {
         }
         if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
             self.ability_pickups_contacts(data);
+        }
+        if has(ABILITY_TESLA) {
+            self.tesla_wall_contacts(data);
         }
         if has(ABILITY_ROCK) {
             self.rocks_contacts(data);
@@ -31211,6 +31215,61 @@ impl RolloutWorld {
 
     /// Circle/RoundedRect and player callbacks for BounceBall. Contacts are
     /// captured before resolution, as DetPhysics does for each shape group.
+    /// A Tesla node's circle is a child of its platform's CompositeBody, so a
+    /// Circle/RoundedRect contact with another wall moves the whole composite.
+    fn tesla_wall_contacts(&mut self, data: &data::RolloutData) {
+        let mut scratch = std::mem::take(&mut self.scratch);
+        scratch.tesla_wall_contacts.clear();
+        for (node_index, node) in self.tesla_nodes.iter().enumerate() {
+            if !node.active || node.macho_carried || node.platform_index >= self.platforms.len() {
+                continue;
+            }
+            let circle = Circle {
+                center: node.collider_center,
+                radius: data.tesla.node_radius * node.collider_scale,
+            };
+            for (wall_index, platform) in self.platforms.iter().enumerate() {
+                if wall_index == node.platform_index || !platform.active {
+                    continue;
+                }
+                let collider = scratch.circle_colliders.get(wall_index).copied();
+                if let Some(contact) = crate::physics::contact::circle_rounded(
+                    circle,
+                    collider.unwrap_or(platform.collider),
+                ) {
+                    scratch
+                        .tesla_wall_contacts
+                        .push((node_index, wall_index, contact));
+                }
+            }
+        }
+        let mut changed_platform = false;
+        for &(node_index, wall_index, contact) in &scratch.tesla_wall_contacts {
+            let node = self.tesla_nodes[node_index];
+            let parent_index = node.platform_index;
+            let parent_position = self.platform_dynamics[parent_index].composite_position;
+            let (wall_position, wall_inverse_mass) = self.platform_contact_frame(wall_index);
+            let (node_body, wall_body) = if parent_index < wall_index {
+                let (left, right) = self.platform_dynamics.split_at_mut(wall_index);
+                (&mut left[parent_index].body, &mut right[0].body)
+            } else {
+                let (left, right) = self.platform_dynamics.split_at_mut(parent_index);
+                (&mut right[0].body, &mut left[wall_index].body)
+            };
+            resolve(contact, node_body, wall_body, parent_position, wall_position);
+            let correction =
+                positional_correction(contact, node.body.inverse_mass, wall_inverse_mass, false);
+            self.platform_dynamics[parent_index].composite_position += correction[0];
+            self.tesla_nodes[node_index].collider_center += correction[0];
+            self.shift_platform_collider(wall_index, correction[1]);
+            changed_platform = true;
+        }
+        self.scratch = scratch;
+        if changed_platform {
+            self.platforms_changed();
+        }
+    }
+
     fn rocks_contacts(&mut self, data: &data::RolloutData) {
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.rock_wall_contacts.clear();
