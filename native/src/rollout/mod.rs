@@ -8088,6 +8088,23 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
+                        // OnEnterAbility's hurtbox.UpdatePhysicsPositions runs
+                        // on the synced pose, before `body.rotation = Fix.Zero`;
+                        // that box is what later updaters see this pass.
+                        if slot.magnet_entity != usize::MAX {
+                            let right = if grounded { slot.base.up.perp_cw() } else { Vec2::RIGHT };
+                            let scale = slot.base.scale;
+                            let center = slot.base.position
+                                + right.complex_mul(data.magnet.collider_offset * scale);
+                            let extents = data::surface_extents(data.magnet.hurtbox_extents) * scale;
+                            let row = &mut self.entities[slot.magnet_entity];
+                            row.x = center.x.raw();
+                            row.y = center.y.raw();
+                            row.right_x = (right.x * extents.x).raw();
+                            row.right_y = (right.y * extents.x).raw();
+                            row.up_x = (right.perp().x * extents.y).raw();
+                            row.up_y = (right.perp().y * extents.y).raw();
+                        }
                         self.magnet_tick(index, action, movement_input, data, false);
                         return;
                     }
@@ -12304,7 +12321,11 @@ impl RolloutWorld {
                 // PlayerPhysics updates its live collider centre before the
                 // later BlackHole updater. The observation row is the prior
                 // DetPhysics publication and can lag that body by one pass.
-                let body_position = if row.kind == 1 {
+                // Magnet's PlayerPhysics never moves its hurtbox, so the
+                // box stays where DetPhysics last synced it.
+                let body_position = if row.kind == 1
+                    && self.players[player_index].active != ActiveAbility::Magnet
+                {
                     self.players[player_index].base.collider.center
                 } else {
                     Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y))
@@ -20269,16 +20290,15 @@ impl RolloutWorld {
             let collider = if player_index == index {
                 // TryPullItems leaves Magnet's own Player-layer hurtbox
                 // enabled. The forward pull box can overlap it, routing the
-                // caster back through the generic PlayerBody branch. Use the
-                // live FixTransform basis from before this MagnetGun pass;
-                // DetPhysics has not synchronized the new aim yet.
-                let right = target.magnet.body_right;
+                // caster back through the generic PlayerBody branch. That box
+                // is where DetPhysics last put it: the published row, or the
+                // entry pose on the entry pass.
+                let row = &self.entities[target.magnet_entity];
                 let extents = data::surface_extents(magnet.hurtbox_extents) * target.base.scale;
                 OrientedBox {
-                    center: target.base.position
-                        + right.complex_mul(magnet.collider_offset * target.base.scale),
-                    right: right * extents.x,
-                    up: right.perp() * extents.y,
+                    center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                    right: Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y)),
+                    up: Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)),
                     inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
                 }
             } else {
