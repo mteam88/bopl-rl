@@ -14943,9 +14943,16 @@ impl RolloutWorld {
             if self.entities[entity].flags & E_ACTIVE == 0 {
                 continue;
             }
-            let Some(hitbox) = slot.contact_collider else {
+            // DetPhysics sweeps the bounding boxes before UpdateBeams, then
+            // SetDimensions moves the collider, so the narrow phase tests this
+            // pass's box on the pairs the previous box found.
+            let Some(swept) = slot.contact_collider else {
                 continue;
             };
+            let Some(hitbox) = slot.hitbox.collider else {
+                continue;
+            };
+            let swept = swept.bounds(Fix::ZERO);
             for victim in 0..self.players.len() {
                 if victims[victim] || !self.playable(victim) {
                     continue;
@@ -15002,6 +15009,21 @@ impl RolloutWorld {
                 }
                 let row = self.entities[target];
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let extent = if row.kind == 0 {
+                    Vec2::new(Fix::from_raw(row.radius), Fix::from_raw(row.radius))
+                } else {
+                    Vec2::new(
+                        Fix::from_raw(row.right_x).abs() + Fix::from_raw(row.up_x).abs(),
+                        Fix::from_raw(row.right_y).abs() + Fix::from_raw(row.up_y).abs(),
+                    )
+                };
+                if swept.max.x <= center.x - extent.x
+                    || swept.min.x >= center.x + extent.x
+                    || swept.max.y <= center.y - extent.y
+                    || swept.min.y >= center.y + extent.y
+                {
+                    continue;
+                }
                 let overlap = if row.kind == 0 {
                     crate::physics::contact::circle_box(
                         Circle {
@@ -15036,7 +15058,7 @@ impl RolloutWorld {
         }
         for victim in 0..self.players.len() {
             if victims[victim] && self.playable(victim) {
-                self.kill(victim, killers[victim], CAUSE_OTHER, true, true);
+                self.kill(victim, killers[victim], CAUSE_BEAMED, true, true);
             }
         }
     }
