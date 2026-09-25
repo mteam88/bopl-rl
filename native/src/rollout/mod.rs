@@ -5899,10 +5899,13 @@ impl RolloutWorld {
         // synced above until the next Simulate.
         for index in 0..self.players.len() {
             let slot = &self.players[index];
+            // A Blink tunnel deactivates its victim, so its LateUpdateSim
+            // does not follow the ground (QuantumTunnel.cs:136).
             if !slot.base.alive
                 || !slot.base.grounded
                 || slot.ground_destroyed
                 || slot.rewind.rewinding
+                || slot.blink_tunnel_active
             {
                 continue;
             }
