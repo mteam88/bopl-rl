@@ -563,7 +563,7 @@ impl Player {
         self.align_to(platform.surface.normal(self.position));
     }
     /// `align` with the surface normal already evaluated.
-    fn align_to(&mut self, up: Vec2) {
+    pub(crate) fn align_to(&mut self, up: Vec2) {
         self.up = up;
         match self.aligned {
             Some((cached_up, rotation)) if cached_up == up => self.rotation = rotation,

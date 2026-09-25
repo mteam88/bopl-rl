@@ -14390,8 +14390,8 @@ impl RolloutWorld {
         if base.grounded
             && let Some(platform) = self.platforms.iter().find(|p| Some(p.id) == base.ground)
         {
-            // PlayerPhysics.Move with dt 0: only the no-input friction branch
-            // changes anything.
+            // PlayerPhysics.Move with dt 0: the no-input friction branch, and
+            // alignRotation to wherever the platform has turned since.
             let normal = platform.surface.normal(base.position);
             if base.ground_input_sign(input, normal) == Fix::ZERO {
                 base.grounded_speed *= if platform.ice {
@@ -14399,6 +14399,9 @@ impl RolloutWorld {
                 } else {
                     base.constants.friction
                 };
+            }
+            if platform.active {
+                base.align_to(normal);
             }
         }
     }
@@ -37303,3 +37306,4 @@ mod tests {
         assert_eq!(world.players[0].base.position, position);
     }
 }
+
