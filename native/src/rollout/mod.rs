@@ -26406,6 +26406,22 @@ impl RolloutWorld {
     /// Mine.ScanForPlayers uses DetPhysics' fixed four-entry CircleCastAll
     /// buffer. Hits are written in collider-registry order (circles, boxes,
     /// rounded rectangles) before Mine filters owners, teams or invisibility.
+    /// DetPhysics.RemoveDestroyedColliders, which every cast query runs
+    /// first: a collider a collision callback destroyed this pass is gone
+    /// before the pass is observed instead of showing once as destroyed.
+    fn purge_destroyed_colliders(&mut self) {
+        for platform_index in (0..self.platforms.len()).rev() {
+            if self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED != 0 {
+                self.remove_platform(platform_index);
+            }
+        }
+        for row in &mut self.entities {
+            if row.flags & E_DESTROYED != 0 {
+                row.flags = E_REMOVED;
+            }
+        }
+    }
+
     fn mine_scan_target(&self, item_index: usize, data: &data::RolloutData) -> Option<Vec2> {
         const MAX_CANDIDATES: usize = MAX_PLAYERS * 17;
         let mine = self.thrown_items[item_index];
@@ -26534,6 +26550,7 @@ impl RolloutWorld {
                 continue;
             }
             let scan_target = if matches!(phase, 1 | 2) && !being_held {
+                self.purge_destroyed_colliders();
                 self.mine_scan_target(item_index, data)
             } else {
                 None
@@ -27721,6 +27738,13 @@ impl RolloutWorld {
                     let live = &mut self.thrown_items[item_index];
                     live.position = item_center;
                     live.body = item_body;
+                    // Mine.OnCollide sees the same contact after the Arrow
+                    // callback destroyed the arrow: an arrow is an igniter.
+                    if live.ability == ABILITY_MINE && matches!(live.phase, 1 | 2) {
+                        live.time_since_anticipation =
+                            data.mine.anticipation_duration * Fix::from_f64(0.8);
+                        live.phase = 3;
+                    }
                     if let Some(entity) = live.entity {
                         let row = &mut self.entities[entity];
                         row.x = item_center.x.raw();
