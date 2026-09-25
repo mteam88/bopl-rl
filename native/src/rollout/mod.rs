@@ -7922,12 +7922,17 @@ impl RolloutWorld {
                         let grounded = self.players[index].base.grounded;
                         let aim = {
                             let slot = &self.players[index];
-                            let forward = if grounded {
-                                slot.base.up.perp_cw()
-                            } else {
+                            // SlimeController signs an airborne forwardsVector
+                            // by facing and then flips it again for a left-facing
+                            // slime, so an airborne form starts aimed right.
+                            let forward = slot.base.up.perp_cw();
+                            if !grounded {
                                 Vec2::RIGHT
-                            };
-                            if slot.facing_right { forward } else { -forward }
+                            } else if slot.facing_right {
+                                forward
+                            } else {
+                                -forward
+                            }
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
@@ -7963,12 +7968,17 @@ impl RolloutWorld {
                         let grounded = self.players[index].base.grounded;
                         let aim = {
                             let slot = &self.players[index];
-                            let forward = if grounded {
-                                slot.base.up.perp_cw()
-                            } else {
+                            // SlimeController signs an airborne forwardsVector
+                            // by facing and then flips it again for a left-facing
+                            // slime, so an airborne form starts aimed right.
+                            let forward = slot.base.up.perp_cw();
+                            if !grounded {
                                 Vec2::RIGHT
-                            };
-                            if slot.facing_right { forward } else { -forward }
+                            } else if slot.facing_right {
+                                forward
+                            } else {
+                                -forward
+                            }
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
@@ -8004,12 +8014,17 @@ impl RolloutWorld {
                         let grounded = self.players[index].base.grounded;
                         let aim = {
                             let slot = &self.players[index];
-                            let forward = if grounded {
-                                slot.base.up.perp_cw()
-                            } else {
+                            // SlimeController signs an airborne forwardsVector
+                            // by facing and then flips it again for a left-facing
+                            // slime, so an airborne form starts aimed right.
+                            let forward = slot.base.up.perp_cw();
+                            if !grounded {
                                 Vec2::RIGHT
-                            };
-                            if slot.facing_right { forward } else { -forward }
+                            } else if slot.facing_right {
+                                forward
+                            } else {
+                                -forward
+                            }
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
@@ -8047,12 +8062,17 @@ impl RolloutWorld {
                         let grounded = self.players[index].base.grounded;
                         let aim = {
                             let slot = &self.players[index];
-                            let forward = if grounded {
-                                slot.base.up.perp_cw()
-                            } else {
+                            // SlimeController signs an airborne forwardsVector
+                            // by facing and then flips it again for a left-facing
+                            // slime, so an airborne form starts aimed right.
+                            let forward = slot.base.up.perp_cw();
+                            if !grounded {
                                 Vec2::RIGHT
-                            };
-                            if slot.facing_right { forward } else { -forward }
+                            } else if slot.facing_right {
+                                forward
+                            } else {
+                                -forward
+                            }
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
@@ -8093,12 +8113,17 @@ impl RolloutWorld {
                         let grounded = self.players[index].base.grounded;
                         let aim = {
                             let slot = &self.players[index];
-                            let forward = if grounded {
-                                slot.base.up.perp_cw()
-                            } else {
+                            // SlimeController signs an airborne forwardsVector
+                            // by facing and then flips it again for a left-facing
+                            // slime, so an airborne form starts aimed right.
+                            let forward = slot.base.up.perp_cw();
+                            if !grounded {
                                 Vec2::RIGHT
-                            };
-                            if slot.facing_right { forward } else { -forward }
+                            } else if slot.facing_right {
+                                forward
+                            } else {
+                                -forward
+                            }
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
