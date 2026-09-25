@@ -233,8 +233,8 @@ typedef struct {
         if (gap_ > out->max_gap) { out->max_gap = gap_; out->max_gap_tick = tick; } \
         if (gap_ > tolerance && !ignored(field)) {                            \
             if (report_all)                                                   \
-                printf("      all      tick %5u %-34s %.9g vs %.9g   (%s)\n",\
-                       tick, field, units((int64_t)(l)), units((int64_t)(r)), context); \
+                printf("      all      tick %5u %-34s %.9g vs %.9g   (%s; raw gap %" PRId64 ")\n",\
+                       tick, field, units((int64_t)(l)), units((int64_t)(r)), context, gap_); \
             record(&out->numeric, tick, field, context, (int64_t)(l), (int64_t)(r), 1); \
             diverged = 1;                                                     \
         }                                                                     \
@@ -423,12 +423,24 @@ static void dump_tables(const BoplRlState *a, const BoplRlState *b, unsigned tic
         else printf(" %70s", "-");
         printf("\n");
     }
+    /* Raw Q32.32 motion of rows whose motion differs, for hand-checking the
+     * arithmetic of a last-bit divergence. */
+    for (uint32_t i = 0; i < count && i < a->header.entity_count && i < b->header.entity_count; i++) {
+        const BoplRlEntity *ea = &a->entities[i], *eb = &b->entities[i];
+        if (ea->x == eb->x && ea->y == eb->y && ea->vx == eb->vx && ea->vy == eb->vy) continue;
+        printf("raw %2u | x %" PRId64 " y %" PRId64 " vx %" PRId64 " vy %" PRId64
+               " | x %" PRId64 " y %" PRId64 " vx %" PRId64 " vy %" PRId64 "\n", i,
+               ea->x, ea->y, ea->vx, ea->vy, eb->x, eb->y, eb->vx, eb->vy);
+    }
     for (uint32_t i = 0; i < a->header.slime_count && i < b->header.slime_count; i++) {
         const BoplRlSlime *sa = &a->slimes[i], *sb = &b->slimes[i];
         printf("slime %u | id %u owner %u flags %u state %u af %u/%u/%u | id %u owner %u flags %u state %u af %u/%u/%u\n",
                i, sa->id, sa->owner, sa->flags, sa->state, sa->ability_flags[0], sa->ability_flags[1],
                sa->ability_flags[2], sb->id, sb->owner, sb->flags, sb->state, sb->ability_flags[0],
                sb->ability_flags[1], sb->ability_flags[2]);
+        printf("slime %u | x %.8f y %.8f vx %.8f vy %.8f | x %.8f y %.8f vx %.8f vy %.8f\n", i,
+               units(sa->x), units(sa->y), units(sa->vx), units(sa->vy),
+               units(sb->x), units(sb->y), units(sb->vx), units(sb->vy));
     }
     fflush(stdout);
 }
@@ -698,9 +710,10 @@ int main(int argc, char **argv) {
         printf("DIFF  %-70s map %u seed %u loadout %s ticks %u\n", set.paths[i], result.map,
                result.seed, result.loadout, result.episode_ticks);
         if (result.compare.numeric.found)
-            printf("      numeric  tick %5u %-34s %.9g vs %.9g   (%s)\n", result.compare.numeric.tick,
+            printf("      numeric  tick %5u %-34s %.9g vs %.9g   (%s; raw gap %" PRId64 ")\n", result.compare.numeric.tick,
                    result.compare.numeric.field, units(result.compare.numeric.left),
-                   units(result.compare.numeric.right), result.compare.numeric.context);
+                   units(result.compare.numeric.right), result.compare.numeric.context,
+                   magnitude(result.compare.numeric.left, result.compare.numeric.right));
         if (result.compare.discrete.found)
             printf("      discrete tick %5u %-34s %" PRId64 " vs %" PRId64 "   (%s)\n",
                    result.compare.discrete.tick, result.compare.discrete.field,

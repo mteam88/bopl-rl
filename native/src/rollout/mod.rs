@@ -9791,7 +9791,6 @@ impl RolloutWorld {
     }
 
     fn exit_push(&mut self, index: usize, data: &data::RolloutData) {
-        let ground = self.players[index].base.ground;
         let slot = &mut self.players[index];
         // Ability.ExitAbility publishes the form collider's position through
         // Player.SetPosition before the slime is re-placed.
@@ -9802,28 +9801,43 @@ impl RolloutWorld {
         slot.base.up = Vec2::UP;
         slot.obs_state = STATE_IDLE;
         slot.state_ticks = 0;
-        slot.obs_state_held_this_tick = true;
-        if let Some(platform) =
-            ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
-        {
-            // PlayerPhysics.SyncPhysicsTo(exitInfo) places the slime from the
-            // form's LocalPlatformPos and re-derives its own local from there.
-            let position = platform.surface.position(slot.base.local, slot.base.radius);
-            slot.base.radius = data.player.radius;
-            if let Ok(local) = platform
-                .surface
-                .local_position(position, data.player.radius)
-            {
-                slot.base.local = local;
-            }
-            slot.base.position = position;
-            slot.base.align(platform);
-        } else {
-            slot.base.radius = data.player.radius;
+        if !self.sync_exit_to_ground(index, data) {
+            let slot = &mut self.players[index];
             slot.base.grounded = false;
             slot.base.ground = None;
             slot.exit_to_fall();
         }
+    }
+
+    /// PlayerPhysics.SyncPhysicsTo(AbilityExitInfo) for a grounded form: the
+    /// slime is placed from the form's LocalPlatformPos at the form's radius
+    /// and re-derives its own local at the slime radius. The slime's
+    /// SlimeController already ran (disabled) earlier in this updater pass, so
+    /// its state switch does not run again until the next one. Returns false
+    /// when the form has no live ground.
+    fn sync_exit_to_ground(&mut self, index: usize, data: &data::RolloutData) -> bool {
+        let slot = &mut self.players[index];
+        slot.obs_state_held_this_tick = true;
+        let Some(platform) = slot
+            .base
+            .ground
+            .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
+        else {
+            slot.base.radius = data.player.radius;
+            return false;
+        };
+        let position = platform.surface.position(slot.base.local, slot.base.radius);
+        slot.base.radius = data.player.radius;
+        if let Ok(local) = platform.surface.local_position(position, data.player.radius) {
+            slot.base.local = local;
+        }
+        slot.base.position = position;
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.align(platform);
+        // The re-enabled slime's box follows its transform, so later updaters
+        // this pass (BlackHole's pull) see the re-placed centre.
+        slot.base.sync_collider();
+        true
     }
 
     fn gold_mushroom_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
@@ -11814,12 +11828,18 @@ impl RolloutWorld {
     fn exit_black_hole_form(&mut self, index: usize, grounded: bool) {
         let slot = &mut self.players[index];
         slot.active = ActiveAbility::None;
-        slot.base.radius = data::get().player.radius;
         slot.base.constants = data::get().player.constants.clone();
         if grounded && slot.base.ground.is_some() {
             slot.obs_state = STATE_IDLE;
             slot.state_ticks = 0;
+            let position = slot.base.position;
+            self.sync_exit_to_ground(index, data::get());
+            let slot = &mut self.players[index];
+            slot.reported_position = position;
+            slot.reported_tick = self.tick;
+            return;
         } else {
+            slot.base.radius = data::get().player.radius;
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.base.grounded = false;
