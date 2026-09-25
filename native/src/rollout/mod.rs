@@ -12520,7 +12520,9 @@ impl RolloutWorld {
                 if inverse_mass == Fix::ZERO || !self.platforms[platform_index].active {
                     continue;
                 }
-                let vector = position - self.platforms[platform_index].surface.center;
+                // The DetPhysics collider copy, which a ShakablePlatform
+                // displacement reaches only at the next Simulate.
+                let vector = position - self.platforms[platform_index].collider.inner.center;
                 let squared = vector.length_squared();
                 if squared == Fix::ZERO {
                     continue;
