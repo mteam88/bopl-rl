@@ -2183,6 +2183,9 @@ pub struct PlayerSlot {
     /// Last movement input accepted by Player.ForceSetInputProfile. New
     /// packets are ignored for an unprotected player during Time Stop.
     pub last_movement_input: Vec2,
+    /// SlimeController.inputVector: the stick as of the slime's last own
+    /// pass, which is the pass that entered its current ability.
+    pub slime_input: Vec2,
     /// Last complete input accepted by Player.ForceSetInputProfile. Active
     /// ability updaters still read this retained profile during Time Stop,
     /// even though new network/replay packets are ignored.
@@ -2291,7 +2294,20 @@ impl PlayerSlot {
     /// before every ability component) has already run, so it ends one tick
     /// later than a landing in PlayerPhysics.UpdateSim; `update_obs_state`
     /// adds this marker to LAND_TICKS.
+    ///
+    /// An airborne exit's EnterFall first runs AlignTransformAir against
+    /// the slime's stale inputVector (SlimeController.cs:263-266, 967-982).
     fn exit_to_fall(&mut self) {
+        if !self.base.grounded {
+            if std::mem::take(&mut self.base.was_upside_down) {
+                self.facing_right = !self.facing_right;
+            }
+            if self.slime_input.x < -Fix::from_f32(0.02) {
+                self.facing_right = false;
+            } else if self.slime_input.x > Fix::from_f32(0.02) {
+                self.facing_right = true;
+            }
+        }
         self.obs_state = STATE_FALL;
         self.state_ticks = 1;
     }
@@ -3730,6 +3746,7 @@ impl RolloutWorld {
                 stock_indicator_entities: [usize::MAX; 3],
                 input_jump_was_down: false,
                 last_movement_input: Vec2::ZERO,
+                slime_input: Vec2::ZERO,
                 last_action: Action::default(),
                 telemetry: CTelemetry::default(),
                 circle_entity: circle_entity[i],
@@ -7003,8 +7020,12 @@ impl RolloutWorld {
             slot.base.radius = data.player.radius;
             slot.base.constants = data.player.constants.clone();
             slot.base.external_velocity = Vec2::ZERO;
+            slot.exit_to_fall();
+        } else {
+            // An ordinary slime has no IAbilityComponent, so no EnterFall.
+            slot.obs_state = STATE_FALL;
+            slot.state_ticks = 1;
         }
-        slot.exit_to_fall();
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
     }
@@ -7150,6 +7171,7 @@ impl RolloutWorld {
         self.grapple_cooldowns_tick(index);
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
+            self.players[index].slime_input = movement_input;
             for s in 0..3 {
                 let slot = &self.players[index];
                 let button_down = action.buttons & (2 << s) as u8 != 0;
@@ -10192,6 +10214,9 @@ impl RolloutWorld {
             let ability_position = slot.base.position;
             slot.active = ActiveAbility::None;
             slot.base.rotation = Fix::ZERO;
+            // QuickSpell exits with a default AbilityExitInfo, whose isFacingRight
+            // is false; SlimeController flips to match.
+            slot.facing_right = false;
             slot.base.up = Vec2::UP;
             slot.exit_to_fall();
             slot.base.collision_rays(terrain!(self));
@@ -11906,6 +11931,9 @@ impl RolloutWorld {
             }
             slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
+            // QuickSpell exits with a default AbilityExitInfo, whose isFacingRight
+            // is false; SlimeController flips to match.
+            slot.facing_right = false;
             slot.exit_to_fall();
             slot.active = ActiveAbility::None;
             slot.base.rotation = Fix::ZERO;
