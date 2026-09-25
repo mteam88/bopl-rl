@@ -1745,7 +1745,10 @@ pub struct BeamOrbState {
     pub owner: usize,
     pub position: Vec2,
     pub exit_ticks: u32,
-    pub destroy_when_unheld: bool,
+    /// The pass the holding Beam was destroyed. DisableIfNotHeld_deter only
+    /// destroys the orb once its holder is gone at the start of its update,
+    /// so a holder killed earlier in the same pass just deactivates it.
+    pub holder_destroyed: Option<u32>,
     /// Last pass Beam.UpdateSim called DisableIfNotHeld_deter.HoldThisFrame.
     pub held_tick: Option<u32>,
 }
@@ -7158,7 +7161,7 @@ impl RolloutWorld {
         if active == ActiveAbility::Beam
             && let Some(orb) = self.players[index].beam.orb
         {
-            self.beam_orbs[orb].destroy_when_unheld = true;
+            self.beam_orbs[orb].holder_destroyed = Some(self.tick);
         }
         if active == ActiveAbility::Drill {
             self.deactivate_drill_hitboxes(index);
@@ -13841,7 +13844,7 @@ impl RolloutWorld {
             state.enabled = false;
             state.born_tick = self.tick;
             state.exit_ticks = 0;
-            state.destroy_when_unheld = false;
+            state.holder_destroyed = None;
             if let Some(entity) = state.entity {
                 let row = &mut self.entities[entity];
                 row.flags = E_ACTIVE | E_TRIGGER;
@@ -13877,7 +13880,7 @@ impl RolloutWorld {
             owner,
             position,
             exit_ticks: 0,
-            destroy_when_unheld: false,
+            holder_destroyed: None,
             held_tick: None,
         });
         self.players[owner].beam_orb_slots[ability_slot] = Some(orb);
@@ -14197,6 +14200,14 @@ impl RolloutWorld {
                 // GameObject inactive for this prefab's next cast.
                 self.entities[entity].flags = E_TRIGGER;
             }
+            return;
+        }
+        // Beam.prefab's DestroyIfOutsideSceneBounds (hierarchy 4) runs after
+        // SpriteAnimator and before PlayerBody and Beam, so the orb goes
+        // unheld on the pass it fires, keeping the pose DetPhysics synced it
+        // to. Beam.ExitAbility does not UnGround.
+        if advance_animation && self.ability_boundary_kill(index, false) {
+            self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
             return;
         }
         if let Some(orb) = self.players[index].beam.orb {
@@ -14598,14 +14609,22 @@ impl RolloutWorld {
                 if orb.born_tick == self.tick || orb.held_tick == Some(self.tick) {
                     continue;
                 }
+                // Updater skips an inactive GameObject, so an orb deactivated
+                // before its holder died stays behind rather than destroying
+                // itself.
+                if orb.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0) {
+                    continue;
+                }
+                let destroy = orb.holder_destroyed.is_some_and(|tick| tick < self.tick);
                 if let Some(entity) = orb.entity {
-                    if orb.destroy_when_unheld {
+                    if destroy {
                         self.entities[entity].flags = E_REMOVED;
                     } else {
-                        self.entities[entity].flags = E_TRIGGER;
+                        // SetActive(false) leaves the hitbox's enabled flag.
+                        self.entities[entity].flags &= !E_ACTIVE;
                     }
                 }
-                orb.active = !orb.destroy_when_unheld;
+                orb.active = !destroy;
                 continue;
             }
             if orb.enabled || orb.exit_ticks == 0 && orb.born_tick == self.tick {
@@ -32130,7 +32149,7 @@ impl RolloutWorld {
         if self.players[index].active == ActiveAbility::Beam
             && let Some(orb) = self.players[index].beam.orb
         {
-            self.beam_orbs[orb].destroy_when_unheld = true;
+            self.beam_orbs[orb].holder_destroyed = Some(self.tick);
         }
         if form_exit
             && matches!(
