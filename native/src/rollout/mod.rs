@@ -7816,6 +7816,12 @@ impl RolloutWorld {
                             collider_rotation: slot.base.rotation,
                             ..PlantCastState::default()
                         };
+                        // PlantObjectOnPlatform follows Ability in the prefab
+                        // updater list: its grounded Move(zero) already runs
+                        // on the entry pass.
+                        if slot.base.grounded {
+                            slot.base.move_only(Vec2::ZERO, terrain!(self));
+                        }
                         return;
                     }
                     ABILITY_TESLA => {
@@ -7831,6 +7837,10 @@ impl RolloutWorld {
                             collider_rotation: slot.base.rotation,
                             ..PlantCastState::default()
                         };
+                        // As for Engine: the entry pass already moves.
+                        if slot.base.grounded {
+                            slot.base.move_only(Vec2::ZERO, terrain!(self));
+                        }
                         return;
                     }
                     ABILITY_FREEZE => {
@@ -10372,6 +10382,9 @@ impl RolloutWorld {
         else {
             return false;
         };
+        // Place re-derives the point from its surface local before reading
+        // the normal (PlaceSparkNode.cs:35-37, PlaceRocketEngine.cs:40-42).
+        let closest = self.platforms[platform_index].surface.position(local, Fix::ZERO);
         let normal = self.platforms[platform_index].surface.normal(closest);
         let scale = self.players[index].player_scale;
         let collider_scale = scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
@@ -10431,7 +10444,7 @@ impl RolloutWorld {
             + (data.tesla.node_collider_offset * scale).complex_mul(relative_right);
         let relative_rotation = node_rotation - parent_rotation;
 
-        self.attach_engine_body(platform_index, data.tesla.node_body);
+        self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -10597,6 +10610,9 @@ impl RolloutWorld {
         else {
             return false;
         };
+        // Place re-derives the point from its surface local before reading
+        // the normal (PlaceSparkNode.cs:35-37, PlaceRocketEngine.cs:40-42).
+        let closest = self.platforms[platform_index].surface.position(local, Fix::ZERO);
         let normal = self.platforms[platform_index].surface.normal(closest);
         let scale = self.players[index]
             .player_scale
@@ -10635,7 +10651,7 @@ impl RolloutWorld {
             + (data.engine.rocket_collider_offset * scale).complex_mul(relative_right);
         let relative_rotation = rocket_rotation - parent_rotation;
 
-        self.attach_engine_body(platform_index, data.engine.rocket_body);
+        self.attach_child_body(platform_index, data.engine.rocket_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let collider_extents = data::surface_extents(data.engine.rocket_extents * scale);
@@ -10706,11 +10722,18 @@ impl RolloutWorld {
         true
     }
 
-    fn attach_engine_body(&mut self, platform_index: usize, child: Body) {
+    fn attach_child_body(&mut self, platform_index: usize, child: Body) {
         let dynamics = &mut self.platform_dynamics[platform_index];
         let extending_composite = dynamics.attached_children != 0;
         if !extending_composite {
             dynamics.composite_position = self.platforms[platform_index].surface.center;
+            // Attach*ToRoundedRect marks the rounded rect composite before
+            // CombineBodies, so its own body is left as it was: the combined
+            // body copies its force without clearing it (DetPhysics.Simulate
+            // adds it a second time) and its velocity stays frozen here.
+            dynamics.root_body.velocity = dynamics.body.velocity;
+            dynamics.root_body.angular_velocity = dynamics.body.angular_velocity;
+            dynamics.root_body.force = dynamics.body.force;
         }
         let parent_mass = Fix::ONE / dynamics.body.inverse_mass;
         let child_mass = Fix::ONE / child.inverse_mass;
@@ -10778,18 +10801,21 @@ impl RolloutWorld {
         let dynamics = &mut self.platform_dynamics[platform_index];
         dynamics.body = dynamics.root_body;
         dynamics.body.inverse_mass = Fix::ONE / mass;
-        dynamics.body.inverse_inertia = if count == 0 {
-            old.inverse_inertia
-        } else {
-            Fix::ONE / moment
-        };
-        dynamics.body.velocity = old.velocity;
-        dynamics.body.angular_velocity = old.angular_velocity;
         dynamics.body.orientation = old.orientation;
-        // Remove*FromComposite rebuilds from the root child body, whose force
-        // was cleared when it first joined the composite. The source copies
-        // only velocity and angularVelocity from the retired combined body.
-        dynamics.body.force = Vec2::ZERO;
+        if count == 0 {
+            // CreateMultiComposite returns no composite for the lone rounded
+            // rect: it resumes its own body, velocity frozen since it joined.
+            dynamics.body.inverse_inertia = old.inverse_inertia;
+            dynamics.root_body.force = Vec2::ZERO;
+        } else {
+            // Remove*FromComposite copies only velocity and angularVelocity
+            // from the retired combined body. The rounded rect's own force
+            // still joins it in DetPhysics.Simulate.
+            dynamics.body.inverse_inertia = Fix::ONE / moment;
+            dynamics.body.velocity = old.velocity;
+            dynamics.body.angular_velocity = old.angular_velocity;
+            dynamics.body.force = Vec2::ZERO;
+        }
         dynamics.attached_children = count;
         dynamics.composite_position = self.platforms[platform_index].surface.center;
         dynamics.basis = None;
@@ -10850,7 +10876,7 @@ impl RolloutWorld {
             + (data.spike.attack_collider_offset * scale).complex_mul(relative_right);
         let relative_rotation = spike_rotation - parent_rotation;
 
-        self.attach_spike_body(platform_index, data.spike.attack_body);
+        self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let collider_extents = data::surface_extents(data.spike.attack_extents * scale);
@@ -10912,24 +10938,6 @@ impl RolloutWorld {
             .apply_impulse(normal * data.spike.cast_force, arm);
         self.platforms_changed();
         true
-    }
-
-    fn attach_spike_body(&mut self, platform_index: usize, child: Body) {
-        let dynamics = &mut self.platform_dynamics[platform_index];
-        let extending_composite = dynamics.attached_children != 0;
-        if !extending_composite {
-            dynamics.composite_position = self.platforms[platform_index].surface.center;
-        }
-        let parent_mass = Fix::ONE / dynamics.body.inverse_mass;
-        let child_mass = Fix::ONE / child.inverse_mass;
-        let parent_moment = Fix::ONE / dynamics.body.inverse_inertia;
-        let child_moment = Fix::ONE / child.inverse_inertia;
-        dynamics.body.inverse_mass = Fix::ONE / (parent_mass + child_mass);
-        dynamics.body.inverse_inertia = Fix::ONE / (parent_moment + child_moment);
-        if extending_composite {
-            dynamics.body.force = Vec2::ZERO;
-        }
-        dynamics.attached_children += 1;
     }
 
     fn remove_spike(&mut self, spike_index: usize) {
@@ -12355,65 +12363,10 @@ impl RolloutWorld {
                 }
             }
 
-            // Composite children retain their own collider centres, but the
-            // DetPhysics entry points at the parent's combined PhysicsBody.
-            for spike in &self.spike_attacks {
-                if !spike.active
-                    || spike.macho_carried
-                    || spike.platform_index >= self.platform_dynamics.len()
-                {
-                    continue;
-                }
-                let parent = &mut self.platform_dynamics[spike.platform_index].body;
-                if let Some(force) = Self::black_hole_force(
-                    position,
-                    spike.collider_center,
-                    radius,
-                    mass,
-                    parent.inverse_mass,
-                    data,
-                ) {
-                    parent.force += force;
-                }
-            }
-            for engine in &self.engines {
-                if !engine.active
-                    || engine.macho_carried
-                    || engine.platform_index >= self.platform_dynamics.len()
-                {
-                    continue;
-                }
-                let parent = &mut self.platform_dynamics[engine.platform_index].body;
-                if let Some(force) = Self::black_hole_force(
-                    position,
-                    engine.collider_center,
-                    radius,
-                    mass,
-                    parent.inverse_mass,
-                    data,
-                ) {
-                    parent.force += force;
-                }
-            }
-            for node in &self.tesla_nodes {
-                if !node.active
-                    || node.macho_carried
-                    || node.platform_index >= self.platform_dynamics.len()
-                {
-                    continue;
-                }
-                let parent = &mut self.platform_dynamics[node.platform_index].body;
-                if let Some(force) = Self::black_hole_force(
-                    position,
-                    node.collider_center,
-                    radius,
-                    mass,
-                    parent.inverse_mass,
-                    data,
-                ) {
-                    parent.force += force;
-                }
-            }
+            // Spike, Engine and Tesla children of a composite get their pull
+            // on their own PhysicsBody, which DetPhysics never integrates
+            // while they are attached (BlackHole.cs:383,410; DetPhysics.cs:
+            // Simulate skips composite members): it never reaches the platform.
 
             let controlled_ground = self.players.iter().find_map(|player| {
                 (player.active == ActiveAbility::Push)
@@ -12422,7 +12375,15 @@ impl RolloutWorld {
             });
             let mut changed = false;
             for platform_index in 0..self.platforms.len() {
-                let inverse_mass = self.platform_dynamics[platform_index].body.inverse_mass;
+                // The rounded rect's own PhysicsBody: its mass, and its force
+                // joins a composite's only at the physics step.
+                let dynamics = &self.platform_dynamics[platform_index];
+                let composite = dynamics.attached_children != 0;
+                let inverse_mass = if composite {
+                    dynamics.root_body.inverse_mass
+                } else {
+                    dynamics.body.inverse_mass
+                };
                 if inverse_mass == Fix::ZERO || !self.platforms[platform_index].active {
                     continue;
                 }
@@ -12443,7 +12404,9 @@ impl RolloutWorld {
                 if controlled_ground == Some(self.platforms[platform_index].id) {
                     magnitude *= data.black_hole.controlled_platform_multiplier;
                 }
-                self.platform_dynamics[platform_index].body.force += vector * magnitude / cube;
+                let dynamics = &mut self.platform_dynamics[platform_index];
+                let body = if composite { &mut dynamics.root_body } else { &mut dynamics.body };
+                body.force += vector * magnitude / cube;
                 changed = true;
             }
             if changed {
@@ -14622,7 +14585,7 @@ impl RolloutWorld {
             + (data.engine.rocket_collider_offset * source.scale).complex_mul(relative_right);
         let mut child = source.body;
         child.orientation = desired_rotation;
-        self.attach_engine_body(platform_index, child);
+        self.attach_child_body(platform_index, child);
         let engine = &mut self.engines[engine_index];
         engine.macho_carried = false;
         engine.born_tick = self.tick;
@@ -14680,7 +14643,7 @@ impl RolloutWorld {
             + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);
         let mut child_body = source.body;
         child_body.orientation = desired_rotation;
-        self.attach_engine_body(platform_index, child_body);
+        self.attach_child_body(platform_index, child_body);
         let node = &mut self.tesla_nodes[node_index];
         node.macho_carried = false;
         node.born_tick = self.tick;
@@ -14757,7 +14720,7 @@ impl RolloutWorld {
             + (data.spike.attack_collider_offset * source.scale).complex_mul(relative_right);
         let mut child_body = source.body;
         child_body.orientation = desired_rotation;
-        self.attach_spike_body(platform_index, child_body);
+        self.attach_child_body(platform_index, child_body);
         let spike = &mut self.spike_attacks[spike_index];
         spike.macho_carried = false;
         spike.born_tick = self.tick;
@@ -18500,9 +18463,6 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 slot.active = ActiveAbility::None;
                 if grounded {
-                    // PlayerPhysics.SyncPhysicsTo(AbilityExitInfo) discards
-                    // selfImposedVelocity on a valid grounded attachment.
-                    slot.base.velocity = Vec2::ZERO;
                     slot.obs_state = STATE_LAND;
                     slot.state_ticks = LAND_TICKS + 2;
                 } else {
@@ -18513,6 +18473,9 @@ impl RolloutWorld {
                 }
                 slot.reported_position = slot.base.position;
                 slot.reported_tick = self.tick;
+                if grounded {
+                    self.sync_exit_to_ground(index, data);
+                }
                 return;
             }
         }
@@ -18562,6 +18525,10 @@ impl RolloutWorld {
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks = LAND_TICKS + 2;
                 slot.reported_position = slot.base.position;
+                // The landing aligned the form before ExitAbility froze it.
+                slot.throw_item.collider_rotation = slot.base.rotation;
+                slot.throw_item.collider_right = slot.base.up.perp_cw();
+                self.sync_exit_to_ground(index, data);
             } else {
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
@@ -18662,10 +18629,11 @@ impl RolloutWorld {
             magnet_holder: None,
             magnet_hold_ticks: -1,
         };
+        // The mine registers its collider on the next pass, as a fresh row;
+        // a free slot's old row stays removed.
         let item_index = if let Some(free) = self.thrown_items.iter().position(|item| !item.active)
         {
-            let entity = self.thrown_items[free].entity;
-            self.thrown_items[free] = ThrownItem { entity, ..item };
+            self.thrown_items[free] = item;
             free
         } else {
             self.thrown_items.push(item);
@@ -18839,6 +18807,9 @@ impl RolloutWorld {
                 }
                 slot.reported_position = slot.base.position;
                 slot.reported_tick = self.tick;
+                if slot.base.grounded {
+                    self.sync_exit_to_ground(index, data);
+                }
                 return;
             }
         }
@@ -22034,7 +22005,7 @@ impl RolloutWorld {
             + (data.spike.attack_collider_offset * source.scale).complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.spike.attack_updatable_count;
-        self.attach_spike_body(platform_index, data.spike.attack_body);
+        self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let collider_extents = data::surface_extents(data.spike.attack_extents * source.scale);
@@ -22122,7 +22093,7 @@ impl RolloutWorld {
             + (data.engine.rocket_collider_offset * source.scale).complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.engine.rocket_updatable_count;
-        self.attach_engine_body(platform_index, data.engine.rocket_body);
+        self.attach_child_body(platform_index, data.engine.rocket_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let collider_extents = data::surface_extents(data.engine.rocket_extents * source.scale);
@@ -22216,7 +22187,7 @@ impl RolloutWorld {
             + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.tesla.node_updatable_count;
-        self.attach_engine_body(platform_index, data.tesla.node_body);
+        self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -30570,6 +30541,9 @@ impl RolloutWorld {
                 // prior Box/RR correction of CompositeBody.position and
                 // re-anchors the composite on its rounded-root FixTransform.
                 dynamics.composite_position = self.platforms[i].surface.center;
+                // The rounded rect's own force joins the combined body's.
+                dynamics.body.force += dynamics.root_body.force;
+                dynamics.root_body.force = Vec2::ZERO;
             }
             if let Some(rotation) = dynamics.transform_rotation.take() {
                 dynamics.body.orientation = rotation;
