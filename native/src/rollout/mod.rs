@@ -1682,6 +1682,8 @@ pub struct BeamState {
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
+    /// preGlowRen is active: shown by the enter pass, hidden by the loop pass.
+    pub glow: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -5701,6 +5703,9 @@ impl RolloutWorld {
             } else {
                 self.players[index].base.late_step(&self.platforms);
             }
+        }
+        if has(ABILITY_BEAM) {
+            self.beams_late_tick(data);
         }
         if has_rope {
             self.ropes_late();
@@ -13664,6 +13669,31 @@ impl RolloutWorld {
             target
         } else {
             result
+        }
+    }
+
+    /// Beam.LateUpdateSim: while the pre-glow shows (enter, and an exit
+    /// straight from enter) UpdateGlowEffects raycasts the beam, and that
+    /// DetPhysics query first drops every collider destroyed this pass.
+    fn beams_late_tick(&mut self, data: &data::RolloutData) {
+        let space = data.maps[self.map].is_space();
+        let mut purge = false;
+        for slot in &mut self.players {
+            if slot.active != ActiveAbility::Beam
+                || !slot.beam.orb.is_some_and(|orb| self.beam_orbs[orb].active)
+            {
+                continue;
+            }
+            match slot.beam.phase {
+                0 => slot.beam.glow = true,
+                1 => slot.beam.glow = false,
+                _ => {}
+            }
+            let fire = slot.base.position + slot.beam.staff_dir * Fix::from_f64(2.8) * slot.base.scale;
+            purge |= slot.beam.glow && (space || fire.y >= Fix::from_f32(-11.22));
+        }
+        if purge {
+            self.purge_destroyed_colliders();
         }
     }
 
