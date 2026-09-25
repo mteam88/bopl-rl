@@ -27747,7 +27747,33 @@ impl RolloutWorld {
                 continue;
             }
             let ability = self.thrown_items[item_index].ability;
-            // DestroyIfOutsideSceneBounds precedes Grenade/Item updaters.
+            // Grenade.UpdateSim comes first on the Grenade and SmokeGrenade
+            // prefabs, so a fuse that runs out on the pass the item leaves the
+            // bounds detonates it before DestroyIfOutsideSceneBounds sees it.
+            let timed_out = {
+                let item = &mut self.thrown_items[item_index];
+                if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.born_tick < self.tick
+                {
+                    if item.magnet_holder.is_none() {
+                        item.fuse -= updater_dt;
+                    }
+                    if item.hurt_owner_delay > Fix::ZERO {
+                        item.hurt_owner_delay -= updater_dt;
+                        if item.hurt_owner_delay <= Fix::ZERO {
+                            item.detonates_on_owner = true;
+                        }
+                    }
+                }
+                matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.fuse <= Fix::ZERO
+            };
+            if timed_out {
+                if ability == ABILITY_SMOKE {
+                    self.detonate_smoke(item_index, false, data);
+                } else {
+                    self.detonate_grenade(item_index, false, data);
+                }
+                continue;
+            }
             // Below the water Grenade, Smoke and Mine instantiate the
             // two-updatable splash. Past the space floor or the sides the
             // grenade's UpEffect/XEffect is XGunExplosion, its own unowned
@@ -27790,30 +27816,6 @@ impl RolloutWorld {
                     self.remove_thrown_item(item_index, false);
                     continue;
                 }
-            }
-            let timed_out = {
-                let item = &mut self.thrown_items[item_index];
-                if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.born_tick < self.tick
-                {
-                    if item.magnet_holder.is_none() {
-                        item.fuse -= updater_dt;
-                    }
-                    if item.hurt_owner_delay > Fix::ZERO {
-                        item.hurt_owner_delay -= updater_dt;
-                        if item.hurt_owner_delay <= Fix::ZERO {
-                            item.detonates_on_owner = true;
-                        }
-                    }
-                }
-                matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.fuse <= Fix::ZERO
-            };
-            if timed_out {
-                if ability == ABILITY_SMOKE {
-                    self.detonate_smoke(item_index, false, data);
-                } else {
-                    self.detonate_grenade(item_index, false, data);
-                }
-                continue;
             }
             if self.thrown_items[item_index].entity.is_none() {
                 continue;
