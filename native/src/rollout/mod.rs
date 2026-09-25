@@ -2243,6 +2243,13 @@ pub struct PlayerSlot {
     pub blink_tunnel_born_tick: u32,
     pub blink_tunnel_age: Fix,
     pub blink_tunnel_released: bool,
+    /// The pass the tunnel reenabled the victim. Nothing publishes
+    /// Player.Position on it, so Player.SetPosition's tie rule lets only the
+    /// first write of the next pass through.
+    pub blink_tunnel_end_tick: Option<u32>,
+    /// Player.Position when that tie kept an earlier write of this pass over
+    /// the one in `reported_position`, with the pass it belongs to.
+    pub tie_position: Option<(u32, Vec2)>,
     pub gold_mushroom: [GoldMushroomState; 3],
     pub rewind: RewindState,
     /// SlimeController.currentState as the policy observes it. The .NET enum
@@ -3870,6 +3877,8 @@ impl RolloutWorld {
                 blink_tunnel_born_tick: 0,
                 blink_tunnel_age: Fix::ZERO,
                 blink_tunnel_released: false,
+                blink_tunnel_end_tick: None,
+                tie_position: None,
                 gold_mushroom: [GoldMushroomState::default(); 3],
                 rewind: RewindState::default(),
                 obs_state: STATE_FALL,
@@ -24435,6 +24444,7 @@ impl RolloutWorld {
             if self.players[victim].blink_tunnel_age > data.blink.player_duration {
                 let slot = &mut self.players[victim];
                 slot.blink_tunnel_active = false;
+                slot.blink_tunnel_end_tick = Some(self.tick);
             }
             self.players[victim].blink_tunnel_age += updater_dt;
             if !self.players[victim].blink_tunnel_released
@@ -25506,6 +25516,9 @@ impl RolloutWorld {
             b.fire_ticks_left -= 1;
         }
         // Ability (updater 2) and PlayerPhysics (3) follow the SpriteAnimator.
+        // Ability.UpdateSim publishes the pose before this pass moves it.
+        let ability_publish = self.players[index].base.position;
+        let tick = self.tick;
         {
             let slot = &mut self.players[index];
             let scale = slot.player_scale;
@@ -25661,6 +25674,11 @@ impl RolloutWorld {
         }
         if exit {
             bow_exit(slot, terrain);
+            // The first pass after a tunnel: Ability.UpdateSim's publish wins
+            // the tie against ExitAbility's (Player.cs:311-322).
+            if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == tick) {
+                slot.tie_position = Some((tick, ability_publish));
+            }
         }
     }
 
@@ -35065,7 +35083,11 @@ impl RolloutWorld {
             // SetPosition call. Once the controller is destroyed, the Player
             // retains its last published position indefinitely; later body
             // corrections in the callback pass are not observable there.
-            let position = if !slot.base.alive || slot.reported_tick.checked_add(1) == Some(tick) {
+            let position = if let Some((_, position)) =
+                slot.tie_position.filter(|(set, _)| set.checked_add(1) == Some(tick))
+            {
+                position
+            } else if !slot.base.alive || slot.reported_tick.checked_add(1) == Some(tick) {
                 slot.reported_position
             } else {
                 slot.base.position
