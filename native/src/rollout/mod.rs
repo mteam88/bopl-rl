@@ -2434,6 +2434,9 @@ impl PlayerSlot {
         if !self.base.grounded {
             self.align_transform_air();
         }
+        // The disabled slime's OldUpdate already passed this updater pass, so
+        // its closing AlignTransformAir waits for the next one.
+        self.obs_state_held_this_tick = true;
         self.obs_state = STATE_FALL;
         self.state_ticks = 1;
     }
@@ -5824,6 +5827,9 @@ impl RolloutWorld {
         }
         if has_mine_explosion {
             self.missile_explosion_contacts(data);
+        }
+        if has(ABILITY_METEOR) {
+            self.meteor_smear_contacts();
         }
         if has(ABILITY_SMOKE) {
             self.smoke_contacts(data);
@@ -29815,6 +29821,47 @@ impl RolloutWorld {
                         CAUSE_OTHER
                     };
                     self.kill(player_index, killer, cause, true, true);
+                }
+            }
+        }
+    }
+
+    /// MeteorSmear carries Explosion with its hitbox live for the smear's whole
+    /// life, so DetPhysics kills any Player-layer shape it overlaps. Only the
+    /// caster's own colliders ignore it (MeteorSmash.SpawnSmearEffect).
+    fn meteor_smear_contacts(&mut self) {
+        for smear_index in 0..self.meteor_smears.len() {
+            let smear = self.meteor_smears[smear_index];
+            if !smear.active {
+                continue;
+            }
+            let hitbox = OrientedBox {
+                center: smear.center,
+                right: smear.right,
+                up: smear.up,
+                inverse_extents: Vec2::new(Fix::ONE / smear.right.x, Fix::ONE / smear.up.y),
+            };
+            for player_index in 0..self.players.len() {
+                if player_index == smear.owner || !self.playable(player_index) {
+                    continue;
+                }
+                let row = self.entities[Self::blink_player_entity(&self.players[player_index])];
+                if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED) {
+                    continue;
+                }
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let hit = if row.kind == 0 {
+                    let circle = Circle { center, radius: Fix::from_raw(row.radius) };
+                    crate::physics::contact::circle_box(circle, hitbox).is_some()
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    let inverse_extents = Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length());
+                    let shape = OrientedBox { center, right, up, inverse_extents };
+                    crate::physics::contact::box_box(shape, hitbox).is_some()
+                };
+                if hit {
+                    self.kill(player_index, smear.owner as u32 + 1, CAUSE_OTHER, true, true);
                 }
             }
         }
