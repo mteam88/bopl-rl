@@ -956,6 +956,14 @@ impl Player {
             self.apply_ground_state(motion);
         }
     }
+    /// PlayerPhysics.UnGround() with its default nullRotation: the body
+    /// levels even when it was not attached.
+    pub(crate) fn unground_level(&mut self, platforms: &[Platform]) {
+        let surface = self.platform(platforms).map(|platform| platform.surface.clone());
+        let mut motion = self.ground_state();
+        motion.unground(surface.as_ref(), true);
+        self.apply_ground_state(motion);
+    }
     pub(crate) fn late_step(&mut self, platforms: &[Platform]) {
         if self.alive && self.grounded && !self.dash.active {
             let platform = self.platform(platforms).unwrap();

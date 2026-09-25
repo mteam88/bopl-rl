@@ -21440,7 +21440,8 @@ impl RolloutWorld {
                     self.players[i].reported_position = position;
                 }
                 let slot = &mut self.players[i];
-                slot.base.force_unground(&self.platforms);
+                // MagnetGun.cs:687 calls UnGround() with nullRotation.
+                slot.base.unground_level(&self.platforms);
                 slot.base.skip_next_gravity = true;
                 slot.ragdoll = RagdollState {
                     active: true,
@@ -21938,12 +21939,21 @@ impl RolloutWorld {
                 let rope = self.players.get(i).and_then(|slot| slot.rope);
                 let rope_top = self.players.get(i).is_some_and(|slot| slot.rope_top);
                 let mut speed = direction * data.magnet.fire_ragdoll_force;
+                // ApplyRagDoll turns the body to face the throw before it
+                // slows the horizontal part (SlimeController.cs:1026-1034).
+                let right = speed.normalized_safe();
                 speed.x /= Fix::from_f32(1.5);
                 if let Some(slot) = self.players.get_mut(i) {
                     slot.base.velocity = speed;
+                    if right != Vec2::ZERO {
+                        slot.base.up = right.perp();
+                        slot.base.rotation = right.normalized_angle();
+                    }
+                    // ApplyRagDoll leaves the skipNextUpdate this pass's hold
+                    // already set (MagnetGun.cs:1127-1128).
                     slot.ragdoll = RagdollState {
                         active: true,
-                        skip_physics: false,
+                        skip_physics: slot.ragdoll.skip_physics,
                         hold_on_ground: false,
                         time: Fix::ZERO,
                         duration: data.magnet.fire_ragdoll_duration,
@@ -24926,9 +24936,11 @@ impl RolloutWorld {
         for timer in &mut slot.timers {
             *timer += DT;
         }
-        if slot.ragdoll.skip_physics {
-            slot.ragdoll.skip_physics = false;
-        } else if !slot.base.grounded {
+        // Both flags stand for PlayerPhysics.skipNextUpdate, which the
+        // ragdolled slime's PlayerPhysics still consumes every pass.
+        let skip = std::mem::take(&mut slot.ragdoll.skip_physics)
+            | std::mem::take(&mut slot.base.skip_next_gravity);
+        if !skip && !slot.base.grounded {
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
