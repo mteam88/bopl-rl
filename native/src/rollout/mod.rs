@@ -3724,6 +3724,7 @@ impl RolloutWorld {
             self.players.push(PlayerSlot {
                 base: Player {
                     alive: true,
+                    out_of_bounds: false,
                     id: i as u32 + 1,
                     position: spawn,
                     rotation: Fix::ZERO,
@@ -5448,9 +5449,10 @@ impl RolloutWorld {
                     && slot.respawn_ticks == 0
                     && slot.respawn_spawn_ticks == 0
                     && !slot.base.alive
-                    && slot.base.outside_bounds()
+                    && slot.base.out_of_bounds
             };
             if boundary_death {
+                self.players[index].base.out_of_bounds = false;
                 // DestroyIfOutsideSceneBounds instantiates the water/bounds
                 // effect before it calls killPlayer with spawnEffect=false.
                 self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
@@ -5464,7 +5466,8 @@ impl RolloutWorld {
                 } else {
                     CAUSE_OTHER
                 };
-                self.kill(index, ENVIRONMENT, cause, false, false);
+                // The boundary component already ran the form's ExitAbility.
+                self.kill_with(index, ENVIRONMENT, cause, false, false, false);
             }
         }
         if has(ABILITY_MAGNET) {
@@ -7501,6 +7504,7 @@ impl RolloutWorld {
                             // before PlayerBody integrates.
                             if slot.base.outside_bounds() {
                                 slot.base.alive = false;
+                                slot.base.out_of_bounds = true;
                                 return;
                             }
                             slot.base.position +=
@@ -19384,7 +19388,10 @@ impl RolloutWorld {
             return false;
         }
         self.players[index].base.alive = false;
+        self.players[index].base.out_of_bounds = true;
         if unground {
+            self.players[index].base.rotation = Fix::ZERO;
+            self.players[index].base.up = Vec2::UP;
             self.players[index].base.force_unground(&self.platforms);
         }
         self.players[index].reported_position = self.players[index].base.position;
@@ -22581,6 +22588,7 @@ impl RolloutWorld {
         });
         let base = Player {
             alive: true,
+            out_of_bounds: false,
             id: source.id,
             position,
             rotation: Fix::ZERO,
@@ -25507,6 +25515,9 @@ impl RolloutWorld {
         // (BowTransform.cs:124, SlimeController.cs:217).
         if slot.base.outside_bounds() {
             slot.base.alive = false; // game_tick attributes it after this updater
+            slot.base.out_of_bounds = true;
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
             slot.base.force_unground(platforms);
             slot.reported_position = slot.base.position;
             return;
