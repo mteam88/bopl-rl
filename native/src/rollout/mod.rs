@@ -9775,15 +9775,22 @@ impl RolloutWorld {
     fn exit_push(&mut self, index: usize, data: &data::RolloutData) {
         let ground = self.players[index].base.ground;
         let slot = &mut self.players[index];
+        // Ability.ExitAbility publishes the form collider's position through
+        // Player.SetPosition before the slime is re-placed.
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
         slot.active = ActiveAbility::None;
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.obs_state = STATE_IDLE;
         slot.state_ticks = 0;
+        slot.obs_state_held_this_tick = true;
         if let Some(platform) =
             ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
         {
-            let position = slot.base.position;
+            // PlayerPhysics.SyncPhysicsTo(exitInfo) places the slime from the
+            // form's LocalPlatformPos and re-derives its own local from there.
+            let position = platform.surface.position(slot.base.local, slot.base.radius);
             slot.base.radius = data.player.radius;
             if let Ok(local) = platform
                 .surface
@@ -9791,6 +9798,7 @@ impl RolloutWorld {
             {
                 slot.base.local = local;
             }
+            slot.base.position = position;
             slot.base.align(platform);
         } else {
             slot.base.radius = data.player.radius;
@@ -9798,8 +9806,6 @@ impl RolloutWorld {
             slot.base.ground = None;
             slot.exit_to_fall();
         }
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
     }
 
     fn gold_mushroom_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
@@ -16492,7 +16498,6 @@ impl RolloutWorld {
             slot.ability_instantiated = [true; 3];
             slot.pending_ability_hierarchy = [u32::MAX; 3];
             slot.base.position = position;
-            slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity = Vec2::ZERO;
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
@@ -32452,7 +32457,9 @@ impl RolloutWorld {
                         // advances once by that velocity while the original
                         // slime body remains frozen at its pre-cast pose.
                         let center = if slot.throw_item.grounded && slot.throw_item.has_fired {
-                            synced - slot.throw_item.direction * throw_config.knockback * DT
+                            // PlayerBody: position += (0 - knockback * dir) * dt,
+                            // negated before the multiply as in the source.
+                            synced + -(slot.throw_item.direction * throw_config.knockback) * DT
                         } else {
                             synced
                         };
