@@ -9641,28 +9641,32 @@ impl RolloutWorld {
         self.spawn_meteor_wave(near, platform_index, index, force_scale, data);
         self.spawn_meteor_smear(start, near, index, data);
 
-        let landing = self.platforms[platform_index]
-            .surface
-            .position(local, data.meteor.physics_radius);
+        // PositionFromLocalPlayerPos, then AttachToGround's own
+        // LocalPlayerPosFromPos -> PositionFromLocalPlayerPos round trip.
+        let surface = &self.platforms[platform_index].surface;
+        let landing = surface.position(local, data.meteor.physics_radius);
+        let local = surface
+            .local_position(landing, data.meteor.physics_radius)
+            .unwrap_or(local);
+        let landing = surface.position(local, data.meteor.physics_radius);
         let platform_id = self.platforms[platform_index].id;
         let slot = &mut self.players[index];
         slot.meteor.phase = 3;
         slot.meteor.dash_updates = 0;
         slot.active = ActiveAbility::None;
         slot.base.position = landing;
-        slot.base.radius = data.player.radius;
+        slot.base.radius = data.meteor.physics_radius;
         slot.base.constants = data.player.constants.clone();
-        slot.base.velocity = Vec2::ZERO;
         slot.base.external_velocity = Vec2::ZERO;
         slot.base.grounded = true;
         slot.base.ground = Some(platform_id);
         slot.base.local = local;
         slot.base.grounded_speed = Fix::ZERO;
-        slot.base.align(&self.platforms[platform_index]);
         slot.obs_state = STATE_LAND;
         slot.state_ticks = LAND_TICKS + 2;
         slot.reported_position = landing;
         slot.reported_tick = self.tick;
+        self.sync_exit_to_ground(index, data);
     }
 
     /// MeteorSmash.ExitAbilityGrounded: the slime returns attached where the
@@ -9710,6 +9714,12 @@ impl RolloutWorld {
             // smear lengths, by up to 2 raw.
             data.meteor.smear_offset.y * (extents.y / data.meteor.smear_extents.y),
         );
+        // SetExtents stores 1/extents; UpdatePhysicsPositions' SetRotation
+        // rebuilds each axis as unit / inverseExtents.
+        let axes = Vec2::new(
+            Fix::ONE / (Fix::ONE / extents.x),
+            Fix::ONE / (Fix::ONE / extents.y),
+        );
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.meteor.smear_updatable_count;
         let entity_index = self.entities.len();
@@ -9722,8 +9732,8 @@ impl RolloutWorld {
             hierarchy: 100_000_000 + hierarchy_base + data.meteor.smear_collider_hierarchy,
             x: (to + offset).x.raw(),
             y: (to + offset).y.raw(),
-            right_x: extents.x.raw(),
-            up_y: extents.y.raw(),
+            right_x: axes.x.raw(),
+            up_y: axes.y.raw(),
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
         });
@@ -9735,8 +9745,8 @@ impl RolloutWorld {
             owner,
             age: 0,
             center: to + offset,
-            right: Vec2::new(extents.x, Fix::ZERO),
-            up: Vec2::new(Fix::ZERO, extents.y),
+            right: Vec2::new(axes.x, Fix::ZERO),
+            up: Vec2::new(Fix::ZERO, axes.y),
         });
     }
 
