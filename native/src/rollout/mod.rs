@@ -2298,6 +2298,7 @@ struct PlatformScratch {
     window: Vec<usize>,
     pairs: Vec<[usize; 2]>,
     callback_colliders: Vec<RoundedRect>,
+    callback_tick: Option<u32>,
     contacts: Vec<(usize, usize, Contact)>,
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
     engine_wall_contacts: Vec<(usize, usize, Contact)>,
@@ -26517,7 +26518,9 @@ impl RolloutWorld {
             center: mine.position,
             radius: data.mine.scan_radius * mine.scale,
         };
-        let mut candidates = [(0u32, 0u32, usize::MAX, usize::MAX); MAX_CANDIDATES];
+        // Mine aims at the hit collider's FixTransform, which the owner's
+        // UpdateSim has already moved this pass; the row is DetPhysics' copy.
+        let mut candidates = [(0u32, 0u32, usize::MAX, usize::MAX, Vec2::ZERO); MAX_CANDIDATES];
         let mut count = 0;
         for (player_index, player) in self.players.iter().enumerate() {
             if !self.playable_slot(player) {
@@ -26532,7 +26535,7 @@ impl RolloutWorld {
             }
             if count < candidates.len() {
                 let row = self.entities[entity];
-                candidates[count] = (row.kind, row.id, entity, player_index);
+                candidates[count] = (row.kind, row.id, entity, player_index, player.base.position);
                 count += 1;
             }
         }
@@ -26547,23 +26550,22 @@ impl RolloutWorld {
             }
             if count < candidates.len() {
                 let row = self.entities[entity];
-                candidates[count] = (row.kind, row.id, entity, clone.owner);
+                candidates[count] = (row.kind, row.id, entity, clone.owner, clone.base.position);
                 count += 1;
             }
         }
-        candidates[..count].sort_unstable_by_key(|&(kind, id, _, _)| (kind, id));
+        candidates[..count].sort_unstable_by_key(|&(kind, id, _, _, _)| (kind, id));
 
         let owner_team = self.players[mine.owner].team;
         let mut written = 0;
-        for &(_, _, entity, player_index) in &candidates[..count] {
+        for &(_, _, entity, player_index, position) in &candidates[..count] {
             if !self.circle_overlaps_entity(query, entity) {
                 continue;
             }
             written += 1;
             let player = &self.players[player_index];
             if player_index != mine.owner && !player.invisible && player.team != owner_team {
-                let row = self.entities[entity];
-                return Some(Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)));
+                return Some(position);
             }
             if written == 4 {
                 break;
@@ -28796,6 +28798,24 @@ impl RolloutWorld {
             for (platform_index, platform) in self.platforms.iter().enumerate() {
                 if !platform.active {
                     continue;
+                }
+                // The sweep paired bounding boxes taken before this pass's
+                // platform/platform corrections moved the wall.
+                if self.scratch.callback_tick == Some(self.tick)
+                    && let Some(swept) = self.scratch.callback_colliders.get(platform_index)
+                {
+                    let extent = Vec2::new(
+                        swept.inner.right.x.abs() + swept.inner.up.x.abs() + swept.radius,
+                        swept.inner.right.y.abs() + swept.inner.up.y.abs() + swept.radius,
+                    );
+                    let (low, high) = (swept.inner.center - extent, swept.inner.center + extent);
+                    if circle.center.x + item_radius <= low.x
+                        || circle.center.x - item_radius >= high.x
+                        || circle.center.y + item_radius <= low.y
+                        || circle.center.y - item_radius >= high.y
+                    {
+                        continue;
+                    }
                 }
                 if let Some(contact) =
                     crate::physics::contact::circle_rounded(circle, platform.collider)
@@ -31138,6 +31158,7 @@ impl RolloutWorld {
         // RR positional corrections below move either platform.
         let scratch = &mut self.scratch;
         scratch.callback_colliders.clear();
+        scratch.callback_tick = Some(self.tick);
         scratch
             .callback_colliders
             .extend(self.platforms.iter().map(|p| p.collider));
