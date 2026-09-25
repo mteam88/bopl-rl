@@ -10375,6 +10375,14 @@ impl RolloutWorld {
                 return;
             }
         }
+        // The recover animation's exit callback runs before the ability's
+        // UpdateSim, like the cast's PlantObject.
+        if self.players[index].plant_cast.phase == 1
+            && self.players[index].plant_cast.ticks > data.engine.recover_ticks
+        {
+            self.exit_engine_cast(index);
+            return;
+        }
         if self.players[index].base.grounded {
             self.players[index]
                 .base
@@ -10386,11 +10394,6 @@ impl RolloutWorld {
             slot.base.external_velocity *= Fix::from_f64(0.95);
             slot.reported_position = published_position;
             slot.reported_tick = self.tick;
-        }
-        if self.players[index].plant_cast.phase == 1
-            && self.players[index].plant_cast.ticks > data.engine.recover_ticks
-        {
-            self.exit_engine_cast(index);
         }
     }
 
@@ -10408,6 +10411,8 @@ impl RolloutWorld {
         });
         let slot = &mut self.players[index];
         slot.active = ActiveAbility::None;
+        // ExitAbility hands over groundedSpeed zero.
+        slot.base.grounded_speed = Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
         if slot.base.grounded
             && let Some(up) = grounded_pose
@@ -10450,6 +10455,14 @@ impl RolloutWorld {
                 return;
             }
         }
+        // The recover animation's exit callback runs before the ability's
+        // UpdateSim, like the cast's PlantObject.
+        if self.players[index].plant_cast.phase == 1
+            && self.players[index].plant_cast.ticks > data.tesla.recover_ticks
+        {
+            self.exit_engine_cast(index);
+            return;
+        }
         if self.players[index].base.grounded {
             self.players[index]
                 .base
@@ -10461,11 +10474,6 @@ impl RolloutWorld {
             slot.base.external_velocity *= Fix::from_f64(0.95);
             slot.reported_position = published_position;
             slot.reported_tick = self.tick;
-        }
-        if self.players[index].plant_cast.phase == 1
-            && self.players[index].plant_cast.ticks > data.tesla.recover_ticks
-        {
-            self.exit_engine_cast(index);
         }
     }
 
