@@ -2216,6 +2216,47 @@ pub struct PlayerSlot {
 }
 
 impl PlayerSlot {
+    /// Every collider row the slime and its ability objects own. A dead
+    /// slime's rows leave DetPhysics together.
+    fn owned_rows(&self) -> [usize; 32] {
+        [
+            self.body_entity,
+            self.dash_entities[0],
+            self.dash_entities[1],
+            self.dash_entities[2],
+            self.circle_entity,
+            self.rock_entity,
+            self.roll_entity,
+            self.meteor_entity,
+            self.black_hole_entity,
+            self.macho_throw_entity,
+            self.drill_entity,
+            self.beam_entity,
+            self.push_entity,
+            self.freeze_entities[0],
+            self.freeze_entities[1],
+            self.freeze_entities[2],
+            self.growth_ray_entity,
+            self.shrink_ray_entity,
+            self.blink_entity,
+            self.duplicator_entity,
+            self.magnet_entity,
+            self.bow_entity,
+            // Every ThrowItem2 slot owns its own hurtbox; `throw_entity` is
+            // only the one currently selected.
+            self.throw_entities[0],
+            self.throw_entities[1],
+            self.throw_entities[2],
+            self.mine_entity,
+            self.gust_entity,
+            self.revival_entity,
+            self.spike_entity,
+            self.time_stop_entity,
+            self.engine_entity,
+            self.tesla_entity,
+        ]
+    }
+
     fn set_ordinary_body_scale(&mut self, scale: Fix) {
         let scale = scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
         // SlimeController assigns hurtBox.Scale every pass even when the
@@ -5519,39 +5560,7 @@ impl RolloutWorld {
         // syncs every registered collider; the sweep axis below reads them.
         for slot in &self.players {
             if slot.out {
-                for e in [
-                    slot.body_entity,
-                    slot.dash_entities[0],
-                    slot.dash_entities[1],
-                    slot.dash_entities[2],
-                    slot.circle_entity,
-                    slot.rock_entity,
-                    slot.roll_entity,
-                    slot.meteor_entity,
-                    slot.black_hole_entity,
-                    slot.macho_throw_entity,
-                    slot.drill_entity,
-                    slot.beam_entity,
-                    slot.push_entity,
-                    slot.freeze_entities[0],
-                    slot.freeze_entities[1],
-                    slot.freeze_entities[2],
-                    slot.growth_ray_entity,
-                    slot.shrink_ray_entity,
-                    slot.duplicator_entity,
-                    slot.magnet_entity,
-                    slot.bow_entity,
-                    slot.throw_entities[0],
-                    slot.throw_entities[1],
-                    slot.throw_entities[2],
-                    slot.mine_entity,
-                    slot.gust_entity,
-                    slot.revival_entity,
-                    slot.spike_entity,
-                    slot.time_stop_entity,
-                    slot.engine_entity,
-                    slot.tesla_entity,
-                ] {
+                for e in slot.owned_rows() {
                     if e != usize::MAX {
                         self.entities[e].flags = E_REMOVED;
                     }
@@ -31219,11 +31228,21 @@ impl RolloutWorld {
         {
             self.beam_orbs[orb].destroy_when_unheld = true;
         }
-        if self.players[index].active == ActiveAbility::Bow {
-            // PlayerCollision.killPlayer calls BowTransform.ExitAbility with
-            // isDead=true. Bow resets rotation, then PlayerPhysics.UnGround
-            // moves the form one 0.05-unit surface-normal step before Ability
-            // copies that position back to the slime and stock logic reads it.
+        if matches!(
+            self.players[index].active,
+            ActiveAbility::Bow
+                | ActiveAbility::Blink
+                | ActiveAbility::Freeze
+                | ActiveAbility::GrowthRay
+                | ActiveAbility::ShrinkRay
+                | ActiveAbility::Duplicator
+                | ActiveAbility::Magnet
+        ) {
+            // PlayerCollision.killPlayer calls the form's ExitAbility
+            // (BowTransform, GunTransform, MagnetGun) with isDead=true. Each
+            // resets rotation, then PlayerPhysics.UnGround moves the form one
+            // 0.05-unit surface-normal step before Ability copies that
+            // position back to the slime and stock logic reads it.
             let slot = &mut self.players[index];
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
@@ -31287,43 +31306,7 @@ impl RolloutWorld {
             if spawn_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
-            let rows = [
-                slot.body_entity,
-                slot.dash_entities[0],
-                slot.dash_entities[1],
-                slot.dash_entities[2],
-                slot.circle_entity,
-                slot.rock_entity,
-                slot.roll_entity,
-                slot.meteor_entity,
-                slot.black_hole_entity,
-                slot.macho_throw_entity,
-                slot.drill_entity,
-                slot.beam_entity,
-                slot.push_entity,
-                slot.freeze_entities[0],
-                slot.freeze_entities[1],
-                slot.freeze_entities[2],
-                slot.growth_ray_entity,
-                slot.shrink_ray_entity,
-                slot.blink_entity,
-                slot.duplicator_entity,
-                slot.magnet_entity,
-                slot.bow_entity,
-                // Every ThrowItem2 slot owns its own hurtbox; `throw_entity`
-                // is only the one currently selected, so removing that alone
-                // leaves the other slots' colliders in the pool for a pass.
-                slot.throw_entities[0],
-                slot.throw_entities[1],
-                slot.throw_entities[2],
-                slot.mine_entity,
-                slot.gust_entity,
-                slot.revival_entity,
-                slot.spike_entity,
-                slot.time_stop_entity,
-                slot.engine_entity,
-                slot.tesla_entity,
-            ];
+            let rows = slot.owned_rows();
             for entity in rows {
                 if entity == usize::MAX {
                     continue;
@@ -31383,43 +31366,7 @@ impl RolloutWorld {
                 *hierarchy = self.next_spawn_hierarchy;
                 self.next_spawn_hierarchy += data::get().revival.marker_updatable_count;
             }
-            for entity in [
-                slot.body_entity,
-                slot.dash_entities[0],
-                slot.dash_entities[1],
-                slot.dash_entities[2],
-                slot.circle_entity,
-                slot.rock_entity,
-                slot.roll_entity,
-                slot.meteor_entity,
-                slot.black_hole_entity,
-                slot.macho_throw_entity,
-                slot.drill_entity,
-                slot.beam_entity,
-                slot.push_entity,
-                slot.freeze_entities[0],
-                slot.freeze_entities[1],
-                slot.freeze_entities[2],
-                slot.growth_ray_entity,
-                slot.shrink_ray_entity,
-                slot.blink_entity,
-                slot.duplicator_entity,
-                slot.magnet_entity,
-                slot.bow_entity,
-                // Every ThrowItem2 slot owns its own hurtbox; `throw_entity`
-                // is only the one currently selected, so removing that alone
-                // leaves the other slots' colliders in the pool for a pass.
-                slot.throw_entities[0],
-                slot.throw_entities[1],
-                slot.throw_entities[2],
-                slot.mine_entity,
-                slot.gust_entity,
-                slot.revival_entity,
-                slot.spike_entity,
-                slot.time_stop_entity,
-                slot.engine_entity,
-                slot.tesla_entity,
-            ] {
+            for entity in slot.owned_rows() {
                 if entity != usize::MAX {
                     let row = &mut self.entities[entity];
                     row.flags = if by_callback {
@@ -31459,43 +31406,7 @@ impl RolloutWorld {
             // casualties before this pass's contacts; callback casualties are
             // observed once as destroyed rows without an owner and dropped at
             // the next pass (DetPhysics.Simulate's remove-destroyed step).
-            let rows = [
-                slot.body_entity,
-                slot.dash_entities[0],
-                slot.dash_entities[1],
-                slot.dash_entities[2],
-                slot.circle_entity,
-                slot.rock_entity,
-                slot.roll_entity,
-                slot.meteor_entity,
-                slot.black_hole_entity,
-                slot.macho_throw_entity,
-                slot.drill_entity,
-                slot.beam_entity,
-                slot.push_entity,
-                slot.freeze_entities[0],
-                slot.freeze_entities[1],
-                slot.freeze_entities[2],
-                slot.growth_ray_entity,
-                slot.shrink_ray_entity,
-                slot.blink_entity,
-                slot.duplicator_entity,
-                slot.magnet_entity,
-                slot.bow_entity,
-                // Every ThrowItem2 slot owns its own hurtbox; `throw_entity`
-                // is only the one currently selected, so removing that alone
-                // leaves the other slots' colliders in the pool for a pass.
-                slot.throw_entities[0],
-                slot.throw_entities[1],
-                slot.throw_entities[2],
-                slot.mine_entity,
-                slot.gust_entity,
-                slot.revival_entity,
-                slot.spike_entity,
-                slot.time_stop_entity,
-                slot.engine_entity,
-                slot.tesla_entity,
-            ];
+            let rows = slot.owned_rows();
             for e in rows {
                 if e == usize::MAX {
                     continue;
