@@ -4,9 +4,9 @@ const colors = ["#f4d93f","#b99be8","#ffca6a","#80c7e0","#d9afee","#ef9e70"];
 // Survivable area, from Assets/Scripts/Assembly-CSharp/SceneBounds.cs and the
 // death tests in DestroyIfOutsideSceneBounds.UpdateSim: the blast zone kills at
 // |x| > 131.25 and y > 72.5 on every level; the bottom is WaterHeight (-11.3)
-// on grass/snow levels and Camera_YMin (-26) on space levels. Every map in
-// native/data/rollout.json is level_type 0 (grass), so the space bounds only
-// apply when a replay's first frame says `level_type: 2` (Unity LevelType.space).
+// on grass/snow levels and Camera_YMin (-26) on space levels. The first frame
+// carries `level_type: 2` (Unity LevelType.space) on space maps; board/serve.py
+// fills it from rollout.json session.level_type for replays that lack it.
 const BOUNDS = {
   grass: { x0: -131.25, x1: 131.25, y0: -11.3, y1: 72.5, water: true },
   space: { x0: -131.25, x1: 131.25, y0: -26, y1: 72.5, water: false },
@@ -23,13 +23,17 @@ const FOCUS_PAD = 10;          // world units around the action
 const FOCUS_MIN = [80, 40];    // minimum view span (world units): a level plus jump height
 const FOCUS_EASE = 0.12;       // per-frame fraction of the remaining move (~0.35 s at 60 Hz)
 const FOCUS_SNAP_TICKS = 6;    // a jump in t larger than this is a scrub: snap the camera
+// RlObservation collider flags (native/src/rollout/mod.rs E_*).
+const E_ENABLED = 2, E_EXPLOSIVE = 1 << 11;
+const EXPLOSIVE = "#ff8a3d";
 
 function focusTarget(frame, b, aspect) {
   const xs = [], ys = [];
   for (const p of frame.players) if (p.flags & 1) { xs.push(p.x); ys.push(p.y); }
-  // Owned circles away from their owner are projectiles (arrows); keep them in view.
+  // Owned circles away from their owner are projectiles (arrows), and grenades
+  // carry no owner; keep both in view.
   for (const e of frame.entities) {
-    if (e.kind !== 0 || !(e.owner > 0)) continue;
+    if (e.kind !== 0 || !(e.owner > 0 || e.flags & E_EXPLOSIVE)) continue;
     if (frame.players.some((p) => p.id === e.owner && Math.hypot(p.x - e.x, p.y - e.y) < 2)) continue;
     xs.push(e.x); ys.push(e.y);
   }
@@ -167,11 +171,18 @@ window.drawBoplArena = function(canvas,frame,initial) {
       )
     )
       continue;
-    ctx.fillStyle = owned
-      ? colors[(e.owner - 1) % 6]
-      : e.layer === 4
-        ? "#274c64"
-        : "#8b9e87";
+    // Grenades and explosions are explosive; an explosion's hitbox is live for
+    // one frame (Explosion.hitBoxActiveOnlyFirstFrame), then only its animation
+    // lingers, drawn faint so it does not read as terrain.
+    const explosive = e.flags & E_EXPLOSIVE;
+    ctx.globalAlpha = explosive && !(e.flags & E_ENABLED) ? 0.25 : 1;
+    ctx.fillStyle = explosive
+      ? EXPLOSIVE
+      : owned
+        ? colors[(e.owner - 1) % 6]
+        : e.layer === 4
+          ? "#274c64"
+          : "#8b9e87";
     ctx.strokeStyle = "#c4d4b6";
     if (e.kind === 1 || e.kind === 2) {
       const corners = [
@@ -221,6 +232,7 @@ window.drawBoplArena = function(canvas,frame,initial) {
       ctx.stroke();
     }
   }
+  ctx.globalAlpha = 1;
   for (const p of frame.players) {
     if (!(p.flags & 1)) continue;
     const [x, y] = point(p.x, p.y),

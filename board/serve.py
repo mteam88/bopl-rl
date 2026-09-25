@@ -96,8 +96,18 @@ def round_json(value, ndigits=3):
 # The arena reads a replay as NDJSON: a header line, then one line per frame,
 # so it can draw the first frame before the last has arrived. Unchanged.
 
+@lru_cache(maxsize=1)
+def level_types():
+    maps = json.loads((HERE.parent / 'native/data/rollout.json').read_text())['maps']
+    return [m['session']['level_type'] for m in maps]
+
+
 def visual_ndjson(data):
     frames = data.pop('frames', [])
+    # The arena picks space bounds from the first frame's level_type.
+    map_id = (data.get('task') or data.get('result') or {}).get('map')
+    if frames and 'level_type' not in frames[0] and isinstance(map_id, int) and 0 <= map_id < len(level_types()):
+        frames[0]['level_type'] = level_types()[map_id]
     chunks = [json.dumps(round_json(data), allow_nan=False, separators=(',', ':')).encode()]
     for frame in frames:
         chunks.append(json.dumps(round_json(frame), allow_nan=False, separators=(',', ':')).encode())
@@ -133,8 +143,12 @@ def gzip_named(raw, name, level=4):
     return buf.getvalue()
 
 
+# Bump when visual_ndjson changes what it writes, so .dash.gz sidecars re-encode.
+ENCODING = 2
+
+
 def source_stamp_name(stat):
-    return f'{stat.st_ino}-{stat.st_mtime_ns}-{stat.st_size}'
+    return f'{stat.st_ino}-{stat.st_mtime_ns}-{stat.st_size}-e{ENCODING}'
 
 
 _visual_mem = OrderedDict()
