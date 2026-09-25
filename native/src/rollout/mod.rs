@@ -9229,12 +9229,21 @@ impl RolloutWorld {
                         });
                     let slot = &mut self.players[index];
                     slot.base.position += normal * Fix::from_f32(0.05)
-                        + Vec2::UP * data.meteor.constants.jump_teleport * Fix::from_int(2);
+                        + Vec2::UP * data.meteor.constants.jump_teleport;
                     slot.base.grounded = false;
                     slot.base.ground = None;
                     slot.base.grounded_speed = Fix::ZERO;
                     slot.base.rotation = Fix::ZERO;
                     slot.base.up = Vec2::UP;
+                    // Jump raycasts between its two teleports and lands on
+                    // anything already overhead.
+                    slot.base.collision_rays(terrain!(self));
+                    if self.players[index].base.grounded {
+                        self.exit_meteor_grounded(index, data);
+                        return;
+                    }
+                    let slot = &mut self.players[index];
+                    slot.base.position += Vec2::UP * data.meteor.constants.jump_teleport;
                     slot.meteor.phase = 1;
                     slot.meteor.ticks = 0;
                     slot.base.velocity = Vec2::UP
@@ -9248,6 +9257,12 @@ impl RolloutWorld {
                 slot.base.velocity = Vec2::UP
                     * data.meteor.speed_curve.evaluate(slot.meteor.time)
                     * data.meteor.jump_speed;
+                slot.base.collision_rays(terrain!(self));
+                if self.players[index].base.grounded {
+                    self.exit_meteor_grounded(index, data);
+                    return;
+                }
+                let slot = &mut self.players[index];
                 slot.base.position += slot.base.velocity * DT;
                 slot.meteor.ticks += 1;
                 if slot.meteor.ticks > data.meteor.air_ticks {
@@ -9275,6 +9290,11 @@ impl RolloutWorld {
                 slot.meteor.prev_offset = offset;
                 slot.base.velocity = Vec2::UP * data.meteor.hold_speed;
                 slot.base.external_velocity *= Fix::from_f64(0.8);
+                slot.base.collision_rays(terrain!(self));
+                if self.players[index].base.grounded {
+                    self.exit_meteor_grounded(index, data);
+                    return;
+                }
                 // Meteor's DestroyIfOutsideSceneBounds sits between
                 // MeteorSmash.UpdateSim and PlayerBody, so it observes the
                 // vibrated position and the body is never integrated after.
@@ -9643,6 +9663,21 @@ impl RolloutWorld {
         slot.state_ticks = LAND_TICKS + 2;
         slot.reported_position = landing;
         slot.reported_tick = self.tick;
+    }
+
+    /// MeteorSmash.ExitAbilityGrounded: the slime returns attached where the
+    /// form's VelocityBasedRaycasts landed it, with no ground speed.
+    fn exit_meteor_grounded(&mut self, index: usize, data: &data::RolloutData) {
+        let slot = &mut self.players[index];
+        slot.active = ActiveAbility::None;
+        slot.base.constants = data.player.constants.clone();
+        slot.base.grounded_speed = Fix::ZERO;
+        slot.base.rotation = Fix::ZERO;
+        slot.obs_state = STATE_LAND;
+        slot.state_ticks = LAND_TICKS + 2;
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
+        self.sync_exit_to_ground(index, data);
     }
 
     fn exit_meteor_air(&mut self, index: usize, data: &data::RolloutData) {
@@ -32844,7 +32879,10 @@ impl RolloutWorld {
                     let root = synced;
                     let rotation = slot.base.rotation;
                     let basis = Vec2::angle(rotation);
-                    let center = root + basis.complex_mul(data.meteor.collider_offset);
+                    // DPhysicsBox: position + ComplexMul(fixTrans.right, offset),
+                    // with right kept exactly as the surface normal turned.
+                    let right = Vec2::new(slot.base.up.y, -slot.base.up.x);
+                    let center = root + right.complex_mul(data.meteor.collider_offset);
                     let collider = OrientedBox::from_basis(
                         center,
                         basis,
