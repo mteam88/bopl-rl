@@ -778,6 +778,7 @@ pub struct SpawnedTeslaNode {
     pub line_center: Vec2,
     pub line_right: Vec2,
     pub line_up: Vec2,
+    pub line_inverse_extents: Vec2,
     pub line_rotation: Fix,
     pub flicker_time: Fix,
     pub flicker_ticks: u32,
@@ -5888,7 +5889,7 @@ impl RolloutWorld {
                 continue;
             };
             let shot_position = self.portal_shots[shot_index].position;
-            let wall_position = self.platforms[wall_index].surface.center;
+            let (wall_position, own_inverse_mass) = self.platform_contact_frame(wall_index);
             let correction = {
                 let shot_body = &mut self.portal_shots[shot_index].body;
                 let wall_body = &mut self.platform_dynamics[wall_index].body;
@@ -5896,13 +5897,12 @@ impl RolloutWorld {
                 positional_correction(
                     contact,
                     shot_body.inverse_mass,
-                    wall_body.inverse_mass,
+                    own_inverse_mass,
                     false,
                 )
             };
             self.portal_shots[shot_index].position += correction[0];
-            self.platforms[wall_index].surface.center += correction[1];
-            self.platforms[wall_index].collider.inner.center += correction[1];
+            self.shift_platform_collider(wall_index, correction[1]);
             if correction[1] != Vec2::ZERO {
                 self.platforms_changed();
             }
@@ -10705,6 +10705,29 @@ impl RolloutWorld {
         true
     }
 
+    /// A rounded rect's side of a DetPhysics contact: ResolveCollision
+    /// swaps a composite member for CompositeBody.position (and the combined
+    /// body), while PositionalCorrection keeps the rounded rect's own
+    /// inverse mass.
+    fn platform_contact_frame(&self, index: usize) -> (Vec2, Fix) {
+        let dynamics = &self.platform_dynamics[index];
+        if dynamics.attached_children != 0 {
+            (dynamics.composite_position, dynamics.root_body.inverse_mass)
+        } else {
+            (self.platforms[index].surface.center, dynamics.body.inverse_mass)
+        }
+    }
+
+    /// A positional correction moves the rounded rect's collider and, for a
+    /// composite member, CompositeBody.position too.
+    fn shift_platform_collider(&mut self, index: usize, delta: Vec2) {
+        self.platforms[index].surface.center += delta;
+        self.platforms[index].collider.inner.center += delta;
+        if self.platform_dynamics[index].attached_children != 0 {
+            self.platform_dynamics[index].composite_position += delta;
+        }
+    }
+
     fn attach_child_body(&mut self, platform_index: usize, child: Body) {
         let dynamics = &mut self.platform_dynamics[platform_index];
         let extending_composite = dynamics.attached_children != 0;
@@ -11375,13 +11398,32 @@ impl RolloutWorld {
             Vec2::UP
         };
         let line_up_basis = Vec2::new(-direction.y, direction.x);
-        let line_right_basis = line_up_basis.perp_cw();
+        let line_rotation = line_up_basis.perp_cw().normalized_angle();
         let half = Fix::from_f32(0.5);
-        let half_length = (distance * half).max(data.tesla.lightning_minimum_extent);
-        self.tesla_nodes[node_index].line_center = from + delta * half;
-        self.tesla_nodes[node_index].line_right = line_right_basis * half_length;
-        self.tesla_nodes[node_index].line_up = line_up_basis * data.tesla.lightning_extents.y;
-        self.tesla_nodes[node_index].line_rotation = line_right_basis.normalized_angle();
+        let mut half_length = distance * half;
+        if half_length == Fix::ZERO {
+            half_length = data.tesla.lightning_minimum_extent;
+        }
+        // Before Initialize, SetExtents only replaces startExtents.x. Once
+        // the box exists it keeps y as CalcExtents().y = One / inverseExtents.y,
+        // which UpdateExtents inverts back, and the physics sync's
+        // Box.SetRotation rebuilds both axes from the angle.
+        let height = if node.line_entity.is_some() {
+            Fix::ONE / node.line_inverse_extents.y
+        } else {
+            data.tesla.lightning_extents.y
+        };
+        let line = OrientedBox::from_basis(
+            from + delta * half,
+            Vec2::angle(line_rotation),
+            Vec2::new(half_length, height),
+        );
+        let node = &mut self.tesla_nodes[node_index];
+        node.line_center = line.center;
+        node.line_right = line.right;
+        node.line_up = line.up;
+        node.line_inverse_extents = line.inverse_extents;
+        node.line_rotation = line_rotation;
     }
 
     fn spike_contacts(&mut self, data: &data::RolloutData) {
@@ -11396,10 +11438,7 @@ impl RolloutWorld {
             }
             let parent = &self.platform_dynamics[spike.platform_index];
             let basis = Vec2::angle(parent.body.orientation + spike.relative_rotation);
-            let center = parent.composite_position
-                + spike
-                    .relative_center
-                    .complex_mul(self.platforms[spike.platform_index].surface.right);
+            let center = spike.collider_center;
             let scaled_extents = data.spike.attack_extents * spike.scale;
             let extents = data::surface_extents(scaled_extents);
             let attack_box = OrientedBox {
@@ -11529,10 +11568,7 @@ impl RolloutWorld {
                     center: node.line_center,
                     right: node.line_right,
                     up: node.line_up,
-                    inverse_extents: Vec2::new(
-                        Fix::ONE / node.line_right.length(),
-                        Fix::ONE / node.line_up.length(),
-                    ),
+                    inverse_extents: node.line_inverse_extents,
                 })
             } else {
                 None
@@ -27270,23 +27306,17 @@ impl RolloutWorld {
                 };
                 let mut center = circle.center;
                 for &(p, contact) in &contacts {
+                    let (platform_center, own_inverse_mass) = self.platform_contact_frame(p);
                     let platform_body = &mut self.platform_dynamics[p].body;
-                    resolve(
-                        contact,
-                        &mut arrow_body,
-                        platform_body,
-                        center,
-                        self.platforms[p].surface.center,
-                    );
+                    resolve(contact, &mut arrow_body, platform_body, center, platform_center);
                     let correction = positional_correction(
                         contact,
                         arrow_body.inverse_mass,
-                        platform_body.inverse_mass,
+                        own_inverse_mass,
                         false,
                     );
                     center += correction[0];
-                    self.platforms[p].surface.center += correction[1];
-                    self.platforms[p].collider.inner.center += correction[1];
+                    self.shift_platform_collider(p, correction[1]);
                 }
                 self.platforms_changed();
                 // Arrow.OnCollide destroys the components from the callback
@@ -27648,6 +27678,7 @@ impl RolloutWorld {
             // registered terrain child without ability-specific branching.
             let mut terrain_contacts = [(usize::MAX, Contact::default(), false); 64];
             let mut terrain_contact_count = 0;
+            let sweep_x = self.sweep_x();
             for (entity, row) in self.entities.iter().copied().enumerate() {
                 if terrain_contact_count == terrain_contacts.len()
                     || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
@@ -27658,14 +27689,19 @@ impl RolloutWorld {
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
                 let contact = if row.kind == 0 {
-                    crate::physics::contact::circle_circle(
-                        Circle {
-                            center,
-                            radius: Fix::from_raw(row.radius),
-                        },
-                        circle,
-                    )
-                    .map(|contact| (contact, true))
+                    // Circle/Circle pairs list the lower sweep minimum first.
+                    let target = Circle {
+                        center,
+                        radius: Fix::from_raw(row.radius),
+                    };
+                    let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+                    if axis(target.center) - target.radius < axis(circle.center) - circle.radius {
+                        crate::physics::contact::circle_circle(target, circle)
+                            .map(|contact| (contact, true))
+                    } else {
+                        crate::physics::contact::circle_circle(circle, target)
+                            .map(|contact| (contact, false))
+                    }
                 } else if row.kind == 1 {
                     let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
                     let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
@@ -27703,24 +27739,27 @@ impl RolloutWorld {
                 };
                 let mut arrow_center = arrow.position;
                 for &(entity, contact, target_first) in &terrain_contacts[..terrain_contact_count] {
-                    let platform_index = self
+                    // ResolveCollision uses the CompositeBody; PositionalCorrection
+                    // takes the child's own inverse mass and moves the child and
+                    // CompositeBody.position, not the platform's own collider.
+                    let node_index = self
+                        .tesla_nodes
+                        .iter()
+                        .position(|node| node.active && node.entity == Some(entity));
+                    let child = self
                         .spike_attacks
                         .iter()
                         .find(|spike| {
                             spike.active && !spike.macho_carried && spike.entity == Some(entity)
                         })
-                        .map(|spike| spike.platform_index)
+                        .map(|spike| (spike.platform_index, data.spike.attack_body.inverse_mass))
                         .or_else(|| {
-                            self.tesla_nodes
-                                .iter()
-                                .find(|node| {
-                                    node.active
-                                        && (node.entity == Some(entity)
-                                            || node.line_entity == Some(entity))
-                                })
-                                .map(|node| node.platform_index)
+                            node_index.map(|index| {
+                                let node = &self.tesla_nodes[index];
+                                (node.platform_index, node.body.inverse_mass)
+                            })
                         });
-                    let Some(platform_index) = platform_index else {
+                    let Some((platform_index, child_inverse_mass)) = child else {
                         continue;
                     };
                     let platform_center = self.platform_dynamics[platform_index].composite_position;
@@ -27735,7 +27774,7 @@ impl RolloutWorld {
                         );
                         positional_correction(
                             contact,
-                            platform_body.inverse_mass,
+                            child_inverse_mass,
                             arrow_body.inverse_mass,
                             false,
                         )
@@ -27750,7 +27789,7 @@ impl RolloutWorld {
                         positional_correction(
                             contact,
                             arrow_body.inverse_mass,
-                            platform_body.inverse_mass,
+                            child_inverse_mass,
                             false,
                         )
                     };
@@ -27761,8 +27800,9 @@ impl RolloutWorld {
                     };
                     self.platform_dynamics[platform_index].body = platform_body;
                     self.platform_dynamics[platform_index].composite_position += platform_delta;
-                    self.platforms[platform_index].surface.center += platform_delta;
-                    self.platforms[platform_index].collider.inner.center += platform_delta;
+                    if let Some(index) = node_index {
+                        self.tesla_nodes[index].collider_center += platform_delta;
+                    }
                     arrow_center += arrow_delta;
                 }
                 self.platforms_changed();
@@ -28043,18 +28083,17 @@ impl RolloutWorld {
                 let mut body = missile.body;
                 let mut center = missile.position;
                 for &(platform_index, contact) in &contacts[..contact_count] {
-                    let platform_center = self.platforms[platform_index].surface.center;
+                    let (platform_center, own_inverse_mass) = self.platform_contact_frame(platform_index);
                     let platform_body = &mut self.platform_dynamics[platform_index].body;
                     resolve(contact, &mut body, platform_body, center, platform_center);
                     let correction = positional_correction(
                         contact,
                         body.inverse_mass,
-                        platform_body.inverse_mass,
+                        own_inverse_mass,
                         false,
                     );
                     center += correction[0];
-                    self.platforms[platform_index].surface.center += correction[1];
-                    self.platforms[platform_index].collider.inner.center += correction[1];
+                    self.shift_platform_collider(platform_index, correction[1]);
                 }
                 self.platforms_changed();
                 if missile.magnet_hold_ticks >= 0 {
@@ -28375,18 +28414,17 @@ impl RolloutWorld {
             let mut body = item.body;
             let mut center = item.position;
             for &(platform_index, contact) in &contacts[..contact_count] {
-                let platform_center = self.platforms[platform_index].surface.center;
+                let (platform_center, own_inverse_mass) = self.platform_contact_frame(platform_index);
                 let platform_body = &mut self.platform_dynamics[platform_index].body;
                 resolve(contact, &mut body, platform_body, center, platform_center);
                 let correction = positional_correction(
                     contact,
                     body.inverse_mass,
-                    platform_body.inverse_mass,
+                    own_inverse_mass,
                     false,
                 );
                 center += correction[0];
-                self.platforms[platform_index].surface.center += correction[1];
-                self.platforms[platform_index].collider.inner.center += correction[1];
+                self.shift_platform_collider(platform_index, correction[1]);
             }
             self.platforms_changed();
             let thrown = &mut self.thrown_items[item_index];
@@ -28462,6 +28500,26 @@ impl RolloutWorld {
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
 
+        // Tesla nodes are circle children of their platform's CompositeBody
+        // and share this pass; participants from NODE up are nodes.
+        const NODE: usize = 1 << 16;
+        let items = &self.thrown_items;
+        let nodes = &self.tesla_nodes;
+        let circle = |index: usize| {
+            if index >= NODE {
+                let node = &nodes[index - NODE];
+                Circle {
+                    center: node.collider_center,
+                    radius: data.tesla.node_radius * node.collider_scale,
+                }
+            } else {
+                Circle {
+                    center: items[index].position,
+                    radius: radius(items[index]),
+                }
+            }
+        };
+
         let order = &mut self.scratch.item_order;
         order.clear();
         order.extend(
@@ -28478,9 +28536,19 @@ impl RolloutWorld {
                         .then_some(index)
                 }),
         );
+        order.extend(self.tesla_nodes.iter().enumerate().filter_map(|(index, node)| {
+            (node.active
+                && !node.macho_carried
+                && node.platform_index < self.platforms.len()
+                && node.body.inverse_mass >= Fix::ZERO
+                && node.entity.is_some_and(|entity| {
+                    self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
+                }))
+            .then_some(NODE + index)
+        }));
         order.sort_unstable_by(|&a, &b| {
-            let a_min = axis(self.thrown_items[a].position) - radius(self.thrown_items[a]);
-            let b_min = axis(self.thrown_items[b].position) - radius(self.thrown_items[b]);
+            let a_min = axis(circle(a).center) - circle(a).radius;
+            let b_min = axis(circle(b).center) - circle(b).radius;
             a_min.cmp(&b_min).then(a.cmp(&b))
         });
 
@@ -28489,33 +28557,26 @@ impl RolloutWorld {
         window.clear();
         contacts.clear();
         for &current in order.iter() {
-            let current_item = self.thrown_items[current];
-            let current_radius = radius(current_item);
-            let current_min = axis(current_item.position) - current_radius;
-            window.retain(|&prior| {
-                axis(self.thrown_items[prior].position) + radius(self.thrown_items[prior])
-                    > current_min
-            });
+            let current_circle = circle(current);
+            let current_min = axis(current_circle.center) - current_circle.radius;
+            window.retain(|&prior| axis(circle(prior).center) + circle(prior).radius > current_min);
             for &prior in window.iter() {
-                let prior_item = self.thrown_items[prior];
-                let prior_radius = radius(prior_item);
-                if other(prior_item.position) + prior_radius
-                    <= other(current_item.position) - current_radius
-                    || other(prior_item.position) - prior_radius
-                        >= other(current_item.position) + current_radius
+                // Nodes of different platforms would need a
+                // composite-on-composite resolve; they never touch in play.
+                if prior >= NODE && current >= NODE {
+                    continue;
+                }
+                let prior_circle = circle(prior);
+                if other(prior_circle.center) + prior_circle.radius
+                    <= other(current_circle.center) - current_circle.radius
+                    || other(prior_circle.center) - prior_circle.radius
+                        >= other(current_circle.center) + current_circle.radius
                 {
                     continue;
                 }
-                if let Some(contact) = crate::physics::contact::circle_circle(
-                    Circle {
-                        center: prior_item.position,
-                        radius: prior_radius,
-                    },
-                    Circle {
-                        center: current_item.position,
-                        radius: current_radius,
-                    },
-                ) {
+                if let Some(contact) =
+                    crate::physics::contact::circle_circle(prior_circle, current_circle)
+                {
                     contacts.push((prior, current, contact));
                 }
             }
@@ -28525,6 +28586,39 @@ impl RolloutWorld {
         // of them. In particular the three overlapping fan copies must all
         // use their initial positions rather than a prior pair's correction.
         for &(a_index, b_index, contact) in contacts.iter() {
+            if a_index >= NODE || b_index >= NODE {
+                // ResolveCollision swaps a composite child for its combined
+                // body and position; PositionalCorrection still takes the
+                // child's own inverse mass, and moves the child collider and
+                // CompositeBody.position, not the platform's own collider.
+                let item_first = b_index >= NODE;
+                let (item_index, node_index) = if item_first {
+                    (a_index, b_index - NODE)
+                } else {
+                    (b_index, a_index - NODE)
+                };
+                let item = self.thrown_items[item_index];
+                let node = self.tesla_nodes[node_index];
+                let platform = node.platform_index;
+                let platform_center = self.platform_dynamics[platform].composite_position;
+                let mut item_body = item.body;
+                let mut platform_body = self.platform_dynamics[platform].body;
+                let (item_delta, node_delta) = if item_first {
+                    resolve(contact, &mut item_body, &mut platform_body, item.position, platform_center);
+                    let c = positional_correction(contact, item_body.inverse_mass, node.body.inverse_mass, false);
+                    (c[0], c[1])
+                } else {
+                    resolve(contact, &mut platform_body, &mut item_body, platform_center, item.position);
+                    let c = positional_correction(contact, node.body.inverse_mass, item_body.inverse_mass, false);
+                    (c[1], c[0])
+                };
+                self.thrown_items[item_index].body = item_body;
+                self.thrown_items[item_index].position += item_delta;
+                self.platform_dynamics[platform].body = platform_body;
+                self.platform_dynamics[platform].composite_position += node_delta;
+                self.tesla_nodes[node_index].collider_center += node_delta;
+                continue;
+            }
             let a = self.thrown_items[a_index];
             let b = self.thrown_items[b_index];
             let mut body_a = a.body;
@@ -28565,6 +28659,9 @@ impl RolloutWorld {
         let mut smoke_callback_count = 0;
         for &(a_index, b_index, _) in contacts.iter() {
             for item_index in [a_index, b_index] {
+                if item_index >= NODE {
+                    continue;
+                }
                 let item = self.thrown_items[item_index];
                 if item.active
                     && item.ability == ABILITY_SMOKE
@@ -29928,7 +30025,7 @@ impl RolloutWorld {
                     continue;
                 };
                 let rock_position = self.duplicated_rocks[rock_index].position;
-                let wall_position = self.platforms[wall_index].surface.center;
+                let (wall_position, own_inverse_mass) = self.platform_contact_frame(wall_index);
                 let (rock_body, wall_body) = (
                     &mut self.duplicated_rocks[rock_index].body,
                     &mut self.platform_dynamics[wall_index].body,
@@ -29937,12 +30034,11 @@ impl RolloutWorld {
                 let correction = positional_correction(
                     contact,
                     rock_body.inverse_mass,
-                    wall_body.inverse_mass,
+                    own_inverse_mass,
                     false,
                 );
                 self.duplicated_rocks[rock_index].position += correction[0];
-                self.platforms[wall_index].surface.center += correction[1];
-                self.platforms[wall_index].collider.inner.center += correction[1];
+                self.shift_platform_collider(wall_index, correction[1]);
                 circle.center = self.duplicated_rocks[rock_index].position;
                 self.platforms_changed();
             }
@@ -30070,7 +30166,7 @@ impl RolloutWorld {
                 continue;
             }
             let rock_position = self.players[rock_index].base.position;
-            let wall_position = self.platforms[wall_index].surface.center;
+            let (wall_position, own_inverse_mass) = self.platform_contact_frame(wall_index);
             let (correction, rock_velocity) = {
                 let rock_body = &mut self.players[rock_index].rock.body;
                 let wall_body = &mut self.platform_dynamics[wall_index].body;
@@ -30079,15 +30175,14 @@ impl RolloutWorld {
                     positional_correction(
                         contact,
                         rock_body.inverse_mass,
-                        wall_body.inverse_mass,
+                        own_inverse_mass,
                         false,
                     ),
                     rock_body.velocity,
                 )
             };
             self.players[rock_index].base.position += correction[0];
-            self.platforms[wall_index].surface.center += correction[1];
-            self.platforms[wall_index].collider.inner.center += correction[1];
+            self.shift_platform_collider(wall_index, correction[1]);
             self.players[rock_index].base.velocity = rock_velocity;
             changed_platform = true;
         }
@@ -30568,6 +30663,17 @@ impl RolloutWorld {
         // Composite children are synchronized immediately after integration.
         // Positional corrections later in this pass move CompositeBody.position
         // while leaving each child collider center stale until the next pass.
+        for spike in &mut self.spike_attacks {
+            if !spike.active || spike.macho_carried || spike.platform_index >= self.platforms.len()
+            {
+                continue;
+            }
+            let platform = spike.platform_index;
+            spike.collider_center = self.platform_dynamics[platform].composite_position
+                + spike
+                    .relative_center
+                    .complex_mul(self.platforms[platform].surface.right);
+        }
         for engine in &mut self.engines {
             if !engine.active
                 || engine.macho_carried
@@ -30666,10 +30772,7 @@ impl RolloutWorld {
             let parent_index = spike.platform_index;
             let parent = &self.platform_dynamics[parent_index].body;
             let basis = Vec2::angle(parent.orientation + spike.relative_rotation);
-            let center = self.platform_dynamics[parent_index].composite_position
-                + spike
-                    .relative_center
-                    .complex_mul(self.platforms[parent_index].surface.right);
+            let center = spike.collider_center;
             let scaled_extents = data.spike.attack_extents * spike.scale;
             let spike_extents = data::surface_extents(scaled_extents);
             let attack_box = OrientedBox {
@@ -30730,6 +30833,7 @@ impl RolloutWorld {
             // Box correction moves the box and its CompositeBody.position,
             // but does not directly move the rounded-rect child collider.
             self.platform_dynamics[parent_index].composite_position += correction[0];
+            self.spike_attacks[spike_index].collider_center += correction[0];
             self.platforms[wall_index].surface.center += correction[1];
             self.platforms[wall_index].collider.inner.center += correction[1];
             if self.platform_dynamics[wall_index].attached_children != 0 {
@@ -30804,6 +30908,7 @@ impl RolloutWorld {
                 false,
             );
             self.platform_dynamics[parent_index].composite_position += correction[0];
+            self.engines[engine_index].collider_center += correction[0];
             self.platforms[wall_index].surface.center += correction[1];
             self.platforms[wall_index].collider.inner.center += correction[1];
             if self.platform_dynamics[wall_index].attached_children != 0 {
@@ -32192,16 +32297,13 @@ impl RolloutWorld {
             let Some(entity) = spike.entity else {
                 continue;
             };
-            let platform = &self.platforms[spike.platform_index];
             let parent = &self.platform_dynamics[spike.platform_index].body;
             let rotation = parent.orientation + spike.relative_rotation;
             let basis = Vec2::angle(rotation);
             // Box.SetRotation builds `up` as ComplexMul(up * extent, basis):
             // 0*x - e*y floors e*y before negating, where `perp() * e` would
             // floor the negative product (1 raw apart).
-            let center = self.platform_dynamics[spike.platform_index].composite_position
-                + spike.relative_center.complex_mul(platform.surface.right);
-            self.spike_attacks[spike_index].collider_center = center;
+            let center = spike.collider_center;
             let extents = data::surface_extents(data.spike.attack_extents * spike.scale);
             self.entities[entity] = CEntity {
                 id: self.entities[entity].id,
