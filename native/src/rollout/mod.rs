@@ -8416,6 +8416,10 @@ impl RolloutWorld {
                             // later UnGround has nothing to push off from.
                             slot.base.ground = None;
                         }
+                        // OnEnterAbility syncs the hurtbox to the entry pose
+                        // (BowTransform.cs:86-87); later updaters this pass
+                        // (BlackHole's pull) see it there.
+                        slot.base.sync_collider();
                         // Ability.UpdateSim publishes the body SyncPhysicsTo
                         // placed; a grown slime's larger radius moves it.
                         slot.reported_position = slot.base.position;
