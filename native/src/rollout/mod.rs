@@ -29709,22 +29709,6 @@ impl RolloutWorld {
             if !self.platforms[i].active {
                 continue;
             }
-            if self.platform_dynamics[i].drop_players_frames >= 0 {
-                self.platform_dynamics[i].drop_players_frames -= 1;
-            }
-            let previous = self.platform_dynamics[i].body_scale;
-            let scale = self.platform_dynamics[i].scale;
-            if !self.platform_dynamics[i].body_resizable && previous != scale {
-                let ratio = previous / scale;
-                self.platform_dynamics[i].body.inverse_mass *= ratio;
-                self.platform_dynamics[i].body.inverse_inertia *= ratio;
-                self.platform_dynamics[i].root_body.inverse_mass *= ratio;
-                self.platform_dynamics[i].root_body.inverse_inertia *= ratio;
-                self.platform_dynamics[i].body_scale = scale;
-                self.platforms_changed();
-            } else if self.platform_dynamics[i].body_resizable {
-                self.platform_dynamics[i].body_scale = scale;
-            }
             if !self.platform_dynamics[i].surface_shape_dirty {
                 continue;
             }
@@ -29802,6 +29786,31 @@ impl RolloutWorld {
         }
         if shook {
             self.platforms_changed();
+        }
+
+        // BoplBody is the last updater on every platform (StickyRR,
+        // AnimateVelocity, ShakablePlatform, ..., BoplBody), so the spring
+        // above still pushed with the mass from before this pass's rescale.
+        for i in 0..self.platforms.len() {
+            if !self.platforms[i].active {
+                continue;
+            }
+            if self.platform_dynamics[i].drop_players_frames >= 0 {
+                self.platform_dynamics[i].drop_players_frames -= 1;
+            }
+            let previous = self.platform_dynamics[i].body_scale;
+            let scale = self.platform_dynamics[i].scale;
+            if !self.platform_dynamics[i].body_resizable && previous != scale {
+                let ratio = previous / scale;
+                self.platform_dynamics[i].body.inverse_mass *= ratio;
+                self.platform_dynamics[i].body.inverse_inertia *= ratio;
+                self.platform_dynamics[i].root_body.inverse_mass *= ratio;
+                self.platform_dynamics[i].root_body.inverse_inertia *= ratio;
+                self.platform_dynamics[i].body_scale = scale;
+                self.platforms_changed();
+            } else if self.platform_dynamics[i].body_resizable {
+                self.platform_dynamics[i].body_scale = scale;
+            }
         }
 
         // AntiLockPlatform runs after AnimateVelocity: add the ordinary force
