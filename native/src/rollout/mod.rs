@@ -18753,9 +18753,12 @@ impl RolloutWorld {
                                     Fix::ZERO,
                                     data,
                                 );
+                                // performDash calls the hole's OnCollide before it
+                                // moves the body to the hit (Dash.cs), so the hole
+                                // exits the form where the dash began.
                                 let slot = &mut self.players[index];
-                                slot.base.position = origin + direction * hit.distance;
-                                slot.reported_position = slot.base.position;
+                                slot.base.position = origin;
+                                slot.reported_position = origin;
                                 self.kill(index, killer, CAUSE_OTHER, false, false);
                                 return;
                             }
@@ -25663,7 +25666,13 @@ impl RolloutWorld {
         if grounded {
             // selfImposedVelocity = -groundNormal * KnockBack, then UnGround:
             // the shooter slams onto the platform and exits on landing.
-            slot.base.velocity = -(slot.base.up * bow.knockback);
+            // currentNormal(body) is read now, so a turning platform gives
+            // this pass's normal rather than the up the last Move aligned to.
+            let normal = slot
+                .base
+                .platform(platforms)
+                .map_or(slot.base.up, |platform| platform.surface.normal(slot.base.position));
+            slot.base.velocity = -(normal * bow.knockback);
             slot.base.force_unground(platforms);
             slot.bow.fire_ticks_left = bow.fire_ground_ticks;
         } else {
