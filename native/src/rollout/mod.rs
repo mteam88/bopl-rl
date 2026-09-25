@@ -25337,7 +25337,7 @@ impl RolloutWorld {
                 // CalcExtents already includes the current DPhysics scale.
                 // During the enter animation only the bevel radius changes.
                 let extents = pd.spawn_extents * self.platform_dynamics[platform_index].scale;
-                self.reshape_platform(platform_index, center, extents, radius);
+                self.reshape_platform(platform_index, extents, radius);
                 let slot = &mut self.players[index];
                 slot.base.position = center;
                 // SpriteAnimator invokes EnterSize after PlatformTransform's
@@ -25558,7 +25558,12 @@ impl RolloutWorld {
         let shift_local = Vec2::new((a - x) * st.active_corner.x, (a2 - y) * st.active_corner.y);
         let shift = shift_local.complex_mul(basis);
         let new_center = center + shift;
-        self.reshape_platform(platform_index, new_center, Vec2::new(a, a2), radius);
+        // PlatformTransform moves the ground body's FixTransform and the
+        // spring's home; the DetPhysics collider follows at the next Simulate.
+        self.platforms[platform_index].surface.center = new_center;
+        self.platform_dynamics[platform_index].shake_unsynced += shift;
+        self.platform_dynamics[platform_index].home_position += shift;
+        self.reshape_platform(platform_index, Vec2::new(a, a2), radius);
         self.players[index].base.position = new_center;
     }
 
@@ -25656,7 +25661,6 @@ impl RolloutWorld {
         // though the geometry itself did not change.
         self.reshape_platform(
             platform_index,
-            position,
             pd.spawn_extents * scale,
             pd.spawn_radius * scale,
         );
@@ -25866,10 +25870,10 @@ impl RolloutWorld {
         }
     }
 
-    fn reshape_platform(&mut self, index: usize, center: Vec2, extents: Vec2, radius: Fix) {
-        let old_center = self.platforms[index].surface.center;
+    /// ResizablePlatform.ResizePlatform: geometry, mass and inertia only.
+    /// It never moves the platform.
+    fn reshape_platform(&mut self, index: usize, extents: Vec2, radius: Fix) {
         let platform = &mut self.platforms[index];
-        platform.surface.center = center;
         // ResizablePlatform.ResizePlatform ends with StickyRect.UpdateBounds
         // (ResizablePlatform.cs:105): the perimeter reads `One / (One / e)`.
         platform.surface.extents = data::surface_extents(extents);
@@ -25877,7 +25881,6 @@ impl RolloutWorld {
         // Box.UpdateExtents (Box.cs:37-44) rescales the existing axes rather
         // than rebuilding them from the rotation.
         let inner = &mut platform.collider.inner;
-        inner.center = center;
         inner.right *= inner.inverse_extents.x;
         inner.up *= inner.inverse_extents.y;
         inner.inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
@@ -25904,7 +25907,6 @@ impl RolloutWorld {
             dynamics.root_body.inverse_mass = dynamics.body.inverse_mass;
             dynamics.root_body.inverse_inertia = dynamics.body.inverse_inertia;
         }
-        dynamics.home_position += center - old_center;
         self.platforms_changed();
         self.rebuild_bounds();
     }
@@ -30984,8 +30986,7 @@ impl RolloutWorld {
         // above used the pre-resize mass while DetPhysics integrates it with
         // the new one.
         for (index, extents, radius) in removal_resizes {
-            let center = self.platforms[index].surface.center;
-            self.reshape_platform(index, center, extents, radius);
+            self.reshape_platform(index, extents, radius);
         }
         removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
         for index in removal_destroys {
@@ -34666,7 +34667,6 @@ mod tests {
 
         world.reshape_platform(
             index,
-            Vec2::new(Fix::from_int(5), Fix::from_int(6)),
             Vec2::new(Fix::from_f64(0.75), Fix::from_f64(3.25)),
             Fix::from_f64(0.25),
         );
