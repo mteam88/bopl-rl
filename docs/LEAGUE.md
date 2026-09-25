@@ -232,124 +232,45 @@ here, the learned members against the scripted/random anchors.
 
 ## State of the league, measured 2026-09-24
 
-Condition `sim9f60ac37.lineups-8.map0-1-2.t7200.d9`, 18 rated members (9 scripted,
-8 specialist, random), 153/153 pairs, 7344 games, 48 per pair.
-
-**One scripted bot is the whole equilibrium.** `search-hard` takes Nash mass 1.000;
-support is 1 of 18 members and entropy 0.00 of a possible 2.89 nats. Every other
-member has negative Nash value, from -0.250 (`grapple-beam-rock`) to -0.458
-(`random`). Elo agrees with non-overlapping intervals: `search-hard` 497 [461, 538]
-against 261 [228, 296] for the best specialist. Pairwise it is not close either -
-`search-hard`'s own draw-aware score rate is at or above 0.750 against all
-seventeen opponents, best resistance `grapple-beam-rock` at 0.250, worst
-`teleport-mine-tesla` at 0.062.
-
-**Read this as an off-kit result, not a verdict on the specialists.** The condition
-is `lineups-8` at `--mirror-share 1`: eight three-ability loadouts, both players
-always holding the same one. Each specialist was trained on exactly one of those
-eight, so it plays its own kit in 1 of 8 lineups and a foreign kit in 7 of 8.
-`search-hard` is a rollout search bot - it plans through `bopl_rl_fork` with
-whatever abilities it happens to hold - so it is the only member that is
-loadout-agnostic by construction. A condition that is 7/8 off-kit for everyone
-else is close to the best case a search bot could be handed. The honest statement
-is that the league measures **generalist** strength and the specialists are weak
-generalists, which is what they were trained to be.
-
-Three things follow.
-
-- **The first exploiter should still target `search-hard`**, because it is the only
-  member the equilibrium plays, so nothing else can move the mixture. But the
-  exploit to look for is a search weakness, not a kit counter.
-- **Adding members will not help until one of them beats it.** A pool whose
-  equilibrium is a single strategy gives PFSP nothing to mix, so opponent sampling
-  collapses to that bot however many members are registered. This is the
-  saturation Matthew has already seen once.
-- **The specialists on their own kits are a separate condition, and it has now
-  been measured** - see "The own-kit condition" below. Counts are never pooled
-  across conditions, so it is additive to this section rather than a revision of
-  it. The short version: on their own kits the specialists are strong, and the
-  equilibrium is still a single member.
-
-Scope: 3 maps of 124. The condition tag `map0-1-2` is the map set 0, 1, 2
-(`registry.condition` joins the sorted ids). `league play --maps` writes a separate
-condition per map set, so widening the map set is the cheapest way to learn whether
-`search-hard` dominates everywhere or only here.
-
-`duplicator-blink-blackhole` and `dash-missile-platform` sit near the bottom, which
-is expected: both lost a boundary-leaving exploit to the 2026-09-23 fidelity fixes
-and are pending retrain. Their ratings here were measured post-fix and are honest,
-so the degeneracy is not an artifact of carrying them. It is off-kit position only:
-both are mid-pack in the own-kit condition below.
-
-## The own-kit condition, measured 2026-09-24
-
-Condition `simf0ab99a8.lineups-own-kit.map0-1-2.t7200.d9`, 9 rated members (8
-specialists, random), 36/36 pairs, 1728 games, 48 per pair, every game played on
-the participant's own three abilities and asserted as such from `lineup_ids`.
+The rating condition `simf0ab99a8.own-kit.mapall-124.t10800.d9`: 58 members
+(18 v4 and 4 v3 mains, 8 specialists, 27 scripted bots, random), every pair
+played, 24 games each, 39,672 games in 4.6 h. 543 games (1.4%) were draws; with
+3-minute games the old flood of timeout draws is gone.
 
 ```
-member                           Elo       bootstrap 95%     Nash    score
-drill-throw-magnet               592  [    517,    675]   +0.000    0.743
-grapple-beam-rock                527  [    464,    601]   -0.187    0.658
-roll-grenade-smoke               495  [    432,    575]   -0.094    0.613
-dash-bow-platform                451  [    383,    524]   -0.187    0.549
-dash-missile-platform            448  [    381,    529]   -0.271    0.546
-duplicator-blink-blackhole       393  [    331,    468]   -0.167    0.466
-web-mjolnir-freeze               370  [    311,    443]   -0.333    0.434
-teleport-mine-tesla              366  [    301,    430]   -0.333    0.427
-random                             0  [      0,      0]   -0.375    0.064
+member                  Elo   95%            member                  Elo   95%
+dash-bow-platform       494  [462, 525]      grapple-beam-rock       428  [400, 461]
+v4-full-2240m           493  [461, 526]      evasive-v2-hard         373  [342, 406]
+v4-aim-only-2313m       488  [460, 521]      v3b-041-final           355  [325, 389]
+v4-full-2313m           483  [453, 517]      drill-throw-magnet      327  [297, 359]
+v4-lite-1920m           478  [448, 508]      dash-missile-platform   267  [238, 299]
+search-medium           459  [432, 492]      roll-grenade-smoke      257  [223, 293]
+search-hard             440  [411, 473]      teleport-mine-tesla     228  [198, 260]
+                                             duplicator-blink-bh     221  [190, 253]
+                                             web-mjolnir-freeze      184  [150, 215]
+                                             random                    0
 ```
 
-`score` is the member's own draw-aware score rate over all 384 of its games,
-random included; 6.3% of games (109/1728) were draws. RPP of the eight against
-the anchor is +0.4792, i.e. 0.979 in score units.
+(`league rate` prints all 58.) Four things in it.
 
-**Training works.** This is what the section above could not say. Every
-specialist sits 366 to 592 Elo above `random` on its own kit, and random takes
-0.064 against the field. Off-kit in `lineups-8` the best specialist was 261, so
-the gap to 592 is large - but do not read it as a clean measurement of the cost of
-playing a foreign kit. The two conditions differ in the simulator library as well
-as the loadouts (`sim9f60ac37` against `simf0ab99a8`, which is post-fixtures
-#9-#14), which is exactly why counts are never pooled across conditions. Both
-scales are anchored at `random` = 0, so the comparison is suggestive and the
-direction is not in doubt; the magnitude is not a number to quote.
+- **The v4 mains and the search bots are one band.** From `dash-bow-platform`
+  at 494 down to `search-hard` at 440 the intervals overlap throughout: the best
+  trained policies are level with the search bots, not past them.
+- **Every other specialist is below the v4 mains, most well below.** They were
+  trained on maps 0-2 only, and here they play all 124. `dash-bow-platform`
+  tops the table on the v4 mains' own kit, which says the kit, not the
+  training, sets most of the gap. `drill-throw-magnet`, first by 65 Elo when
+  rated on maps 0-2, is 327 here: its strength was largely those three maps.
+- **The Nash equilibrium is two members**, `v4-aim-only-2313m` (0.385) and
+  `grapple-beam-rock` (0.615). Two members that beat different things; growing
+  the league means adding something that beats both.
+- **A checkpoint rated by `league candidate` lands where the round robin puts
+  it.** `drill-throw-magnet`'s checkpoint, rated as a candidate on 114 games,
+  refits to 327 [268, 383] against its member rating of 327.
 
-**The equilibrium is still one member.** `drill-throw-magnet` takes Nash mass
-1.000 with support 1 of 9. So the own-kit population is saturated the same way the
-generalist condition is saturated by `search-hard` - a different member, the same
-shape. A pool whose equilibrium is a single strategy gives PFSP nothing to mix
-regardless of how many members are registered, and that holds here too. Growing
-this pool means adding something that beats `drill-throw-magnet`, not adding more
-specialists.
-
-**The ordering is near-transitive and the middle is not resolved.** Nash and Elo
-agree on the ends but not in between. `roll-grenade-smoke` has the second-best
-Nash value (-0.094) on the third-best Elo, and `duplicator-blink-blackhole` the
-third-best (-0.167) on the sixth-best Elo, because Nash reads resistance to the
-equilibrium member and Elo reads average strength against everyone. A member that
-is mediocre overall but holds up against `drill-throw-magnet` is exactly what this
-pool needs and exactly what Elo hides. Elo intervals separate top from
-bottom (592 [517, 675] against 366 [301, 430]) and overlap everywhere in the
-middle, so the five members between 393 and 527 are one indistinguishable band at
-48 games per pair. Deepening them is what `play`'s 15-85% gate will spend CPU on
-next.
-
-**What this condition cannot separate: kit from policy.** Each member is one
-policy welded to one kit, so `drill-throw-magnet` on top means the
-drill/throw/magnet *pairing* is strongest, and there is no way here to say whether
-that is a better-trained policy or a stronger set of abilities. Splitting it needs
-either one policy rated across several kits or several policies rated on one kit,
-and neither exists. Read the table as a ranking of specialist-plus-kit units, and
-do not use it to argue any ability is strong.
-
-`duplicator-blink-blackhole` (393) and `dash-missile-platform` (448) are mid-pack
-here rather than at the bottom, which is worth noting because they are the two
-pending retrain after the 2026-09-23 fidelity fixes. Their off-kit position near
-the bottom of the generalist condition is not reproduced on their own kits.
-
-Scope is the same 3 maps of 124 as the section above, and the same caveat applies:
-widening the map set is the cheapest way to learn whether this ordering is general
-or local.
+Map 114 (`espace 1`) is a hazard, not a defect: a moon orbits each spawn planet
+and its first pass, about half a second in, crushes a player that stays on top of
+the planet. The current members, none trained on space maps, often walk into it.
 
 ## Rating the specialists on their own kits: what it takes
 
