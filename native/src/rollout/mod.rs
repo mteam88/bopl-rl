@@ -15472,8 +15472,10 @@ impl RolloutWorld {
             // Newly instantiated cloud prefabs run Init (including the RNG
             // draw above) before their bounds updater in the same pass. A
             // cloud born below WaterHeight is destroyed before its collider
-            // can appear in the public entity rows.
+            // can appear in the public entity rows, instantiating the
+            // two-updatable water splash.
             if cloud.position.y < Fix::from_f32(-11.3) {
+                self.next_spawn_hierarchy += 2;
                 self.remove_smoke_cloud(cloud_index);
                 continue;
             }
@@ -15846,6 +15848,9 @@ impl RolloutWorld {
                 && self.smoke_clouds[cloud_index].registered
                 && self.smoke_clouds[cloud_index].position.y < Fix::from_f32(-11.3)
             {
+                // SmokeCircle's DestroyIfOutsideSceneBounds also instantiates
+                // the two-updatable water splash.
+                self.next_spawn_hierarchy += 2;
                 self.remove_smoke_cloud(cloud_index);
                 continue;
             }
@@ -26042,6 +26047,10 @@ impl RolloutWorld {
             // NeverDestroyAbove flag leaves top exits alive.
             let position = self.arrows[i].position;
             if position.y < Fix::from_f32(-11.3) || position.x.abs() > Fix::from_f64(131.25) {
+                // Only the water exit has an effect: the two-updatable splash.
+                if position.y < Fix::from_f32(-11.3) && !data.maps[self.map].is_space() {
+                    self.next_spawn_hierarchy += 2;
+                }
                 self.destroy_arrow(i);
                 continue;
             }
