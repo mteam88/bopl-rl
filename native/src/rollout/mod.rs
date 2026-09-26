@@ -26237,6 +26237,25 @@ impl RolloutWorld {
             form.set_scale(scale, bow.hurtbox_extents, data.player.radius);
             slot.base.radius = form.physics_radius();
         }
+        // The Bow's DestroyIfOutsideSceneBounds (hierarchy 50) runs after
+        // PlayerPhysics (48) and before BowTransform (51), so a Bow below the
+        // water dies before OldUpdate can fire, and PlayerBody never
+        // integrates it. BowTransform.ExitAbility ungrounds the body first
+        // (BowTransform.cs:120), so a grounded Bow dies 0.05 off its
+        // surface, and that is the position the slime takes over
+        // (BowTransform.cs:124, SlimeController.cs:217).
+        {
+            let slot = &mut self.players[index];
+            if slot.base.outside_bounds() {
+                slot.base.alive = false; // game_tick attributes it after this updater
+                slot.base.out_of_bounds = true;
+                slot.base.rotation = Fix::ZERO;
+                slot.base.up = Vec2::UP;
+                slot.base.force_unground(&self.platforms);
+                slot.reported_position = slot.base.position;
+                return;
+            }
+        }
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
         let dir = action.direction();
@@ -26292,22 +26311,6 @@ impl RolloutWorld {
             bounds: &this.bounds,
         };
         let platforms: &[Platform] = terrain.platforms;
-        // Bow's boundary component runs after BowTransform but before
-        // PlayerBody performs this pass's position integration; its
-        // ExitAbility deactivates the Bow, so the body is never integrated.
-        // BowTransform.ExitAbility ungrounds the body first
-        // (BowTransform.cs:120), so a grounded Bow dies 0.05 off its
-        // surface, and that is the position the slime takes over
-        // (BowTransform.cs:124, SlimeController.cs:217).
-        if slot.base.outside_bounds() {
-            slot.base.alive = false; // game_tick attributes it after this updater
-            slot.base.out_of_bounds = true;
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
-            slot.base.force_unground(platforms);
-            slot.reported_position = slot.base.position;
-            return;
-        }
         // BowTransform.UpdateSim ungrounds a Bow whose ground went inactive and
         // lets it fall in the same pass; UnGround still lifts it off that
         // surface (BowTransform.cs:214-218, PlayerPhysics.cs:366-370).
