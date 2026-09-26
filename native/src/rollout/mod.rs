@@ -5358,7 +5358,9 @@ impl RolloutWorld {
             if let Some((position, hierarchy)) = self.players[index].pending_black_hole.take() {
                 self.spawn_black_hole(index, position, hierarchy, data);
             }
-            if self.playable(index) {
+            // An ordinary slime's drop test closes its grounded Move instead
+            // (`player_tick`).
+            if self.playable(index) && self.players[index].active != ActiveAbility::None {
                 self.apply_platform_drop(index, data);
             }
             if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
@@ -7259,6 +7261,8 @@ impl RolloutWorld {
         }
 
         let slot = &mut self.players[index];
+        // UnGround lifts the body off the surface before the push.
+        slot.base.position += normal * Fix::from_f32(0.05);
         slot.base.velocity += normal * dynamics.drop_force;
         slot.base.position += slot.base.velocity / Fix::from_int(100);
         slot.base.grounded = false;
@@ -7275,13 +7279,14 @@ impl RolloutWorld {
             slot.base.constants = data.player.constants.clone();
             slot.base.external_velocity = Vec2::ZERO;
             slot.exit_to_fall();
+            slot.reported_position = slot.base.position;
+            slot.reported_tick = self.tick;
         } else {
-            // An ordinary slime has no IAbilityComponent, so no EnterFall.
+            // An ordinary slime has no IAbilityComponent, so no EnterFall,
+            // and it already published its position before Move.
             slot.obs_state = STATE_FALL;
             slot.state_ticks = 1;
         }
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
     }
 
     fn player_tick(
@@ -9192,12 +9197,25 @@ impl RolloutWorld {
             angle: action.angle,
             buttons: action.buttons & 1,
         };
+        // PlayerPhysics.Move ends its grounded branch with DropPlatformTest,
+        // so a slime knocked off a slammed platform takes no airborne step on
+        // this pass; PlayerBody then integrates the push.
+        let grounded = self.players[index].base.grounded;
         if self.players[index].rope.is_some() {
             self.rope_player_move(index, masked, movement_input, jump_pressed);
+            if grounded && self.playable(index) {
+                self.apply_platform_drop(index, data);
+            }
         } else {
-            self.players[index]
+            let integrate = self.players[index]
                 .base
-                .move_step(masked, movement_input, terrain!(self));
+                .move_unintegrated(masked, movement_input, terrain!(self));
+            if grounded && self.playable(index) {
+                self.apply_platform_drop(index, data);
+            }
+            if integrate {
+                self.players[index].base.integrate();
+            }
         }
         if self.players[index].freeze_form_exit_tick == self.tick
             && self.players[index].base.grounded

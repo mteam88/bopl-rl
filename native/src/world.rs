@@ -831,19 +831,26 @@ impl Player {
     /// gravity: dash entry/continuation, jump, ground or air movement, then
     /// PlayerBody's integration.
     pub(crate) fn move_step(&mut self, action: Action, input: Vec2, terrain: Terrain) {
+        if self.move_unintegrated(action, input, terrain) {
+            self.integrate();
+        }
+    }
+    /// `move_step` short of PlayerBody's integration. False when Dash took
+    /// the pass or the body left the level, and there is nothing to integrate.
+    pub(crate) fn move_unintegrated(&mut self, action: Action, input: Vec2, terrain: Terrain) -> bool {
         let jump = action.buttons & 1 != 0;
         let cast = self.instant_cast_this_pass;
         if self.dash.active {
             self.previous_jump = jump;
             self.dash_step(action, terrain);
-            return;
+            return false;
         }
         self.cooldown += DT;
         if action.buttons & 2 != 0 && self.cooldown > Fix::from_int(4) {
             self.enter_dash(action, input, terrain);
             self.previous_jump = jump;
             self.dash_step(action, terrain);
-            return;
+            return false;
         }
         if jump && !self.previous_jump && self.grounded && !cast {
             self.jump(terrain.platforms);
@@ -853,8 +860,12 @@ impl Player {
         if self.outside_bounds() {
             self.alive = false;
             self.out_of_bounds = true;
-            return;
+            return false;
         }
+        true
+    }
+    /// PlayerBody.LateUpdateSim without a rope.
+    pub(crate) fn integrate(&mut self) {
         self.position += (self.velocity + self.external_velocity) * DT;
         self.external_velocity *= Fix::from_f64(0.95);
     }
