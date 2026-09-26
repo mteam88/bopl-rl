@@ -16311,6 +16311,24 @@ impl RolloutWorld {
         }
     }
 
+    /// The row a pooled object registers into. DetPhysics appends a new
+    /// collider after every live one of its shape and closes gaps on removal,
+    /// so the previous row is reused only while no live row of that shape
+    /// follows it.
+    fn pooled_row(&mut self, previous: Option<usize>) -> usize {
+        if let Some(row) = previous {
+            let kind = self.entities[row].kind;
+            if !self.entities[row + 1..]
+                .iter()
+                .any(|e| e.kind == kind && e.flags & E_REMOVED == 0)
+            {
+                return row;
+            }
+        }
+        self.entities.push(CEntity::default());
+        self.entities.len() - 1
+    }
+
     /// Remove callback-destroyed items, register explosions queued by the
     /// preceding pass, and execute both Shockwave.Init calls before the
     /// updater loop begins.
@@ -16328,15 +16346,8 @@ impl RolloutWorld {
             if !explosion.active || explosion.registered || explosion.born_tick >= self.tick {
                 continue;
             }
-            let entity = match explosion.entity {
-                Some(entity) => entity,
-                None => {
-                    self.entities.push(CEntity::default());
-                    let entity = self.entities.len() - 1;
-                    self.grenade_explosions[explosion_index].entity = Some(entity);
-                    entity
-                }
-            };
+            let entity = self.pooled_row(explosion.entity);
+            self.grenade_explosions[explosion_index].entity = Some(entity);
             let id = self.next_id();
             let collider = OrientedBox::from_basis(
                 explosion.position,
@@ -16386,15 +16397,8 @@ impl RolloutWorld {
                 self.remove_smoke_cloud(cloud_index);
                 continue;
             }
-            let entity = match cloud.entity {
-                Some(entity) => entity,
-                None => {
-                    self.entities.push(CEntity::default());
-                    let entity = self.entities.len() - 1;
-                    self.smoke_clouds[cloud_index].entity = Some(entity);
-                    entity
-                }
-            };
+            let entity = self.pooled_row(cloud.entity);
+            self.smoke_clouds[cloud_index].entity = Some(entity);
             let id = self.next_id();
             self.entities[entity] = CEntity {
                 id,
@@ -16423,15 +16427,8 @@ impl RolloutWorld {
             if !explosion.active || explosion.registered || explosion.born_tick >= self.tick {
                 continue;
             }
-            let entity = match explosion.entity {
-                Some(entity) => entity,
-                None => {
-                    self.entities.push(CEntity::default());
-                    let entity = self.entities.len() - 1;
-                    self.smoke_explosions[explosion_index].entity = Some(entity);
-                    entity
-                }
-            };
+            let entity = self.pooled_row(explosion.entity);
+            self.smoke_explosions[explosion_index].entity = Some(entity);
             let id = self.next_id();
             let extents = data.smoke.explosion_extents * explosion.scale;
             // SmokeExplosion.prefab's FixTransform offsets its box upward.
@@ -26738,15 +26735,8 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let entity = match self.arrows[i].entity {
-                Some(entity) => entity,
-                None => {
-                    self.entities.push(CEntity::default());
-                    let entity = self.entities.len() - 1;
-                    self.arrows[i].entity = Some(entity);
-                    entity
-                }
-            };
+            let entity = self.pooled_row(self.arrows[i].entity);
+            self.arrows[i].entity = Some(entity);
             let arrow = &mut self.arrows[i];
             self.entities[entity] = CEntity {
                 id: arrow.id,
@@ -26780,15 +26770,8 @@ impl RolloutWorld {
             if !missile.active || missile.registered || missile.born_tick >= self.tick {
                 continue;
             }
-            let entity = match missile.entity {
-                Some(entity) => entity,
-                None => {
-                    self.entities.push(CEntity::default());
-                    let entity = self.entities.len() - 1;
-                    self.guided_missiles[index].entity = Some(entity);
-                    entity
-                }
-            };
+            let entity = self.pooled_row(missile.entity);
+            self.guided_missiles[index].entity = Some(entity);
             let id = self.next_id();
             let collider = OrientedBox::from_basis(
                 missile.position,
@@ -26837,15 +26820,8 @@ impl RolloutWorld {
             if !explosion.active || explosion.registered || explosion.born_tick >= self.tick {
                 continue;
             }
-            let entity = match explosion.entity {
-                Some(entity) => entity,
-                None => {
-                    self.entities.push(CEntity::default());
-                    let entity = self.entities.len() - 1;
-                    self.missile_explosions[index].entity = Some(entity);
-                    entity
-                }
-            };
+            let entity = self.pooled_row(explosion.entity);
+            self.missile_explosions[index].entity = Some(entity);
             let id = self.next_id();
             let collider = OrientedBox::from_basis(
                 explosion.position,
