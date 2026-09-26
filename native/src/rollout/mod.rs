@@ -7320,8 +7320,8 @@ impl RolloutWorld {
                 slot.physics_scale = slot.base.scale;
             }
         }
-        if self.players[index].ragdoll.active {
-            self.ragdoll_player_tick(index, data);
+        let ragdoll_ended = self.players[index].ragdoll.active;
+        if ragdoll_ended && self.ragdoll_player_tick(index) {
             let scale = self.players[index].player_scale;
             self.players[index].set_ordinary_body_scale(scale);
             return;
@@ -7365,7 +7365,7 @@ impl RolloutWorld {
             // SlimeController.OldUpdate then publishes body.position
             // (SlimeController.cs:712): on a landing tick that is the
             // AttachToGround position, before Move slides along the surface.
-            if !slot.base.grounded {
+            if !slot.base.grounded && !ragdoll_ended {
                 slot.base.gravity_step(terrain!(self));
             }
             // Everything above is PlayerPhysics.UpdateSim; everything below is
@@ -24997,13 +24997,11 @@ impl RolloutWorld {
         }
     }
 
-    fn ragdoll_player_tick(&mut self, index: usize, _data: &data::RolloutData) {
+    /// The ragdolled slime's pass. Returns false when the ragdoll ends in it:
+    /// SlimeController then carries on through OldUpdate and Move like any
+    /// other pass, with PlayerPhysics.UpdateSim already done here.
+    fn ragdoll_player_tick(&mut self, index: usize) -> bool {
         let slot = &mut self.players[index];
-        // SlimeController.OldUpdate advances all cooldowns before its
-        // ragdoll-state early return suppresses PlayerPhysics.Move.
-        for timer in &mut slot.timers {
-            *timer += DT;
-        }
         // Both flags stand for PlayerPhysics.skipNextUpdate, which the
         // ragdolled slime's PlayerPhysics still consumes every pass.
         let skip = std::mem::take(&mut slot.ragdoll.skip_physics)
@@ -25026,16 +25024,14 @@ impl RolloutWorld {
         slot.reported_tick = self.tick;
         if slot.base.grounded && slot.frozen_solid_count == 0 && !slot.ragdoll.hold_on_ground {
             // AttachToGround switches a ragdoll straight into the land state
-            // before SlimeController.UpdateSim, which then performs its
-            // ordinary grounded Move in this same pass.
+            // before SlimeController.UpdateSim.
             slot.ragdoll.active = false;
             slot.obs_state = STATE_FALL;
             slot.state_ticks = 0;
-            slot.base
-                .move_only(slot.last_movement_input, terrain!(self));
+            return false;
         }
         slot.ragdoll.time += DT;
-        if slot.ragdoll.active && slot.ragdoll.time > slot.ragdoll.duration {
+        if slot.ragdoll.time > slot.ragdoll.duration {
             let held_on_ground = slot.ragdoll.hold_on_ground && slot.base.grounded;
             slot.ragdoll.active = false;
             slot.base.external_velocity += slot.base.velocity;
@@ -25050,11 +25046,16 @@ impl RolloutWorld {
             }
             slot.exit_to_fall();
             slot.ragdoll_grounded_fall = held_on_ground;
-            slot.base
-                .move_only(slot.last_movement_input, terrain!(self));
+            return false;
+        }
+        // OldUpdate advances all cooldowns before its ragdoll-state early
+        // return suppresses PlayerPhysics.Move.
+        for timer in &mut slot.timers {
+            *timer += DT;
         }
         slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
         slot.base.external_velocity *= Fix::from_f64(0.95);
+        true
     }
 
     fn frozen_solids_tick(&mut self, updater_dt: Fix) {
