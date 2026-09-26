@@ -548,6 +548,8 @@ pub struct ThrownItem {
     pub prev_chase_dir: Vec2,
     pub prev_rand_vector: Vec2,
     pub prev_velocity_change: Vec2,
+    /// The last shake's net move, which the collider only takes at the next Simulate.
+    pub pending_shake: Vec2,
     /// Poke Ball capture state. `None` is the ordinary flying/fizzle phase.
     pub capture_victim: Option<usize>,
     pub capture_victim_is_clone: bool,
@@ -12945,9 +12947,12 @@ impl RolloutWorld {
                 if !item.active || item.entity.is_none() || self.blink_object_hidden(item.entity) {
                     continue;
                 }
+                // The DetPhysics collider: a Mine's shake moves only its
+                // FixTransform, which the collider takes at the next Simulate.
+                let center = item.position - item.pending_shake;
                 if let Some(force) = Self::black_hole_force(
                     position,
-                    item.position,
+                    center,
                     radius,
                     mass,
                     item.body.inverse_mass,
@@ -19586,6 +19591,7 @@ impl RolloutWorld {
             prev_chase_dir: Vec2::RIGHT,
             prev_rand_vector: Vec2::ZERO,
             prev_velocity_change: Vec2::ZERO,
+            pending_shake: Vec2::ZERO,
             capture_victim: None,
             capture_victim_is_clone: false,
             capture_left: Fix::ZERO,
@@ -19917,6 +19923,7 @@ impl RolloutWorld {
             prev_chase_dir: Vec2::RIGHT,
             prev_rand_vector: Vec2::ZERO,
             prev_velocity_change: Vec2::ZERO,
+            pending_shake: Vec2::ZERO,
             capture_victim: None,
             capture_victim_is_clone: false,
             capture_left: Fix::ZERO,
@@ -23363,6 +23370,7 @@ impl RolloutWorld {
             clone.prev_chase_dir = Vec2::RIGHT;
             clone.prev_rand_vector = Vec2::ZERO;
             clone.prev_velocity_change = Vec2::ZERO;
+            clone.pending_shake = Vec2::ZERO;
             clone.capture_victim = None;
             clone.capture_victim_is_clone = false;
             clone.capture_left = Fix::ZERO;
@@ -27409,6 +27417,7 @@ impl RolloutWorld {
                 mine.position -= mine.prev_velocity_change;
                 let velocity_change = random_vector - mine.prev_rand_vector;
                 mine.position += velocity_change;
+                mine.pending_shake = velocity_change - mine.prev_velocity_change;
                 mine.prev_rand_vector = random_vector;
                 mine.prev_velocity_change = velocity_change;
             }
