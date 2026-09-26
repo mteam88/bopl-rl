@@ -8693,6 +8693,23 @@ impl RolloutWorld {
                     }
                     ABILITY_THROW => {
                         let ground = self.players[index].base.ground;
+                        // OnEnterAbility hands the form PlayerInfo.selfImposedVelocity
+                        // after SyncPhysicsTo (MachoThrow2.cs:385-388): groundedSpeed
+                        // along the surface when grounded, a residue its PlayerBody
+                        // integrates before the collider sync.
+                        let self_imposed = {
+                            let slot = &self.players[index];
+                            if slot.base.grounded {
+                                ground
+                                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+                                    .map_or(slot.base.velocity, |p| {
+                                        p.surface.normal(slot.base.position).perp_cw()
+                                            * slot.base.grounded_speed
+                                    })
+                            } else {
+                                slot.base.velocity
+                            }
+                        };
                         let form_position = ground
                             .and_then(|id| self.platforms.iter().find(|p| p.id == id))
                             .map_or(self.players[index].base.position, |platform| {
@@ -8738,6 +8755,7 @@ impl RolloutWorld {
                             ..MachoThrowState::default()
                         };
                         slot.base.position = form_position;
+                        slot.base.velocity = self_imposed;
                         slot.base.radius = data.macho_throw.physics_radius;
                         slot.base.constants = data.macho_throw.constants.clone();
                         self.macho_throw_tick(index, action, false, false, data);
@@ -16152,17 +16170,15 @@ impl RolloutWorld {
     ) {
         // PlayerPhysics (hierarchy 3) applies gravity, then PlayerBody
         // (hierarchy 7) integrates before MachoThrow2 (hierarchy 8) changes
-        // movement for the following pass. A freshly registered ability
-        // prefab starts after those hierarchy positions on its entry pass,
-        // represented by `advance_animation == false`.
+        // movement for the following pass. The pooled form runs all three on
+        // its entry pass too; only its animator's entry frame is already
+        // counted (`ticks: 1`), represented by `advance_animation == false`.
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
-        if advance_animation {
-            self.players[index].base.gravity_step(terrain!(self));
-            let slot = &mut self.players[index];
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
-        }
+        self.players[index].base.gravity_step(terrain!(self));
+        let slot = &mut self.players[index];
+        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+        slot.base.external_velocity *= Fix::from_f64(0.95);
         if advance_animation {
             self.players[index].macho_throw.ticks += 1;
             let phase = self.players[index].macho_throw.phase;
