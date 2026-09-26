@@ -2534,6 +2534,8 @@ struct PlatformScratch {
     /// Arrow Circle/RoundedRectangle manifolds of one DetPhysics pass, in
     /// resolution order.
     arrow_platform_contacts: Vec<(usize, usize, Contact)>,
+    /// Slime-vs-slime shoves of one DetPhysics pass: (pushed, other, lower id).
+    slime_shoves: Vec<(usize, usize, bool)>,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
@@ -2790,6 +2792,7 @@ impl RolloutWorld {
                 missile_contacts: Vec::with_capacity(256),
                 missile_detonations: Vec::with_capacity(128),
                 arrow_platform_contacts: Vec::with_capacity(64),
+                slime_shoves: Vec::with_capacity(8),
                 ray_hits: Vec::with_capacity(192),
                 duplicate_shake_order: Vec::with_capacity(64),
                 duplicate_shake_offsets: Vec::with_capacity(64),
@@ -5756,7 +5759,12 @@ impl RolloutWorld {
         if has(ABILITY_DUPLICATOR) {
             self.register_pending_duplicated_items(data);
         }
-        // Slime-vs-slime shove (World::step parity).
+        // Slime-vs-slime shove (World::step parity). The overlap is found
+        // here, but SlimeController.OnCollide is a Box/Box callback, the last
+        // kind DetPhysics dispatches, and reads the other body's live
+        // transform then: a Bow killed by an arrow this pass shoves from
+        // where its ExitAbility left it.
+        self.scratch.slime_shoves.clear();
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
                 let (pa, pb) = (a, b);
@@ -5768,13 +5776,11 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let a_pos = self.players[pa].base.position;
-                let b_pos = self.players[pb].base.position;
                 if self.players[pa].active == ActiveAbility::None {
-                    self.players[pa].base.push_from(b_pos, true);
+                    self.scratch.slime_shoves.push((pa, pb, true));
                 }
                 if self.players[pb].active == ActiveAbility::None {
-                    self.players[pb].base.push_from(a_pos, false);
+                    self.scratch.slime_shoves.push((pb, pa, false));
                 }
             }
         }
@@ -5986,6 +5992,14 @@ impl RolloutWorld {
         }
         if has_clones {
             self.abilityless_clone_contacts();
+        }
+        for i in 0..self.scratch.slime_shoves.len() {
+            let (pushed, other, lower_id) = self.scratch.slime_shoves[i];
+            if !self.players[pushed].base.alive {
+                continue;
+            }
+            let other_position = self.players[other].base.position;
+            self.players[pushed].base.push_from(other_position, lower_id);
         }
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
         // StickyRoundedRectangle riders from their surface local after
