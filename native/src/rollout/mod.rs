@@ -24980,8 +24980,18 @@ impl RolloutWorld {
                     if slot.active == ActiveAbility::Bow {
                         slot.bow.form_rotation = slot.base.rotation;
                     }
+                    if slot.active == ActiveAbility::BlackHole {
+                        slot.black_hole_cast.collider_up = slot.base.up;
+                        slot.black_hole_cast.collider_rotation = slot.base.rotation;
+                    }
                 } else {
                     self.release_airborne_blink_player(victim);
+                }
+                // DetPhysics keeps syncing the inactive form's box, which
+                // follows the body the release just moved.
+                let slot = &mut self.players[victim];
+                if slot.active == ActiveAbility::BlackHole {
+                    slot.black_hole_cast.collider_position = slot.base.position;
                 }
                 self.players[victim].base.sync_collider();
                 self.players[victim].blink_tunnel_released = true;
