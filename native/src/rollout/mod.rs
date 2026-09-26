@@ -30673,6 +30673,12 @@ impl RolloutWorld {
         (center, half(right, up))
     }
 
+    fn player_is_circle(&self, player_index: usize) -> bool {
+        let player = &self.players[player_index];
+        !matches!(player.active, ActiveAbility::None | ActiveAbility::Dash)
+            && self.entities[Self::blink_player_entity(player)].kind == 0
+    }
+
     /// The low edge, on the broadphase sweep axis, of the player's registered
     /// Player-layer shape.
     fn player_sweep_min(&self, player_index: usize, sweep_x: bool) -> Fix {
@@ -30724,7 +30730,13 @@ impl RolloutWorld {
                 count += 1;
             }
         }
-        order[..count].sort_by_key(|&player_index| self.player_sweep_min(player_index, sweep_x));
+        // DetPhysics queues callbacks one pair category at a time, and every
+        // category holding a circle runs before the one holding two boxes
+        // (circle/circle, then circle/box, then box/box), so a circular form
+        // dies before a box-shaped body in the same blast.
+        order[..count].sort_by_key(|&player_index| {
+            (!self.player_is_circle(player_index), self.player_sweep_min(player_index, sweep_x))
+        });
         (order, count)
     }
 
@@ -33202,6 +33214,24 @@ impl RolloutWorld {
                 slot.base.position += normal * Fix::from_f32(0.05);
             }
         }
+        // Roll.ExitAbility hands a grounded ball's exit position in by the
+        // radius difference along the ground normal (Roll.cs:216-219), and
+        // onExitAbility moves the dying slime there before DropAbilities. The
+        // player keeps publishing the ball's position.
+        let mut drop_inset = Vec2::ZERO;
+        if form_exit && self.players[index].active == ActiveAbility::Roll {
+            let slot = &self.players[index];
+            let normal = slot
+                .base
+                .grounded
+                .then(|| self.platforms.iter().find(|p| Some(p.id) == slot.base.ground))
+                .flatten()
+                .map(|platform| platform.surface.normal(slot.base.position));
+            if let Some(normal) = normal {
+                let difference = slot.base.radius - data::get().player.radius * slot.player_scale;
+                drop_inset = normal * difference;
+            }
+        }
         self.deactivate_drill_hitboxes(index);
         let rope_drop_icon_overridden = self.rope_drop_icon_overridden(index, data::get());
         let revival_marker = (!already_won)
@@ -33240,9 +33270,9 @@ impl RolloutWorld {
         // SlimeController.DropAbilities reads the slime body. A death inside
         // an ability first moves that body to the ability object's position
         // (PlayerCollision.cs:124-131, SlimeController.cs:215-219).
-        let drop_position = slot.base.position;
+        let drop_position = slot.base.position - drop_inset;
         if slot.active != ActiveAbility::None {
-            slot.reported_position = drop_position;
+            slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
         }
         slot.active = ActiveAbility::None;
