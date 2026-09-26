@@ -20342,8 +20342,9 @@ impl RolloutWorld {
         // PlayerBody is a separate updater and advances even while
         // PlayerPhysics remains grounded. LateUpdate later restores the live
         // surface pose, after DetPhysics has synchronized this position.
-        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-        slot.base.external_velocity *= Fix::from_f64(0.95);
+        // Ability.EnterAbility handed it the slime's rope.
+        let jump_pressed = action.buttons & 1 != 0 && !slot.base.previous_jump;
+        self.form_body_move(index, jump_pressed);
     }
 
     fn fire_freeze(&mut self, index: usize, data: &data::RolloutData) {
@@ -20493,8 +20494,9 @@ impl RolloutWorld {
         // PlayerBody is a separate updater and advances even while
         // PlayerPhysics remains grounded. LateUpdate later restores the live
         // surface pose, after DetPhysics has synchronized this position.
-        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-        slot.base.external_velocity *= Fix::from_f64(0.95);
+        // Ability.EnterAbility handed it the slime's rope.
+        let jump_pressed = action.buttons & 1 != 0 && !slot.base.previous_jump;
+        self.form_body_move(index, jump_pressed);
     }
 
     fn fire_blink(&mut self, index: usize, data: &data::RolloutData) {
@@ -20642,8 +20644,9 @@ impl RolloutWorld {
         // PlayerBody is a separate updater and advances even while
         // PlayerPhysics remains grounded. LateUpdate later restores the live
         // surface pose, after DetPhysics has synchronized this position.
-        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-        slot.base.external_velocity *= Fix::from_f64(0.95);
+        // Ability.EnterAbility handed it the slime's rope.
+        let jump_pressed = action.buttons & 1 != 0 && !slot.base.previous_jump;
+        self.form_body_move(index, jump_pressed);
     }
 
     fn fire_scale_ray(&mut self, index: usize, growth: bool, data: &data::RolloutData) {
@@ -20787,8 +20790,9 @@ impl RolloutWorld {
         // PlayerBody is a separate updater and advances even while
         // PlayerPhysics remains grounded. LateUpdate later restores the live
         // surface pose, after DetPhysics has synchronized this position.
-        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-        slot.base.external_velocity *= Fix::from_f64(0.95);
+        // Ability.EnterAbility handed it the slime's rope.
+        let jump_pressed = action.buttons & 1 != 0 && !slot.base.previous_jump;
+        self.form_body_move(index, jump_pressed);
     }
 
     /// Run Magnet's three state-bearing prefab updater phases in hierarchy
