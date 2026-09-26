@@ -293,6 +293,13 @@ const E_CONTACT_DAMAGE_KNOWN: u32 = 1 << 14;
 /// remove-destroyed step). Such rows are not emitted.
 const E_REMOVED: u32 = 1 << 31;
 
+/// A destroyed collider's row. Its body keeps the negative inverse mass that
+/// the oracle reports as `E_TRIGGER`.
+#[inline]
+const fn destroyed_flags(flags: u32) -> u32 {
+    (flags & E_TRIGGER) | E_DESTROYED
+}
+
 #[inline]
 const fn ability_collider_flags(ability: u32) -> u32 {
     E_CONTACT_DAMAGE_KNOWN
@@ -4654,7 +4661,7 @@ impl RolloutWorld {
             let state = &mut self.ability_pickups[pickup_index];
             state.active = false;
             if let Some(entity) = state.entity {
-                self.entities[entity].flags = E_DESTROYED;
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
         }
         order.clear();
@@ -6391,7 +6398,7 @@ impl RolloutWorld {
         shot.remove_next_tick = by_callback;
         if let Some(entity) = shot.entity {
             let row = &mut self.entities[entity];
-            row.flags = if by_callback { E_DESTROYED } else { E_REMOVED };
+            row.flags = if by_callback { destroyed_flags(row.flags) } else { E_REMOVED };
             row.owner = 0;
         }
     }
@@ -11207,7 +11214,7 @@ impl RolloutWorld {
             self.entities[entity].up_y = node.line_up.y.raw();
             self.entities[entity].rotation = node.line_rotation.raw();
             self.entities[entity].owner = 0;
-            self.entities[entity].flags = (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+            self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             self.destroyed_tesla_lines.push(DestroyedTeslaLine {
                 entity,
                 destroy_tick: self.tick,
@@ -13349,7 +13356,8 @@ impl RolloutWorld {
                     // Updater.DestroyFix is deferred until DetPhysics's next
                     // remove-destroyed pass, so this callback frame still
                     // exports the wall with its destroyed bit.
-                    self.entities[platform_entity].flags = E_DESTROYED;
+                    let row = &mut self.entities[platform_entity];
+                    row.flags = destroyed_flags(row.flags);
                 }
                 platform_index += 1;
             }
@@ -13392,7 +13400,7 @@ impl RolloutWorld {
                 self.destroy_arrow(arrow_index);
                 if let Some(entity) = arrow.entity {
                     let row = &mut self.entities[entity];
-                    row.flags = E_DESTROYED;
+                    row.flags = destroyed_flags(row.flags);
                     row.owner = 0;
                     row.x = arrow.position.x.raw();
                     row.y = arrow.position.y.raw();
@@ -13439,7 +13447,7 @@ impl RolloutWorld {
                     data,
                 );
                 self.ability_pickups[pickup_index].active = false;
-                self.entities[entity].flags = E_DESTROYED;
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
 
             for item_index in 0..self.thrown_items.len() {
@@ -13485,7 +13493,7 @@ impl RolloutWorld {
                 self.portal_shots[shot_index].active = false;
                 self.portal_shots[shot_index].registered = false;
                 self.portal_shots[shot_index].remove_next_tick = true;
-                self.entities[entity].flags = E_DESTROYED;
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
 
             for rock_index in 0..self.duplicated_rocks.len() {
@@ -13506,7 +13514,7 @@ impl RolloutWorld {
                     data,
                 );
                 self.duplicated_rocks[rock_index].active = false;
-                self.entities[entity].flags = E_DESTROYED;
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
 
             for missile_index in 0..self.guided_missiles.len() {
@@ -13550,7 +13558,7 @@ impl RolloutWorld {
                 );
                 self.revival_marker_pool[marker_index].active = false;
                 self.revival_marker_pool[marker_index].registered = false;
-                self.entities[entity].flags = E_DESTROYED;
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
             for marker_index in 0..self.teleport_marker_pool.len() {
                 let marker = self.teleport_marker_pool[marker_index];
@@ -13572,7 +13580,7 @@ impl RolloutWorld {
                 );
                 self.teleport_marker_pool[marker_index].active = false;
                 self.teleport_marker_pool[marker_index].registered = false;
-                self.entities[entity].flags = E_DESTROYED;
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
 
             for spike_index in 0..self.spike_attacks.len() {
@@ -13600,7 +13608,7 @@ impl RolloutWorld {
                     data,
                 );
                 self.remove_spike(spike_index);
-                self.entities[entity].flags = E_DESTROYED;
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
             for engine_index in 0..self.engines.len() {
                 let engine = self.engines[engine_index];
@@ -13627,7 +13635,7 @@ impl RolloutWorld {
                     data,
                 );
                 self.remove_engine(engine_index);
-                self.entities[entity].flags = E_DESTROYED;
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
             for node_index in 0..self.tesla_nodes.len() {
                 let node = self.tesla_nodes[node_index];
@@ -13654,7 +13662,7 @@ impl RolloutWorld {
                     data,
                 );
                 self.remove_tesla_node(node_index);
-                self.entities[entity].flags = E_DESTROYED;
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
         }
 
@@ -13715,7 +13723,7 @@ impl RolloutWorld {
                 );
                 self.black_holes[consumed].active = false;
                 if let Some(entity) = self.black_holes[consumed].entity {
-                    self.entities[entity].flags = E_DESTROYED;
+                    self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
                 }
                 if consumed == a_index {
                     break;
@@ -27109,7 +27117,7 @@ impl RolloutWorld {
         self.destroy_arrow(index);
         if let Some(entity) = self.arrows[index].entity {
             let row = &mut self.entities[entity];
-            row.flags = E_DESTROYED;
+            row.flags = destroyed_flags(row.flags);
             row.owner = 0;
             row.x = position.x.raw();
             row.y = position.y.raw();
@@ -27328,7 +27336,11 @@ impl RolloutWorld {
         missile.active = false;
         missile.registered = false;
         if let Some(entity) = missile.entity {
-            self.entities[entity].flags = if by_callback { E_DESTROYED } else { E_REMOVED };
+            self.entities[entity].flags = if by_callback {
+                destroyed_flags(self.entities[entity].flags)
+            } else {
+                E_REMOVED
+            };
         }
     }
 
@@ -28527,7 +28539,7 @@ impl RolloutWorld {
         item.active = false;
         if let Some(entity) = item.entity {
             let row = &mut self.entities[entity];
-            row.flags = if by_callback { E_DESTROYED } else { E_REMOVED };
+            row.flags = if by_callback { destroyed_flags(row.flags) } else { E_REMOVED };
             row.owner = 0;
         }
     }
@@ -28865,7 +28877,7 @@ impl RolloutWorld {
                 self.destroy_arrow(i);
                 if let Some(entity) = self.arrows[i].entity {
                     let e = &mut self.entities[entity];
-                    e.flags = E_DESTROYED;
+                    e.flags = destroyed_flags(e.flags);
                     e.owner = 0;
                     e.x = center.x.raw();
                     e.y = center.y.raw();
@@ -28968,7 +28980,7 @@ impl RolloutWorld {
                 self.destroy_arrow(i);
                 if let Some(entity) = self.arrows[i].entity {
                     let row = &mut self.entities[entity];
-                    row.flags = E_DESTROYED;
+                    row.flags = destroyed_flags(row.flags);
                     row.owner = 0;
                     row.x = arrow_center.x.raw();
                     row.y = arrow_center.y.raw();
@@ -29163,7 +29175,7 @@ impl RolloutWorld {
                 self.destroy_arrow(i);
                 if let Some(entity) = self.arrows[i].entity {
                     let row = &mut self.entities[entity];
-                    row.flags = E_DESTROYED;
+                    row.flags = destroyed_flags(row.flags);
                     row.owner = 0;
                     row.x = arrow_center.x.raw();
                     row.y = arrow_center.y.raw();
@@ -33532,7 +33544,7 @@ impl RolloutWorld {
                 }
                 let row = &mut self.entities[entity];
                 if by_callback {
-                    row.flags = (row.flags & E_TRIGGER) | E_DESTROYED;
+                    row.flags = destroyed_flags(row.flags);
                     row.owner = 0;
                 } else {
                     row.flags = E_REMOVED;
@@ -33594,7 +33606,7 @@ impl RolloutWorld {
                 if entity != usize::MAX {
                     let row = &mut self.entities[entity];
                     row.flags = if by_callback {
-                        (row.flags & E_TRIGGER) | E_DESTROYED
+                        destroyed_flags(row.flags)
                     } else {
                         E_REMOVED
                     };
@@ -33639,7 +33651,7 @@ impl RolloutWorld {
                 }
                 let row = &mut self.entities[e];
                 if by_callback {
-                    row.flags = (row.flags & E_TRIGGER) | E_DESTROYED;
+                    row.flags = destroyed_flags(row.flags);
                     row.owner = 0;
                 } else {
                     row.flags = E_REMOVED;
