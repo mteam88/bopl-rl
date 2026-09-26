@@ -15034,6 +15034,9 @@ impl RolloutWorld {
         // Force the quiet-platform path to rebuild the scaled axes
         // from the retained body orientation as the source does.
         dynamics.transform_rotation = Some(dynamics.body.orientation);
+        // The setter re-seats every attached child before it rescales the
+        // collider, so each reads the pre-resize shape.
+        self.reposition_platform_children(platform, data::get());
         let collider = &mut self.platforms[platform].collider;
         collider.radius *= ratio;
         collider.inner.right *= ratio;
