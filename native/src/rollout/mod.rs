@@ -2127,6 +2127,8 @@ pub struct PlayerSlot {
     /// the active ability's separate body moves.
     pub ability_origin: Vec2,
     pub ability_origin_velocity: Vec2,
+    /// The external part of `ability_origin_velocity`.
+    pub ability_origin_external: Vec2,
     pub ability_origin_rotation: Fix,
     pub ability_origin_state: u32,
     pub ability_origin_scale: Fix,
@@ -3879,6 +3881,7 @@ impl RolloutWorld {
                 active_slot: 0,
                 ability_origin: spawn,
                 ability_origin_velocity: Vec2::ZERO,
+                ability_origin_external: Vec2::ZERO,
                 ability_origin_rotation: Fix::ZERO,
                 ability_origin_state: STATE_FALL,
                 ability_origin_scale: Fix::ONE,
@@ -7601,6 +7604,7 @@ impl RolloutWorld {
                     frozen.move_only(movement_input, terrain!(self));
                     slot.ability_origin = frozen.position;
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
+                    slot.ability_origin_external = frozen.external_velocity;
                     slot.ability_origin_rotation = frozen.rotation;
                     slot.ability_origin_state = slot.obs_state;
                     slot.ability_origin_ground = frozen.ground.filter(|_| frozen.grounded);
@@ -25327,18 +25331,16 @@ impl RolloutWorld {
             if self.players[victim].poke_invulnerable {
                 return;
             }
-            let deferred_bow_exit = if self.players[victim].active != ActiveAbility::None
+            if self.players[victim].active != ActiveAbility::None
                 || self.players[victim].base.dash.active
             {
-                self.exit_form_for_freeze(victim, data)
-            } else {
-                false
-            };
-            self.begin_freeze(victim, data.freeze.freeze_seconds, deferred_bow_exit);
+                self.exit_form_for_freeze(victim, data);
+            }
+            self.begin_freeze(victim, data.freeze.freeze_seconds);
         }
     }
 
-    fn exit_form_for_freeze(&mut self, victim: usize, data: &data::RolloutData) -> bool {
+    fn exit_form_for_freeze(&mut self, victim: usize, data: &data::RolloutData) {
         let was_bow = self.players[victim].active == ActiveAbility::Bow;
         let deferred = was_bow && self.players[victim].base.grounded;
         let slot = &mut self.players[victim];
@@ -25377,10 +25379,9 @@ impl RolloutWorld {
         if deferred {
             slot.freeze_form_exit_tick = self.tick;
         }
-        deferred
     }
 
-    fn begin_freeze(&mut self, victim: usize, duration: Fix, deferred_form_exit: bool) {
+    fn begin_freeze(&mut self, victim: usize, duration: Fix) {
         let freeze_position = self.players[victim].base.position;
         self.next_spawn_hierarchy += data::get().freeze.frozen_updatable_count;
         let state = FrozenSolidState {
@@ -25397,27 +25398,17 @@ impl RolloutWorld {
         }
         let slot = &mut self.players[victim];
         slot.frozen_solid_count = slot.frozen_solid_count.saturating_add(1);
-        slot.ragdoll = RagdollState {
-            active: true,
-            skip_physics: true,
-            hold_on_ground: false,
-            time: Fix::ZERO,
-            duration: duration + Fix::ONE,
-        };
+        slot.ragdoll = RagdollState::default();
         slot.base.velocity = Vec2::ZERO;
         slot.base.force_unground(&self.platforms);
-        if deferred_form_exit {
-            // FrozenSolid.Begin applies ragdoll first, then UnGround invokes
-            // SlimeController.OnNoLongerGrounded and overwrites the visible
-            // state with Fall. PlayerPhysics.skipNextUpdate suppresses gravity
-            // in the restored slime's later updater, but SlimeController.Move
-            // still applies air control and reattaches with a fresh slime
-            // surface local. FrozenSolid does not run until the next pass.
-            slot.ragdoll.active = false;
-            slot.obs_state = STATE_FALL;
-            slot.state_ticks = 0;
-            slot.base.skip_next_gravity = true;
-        }
+        // FrozenSolid.Begin applies ragdoll first, then UnGround invokes
+        // SlimeController.OnNoLongerGrounded and overwrites the state with
+        // Fall. Until FrozenSolid's first pass (it updates after the slimes,
+        // and not on the pass it spawns) the slime plays on as usual, casts
+        // included; PlayerPhysics.skipNextUpdate only suppresses its gravity.
+        slot.obs_state = STATE_FALL;
+        slot.state_ticks = 0;
+        slot.base.skip_next_gravity = true;
     }
 
     /// The ragdolled slime's pass. Returns false when the ragdoll ends in it:
@@ -25505,6 +25496,19 @@ impl RolloutWorld {
                 continue;
             }
             let slot = &mut self.players[effect.victim];
+            if slot.active != ActiveAbility::None || slot.base.dash.active {
+                // Cast out of the ice before its first pass: the inactive
+                // slime shatters it, and the release ragdoll lands on the
+                // slime the form left behind.
+                self.frozen_solids[effect_index].active = false;
+                slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
+                slot.ability_origin_velocity =
+                    Vec2::new(Fix::ZERO, Fix::from_int(4)) + slot.ability_origin_external;
+                slot.ability_origin_rotation = Vec2::UP.normalized_angle();
+                slot.ability_origin_state = STATE_RAGDOLL;
+                slot.timers.fill(Fix::ZERO);
+                continue;
+            }
             slot.base.position = effect.freeze_position;
             slot.base.velocity = Vec2::ZERO;
             slot.obs_state = STATE_RAGDOLL;
@@ -37492,7 +37496,7 @@ mod tests {
     fn frozen_solid_shatters_when_victim_leaves_play() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.begin_freeze(0, Fix::from_int(10), false);
+        world.begin_freeze(0, Fix::from_int(10));
         world.players[0].timers.fill(Fix::from_int(3));
         world.players[0].base.alive = false;
         world.tick += 1;
