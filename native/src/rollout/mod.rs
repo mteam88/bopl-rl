@@ -2365,6 +2365,17 @@ impl PlayerSlot {
             + self.gun.collider_up.perp_cw().complex_mul(offset * self.base.scale);
     }
 
+    /// PlayerBody's step in a PlantObjectOnPlatform form, entry pass included.
+    /// The hurtbox is synced after it, before LateUpdateSim puts a grounded
+    /// body back on its platform.
+    fn plant_cast_body_step(&mut self, published: Vec2, tick: u32) {
+        self.base.position += (self.base.velocity + self.base.external_velocity) * DT;
+        self.base.external_velocity *= Fix::from_f64(0.95);
+        self.plant_cast.collider_position = self.base.position;
+        self.reported_position = published;
+        self.reported_tick = tick;
+    }
+
     /// The slime object is gone: eliminated, or killed after WinGame, where
     /// Player.Kill is ignored but PlayerCollision still destroys the slime.
     fn slime_destroyed(&self) -> bool {
@@ -8253,6 +8264,11 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
+                        if slot.base.grounded {
+                            // SyncPhysicsTo clears a grounded self-imposed
+                            // velocity; the external one survives.
+                            slot.base.velocity = Vec2::ZERO;
+                        }
                         slot.plant_cast = PlantCastState {
                             collider_position: slot.base.position,
                             collider_up: slot.base.up,
@@ -8260,11 +8276,12 @@ impl RolloutWorld {
                             ..PlantCastState::default()
                         };
                         // PlantObjectOnPlatform follows Ability in the prefab
-                        // updater list: its grounded Move(zero) already runs
-                        // on the entry pass.
+                        // updater list: its grounded Move(zero) and
+                        // PlayerBody's step already run on the entry pass.
                         if slot.base.grounded {
                             slot.base.move_only(Vec2::ZERO, terrain!(self));
                         }
+                        slot.plant_cast_body_step(slot.base.position, self.tick);
                         return;
                     }
                     ABILITY_TESLA => {
@@ -8274,6 +8291,11 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
+                        if slot.base.grounded {
+                            // SyncPhysicsTo clears a grounded self-imposed
+                            // velocity; the external one survives.
+                            slot.base.velocity = Vec2::ZERO;
+                        }
                         slot.plant_cast = PlantCastState {
                             collider_position: slot.base.position,
                             collider_up: slot.base.up,
@@ -8284,6 +8306,7 @@ impl RolloutWorld {
                         if slot.base.grounded {
                             slot.base.move_only(Vec2::ZERO, terrain!(self));
                         }
+                        slot.plant_cast_body_step(slot.base.position, self.tick);
                         return;
                     }
                     ABILITY_FREEZE => {
@@ -10883,13 +10906,7 @@ impl RolloutWorld {
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
         }
-        {
-            let slot = &mut self.players[index];
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
-            slot.reported_position = published_position;
-            slot.reported_tick = self.tick;
-        }
+        self.players[index].plant_cast_body_step(published_position, self.tick);
     }
 
     fn exit_engine_cast(&mut self, index: usize) {
@@ -10906,8 +10923,10 @@ impl RolloutWorld {
         });
         let slot = &mut self.players[index];
         slot.active = ActiveAbility::None;
-        // ExitAbility hands over groundedSpeed zero.
+        // ExitAbility hands over groundedSpeed and both velocities zero.
         slot.base.grounded_speed = Fix::ZERO;
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.external_velocity = Vec2::ZERO;
         slot.base.rotation = Fix::ZERO;
         if slot.base.grounded
             && let Some(up) = grounded_pose
@@ -10963,13 +10982,7 @@ impl RolloutWorld {
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
         }
-        {
-            let slot = &mut self.players[index];
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
-            slot.reported_position = published_position;
-            slot.reported_tick = self.tick;
-        }
+        self.players[index].plant_cast_body_step(published_position, self.tick);
     }
 
     fn spawn_tesla_node(&mut self, index: usize, data: &data::RolloutData) -> bool {
