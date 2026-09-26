@@ -1182,6 +1182,8 @@ pub struct SpawnedPlatform {
     pub removal_time: Fix,
     pub removal_extents: Vec2,
     pub removal_radius: Fix,
+    /// First updater hierarchy number of the platform prefab.
+    pub hierarchy_base: u32,
 }
 
 /// DetPhysics body plus AnimateVelocity state for one rounded platform.
@@ -2595,6 +2597,10 @@ pub struct RolloutWorld {
     pub player_time_scale: Fix,
     pub time_stop_protected: [bool; MAX_PLAYERS],
     pub spawned: Vec<SpawnedPlatform>,
+    /// Black Hole pulls on a shrinking platform whose ResizablePlatform ran
+    /// earlier in the pass: (platform, vector, distance cubed, hole mass,
+    /// Push-controlled). They read the mass the shrink leaves.
+    pub late_platform_pulls: Vec<(usize, Vec2, Fix, Fix, bool)>,
     pub gust_waves: [Shockwave; MAX_PLAYERS * 3],
     pub revival_marker_pool: Vec<RevivalMarker>,
     pub teleport_marker_pool: Vec<TeleportMarker>,
@@ -2774,6 +2780,7 @@ impl RolloutWorld {
             player_time_scale: Fix::ONE,
             time_stop_protected: [false; MAX_PLAYERS],
             spawned: Vec::with_capacity(64),
+            late_platform_pulls: Vec::new(),
             gust_waves: [Shockwave::default(); MAX_PLAYERS * 3],
             revival_marker_pool: Vec::with_capacity(64),
             teleport_marker_pool: Vec::with_capacity(64),
@@ -2991,6 +2998,7 @@ impl RolloutWorld {
             player_time_scale: _,
             time_stop_protected: _,
             spawned: _,
+            late_platform_pulls: _,
             gust_waves: _,
             revival_marker_pool: _,
             teleport_marker_pool: _,
@@ -3127,6 +3135,7 @@ impl RolloutWorld {
         self.player_time_scale = Fix::ONE;
         self.time_stop_protected = [false; MAX_PLAYERS];
         self.spawned.clear();
+        self.late_platform_pulls.clear();
         for wave in &mut self.gust_waves {
             wave.reset();
         }
@@ -12999,8 +13008,21 @@ impl RolloutWorld {
                 if cube == Fix::ZERO {
                     continue;
                 }
+                let controlled = controlled_ground == Some(self.platforms[platform_index].id);
+                // Updaters run in spawn order. A platform spawned before this
+                // hole has already shrunk by the time its pull is computed.
+                let shrunk_first = self.spawned.iter().any(|spawn| {
+                    spawn.active
+                        && spawn.being_removed
+                        && spawn.platform_index == platform_index
+                        && spawn.hierarchy_base < self.black_holes[hole_index].hierarchy_base
+                });
+                if shrunk_first {
+                    self.late_platform_pulls.push((platform_index, vector, cube, mass, controlled));
+                    continue;
+                }
                 let mut magnitude = data.black_hole.gravity * (Fix::ONE / inverse_mass) * mass;
-                if controlled_ground == Some(self.platforms[platform_index].id) {
+                if controlled {
                     magnitude *= data.black_hole.controlled_platform_multiplier;
                 }
                 let dynamics = &mut self.platform_dynamics[platform_index];
@@ -26341,6 +26363,7 @@ impl RolloutWorld {
             removal_time: Fix::ZERO,
             removal_extents: Vec2::ZERO,
             removal_radius: Fix::ZERO,
+            hierarchy_base,
         });
         platform_index
     }
@@ -31994,6 +32017,7 @@ impl RolloutWorld {
             .last()
             .expect("authored platform removal curve")
             .time;
+        let late_pulls = std::mem::take(&mut self.late_platform_pulls);
         let mut removal_resizes = Vec::new();
         let mut removal_destroys = Vec::new();
         for spawn in &mut self.spawned {
@@ -32065,6 +32089,19 @@ impl RolloutWorld {
         // the new one.
         for (index, extents, radius) in removal_resizes {
             self.reshape_platform(index, extents, radius);
+        }
+        for (index, vector, cube, mass, controlled) in late_pulls {
+            let dynamics = &mut self.platform_dynamics[index];
+            let body = if dynamics.attached_children != 0 {
+                &mut dynamics.root_body
+            } else {
+                &mut dynamics.body
+            };
+            let mut magnitude = data.black_hole.gravity * (Fix::ONE / body.inverse_mass) * mass;
+            if controlled {
+                magnitude *= data.black_hole.controlled_platform_multiplier;
+            }
+            body.force += vector * magnitude / cube;
         }
         removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
         for index in removal_destroys {
