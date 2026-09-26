@@ -56,6 +56,7 @@ pub struct Player {
     /// Set with `alive = false` when a boundary component destroyed the body.
     /// The death is attributed later in the pass, after an ungrounding exit
     /// may already have moved the body back inside the bounds.
+    #[serde(default)]
     pub out_of_bounds: bool,
     pub id: u32,
     pub position: Vec2,

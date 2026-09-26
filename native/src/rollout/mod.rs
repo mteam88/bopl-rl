@@ -36989,7 +36989,9 @@ mod tests {
     #[test]
     fn magnet_pulls_holds_and_fires_spell_markers() {
         let mut world = RolloutWorld::new();
-        world.reset(&test_config()).unwrap();
+        let mut config = test_config();
+        config.player[0].abilities[0] = ABILITY_MAGNET;
+        world.reset(&config).unwrap();
         let data = data::get();
         world.players[0].active = ActiveAbility::Magnet;
         world.players[0].magnet.phase = 2;
@@ -37940,11 +37942,10 @@ mod tests {
 
         world.spawn_meteor_smear(Vec2::ZERO, Vec2::UP, 0, data::get());
 
+        // The published axis is SetRotation's `1 / inverseExtents` round trip.
         let entity = world.meteor_smears[0].entity.unwrap();
-        assert_eq!(
-            world.entities[entity].right_x,
-            (data::get().meteor.smear_extents.x * Fix::from_int(2)).raw()
-        );
+        let width = data::get().meteor.smear_extents.x * Fix::from_int(2);
+        assert_eq!(world.entities[entity].right_x, (Fix::ONE / (Fix::ONE / width)).raw());
     }
 
     #[test]
