@@ -7293,6 +7293,20 @@ impl RolloutWorld {
         }
     }
 
+    /// PlayerInfo.selfImposedVelocity on ability entry (SlimeController.cs:659):
+    /// groundedSpeed along the ground's forwards direction when grounded.
+    fn entry_self_imposed(&self, index: usize) -> Vec2 {
+        let base = &self.players[index].base;
+        if !base.grounded {
+            return base.velocity;
+        }
+        base.ground
+            .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+            .map_or(base.velocity, |p| {
+                p.surface.normal(base.position).perp_cw() * base.grounded_speed
+            })
+    }
+
     fn player_tick(
         &mut self,
         index: usize,
@@ -7914,10 +7928,11 @@ impl RolloutWorld {
                             });
                             self.players[index].rock_entity = entity;
                         }
+                        let self_imposed = self.entry_self_imposed(index);
                         let slot = &mut self.players[index];
                         let mut body = data.rock.body;
-                        let velocity = slot.base.velocity + slot.base.external_velocity;
-                        let direction = if slot.base.velocity.x <= Fix::ZERO {
+                        let velocity = self_imposed + slot.base.external_velocity;
+                        let direction = if self_imposed.x <= Fix::ZERO {
                             Fix::ONE
                         } else {
                             -Fix::ONE
@@ -8701,19 +8716,7 @@ impl RolloutWorld {
                         // after SyncPhysicsTo (MachoThrow2.cs:385-388): groundedSpeed
                         // along the surface when grounded, a residue its PlayerBody
                         // integrates before the collider sync.
-                        let self_imposed = {
-                            let slot = &self.players[index];
-                            if slot.base.grounded {
-                                ground
-                                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                                    .map_or(slot.base.velocity, |p| {
-                                        p.surface.normal(slot.base.position).perp_cw()
-                                            * slot.base.grounded_speed
-                                    })
-                            } else {
-                                slot.base.velocity
-                            }
-                        };
+                        let self_imposed = self.entry_self_imposed(index);
                         let form_position = ground
                             .and_then(|id| self.platforms.iter().find(|p| p.id == id))
                             .map_or(self.players[index].base.position, |platform| {
@@ -8770,20 +8773,7 @@ impl RolloutWorld {
                         // PlayerInfo.selfImposedVelocity is groundedSpeed along
                         // MulByNegI(ground normal) when grounded (taken before the
                         // facing flip, SlimeController.cs:659).
-                        let self_imposed = {
-                            let slot = &self.players[index];
-                            if slot.base.grounded {
-                                slot.base
-                                    .ground
-                                    .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                                    .map_or(slot.base.velocity, |p| {
-                                        p.surface.normal(slot.base.position).perp_cw()
-                                            * slot.base.grounded_speed
-                                    })
-                            } else {
-                                slot.base.velocity
-                            }
-                        };
+                        let self_imposed = self.entry_self_imposed(index);
                         let (position, rotation, player_up, scale) = {
                             let slot = &self.players[index];
                             (
