@@ -9560,16 +9560,11 @@ impl RolloutWorld {
             && let Some(platform) =
                 ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
         {
-            let scale = self.players[index].player_scale;
-            // Roll.ExitAbility is `body.position - vec * PlayerAbilityRadiusDiff()`
-            // (Roll.cs:219), and PlayerAbilityRadiusDiff is
-            // `playerPhysics.radius - playerInfo.radius` (Roll.cs:238-241) - a
-            // difference of two ALREADY scaled radii, multiplied into the normal
-            // once. Scaling the unscaled difference instead adds a second
-            // per-component floor and moves the exit point by up to 3 raw
-            // whenever the player is not at scale 1.
-            exit_position -= platform.surface.normal(exit_position)
-                * (data.roll.physics_radius * scale - data.player.radius * scale);
+            // SyncPhysicsTo(AbilityExitInfo) places the slime at the form's
+            // own perimeter coordinate and radius (PlayerPhysics.cs:563);
+            // Roll's radius-adjusted exitInfo.position is only read airborne.
+            let base = &self.players[index].base;
+            exit_position = platform.surface.position(base.local, base.radius);
         }
         let slot = &mut self.players[index];
         slot.active = ActiveAbility::None;
@@ -34361,8 +34356,10 @@ impl RolloutWorld {
                     circle.owner = slot.base.id;
                 }
                 if (alive && rolling) || was_active {
+                    // Like the slime's box, the row is the collider DetPhysics
+                    // synced; a grounded Roll moves after it (PlayerPhysics.cs:138).
                     let (position, rotation) = if rolling {
-                        (slot.base.position, slot.base.rotation)
+                        (slot.base.collider.center, slot.base.collider_rotation)
                     } else {
                         (exit_position, Fix::ZERO)
                     };
