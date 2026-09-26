@@ -513,6 +513,9 @@ pub struct ThrownItem {
     /// registry immediately but cannot enter the already-built manifold set.
     pub callback_registered_tick: u32,
     pub position: Vec2,
+    /// The position DetPhysics' broadphase swept this pass, before any
+    /// correction moved it.
+    pub swept_position: Vec2,
     pub body: Body,
     /// Live DPhysicsCircle/FixTransform scale. `body_scale` is the value the
     /// earlier BoplBody updater has consumed; a late ScaleChanger mutation is
@@ -5892,6 +5895,9 @@ impl RolloutWorld {
         // one, so an item's wall correction moves it before an arrow's
         // manifold with it is built.
         if has_thrown_item {
+            for item in &mut self.thrown_items {
+                item.swept_position = item.position;
+            }
             self.thrown_item_platform_contacts(data);
         }
         if has(ABILITY_BOW) {
@@ -19478,6 +19484,7 @@ impl RolloutWorld {
             entity: None,
             callback_registered_tick: u32::MAX,
             position,
+            swept_position: position,
             body: Body {
                 velocity,
                 ..data.mine.item_body
@@ -19804,6 +19811,7 @@ impl RolloutWorld {
             entity: None,
             callback_registered_tick: u32::MAX,
             position: self.players[index].base.position,
+            swept_position: self.players[index].base.position,
             body: Body {
                 orientation: self.players[index].base.rotation,
                 ..config.item_body
@@ -29992,8 +30000,15 @@ impl RolloutWorld {
 
             let owner_id = item.owner as u32 + 1;
             let mut detonate = false;
+            // The pair comes from the broadphase, swept before a wall or an
+            // arrow corrected the item this pass; the manifold then tests the
+            // corrected circle.
+            let swept = Circle {
+                center: item.swept_position,
+                radius: item_radius,
+            };
             for player_index in 0..self.players.len() {
-                if !self.playable(player_index) {
+                if !self.playable(player_index) || !self.player_swept_pairs(player_index, swept) {
                     continue;
                 }
                 let player = &self.players[player_index];
@@ -30051,7 +30066,8 @@ impl RolloutWorld {
                         // Any other form is hit through the shape its prefab
                         // registered, such as Growth Ray's box.
                         _ => {
-                            detonate |= self.player_hit_by_circle(player_index, circle);
+                            let h = self.player_hit_by_circle(player_index, circle);
+                            detonate |= h;
                             continue;
                         }
                     };
@@ -30256,23 +30272,41 @@ impl RolloutWorld {
         }
     }
 
-    /// The low edge, on the broadphase sweep axis, of the player's registered
-    /// Player-layer shape (PhysTools.ComputeBoundingBox).
-    fn player_sweep_min(&self, player_index: usize, sweep_x: bool) -> Fix {
+    /// The centre and half size of the bounding box of the player's
+    /// registered Player-layer shape (PhysTools.ComputeBoundingBox).
+    fn player_bounds(&self, player_index: usize) -> (Vec2, Vec2) {
         let player = &self.players[player_index];
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let half = |right: Vec2, up: Vec2| {
+            Vec2::new(right.x.abs() + up.x.abs(), right.y.abs() + up.y.abs())
+        };
         if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
             let collider = player.base.collider;
-            return axis(collider.center) - axis(collider.right).abs() - axis(collider.up).abs();
+            return (collider.center, half(collider.right, collider.up));
         }
         let row = self.entities[Self::blink_player_entity(player)];
         let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
         if row.kind == 0 {
-            return axis(center) - Fix::from_raw(row.radius);
+            let radius = Fix::from_raw(row.radius);
+            return (center, Vec2::new(radius, radius));
         }
         let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
         let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-        axis(center) - axis(right).abs() - axis(up).abs()
+        (center, half(right, up))
+    }
+
+    /// The low edge, on the broadphase sweep axis, of the player's registered
+    /// Player-layer shape.
+    fn player_sweep_min(&self, player_index: usize, sweep_x: bool) -> Fix {
+        let (center, half) = self.player_bounds(player_index);
+        if sweep_x { center.x - half.x } else { center.y - half.y }
+    }
+
+    /// Whether SortAndSweep pairs the circle with the player's shape: their
+    /// bounding boxes overlap strictly on both axes.
+    fn player_swept_pairs(&self, player_index: usize, circle: Circle) -> bool {
+        let (center, half) = self.player_bounds(player_index);
+        let reach = half + Vec2::new(circle.radius, circle.radius);
+        (circle.center.x - center.x).abs() < reach.x && (circle.center.y - center.y).abs() < reach.y
     }
 
     /// The players flagged in `victims`, in the order DetPhysics dispatches
