@@ -25864,7 +25864,6 @@ impl RolloutWorld {
         dynamics.shake_time = Fix::ZERO;
         dynamics.shake_duration = data.duplicator.platform_shake_duration;
         dynamics.shake_amount = data.duplicator.platform_shake;
-        dynamics.shake_previous = Vec2::ZERO;
         dynamics.meteor_shake_curve = false;
     }
 
