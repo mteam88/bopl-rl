@@ -13997,7 +13997,7 @@ impl RolloutWorld {
         data: &data::RolloutData,
     ) -> (Vec2, Vec2, bool) {
         let angle = aim.complex_mul(Vec2::new(right.x, -right.y)).normalized_angle();
-        let relative = if angle < Fix::PI + data.beam.min_grounded_angle
+        let clamped = if angle < Fix::PI + data.beam.min_grounded_angle
             || angle > Fix::TAU - data.beam.min_grounded_angle
         {
             Vec2::angle(angle)
@@ -14006,11 +14006,11 @@ impl RolloutWorld {
         } else {
             Vec2::angle(Fix::PI + data.beam.min_grounded_angle)
         };
-        (
-            relative.complex_mul(right),
-            relative,
-            relative.dot(Vec2::UP) > data.beam.up_alignment,
-        )
+        // relativeStaffDir is read back from the rotated staff, not the
+        // clamped angle itself (Beam.cs:302-303).
+        let staff = clamped.complex_mul(right);
+        let relative = staff.complex_mul(Vec2::new(right.x, -right.y));
+        (staff, relative, relative.dot(Vec2::UP) > data.beam.up_alignment)
     }
 
     /// The aim step of Beam.UpdateSim. While `onFirstFrame` is set, a
