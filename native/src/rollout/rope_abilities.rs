@@ -1168,7 +1168,16 @@ impl RolloutWorld {
                         .dot(self.players[player].base.external_velocity)
                         > Fix::from_int(30)
                 {
-                    self.players[player].base.force_unground(&self.platforms);
+                    // PlayerPhysics.LateUpdateSim's UnGround nulls the rotation
+                    // and raises the slime's OnNoLongerGrounded: State.fall.
+                    let slot = &mut self.players[player];
+                    slot.base.force_unground(&self.platforms);
+                    slot.base.rotation = Fix::ZERO;
+                    slot.base.up = Vec2::UP;
+                    if slot.active == ActiveAbility::None {
+                        slot.obs_state = STATE_FALL;
+                        slot.state_ticks = 0;
+                    }
                 }
                 self.ropes[rope_index].physics.segment[endpoint] =
                     self.players[player].base.position;
