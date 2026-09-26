@@ -2384,17 +2384,6 @@ impl PlayerSlot {
             + self.gun.collider_up.perp_cw().complex_mul(offset * self.base.scale);
     }
 
-    /// PlayerBody's step in a PlantObjectOnPlatform form, entry pass included.
-    /// The hurtbox is synced after it, before LateUpdateSim puts a grounded
-    /// body back on its platform.
-    fn plant_cast_body_step(&mut self, published: Vec2, tick: u32) {
-        self.base.position += (self.base.velocity + self.base.external_velocity) * DT;
-        self.base.external_velocity *= Fix::from_f64(0.95);
-        self.plant_cast.collider_position = self.base.position;
-        self.reported_position = published;
-        self.reported_tick = tick;
-    }
-
     /// The slime object is gone: eliminated, or killed after WinGame, where
     /// Player.Kill is ignored but PlayerCollision still destroys the slime.
     fn slime_destroyed(&self) -> bool {
@@ -8340,7 +8329,8 @@ impl RolloutWorld {
                         if slot.base.grounded {
                             slot.base.move_only(Vec2::ZERO, terrain!(self));
                         }
-                        slot.plant_cast_body_step(slot.base.position, self.tick);
+                        let published = slot.base.position;
+                        self.plant_cast_form_move(index, published, jump_pressed);
                         return;
                     }
                     ABILITY_TESLA => {
@@ -8365,7 +8355,8 @@ impl RolloutWorld {
                         if slot.base.grounded {
                             slot.base.move_only(Vec2::ZERO, terrain!(self));
                         }
-                        slot.plant_cast_body_step(slot.base.position, self.tick);
+                        let published = slot.base.position;
+                        self.plant_cast_form_move(index, published, jump_pressed);
                         return;
                     }
                     ABILITY_FREEZE => {
@@ -10963,11 +10954,17 @@ impl RolloutWorld {
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
         }
-        // PlayerBody carries a grapple rope into the form.
+        self.plant_cast_form_move(index, published_position, jump_pressed);
+    }
+
+    /// PlayerBody's step in a PlantObjectOnPlatform form, entry pass included;
+    /// it carries a grapple rope into the form. The hurtbox is synced after
+    /// it, before LateUpdateSim puts a grounded body back on its platform.
+    fn plant_cast_form_move(&mut self, index: usize, published: Vec2, jump_pressed: bool) {
         self.form_body_move(index, jump_pressed);
         let slot = &mut self.players[index];
         slot.plant_cast.collider_position = slot.base.position;
-        slot.reported_position = published_position;
+        slot.reported_position = published;
         slot.reported_tick = self.tick;
     }
 
@@ -11044,12 +11041,7 @@ impl RolloutWorld {
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
         }
-        // PlayerBody carries a grapple rope into the form.
-        self.form_body_move(index, jump_pressed);
-        let slot = &mut self.players[index];
-        slot.plant_cast.collider_position = slot.base.position;
-        slot.reported_position = published_position;
-        slot.reported_tick = self.tick;
+        self.plant_cast_form_move(index, published_position, jump_pressed);
     }
 
     fn spawn_tesla_node(&mut self, index: usize, data: &data::RolloutData) -> bool {
