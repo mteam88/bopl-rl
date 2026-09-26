@@ -2108,6 +2108,8 @@ pub struct PlayerSlot {
     pub ability_origin_rotation: Fix,
     pub ability_origin_state: u32,
     pub ability_origin_scale: Fix,
+    /// The deactivated slime's PlayerPhysics keeps its ground while in a form.
+    pub ability_origin_ground: Option<u32>,
     pub ability_entry_action: Action,
     /// Player.Scale, which ScaleChanger mutates after the player updaters.
     pub player_scale: Fix,
@@ -3853,6 +3855,7 @@ impl RolloutWorld {
                 ability_origin_rotation: Fix::ZERO,
                 ability_origin_state: STATE_FALL,
                 ability_origin_scale: Fix::ONE,
+                ability_origin_ground: None,
                 ability_entry_action: Action::default(),
                 player_scale: Fix::ONE,
                 physics_scale: Fix::ONE,
@@ -5237,6 +5240,8 @@ impl RolloutWorld {
         let active_subsystems = self.active_subsystems;
         let has = |ability| active_subsystems & ability_bit(ability) != 0;
         let has_rope = has(ABILITY_GRAPPLING_HOOK) || has(ABILITY_WEB_SWING);
+        // Gold Mushroom and a Duplicator shot at a slime both make ability-less clones.
+        let has_clones = has(ABILITY_GOLD_MUSHROOM) || has(ABILITY_DUPLICATOR);
         let has_thrown_item = has(ABILITY_GRENADE)
             || has(ABILITY_SMOKE)
             || has(ABILITY_TACK)
@@ -5258,6 +5263,7 @@ impl RolloutWorld {
         }
         if has(ABILITY_DUPLICATOR) {
             self.register_pending_duplicated_pickups(data);
+            self.register_pending_abilityless_clones();
         }
         // A projectile fired during the prior updater pass has a lower
         // allocated hierarchy than an ability prefab instantiated by a later
@@ -5706,45 +5712,9 @@ impl RolloutWorld {
                 if !self.playable(pa) || !self.playable(pb) {
                     continue;
                 }
-                // Non-instant abilities disable the original slime box, but
-                // Bow and Platform anticipation replace it with their own
-                // Player-layer trigger. The active ability has no
-                // SlimeController callback; the ordinary slime on the other
-                // side still receives its one-sided overlap push.
-                let collider_enabled = |slot: &PlayerSlot| match slot.active {
-                    ActiveAbility::None
-                    | ActiveAbility::Dash
-                    | ActiveAbility::Bow
-                    | ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile
-                    | ActiveAbility::Mine
-                    | ActiveAbility::Rock
-                    | ActiveAbility::Roll
-                    | ActiveAbility::Meteor
-                    | ActiveAbility::Push
-                    | ActiveAbility::Freeze
-                    | ActiveAbility::Blink
-                    | ActiveAbility::GrowthRay
-                    | ActiveAbility::ShrinkRay
-                    | ActiveAbility::Spike
-                    | ActiveAbility::Engine
-                    | ActiveAbility::Tesla
-                    | ActiveAbility::TimeStop
-                    | ActiveAbility::Gust
-                    | ActiveAbility::Revival
-                    | ActiveAbility::BlackHole
-                    | ActiveAbility::Throw
-                    | ActiveAbility::Drill
-                    | ActiveAbility::Beam
-                    | ActiveAbility::Duplicator
-                    | ActiveAbility::Magnet => true,
-                    ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
-                };
-                if !collider_enabled(&self.players[pa]) || !collider_enabled(&self.players[pb]) {
+                if !Self::slime_collider_enabled(&self.players[pa])
+                    || !Self::slime_collider_enabled(&self.players[pb])
+                {
                     continue;
                 }
                 let a_pos = self.players[pa].base.position;
@@ -5810,11 +5780,15 @@ impl RolloutWorld {
                 self.update_obs_state(index, input);
             }
         }
-        if has(ABILITY_GOLD_MUSHROOM) {
+        if has_clones {
             self.abilityless_clones_tick(actions);
         }
-        if has(ABILITY_GOLD_MUSHROOM) && has(ABILITY_BLINK) {
+        if has_clones && has(ABILITY_BLINK) {
             self.blink_clone_tunnels_tick(data, updater_dt);
+        }
+        // The clones' shoves are DetPhysics callbacks, after their update.
+        if has_clones {
+            self.abilityless_clone_shoves();
         }
         let physics_dt = DT * self.player_time_scale;
         if has(ABILITY_BOW) {
@@ -5948,7 +5922,7 @@ impl RolloutWorld {
         if has(ABILITY_TESLA) {
             self.tesla_contacts(data);
         }
-        if has(ABILITY_GOLD_MUSHROOM) {
+        if has_clones {
             self.abilityless_clone_contacts();
         }
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
@@ -5996,6 +5970,22 @@ impl RolloutWorld {
                 continue;
             }
             self.players[index].base.late_step(&self.platforms);
+        }
+        if has_clones {
+            for clone in &mut self.abilityless_clones {
+                let ground = clone.base.ground.and_then(|ground| {
+                    self.platforms.iter().position(|platform| platform.id == ground)
+                });
+                if clone.active
+                    && !clone.blink_tunnel_active
+                    && let Some(platform_index) = ground
+                    && self.platforms[platform_index].active
+                    && self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED
+                        == 0
+                {
+                    clone.base.late_step(&self.platforms);
+                }
+            }
         }
         if has(ABILITY_BEAM) {
             self.beams_late_tick(data);
@@ -7202,6 +7192,47 @@ impl RolloutWorld {
         self.ability_pickups_tick_remaining(data, updater_dt);
     }
 
+    /// Non-instant abilities disable the original slime box, but
+    /// Bow and Platform anticipation replace it with their own
+    /// Player-layer trigger. The active ability has no
+    /// SlimeController callback; the ordinary slime on the other
+    /// side still receives its one-sided overlap push.
+    fn slime_collider_enabled(slot: &PlayerSlot) -> bool {
+        match slot.active {
+            ActiveAbility::None
+            | ActiveAbility::Dash
+            | ActiveAbility::Bow
+            | ActiveAbility::Grenade
+            | ActiveAbility::Smoke
+            | ActiveAbility::Tack
+            | ActiveAbility::Mjolnir
+            | ActiveAbility::PokeBall
+            | ActiveAbility::Missile
+            | ActiveAbility::Mine
+            | ActiveAbility::Rock
+            | ActiveAbility::Roll
+            | ActiveAbility::Meteor
+            | ActiveAbility::Push
+            | ActiveAbility::Freeze
+            | ActiveAbility::Blink
+            | ActiveAbility::GrowthRay
+            | ActiveAbility::ShrinkRay
+            | ActiveAbility::Spike
+            | ActiveAbility::Engine
+            | ActiveAbility::Tesla
+            | ActiveAbility::TimeStop
+            | ActiveAbility::Gust
+            | ActiveAbility::Revival
+            | ActiveAbility::BlackHole
+            | ActiveAbility::Throw
+            | ActiveAbility::Drill
+            | ActiveAbility::Beam
+            | ActiveAbility::Duplicator
+            | ActiveAbility::Magnet => true,
+            ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
+        }
+    }
+
     fn playable(&self, index: usize) -> bool {
         let slot = &self.players[index];
         slot.base.alive
@@ -7509,6 +7540,7 @@ impl RolloutWorld {
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
                     slot.ability_origin_rotation = frozen.rotation;
                     slot.ability_origin_state = slot.obs_state;
+                    slot.ability_origin_ground = frozen.ground.filter(|_| frozen.grounded);
                     // SlimeController still writes Player.Scale to its hurtbox
                     // after OldUpdate on the pass it enters an ability.
                     let scale = slot.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
@@ -22896,13 +22928,19 @@ impl RolloutWorld {
             return;
         }
         let source = self.players[victim].base.clone();
-        let current_normal = source
-            .ground
+        // SlimeController.CurrentNormal reads the slime's own body, which a
+        // form leaves grounded where it was entered.
+        let (slime_ground, slime_position) = if self.players[victim].active == ActiveAbility::None {
+            (source.ground.filter(|_| source.grounded), source.position)
+        } else {
+            (self.players[victim].ability_origin_ground, self.players[victim].ability_origin)
+        };
+        let current_normal = slime_ground
             .and_then(|ground| {
                 self.platforms
                     .iter()
                     .find(|platform| platform.id == ground)
-                    .map(|platform| platform.surface.normal(source.position))
+                    .map(|platform| platform.surface.normal(slime_position))
             })
             .unwrap_or(Vec2::UP);
         let launch_direction = if direction == current_normal {
@@ -22914,24 +22952,6 @@ impl RolloutWorld {
         self.next_spawn_hierarchy += 8;
         let position = source.position;
         let collider = OrientedBox::from_basis(position, Vec2::RIGHT, data.player.hurtbox_extents);
-        let entity = self.entities.len();
-        let id = self.next_id();
-        self.entities.push(CEntity {
-            id,
-            kind: 1,
-            layer: LAYER_PLAYER,
-            owner: source.id,
-            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
-            hierarchy: 100_000_000 + hierarchy_base + 6,
-            x: position.x.raw(),
-            y: position.y.raw(),
-            right_x: collider.right.x.raw(),
-            right_y: collider.right.y.raw(),
-            up_x: collider.up.x.raw(),
-            up_y: collider.up.y.raw(),
-            inverse_mass: -Fix::ONE.raw(),
-            ..CEntity::default()
-        });
         let base = Player {
             alive: true,
             out_of_bounds: false,
@@ -22970,7 +22990,7 @@ impl RolloutWorld {
             active: true,
             born_tick: self.tick,
             hierarchy_base,
-            entity: Some(entity),
+            entity: None,
             owner: victim,
             base,
             obs_state: STATE_FALL,
@@ -31451,6 +31471,66 @@ impl RolloutWorld {
         }
     }
 
+    /// Ability-less clones meet every other Player-layer body through the same
+    /// SlimeController.OnCollide shove (SlimeController.cs:1221-1242). Clones
+    /// are spawned after every player, so a clone loses a zero-distance tie.
+    fn abilityless_clone_shoves(&mut self) {
+        for clone_index in 0..self.abilityless_clones.len() {
+            let clone = &self.abilityless_clones[clone_index];
+            if !clone.active
+                || !clone.base.alive
+                || clone.entity.is_none()
+                || clone.captured_by_ball.is_some()
+                || self.blink_object_hidden(clone.entity)
+            {
+                continue;
+            }
+            let (clone_position, hierarchy_base) = (clone.base.position, clone.hierarchy_base);
+            for player in 0..self.players.len() {
+                if !self.playable(player) || !Self::slime_collider_enabled(&self.players[player]) {
+                    continue;
+                }
+                let position = self.players[player].base.position;
+                self.abilityless_clones[clone_index].base.push_from(position, false);
+                if self.players[player].active == ActiveAbility::None {
+                    self.players[player].base.push_from(clone_position, true);
+                }
+            }
+            for other in 0..self.abilityless_clones.len() {
+                let other_clone = &self.abilityless_clones[other];
+                if other == clone_index
+                    || !other_clone.active
+                    || !other_clone.base.alive
+                    || other_clone.entity.is_none()
+                    || other_clone.captured_by_ball.is_some()
+                    || self.blink_object_hidden(other_clone.entity)
+                {
+                    continue;
+                }
+                let lower = hierarchy_base < other_clone.hierarchy_base;
+                let position = other_clone.base.position;
+                self.abilityless_clones[clone_index].base.push_from(position, lower);
+            }
+        }
+    }
+
+    /// The clone prefab's hurtbox joins DetPhysics when the updater
+    /// initializes it on the following tick (DPhysicsBox.Init).
+    fn register_pending_abilityless_clones(&mut self) {
+        for clone_index in 0..self.abilityless_clones.len() {
+            let clone = &self.abilityless_clones[clone_index];
+            if !clone.active || clone.entity.is_some() || clone.born_tick >= self.tick {
+                continue;
+            }
+            let hierarchy = 100_000_000 + clone.hierarchy_base + 6;
+            let entity = self.entities.len();
+            let id = self.next_id();
+            self.entities.push(CEntity { id, hierarchy, ..CEntity::default() });
+            self.abilityless_clones[clone_index].entity = Some(entity);
+            self.sync_abilityless_clone_entity(clone_index);
+        }
+    }
+
     fn sync_abilityless_clone_entity(&mut self, clone_index: usize) {
         let clone = &self.abilityless_clones[clone_index];
         if let Some(entity) = clone.entity {
@@ -35469,7 +35549,8 @@ impl RolloutWorld {
         let mut clone_order = [usize::MAX; MAX_PLAYERS * 16];
         let mut clone_count = 0usize;
         for (index, clone) in self.abilityless_clones.iter().enumerate() {
-            if clone.active {
+            // Updater.updatables holds the clone from its registration on.
+            if clone.active && clone.entity.is_some() {
                 clone_order[clone_count] = index;
                 clone_count += 1;
             }
@@ -35495,7 +35576,9 @@ impl RolloutWorld {
                 abilities: [0; 3],
                 ability_flags: [0; 3],
                 cooldowns: [0; 3],
-                timers: [0; 3],
+                // SlimeController.Init fills its three timers with -1.5 and
+                // no ability ever advances them.
+                timers: [Fix::from_f32(-1.5).raw(); 3],
             });
         }
     }
