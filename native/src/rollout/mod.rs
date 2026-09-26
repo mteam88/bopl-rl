@@ -2146,6 +2146,10 @@ pub struct PlayerSlot {
     /// advances later in the same updater pass.
     pub reported_position: Vec2,
     pub reported_tick: u32,
+    /// The tick and body position of a form exit the slime has already moved
+    /// on from in the same pass (a Magnet Gun steal). The deactivated form
+    /// collider stays where the exit published it.
+    pub form_exit: Option<(u32, Vec2)>,
     /// A platform destroyed later in the previous updater pass. Unity keeps
     /// the rider grounded until its own next update, then ungrounds it. The
     /// pass-end DestroyImmediate already nulled attachedGround, so UnGround
@@ -3893,6 +3897,7 @@ impl RolloutWorld {
                 ability_time: Fix::ZERO,
                 reported_position: spawn,
                 reported_tick: u32::MAX,
+                form_exit: None,
                 ground_destroyed: false,
                 bow: BowState::default(),
                 rock: RockState::default(),
@@ -21451,13 +21456,37 @@ impl RolloutWorld {
                     player.base.position,
                     crate::physics::contact::circle_circle(pickup_circle, circle).is_some(),
                 );
-            } else {
+            } else if player.active == ActiveAbility::None {
                 consider(
                     MagnetHeld::Player(player_index),
                     player.base.position,
                     crate::physics::contact::circle_box(pickup_circle, player.base.collider)
                         .is_some(),
                 );
+            } else {
+                // An ability form is hit through its own collider, and the
+                // distance is measured to that collider's transform.
+                let entity = Self::blink_player_entity(player);
+                if !self.collides(entity) {
+                    continue;
+                }
+                let row = self.entities[entity];
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let overlaps = if row.kind == 0 {
+                    let circle = Circle { center, radius: Fix::from_raw(row.radius) };
+                    crate::physics::contact::circle_circle(pickup_circle, circle).is_some()
+                } else {
+                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                    let form = OrientedBox {
+                        center,
+                        right,
+                        up,
+                        inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+                    };
+                    crate::physics::contact::circle_box(pickup_circle, form).is_some()
+                };
+                consider(MagnetHeld::Player(player_index), center, overlaps);
             }
         }
         for (arrow_index, arrow) in self.arrows.iter().enumerate() {
@@ -21705,12 +21734,21 @@ impl RolloutWorld {
             }
             MagnetHeld::Nothing => return,
         };
-        if let MagnetHeld::Player(victim) = held
-            && self.players[victim].active != ActiveAbility::None
-        {
-            // MagnetGun exits an ability form with an explicit ungrounded
-            // packet whose position is the stealing gun's CurrentFirePoint.
-            position = self.magnet_firepoint(index, data);
+        // MagnetGun exits an ability form with an ungrounded packet placed at
+        // its CurrentFirePoint, but the form's own ExitAbility overwrites that
+        // position with its body's. Only Drill and MeteorSmash pass it on;
+        // CastSpell adds its ExitAbilityOffset.
+        if let MagnetHeld::Player(victim) = held {
+            match self.players[victim].active {
+                ActiveAbility::Drill | ActiveAbility::Meteor => {
+                    position = self.magnet_firepoint(index, data);
+                }
+                ActiveAbility::TimeStop => {
+                    position += data.time_stop.exit_offset * self.players[victim].player_scale;
+                }
+                ActiveAbility::Throw => self.drop_macho_held_boulder(victim, data),
+                _ => {}
+            }
         }
 
         if self.players[index].magnet.phase == 1 {
@@ -21762,6 +21800,7 @@ impl RolloutWorld {
                     self.exit_form_for_freeze(i, data);
                     self.players[i].base.position = position;
                     self.players[i].reported_position = position;
+                    self.players[i].form_exit = Some((self.tick, position));
                 }
                 let slot = &mut self.players[i];
                 // MagnetGun.cs:687 calls UnGround() with nullRotation.
@@ -34586,7 +34625,10 @@ impl RolloutWorld {
             // ended (Ability.cs:151-152) and DetPhysics still syncs that
             // frozen FixTransform every pass (DetPhysics.cs:2498-2530), so
             // the exit pass writes the published exit position.
-            let exit_position = slot.reported_position;
+            let exit_position = slot
+                .form_exit
+                .filter(|&(tick, _)| tick == self.tick)
+                .map_or(slot.reported_position, |(_, position)| position);
             let dash_exit_rotation = slot.base.dash.exit_rotation;
             let data = data::get();
 
@@ -35697,7 +35739,10 @@ impl RolloutWorld {
             let in_ability = slot.active != ActiveAbility::None;
             let synced = slot.base.collider.center;
             let rotation = slot.base.collider_rotation;
-            let exit_position = slot.reported_position;
+            let exit_position = slot
+                .form_exit
+                .filter(|&(tick, _)| tick == self.tick)
+                .map_or(slot.reported_position, |(_, position)| position);
 
             let body = &mut self.entities[slot.body_entity];
             let body_was_active = body.flags & E_ACTIVE != 0;
@@ -37520,7 +37565,7 @@ mod tests {
         world.players[0].magnet.aim = Vec2::RIGHT;
         world.players[0].magnet.body_right = Vec2::RIGHT;
         world.players[0].base.position = Vec2::new(Fix::from_int(2), Fix::from_int(20));
-        world.players[1].active = ActiveAbility::Blink;
+        world.players[1].active = ActiveAbility::Drill;
         world.players[1].base.position = Vec2::new(Fix::from_int(30), Fix::from_int(30));
         let firepoint = world.magnet_firepoint(0, data::get());
 
