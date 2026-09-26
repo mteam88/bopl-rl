@@ -160,6 +160,7 @@ impl Player {
         }
         if self.dash.active && self.outside_bounds() {
             self.alive = false;
+            self.out_of_bounds = true;
         }
     }
 }
