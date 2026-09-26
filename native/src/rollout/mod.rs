@@ -28349,9 +28349,12 @@ impl RolloutWorld {
                 }
                 let hit_radius =
                     hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
+                // SlimeController.body.position: the slime's own transform,
+                // which the synced collider row trails by this pass's move.
                 if self
                     .active_player_position(player_index)
-                    .is_some_and(|position| {
+                    .is_some_and(|_| {
+                        let position = self.players[player_index].base.position;
                         (position - item_position).length_squared() < hit_radius * hit_radius
                     })
                 {
