@@ -9827,15 +9827,20 @@ impl RolloutWorld {
             });
         }
         let map = &data.maps[self.map];
-        if let Some((water_position, water_extents, water_hierarchy)) = map.water {
-            let water = water_position.y + water_extents.y;
-            let water_distance = ray_start.y - water;
-            if data.meteor.raycast_mask & (1 << LAYER_WATER) != 0
-                && water_distance >= Fix::ZERO
-                && water_distance <= distance_limit
+        if let Some((water_position, water_extents, water_hierarchy)) = map.water
+            && data.meteor.raycast_mask & (1 << LAYER_WATER) != 0
+        {
+            let water = OrientedBox::from_basis(
+                water_position,
+                Vec2::RIGHT,
+                data::surface_extents(water_extents),
+            );
+            if let Some(hit) = water.raycast(ray_start, direction)
+                && hit.near >= Fix::ZERO
+                && hit.near <= distance_limit
             {
                 self.scratch.ray_hits.push(SortedRayHit {
-                    distance: water_distance,
+                    distance: hit.near,
                     hierarchy: water_hierarchy,
                     kind: 3,
                     index: 0,
@@ -9910,7 +9915,9 @@ impl RolloutWorld {
                     }
                 }
                 3 => {
-                    self.spawn_meteor_smear(start, Vec2::new(start.x, scene_water), index, data);
+                    // The smear ends where the ray met the water collider,
+                    // which need not sit at SceneBounds.WaterHeight.
+                    self.spawn_meteor_smear(start, near, index, data);
                     self.players[index].base.position =
                         Vec2::new(start.x, scene_water - Fix::from_int(20));
                     self.exit_meteor_air(index, data);
