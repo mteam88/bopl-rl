@@ -703,7 +703,11 @@ impl RolloutWorld {
             return;
         };
         if !self.ropes[rope_index].physics.enabled {
+            // PlayerBody drops the disabled rope and steps like an unroped body.
             self.players[player].rope = None;
+            let body = &mut self.players[player].base;
+            body.position += (body.velocity + body.external_velocity) * DT;
+            body.external_velocity *= Fix::from_f64(0.95);
             return;
         }
         let top = self.players[player].rope_top;
