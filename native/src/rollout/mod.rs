@@ -31682,8 +31682,12 @@ impl RolloutWorld {
                 let ratio = previous / scale;
                 dynamics.body.inverse_mass *= ratio;
                 dynamics.body.inverse_inertia *= ratio;
-                dynamics.root_body.inverse_mass *= ratio;
-                dynamics.root_body.inverse_inertia *= ratio;
+                // DPhysicsRoundedRect.inverseMass writes the combined body of
+                // a composite and leaves the rect's own body unscaled.
+                if dynamics.attached_children == 0 {
+                    dynamics.root_body.inverse_mass *= ratio;
+                    dynamics.root_body.inverse_inertia *= ratio;
+                }
                 dynamics.body_scale = scale;
                 self.platforms_changed();
             } else if dynamics.body_resizable {
