@@ -52,10 +52,7 @@ def component(entry, type_name, all_matches=False):
 
 
 def updater_count(prefab):
-    return sum(
-        "hierarchyNumber" in c.get("properties", {})
-        for c in prefab["data"]["components"]
-    )
+    return registering_count(prefab)
 
 
 # Updater registration is opt-in per class. Updater never sweeps the scene for
