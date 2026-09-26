@@ -11480,7 +11480,9 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
-    fn rebuild_platform_attachment_body(&mut self, platform_index: usize) {
+    /// `synced`: DetPhysics.Destroy* ran SynCompositeToFixTransAndRelativeValues
+    /// first. MachoThrow2's pickup calls Remove*FromComposite directly.
+    fn rebuild_platform_attachment_body(&mut self, platform_index: usize, synced: bool) {
         let old = self.platform_dynamics[platform_index].body;
         let mut mass = Fix::ONE
             / self.platform_dynamics[platform_index]
@@ -11539,25 +11541,39 @@ impl RolloutWorld {
         }
         // CreateMultiComposite re-attaches every remaining child through
         // CombineBodies, which re-derives relativePos from the child's
-        // synced collider centre: ComplexMul(relativePos, fixTrans.right)
-        // rotated back by the orientation, rounding on both multiplies.
-        let orientation = dynamics.transform_rotation.unwrap_or(old.orientation);
+        // collider centre against the rounded rect's position, rotated back
+        // by the orientation. After the sync that centre is
+        // ComplexMul(relativePos, fixTrans.right) from the rect; without it,
+        // it is where the retired composite, pivoting on its own position,
+        // put it.
+        let orientation = if synced {
+            dynamics.transform_rotation.unwrap_or(old.orientation)
+        } else {
+            old.orientation
+        };
         let right = self.platforms[platform_index].surface.right;
+        let position = dynamics.composite_position;
         let inverse = Vec2::angle(-orientation);
-        let refit = |relative: Vec2| relative.complex_mul(right).complex_mul(inverse);
+        let refit = |relative: Vec2, center: Vec2| {
+            if synced {
+                relative.complex_mul(right).complex_mul(inverse)
+            } else {
+                (center - position).complex_mul(inverse)
+            }
+        };
         for spike in &mut self.spike_attacks {
             if spike.active && !spike.macho_carried && spike.platform_index == platform_index {
-                spike.relative_center = refit(spike.relative_center);
+                spike.relative_center = refit(spike.relative_center, spike.collider_center);
             }
         }
         for engine in &mut self.engines {
             if engine.active && !engine.macho_carried && engine.platform_index == platform_index {
-                engine.relative_center = refit(engine.relative_center);
+                engine.relative_center = refit(engine.relative_center, engine.collider_center);
             }
         }
         for node in &mut self.tesla_nodes {
             if node.active && !node.macho_carried && node.platform_index == platform_index {
-                node.relative_center = refit(node.relative_center);
+                node.relative_center = refit(node.relative_center, node.collider_center);
             }
         }
     }
@@ -15750,15 +15766,17 @@ impl RolloutWorld {
         let Some((kind, attachable_index)) = best else {
             return;
         };
+        // SetActive(false) leaves the collider component enabled, and the
+        // pickup leaves its platform's CompositeBody.
         if kind == 1 {
             let old_platform = self.engines[attachable_index].platform_index;
             self.engines[attachable_index].macho_carried = true;
             self.engines[attachable_index].platform_index = usize::MAX;
             if let Some(entity) = self.engines[attachable_index].entity {
-                self.entities[entity].flags &= !(E_ACTIVE | E_ENABLED);
+                self.entities[entity].flags &= !(E_ACTIVE | E_COMPOSITE);
             }
             self.players[owner].macho_throw.picked_engine = Some(attachable_index);
-            self.rebuild_platform_attachment_body(old_platform);
+            self.rebuild_platform_attachment_body(old_platform, false);
         } else if kind == 2 {
             let old_platform = self.tesla_nodes[attachable_index].platform_index;
             let line_owner = if self.tesla_nodes[attachable_index].child.is_some() {
@@ -15775,19 +15793,19 @@ impl RolloutWorld {
             self.tesla_nodes[attachable_index].macho_carried = true;
             self.tesla_nodes[attachable_index].platform_index = usize::MAX;
             if let Some(entity) = self.tesla_nodes[attachable_index].entity {
-                self.entities[entity].flags &= !(E_ACTIVE | E_ENABLED);
+                self.entities[entity].flags &= !(E_ACTIVE | E_COMPOSITE);
             }
             self.players[owner].macho_throw.picked_tesla = Some(attachable_index);
-            self.rebuild_platform_attachment_body(old_platform);
+            self.rebuild_platform_attachment_body(old_platform, false);
         } else if kind == 3 {
             let old_platform = self.spike_attacks[attachable_index].platform_index;
             self.spike_attacks[attachable_index].macho_carried = true;
             self.spike_attacks[attachable_index].platform_index = usize::MAX;
             if let Some(entity) = self.spike_attacks[attachable_index].entity {
-                self.entities[entity].flags &= !(E_ACTIVE | E_ENABLED);
+                self.entities[entity].flags &= !(E_ACTIVE | E_COMPOSITE);
             }
             self.players[owner].macho_throw.picked_spike = Some(attachable_index);
-            self.rebuild_platform_attachment_body(old_platform);
+            self.rebuild_platform_attachment_body(old_platform, false);
         } else {
             self.players[owner].macho_throw.picked_rope = Some(attachable_index);
         }
@@ -32774,7 +32792,7 @@ impl RolloutWorld {
     fn platforms_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
         for index in 0..self.platforms.len() {
             if self.platform_dynamics[index].composite_rebuild {
-                self.rebuild_platform_attachment_body(index);
+                self.rebuild_platform_attachment_body(index, true);
             }
         }
         // ResizablePlatform.UpdateSim runs every tick while an evicted platform
@@ -38141,7 +38159,7 @@ mod tests {
         world.reset(&test_config()).unwrap();
         world.platform_dynamics[0].body.force = Vec2::new(Fix::from_int(7), Fix::from_int(-3));
 
-        world.rebuild_platform_attachment_body(0);
+        world.rebuild_platform_attachment_body(0, true);
 
         assert_eq!(world.platform_dynamics[0].body.force, Vec2::ZERO);
     }
