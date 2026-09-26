@@ -16825,9 +16825,18 @@ impl RolloutWorld {
                 let direction = -surface.normal(point);
                 let distance = ((position - point).length_squared() / Fix::from_int(10))
                     .max(Fix::from_f64(1.5));
-                let impulse = direction.normalized_safe()
-                    * (wave.platform_force / distance)
-                    * Fix::from_int(60);
+                // Shockwave pushes a "boulder"-tagged platform with defaultForce.
+                let boulder = self
+                    .macho_boulders
+                    .iter()
+                    .any(|boulder| boulder.active && boulder.platform_index == platform_index);
+                let force = if boulder {
+                    wave.default_force
+                } else {
+                    wave.platform_force
+                };
+                let impulse =
+                    direction.normalized_safe() * (force / distance) * Fix::from_int(60);
                 let arm = (point - surface.center).normalized_safe();
                 self.platform_dynamics[platform_index]
                     .body
