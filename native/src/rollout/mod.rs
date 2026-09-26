@@ -27064,7 +27064,8 @@ impl RolloutWorld {
     #[inline]
     fn circle_entity_contact(&self, query: Circle, entity: usize) -> Option<Contact> {
         let row = self.entities[entity];
-        if row.flags & E_ACTIVE == 0 {
+        // DetPhysics.IsActive: the object is active and its collider enabled.
+        if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED) {
             return None;
         }
         if row.kind == 0 {
