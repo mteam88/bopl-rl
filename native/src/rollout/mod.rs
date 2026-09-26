@@ -2531,9 +2531,9 @@ struct PlatformScratch {
     /// either Missile callback destroys a participant.
     missile_contacts: Vec<(usize, usize, Contact)>,
     missile_detonations: Vec<usize>,
-    /// Arrow Circle/RoundedRectangle manifolds. Retained because arrows can
-    /// overlap several composite platforms in one DetPhysics pass.
-    arrow_platform_contacts: Vec<(usize, Contact)>,
+    /// Arrow Circle/RoundedRectangle manifolds of one DetPhysics pass, in
+    /// resolution order.
+    arrow_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
@@ -28925,6 +28925,76 @@ impl RolloutWorld {
         self.remove_smoke_cloud(cloud_index);
     }
 
+    /// Circle/RR: DetPhysics builds every manifold first, then applies each
+    /// impulse and positional correction in SortAndSweep order
+    /// (DetPhysics.cs:3012-3048), like thrown items. A landing arrow kicks
+    /// its platform before the wall callback destroys it
+    /// (DetPhysics.cs:3195-3199), and a platform two arrows land on sees the
+    /// first one's impulse before the second's.
+    fn arrow_platform_contacts(&mut self, data: &data::RolloutData) {
+        let radius = data.arrow.radius;
+        let mut contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
+        contacts.clear();
+        for (i, arrow) in self.arrows.iter().enumerate() {
+            if !arrow.active || !arrow.registered || self.blink_object_hidden(arrow.entity) {
+                continue;
+            }
+            let circle = Circle {
+                center: arrow.position,
+                radius: radius * arrow.scale,
+            };
+            for (p, platform) in self.platforms.iter().enumerate() {
+                if !platform.active || !self.scratch.swept_pairs(self.tick, p, circle) {
+                    continue;
+                }
+                if let Some(contact) =
+                    crate::physics::contact::circle_rounded(circle, self.circle_collider(p))
+                {
+                    contacts.push((i, p, contact));
+                }
+            }
+        }
+        if contacts.is_empty() {
+            self.scratch.arrow_platform_contacts = contacts;
+            return;
+        }
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let arrow_min = |i: usize| axis(self.arrows[i].position) - radius * self.arrows[i].scale;
+        let platform_min = |p: usize| {
+            let swept = self
+                .scratch
+                .callback_colliders
+                .get(p)
+                .filter(|_| self.scratch.callback_tick == Some(self.tick))
+                .copied()
+                .unwrap_or_else(|| self.circle_collider(p));
+            axis(swept.inner.center)
+                - axis(swept.inner.right).abs()
+                - axis(swept.inner.up).abs()
+                - swept.radius
+        };
+        contacts.sort_by_key(|&(i, p, _)| {
+            let (a, b) = (arrow_min(i), platform_min(p));
+            (a.max(b), a.min(b))
+        });
+        for &(i, p, contact) in &contacts {
+            let (platform_center, own_inverse_mass) = self.platform_contact_frame(p);
+            let mut arrow_body = self.arrows[i].body(&data.arrow.body);
+            let platform_body = &mut self.platform_dynamics[p].body;
+            resolve(contact, &mut arrow_body, platform_body, self.arrows[i].position, platform_center);
+            let correction =
+                positional_correction(contact, arrow_body.inverse_mass, own_inverse_mass, false);
+            let arrow = &mut self.arrows[i];
+            arrow.velocity = arrow_body.velocity;
+            arrow.angular_velocity = arrow_body.angular_velocity;
+            arrow.position += correction[0];
+            self.shift_platform_collider(p, correction[1]);
+        }
+        self.platforms_changed();
+        self.scratch.arrow_platform_contacts = contacts;
+    }
+
     /// DetPhysics contact group order for Arrow's circle is Circle/RR,
     /// Circle/Circle, then Circle/Box. Arrow.OnCollide consumes wall contacts,
     /// but intentionally returns without destroying itself for PlayerBody
@@ -28932,6 +29002,7 @@ impl RolloutWorld {
     /// the arrow continues flying.
     fn arrows_contacts(&mut self, data: &data::RolloutData) {
         let radius = data.arrow.radius;
+        self.arrow_platform_contacts(data);
         for i in 0..self.arrows.len() {
             if !self.arrows[i].active
                 || !self.arrows[i].registered
@@ -28945,64 +29016,27 @@ impl RolloutWorld {
                 radius: radius * arrow.scale,
             };
 
-            // Circle/RR: DetPhysics tests every pair first, then applies the
-            // collision impulse and positional correction to the arrow and
-            // the platform bodies (DetPhysics.cs:3012-3048); Arrow.OnCollide
-            // only runs from the callback queue afterwards
-            // (DetPhysics.cs:3195-3199), so a landing arrow kicks its
-            // platform before the wall callback destroys it. That callback
+            // Arrow.OnCollide destroys the components from the callback
+            // queue: this pass still observes the corrected collider and
+            // resolved body, flagged destroyed and ownerless
+            // (Arrow.cs:124-128); the next pass removes it. That callback
             // precedes all player shape groups: an arrow overlapping terrain
             // and a player in the same pass never reaches PlayerCollision.
-            let mut contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
-            contacts.clear();
-            for (p, platform) in self.platforms.iter().enumerate() {
-                if !platform.active || !self.scratch.swept_pairs(self.tick, p, circle) {
-                    continue;
-                }
-                if let Some(contact) =
-                    crate::physics::contact::circle_rounded(circle, self.circle_collider(p))
-                {
-                    contacts.push((p, contact));
-                }
-            }
-            if !contacts.is_empty() {
-                let mut arrow_body = arrow.body(&data.arrow.body);
-                let mut center = circle.center;
-                for &(p, contact) in &contacts {
-                    let (platform_center, own_inverse_mass) = self.platform_contact_frame(p);
-                    let platform_body = &mut self.platform_dynamics[p].body;
-                    resolve(contact, &mut arrow_body, platform_body, center, platform_center);
-                    let correction = positional_correction(
-                        contact,
-                        arrow_body.inverse_mass,
-                        own_inverse_mass,
-                        false,
-                    );
-                    center += correction[0];
-                    self.shift_platform_collider(p, correction[1]);
-                }
-                self.platforms_changed();
-                // Arrow.OnCollide destroys the components from the callback
-                // queue: this pass still observes the corrected collider and
-                // resolved body, flagged destroyed and ownerless
-                // (Arrow.cs:124-128); the next pass removes it.
+            if self.scratch.arrow_platform_contacts.iter().any(|&(a, ..)| a == i) {
                 self.destroy_arrow(i);
-                if let Some(entity) = self.arrows[i].entity {
+                if let Some(entity) = arrow.entity {
                     let e = &mut self.entities[entity];
                     e.flags = destroyed_flags(e.flags);
                     e.owner = 0;
-                    e.x = center.x.raw();
-                    e.y = center.y.raw();
-                    e.vx = arrow_body.velocity.x.raw();
-                    e.vy = arrow_body.velocity.y.raw();
+                    e.x = arrow.position.x.raw();
+                    e.y = arrow.position.y.raw();
+                    e.vx = arrow.velocity.x.raw();
+                    e.vy = arrow.velocity.y.raw();
                     e.rotation = arrow.rotation.raw();
-                    e.angular_velocity = arrow_body.angular_velocity.raw();
+                    e.angular_velocity = arrow.angular_velocity.raw();
                 }
-                contacts.clear();
-                self.scratch.arrow_platform_contacts = contacts;
                 continue;
             }
-            self.scratch.arrow_platform_contacts = contacts;
 
             // Circle/Circle: released item bodies are resolved before either
             // callback runs. Arrow.OnCollide is queued first for this pair;
