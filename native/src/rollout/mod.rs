@@ -16111,12 +16111,13 @@ impl RolloutWorld {
                 .ground
                 .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
                 .map(|platform| {
-                    let local = platform
-                        .surface
-                        .local_position(self.players[index].base.position, data.player.radius)
-                        .ok();
-                    let up = platform.surface.normal(self.players[index].base.position);
-                    (local, up, up.perp_cw().normalized_angle())
+                    // SyncPhysicsTo(AbilityExitInfo) re-derives the pose from
+                    // the form's own perimeter coordinate and radius.
+                    let base = &self.players[index].base;
+                    let position = platform.surface.position(base.local, base.radius);
+                    let local = platform.surface.local_position(position, data.player.radius).ok();
+                    let up = platform.surface.normal(position);
+                    (position, local, up, up.perp_cw().normalized_angle())
                 })
         } else {
             None
@@ -16125,10 +16126,12 @@ impl RolloutWorld {
         slot.active = ActiveAbility::None;
         slot.facing_right = slot.macho_throw.facing_right;
         slot.base.radius = data.player.radius;
-        if let Some((Some(local), up, rotation)) = ordinary_ground {
+        if let Some((position, Some(local), up, rotation)) = ordinary_ground {
             // PlayerPhysics.SyncPhysicsTo converts the form's world pose
             // back into the ordinary slime's smaller-radius perimeter
             // coordinate before its same-pass LateUpdateSim.
+            slot.base.position = position;
+            slot.base.velocity = Vec2::ZERO;
             slot.base.local = local;
             slot.base.up = up;
             slot.base.rotation = rotation;
