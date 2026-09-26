@@ -5136,6 +5136,15 @@ impl RolloutWorld {
                 if slot.base.attach_upside_down == Some(true) {
                     slot.facing_right = !slot.facing_right;
                 }
+                // A landing in PlayerPhysics.UpdateSim precedes OldUpdate, so
+                // this pass's `case State.land` already re-aims (see below).
+                if slot.base.pre_move_grounded
+                    && !jumped
+                    && !held
+                    && (align.abs() >= Fix::from_f32(0.2) || into_ground)
+                {
+                    slot.facing_right = align >= Fix::ZERO;
+                }
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks += LAND_TICKS;
             }
