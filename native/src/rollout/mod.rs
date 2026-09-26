@@ -7439,7 +7439,7 @@ impl RolloutWorld {
             }
         }
         let ragdoll_ended = self.players[index].ragdoll.active;
-        if ragdoll_ended && self.ragdoll_player_tick(index) {
+        if ragdoll_ended && self.ragdoll_player_tick(index, action) {
             let scale = self.players[index].player_scale;
             self.players[index].set_ordinary_body_scale(scale);
             return;
@@ -25421,7 +25421,7 @@ impl RolloutWorld {
     /// The ragdolled slime's pass. Returns false when the ragdoll ends in it:
     /// SlimeController then carries on through OldUpdate and Move like any
     /// other pass, with PlayerPhysics.UpdateSim already done here.
-    fn ragdoll_player_tick(&mut self, index: usize) -> bool {
+    fn ragdoll_player_tick(&mut self, index: usize, action: Action) -> bool {
         let slot = &mut self.players[index];
         // Both flags stand for PlayerPhysics.skipNextUpdate, which the
         // ragdolled slime's PlayerPhysics still consumes every pass.
@@ -25469,10 +25469,19 @@ impl RolloutWorld {
             slot.ragdoll_grounded_fall = held_on_ground;
             return false;
         }
-        // OldUpdate advances all cooldowns before its ragdoll-state early
-        // return suppresses PlayerPhysics.Move.
+        // OldUpdate runs its whole cooldown loop, the rope abilities'
+        // UpdateCooldowns included, before its ragdoll-state early return
+        // suppresses PlayerPhysics.Move.
         for timer in &mut slot.timers {
             *timer += DT;
+        }
+        self.web_cooldowns_tick(index, action);
+        self.grapple_cooldowns_tick(index);
+        let slot = &mut self.players[index];
+        for s in 0..3 {
+            if slot.cooldowns[s] == Fix::ZERO {
+                slot.timers[s] = Fix::from_f64(0.01);
+            }
         }
         slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
         slot.base.external_velocity *= Fix::from_f64(0.95);
