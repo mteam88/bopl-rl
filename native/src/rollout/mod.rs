@@ -7492,9 +7492,11 @@ impl RolloutWorld {
                 }
             }
         }
-        self.web_cooldowns_tick(index, action);
-        self.grapple_cooldowns_tick(index);
+        // The rope abilities' UpdateCooldowns sits in the same !isInAbility
+        // loop (SlimeController.cs:717-743).
         if !in_ability {
+            self.web_cooldowns_tick(index, action);
+            self.grapple_cooldowns_tick(index);
             // SlimeController.cs:750-753: a zero cooldown (a rope still out
             // to reel in) pins the timer just above it.
             let slot = &mut self.players[index];
@@ -31746,11 +31748,26 @@ impl RolloutWorld {
         } else {
             self.ropes[rope_index].physics.count - 1
         };
-        if jump_pressed {
-            let rope = &self.ropes[rope_index].physics;
+        let mass = if data.rock.rope_player_mass == Fix::ZERO {
+            Fix::from_f64(0.5)
+        } else {
+            data.rock.rope_player_mass
+        };
+        if jump_pressed && self.ropes[rope_index].owner == index {
+            // BounceBall.AttachRope(null) lets go without the Dettach that
+            // PlayerBody's version makes (BounceBall.cs:205-223).
+            let rope = &mut self.ropes[rope_index];
             self.players[index].rock.body.velocity =
-                (rope.segment[endpoint] - rope.previous[endpoint]) / DT;
-            self.attach_player_rope(index, None, top);
+                (rope.physics.segment[endpoint] - rope.physics.previous[endpoint]) / DT;
+            if top {
+                rope.time_air_start = Fix::from_int(100);
+                rope.physics.force_start = -Vec2::UP * rope_abilities::ROPE_GRAVITY;
+            } else {
+                rope.time_air_end = Fix::from_int(100);
+                rope.physics.force_end = -Vec2::UP * rope_abilities::ROPE_GRAVITY;
+            }
+            rope.physics.set_mass(mass, top, Fix::ONE);
+            self.players[index].rope = None;
             return;
         }
 
@@ -31767,7 +31784,7 @@ impl RolloutWorld {
                 rope.time_air_end = Fix::from_int(100);
             }
             rope.physics
-                .set_mass(data.rock.rope_player_mass, top, scale);
+                .set_mass(mass, top, scale);
             if top {
                 rope.physics.force_start = velocity - previous;
             } else {

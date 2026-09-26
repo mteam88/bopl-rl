@@ -8,7 +8,7 @@ const MAX_SEGMENTS: usize = 40;
 const MAX_CONTACTS: usize = 32;
 const SEGMENTS: usize = 12;
 
-const ROPE_GRAVITY: Fix = Fix::from_raw(8_589_934_592);
+pub(super) const ROPE_GRAVITY: Fix = Fix::from_raw(8_589_934_592);
 const ROPE_ITERATIONS: usize = 7;
 const PLATFORM_STRETCHINESS: Fix = Fix::from_raw(171_798_688);
 const MAX_STRETCH: Fix = Fix::from_raw(429_496_729_600);
