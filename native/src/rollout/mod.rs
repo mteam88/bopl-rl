@@ -11303,17 +11303,17 @@ impl RolloutWorld {
         }
         let dynamics = &mut self.platform_dynamics[platform_index];
         dynamics.body = dynamics.root_body;
-        dynamics.body.inverse_mass = Fix::ONE / mass;
         dynamics.body.orientation = old.orientation;
         if count == 0 {
             // CreateMultiComposite returns no composite for the lone rounded
-            // rect: it resumes its own body, velocity frozen since it joined.
-            dynamics.body.inverse_inertia = old.inverse_inertia;
+            // rect: it resumes its own body (a struct the combining never
+            // wrote), mass, inertia and a velocity frozen since it joined.
             dynamics.root_body.force = Vec2::ZERO;
         } else {
             // Remove*FromComposite copies only velocity and angularVelocity
             // from the retired combined body. The rounded rect's own force
             // still joins it in DetPhysics.Simulate.
+            dynamics.body.inverse_mass = Fix::ONE / mass;
             dynamics.body.inverse_inertia = Fix::ONE / moment;
             dynamics.body.velocity = old.velocity;
             dynamics.body.angular_velocity = old.angular_velocity;
