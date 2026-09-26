@@ -5574,8 +5574,13 @@ impl RolloutWorld {
             // SlimeController.onExitAbility ends by syncing the hurtbox
             // (SlimeController.cs:251), so later updaters this pass (Black
             // Hole's pull, another Magnet) find the slime where it came out.
+            // Its airborne SyncPhysicsTo also drops attachedGround.
             if exited {
-                self.players[index].base.sync_collider();
+                let base = &mut self.players[index].base;
+                base.sync_collider();
+                if !base.grounded {
+                    base.ground = None;
+                }
             }
             if self.players[index].active == ActiveAbility::Roll {
                 self.roll_contacts_for(index, data);
@@ -6047,6 +6052,7 @@ impl RolloutWorld {
         if has(ABILITY_ROCK) {
             self.rocks_late_tick(data);
         }
+
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
