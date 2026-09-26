@@ -5680,6 +5680,7 @@ impl RolloutWorld {
         // spawned platform's ShakablePlatform also runs after them, so a
         // Beam or Meteor landing on it shakes it on the same pass.
         self.platform_motion_tick(data, updater_dt, true);
+        self.platform_body_scale_tick(true);
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT);
         }
@@ -31657,6 +31658,34 @@ impl RolloutWorld {
         }
     }
 
+    /// BoplBody.UpdateSim, the last updater on each platform: a
+    /// non-resizable body follows a DPhysics scale change with its mass and
+    /// inertia. A runtime-spawned platform updates behind the prefab that
+    /// spawned it, so it sees that pass's Macho excavation.
+    fn platform_body_scale_tick(&mut self, runtime_spawned: bool) {
+        for i in 0..self.platforms.len() {
+            if !self.platforms[i].active
+                || (self.platform_defs[i] == usize::MAX) != runtime_spawned
+            {
+                continue;
+            }
+            let dynamics = &mut self.platform_dynamics[i];
+            let previous = dynamics.body_scale;
+            let scale = dynamics.scale;
+            if !dynamics.body_resizable && previous != scale {
+                let ratio = previous / scale;
+                dynamics.body.inverse_mass *= ratio;
+                dynamics.body.inverse_inertia *= ratio;
+                dynamics.root_body.inverse_mass *= ratio;
+                dynamics.root_body.inverse_inertia *= ratio;
+                dynamics.body_scale = scale;
+                self.platforms_changed();
+            } else if dynamics.body_resizable {
+                dynamics.body_scale = scale;
+            }
+        }
+    }
+
     fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         self.platform_bounds_tick(false);
         self.platform_motion_tick(data, updater_dt, false);
@@ -31691,20 +31720,8 @@ impl RolloutWorld {
                 self.platforms[i].surface.radius = self.platforms[i].collider.radius;
                 self.platforms[i].surface.bounds_radius = self.platforms[i].collider.radius;
             }
-            let previous = self.platform_dynamics[i].body_scale;
-            let scale = self.platform_dynamics[i].scale;
-            if !self.platform_dynamics[i].body_resizable && previous != scale {
-                let ratio = previous / scale;
-                self.platform_dynamics[i].body.inverse_mass *= ratio;
-                self.platform_dynamics[i].body.inverse_inertia *= ratio;
-                self.platform_dynamics[i].root_body.inverse_mass *= ratio;
-                self.platform_dynamics[i].root_body.inverse_inertia *= ratio;
-                self.platform_dynamics[i].body_scale = scale;
-                self.platforms_changed();
-            } else if self.platform_dynamics[i].body_resizable {
-                self.platform_dynamics[i].body_scale = scale;
-            }
         }
+        self.platform_body_scale_tick(false);
 
         // AntiLockPlatform runs after AnimateVelocity: add the ordinary force
         // and re-home at the pre-integration position, preserving the existing
