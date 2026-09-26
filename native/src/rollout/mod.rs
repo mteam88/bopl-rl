@@ -32190,6 +32190,23 @@ impl RolloutWorld {
                     .relative_center
                     .complex_mul(self.platforms[platform].surface.right);
         }
+        // The sweep's axis statistics read these children where they now are.
+        let children = (self.spike_attacks.iter())
+            .map(|c| (c.active, c.macho_carried, c.entity, c.collider_center))
+            .chain(
+                (self.engines.iter())
+                    .map(|c| (c.active, c.macho_carried, c.entity, c.collider_center)),
+            )
+            .chain(
+                (self.tesla_nodes.iter())
+                    .map(|c| (c.active, c.macho_carried, c.entity, c.collider_center)),
+            );
+        for (active, carried, entity, center) in children {
+            if let (true, false, Some(entity)) = (active, carried, entity) {
+                self.entities[entity].x = center.x.raw();
+                self.entities[entity].y = center.y.raw();
+            }
+        }
         // CollisionInformation stores the shape as it was during narrow phase;
         // PlayerCollision's later squish callback tests that copy, before the
         // RR positional corrections below move either platform.
