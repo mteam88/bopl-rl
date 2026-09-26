@@ -19392,7 +19392,10 @@ impl RolloutWorld {
             Vec2::UP
         };
         let state = &mut self.players[index].throw_item;
-        if !state.has_inputted_fire {
+        // The gLoop animation's Fire callback runs before ThrowItem.UpdateSim,
+        // so on the pass the loop runs out this pass's input is never read.
+        let loop_ends = state.phase == 1 && state.ticks + 1 > data.mine.ground_loop_ticks;
+        if !state.has_inputted_fire && !loop_ends {
             // ThrowItem.OldUpdate follows the live stick until the button is
             // released. The release pass always replaces that direction with
             // -LocalUp, even though Mine's authored onlyThrowUp later forces
