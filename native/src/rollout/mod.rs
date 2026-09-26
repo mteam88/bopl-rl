@@ -5916,8 +5916,12 @@ impl RolloutWorld {
         if has(ABILITY_MISSILE) {
             self.guided_missile_contacts(data);
         }
-        if has_thrown_item {
+        // The global circle/circle pass: items, Portal shots, and Tesla
+        // nodes of different platforms.
+        if has_thrown_item || has(ABILITY_TESLA) {
             self.thrown_item_pair_contacts(data);
+        }
+        if has_thrown_item {
             self.thrown_items_contacts(data);
         }
         if has(ABILITY_GRENADE) {
@@ -29942,10 +29946,14 @@ impl RolloutWorld {
             let current_min = axis(current_circle.center) - current_circle.radius;
             window.retain(|&prior| axis(circle(prior).center) + circle(prior).radius > current_min);
             for &prior in window.iter() {
-                // Nodes of different platforms would need a
-                // composite-on-composite resolve; they never touch in play.
-                // Shots only meet items here.
-                if prior >= SHOT && current >= SHOT {
+                // Shots only meet items here. Nodes of one platform share
+                // its composite, which DetPhysics never tests against itself.
+                if prior >= SHOT && current >= SHOT && (prior < NODE || current < NODE)
+                    || prior >= NODE
+                        && current >= NODE
+                        && nodes[prior - NODE].platform_index
+                            == nodes[current - NODE].platform_index
+                {
                     continue;
                 }
                 let prior_circle = circle(prior);
@@ -29968,6 +29976,31 @@ impl RolloutWorld {
         // of them. In particular the three overlapping fan copies must all
         // use their initial positions rather than a prior pair's correction.
         for &(a_index, b_index, contact) in contacts.iter() {
+            if a_index >= NODE && b_index >= NODE {
+                // Nodes of two platforms: both sides swap to their combined
+                // bodies, and each child collider and CompositeBody.position
+                // takes its own correction.
+                let (a, b) = (self.tesla_nodes[a_index - NODE], self.tesla_nodes[b_index - NODE]);
+                let (a_platform, b_platform) = (a.platform_index, b.platform_index);
+                let mut body_a = self.platform_dynamics[a_platform].body;
+                let mut body_b = self.platform_dynamics[b_platform].body;
+                resolve(
+                    contact,
+                    &mut body_a,
+                    &mut body_b,
+                    self.platform_dynamics[a_platform].composite_position,
+                    self.platform_dynamics[b_platform].composite_position,
+                );
+                let correction =
+                    positional_correction(contact, a.body.inverse_mass, b.body.inverse_mass, false);
+                self.platform_dynamics[a_platform].body = body_a;
+                self.platform_dynamics[a_platform].composite_position += correction[0];
+                self.tesla_nodes[a_index - NODE].collider_center += correction[0];
+                self.platform_dynamics[b_platform].body = body_b;
+                self.platform_dynamics[b_platform].composite_position += correction[1];
+                self.tesla_nodes[b_index - NODE].collider_center += correction[1];
+                continue;
+            }
             if (SHOT..NODE).contains(&a_index) || (SHOT..NODE).contains(&b_index) {
                 // PortalShot's Projectile does not ignite explosives and its
                 // own callback only lands on walls: the impulse is all.
