@@ -5857,6 +5857,13 @@ impl RolloutWorld {
                 }
             }
         }
+        for clone in &self.abilityless_clones {
+            if let Some(e) = clone.entity.filter(|_| !clone.active)
+                && self.entities[e].flags & E_DESTROYED != 0
+            {
+                self.entities[e].flags = E_REMOVED;
+            }
+        }
         for i in 0..self.platforms.len() {
             let unsynced = std::mem::replace(&mut self.platform_dynamics[i].shake_unsynced, Vec2::ZERO);
             self.platforms[i].collider.inner.center += unsynced;
@@ -13706,8 +13713,13 @@ impl RolloutWorld {
             }
         }
 
-        let mut victims = [false; MAX_PLAYERS];
-        let mut killers = [0u32; MAX_PLAYERS];
+        // Kills run in DetPhysics callback order: the circle/circle group,
+        // then circle/box, each in SortAndSweep order. Only the last body of
+        // a player drops its ability, so a slime and its clone eaten in one
+        // pass must die in that order.
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let mut victims: Vec<((bool, Fix, Fix), bool, usize, u32)> = Vec::new();
         for hole_index in 0..self.black_holes.len() {
             let hole = self.black_holes[hole_index];
             if !hole.active || hole.mass < Fix::ZERO || self.blink_object_hidden(hole.entity) {
@@ -13717,6 +13729,9 @@ impl RolloutWorld {
                 center: hole.position,
                 radius: hole.radius,
             };
+            let hole_min = axis(hole.position) - hole.radius;
+            let key = |boxed: bool, min: Fix| (boxed, hole_min.max(min), hole_min.min(min));
+            let killer = hole.owner as u32 + 1;
             for (player_index, player) in self.players.iter().enumerate() {
                 if !self.playable_slot(player) || player.out {
                     continue;
@@ -13785,8 +13800,34 @@ impl RolloutWorld {
                     .is_some()
                 };
                 if overlaps {
-                    victims[player_index] = true;
-                    killers[player_index] = hole.owner as u32 + 1;
+                    let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                    let min = if row.kind == 0 {
+                        axis(center) - Fix::from_raw(row.radius)
+                    } else {
+                        axis(center)
+                            - axis(Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y)))
+                                .abs()
+                            - axis(Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)))
+                                .abs()
+                    };
+                    victims.push((key(row.kind != 0, min), false, player_index, killer));
+                    Self::black_hole_grow(
+                        &mut self.black_holes[hole_index],
+                        -Fix::ONE,
+                        Fix::ZERO,
+                        data,
+                    );
+                }
+            }
+            for clone_index in 0..self.abilityless_clones.len() {
+                let clone = &self.abilityless_clones[clone_index];
+                if !clone.active || self.blink_object_hidden(clone.entity) {
+                    continue;
+                }
+                let body = clone.base.collider;
+                if crate::physics::contact::circle_box(circle, body).is_some() {
+                    let min = axis(body.center) - axis(body.right).abs() - axis(body.up).abs();
+                    victims.push((key(true, min), true, clone_index, killer));
                     Self::black_hole_grow(
                         &mut self.black_holes[hole_index],
                         -Fix::ONE,
@@ -13796,20 +13837,24 @@ impl RolloutWorld {
                 }
             }
         }
-        for player_index in 0..self.players.len() {
-            if victims[player_index] && self.playable(player_index) {
+        victims.sort_by_key(|&(key, ..)| key);
+        for (_, clone, index, killer) in victims {
+            if clone {
+                let entity = self.abilityless_clones[index].entity;
+                let alive = self.abilityless_clones[index].active;
+                self.kill_abilityless_clone(index, killer, CAUSE_OTHER);
+                // A callback casualty stays visible as destroyed until the
+                // next pass's DetPhysics.Simulate drops it.
+                if let Some(entity) = entity.filter(|_| alive) {
+                    self.entities[entity].flags = E_DESTROYED | E_TRIGGER;
+                    self.entities[entity].owner = 0;
+                }
+            } else if self.playable(index) {
                 // BlackHole explicitly requests no ordinary death effect,
                 // while still executing from DetPhysics's callback queue.
                 // A form gets Ability.ExitAbility at its FixTransform, not
                 // the form's own exit (BlackHole.cs:486-495).
-                self.kill_with(
-                    player_index,
-                    killers[player_index],
-                    CAUSE_OTHER,
-                    true,
-                    false,
-                    false,
-                );
+                self.kill_with(index, killer, CAUSE_OTHER, true, false, false);
             }
         }
     }
@@ -23158,6 +23203,11 @@ impl RolloutWorld {
             .iter()
             .position(|clone| !clone.active)
         {
+            if let Some(e) = self.abilityless_clones[free].entity
+                && self.entities[e].flags & E_DESTROYED != 0
+            {
+                self.entities[e].flags = E_REMOVED;
+            }
             self.abilityless_clones[free] = clone;
         } else {
             self.abilityless_clones.push(clone);
