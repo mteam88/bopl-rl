@@ -625,6 +625,8 @@ impl RolloutWorld {
             .local_position(near, Fix::ZERO)
             .expect("web ray endpoint lies on platform");
         let rope = self.allocate_rope(player, near, position, separation, Some(platform), local);
+        // The Rope and RopeAttachment prefabs both count (WebSwing.cs:149,159).
+        self.next_spawn_hierarchy += 2;
         let number = self.ropes[rope].number;
         self.attach_player_rope(player, None, false);
         self.attach_player_rope(player, Some(rope), false);
