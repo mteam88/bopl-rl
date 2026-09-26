@@ -25966,9 +25966,8 @@ impl RolloutWorld {
                     // (FixTransform.cs:49-59); State.Size sizes along them.
                     self.players[index].platform.sizing_right = up.perp_cw();
                 }
-                // CalcExtents already includes the current DPhysics scale.
                 // During the enter animation only the bevel radius changes.
-                let extents = pd.spawn_extents * self.platform_dynamics[platform_index].scale;
+                let extents = self.platform_calc_extents(platform_index);
                 self.reshape_platform(platform_index, extents, radius);
                 let slot = &mut self.players[index];
                 slot.base.position = center;
@@ -26096,10 +26095,9 @@ impl RolloutWorld {
         pd: &data::PlatformAbilityData,
     ) {
         let platform_index = self.players[index].platform.platform_index;
-        let (center, extents, radius) = {
-            let s = &self.platforms[platform_index].surface;
-            (s.center, s.extents, s.radius)
-        };
+        let center = self.platforms[platform_index].surface.center;
+        let extents = self.platform_calc_extents(platform_index);
+        let radius = self.platforms[platform_index].collider.radius;
         let (x, y) = (extents.x, extents.y);
         // PlatformTransform.State.Size uses the transformed player's stable
         // `body.right` (the exact Slerp vector, FixTransform.cs:49-59), not
@@ -26507,6 +26505,13 @@ impl RolloutWorld {
 
     /// ResizablePlatform.ResizePlatform: geometry, mass and inertia only.
     /// It never moves the platform.
+    /// DPhysicsRoundedRect.CalcExtents reads the extents back off the
+    /// collider, `One / inverseExtents`, so a scale change shows up in them.
+    fn platform_calc_extents(&self, index: usize) -> Vec2 {
+        let inverse = self.platforms[index].collider.inner.inverse_extents;
+        Vec2::new(Fix::ONE / inverse.x, Fix::ONE / inverse.y)
+    }
+
     fn reshape_platform(&mut self, index: usize, extents: Vec2, radius: Fix) {
         let platform = &mut self.platforms[index];
         // ResizablePlatform.ResizePlatform ends with StickyRect.UpdateBounds
