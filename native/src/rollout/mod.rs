@@ -31993,6 +31993,31 @@ impl RolloutWorld {
                 }
             }
         }
+        // Resolved in SortAndSweep order, as thrown_item_platform_contacts:
+        // by the later bounding box's rank on the sweep axis, then the
+        // earlier's. A wall two rocks touch sees the first one's impulse.
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let rock_min = |rock: usize| axis(swept[rock].center) - swept[rock].radius;
+        let wall_min = |wall_index: usize| {
+            let wall = scratch
+                .callback_colliders
+                .get(wall_index)
+                .filter(|_| scratch.callback_tick == Some(self.tick))
+                .or(scratch.circle_colliders.get(wall_index))
+                .copied()
+                .unwrap_or(self.platforms[wall_index].collider);
+            axis(wall.inner.center)
+                - axis(wall.inner.right).abs()
+                - axis(wall.inner.up).abs()
+                - wall.radius
+        };
+        let mut contacts = std::mem::take(&mut scratch.rock_wall_contacts);
+        contacts.sort_by_key(|&(rock_index, wall_index, _)| {
+            let (a, b) = (rock_min(rock_index), wall_min(wall_index));
+            (a.max(b), a.min(b))
+        });
+        scratch.rock_wall_contacts = contacts;
         let mut changed_platform = false;
         for &(rock_index, wall_index, contact) in &scratch.rock_wall_contacts {
             if self.players[rock_index].active != ActiveAbility::Rock {
