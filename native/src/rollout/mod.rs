@@ -27596,7 +27596,9 @@ impl RolloutWorld {
         // updater pass after Fire, pins a settled tack before each integration,
         // and performs the armed proximity query without allocating.
         for item_index in 0..self.thrown_items.len() {
-            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+            // A tunnel's release comes after this updater's turn.
+            let entity = self.thrown_items[item_index].entity;
+            if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
                 continue;
             }
             if !self.thrown_items[item_index].active
@@ -27709,8 +27711,10 @@ impl RolloutWorld {
 
     fn thrown_item_scale_mass_tick(&mut self) {
         for item_index in 0..self.thrown_items.len() {
+            // A tunnel's release comes after this updater's turn.
             if !self.thrown_items[item_index].active
                 || self.blink_object_hidden(self.thrown_items[item_index].entity)
+                || self.blink_object_released(self.thrown_items[item_index].entity)
             {
                 continue;
             }
