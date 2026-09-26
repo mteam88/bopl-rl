@@ -16320,20 +16320,38 @@ impl RolloutWorld {
         let scale_strength = (self.players[index].base.scale
             + (data.macho_throw.extra_strength_scale - Fix::ONE))
             / data.macho_throw.extra_strength_scale;
-        let body = &mut self.platform_dynamics[platform_index].body;
-        body.gravity_scale = Fix::ONE;
-        body.bounciness = data.macho_throw.boulder_dropped_bounciness;
+        let dynamics = &mut self.platform_dynamics[platform_index];
+        Self::drop_boulder(dynamics, data);
+        // DPhysicsRoundedRect.velocity and angularVelocity write the combined
+        // body of a composite boulder, leaving its own body's velocity.
+        let body = &mut dynamics.body;
         body.velocity = direction * strength * scale_strength * body.inverse_mass;
         body.angular_velocity = if self.players[index].macho_throw.facing_right {
             -data.macho_throw.rotation_velocity
         } else {
             data.macho_throw.rotation_velocity
         };
-        self.platform_dynamics[platform_index].root_body = *body;
+        if dynamics.attached_children == 0 {
+            dynamics.root_body = dynamics.body;
+        }
         self.macho_boulders[boulder_index].held = false;
         self.macho_boulders[boulder_index].dropped = true;
         self.players[index].macho_throw.held_boulder = None;
         self.platforms_changed();
+    }
+
+    /// Boulder.Drop: SetGravityScale writes the rounded rect's own body and a
+    /// composite's combined body; SetBounciness writes only its own body, so a
+    /// composite keeps the bounciness it combined with.
+    fn drop_boulder(dynamics: &mut PlatformDynamics, data: &data::RolloutData) {
+        dynamics.body.gravity_scale = Fix::ONE;
+        if dynamics.attached_children == 0 {
+            dynamics.body.bounciness = data.macho_throw.boulder_dropped_bounciness;
+            dynamics.root_body = dynamics.body;
+        } else {
+            dynamics.root_body.gravity_scale = Fix::ONE;
+            dynamics.root_body.bounciness = data.macho_throw.boulder_dropped_bounciness;
+        }
     }
 
     fn drop_macho_held_boulder(&mut self, index: usize, data: &data::RolloutData) {
@@ -16345,10 +16363,7 @@ impl RolloutWorld {
         }
         let platform = self.macho_boulders[held].platform_index;
         if platform < self.platform_dynamics.len() {
-            let body = &mut self.platform_dynamics[platform].body;
-            body.gravity_scale = Fix::ONE;
-            body.bounciness = data.macho_throw.boulder_dropped_bounciness;
-            self.platform_dynamics[platform].root_body = *body;
+            Self::drop_boulder(&mut self.platform_dynamics[platform], data);
             self.platforms_changed();
         }
         self.macho_boulders[held].held = false;
