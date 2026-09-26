@@ -11109,6 +11109,15 @@ impl RolloutWorld {
         // the normal (PlaceSparkNode.cs:35-37, PlaceRocketEngine.cs:40-42).
         let closest = self.platforms[platform_index].surface.position(local, Fix::ZERO);
         let normal = self.platforms[platform_index].surface.normal(closest);
+        // RocketEngineInit re-reads its surface position from the raised,
+        // unscaled placement point (RocketEngine.cs:101, PlaceRocketEngine.cs:44-53).
+        let raised = closest + normal * data.engine.plant_offset.y;
+        let Ok(local) = self.platforms[platform_index]
+            .surface
+            .local_position(raised, Fix::ZERO)
+        else {
+            return false;
+        };
         let scale = self.players[index]
             .player_scale
             .clamp(Fix::from_f32(0.1), Fix::from_int(5));
@@ -11619,6 +11628,55 @@ impl RolloutWorld {
         self.spike_attacks[index].relative_center = (root_position - platform.surface.center)
             .complex_mul(inverse_basis)
             + (data.spike.attack_collider_offset * attack.scale).complex_mul(relative_right);
+    }
+
+    /// ResizablePlatform.ResizePlatform ends with RepositionOnParent on every
+    /// attached child: each re-derives its offset from the platform's current
+    /// pose and its own synced rotation, so the offset follows the rounding
+    /// of that pose (ResizablePlatform.cs:69-87, RocketEngine.cs:180-193,
+    /// SimpleSparkNode.cs:305-318, SpikeAttack.cs:144-158). A child placed
+    /// this pass still has the pose it was placed with, which this repeats.
+    fn reposition_platform_children(&mut self, platform: usize, data: &data::RolloutData) {
+        let tick = self.tick;
+        let settled = |active: bool, carried: bool, on: usize, born: u32| {
+            active && !carried && on == platform && born < tick
+        };
+        for index in 0..self.spike_attacks.len() {
+            let spike = &self.spike_attacks[index];
+            if settled(spike.active, spike.macho_carried, spike.platform_index, spike.born_tick) {
+                self.place_spike_attack(index, data);
+            }
+        }
+        let parent_position = self.platforms[platform].surface.center;
+        let inverse_basis = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
+        let surface = &self.platforms[platform].surface;
+        let relative = |local: Fix, rotation: Fix, surface_offset: Fix, offset: Vec2| {
+            let right = Vec2::angle(rotation);
+            let root = surface.position(local, Fix::ZERO) + right.perp() * surface_offset;
+            (root - parent_position).complex_mul(inverse_basis)
+                + offset.complex_mul(right.complex_mul(inverse_basis))
+        };
+        for engine in &mut self.engines {
+            if settled(engine.active, engine.macho_carried, engine.platform_index, engine.born_tick)
+            {
+                engine.relative_center = relative(
+                    engine.local,
+                    engine.collider_rotation,
+                    engine.surface_offset,
+                    data.engine.rocket_collider_offset * engine.scale,
+                );
+            }
+        }
+        for node in &mut self.tesla_nodes {
+            if settled(node.active, node.macho_carried, node.platform_index, node.born_tick) {
+                node.relative_center = relative(
+                    node.local,
+                    node.collider_rotation,
+                    node.surface_offset,
+                    data.tesla.node_collider_offset * node.scale,
+                );
+            }
+        }
     }
 
     fn engines_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
@@ -30890,6 +30948,7 @@ impl RolloutWorld {
             {
                 continue;
             }
+            self.reposition_platform_children(i, data);
             let radius = self.platforms[i].collider.radius;
             let inner = &mut self.platforms[i].collider.inner;
             // DPhysicsRoundedRect.CalcExtents
@@ -32088,6 +32147,8 @@ impl RolloutWorld {
         // above used the pre-resize mass while DetPhysics integrates it with
         // the new one.
         for (index, extents, radius) in removal_resizes {
+            // The children move before StickyRect.UpdateBounds takes the new size.
+            self.reposition_platform_children(index, data);
             self.reshape_platform(index, extents, radius);
         }
         for (index, vector, cube, mass, controlled) in late_pulls {
