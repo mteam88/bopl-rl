@@ -29276,32 +29276,61 @@ impl RolloutWorld {
 
         // DetPhysics builds the complete Box/Box manifold batch before it
         // dispatches Missile.OnCollide. Capture it first so the first callback
-        // cannot hide another same-pass Missile contact.
-        for first in 0..self.guided_missiles.len() {
-            let a = self.guided_missiles[first];
-            if !a.active || !a.registered || self.blink_object_hidden(a.entity) {
-                continue;
-            }
-            let a_box = OrientedBox::from_basis(
-                a.position,
-                Vec2::angle(a.body.orientation),
-                data.missile.spark_extents * a.scale,
-            );
-            for second in first + 1..self.guided_missiles.len() {
-                let b = self.guided_missiles[second];
-                if !b.active || !b.registered || self.blink_object_hidden(b.entity) {
-                    continue;
-                }
-                let b_box = OrientedBox::from_basis(
-                    b.position,
-                    Vec2::angle(b.body.orientation),
-                    data.missile.spark_extents * b.scale,
-                );
-                if let Some(contact) = crate::physics::contact::box_box(a_box, b_box) {
-                    contacts.push((first, second, contact));
-                }
+        // cannot hide another same-pass Missile contact. Pairs come out of the
+        // global sort-and-sweep with A the box whose bounds start first on the
+        // sweep axis; which side is A changes the contact normal's rounding.
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
+        let missiles = &self.guided_missiles;
+        let shape = |index: usize| {
+            let missile = missiles[index];
+            OrientedBox::from_basis(
+                missile.position,
+                Vec2::angle(missile.body.orientation),
+                data.missile.spark_extents * missile.scale,
+            )
+        };
+        let half = |b: OrientedBox| {
+            Vec2::new(b.right.x.abs() + b.up.x.abs(), b.right.y.abs() + b.up.y.abs())
+        };
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        order.clear();
+        for (index, missile) in self.guided_missiles.iter().enumerate() {
+            if missile.active && missile.registered && !self.blink_object_hidden(missile.entity) {
+                order.push(index);
             }
         }
+        order.sort_unstable_by(|&a, &b| {
+            let a_min = axis(shape(a).center) - axis(half(shape(a)));
+            let b_min = axis(shape(b).center) - axis(half(shape(b)));
+            a_min.cmp(&b_min).then(a.cmp(&b))
+        });
+        let mut window = std::mem::take(&mut self.scratch.item_window);
+        window.clear();
+        for &current in &order {
+            let b_box = shape(current);
+            let b_half = half(b_box);
+            window.retain(|&prior| {
+                axis(shape(prior).center) + axis(half(shape(prior)))
+                    > axis(b_box.center) - axis(b_half)
+            });
+            for &prior in &window {
+                let a_box = shape(prior);
+                let a_half = half(a_box);
+                if other(a_box.center) + other(a_half) <= other(b_box.center) - other(b_half)
+                    || other(a_box.center) - other(a_half) >= other(b_box.center) + other(b_half)
+                {
+                    continue;
+                }
+                if let Some(contact) = crate::physics::contact::box_box(a_box, b_box) {
+                    contacts.push((prior, current, contact));
+                }
+            }
+            window.push(current);
+        }
+        self.scratch.item_order = order;
+        self.scratch.item_window = window;
 
         for &(first, second, contact) in &contacts {
             let a = self.guided_missiles[first];
