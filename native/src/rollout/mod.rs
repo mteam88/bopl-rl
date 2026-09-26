@@ -31689,10 +31689,9 @@ impl RolloutWorld {
                 if delta.length_squared() > data.rock.squared_max_rope_separation {
                     delta = delta.normalized_safe() * data.rock.squared_max_rope_separation;
                 }
-                self.players[index]
-                    .rock
-                    .body
-                    .apply_impulse(delta * data.rock.rope_pull_strength * scale, Vec2::ZERO);
+                // BoplBody.AddForce(Impulse) queues f * 60 as a force.
+                self.players[index].rock.body.force +=
+                    delta * data.rock.rope_pull_strength * scale * Fix::from_int(60);
             }
             rope.physics.segment[endpoint] = position;
         }
