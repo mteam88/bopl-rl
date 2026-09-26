@@ -836,6 +836,9 @@ pub struct SpawnedTeslaNode {
 pub struct DestroyedTeslaLine {
     pub entity: usize,
     pub destroy_tick: u32,
+    /// Not yet marked destroyed: its node's OnDestroyUpdatable runs at the
+    /// end of the pass.
+    pub pending: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -6062,6 +6065,12 @@ impl RolloutWorld {
             self.rocks_late_tick(data);
         }
 
+        for line in &mut self.destroyed_tesla_lines {
+            if std::mem::take(&mut line.pending) {
+                let row = &mut self.entities[line.entity];
+                row.flags = destroyed_flags(row.flags);
+            }
+        }
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
@@ -11222,13 +11231,13 @@ impl RolloutWorld {
                 self.retired_tesla_contacts.push(self.tesla_nodes[parent]);
             }
             self.retired_tesla_contacts.push(self.tesla_nodes[oldest]);
-            self.remove_tesla_node(oldest);
+            self.remove_tesla_node(oldest, true);
         }
         self.platforms_changed();
         true
     }
 
-    fn disconnect_tesla_node(&mut self, node_index: usize) {
+    fn disconnect_tesla_node(&mut self, node_index: usize, deferred: bool) {
         if !self.tesla_nodes[node_index].connected {
             return;
         }
@@ -11246,10 +11255,13 @@ impl RolloutWorld {
             self.entities[entity].up_y = node.line_up.y.raw();
             self.entities[entity].rotation = node.line_rotation.raw();
             self.entities[entity].owner = 0;
-            self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+            if !deferred {
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+            }
             self.destroyed_tesla_lines.push(DestroyedTeslaLine {
                 entity,
                 destroy_tick: self.tick,
+                pending: deferred,
             });
         }
         self.tesla_nodes[node_index].line_active = false;
@@ -11263,18 +11275,21 @@ impl RolloutWorld {
         }
     }
 
-    fn remove_tesla_node(&mut self, node_index: usize) {
+    /// `deferred`: the node was Updater.DestroyFix'd mid-pass, so its
+    /// OnDestroyUpdatable (and the lines it destroys) waits for the end of
+    /// the pass, after every LateUpdateSim.
+    fn remove_tesla_node(&mut self, node_index: usize, deferred: bool) {
         if !self.tesla_nodes[node_index].active {
             return;
         }
         if self.tesla_nodes[node_index].connected {
-            self.disconnect_tesla_node(node_index);
+            self.disconnect_tesla_node(node_index, deferred);
         }
         if let Some(parent) = self.tesla_nodes[node_index].parent
             && parent < self.tesla_nodes.len()
             && self.tesla_nodes[parent].connected
         {
-            self.disconnect_tesla_node(parent);
+            self.disconnect_tesla_node(parent, deferred);
         }
         let child = self.tesla_nodes[node_index].child;
         let parent = self.tesla_nodes[node_index].parent;
@@ -12101,7 +12116,7 @@ impl RolloutWorld {
                         && !self.tesla_nodes[parent].macho_carried
                 });
                 if !child_live && !parent_live {
-                    self.disconnect_tesla_node(node_index);
+                    self.disconnect_tesla_node(node_index, false);
                 }
             }
             if !self.tesla_nodes[node_index].connected
@@ -13718,7 +13733,7 @@ impl RolloutWorld {
                     Fix::ZERO,
                     data,
                 );
-                self.remove_tesla_node(node_index);
+                self.remove_tesla_node(node_index, true);
                 self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
         }
@@ -15832,7 +15847,7 @@ impl RolloutWorld {
                 && line_owner < self.tesla_nodes.len()
                 && self.tesla_nodes[line_owner].connected
             {
-                self.disconnect_tesla_node(line_owner);
+                self.disconnect_tesla_node(line_owner, false);
             }
             self.tesla_nodes[attachable_index].macho_carried = true;
             self.tesla_nodes[attachable_index].platform_index = usize::MAX;
@@ -24190,7 +24205,7 @@ impl RolloutWorld {
             }
             self.tesla_nodes[node_index].duplicate_lifespan -= 1;
             if self.tesla_nodes[node_index].duplicate_lifespan < 0 {
-                self.remove_tesla_node(node_index);
+                self.remove_tesla_node(node_index, false);
             } else if self.tesla_nodes[node_index].duplicate_lifespan < 60 {
                 let progress = Fix::ONE
                     - Fix::from_int(self.tesla_nodes[node_index].duplicate_lifespan as i64)
@@ -26933,7 +26948,7 @@ impl RolloutWorld {
                 // Spark nodes are Unity children of their planted platform.
                 // Destroying the parent invokes each node's OnDestroyUpdatable,
                 // including the partner/lightning disconnect cascade.
-                self.remove_tesla_node(node_index);
+                self.remove_tesla_node(node_index, false);
             }
         }
         for node in &mut self.tesla_nodes {
