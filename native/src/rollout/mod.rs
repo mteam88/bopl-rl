@@ -2659,6 +2659,11 @@ pub struct RolloutWorld {
     pub last_observed_id: u32,
     /// Base hierarchy for the next prefab instantiated after player spawn.
     pub next_spawn_hierarchy: u32,
+    /// Instantiations made during the updater phase by objects this port
+    /// updates out of hierarchy order, as (object hierarchy, updatables).
+    /// Updater runs them in hierarchy order, so a spawn by a lower object
+    /// claims its hierarchy first.
+    pub queued_spawns: Vec<(u32, u32)>,
     // Observation buffers. `entities`/`slimes` back the pointers in `state`.
     pub entities: Vec<CEntity>,
     pub slimes: Vec<CSlime>,
@@ -2804,6 +2809,7 @@ impl RolloutWorld {
             observed_ids: Vec::with_capacity(256),
             last_observed_id: 0,
             next_spawn_hierarchy: 0,
+            queued_spawns: Vec::new(),
             entities: Vec::with_capacity(192),
             slimes: Vec::with_capacity(MAX_PLAYERS * 17),
             state: empty_state(),
@@ -3020,6 +3026,7 @@ impl RolloutWorld {
             observed_ids: _,
             last_observed_id: _,
             next_spawn_hierarchy: _,
+            queued_spawns: _,
             entities: _,
             slimes: _,
             state: _,
@@ -5817,6 +5824,7 @@ impl RolloutWorld {
         if has(ABILITY_DUPLICATOR) {
             self.duplicated_rocks_integrate(physics_dt, data);
         }
+        self.claim_queued_spawns(u32::MAX);
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
         for slot in &self.players {
@@ -26991,8 +26999,10 @@ impl RolloutWorld {
                 if position.y < floor || position.x.abs() > Fix::from_f64(131.25) {
                     // Only the water exit has an effect: the two-updatable splash.
                     // In space the floor exit looks for an UpEffect Arrow lacks.
-                    if position.y < floor && !data.maps[self.map].is_space() {
-                        self.next_spawn_hierarchy += 2;
+                    if position.y < floor && !data.maps[self.map].is_space()
+                        && let Some(entity) = self.arrows[i].entity
+                    {
+                        self.queued_spawns.push((self.entities[entity].hierarchy, 2));
                     }
                     self.destroy_arrow(i);
                     continue;
@@ -28151,8 +28161,21 @@ impl RolloutWorld {
             return;
         }
         let item = self.thrown_items[item_index];
+        if let Some(entity) = item.entity {
+            self.claim_queued_spawns(self.entities[entity].hierarchy);
+        }
         self.spawn_grenade_explosion(item.position, item.owner, true, item.scale, data);
         self.remove_thrown_item(item_index, by_callback);
+    }
+
+    /// Hand out the hierarchy of every queued spawn made by an object below
+    /// `hierarchy`, in the order Updater would have reached them.
+    fn claim_queued_spawns(&mut self, hierarchy: u32) {
+        self.queued_spawns.sort_by_key(|&(object, _)| object);
+        let claimed = self.queued_spawns.partition_point(|&(object, _)| object < hierarchy);
+        for (_, updatables) in self.queued_spawns.drain(..claimed) {
+            self.next_spawn_hierarchy += updatables;
+        }
     }
 
     fn spawn_grenade_explosion(
