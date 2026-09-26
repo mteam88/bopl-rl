@@ -1620,6 +1620,9 @@ pub struct BlackHoleCastState {
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
+    /// The hurtbox centre OnEnterAbility's UpdatePhysicsPositions placed
+    /// (BlackHoleClap.cs:55-56), before the form's first move.
+    pub entry_center: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -7410,7 +7413,8 @@ impl RolloutWorld {
             slot.base.external_velocity *= Fix::from_f64(0.95);
             return;
         }
-        // A Beam form finds its lost ground inside Beam.MovePlayer instead.
+        // A Beam form finds its lost ground inside Beam.MovePlayer instead,
+        // and BlackHoleClap exits on it at the top of its UpdateSim.
         // ThrowItem2 finds it inside its own Move, after the grounded-throw
         // exit test, so it leaves the form one pass later.
         let throw_form = matches!(
@@ -7421,7 +7425,7 @@ impl RolloutWorld {
                 | ActiveAbility::Mjolnir
                 | ActiveAbility::PokeBall
         );
-        if self.players[index].active != ActiveAbility::Beam
+        if !matches!(self.players[index].active, ActiveAbility::Beam | ActiveAbility::BlackHole)
             && std::mem::take(&mut self.players[index].ground_destroyed)
             && !throw_form
         {
@@ -8740,6 +8744,9 @@ impl RolloutWorld {
                             ..BlackHoleCastState::default()
                         };
                         slot.base.position = form_position;
+                        let up = if grounded { slot.base.up } else { Vec2::UP };
+                        slot.black_hole_cast.entry_center = form_position
+                            + up.perp_cw().complex_mul(data.black_hole.collider_offset);
                         slot.base.radius = data.black_hole.physics_radius;
                         slot.base.constants = data.black_hole.constants.clone();
                         if grounded {
@@ -12500,10 +12507,16 @@ impl RolloutWorld {
             slot.base.collision_rays(terrain!(self));
         }
         if self.players[index].base.grounded {
-            let ground_live = self.players[index]
-                .base
-                .ground
-                .is_some_and(|id| self.platforms.iter().any(|platform| platform.id == id));
+            // BlackHoleClap exits on a ground that IsDestroyed or inactive
+            // (BlackHoleClap.cs:135), before its row leaves the list.
+            let ground_live = !std::mem::take(&mut self.players[index].ground_destroyed)
+                && self.players[index].base.ground.is_some_and(|id| {
+                    self.platforms.iter().zip(&self.platform_entities).any(|(platform, &entity)| {
+                        platform.id == id
+                            && platform.active
+                            && self.entities[entity].flags & E_DESTROYED == 0
+                    })
+                });
             if ground_live {
                 self.players[index]
                     .base
@@ -12939,6 +12952,8 @@ impl RolloutWorld {
                     player.gun.hurtbox_center
                 } else if player.active == ActiveAbility::Beam {
                     player.beam.entry_center
+                } else if player.active == ActiveAbility::BlackHole {
+                    player.black_hole_cast.entry_center
                 } else {
                     player.base.collider.center
                 };
