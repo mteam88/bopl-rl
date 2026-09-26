@@ -7359,8 +7359,19 @@ impl RolloutWorld {
             return;
         }
         // A Beam form finds its lost ground inside Beam.MovePlayer instead.
+        // ThrowItem2 finds it inside its own Move, after the grounded-throw
+        // exit test, so it leaves the form one pass later.
+        let throw_form = matches!(
+            self.players[index].active,
+            ActiveAbility::Grenade
+                | ActiveAbility::Smoke
+                | ActiveAbility::Tack
+                | ActiveAbility::Mjolnir
+                | ActiveAbility::PokeBall
+        );
         if self.players[index].active != ActiveAbility::Beam
             && std::mem::take(&mut self.players[index].ground_destroyed)
+            && !throw_form
         {
             let slot = &mut self.players[index];
             // Ordinary SlimeController explicitly zeros rotation before
