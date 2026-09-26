@@ -15919,6 +15919,7 @@ impl RolloutWorld {
         let rope = &mut self.ropes[rope_index];
         rope.platform = Some(platform_index);
         rope.platform_local = local;
+        rope.platform_anchor = new_position;
         rope.platform_pull = data.ropes.boulder_pull;
         rope.platform_attach_tick = 0;
         for segment in 0..rope.physics.count / 2 {
@@ -26270,9 +26271,11 @@ impl RolloutWorld {
             return;
         };
         let top = self.players[owner].rope_top;
+        let anchor = surface.position(local, Fix::ZERO);
         let rope = &mut self.ropes[rope_index];
         rope.platform = Some(platform_index);
         rope.platform_local = local;
+        rope.platform_anchor = anchor;
         rope.platform_pull = data::get().ropes.platform_pull;
         rope.platform_top = top;
         rope.platform_attach_tick = self.tick;

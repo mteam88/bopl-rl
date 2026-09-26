@@ -57,6 +57,9 @@ pub(crate) struct RolloutRope {
     pub time_air_end: Fix,
     pub platform: Option<usize>,
     pub platform_local: Fix,
+    /// RopeAttachment's own fixTrans.position: placed on attach and by each
+    /// RepositionOnParent, and read by the next pull before it moves again.
+    pub platform_anchor: Vec2,
     /// RopeAttachment.effectivePlatformPullStr switches on Boulder parents.
     pub platform_pull: Fix,
     /// RopeAttachment.topAttachment. Web/Grapple platform anchors use the
@@ -105,6 +108,7 @@ fn empty_rope() -> RolloutRope {
         time_air_end: Fix::ZERO,
         platform: None,
         platform_local: Fix::ZERO,
+        platform_anchor: Vec2::ZERO,
         platform_pull: PLATFORM_PULL,
         platform_top: true,
         platform_attach_tick: 0,
@@ -207,6 +211,9 @@ impl RolloutWorld {
         };
         rope.platform = platform;
         rope.platform_local = platform_local;
+        rope.platform_anchor = platform.map_or(Vec2::ZERO, |platform| {
+            self.platforms[platform].surface.position(platform_local, Fix::ZERO)
+        });
         rope.platform_pull = PLATFORM_PULL;
         rope.platform_top = true;
         rope.platform_attach_tick = self.tick;
@@ -904,7 +911,8 @@ impl RolloutWorld {
                 let force = (self.ropes[index].physics.segment[endpoint]
                     - self.ropes[index].physics.segment[neighbor])
                     * self.ropes[index].platform_pull;
-                let arm = (anchor - self.platforms[platform].surface.center).normalized_safe();
+                let arm = (self.ropes[index].platform_anchor - self.platforms[platform].surface.center)
+                    .normalized_safe();
                 self.platform_dynamics[platform]
                     .body
                     .apply_impulse(force, arm);
@@ -925,6 +933,7 @@ impl RolloutWorld {
                 self.ropes[index].physics.force_end = Vec2::ZERO;
             }
             self.ropes[index].physics.segment[endpoint] = anchor;
+            self.ropes[index].platform_anchor = anchor;
             for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
                 if (self.ropes[index].physics.segment[segment]
                     - self.ropes[index].physics.segment[segment + 1])
@@ -1013,12 +1022,14 @@ impl RolloutWorld {
                     .surface
                     .local_position(position, Fix::ZERO)
                     .expect("grapple hook centre overlaps platform");
+                let anchor = self.platforms[platform].surface.position(local, Fix::ZERO);
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.mass_start = Fix::ONE;
                 rope.physics.force_start = Vec2::ZERO;
                 rope.physics.time_since_hook_arrived = Fix::ZERO;
                 rope.platform = Some(platform);
                 rope.platform_local = local;
+                rope.platform_anchor = anchor;
                 rope.platform_pull = source.platform_pull;
                 rope.reel_in = true;
                 rope.hook_active = false;
@@ -1219,9 +1230,9 @@ impl RolloutWorld {
                 } else {
                     rope.physics.count - 1
                 };
-                rope.physics.segment[endpoint] = self.platforms[platform]
-                    .surface
-                    .position(rope.platform_local, Fix::ZERO);
+                rope.platform_anchor =
+                    self.platforms[platform].surface.position(rope.platform_local, Fix::ZERO);
+                rope.physics.segment[endpoint] = rope.platform_anchor;
             }
             if rope.born_tick != self.tick
                 && let Some(hole_index) = rope.black_hole
