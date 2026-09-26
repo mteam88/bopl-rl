@@ -10665,7 +10665,11 @@ impl RolloutWorld {
                 return;
             }
         }
-        if self.players[index].base.grounded {
+        // The recover animation's exit callback runs before Spike.UpdateSim,
+        // like the cast's CastSpike, so the exit pass has no Move.
+        let exit_now = self.players[index].spike_cast.phase == 1
+            && self.players[index].spike_cast.ticks > data.spike.recover_ticks;
+        if self.players[index].base.grounded && !exit_now {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
@@ -10677,16 +10681,16 @@ impl RolloutWorld {
             slot.reported_position = published_position;
             slot.reported_tick = self.tick;
         }
-        if self.players[index].spike_cast.phase == 1
-            && self.players[index].spike_cast.ticks > data.spike.recover_ticks
-        {
+        if exit_now {
             self.exit_spike_cast(index);
         }
     }
 
     fn exit_spike_cast(&mut self, index: usize) {
         // The slime's SyncPhysicsTo(AbilityExitInfo) re-places it from the
-        // form's surface local.
+        // form's surface local. Spike reports the magnitude of its
+        // self-imposed velocity as groundedSpeed, which is zero on the ground.
+        self.players[index].base.grounded_speed = Fix::ZERO;
         if self.players[index].base.grounded {
             self.sync_exit_to_ground(index, data::get());
         }
