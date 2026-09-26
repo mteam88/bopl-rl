@@ -7459,6 +7459,16 @@ impl RolloutWorld {
         }
         self.web_cooldowns_tick(index, action);
         self.grapple_cooldowns_tick(index);
+        if !in_ability {
+            // SlimeController.cs:750-753: a zero cooldown (a rope still out
+            // to reel in) pins the timer just above it.
+            let slot = &mut self.players[index];
+            for s in 0..3 {
+                if slot.cooldowns[s] == Fix::ZERO {
+                    slot.timers[s] = Fix::from_f64(0.01);
+                }
+            }
+        }
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
             self.players[index].slime_input = movement_input;
