@@ -8028,6 +8028,15 @@ impl RolloutWorld {
                         } else {
                             self.players[index].base.position
                         };
+                        // Ability.EnterAbility rescales the form's own collider
+                        // from the scale it was left at, keeping its Q32 residue;
+                        // a new form starts from the prefab radius.
+                        let collider_radius = if self.players[index].rock_entity == usize::MAX {
+                            data.rock.radius
+                        } else {
+                            let rock = &self.players[index].rock;
+                            rock.collider_radius * (Fix::ONE / rock.scale)
+                        };
                         if self.players[index].rock_entity == usize::MAX {
                             let id = self.next_id();
                             let entity = self.entities.len();
@@ -8081,7 +8090,7 @@ impl RolloutWorld {
                         slot.base.external_velocity = Vec2::ZERO;
                         slot.rock = RockState {
                             body,
-                            collider_radius: data.rock.radius,
+                            collider_radius,
                             exit_scale: Fix::ONE,
                             scale_last_frame: Fix::ONE,
                             scale: Fix::ONE,
