@@ -1678,6 +1678,9 @@ pub struct AbilitylessClone {
     pub blink_tunnel_age: Fix,
     pub blink_tunnel_released: bool,
     pub blink_reactivated_tick: Option<u32>,
+    /// Black Hole pull from a hole registered after this clone: it lands
+    /// after the clone's PlayerBody.UpdateSim has decayed externalVelocity.
+    pub late_pull: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -13051,8 +13054,13 @@ impl RolloutWorld {
                     continue;
                 }
                 let force = vector * (-(data.black_hole.gravity * mass)) / cube;
-                self.abilityless_clones[clone_index].base.external_velocity +=
-                    (-force * data.black_hole.player_force) * Fix::from_int(35);
+                let pull = (-force * data.black_hole.player_force) * Fix::from_int(35);
+                let clone = &mut self.abilityless_clones[clone_index];
+                if clone.hierarchy_base < self.black_holes[hole_index].hierarchy_base {
+                    clone.late_pull += pull;
+                } else {
+                    clone.base.external_velocity += pull;
+                }
             }
 
             // BlackHole.UpdateSim walks the registered circle array before
@@ -23104,6 +23112,7 @@ impl RolloutWorld {
             blink_tunnel_age: Fix::ZERO,
             blink_tunnel_released: false,
             blink_reactivated_tick: None,
+            late_pull: Vec2::ZERO,
         };
         if let Some(free) = self
             .abilityless_clones
@@ -31778,6 +31787,9 @@ impl RolloutWorld {
             }
             self.abilityless_clones[clone_index].base.sync_collider();
             self.sync_abilityless_clone_entity(clone_index);
+        }
+        for clone in &mut self.abilityless_clones {
+            clone.base.external_velocity += std::mem::take(&mut clone.late_pull);
         }
     }
 
