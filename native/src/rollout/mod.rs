@@ -7224,7 +7224,7 @@ impl RolloutWorld {
                 | ActiveAbility::Mjolnir
                 | ActiveAbility::PokeBall
         ) {
-            self.release_held_throw_item_on_exit(index, data);
+            self.release_held_throw_item_on_exit(index, false, data);
         }
         if active == ActiveAbility::Throw {
             self.drop_macho_held_boulder(index, data);
@@ -19759,7 +19759,7 @@ impl RolloutWorld {
             if slot.base.grounded {
                 // VelocityBasedRaycasts immediately exits the aerial ability,
                 // and ExitAbility tosses a still-held item straight up.
-                self.release_held_throw_item_on_exit(index, data);
+                self.release_held_throw_item_on_exit(index, false, data);
                 let slot = &mut self.players[index];
                 slot.active = ActiveAbility::None;
                 slot.obs_state = STATE_LAND;
@@ -19919,11 +19919,16 @@ impl RolloutWorld {
     }
 
     /// ThrowItem2.ExitAbility releases an already spawned payload when the
-    /// form is interrupted before Fire. PlayerCollision reaches this path in
-    /// its DetPhysics callback, after item integration, so publish the manual
-    /// circle at the held position now and leave its impulse queued for the
-    /// next pass.
-    fn release_held_throw_item_on_exit(&mut self, index: usize, data: &data::RolloutData) {
+    /// form is interrupted before Fire. Landing and platform drops reach it
+    /// in the updater, before DetPhysics; PlayerCollision reaches it in its
+    /// DetPhysics callback, after item integration, so the manual circle
+    /// misses that pass's manifolds and its impulse waits for the next pass.
+    fn release_held_throw_item_on_exit(
+        &mut self,
+        index: usize,
+        by_callback: bool,
+        data: &data::RolloutData,
+    ) {
         let ability = active_throw_ability(self.players[index].active);
         if !matches!(
             ability,
@@ -19979,7 +19984,9 @@ impl RolloutWorld {
                 inverse_mass: item.body.inverse_mass.raw(),
                 ..CEntity::default()
             });
-            item.callback_registered_tick = self.tick;
+            if by_callback {
+                item.callback_registered_tick = self.tick;
+            }
         }
         self.players[index].throw_item.has_fired = true;
     }
@@ -32526,7 +32533,7 @@ impl RolloutWorld {
                 | ActiveAbility::Mjolnir
                 | ActiveAbility::PokeBall
         ) {
-            self.release_held_throw_item_on_exit(index, data::get());
+            self.release_held_throw_item_on_exit(index, by_callback, data::get());
         }
         if self.players[index].active == ActiveAbility::Throw {
             self.drop_macho_held_boulder(index, data::get());
