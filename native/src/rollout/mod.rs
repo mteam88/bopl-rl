@@ -36733,6 +36733,10 @@ fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
         // rotation; the slime then enters fall and immediately
         // raycasts for a landing (SlimeController.cs:251-259), its
         // own attached ground cleared first (PlayerPhysics.cs:577).
+        // ExitAbility zeroes the rotation itself (BowTransform.cs:119), so an
+        // airborne Bow with no retained ground leaves unrotated too.
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
         slot.base.force_unground(platforms);
         slot.reported_position = slot.base.position; // Ability.cs:151
         slot.base.ground = None;
