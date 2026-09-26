@@ -1317,6 +1317,8 @@ pub struct AbilitySpawnerDef {
 }
 pub struct MapDef {
     pub platforms: Vec<PlatformDef>,
+    /// Platform indices in Updater registration (scene sibling) order.
+    pub update_order: Vec<usize>,
     pub water: Option<(Vec2, Vec2, u32)>,
     pub level_type: u32,
     pub team_spawns: Vec<Vec2>,
@@ -2416,7 +2418,7 @@ pub fn surface_extents(extents: Vec2) -> Vec2 {
 }
 
 fn map_def(raw: &RawMap) -> MapDef {
-    let platforms = raw
+    let platforms: Vec<PlatformDef> = raw
         .platforms
         .iter()
         .map(|p| {
@@ -2539,8 +2541,11 @@ fn map_def(raw: &RawMap) -> MapDef {
         Vec2::new(middle, respawn_y),
         Vec2::new(middle + half_span, respawn_y),
     ];
+    let mut update_order: Vec<usize> = (0..platforms.len()).collect();
+    update_order.sort_by_key(|&i| platforms[i].intro_order);
     MapDef {
         platforms,
+        update_order,
         water: raw
             .water
             .as_ref()

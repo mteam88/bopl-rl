@@ -1180,7 +1180,6 @@ pub struct SpawnedPlatform {
     pub owner: usize,
     /// Index into `RolloutWorld::platforms` (kept in sync on removal).
     pub platform_index: usize,
-    pub sudden_death_delay: Fix,
     pub removal_time: Fix,
     pub removal_extents: Vec2,
     pub removal_radius: Fix,
@@ -1254,6 +1253,9 @@ pub struct PlatformDynamics {
     /// raycasts read catches up at the next Simulate.
     pub shake_unsynced: Vec2,
     pub meteor_shake_curve: bool,
+    /// `AnimateVelocity.randomSuddenDeathDelay`, drawn when the body enters
+    /// sudden death; `None` until then (`inSuddenDeath`).
+    pub sudden_death_delay: Option<Fix>,
     /// Permanent Duplicator copies are keyed by the casting gun hierarchy.
     /// A later copy from the same gun schedules the previous one to expire.
     pub duplicate_spawner_hierarchy: Option<u32>,
@@ -2646,7 +2648,6 @@ pub struct RolloutWorld {
     /// `UpdateSim` from immediately re-arming sudden death on the next pass.
     pub game_in_progress: bool,
     pub sudden_death_tick: u32,
-    pub sudden_death_delays: Vec<Fix>,
     pub ability_spawner_enabled: bool,
     /// Per-authored-spawner `(time, spawn_count)` state, in updater order.
     pub ability_spawner_state: Vec<(Fix, u8)>,
@@ -2810,7 +2811,6 @@ impl RolloutWorld {
             sudden_death_latched: false,
             game_in_progress: true,
             sudden_death_tick: 0,
-            sudden_death_delays: Vec::with_capacity(64),
             ability_spawner_enabled: false,
             ability_spawner_state: Vec::with_capacity(2),
             active_subsystems: 0,
@@ -2924,8 +2924,6 @@ impl RolloutWorld {
         self.sudden_death_latched = src.sudden_death_latched;
         self.game_in_progress = src.game_in_progress;
         self.sudden_death_tick = src.sudden_death_tick;
-        self.sudden_death_delays
-            .clone_from(&src.sudden_death_delays);
         self.ability_spawner_enabled = src.ability_spawner_enabled;
         self.ability_spawner_state
             .clone_from(&src.ability_spawner_state);
@@ -3028,7 +3026,6 @@ impl RolloutWorld {
             sudden_death_latched: _,
             game_in_progress: _,
             sudden_death_tick: _,
-            sudden_death_delays: _,
             ability_spawner_enabled: _,
             ability_spawner_state: _,
             active_subsystems: _,
@@ -3646,7 +3643,6 @@ impl RolloutWorld {
             }
         }
         self.next_platform_id = 100;
-        self.sudden_death_delays.clear();
         self.orbits.clear();
         self.vector_fields.clear();
         for (index, p) in def.platforms.iter().enumerate() {
@@ -3705,6 +3701,7 @@ impl RolloutWorld {
                 shake_previous: Vec2::ZERO,
                 shake_unsynced: Vec2::ZERO,
                 meteor_shake_curve: false,
+                sudden_death_delay: None,
                 duplicate_spawner_hierarchy: None,
                 duplicate_lifespan: 0,
                 duplicate_shake_offset: Vec2::ZERO,
@@ -3725,8 +3722,6 @@ impl RolloutWorld {
             self.platform_defs.push(index);
             self.platform_entities.push(entity);
             self.next_platform_id += 1;
-            // AnimateVelocity samples this only when sudden death activates.
-            self.sudden_death_delays.push(Fix::ZERO);
             if p.orbit.is_some() {
                 self.orbits.push((self.platforms.len() - 1, 0));
             }
@@ -5627,13 +5622,11 @@ impl RolloutWorld {
         // later hit them: a Gust wave or explosion spawned after the platform
         // pushes it after its AnimateVelocity spring has read the velocity.
         self.platform_bounds_tick(true);
-        self.platform_springs_tick(data, updater_dt, true);
         // ResizablePlatform sits behind AnimateVelocity in the clone's
-        // prefab, so its unconditional ResizePlatform follows the spring.
-        self.platform_resizable_tick(data);
-        // A spawned platform's ShakablePlatform also runs after them, so a
+        // prefab, so its unconditional ResizePlatform follows the spring. A
+        // spawned platform's ShakablePlatform also runs after them, so a
         // Beam or Meteor landing on it shakes it on the same pass.
-        self.platform_shakes_tick(data, updater_dt, true);
+        self.platform_motion_tick(data, updater_dt, true);
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT);
         }
@@ -15931,6 +15924,7 @@ impl RolloutWorld {
             shake_previous: Vec2::ZERO,
                 shake_unsynced: Vec2::ZERO,
             meteor_shake_curve: false,
+            sudden_death_delay: None,
             duplicate_spawner_hierarchy: None,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
@@ -25723,7 +25717,6 @@ impl RolloutWorld {
         self.platform_dynamics.push(dynamics);
         self.platform_defs.push(definition);
         self.platform_entities.push(entity);
-        self.sudden_death_delays.push(Fix::ZERO);
         self.platforms_changed();
         // The duplicate is instantiated during the updater pass and joins the
         // same pass's DetPhysics simulation. Later collision rays therefore
@@ -26406,6 +26399,7 @@ impl RolloutWorld {
             shake_previous: Vec2::ZERO,
                 shake_unsynced: Vec2::ZERO,
             meteor_shake_curve: false,
+            sudden_death_delay: None,
             duplicate_spawner_hierarchy: None,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
@@ -26435,17 +26429,16 @@ impl RolloutWorld {
         );
         // CreatePlatform explicitly activates a new body's sudden-death mode
         // only when the global transition is already in progress.
-        let delay = if self.sudden_death {
-            self.rng.fix_range(Fix::ZERO, pd.sudden_death_max_delay)
-        } else {
-            Fix::ZERO
-        };
+        // Init clears it again, so the body's first pass draws afresh.
+        if self.sudden_death {
+            self.platform_dynamics[platform_index].sudden_death_delay =
+                Some(self.rng.fix_range(Fix::ZERO, pd.sudden_death_max_delay));
+        }
         self.spawned.push(SpawnedPlatform {
             active: true,
             being_removed: false,
             owner,
             platform_index,
-            sudden_death_delay: delay,
             removal_time: Fix::ZERO,
             removal_extents: Vec2::ZERO,
             removal_radius: Fix::ZERO,
@@ -30823,7 +30816,7 @@ impl RolloutWorld {
     /// components run before the dynamically registered player prefabs, so
     /// their damping must observe the velocity from the start of the tick,
     /// before Gust or another later ability applies a direct impulse.
-    /// `AnimateVelocity.UpdateSim` for one half of the platform list.
+    /// `AnimateVelocity.UpdateSim` for one platform.
     ///
     /// `Updater` walks its updatables in registration order. Every authored
     /// map platform registers during level load, ahead of the player and
@@ -30835,132 +30828,104 @@ impl RolloutWorld {
     /// in the same pass the clone's `AnimateVelocity` then reads, so the very
     /// first integration tick after a cast already pulls towards the aimed
     /// rotation instead of the spawn rotation.
-    fn platform_springs_tick(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        runtime_spawned: bool,
-    ) {
+    fn platform_spring(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) {
+        if !self.platforms[i].active {
+            return;
+        }
         // AnimateVelocity.Init (AnimateVelocity.cs:74-79) homes on the current
         // position and clears inSuddenDeath before any UpdateSim, so an
         // in-progress sudden death is re-activated with a fresh delay and
         // sinks the new home on that same pass (AnimateVelocity.cs:126-137).
-        for i in 0..self.platforms.len() {
-            if !self.platforms[i].active
-                || self.platform_dynamics[i].intro_disabled
-                || (self.platform_defs[i] == usize::MAX) != runtime_spawned
-                || self.platform_dynamics[i].init_tick != Some(self.tick)
-            {
-                continue;
-            }
+        if !self.platform_dynamics[i].intro_disabled
+            && self.platform_dynamics[i].init_tick == Some(self.tick)
+        {
             self.platform_dynamics[i].init_tick = None;
             self.platform_dynamics[i].home_position = self.platforms[i].surface.center;
-            if self.sudden_death {
-                let max_delay = data.platform.sudden_death_max_delay;
-                if let Some(spawn) =
-                    self.spawned.iter_mut().find(|s| s.active && s.platform_index == i)
-                {
-                    spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, max_delay);
-                }
-            }
+            self.platform_dynamics[i].sudden_death_delay = None;
+        }
+        // A body instantiated this pass joins the Updater on the next.
+        if self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick) {
+            return;
         }
         // ActivateSuddenDeath moves the spring home; the body follows through
-        // the ordinary spring/integration path rather than teleporting. This
-        // is `AnimateVelocity.inSuddenDeath`, not the session flag: the
-        // component latch survives `WinGame`'s
+        // the ordinary spring/integration path rather than teleporting. The
+        // first pass that sees the session flag draws this body's delay from
+        // the shared stream, in registration order with the shakes. Once
+        // drawn it is `AnimateVelocity.inSuddenDeath`, not the session flag:
+        // the component latch survives `WinGame`'s
         // `ActivateSuddenDeath(activate: false)`, so the level keeps sinking
         // on the tick that decides the round and on every tick after it.
-        if self.sudden_death_latched {
-            let map = &data.maps[self.map];
+        let def_index = self.platform_defs[i];
+        let sinks = def_index != usize::MAX
+            || self.spawned.iter().any(|s| s.active && s.platform_index == i);
+        if sinks && self.sudden_death && self.platform_dynamics[i].sudden_death_delay.is_none() {
+            let max_delay = if def_index == usize::MAX {
+                data.platform.sudden_death_max_delay
+            } else {
+                data.maps[self.map].platforms[def_index].sudden_death_max_delay
+            };
+            self.platform_dynamics[i].sudden_death_delay =
+                Some(self.rng.fix_range(Fix::ZERO, max_delay));
+        }
+        if let (true, Some(delay)) = (sinks, self.platform_dynamics[i].sudden_death_delay) {
             let elapsed = Fix::from_int(i64::from(self.tick - self.sudden_death_tick)) * DT;
-            for i in 0..self.platforms.len() {
-                if !self.platforms[i].active
-                    || (self.platform_defs[i] == usize::MAX) != runtime_spawned
-                    || self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick)
-                {
-                    continue;
-                }
-                let def_index = self.platform_defs[i];
-                let (speed_scale, accel, delay, curve) = if def_index == usize::MAX {
-                    let Some(spawn) = self
-                        .spawned
-                        .iter()
-                        .find(|s| s.active && s.platform_index == i)
-                    else {
-                        continue;
-                    };
-                    (
-                        data.platform.sudden_death_speed,
-                        data.platform.sudden_death_acceleration,
-                        spawn.sudden_death_delay,
-                        &data.platform.sudden_death_y_speed,
-                    )
-                } else {
-                    let def = &map.platforms[def_index];
-                    (
-                        def.sudden_death_speed,
-                        def.sudden_death_acceleration,
-                        self.sudden_death_delays[def_index],
-                        &def.sudden_death_y_speed,
-                    )
-                };
-                // AnimateVelocity.UpdateSim (AnimateVelocity.cs:137):
-                //
-                // ```text
-                // homePosition += Vec2.down * suddenDeathYSpeed.Evaluate(fix - delay)
-                //     * fix2 * simDeltaTime;
-                // ```
-                //
-                // `Vec2.down` makes the product negative *before* the two
-                // remaining multiplies, and `Fix.operator *` floors (it
-                // shifts the 128-bit product right by 32), so negating last
-                // is not the same number: `floor(-x) = -ceil(x)` differs
-                // from `-floor(x)` by a raw unit whenever the product has a
-                // fraction, which is almost every tick. Keep the descent
-                // negative from the start.
-                let steps = (elapsed * accel).to_int().clamp(0, 5);
-                let scale = speed_scale * Fix::from_int(2 << steps);
-                let speed = curve.evaluate(elapsed - delay);
-                let drop = -speed * scale * updater_dt;
-                self.platform_dynamics[i].home_position.y += drop;
-            }
+            let (speed_scale, accel, curve) = if def_index == usize::MAX {
+                (
+                    data.platform.sudden_death_speed,
+                    data.platform.sudden_death_acceleration,
+                    &data.platform.sudden_death_y_speed,
+                )
+            } else {
+                let def = &data.maps[self.map].platforms[def_index];
+                (def.sudden_death_speed, def.sudden_death_acceleration, &def.sudden_death_y_speed)
+            };
+            // AnimateVelocity.UpdateSim (AnimateVelocity.cs:137):
+            //
+            // ```text
+            // homePosition += Vec2.down * suddenDeathYSpeed.Evaluate(fix - delay)
+            //     * fix2 * simDeltaTime;
+            // ```
+            //
+            // `Vec2.down` makes the product negative *before* the two
+            // remaining multiplies, and `Fix.operator *` floors (it shifts
+            // the 128-bit product right by 32), so negating last is not the
+            // same number: `floor(-x) = -ceil(x)` differs from `-floor(x)` by
+            // a raw unit whenever the product has a fraction, which is almost
+            // every tick. Keep the descent negative from the start.
+            let steps = (elapsed * accel).to_int().clamp(0, 5);
+            let scale = speed_scale * Fix::from_int(2 << steps);
+            let speed = curve.evaluate(elapsed - delay);
+            let drop = -speed * scale * updater_dt;
+            self.platform_dynamics[i].home_position.y += drop;
         }
 
         // AnimateVelocity.UpdateSim. Keep the apparently cancelling inverse
         // mass and 60 Hz impulse conversions: their intermediate fixed-point
         // rounding is observable over long-running springs (notably map 2's
         // orbiter), so simplifying this to `velocity += spring * DT` drifts.
-        for i in 0..self.platforms.len() {
-            // A body instantiated this pass joins the Updater on the next.
-            if !self.platforms[i].active
-                || self.platform_dynamics[i].intro_disabled
-                || (self.platform_defs[i] == usize::MAX) != runtime_spawned
-                || self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick)
-            {
-                continue;
+        if self.platform_dynamics[i].intro_disabled {
+            return;
+        }
+        let position = self.platforms[i].surface.center;
+        let dynamics = &mut self.platform_dynamics[i];
+        let spring = if dynamics.float_next_frame {
+            dynamics.float_next_frame = false;
+            dynamics.home_position = position;
+            -dynamics.body.velocity * dynamics.mu
+        } else {
+            (dynamics.home_position - position) * dynamics.speed
+                - dynamics.body.velocity * dynamics.mu
+        };
+        let impulse = spring * updater_dt / dynamics.body.inverse_mass;
+        dynamics.body.force += impulse * Fix::from_int(60);
+        if dynamics.interpolate_rotation_home {
+            let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
+            if angle_delta.abs() > Fix::PI {
+                angle_delta = -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
             }
-            let position = self.platforms[i].surface.center;
-            let dynamics = &mut self.platform_dynamics[i];
-            let spring = if dynamics.float_next_frame {
-                dynamics.float_next_frame = false;
-                dynamics.home_position = position;
-                -dynamics.body.velocity * dynamics.mu
-            } else {
-                (dynamics.home_position - position) * dynamics.speed
-                    - dynamics.body.velocity * dynamics.mu
-            };
-            let impulse = spring * updater_dt / dynamics.body.inverse_mass;
-            dynamics.body.force += impulse * Fix::from_int(60);
-            if dynamics.interpolate_rotation_home {
-                let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
-                if angle_delta.abs() > Fix::PI {
-                    angle_delta =
-                        -Fix::from_int(angle_delta.sign()) * (Fix::TAU - angle_delta.abs());
-                }
-                dynamics.body.angular_velocity = (dynamics.body.angular_velocity
-                    + angle_delta * dynamics.rotation_speed * updater_dt)
-                    * (Fix::ONE - dynamics.rotation_mu);
-            }
+            dynamics.body.angular_velocity = (dynamics.body.angular_velocity
+                + angle_delta * dynamics.rotation_speed * updater_dt)
+                * (Fix::ONE - dynamics.rotation_mu);
         }
     }
 
@@ -30989,125 +30954,141 @@ impl RolloutWorld {
     /// one `PlatformTransform` computed. Registration order puts this
     /// behind the clone's `AnimateVelocity`, so the spring above still used
     /// the previous pass's mass.
-    fn platform_resizable_tick(&mut self, data: &data::RolloutData) {
-        for i in 0..self.platforms.len() {
-            if !self.platforms[i].active || !self.platform_dynamics[i].body_resizable {
-                continue;
-            }
-            // `isBeingRemoved` takes the other branch of `UpdateSim` and
-            // resizes from the removal curve instead; that path already runs
-            // at the top of `platforms_tick`.
-            if self
-                .spawned
-                .iter()
-                .any(|s| s.active && s.being_removed && s.platform_index == i)
-            {
-                continue;
-            }
-            self.reposition_platform_children(i, data);
-            let radius = self.platforms[i].collider.radius;
-            let inner = &mut self.platforms[i].collider.inner;
-            // DPhysicsRoundedRect.CalcExtents
-            let extents = Vec2::new(
-                Fix::ONE / inner.inverse_extents.x,
-                Fix::ONE / inner.inverse_extents.y,
-            );
-            // DPhysicsRoundedRect.SetExtents -> Box.UpdateExtents
-            inner.right *= inner.inverse_extents.x;
-            inner.up *= inner.inverse_extents.y;
-            inner.inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
-            inner.right *= extents.x;
-            inner.up *= extents.y;
-            // StickyRect.UpdateBounds reads the perimeter back the same way.
-            self.platforms[i].surface.extents = data::surface_extents(extents);
-            self.platforms[i].surface.radius = radius;
-            self.platforms[i].surface.bounds_radius = radius;
-            // ResizePlatform passes (rHeight, rWidth) into PlatformArea's
-            // (rWidth, rHeight) parameters (ResizablePlatform.cs:53).
-            let mass = Fix::from_int(10)
-                + data.platform.spawn_mass_per_area * platform_area(extents.y, extents.x, radius);
-            let w = extents.x + radius;
-            let h = extents.y + radius;
-            let longest = w.max(h);
-            let inertia = w.min(h) * longest * longest * Fix::from_f32(0.2) + Fix::from_int(40);
-            let dynamics = &mut self.platform_dynamics[i];
-            dynamics.body.inverse_mass = Fix::ONE / mass;
-            dynamics.body.inverse_inertia = Fix::ONE / inertia;
-            if dynamics.attached_children == 0 {
-                dynamics.root_body.inverse_mass = dynamics.body.inverse_mass;
-                dynamics.root_body.inverse_inertia = dynamics.body.inverse_inertia;
-            }
-            dynamics.surface_shape_dirty = false;
-            // resizeChildren: every attached child is re-placed on the new
-            // shape. A SpikeAttack past its thrust curve keeps this pose; on
-            // its cast pass it still has the cast normal, and the pose Spike
-            // just gave it.
-            for index in 0..self.spike_attacks.len() {
-                let attack = &self.spike_attacks[index];
-                if attack.active
-                    && !attack.macho_carried
-                    && attack.entity.is_some()
-                    && attack.platform_index == i
-                    && attack.born_tick != self.tick
-                {
-                    self.place_spike_attack(index, data);
-                }
-            }
-            self.platforms_changed();
-            self.rebuild_bounds();
+    fn platform_resizable(&mut self, data: &data::RolloutData, i: usize) {
+        if !self.platforms[i].active || !self.platform_dynamics[i].body_resizable {
+            return;
         }
+        // `isBeingRemoved` takes the other branch of `UpdateSim` and
+        // resizes from the removal curve instead; that path already runs
+        // at the top of `platforms_tick`.
+        if self
+            .spawned
+            .iter()
+            .any(|s| s.active && s.being_removed && s.platform_index == i)
+        {
+            return;
+        }
+        self.reposition_platform_children(i, data);
+        let radius = self.platforms[i].collider.radius;
+        let inner = &mut self.platforms[i].collider.inner;
+        // DPhysicsRoundedRect.CalcExtents
+        let extents = Vec2::new(
+            Fix::ONE / inner.inverse_extents.x,
+            Fix::ONE / inner.inverse_extents.y,
+        );
+        // DPhysicsRoundedRect.SetExtents -> Box.UpdateExtents
+        inner.right *= inner.inverse_extents.x;
+        inner.up *= inner.inverse_extents.y;
+        inner.inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+        inner.right *= extents.x;
+        inner.up *= extents.y;
+        // StickyRect.UpdateBounds reads the perimeter back the same way.
+        self.platforms[i].surface.extents = data::surface_extents(extents);
+        self.platforms[i].surface.radius = radius;
+        self.platforms[i].surface.bounds_radius = radius;
+        // ResizePlatform passes (rHeight, rWidth) into PlatformArea's
+        // (rWidth, rHeight) parameters (ResizablePlatform.cs:53).
+        let mass = Fix::from_int(10)
+            + data.platform.spawn_mass_per_area * platform_area(extents.y, extents.x, radius);
+        let w = extents.x + radius;
+        let h = extents.y + radius;
+        let longest = w.max(h);
+        let inertia = w.min(h) * longest * longest * Fix::from_f32(0.2) + Fix::from_int(40);
+        let dynamics = &mut self.platform_dynamics[i];
+        dynamics.body.inverse_mass = Fix::ONE / mass;
+        dynamics.body.inverse_inertia = Fix::ONE / inertia;
+        if dynamics.attached_children == 0 {
+            dynamics.root_body.inverse_mass = dynamics.body.inverse_mass;
+            dynamics.root_body.inverse_inertia = dynamics.body.inverse_inertia;
+        }
+        dynamics.surface_shape_dirty = false;
+        // resizeChildren: every attached child is re-placed on the new
+        // shape. A SpikeAttack past its thrust curve keeps this pose; on
+        // its cast pass it still has the cast normal, and the pose Spike
+        // just gave it.
+        for index in 0..self.spike_attacks.len() {
+            let attack = &self.spike_attacks[index];
+            if attack.active
+                && !attack.macho_carried
+                && attack.entity.is_some()
+                && attack.platform_index == i
+                && attack.born_tick != self.tick
+            {
+                self.place_spike_attack(index, data);
+            }
+        }
+        self.platforms_changed();
+        self.rebuild_bounds();
     }
 
-    fn platform_shakes_tick(
+    /// AnimateVelocity then ShakablePlatform for one half of the platform
+    /// list, one platform at a time in registration order (a spawned
+    /// platform's ResizablePlatform sits between the two). Both draw from the
+    /// shared random stream - the sudden-death delay on the first pass that
+    /// sees the flag, the shake on every pass it shakes - so running all the
+    /// springs before all the shakes would deal the numbers out in the wrong
+    /// order.
+    fn platform_motion_tick(
         &mut self,
         data: &data::RolloutData,
         updater_dt: Fix,
         runtime_spawned: bool,
     ) {
-        // ShakablePlatform follows AnimateVelocity in each authored platform
-        // prefab. It writes a temporary transform displacement directly;
-        // the spring home remains fixed and pulls the rigid body back while
-        // successive samples replace the previous random offset.
+        let order = &data.maps[self.map].update_order;
+        let authored = if runtime_spawned { 0 } else { order.len() };
         let mut shook = false;
-        for i in 0..self.platforms.len() {
-            if !self.platforms[i].active
-                || self.platform_dynamics[i].intro_disabled
-                || (self.platform_defs[i] == usize::MAX) != runtime_spawned
-            {
+        for k in 0..self.platforms.len() {
+            let i = if k < authored { order[k] } else { k };
+            if (self.platform_defs[i] == usize::MAX) != runtime_spawned {
                 continue;
             }
-            let duration = self.platform_dynamics[i].shake_duration;
-            if self.platform_dynamics[i].shake_time >= duration || duration == Fix::ZERO {
-                continue;
+            self.platform_spring(data, updater_dt, i);
+            if runtime_spawned {
+                self.platform_resizable(data, i);
             }
-            self.platform_dynamics[i].shake_time += updater_dt;
-            let strength = if self.platform_dynamics[i].meteor_shake_curve {
-                data.meteor
-                    .spin_curve
-                    .evaluate(self.platform_dynamics[i].shake_time)
-                    * self.platform_dynamics[i].shake_amount
-            } else {
-                self.platform_dynamics[i].shake_amount
-            };
-            let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-            let radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
-            let offset = Vec2::angle(angle) * radius * strength;
-            let delta = offset - self.platform_dynamics[i].shake_previous;
-            self.platform_dynamics[i].shake_previous = offset;
-            self.platforms[i].surface.center += delta;
-            self.platform_dynamics[i].shake_unsynced += delta;
-            self.platform_dynamics[i].composite_position += delta;
-            shook = true;
-            if self.platform_dynamics[i].shake_time >= duration {
-                self.platform_dynamics[i].shake_time = Fix::ZERO;
-                self.platform_dynamics[i].shake_duration = Fix::ZERO;
-                self.platform_dynamics[i].shake_amount = Fix::ZERO;
-                self.platform_dynamics[i].meteor_shake_curve = false;
-            }
+            shook |= self.platform_shake(data, updater_dt, i);
         }
         if shook {
             self.platforms_changed();
         }
+    }
+
+    /// ShakablePlatform follows AnimateVelocity in each authored platform
+    /// prefab. It writes a temporary transform displacement directly; the
+    /// spring home remains fixed and pulls the rigid body back while
+    /// successive samples replace the previous random offset.
+    fn platform_shake(&mut self, data: &data::RolloutData, updater_dt: Fix, i: usize) -> bool {
+        if !self.platforms[i].active || self.platform_dynamics[i].intro_disabled {
+            return false;
+        }
+        let duration = self.platform_dynamics[i].shake_duration;
+        if self.platform_dynamics[i].shake_time >= duration || duration == Fix::ZERO {
+            return false;
+        }
+        self.platform_dynamics[i].shake_time += updater_dt;
+        let strength = if self.platform_dynamics[i].meteor_shake_curve {
+            data.meteor
+                .spin_curve
+                .evaluate(self.platform_dynamics[i].shake_time)
+                * self.platform_dynamics[i].shake_amount
+        } else {
+            self.platform_dynamics[i].shake_amount
+        };
+        let angle = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+        let radius = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+        let offset = Vec2::angle(angle) * radius * strength;
+        let delta = offset - self.platform_dynamics[i].shake_previous;
+        self.platform_dynamics[i].shake_previous = offset;
+        self.platforms[i].surface.center += delta;
+        self.platform_dynamics[i].shake_unsynced += delta;
+        self.platform_dynamics[i].composite_position += delta;
+        if self.platform_dynamics[i].shake_time >= duration {
+            self.platform_dynamics[i].shake_time = Fix::ZERO;
+            self.platform_dynamics[i].shake_duration = Fix::ZERO;
+            self.platform_dynamics[i].shake_amount = Fix::ZERO;
+            self.platform_dynamics[i].meteor_shake_curve = false;
+        }
+        true
     }
 
     /// StickyRoundedRectangle.UpdateSim closes with UpdateBounds, re-reading
@@ -31138,9 +31119,7 @@ impl RolloutWorld {
 
     fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         self.platform_bounds_tick(false);
-        self.platform_springs_tick(data, updater_dt, false);
-
-        self.platform_shakes_tick(data, updater_dt, false);
+        self.platform_motion_tick(data, updater_dt, false);
 
         // BoplBody is the last updater on every platform (StickyRR,
         // AnimateVelocity, ShakablePlatform, ..., BoplBody), so the spring
@@ -33163,35 +33142,8 @@ impl RolloutWorld {
             self.sudden_death = true;
             self.sudden_death_latched = true;
             self.sudden_death_tick = self.tick;
-            // On the following Updater pass each AnimateVelocity notices the
-            // global flag and samples in registration order: authored bodies,
-            // then live ability-spawned bodies.
-            //
-            // Registration order is the scene's sibling order, which is what
-            // `intro_order` records - NOT the order of `map.platforms`, which
-            // is sorted by serialized hierarchy number. On most maps the two
-            // coincide and drawing in list order is indistinguishable. On map
-            // 53 they do not: `LongSnowCapsule` (hierarchy 104) is first by
-            // hierarchy and last by sibling order, so drawing in list order
-            // permutes every delay on the level. The symptom is a platform
-            // that starts moving several passes before the reference's, and
-            // moving *up*: `suddenDeathYSpeed`'s first segment has value zero
-            // with an out-tangent of -0.4655, so a curve sampled just past
-            // t = 0 returns a negative speed and `Vec2.down * speed` lifts
-            // the spring home instead of lowering it.
-            let mut order: Vec<usize> = (0..map.platforms.len()).collect();
-            order.sort_by_key(|&i| map.platforms[i].intro_order);
-            for i in order {
-                self.sudden_death_delays[i] = self
-                    .rng
-                    .fix_range(Fix::ZERO, map.platforms[i].sudden_death_max_delay);
-            }
-            let spawned_max_delay = data::get().platform.sudden_death_max_delay;
-            for spawn in &mut self.spawned {
-                if spawn.active {
-                    spawn.sudden_death_delay = self.rng.fix_range(Fix::ZERO, spawned_max_delay);
-                }
-            }
+            // Each AnimateVelocity notices the flag on the following Updater
+            // pass and draws its delay then (`platform_spring`).
         }
         if self.episode_ticks >= self.limit {
             self.terminal = true;
@@ -36022,7 +35974,7 @@ mod tests {
             world.platforms[index].collider.inner.inverse_extents / ratio;
         world.platform_dynamics[index].scale *= ratio;
 
-        world.platform_resizable_tick(data::get());
+        world.platform_resizable(data::get(), index);
 
         assert_ne!(
             world.platform_dynamics[index].body.inverse_mass,
