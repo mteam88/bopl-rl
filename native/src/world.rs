@@ -956,6 +956,19 @@ impl Player {
             self.apply_ground_state(motion);
         }
     }
+    /// PlayerPhysics.UnGround(nullRotation: false) when the ground has gone
+    /// inactive: attachedGround still names it, so the body still lifts off
+    /// its surface.
+    pub(crate) fn unground_inactive(&mut self, platforms: &[Platform]) {
+        let Some(ground) = platforms.iter().find(|p| !p.active && Some(p.id) == self.ground)
+        else {
+            return;
+        };
+        let surface = ground.surface.clone();
+        let mut motion = self.ground_state();
+        motion.unground(Some(&surface), false);
+        self.apply_ground_state(motion);
+    }
     /// PlayerPhysics.UnGround() with its default nullRotation: the body
     /// levels even when it was not attached.
     pub(crate) fn unground_level(&mut self, platforms: &[Platform]) {

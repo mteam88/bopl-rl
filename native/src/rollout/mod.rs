@@ -25732,6 +25732,12 @@ impl RolloutWorld {
             slot.reported_position = slot.base.position;
             return;
         }
+        // BowTransform.UpdateSim ungrounds a Bow whose ground went inactive and
+        // lets it fall in the same pass; UnGround still lifts it off that
+        // surface (BowTransform.cs:214-218, PlayerPhysics.cs:366-370).
+        if slot.base.grounded {
+            slot.base.unground_inactive(platforms);
+        }
         if slot.base.grounded {
             if slot.bow.has_fired {
                 // Landed after firing: exit with the landing (justlanded).
