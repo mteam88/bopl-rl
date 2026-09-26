@@ -5598,6 +5598,7 @@ impl RolloutWorld {
         // prefab that created and steers them, but ahead of the effects that
         // later hit them: a Gust wave or explosion spawned after the platform
         // pushes it after its AnimateVelocity spring has read the velocity.
+        self.platform_bounds_tick(true);
         self.platform_springs_tick(data, updater_dt, true);
         // ResizablePlatform sits behind AnimateVelocity in the clone's
         // prefab, so its unconditional ResizePlatform follows the spring.
@@ -5963,20 +5964,7 @@ impl RolloutWorld {
                 }
                 continue;
             }
-            let live_radius = slot.base.ground.and_then(|ground| {
-                self.platforms
-                    .iter()
-                    .position(|platform| platform.id == ground)
-                    .filter(|&platform| self.platform_dynamics[platform].surface_shape_dirty)
-                    .map(|platform| self.platforms[platform].collider.radius)
-            });
-            if let Some(radius) = live_radius {
-                self.players[index]
-                    .base
-                    .late_step_with_shape_radius(&self.platforms, radius);
-            } else {
-                self.players[index].base.late_step(&self.platforms);
-            }
+            self.players[index].base.late_step(&self.platforms);
         }
         if has(ABILITY_BEAM) {
             self.beams_late_tick(data);
@@ -14685,6 +14673,7 @@ impl RolloutWorld {
         collider.inner.right *= ratio;
         collider.inner.up *= ratio;
         collider.inner.inverse_extents = collider.inner.inverse_extents / ratio;
+        self.platforms[platform].surface.radius = self.platforms[platform].collider.radius;
         self.platforms_changed();
     }
 
@@ -15347,6 +15336,7 @@ impl RolloutWorld {
             platform.collider.inner.inverse_extents =
                 platform.collider.inner.inverse_extents / ratio;
             platform.collider.radius *= ratio;
+            platform.surface.radius = platform.collider.radius;
         }
         let at_minimum = next <= self.platform_dynamics[platform_index].min_scale;
         self.platform_dynamics[platform_index].scale = next;
@@ -15762,6 +15752,7 @@ impl RolloutWorld {
             up: Vec2::UP,
             extents: data::surface_extents(extents),
             radius,
+            bounds_radius: radius,
         };
         let platform_index = self.platforms.len();
         self.platforms.push(make_platform(
@@ -16456,17 +16447,6 @@ impl RolloutWorld {
         }
     }
 
-    /// Shockwave reads StickyRoundedRectangle.GetClosestPoint, which pairs
-    /// the extents cached at the last UpdateBounds with the collider's live
-    /// radius; a Growth Ray scale step this pass has already changed it.
-    fn shockwave_surface(&self, platform_index: usize) -> Surface {
-        let platform = &self.platforms[platform_index];
-        Surface {
-            radius: platform.collider.radius,
-            ..platform.surface
-        }
-    }
-
     fn apply_explosion_shockwave(&mut self, position: Vec2, wave: data::ExplosionShockwaveData) {
         let query = Circle {
             center: position,
@@ -16484,7 +16464,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let surface = self.shockwave_surface(platform_index);
+                let surface = self.platforms[platform_index].surface.clone();
                 let Ok(point) = surface.closest_point(position) else {
                     continue;
                 };
@@ -18501,7 +18481,7 @@ impl RolloutWorld {
             else {
                 continue;
             };
-            let surface = self.shockwave_surface(platform_index);
+            let surface = self.platforms[platform_index].surface.clone();
             let Ok(point) = surface.closest_point(wave.position) else {
                 continue;
             };
@@ -25484,6 +25464,7 @@ impl RolloutWorld {
                 platform.collider.inner.inverse_extents =
                     platform.collider.inner.inverse_extents / ratio;
                 platform.surface.radius *= ratio;
+                platform.surface.bounds_radius *= ratio;
                 platform.surface.extents *= ratio;
                 self.platforms_changed();
             }
@@ -26012,9 +25993,13 @@ impl RolloutWorld {
                 st.time_passed += player_dt;
                 let (time_passed, exit_time, platform_index) =
                     (st.time_passed, st.exit_time, st.platform_index);
-                let (center, up, span) = {
+                // UpdateSim reads CalcExtents and the live radius off the
+                // collider, not the bounds cached at the last UpdateBounds.
+                let span = self.platforms[platform_index].collider.radius
+                    + self.platform_calc_extents(platform_index).y;
+                let (center, up) = {
                     let s = &self.platforms[platform_index].surface;
-                    (s.center, s.up, s.radius + s.extents.y)
+                    (s.center, s.up)
                 };
                 let eject = pd
                     .ejection_curve
@@ -26242,6 +26227,7 @@ impl RolloutWorld {
             up: Vec2::UP,
             extents: data::surface_extents(pd.spawn_extents * scale),
             radius: pd.spawn_radius * scale,
+            bounds_radius: pd.spawn_radius * scale,
         };
         let platform_index = self.platforms.len();
         self.platforms.push(make_platform(
@@ -26529,6 +26515,7 @@ impl RolloutWorld {
         // (ResizablePlatform.cs:105): the perimeter reads `One / (One / e)`.
         platform.surface.extents = data::surface_extents(extents);
         platform.surface.radius = radius;
+        platform.surface.bounds_radius = radius;
         // Box.UpdateExtents (Box.cs:37-44) rescales the existing axes rather
         // than rebuilding them from the rotation.
         let inner = &mut platform.collider.inner;
@@ -30844,6 +30831,7 @@ impl RolloutWorld {
             // StickyRect.UpdateBounds reads the perimeter back the same way.
             self.platforms[i].surface.extents = data::surface_extents(extents);
             self.platforms[i].surface.radius = radius;
+            self.platforms[i].surface.bounds_radius = radius;
             // ResizePlatform passes (rHeight, rWidth) into PlatformArea's
             // (rWidth, rHeight) parameters (ResizablePlatform.cs:53).
             let mass = Fix::from_int(10)
@@ -30917,12 +30905,16 @@ impl RolloutWorld {
         }
     }
 
-    fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// StickyRoundedRectangle.UpdateSim closes with UpdateBounds, re-reading
+    /// a scale change into the cached extents and radius. A runtime-spawned
+    /// platform's StickyRR runs behind the ability that spawned it, so that
+    /// ability still reads the bounds from before the change.
+    fn platform_bounds_tick(&mut self, runtime_spawned: bool) {
         for i in 0..self.platforms.len() {
-            if !self.platforms[i].active {
-                continue;
-            }
-            if !self.platform_dynamics[i].surface_shape_dirty {
+            if !self.platforms[i].active
+                || !self.platform_dynamics[i].surface_shape_dirty
+                || (self.platform_defs[i] == usize::MAX) != runtime_spawned
+            {
                 continue;
             }
             let inner = self.platforms[i].collider.inner;
@@ -30933,9 +30925,14 @@ impl RolloutWorld {
             let radius = self.platforms[i].collider.radius;
             self.platforms[i].surface.extents = extents;
             self.platforms[i].surface.radius = radius;
+            self.platforms[i].surface.bounds_radius = radius;
             self.platform_dynamics[i].surface_shape_dirty = false;
             self.platforms_changed();
         }
+    }
+
+    fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        self.platform_bounds_tick(false);
         self.platform_springs_tick(data, updater_dt, false);
 
         self.platform_shakes_tick(data, updater_dt, false);
@@ -30968,6 +30965,7 @@ impl RolloutWorld {
                     Fix::ONE / inner.inverse_extents.y,
                 );
                 self.platforms[i].surface.radius = self.platforms[i].collider.radius;
+                self.platforms[i].surface.bounds_radius = self.platforms[i].collider.radius;
             }
             let previous = self.platform_dynamics[i].body_scale;
             let scale = self.platform_dynamics[i].scale;
@@ -36259,6 +36257,7 @@ mod tests {
         world.platform_dynamics[source].body_scale = Fix::from_int(2);
         world.platforms[source].surface.extents *= Fix::from_int(2);
         world.platforms[source].surface.radius *= Fix::from_int(2);
+        world.platforms[source].surface.bounds_radius *= Fix::from_int(2);
         world.platforms[source].collider.inner.right *= Fix::from_int(2);
         world.platforms[source].collider.inner.up *= Fix::from_int(2);
         world.platforms[source].collider.inner.inverse_extents =

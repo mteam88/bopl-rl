@@ -984,19 +984,4 @@ impl Player {
             self.align(platform);
         }
     }
-
-    pub(crate) fn late_step_with_shape_radius(
-        &mut self,
-        platforms: &[Platform],
-        shape_radius: Fix,
-    ) {
-        if self.alive && self.grounded && !self.dash.active {
-            let platform = self.platform(platforms).unwrap();
-            self.position =
-                platform
-                    .surface
-                    .position_with_shape_radius(self.local, self.radius, shape_radius);
-            self.align(platform);
-        }
-    }
 }

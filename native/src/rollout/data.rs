@@ -2473,6 +2473,7 @@ fn map_def(raw: &RawMap) -> MapDef {
                     up,
                     extents: collider_extents,
                     radius: Fix::from_raw(p.radius) * base_scale,
+                    bounds_radius: Fix::from_raw(p.radius) * base_scale,
                 },
                 collider_inverse_extents,
                 collider_axis_extents,
