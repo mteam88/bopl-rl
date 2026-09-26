@@ -10053,9 +10053,9 @@ impl RolloutWorld {
                     self.players[index].base.position = near;
                     let caster_id = self.players[index].base.id;
                     self.kill(target, caster_id, CAUSE_OTHER, true, true);
-                    // If invulnerability rejected the target callback, the
-                    // reciprocal PlayerCollision callback can still kill the
-                    // Meteor against a surviving lethal player form.
+                    // A Rock (no PlayerCollision) or an invulnerable target
+                    // survives, and the reciprocal PlayerCollision callback
+                    // can still kill the Meteor against a lethal form.
                     if self.playable(target)
                         && (self.players[target].active == ActiveAbility::Rock
                             || (self.players[target].active == ActiveAbility::Roll
@@ -30807,15 +30807,6 @@ impl RolloutWorld {
                         hitbox,
                     )
                     .is_some()
-                } else if player.active == ActiveAbility::Rock {
-                    crate::physics::contact::circle_box(
-                        Circle {
-                            center: player.base.position,
-                            radius: player.rock.collider_radius,
-                        },
-                        hitbox,
-                    )
-                    .is_some()
                 } else if player.active == ActiveAbility::Platform {
                     false
                 } else {
@@ -30865,15 +30856,6 @@ impl RolloutWorld {
                         Circle {
                             center: player.base.position,
                             radius: data.platform.hurtbox_radius * player.player_scale,
-                        },
-                        hitbox,
-                    )
-                    .is_some()
-                } else if player.active == ActiveAbility::Rock {
-                    crate::physics::contact::circle_box(
-                        Circle {
-                            center: player.base.position,
-                            radius: player.rock.collider_radius,
                         },
                         hitbox,
                     )
@@ -30938,12 +30920,6 @@ impl RolloutWorld {
                         radius: data.platform.hurtbox_radius * player.player_scale,
                     };
                     crate::physics::contact::circle_circle(hitbox, hurtbox).is_some()
-                } else if player.active == ActiveAbility::Rock {
-                    let body = Circle {
-                        center: player.base.position,
-                        radius: player.rock.collider_radius,
-                    };
-                    crate::physics::contact::circle_circle(hitbox, body).is_some()
                 } else if player.active == ActiveAbility::Platform {
                     false
                 } else {
@@ -31251,15 +31227,6 @@ impl RolloutWorld {
                         Circle {
                             center: player.base.position,
                             radius: data.platform.hurtbox_radius * player.player_scale,
-                        },
-                        hitbox,
-                    )
-                    .is_some()
-                } else if player.active == ActiveAbility::Rock {
-                    crate::physics::contact::circle_box(
-                        Circle {
-                            center: player.base.position,
-                            radius: player.rock.collider_radius,
                         },
                         hitbox,
                     )
@@ -33454,6 +33421,12 @@ impl RolloutWorld {
         by_callback: bool,
         spawn_effect: bool,
     ) {
+        // A callback kill is the victim's PlayerCollision.killPlayer, and
+        // Rock.prefab has no PlayerCollision: only its BounceBall hears the
+        // contact. Rock dies through Ability.ExitAbility or scene bounds.
+        if by_callback && self.players[index].active == ActiveAbility::Rock {
+            return;
+        }
         self.kill_with(index, killer, cause, by_callback, spawn_effect, true);
     }
 
