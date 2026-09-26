@@ -19171,7 +19171,9 @@ impl RolloutWorld {
                         let slot = &mut self.players[index];
                         slot.base.position = origin + direction * hit.distance;
                         slot.reported_position = slot.base.position;
-                        self.kill(index, killer, cause, false, false);
+                        // KillPlayerOnCollision kills with spawnEffect
+                        // (PlayerCollision.cs:457).
+                        self.kill(index, killer, cause, false, true);
                         if let Some(owner) = arrow_owner
                             && owner != caster_id
                             && owner >= 1
