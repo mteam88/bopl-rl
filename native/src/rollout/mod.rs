@@ -20950,7 +20950,24 @@ impl RolloutWorld {
                 space,
             )
             .expect("valid Magnet gravity constants");
+            // A held boulder's hitbox is off for the raycasts
+            // (MagnetGun.cs:1216-1225).
+            let held_boulder = match slot.magnet.held {
+                MagnetHeld::Boulder(boulder) if slot.magnet.phase == 3 => {
+                    Some(self.macho_boulders[boulder].platform_index)
+                }
+                _ => None,
+            };
+            let hidden = held_boulder.filter(|&platform| self.platforms[platform].active);
+            if let Some(platform) = hidden {
+                self.platforms[platform].active = false;
+            }
+            let slot = &mut self.players[index];
             slot.base.collision_rays(terrain!(self));
+            if let Some(platform) = hidden {
+                self.platforms[platform].active = true;
+            }
+            let slot = &mut self.players[index];
             if slot.base.grounded && slot.magnet.has_fired {
                 self.exit_magnet(index, true, data);
                 return;
@@ -21759,8 +21776,13 @@ impl RolloutWorld {
                 let platform = self.macho_boulders[i].platform_index;
                 self.platform_dynamics[platform].body.angular_velocity =
                     data.magnet.locked_angular_velocity;
-                if self.players[index].base.ground == Some(self.platforms[platform].id) {
-                    self.players[index].base.force_unground(&self.platforms);
+                // MagnetGun.cs:747-753 calls UnGround() with its default
+                // nullRotation, so the firepoint swings back to body.right
+                // (1,0) for the rest of the pass.
+                let slot = &mut self.players[index];
+                if slot.base.grounded && slot.base.ground == Some(self.platforms[platform].id) {
+                    slot.base.unground_level(&self.platforms);
+                    slot.magnet.body_right = Vec2::RIGHT;
                 }
             }
             MagnetHeld::AbilityPickup(i) => {
@@ -22088,6 +22110,22 @@ impl RolloutWorld {
                 let platform = self.macho_boulders[i].platform_index;
                 let velocity = self.platform_dynamics[platform].body.velocity;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
+                // DetPhysics.MoveObjectOutOfWalls: the first overlapping
+                // rounded rect in collider order pushes the boulder fully out.
+                let mut shape = self.platforms[platform].collider;
+                shape.inner.center = position;
+                let position = position
+                    + self
+                        .platforms
+                        .iter()
+                        .enumerate()
+                        .filter(|&(other, wall)| other != platform && wall.active)
+                        .find_map(|(_, wall)| {
+                            crate::physics::contact::rounded_rounded(shape, wall.collider)
+                        })
+                        .map_or(Vec2::ZERO, |contact| {
+                            positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0]
+                        });
                 self.platforms[platform].surface.center = position;
                 self.platforms[platform].collider.inner.center = position;
                 self.platform_dynamics[platform].composite_position = position;
