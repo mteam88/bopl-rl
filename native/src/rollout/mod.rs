@@ -25839,7 +25839,13 @@ impl RolloutWorld {
             // the pass that shows "load" it counts that animation instead, whose
             // third sprite comes after loadingFrame is already set.
             let early = b.ticks > bow.transform_ticks / 3 && b.ticks <= bow.transform_ticks;
-            let fire_now = b.released && !b.has_fired && (b.loading_frame > 0 || early);
+            b.released && !b.has_fired && (b.loading_frame > 0 || early)
+        };
+        if fire_now {
+            self.fire_bow(index, data);
+        }
+        {
+            let b = &mut self.players[index].bow;
             // loadingFrame = getNumberOfPassedSprites() of the "load" anim =
             // currentSpriteIndex+1. SpriteAnimator runs after BowTransform, so
             // the Loading callback which ends "transform" is first visible to
@@ -25856,10 +25862,6 @@ impl RolloutWorld {
                     .count() as u32;
                 b.loading_frame = (1 + passed).min(4);
             }
-            fire_now
-        };
-        if fire_now {
-            self.fire_bow(index, data);
         }
 
         // Movement (UpdateSim).
