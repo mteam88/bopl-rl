@@ -7550,8 +7550,13 @@ impl RolloutWorld {
                     // A landing in this pass's PlayerPhysics.UpdateSim already
                     // set State.land through attachToGround
                     // (SlimeController.cs:1126-1128) before EnterAbility
-                    // freezes the state machine.
+                    // freezes the state machine. A ceiling landing flipped
+                    // the sprite in the same callback, so the ability aims
+                    // from the flipped facing.
                     if slot.base.grounded && slot.obs_state == STATE_FALL {
+                        if slot.base.attach_upside_down == Some(true) {
+                            slot.facing_right = !slot.facing_right;
+                        }
                         slot.obs_state = STATE_LAND;
                         slot.state_ticks += LAND_TICKS;
                     }
