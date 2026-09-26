@@ -1560,6 +1560,7 @@ pub struct DuplicatePlatformState {
     pub effect_scale: Fix,
     pub spawn_position: Vec2,
     pub spawner_hierarchy: u32,
+    pub hierarchy_base: u32,
 }
 
 /// Per-player platform ability state (PlatformTransform.cs).
@@ -25594,6 +25595,7 @@ impl RolloutWorld {
             effect_scale: scale,
             spawn_position,
             spawner_hierarchy,
+            hierarchy_base: self.next_spawn_hierarchy,
         };
         if let Some(slot) = self
             .duplicate_platform_effects
@@ -25702,12 +25704,59 @@ impl RolloutWorld {
             if self.duplicate_platform_effects[effect_index].time
                 > data.duplicator.platform_shake_duration
             {
-                spawn.push((snapshot.source, spawn_position, snapshot.spawner_hierarchy));
+                spawn.push((snapshot.source, spawn_position, snapshot));
                 self.duplicate_platform_effects[effect_index].active = false;
             }
         }
-        for request in spawn {
-            self.spawn_duplicate_platform(request.0, request.1, request.2, data);
+        for (source, position, effect) in spawn {
+            self.spawn_duplicate_platform(source, position, effect.spawner_hierarchy, data);
+            self.black_holes_pull_spawned_platform(effect.hierarchy_base, data);
+        }
+    }
+
+    /// The duplicate joins DetPhysics inside the effect's UpdateSim, so holes
+    /// registered after the effect pull it in the same pass, before it
+    /// integrates (BlackHole.cs:384-397).
+    fn black_holes_pull_spawned_platform(
+        &mut self,
+        effect_hierarchy: u32,
+        data: &data::RolloutData,
+    ) {
+        if self.player_time_scale < Fix::from_f32(0.01) {
+            return;
+        }
+        let platform_index = self.platforms.len() - 1;
+        for hole_index in 0..self.black_holes.len() {
+            let hole = &self.black_holes[hole_index];
+            if !hole.active
+                || hole.hierarchy_base < effect_hierarchy
+                || self.blink_object_hidden(hole.entity)
+            {
+                continue;
+            }
+            let (position, mass) = (hole.position, hole.mass);
+            let dynamics = &self.platform_dynamics[platform_index];
+            let composite = dynamics.attached_children != 0;
+            let inverse_mass =
+                if composite { dynamics.root_body.inverse_mass } else { dynamics.body.inverse_mass };
+            if inverse_mass == Fix::ZERO {
+                continue;
+            }
+            let vector = position - self.platforms[platform_index].collider.inner.center;
+            let squared = vector.length_squared();
+            if squared == Fix::ZERO {
+                continue;
+            }
+            let distance = squared.sqrt().expect("Black Hole platform distance");
+            let cube = distance * distance * distance;
+            if cube == Fix::ZERO {
+                continue;
+            }
+            let magnitude = data.black_hole.gravity * (Fix::ONE / inverse_mass) * mass;
+            let dynamics = &mut self.platform_dynamics[platform_index];
+            let body = if composite { &mut dynamics.root_body } else { &mut dynamics.body };
+            body.force += vector * magnitude / cube;
+            self.platforms_changed();
         }
     }
 
@@ -25767,7 +25816,9 @@ impl RolloutWorld {
         dynamics.shake_duration = Fix::ZERO;
         dynamics.shake_amount = Fix::ZERO;
         dynamics.shake_previous = Vec2::ZERO;
-        dynamics.init_tick = None;
+        // The clone's AnimateVelocity is not initialized by DuplicateObject;
+        // it homes where this pass's integration left it, on the next pass.
+        dynamics.init_tick = Some(self.tick + 1);
         dynamics.duplicate_spawner_hierarchy = Some(spawner_hierarchy);
         dynamics.duplicate_lifespan = i32::MAX;
         dynamics.duplicate_shake_offset = Vec2::ZERO;
