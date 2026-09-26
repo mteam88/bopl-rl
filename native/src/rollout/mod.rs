@@ -8310,6 +8310,10 @@ impl RolloutWorld {
                         if slot.base.grounded {
                             slot.base.move_only(Vec2::ZERO, terrain!(self));
                         }
+                        let published = slot.base.position;
+                        self.form_body_move(index, jump_pressed);
+                        self.players[index].reported_position = published;
+                        self.players[index].reported_tick = self.tick;
                         return;
                     }
                     ABILITY_ENGINE => {
@@ -9248,15 +9252,15 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Spike {
-            self.spike_cast_tick(index, data);
+            self.spike_cast_tick(index, jump_pressed, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Engine {
-            self.engine_cast_tick(index, data);
+            self.engine_cast_tick(index, jump_pressed, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Tesla {
-            self.tesla_cast_tick(index, data);
+            self.tesla_cast_tick(index, jump_pressed, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Gust {
@@ -10856,7 +10860,7 @@ impl RolloutWorld {
         self.players[index].reported_tick = self.tick;
     }
 
-    fn spike_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
+    fn spike_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
@@ -10887,13 +10891,10 @@ impl RolloutWorld {
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
         }
-        {
-            let slot = &mut self.players[index];
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
-            slot.reported_position = published_position;
-            slot.reported_tick = self.tick;
-        }
+        // PlayerBody carries a grapple rope into the form.
+        self.form_body_move(index, jump_pressed);
+        self.players[index].reported_position = published_position;
+        self.players[index].reported_tick = self.tick;
         if exit_now {
             self.exit_spike_cast(index);
         }
@@ -10929,7 +10930,7 @@ impl RolloutWorld {
         }
     }
 
-    fn engine_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
+    fn engine_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
@@ -10962,7 +10963,12 @@ impl RolloutWorld {
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
         }
-        self.players[index].plant_cast_body_step(published_position, self.tick);
+        // PlayerBody carries a grapple rope into the form.
+        self.form_body_move(index, jump_pressed);
+        let slot = &mut self.players[index];
+        slot.plant_cast.collider_position = slot.base.position;
+        slot.reported_position = published_position;
+        slot.reported_tick = self.tick;
     }
 
     fn exit_engine_cast(&mut self, index: usize) {
@@ -11005,7 +11011,7 @@ impl RolloutWorld {
         }
     }
 
-    fn tesla_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
+    fn tesla_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
@@ -11038,7 +11044,12 @@ impl RolloutWorld {
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
         }
-        self.players[index].plant_cast_body_step(published_position, self.tick);
+        // PlayerBody carries a grapple rope into the form.
+        self.form_body_move(index, jump_pressed);
+        let slot = &mut self.players[index];
+        slot.plant_cast.collider_position = slot.base.position;
+        slot.reported_position = published_position;
+        slot.reported_tick = self.tick;
     }
 
     fn spawn_tesla_node(&mut self, index: usize, data: &data::RolloutData) -> bool {
