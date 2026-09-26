@@ -32181,7 +32181,9 @@ impl RolloutWorld {
         // above used the pre-resize mass while DetPhysics integrates it with
         // the new one.
         for (index, extents, radius) in removal_resizes {
-            // The children move before StickyRect.UpdateBounds takes the new size.
+            // The children move before StickyRect.UpdateBounds takes the new
+            // size, but after the RoundedRect took its new radius.
+            self.platforms[index].surface.radius = radius;
             self.reposition_platform_children(index, data);
             self.reshape_platform(index, extents, radius);
         }
