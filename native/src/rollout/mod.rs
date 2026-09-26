@@ -7980,6 +7980,19 @@ impl RolloutWorld {
                             previous_player_velocity: velocity,
                             ..RockState::default()
                         };
+                        // BounceBall.cs:146-151: a roped entry stretches a
+                        // short rope to minRopeLength at the form's scale.
+                        if let Some(rope_index) = self.players[index].rope {
+                            let scale = self.players[index].rock.scale;
+                            let rope = &mut self.ropes[rope_index].physics;
+                            let count = Fix::from_int(rope.count as i64);
+                            if rope.separation * count < data.rock.min_rope_length * scale {
+                                rope.separation = scale * data.rock.min_rope_length / count;
+                            }
+                        }
+                        // BounceBall sits after SlimeController in the player
+                        // prefab, so its UpdateSim runs on the entry pass too.
+                        self.rock_rope_update(index, jump_pressed, data);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
                         // before PlayerPhysics.Move (SlimeController.cs:1067,
@@ -27244,6 +27257,25 @@ impl RolloutWorld {
         }
     }
 
+    /// DetPhysics' sort-and-sweep pairing: the two bounding boxes overlap
+    /// strictly on both axes.
+    fn circle_entity_bounds_overlap(&self, query: Circle, entity: usize) -> bool {
+        let row = self.entities[entity];
+        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+        let extent = if row.kind == 0 {
+            Vec2::new(Fix::from_raw(row.radius), Fix::from_raw(row.radius))
+        } else {
+            Vec2::new(
+                Fix::from_raw(row.right_x).abs() + Fix::from_raw(row.up_x).abs(),
+                Fix::from_raw(row.right_y).abs() + Fix::from_raw(row.up_y).abs(),
+            )
+        };
+        query.center.x + query.radius > center.x - extent.x
+            && query.center.x - query.radius < center.x + extent.x
+            && query.center.y + query.radius > center.y - extent.y
+            && query.center.y - query.radius < center.y + extent.y
+    }
+
     #[inline]
     fn circle_overlaps_entity(&self, query: Circle, entity: usize) -> bool {
         self.circle_entity_contact(query, entity).is_some()
@@ -31643,10 +31675,13 @@ impl RolloutWorld {
                 rope.physics.force_end = velocity - previous;
             }
             if !rope.physics.detached {
+                // body.up rewrites the form's own rotation (FixTransform.up).
                 let other = rope.physics.segment[rope.physics.count - 1 - endpoint];
-                self.players[index].base.up = -(position - other).normalized_safe();
+                let up = -(position - other).normalized_safe();
+                self.players[index].base.up = up;
+                self.players[index].rock.body.orientation = up.perp_cw().normalized_angle();
             }
-            if rope.physics.time_since_hook_arrived >= Fix::ZERO
+            if rope.physics.time_since_hook_arrived > Fix::ZERO
                 && !stopped
                 && !rope.physics.detached
             {
@@ -31741,6 +31776,9 @@ impl RolloutWorld {
     fn rocks_contacts(&mut self, data: &data::RolloutData) {
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.rock_wall_contacts.clear();
+        // DetPhysics pairs colliders by the bounding boxes taken after
+        // integration, before any contact pass pushes a body out.
+        let mut swept = [Circle::default(); MAX_PLAYERS];
         for (rock_index, slot) in self.players.iter().enumerate() {
             if slot.active != ActiveAbility::Rock || !self.playable_slot(slot) {
                 continue;
@@ -31751,6 +31789,7 @@ impl RolloutWorld {
                 // BounceBall's pulse is applied only in the later LateUpdate.
                 radius: slot.rock.collider_radius,
             };
+            swept[rock_index] = circle;
             for (wall_index, platform) in self.platforms.iter().enumerate() {
                 if !platform.active || !scratch.swept_pairs(self.tick, wall_index, circle) {
                     continue;
@@ -31805,7 +31844,10 @@ impl RolloutWorld {
                 continue;
             }
             for b in a + 1..self.players.len() {
-                if self.players[b].active != ActiveAbility::Rock || !self.playable(b) {
+                if self.players[b].active != ActiveAbility::Rock
+                    || !self.playable(b)
+                    || !swept[a].bounds_overlap(swept[b])
+                {
                     continue;
                 }
                 let ca = Circle {
@@ -31874,7 +31916,10 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = Self::blink_player_entity(&self.players[victim]);
-                if entity == usize::MAX || self.entities[entity].layer != LAYER_PLAYER {
+                if entity == usize::MAX
+                    || self.entities[entity].layer != LAYER_PLAYER
+                    || !self.circle_entity_bounds_overlap(swept[rock_index], entity)
+                {
                     continue;
                 }
                 if let Some(contact) = self.circle_entity_contact(rock, entity) {
@@ -31898,6 +31943,9 @@ impl RolloutWorld {
                 let Some(entity) = self.abilityless_clones[clone_index].entity else {
                     continue;
                 };
+                if !self.circle_entity_bounds_overlap(swept[rock_index], entity) {
+                    continue;
+                }
                 if let Some(contact) = self.circle_entity_contact(rock, entity) {
                     if self.players[rock_index].rope.is_none() {
                         self.players[rock_index].rock.body.force +=

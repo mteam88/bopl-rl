@@ -51,6 +51,12 @@ pub struct RayHit {
 }
 
 impl Circle {
+    /// DetPhysics' sort-and-sweep pairing of two circles' bounding boxes.
+    pub fn bounds_overlap(self, other: Circle) -> bool {
+        let reach = self.radius + other.radius;
+        (self.center.x - other.center.x).abs() < reach
+            && (self.center.y - other.center.y).abs() < reach
+    }
     pub fn overlaps(self, point: Vec2) -> bool {
         (self.center - point).length_squared() < self.radius * self.radius
     }
