@@ -11573,7 +11573,8 @@ impl RolloutWorld {
             .last()
             .expect("authored SpikeAttack curve")
             .time;
-        for attack in &mut self.spike_attacks {
+        for index in 0..self.spike_attacks.len() {
+            let attack = &mut self.spike_attacks[index];
             if !attack.active || attack.macho_carried || attack.born_tick >= self.tick {
                 continue;
             }
@@ -11583,21 +11584,26 @@ impl RolloutWorld {
             }
             attack.surface_offset =
                 data.spike.down_thrust.evaluate(attack.time) + data.spike.surface_offset;
-            let platform = &self.platforms[attack.platform_index];
-            let parent_rotation = self.platform_dynamics[attack.platform_index]
-                .body
-                .orientation;
-            let spike_right = Vec2::angle(parent_rotation + attack.relative_rotation);
-            let root_position = platform.surface.position(attack.local, Fix::ZERO)
-                + spike_right.perp() * attack.surface_offset;
-            let inverse_basis = Vec2::angle(-parent_rotation);
-            let relative_right = spike_right.complex_mul(inverse_basis);
-            // Scale inside the complex multiply, per DPhysicsBox.cs:456 and
-            // FixTransform.cs:100-103; see cast_spike.
-            attack.relative_center = (root_position - platform.surface.center)
-                .complex_mul(inverse_basis)
-                + (data.spike.attack_collider_offset * attack.scale).complex_mul(relative_right);
+            self.place_spike_attack(index, data);
         }
+    }
+
+    /// SpikeAttack.UpdatePosition, and RepositionOnParent with the offset it
+    /// last wrote: the collider's pose relative to its platform.
+    fn place_spike_attack(&mut self, index: usize, data: &data::RolloutData) {
+        let attack = self.spike_attacks[index];
+        let platform = &self.platforms[attack.platform_index];
+        let parent_rotation = self.platform_dynamics[attack.platform_index].body.orientation;
+        let spike_right = Vec2::angle(parent_rotation + attack.relative_rotation);
+        let root_position = platform.surface.position(attack.local, Fix::ZERO)
+            + spike_right.perp() * attack.surface_offset;
+        let inverse_basis = Vec2::angle(-parent_rotation);
+        let relative_right = spike_right.complex_mul(inverse_basis);
+        // Scale inside the complex multiply, per DPhysicsBox.cs:456 and
+        // FixTransform.cs:100-103; see cast_spike.
+        self.spike_attacks[index].relative_center = (root_position - platform.surface.center)
+            .complex_mul(inverse_basis)
+            + (data.spike.attack_collider_offset * attack.scale).complex_mul(relative_right);
     }
 
     fn engines_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
@@ -30882,6 +30888,21 @@ impl RolloutWorld {
                 dynamics.root_body.inverse_inertia = dynamics.body.inverse_inertia;
             }
             dynamics.surface_shape_dirty = false;
+            // resizeChildren: every attached child is re-placed on the new
+            // shape. A SpikeAttack past its thrust curve keeps this pose; on
+            // its cast pass it still has the cast normal, and the pose Spike
+            // just gave it.
+            for index in 0..self.spike_attacks.len() {
+                let attack = &self.spike_attacks[index];
+                if attack.active
+                    && !attack.macho_carried
+                    && attack.entity.is_some()
+                    && attack.platform_index == i
+                    && attack.born_tick != self.tick
+                {
+                    self.place_spike_attack(index, data);
+                }
+            }
             self.platforms_changed();
             self.rebuild_bounds();
         }
