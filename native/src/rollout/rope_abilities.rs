@@ -1134,8 +1134,10 @@ impl RolloutWorld {
             };
             // HookshotInstant attaches after this pass's PlayerBody updater;
             // a newly spawned grounded rope therefore keeps Initialize's
-            // final point until the next pass.
+            // final point until the next pass. Before the hook arrives the end
+            // keeps PlayerBody's integrated point (PlayerPhysics.cs:147).
             if self.players[player].base.grounded
+                && self.ropes[rope_index].physics.time_since_hook_arrived > Fix::ZERO
                 && self.ropes[rope_index].born_tick != self.tick
                 && self.players[player].rope_attach_tick != self.tick
             {
