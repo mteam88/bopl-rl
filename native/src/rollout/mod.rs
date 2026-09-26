@@ -30327,11 +30327,13 @@ impl RolloutWorld {
                 };
                 detonate |= hit;
             }
+            // SmokeGrenadeExplode2.OnCollide ignores every contact, not only
+            // the owner's, until hurtOwnerDelay has run out.
             if detonate {
-                if item.ability == ABILITY_SMOKE {
-                    self.detonate_smoke(item_index, true, data);
-                } else {
+                if item.ability != ABILITY_SMOKE {
                     self.detonate_grenade(item_index, true, data);
+                } else if item.detonates_on_owner {
+                    self.detonate_smoke(item_index, true, data);
                 }
             }
         }
