@@ -676,6 +676,7 @@ impl RolloutWorld {
         );
         if self.players[player].base.outside_bounds() {
             self.players[player].base.alive = false;
+            self.players[player].base.out_of_bounds = true;
             return;
         }
         // SlimeController.cs:1086-1089; the rope is live here, or the slime
