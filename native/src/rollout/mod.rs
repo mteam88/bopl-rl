@@ -19368,6 +19368,7 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             slot.base.position += slot.base.external_velocity * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
+            slot.throw_item.collider_rotation = slot.base.rotation;
             slot.throw_item.collider_right = slot.base.up.perp_cw();
         } else {
             let this = &mut *self;
