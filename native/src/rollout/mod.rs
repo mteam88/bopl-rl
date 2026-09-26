@@ -1044,6 +1044,10 @@ pub struct RewindState {
     /// ReleaseControl calls it again after arrival and repeats the 0.05 push.
     pub attached_ground: Option<u32>,
     pub finish_next_tick: bool,
+    /// The slime started this pass inside a form. Its GameObject was still
+    /// inactive when RewindRecorder ran, so a form exiting later in the pass
+    /// contributes no sample.
+    pub in_form_at_pass: bool,
     pub destination: RewindSample,
     pub path_segments: usize,
     pub path_positions: [Vec2; REWIND_MAX_SEGMENTS + 1],
@@ -1065,6 +1069,7 @@ impl Default for RewindState {
             ability_slot: 0,
             attached_ground: None,
             finish_next_tick: false,
+            in_form_at_pass: false,
             destination: RewindSample::default(),
             path_segments: 0,
             path_positions: [Vec2::ZERO; REWIND_MAX_SEGMENTS + 1],
@@ -4062,6 +4067,8 @@ impl RolloutWorld {
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT, DT);
                 }
+                // The recorder starts sampling on the pass the slime wakes.
+                self.record_warmup_rewind(i);
                 continue;
             }
             if spawn_anim > 0 {
@@ -7391,6 +7398,8 @@ impl RolloutWorld {
         // gravity step below) and Move's raycasts both fire attachToGround,
         // and `update_obs_state` consumes whichever one landed the body.
         self.players[index].base.begin_pass();
+        self.players[index].rewind.in_form_at_pass =
+            self.players[index].active != ActiveAbility::None;
         // An airborne body keeps its stale attachedGround; only a grounded
         // rider discovers the disabled wall.
         let leaving_blink_wall = self.players[index].base.grounded
@@ -10542,6 +10551,7 @@ impl RolloutWorld {
             }
             if !self.players[index].rewind.rewinding {
                 if self.players[index].active == ActiveAbility::None
+                    && !self.players[index].rewind.in_form_at_pass
                     && !self.players[index].base.dash.active
                 {
                     let slot = &mut self.players[index];
