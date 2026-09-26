@@ -1850,6 +1850,7 @@ pub struct BlinkObjectTunnel {
     pub age: Fix,
     pub duration: Fix,
     pub restore_flags: u32,
+    pub released_tick: Option<u32>,
 }
 
 /// One `TeleportedObjectEffect` retaining an inactive non-player GameObject.
@@ -24447,6 +24448,7 @@ impl RolloutWorld {
                 age: Fix::ZERO,
                 duration,
                 restore_flags,
+                released_tick: None,
             };
         } else {
             self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
@@ -24458,6 +24460,7 @@ impl RolloutWorld {
                 age: Fix::ZERO,
                 duration,
                 restore_flags: self.entities[entity].flags,
+                released_tick: None,
             };
             if let Some(index) = self
                 .blink_object_tunnels
@@ -24523,6 +24526,19 @@ impl RolloutWorld {
             })
     }
 
+    /// Whether a Blink tunnel let the object go during this pass.
+    fn blink_object_released(&self, entity: Option<usize>) -> bool {
+        let Some(entity) = entity else {
+            return false;
+        };
+        let entity_id = self.entities.get(entity).map_or(0, |row| row.id);
+        self.blink_object_tunnels.iter().any(|tunnel| {
+            tunnel.released_tick == Some(self.tick)
+                && tunnel.entity == entity
+                && tunnel.entity_id == entity_id
+        })
+    }
+
     /// Generic QuantumTunnel victims stay allocated but their GameObject is
     /// inactive. The pool prevents hidden objects from being mistaken for a
     /// free gameplay slot and avoids per-cast allocation in vectorized worlds.
@@ -24543,6 +24559,7 @@ impl RolloutWorld {
                     self.entities[tunnel.entity].flags = tunnel.restore_flags;
                 }
                 self.blink_object_tunnels[index].active = false;
+                self.blink_object_tunnels[index].released_tick = Some(self.tick);
                 continue;
             }
             self.blink_object_tunnels[index].age += updater_dt;
@@ -26953,63 +26970,69 @@ impl RolloutWorld {
                 }
                 continue;
             }
-            // DestroyIfOutsideSceneBounds (Arrow prefab hierarchy 1) runs
-            // before Arrow.UpdateSim (hierarchy 2) and DetPhysics. Its
-            // NeverDestroyAbove flag leaves top exits alive.
-            let position = self.arrows[i].position;
-            let floor = data.maps[self.map].lower_boundary();
-            if position.y < floor || position.x.abs() > Fix::from_f64(131.25) {
-                // Only the water exit has an effect: the two-updatable splash.
-                // In space the floor exit looks for an UpEffect Arrow lacks.
-                if position.y < floor && !data.maps[self.map].is_space() {
-                    self.next_spawn_hierarchy += 2;
+            // A Blink tunnel re-enables its victim from its own later updater
+            // (QuantumTunnel.cs:163-166): on the release pass the arrow's
+            // updaters already passed it by, and only DetPhysics moves it.
+            if !self.blink_object_released(self.arrows[i].entity) {
+                // DestroyIfOutsideSceneBounds (Arrow prefab hierarchy 1) runs
+                // before Arrow.UpdateSim (hierarchy 2) and DetPhysics. Its
+                // NeverDestroyAbove flag leaves top exits alive.
+                let position = self.arrows[i].position;
+                let floor = data.maps[self.map].lower_boundary();
+                if position.y < floor || position.x.abs() > Fix::from_f64(131.25) {
+                    // Only the water exit has an effect: the two-updatable splash.
+                    // In space the floor exit looks for an UpEffect Arrow lacks.
+                    if position.y < floor && !data.maps[self.map].is_space() {
+                        self.next_spawn_hierarchy += 2;
+                    }
+                    self.destroy_arrow(i);
+                    continue;
                 }
-                self.destroy_arrow(i);
-                continue;
+                let arrow = &mut self.arrows[i];
+                arrow.time_passed += updater_dt;
+                if arrow.scale != arrow.mass_scale
+                    && arrow.inverse_mass != Fix::ZERO
+                    && arrow.inverse_inertia != Fix::ZERO
+                {
+                    let ratio = arrow.mass_scale / arrow.scale;
+                    arrow.inverse_mass *= ratio;
+                    arrow.inverse_inertia *= ratio;
+                    arrow.mass_scale = arrow.scale;
+                }
+                if !arrow.can_hurt_owner
+                    && arrow.hurt_owner_after > Fix::ZERO
+                    && arrow.time_passed > arrow.hurt_owner_after
+                {
+                    arrow.can_hurt_owner = true;
+                }
+                // Arrow.UpdateSim runs in the updater pass, before BoplBody's
+                // hold countdown and DetPhysics integration.
+                let being_held = arrow.magnet_hold_ticks >= 0;
+                if being_held {
+                    arrow.magnet_hold_ticks -= 1;
+                    if arrow.magnet_hold_ticks == 0 {
+                        arrow.magnet_holder = None;
+                        arrow.magnet_hold_ticks = -1;
+                    }
+                }
+                // Arrow.UpdateSim runs in the updater pass, before DetPhysics
+                // integrates gravity and position. Preserve that authored phase
+                // for the policy-visible collider orientation.
+                if !being_held && arrow.updater_tick != self.tick {
+                    let speed = arrow.velocity.length();
+                    let up = if speed == Fix::ZERO {
+                        Vec2::UP
+                    } else {
+                        arrow.velocity / speed
+                    };
+                    // DetPhysics.IntegrateBody wraps the orientation into [0, 2pi)
+                    // (DetPhysics.cs:1645) and SyncGameObject writes it back to the
+                    // arrow's FixTransform, so a straight shot reads 0, not 2pi.
+                    arrow.rotation = up.perp_cw().normalized_angle();
+                    arrow.updater_tick = self.tick;
+                }
             }
             let arrow = &mut self.arrows[i];
-            arrow.time_passed += updater_dt;
-            if arrow.scale != arrow.mass_scale
-                && arrow.inverse_mass != Fix::ZERO
-                && arrow.inverse_inertia != Fix::ZERO
-            {
-                let ratio = arrow.mass_scale / arrow.scale;
-                arrow.inverse_mass *= ratio;
-                arrow.inverse_inertia *= ratio;
-                arrow.mass_scale = arrow.scale;
-            }
-            if !arrow.can_hurt_owner
-                && arrow.hurt_owner_after > Fix::ZERO
-                && arrow.time_passed > arrow.hurt_owner_after
-            {
-                arrow.can_hurt_owner = true;
-            }
-            // Arrow.UpdateSim runs in the updater pass, before BoplBody's
-            // hold countdown and DetPhysics integration.
-            let being_held = arrow.magnet_hold_ticks >= 0;
-            if being_held {
-                arrow.magnet_hold_ticks -= 1;
-                if arrow.magnet_hold_ticks == 0 {
-                    arrow.magnet_holder = None;
-                    arrow.magnet_hold_ticks = -1;
-                }
-            }
-            // Arrow.UpdateSim runs in the updater pass, before DetPhysics
-            // integrates gravity and position. Preserve that authored phase
-            // for the policy-visible collider orientation.
-            if !being_held && arrow.updater_tick != self.tick {
-                let speed = arrow.velocity.length();
-                let up = if speed == Fix::ZERO {
-                    Vec2::UP
-                } else {
-                    arrow.velocity / speed
-                };
-                // DetPhysics.IntegrateBody wraps the orientation into [0, 2pi)
-                // (DetPhysics.cs:1645) and SyncGameObject writes it back to the
-                // arrow's FixTransform, so a straight shot reads 0, not 2pi.
-                arrow.rotation = up.perp_cw().normalized_angle();
-                arrow.updater_tick = self.tick;
-            }
             // DetPhysics.IntegrateBody (DetPhysics.cs:1643) is
             //   velocity += deltaTime * new Vec2(Zero, gravityAccel * gravityScale)
             //             + GameTime.FixedTimeStep * force * inverseMass;
