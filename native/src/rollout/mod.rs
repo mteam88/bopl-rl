@@ -12408,7 +12408,12 @@ impl RolloutWorld {
                     self.entities[entity].flags = E_ACTIVE;
                 }
             }
+            // Mine.Igniters holds the line's layer but not LethalTerrain, so
+            // only the line lights a mine.
             for mine in &mut self.thrown_items {
+                let Some(line) = line else {
+                    break;
+                };
                 if !mine.active || mine.ability != ABILITY_MINE || !matches!(mine.phase, 1 | 2) {
                     continue;
                 }
@@ -12416,11 +12421,7 @@ impl RolloutWorld {
                     center: mine.position,
                     radius: thrown_item_radius(data, *mine),
                 };
-                if crate::physics::contact::circle_circle(node_circle, mine_circle).is_some()
-                    || line.is_some_and(|line| {
-                        crate::physics::contact::circle_box(mine_circle, line).is_some()
-                    })
-                {
+                if crate::physics::contact::circle_box(mine_circle, line).is_some() {
                     mine.time_since_anticipation =
                         data.mine.anticipation_duration * Fix::from_f64(0.8);
                     mine.phase = 3;
