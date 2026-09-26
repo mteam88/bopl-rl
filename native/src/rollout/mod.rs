@@ -34092,9 +34092,9 @@ impl RolloutWorld {
                         // drift; LateUpdateSim snaps only the body.
                         (synced, slot.throw_item.collider_rotation)
                     } else {
-                        // A timed air exit leaves the box at the form's
-                        // pose; the slime EnterFall lands turns on its own.
-                        let rotation = if missile_row || slot.throw_item.grounded {
+                        // A timed exit leaves the box at the form's pose;
+                        // the slime that lands or re-grounds turns on its own.
+                        let rotation = if missile_row {
                             slot.base.rotation
                         } else {
                             slot.throw_item.collider_rotation
