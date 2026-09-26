@@ -27644,11 +27644,20 @@ impl RolloutWorld {
     /// then active Ability objects. An abilityless clone therefore becomes
     /// the recall target while the owner's original slime is transformed.
     fn mjolnir_owner_position(&self, owner: usize) -> Option<Vec2> {
-        if self.players[owner].active == ActiveAbility::None
-            && !self.players[owner].teleport_effect_active
-            && let Some(position) = self.active_player_position(owner)
-        {
-            return Some(position);
+        // Both the slime and an Ability answer with their own transform. The
+        // synced collider rows lag a form change on its own pass and sit at a
+        // form's collider offset, so the player's state decides instead.
+        let slot = &self.players[owner];
+        let present = slot.base.alive
+            && !slot.slime_destroyed()
+            && slot.unspawned == 0
+            && slot.respawn_ticks == 0
+            && !slot.revival_clone_pending
+            && !slot.stock_clone_pending
+            && !slot.teleport_effect_active
+            && !slot.blink_tunnel_active;
+        if slot.active == ActiveAbility::None && present {
+            return Some(slot.base.position);
         }
         if let Some(clone) = self
             .abilityless_clones
@@ -27657,12 +27666,7 @@ impl RolloutWorld {
         {
             return Some(clone.base.position);
         }
-        if self.players[owner].active != ActiveAbility::None
-            && !self.players[owner].teleport_effect_active
-        {
-            return self.active_player_position(owner);
-        }
-        None
+        present.then_some(slot.base.position)
     }
 
     fn poke_balls_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
