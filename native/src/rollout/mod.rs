@@ -32154,6 +32154,33 @@ impl RolloutWorld {
                 }
             }
         }
+        // Resolved in SortAndSweep order, as rocks_contacts: two nodes
+        // touching one wall hand it their impulses in sweep order.
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let node_min = |node_index: usize| {
+            let node = &self.tesla_nodes[node_index];
+            axis(node.collider_center) - data.tesla.node_radius * node.collider_scale
+        };
+        let wall_min = |wall_index: usize| {
+            let wall = scratch
+                .callback_colliders
+                .get(wall_index)
+                .filter(|_| scratch.callback_tick == Some(self.tick))
+                .or(scratch.circle_colliders.get(wall_index))
+                .copied()
+                .unwrap_or(self.platforms[wall_index].collider);
+            axis(wall.inner.center)
+                - axis(wall.inner.right).abs()
+                - axis(wall.inner.up).abs()
+                - wall.radius
+        };
+        let mut contacts = std::mem::take(&mut scratch.tesla_wall_contacts);
+        contacts.sort_by_key(|&(node_index, wall_index, _)| {
+            let (a, b) = (node_min(node_index), wall_min(wall_index));
+            (a.max(b), a.min(b))
+        });
+        scratch.tesla_wall_contacts = contacts;
         let mut changed_platform = false;
         for &(node_index, wall_index, contact) in &scratch.tesla_wall_contacts {
             let node = self.tesla_nodes[node_index];
