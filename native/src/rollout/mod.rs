@@ -7424,6 +7424,11 @@ impl RolloutWorld {
                 *timer += DT;
             }
             slot.base.move_only(Vec2::ZERO, terrain!(self));
+            // A landing inside Move retargets attachedGround, which the
+            // arrival's UnGround lifts off (RewindRecorder.cs:358).
+            if slot.base.grounded {
+                slot.rewind.attached_ground = slot.base.ground;
+            }
             slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
             return;
@@ -7702,6 +7707,9 @@ impl RolloutWorld {
                             // the input vector captured before Rewind set
                             // suppressInput.
                             slot.base.move_only(movement_input, terrain!(self));
+                            if slot.base.grounded {
+                                slot.rewind.attached_ground = slot.base.ground;
+                            }
                             // Rewind is instant: the slime stays active, so
                             // its own bounds component still runs here, in
                             // the same slot `move_step` tests -- after Move,
