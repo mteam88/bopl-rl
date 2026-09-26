@@ -29853,16 +29853,25 @@ impl RolloutWorld {
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
 
         // Tesla nodes are circle children of their platform's CompositeBody
-        // and share this pass; participants from NODE up are nodes.
+        // and share this pass; participants from NODE up are nodes. Portal
+        // shots are Projectile-layer circles like the items; participants
+        // from SHOT up are shots.
         const NODE: usize = 1 << 16;
+        const SHOT: usize = 1 << 15;
         let items = &self.thrown_items;
         let nodes = &self.tesla_nodes;
+        let shots = &self.portal_shots;
         let circle = |index: usize| {
             if index >= NODE {
                 let node = &nodes[index - NODE];
                 Circle {
                     center: node.collider_center,
                     radius: data.tesla.node_radius * node.collider_scale,
+                }
+            } else if index >= SHOT {
+                Circle {
+                    center: shots[index - SHOT].position,
+                    radius: data.portal_gun.shot_radius,
                 }
             } else {
                 Circle {
@@ -29898,6 +29907,13 @@ impl RolloutWorld {
                 }))
             .then_some(NODE + index)
         }));
+        for index in 0..self.portal_shots.len() {
+            let shot = self.portal_shots[index];
+            if shot.active && shot.registered && !self.blink_object_hidden(shot.entity) {
+                self.scratch.item_order.push(SHOT + index);
+            }
+        }
+        let order = &mut self.scratch.item_order;
         order.sort_unstable_by(|&a, &b| {
             let a_min = axis(circle(a).center) - circle(a).radius;
             let b_min = axis(circle(b).center) - circle(b).radius;
@@ -29915,7 +29931,8 @@ impl RolloutWorld {
             for &prior in window.iter() {
                 // Nodes of different platforms would need a
                 // composite-on-composite resolve; they never touch in play.
-                if prior >= NODE && current >= NODE {
+                // Shots only meet items here.
+                if prior >= SHOT && current >= SHOT {
                     continue;
                 }
                 let prior_circle = circle(prior);
@@ -29938,6 +29955,55 @@ impl RolloutWorld {
         // of them. In particular the three overlapping fan copies must all
         // use their initial positions rather than a prior pair's correction.
         for &(a_index, b_index, contact) in contacts.iter() {
+            if (SHOT..NODE).contains(&a_index) || (SHOT..NODE).contains(&b_index) {
+                // PortalShot's Projectile does not ignite explosives and its
+                // own callback only lands on walls: the impulse is all.
+                let shot_first = a_index >= SHOT;
+                let (item_index, shot_index) = if shot_first {
+                    (b_index, a_index - SHOT)
+                } else {
+                    (a_index, b_index - SHOT)
+                };
+                let item_position = self.thrown_items[item_index].position;
+                let shot_position = self.portal_shots[shot_index].position;
+                let mut item_body = self.thrown_items[item_index].body;
+                let mut shot_body = self.portal_shots[shot_index].body;
+                let (item_delta, shot_delta) = if shot_first {
+                    resolve(contact, &mut shot_body, &mut item_body, shot_position, item_position);
+                    let c = positional_correction(
+                        contact,
+                        shot_body.inverse_mass,
+                        item_body.inverse_mass,
+                        false,
+                    );
+                    (c[1], c[0])
+                } else {
+                    resolve(contact, &mut item_body, &mut shot_body, item_position, shot_position);
+                    let c = positional_correction(
+                        contact,
+                        item_body.inverse_mass,
+                        shot_body.inverse_mass,
+                        false,
+                    );
+                    (c[0], c[1])
+                };
+                self.thrown_items[item_index].body = item_body;
+                self.thrown_items[item_index].position += item_delta;
+                let shot = &mut self.portal_shots[shot_index];
+                shot.body = shot_body;
+                shot.position += shot_delta;
+                if let Some(entity) = shot.entity {
+                    let shot = *shot;
+                    let row = &mut self.entities[entity];
+                    row.x = shot.position.x.raw();
+                    row.y = shot.position.y.raw();
+                    row.vx = shot.body.velocity.x.raw();
+                    row.vy = shot.body.velocity.y.raw();
+                    row.rotation = shot.body.orientation.raw();
+                    row.angular_velocity = shot.body.angular_velocity.raw();
+                }
+                continue;
+            }
             if a_index >= NODE || b_index >= NODE {
                 // ResolveCollision swaps a composite child for its combined
                 // body and position; PositionalCorrection still takes the
@@ -30010,6 +30076,10 @@ impl RolloutWorld {
         let mut smoke_callbacks = [usize::MAX; 64];
         let mut smoke_callback_count = 0;
         for &(a_index, b_index, _) in contacts.iter() {
+            // A portal shot's Projectile does not ignite explosives.
+            if (SHOT..NODE).contains(&a_index) || (SHOT..NODE).contains(&b_index) {
+                continue;
+            }
             for item_index in [a_index, b_index] {
                 if item_index >= NODE {
                     continue;
