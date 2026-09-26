@@ -16456,6 +16456,17 @@ impl RolloutWorld {
         }
     }
 
+    /// Shockwave reads StickyRoundedRectangle.GetClosestPoint, which pairs
+    /// the extents cached at the last UpdateBounds with the collider's live
+    /// radius; a Growth Ray scale step this pass has already changed it.
+    fn shockwave_surface(&self, platform_index: usize) -> Surface {
+        let platform = &self.platforms[platform_index];
+        Surface {
+            radius: platform.collider.radius,
+            ..platform.surface
+        }
+    }
+
     fn apply_explosion_shockwave(&mut self, position: Vec2, wave: data::ExplosionShockwaveData) {
         let query = Circle {
             center: position,
@@ -16473,17 +16484,17 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let platform = &self.platforms[platform_index];
-                let Ok(point) = platform.surface.closest_point(position) else {
+                let surface = self.shockwave_surface(platform_index);
+                let Ok(point) = surface.closest_point(position) else {
                     continue;
                 };
-                let direction = -platform.surface.normal(point);
+                let direction = -surface.normal(point);
                 let distance = ((position - point).length_squared() / Fix::from_int(10))
                     .max(Fix::from_f64(1.5));
                 let impulse = direction.normalized_safe()
                     * (wave.platform_force / distance)
                     * Fix::from_int(60);
-                let arm = (point - platform.surface.center).normalized_safe();
+                let arm = (point - surface.center).normalized_safe();
                 self.platform_dynamics[platform_index]
                     .body
                     .apply_impulse(impulse, arm);
@@ -18490,11 +18501,11 @@ impl RolloutWorld {
             else {
                 continue;
             };
-            let platform = &self.platforms[platform_index];
-            let Ok(point) = platform.surface.closest_point(wave.position) else {
+            let surface = self.shockwave_surface(platform_index);
+            let Ok(point) = surface.closest_point(wave.position) else {
                 continue;
             };
-            let direction = -platform.surface.normal(point);
+            let direction = -surface.normal(point);
             let distance = ((wave.position - point).length_squared() / Fix::from_int(10))
                 .max(Fix::from_f64(1.5));
             let boulder = self
@@ -18507,7 +18518,7 @@ impl RolloutWorld {
                 config.platform_force / distance
             } * wave.scale;
             let impulse = direction.normalized_safe() * force * strength * Fix::from_int(60);
-            let arm = (point - platform.surface.center).normalized_safe();
+            let arm = (point - surface.center).normalized_safe();
             self.platform_dynamics[platform_index]
                 .body
                 .apply_impulse(impulse, arm);
