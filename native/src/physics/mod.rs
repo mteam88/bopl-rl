@@ -67,6 +67,7 @@ pub fn resolve(contact: Contact, a: &mut Body, b: &mut Body, pos_a: Vec2, pos_b:
     let before_b = *b;
     let arm_a = (contact.point - pos_a).normalized_safe();
     let arm_b = (contact.point - pos_b).normalized_safe();
+    if std::env::var_os("BOPL_TRACE").is_some() { eprintln!("RT res n {} {} pen {} cp {} {} pa {} {} pb {} {} va {} {} wa {} vb {} {} wb {} ima {} imb {} iia {} iib {}", contact.normal.x.raw(), contact.normal.y.raw(), contact.penetration.raw(), contact.point.x.raw(), contact.point.y.raw(), pos_a.x.raw(), pos_a.y.raw(), pos_b.x.raw(), pos_b.y.raw(), before_a.velocity.x.raw(), before_a.velocity.y.raw(), before_a.angular_velocity.raw(), before_b.velocity.x.raw(), before_b.velocity.y.raw(), before_b.angular_velocity.raw(), before_a.inverse_mass.raw(), before_b.inverse_mass.raw(), before_a.inverse_inertia.raw(), before_b.inverse_inertia.raw()); } // BOPL_TRACE
     let relative = before_b.velocity + before_b.angular_velocity * arm_b.perp()
         - before_a.velocity
         - before_a.angular_velocity * arm_a.perp();

@@ -29997,7 +29997,10 @@ impl RolloutWorld {
                         )
                         .is_some()
                 });
-                if hit_grenade_explosion || hit_missile_explosion {
+                if hit_grenade_explosion
+                    || hit_missile_explosion
+                    || self.smoke_explosion_hits(circle, data)
+                {
                     if item.ability == ABILITY_GRENADE {
                         self.detonate_grenade(item_index, true, data);
                         continue;
@@ -30081,6 +30084,7 @@ impl RolloutWorld {
                     || hit_tack
                     || hit_grenade_explosion
                     || hit_mine_explosion
+                    || self.smoke_explosion_hits(mine_circle, data)
                 {
                     let mine = &mut self.thrown_items[item_index];
                     mine.time_since_anticipation =
@@ -30401,6 +30405,25 @@ impl RolloutWorld {
 
     /// Whether SortAndSweep pairs the circle with the player's shape: their
     /// bounding boxes overlap strictly on both axes.
+    /// A burning smoke cloud's Explosion hits on its first registered pass,
+    /// like a grenade's, so it sets off grenades and mines too.
+    fn smoke_explosion_hits(&self, circle: Circle, data: &data::RolloutData) -> bool {
+        self.smoke_explosions.iter().any(|explosion| {
+            explosion.active
+                && explosion.registered
+                && explosion.age == 1
+                && crate::physics::contact::circle_box(
+                    circle,
+                    OrientedBox::from_basis(
+                        explosion.position + data.smoke.explosion_collider_offset * explosion.scale,
+                        Vec2::RIGHT,
+                        data.smoke.explosion_extents * explosion.scale,
+                    ),
+                )
+                .is_some()
+        })
+    }
+
     fn player_swept_pairs(&self, player_index: usize, circle: Circle) -> bool {
         let (center, half) = self.player_bounds(player_index);
         let reach = half + Vec2::new(circle.radius, circle.radius);
