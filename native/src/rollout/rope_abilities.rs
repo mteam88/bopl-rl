@@ -449,7 +449,8 @@ impl RolloutWorld {
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
         });
-        self.next_spawn_hierarchy += source.hook_updatable_count;
+        // The Rope and RopeHook prefabs both count (HookshotInstant.cs:128-132).
+        self.next_spawn_hierarchy += 1 + source.hook_updatable_count;
         let rope_index = self.allocate_rope(
             player,
             hook_position,
