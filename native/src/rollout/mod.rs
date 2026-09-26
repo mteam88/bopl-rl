@@ -15504,23 +15504,10 @@ impl RolloutWorld {
         let area = platform_area(extents.x, extents.y, collider.radius);
         let next =
             dynamics.scale - dynamics.scale * DT * data.macho_throw.platform_scale_reduction / area;
-        let next = next.max(dynamics.min_scale);
-        let ratio = (Fix::ONE / dynamics.scale) * next;
-        {
-            let platform = &mut self.platforms[platform_index];
-            platform.collider.inner.right *= ratio;
-            platform.collider.inner.up *= ratio;
-            platform.collider.inner.inverse_extents =
-                platform.collider.inner.inverse_extents / ratio;
-            platform.collider.radius *= ratio;
-            platform.surface.radius = platform.collider.radius;
-        }
-        let at_minimum = next <= self.platform_dynamics[platform_index].min_scale;
-        self.platform_dynamics[platform_index].scale = next;
-        self.platform_dynamics[platform_index].surface_shape_dirty = true;
-        self.platforms_changed();
-        if at_minimum {
-            self.entities[self.platform_entities[platform_index]].flags = E_DESTROYED;
+        self.set_platform_scale(platform_index, next);
+        let dynamics = &self.platform_dynamics[platform_index];
+        if dynamics.scale <= dynamics.min_scale {
+            self.remove_platform(platform_index);
         }
     }
 
@@ -16381,19 +16368,17 @@ impl RolloutWorld {
 
     fn macho_boulders_tick(&mut self, data: &data::RolloutData) {
         let lower_boundary = data.maps[self.map].lower_boundary();
-        for boulder in self.macho_boulders.iter().copied() {
+        for boulder_index in 0..self.macho_boulders.len() {
+            let boulder = self.macho_boulders[boulder_index];
             if !boulder.active || boulder.platform_index >= self.platforms.len() {
                 continue;
             }
             // Boulder.prefab only destroys below the water boundary:
-            // DestroyIfTooFarX=false and DoNotDestroyUp=true.
+            // DestroyIfTooFarX=false and DoNotDestroyUp=true. The updater's
+            // DestroyFix removes it before this pass's contacts and export.
             if self.platforms[boulder.platform_index].surface.center.y < lower_boundary {
-                let entity = self.platform_entities[boulder.platform_index];
-                if self.entities[entity].flags & E_DESTROYED == 0 {
-                    self.entities[entity].flags = E_DESTROYED;
-                    self.next_spawn_hierarchy +=
-                        data.macho_throw.boulder_down_effect_updatable_count;
-                }
+                self.remove_platform(boulder.platform_index);
+                self.next_spawn_hierarchy += data.macho_throw.boulder_down_effect_updatable_count;
             }
         }
     }
