@@ -30922,27 +30922,6 @@ impl RolloutWorld {
             let radius = self.platforms[i].collider.radius;
             self.platforms[i].surface.extents = extents;
             self.platforms[i].surface.radius = radius;
-            if self.platform_dynamics[i].body_resizable {
-                // ResizablePlatform.UpdateSim calls ResizePlatform from the
-                // live rounded-rectangle dimensions every pass. A scale ray
-                // changes those dimensions after this updater, so the next
-                // pass must recompute mass and inertia from the new geometry.
-                let mass = Fix::from_int(10)
-                    + data.platform.spawn_mass_per_area
-                        * platform_area(extents.y, extents.x, radius);
-                let w = extents.x + radius;
-                let h = extents.y + radius;
-                let longest = w.max(h);
-                let inertia = w.min(h) * longest * longest * Fix::from_f32(0.2) + Fix::from_int(40);
-                self.platform_dynamics[i].body.inverse_mass = Fix::ONE / mass;
-                self.platform_dynamics[i].body.inverse_inertia = Fix::ONE / inertia;
-                if self.platform_dynamics[i].attached_children == 0 {
-                    self.platform_dynamics[i].root_body.inverse_mass =
-                        self.platform_dynamics[i].body.inverse_mass;
-                    self.platform_dynamics[i].root_body.inverse_inertia =
-                        self.platform_dynamics[i].body.inverse_inertia;
-                }
-            }
             self.platform_dynamics[i].surface_shape_dirty = false;
             self.platforms_changed();
         }
@@ -35793,9 +35772,8 @@ mod tests {
         world.platforms[index].collider.inner.inverse_extents =
             world.platforms[index].collider.inner.inverse_extents / ratio;
         world.platform_dynamics[index].scale *= ratio;
-        world.platform_dynamics[index].surface_shape_dirty = true;
 
-        world.platform_updaters_tick(data::get(), DT);
+        world.platform_resizable_tick(data::get());
 
         assert_ne!(
             world.platform_dynamics[index].body.inverse_mass,
