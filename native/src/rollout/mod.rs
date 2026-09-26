@@ -7565,6 +7565,12 @@ impl RolloutWorld {
                         slot.obs_state = STATE_LAND;
                         slot.state_ticks += LAND_TICKS;
                     }
+                    // The first pass after a tunnel: OldUpdate's publish of the
+                    // pre-entry body wins the tie against EnterAbility's and
+                    // Ability.UpdateSim's (Player.cs:311-322).
+                    if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == self.tick) {
+                        slot.tie_position = Some((self.tick, slot.base.position));
+                    }
                     // The PlayerInfo package carries the post-gravity state;
                     // PlayerBody has not integrated the position yet. The
                     // deactivated slime still gets this pass's Move
