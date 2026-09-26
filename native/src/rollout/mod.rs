@@ -2094,6 +2094,9 @@ pub struct PlayerSlot {
     pub rope_attach_tick: u32,
     pub rope_prev_imposed: Vec2,
     pub rope_prev_external: Vec2,
+    /// PlayerBody.extraSwingForce: SlimeController's airborne steer on a
+    /// rope, added to the rope force by the slime body's next late pass.
+    pub rope_swing_force: Vec2,
     pub(crate) web_swing: [rope_abilities::WebSwingState; 3],
     pub(crate) grapple: [rope_abilities::GrappleState; 3],
     pub active: ActiveAbility,
@@ -3840,6 +3843,7 @@ impl RolloutWorld {
                 rope_attach_tick: 0,
                 rope_prev_imposed: Vec2::ZERO,
                 rope_prev_external: Vec2::ZERO,
+                rope_swing_force: Vec2::ZERO,
                 web_swing: [rope_abilities::WebSwingState::default(); 3],
                 grapple: [rope_abilities::GrappleState::default(); 3],
                 active: ActiveAbility::None,

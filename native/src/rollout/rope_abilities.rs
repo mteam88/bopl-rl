@@ -675,6 +675,12 @@ impl RolloutWorld {
             self.players[player].base.alive = false;
             return;
         }
+        // SlimeController.cs:1086-1089; the rope is live here, or the slime
+        // would not be on this path.
+        if !self.players[player].base.grounded {
+            self.players[player].rope_swing_force =
+                Vec2::new(input.x * data::get().ropes.extra_swing_force, Fix::ZERO);
+        }
         self.rope_body_move(player, jump_pressed);
     }
 
@@ -747,6 +753,11 @@ impl RolloutWorld {
                     self.ropes[rope_index].time_air_end = Fix::ZERO;
                 }
                 self.ropes[rope_index].physics.set_mass(mass, top, Fix::ONE);
+                if top {
+                    self.ropes[rope_index].physics.force_start = Vec2::ZERO;
+                } else {
+                    self.ropes[rope_index].physics.force_end = Vec2::ZERO;
+                }
             } else {
                 let time = if top {
                     self.ropes[rope_index].time_air_start += DT;
@@ -1168,7 +1179,13 @@ impl RolloutWorld {
                 let imposed = self.players[player].base.velocity
                     - previous_imposed
                     - Vec2::UP * Fix::from_int(10);
-                let external = self.players[player].base.external_velocity - previous_external;
+                let mut external =
+                    self.players[player].base.external_velocity - previous_external;
+                // Only the slime's own PlayerBody carries the steer; an
+                // ability form's body has none and leaves it pending.
+                if self.players[player].active == ActiveAbility::None {
+                    external += std::mem::take(&mut self.players[player].rope_swing_force);
+                }
                 if top {
                     self.ropes[rope_index].physics.force_start = imposed + external;
                 } else {

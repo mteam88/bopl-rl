@@ -1989,6 +1989,7 @@ def main():
         "boulder_pull": fix(attachment, "boulderPullStr"),
         "platform_break_stretch": fix(attachment, "stretchBeforeBreak_platform"),
         "non_platform_mass": fix(attachment, "nonPlatformMass"),
+        "extra_swing_force": fix(slime_ctl, "extraSwingForce"),
         "web_max_length": fix(web, "maxWebLength"),
         "web_shorten": fix(web, "ropeShorten"),
         "web_cooldown": fix(web, "cooldown"),
