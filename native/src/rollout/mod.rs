@@ -27303,10 +27303,11 @@ impl RolloutWorld {
         None
     }
 
-    /// OnCollide accepts every Player-layer collider except the current
-    /// Magnet holder's own hurtbox while the mine is held.
+    /// OnCollide accepts every Player-layer collider except the holding
+    /// MagnetGun's own hurtbox while the mine is held. A holder that has just
+    /// left the Magnet form is hit through its new form.
     fn mine_hits_player_layer(&self, query: Circle, holder: Option<usize>) -> bool {
-        let ignored = holder.map(|index| Self::blink_player_entity(&self.players[index]));
+        let ignored = holder.map(|index| self.players[index].magnet_entity);
         for player in &self.players {
             if !self.playable_slot(player) {
                 continue;
@@ -30104,7 +30105,10 @@ impl RolloutWorld {
                     continue;
                 }
                 let player = &self.players[player_index];
-                if item.magnet_holder == Some(player_index) {
+                // Only the holding MagnetGun's hurtbox is exempt.
+                if item.magnet_holder == Some(player_index)
+                    && player.active == ActiveAbility::Magnet
+                {
                     continue;
                 }
                 if player.base.id == owner_id && !item.detonates_on_owner {
