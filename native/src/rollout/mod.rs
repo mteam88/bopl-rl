@@ -11711,7 +11711,16 @@ impl RolloutWorld {
                         engine.time = Fix::ZERO;
                     }
                 }
-                1 => {
+                // The end animation only stops the stop check: until TurnOff
+                // the engine still ignites smoke and pushes (RocketEngine.cs:131-178).
+                1 | 2 => {
+                    if engine.phase == 2 && updater_dt != Fix::ZERO {
+                        engine.ticks += 1;
+                        if engine.ticks > data.engine.end_ticks {
+                            engine.phase = 3;
+                            continue;
+                        }
+                    }
                     let platform = engine.platform_index;
                     if platform >= self.platforms.len() {
                         engine.active = false;
@@ -11768,10 +11777,10 @@ impl RolloutWorld {
                         let entity = cloud.entity.expect("registered smoke cloud");
                         self.entities[entity].flags = E_ACTIVE;
                     }
-                    let below_water = data.maps[self.map]
-                        .water_height()
-                        .is_some_and(|height| surface_position.y < height);
-                    if engine.time > end_time || below_water {
+                    // SceneBounds.WaterHeight, not the map's own water collider.
+                    let below_water =
+                        surface_position.y < data.maps[self.map].scene_water_height();
+                    if engine.phase == 1 && (engine.time > end_time || below_water) {
                         engine.phase = 2;
                         engine.ticks = 0;
                         continue;
@@ -11792,15 +11801,6 @@ impl RolloutWorld {
                             self.platform_dynamics[platform].body.orientation;
                     }
                     platforms_changed = true;
-                }
-                2 => {
-                    if updater_dt == Fix::ZERO {
-                        continue;
-                    }
-                    engine.ticks += 1;
-                    if engine.ticks > data.engine.end_ticks {
-                        engine.phase = 3;
-                    }
                 }
                 _ => {}
             }
