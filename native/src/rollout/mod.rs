@@ -13349,6 +13349,14 @@ impl RolloutWorld {
         // Circle/RoundedRect callbacks precede the circle/circle and
         // circle/box groups. A wall is eaten only when it contains the hole's
         // centre, even though the two colliders can overlap much earlier.
+        // DetPhysics queues every contact before dispatching any, so a wall
+        // one hole eats this pass is eaten by every later hole containing it.
+        let mut destroyed_before = 0u64;
+        for (platform_index, &entity) in self.platform_entities.iter().enumerate() {
+            if self.entities[entity].flags & E_DESTROYED != 0 {
+                destroyed_before |= 1 << platform_index;
+            }
+        }
         for hole_index in 0..self.black_holes.len() {
             if !self.black_holes[hole_index].active
                 || self.black_holes[hole_index].mass < Fix::ZERO
@@ -13360,7 +13368,7 @@ impl RolloutWorld {
             while platform_index < self.platforms.len() {
                 let hole = self.black_holes[hole_index];
                 let platform_entity = self.platform_entities[platform_index];
-                if self.entities[platform_entity].flags & E_DESTROYED != 0
+                if destroyed_before & (1 << platform_index) != 0
                     || !self.platforms[platform_index].active
                 {
                     platform_index += 1;
