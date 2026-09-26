@@ -2145,6 +2145,11 @@ pub struct PlayerSlot {
     /// by Ability.OnScaleChanged's incremental scale multiplier.
     pub magnet_firepoint_offsets: [Vec2; 3],
     pub magnet_prev_scales: [Fix; 3],
+    /// PlayerPhysics.gravity_modifier on each slot's GunTransform or MagnetGun
+    /// form. Entering airborne sets 0.03 and firing sets 1, but entering
+    /// grounded leaves it alone, so a form whose ground vanishes inside Move
+    /// falls with whatever its last use left.
+    pub gun_gravity: [Fix; 3],
     pub ragdoll: RagdollState,
     /// Live FrozenSolid instances pinning this slime. Ground contact does not
     /// end the refreshed ragdoll while any of them remains active.
@@ -3874,6 +3879,7 @@ impl RolloutWorld {
                 magnet: MagnetState::default(),
                 magnet_firepoint_offsets: [data.magnet.firepoint_offset; 3],
                 magnet_prev_scales: [Fix::ONE; 3],
+                gun_gravity: [Fix::ONE; 3],
                 ragdoll: RagdollState::default(),
                 frozen_solid_count: 0,
                 freeze_form_exit_tick: u32::MAX,
@@ -4645,6 +4651,7 @@ impl RolloutWorld {
         debug_assert_ne!(hierarchy_base, u32::MAX);
         self.players[player_index].ability_instantiated[ability_slot] = true;
         self.players[player_index].pending_ability_hierarchy[ability_slot] = u32::MAX;
+        self.players[player_index].gun_gravity[ability_slot] = Fix::ONE;
 
         if ability == ABILITY_MAGNET {
             self.players[player_index].magnet_firepoint_offsets[ability_slot] =
@@ -8224,6 +8231,7 @@ impl RolloutWorld {
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
                             slot.base.radius = data.freeze.radius;
+                            slot.gun_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
@@ -8270,6 +8278,7 @@ impl RolloutWorld {
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
                             slot.base.radius = data.blink.radius;
+                            slot.gun_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
@@ -8320,6 +8329,7 @@ impl RolloutWorld {
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
                             slot.base.radius = ray.radius;
+                            slot.gun_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
@@ -8372,6 +8382,7 @@ impl RolloutWorld {
                             slot.reported_tick = self.tick;
                         } else {
                             slot.base.radius = data.duplicator.radius;
+                            slot.gun_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
@@ -8432,6 +8443,7 @@ impl RolloutWorld {
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
+                            slot.gun_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
@@ -17619,6 +17631,7 @@ impl RolloutWorld {
             slot.magnet = MagnetState::default();
             slot.magnet_firepoint_offsets = [data.magnet.firepoint_offset; 3];
             slot.magnet_prev_scales = [Fix::ONE; 3];
+            slot.gun_gravity = [Fix::ONE; 3];
             slot.blink_tunnel_active = false;
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
@@ -18095,6 +18108,7 @@ impl RolloutWorld {
             slot.magnet = MagnetState::default();
             slot.magnet_firepoint_offsets = [data.magnet.firepoint_offset; 3];
             slot.magnet_prev_scales = [Fix::ONE; 3];
+            slot.gun_gravity = [Fix::ONE; 3];
             slot.blink_tunnel_active = false;
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
@@ -20146,15 +20160,14 @@ impl RolloutWorld {
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
                     .is_none());
         if invalid_ground {
+            let slot = self.players[index].active_slot;
+            self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
             self.players[index].base.force_unground(&self.platforms);
         }
 
         if !self.players[index].base.grounded {
-            let gravity_modifier = if self.players[index].gun.has_fired {
-                Fix::ONE
-            } else {
-                Fix::from_f32(0.03)
-            };
+            let gravity_modifier =
+                self.players[index].gun_gravity[self.players[index].active_slot];
             let slot = &mut self.players[index];
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -20220,6 +20233,7 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
+            slot.gun_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = data.freeze.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
             // it again for the shot and knockback.
@@ -20297,15 +20311,14 @@ impl RolloutWorld {
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
                     .is_none());
         if invalid_ground {
+            let slot = self.players[index].active_slot;
+            self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
             self.players[index].base.force_unground(&self.platforms);
         }
 
         if !self.players[index].base.grounded {
-            let gravity_modifier = if self.players[index].gun.has_fired {
-                Fix::ONE
-            } else {
-                Fix::from_f32(0.03)
-            };
+            let gravity_modifier =
+                self.players[index].gun_gravity[self.players[index].active_slot];
             let slot = &mut self.players[index];
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -20371,6 +20384,7 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
+            slot.gun_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = data.blink.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
             // it again for the shot and knockback.
@@ -20446,15 +20460,14 @@ impl RolloutWorld {
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
                     .is_none());
         if invalid_ground {
+            let slot = self.players[index].active_slot;
+            self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
             self.players[index].base.force_unground(&self.platforms);
         }
 
         if !self.players[index].base.grounded {
-            let gravity_modifier = if self.players[index].gun.has_fired {
-                Fix::ONE
-            } else {
-                Fix::from_f32(0.03)
-            };
+            let gravity_modifier =
+                self.players[index].gun_gravity[self.players[index].active_slot];
             let slot = &mut self.players[index];
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -20525,6 +20538,7 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
+            slot.gun_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = ray.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
             // it again for the shot and knockback.
@@ -20591,15 +20605,14 @@ impl RolloutWorld {
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
                     .is_none());
         if invalid_ground {
+            let slot = self.players[index].active_slot;
+            self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
             self.players[index].base.force_unground(&self.platforms);
         }
 
         if !self.players[index].base.grounded {
-            let gravity_modifier = if self.players[index].gun.has_fired {
-                Fix::ONE
-            } else {
-                Fix::from_f32(0.03)
-            };
+            let gravity_modifier =
+                self.players[index].gun_gravity[self.players[index].active_slot];
             let slot = &mut self.players[index];
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -20768,15 +20781,14 @@ impl RolloutWorld {
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
                     .is_none());
         if invalid_ground {
+            let slot = self.players[index].active_slot;
+            self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
             self.players[index].base.force_unground(&self.platforms);
         }
 
         if !self.players[index].base.grounded {
-            let gravity_modifier = if self.players[index].magnet.has_fired {
-                Fix::ONE
-            } else {
-                Fix::from_f32(0.03)
-            };
+            let gravity_modifier =
+                self.players[index].gun_gravity[self.players[index].active_slot];
             let slot = &mut self.players[index];
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -22173,6 +22185,7 @@ impl RolloutWorld {
         let grounded = self.players[index].base.grounded;
         let slot = &mut self.players[index];
         slot.magnet.has_fired = true;
+        slot.gun_gravity[slot.active_slot] = Fix::ONE;
         slot.magnet.phase = 5;
         slot.magnet.animation = 3;
         slot.magnet.animation_ticks = 0;
@@ -22249,6 +22262,7 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
+            slot.gun_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = gun.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
             // it again for the shot and knockback.
