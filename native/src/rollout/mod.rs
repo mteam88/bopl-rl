@@ -14887,7 +14887,12 @@ impl RolloutWorld {
         };
         for (index, (platform, &entity)) in platforms.iter().zip(platform_entities).enumerate() {
             let row = entities[entity];
-            if row.flags & E_ACTIVE == 0 || mask & (1u32 << row.layer) == 0 {
+            // The row's active bit syncs at the end of the tick; a Blink wall
+            // hides or returns earlier in this pass.
+            if !platform.active
+                || row.flags & (E_REMOVED | E_DESTROYED) != 0
+                || mask & (1u32 << row.layer) == 0
+            {
                 continue;
             }
             let collider = swept.map_or(platform.collider, |swept| swept[index]);
