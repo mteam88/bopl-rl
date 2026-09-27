@@ -617,6 +617,9 @@ pub struct GuidedMissile {
     pub duplicate_shake_offset: Vec2,
     pub magnet_holder: Option<usize>,
     pub magnet_hold_ticks: i8,
+    /// Touched a missile explosion on its blasting pass. Missile.OnCollide
+    /// then runs among that explosion's kills, in sweep order.
+    pub blast_hit: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -30033,15 +30036,19 @@ impl RolloutWorld {
         self.scratch.missile_detonations = detonations;
     }
 
+    /// `blasting` picks the missile explosions on their blasting pass
+    /// instead of every other trigger.
     fn guided_missile_hits_trigger(
         &self,
         missile: GuidedMissile,
         missile_box: OrientedBox,
+        blasting: bool,
     ) -> bool {
         self.entities.iter().enumerate().any(|(entity, row)| {
             if Some(entity) == missile.entity
                 || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
                 || !matches!(row.layer, 18 | 19 | 22 | 26)
+                || self.blasting_missile_explosion(entity) != blasting
             {
                 return false;
             }
@@ -30293,7 +30300,7 @@ impl RolloutWorld {
             // explosion. RigidBodyAffector and Rope are deliberately absent:
             // those are Missile's two explicit callback exclusions.
             if missile.magnet_hold_ticks < 0
-                && self.guided_missile_hits_trigger(missile, missile_box)
+                && self.guided_missile_hits_trigger(missile, missile_box, false)
             {
                 self.spawn_missile_explosion(
                     missile.position,
@@ -30303,6 +30310,12 @@ impl RolloutWorld {
                     data,
                 );
                 self.destroy_guided_missile(missile_index, true);
+                continue;
+            }
+            if missile.magnet_hold_ticks < 0
+                && self.guided_missile_hits_trigger(missile, missile_box, true)
+            {
+                self.guided_missiles[missile_index].blast_hit = true;
                 continue;
             }
 
@@ -31260,7 +31273,13 @@ impl RolloutWorld {
                 0
             };
             let (order, count) = self.victims_in_sweep_order(&victims);
+            let sweep_x = self.sweep_x();
             for &player_index in &order[..count] {
+                let key = (
+                    !self.player_is_circle(player_index),
+                    self.player_sweep_min(player_index, sweep_x),
+                );
+                self.blast_hit_missiles(hitbox, Some(key), data);
                 if self.playable(player_index) {
                     let cause = if killer == self.players[player_index].base.id {
                         CAUSE_ACCIDENT
@@ -31270,6 +31289,57 @@ impl RolloutWorld {
                     self.kill(player_index, killer, cause, true, true);
                 }
             }
+            self.blast_hit_missiles(hitbox, None, data);
+        }
+    }
+
+    /// A missile explosion's row on the pass its hitbox kills.
+    fn blasting_missile_explosion(&self, entity: usize) -> bool {
+        self.missile_explosions.iter().any(|explosion| {
+            explosion.active
+                && explosion.registered
+                && explosion.age == 1
+                && explosion.entity == Some(entity)
+                && !self.blink_object_hidden(explosion.entity)
+        })
+    }
+
+    /// Missile.OnCollide for the missiles touching this blast whose Box/Box
+    /// callback comes before the one keyed `until`, in sweep order.
+    fn blast_hit_missiles(
+        &mut self,
+        hitbox: OrientedBox,
+        until: Option<(bool, Fix)>,
+        data: &data::RolloutData,
+    ) {
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        loop {
+            let next = self
+                .guided_missiles
+                .iter()
+                .enumerate()
+                .filter(|(_, missile)| missile.active && missile.blast_hit)
+                .filter_map(|(index, missile)| {
+                    let missile_box = OrientedBox::from_basis(
+                        missile.position,
+                        Vec2::angle(missile.body.orientation),
+                        data.missile.spark_extents * missile.scale,
+                    );
+                    crate::physics::contact::box_box(missile_box, hitbox)?;
+                    let min = axis(missile_box.center)
+                        - axis(missile_box.right).abs()
+                        - axis(missile_box.up).abs();
+                    Some(((true, min), index))
+                })
+                .filter(|&(key, _)| until.is_none_or(|until| key < until))
+                .min();
+            let Some((_, index)) = next else {
+                break;
+            };
+            let missile = self.guided_missiles[index];
+            self.spawn_missile_explosion(missile.position, missile.owner, false, Fix::ONE, data);
+            self.destroy_guided_missile(index, true);
         }
     }
 
