@@ -30547,9 +30547,15 @@ impl RolloutWorld {
                 }
                 // DetPhysics resolves every pair before any callback runs, so
                 // each platform and player the box touched calls OnCollide at
-                // the corrected position.
+                // the corrected position. Box/Box pairs are tested after the
+                // Box/RoundedRect corrections, so a player is hit by the moved box.
                 let owner = missile.owner;
-                let hits = contact_count + self.guided_missile_player_hits(missile, missile_box);
+                let corrected_box = OrientedBox {
+                    center,
+                    ..missile_box
+                };
+                let hits =
+                    contact_count + self.guided_missile_player_hits(missile, corrected_box);
                 for _ in 0..hits {
                     self.spawn_missile_explosion(center, owner, false, Fix::ONE, data);
                 }
