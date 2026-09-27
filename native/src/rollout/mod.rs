@@ -16875,17 +16875,21 @@ impl RolloutWorld {
         }
 
         let input = action.direction();
-        let alignment = self.players[index]
+        // UpdateSim dots the raw stick with the attached ground's forwards
+        // direction, and idle only starts walking past DEADZONE (0.4).
+        let forwards = self.players[index]
             .base
-            .up
-            .perp_cw()
-            .dot(input.normalized_safe());
+            .platform(&self.platforms)
+            .map_or(Vec2::RIGHT, |platform| {
+                platform.surface.normal(self.players[index].base.position).perp_cw()
+            });
+        let alignment = input.dot(forwards);
         let aligned = alignment.abs() >= Fix::from_f32(0.2);
         let moving_right = alignment > Fix::ZERO;
         let mut move_input = Vec2::ZERO;
         match phase {
             3 => {
-                if alignment.abs() >= Fix::from_f32(0.2) {
+                if alignment.abs() >= Fix::from_f32(0.4) {
                     self.players[index].macho_throw.phase = 4;
                     self.players[index].macho_throw.ticks = 0;
                 }
