@@ -1210,7 +1210,7 @@ impl RolloutWorld {
                 active_count += 1;
             }
         }
-        for entity in self.entities.iter().filter(|entity| entity.kind != 2 && entity.flags & 3 == 3) {
+        for entity in self.entities.iter().filter(|entity| entity.kind < 2 && entity.flags & 3 == 3) {
             mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
             active_count += 1;
         }

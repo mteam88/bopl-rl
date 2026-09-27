@@ -4500,8 +4500,9 @@ impl RolloutWorld {
     }
 
     /// DetPhysics sweeps its bounding boxes along the axis with the larger
-    /// variance about the mean of the active platforms and non-platform rows;
-    /// each broadphase pair lists the lower-minimum collider first.
+    /// variance about the mean of the active platforms, circles and boxes;
+    /// each broadphase pair lists the lower-minimum collider first. Beams are
+    /// DetPhysics' own list and stay out of both (DetPhysics.cs:2827-2900).
     fn sweep_x(&self) -> bool {
         let mut mean = Vec2::ZERO;
         let mut active_count = 0usize;
@@ -4514,7 +4515,7 @@ impl RolloutWorld {
         for entity in self
             .entities
             .iter()
-            .filter(|entity| entity.kind != 2 && entity.flags & 3 == 3)
+            .filter(|entity| entity.kind < 2 && entity.flags & 3 == 3)
         {
             mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
             active_count += 1;
@@ -4530,7 +4531,7 @@ impl RolloutWorld {
         for entity in self
             .entities
             .iter()
-            .filter(|entity| entity.kind != 2 && entity.flags & E_REMOVED == 0)
+            .filter(|entity| entity.kind < 2 && entity.flags & E_REMOVED == 0)
         {
             let delta = mean - Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
@@ -32387,6 +32388,7 @@ impl RolloutWorld {
         // DetPhysics picks the sweep axis from every registered collider:
         // the mean over the active ones, the spread over all of them,
         // including frozen inactive hurtboxes (DetPhysics.cs:2827-2894).
+        // Beam trace rows are not colliders.
         // Rounded rectangles have just integrated; the other rows were
         // synced by `refresh_actor_entities`.
         let others = &mut scratch.others;
@@ -32394,7 +32396,7 @@ impl RolloutWorld {
         others.extend(
             entities
                 .iter()
-                .filter(|e| e.kind != 2 && e.flags & E_REMOVED == 0)
+                .filter(|e| e.kind < 2 && e.flags & E_REMOVED == 0)
                 .map(|e| {
                     (
                         Vec2::new(Fix::from_raw(e.x), Fix::from_raw(e.y)),
@@ -32422,7 +32424,7 @@ impl RolloutWorld {
         }
         for e in entities
             .iter()
-            .filter(|e| e.kind != 2 && e.flags & E_REMOVED == 0)
+            .filter(|e| e.kind < 2 && e.flags & E_REMOVED == 0)
         {
             let delta = mean - Vec2::new(Fix::from_raw(e.x), Fix::from_raw(e.y));
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
