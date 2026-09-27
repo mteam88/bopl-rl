@@ -1604,7 +1604,16 @@ impl RolloutWorld {
                 let hole = self.black_holes[hole_index];
                 rope.physics.segment[0] = hole.position;
             }
-            if let Some(position) = rope.parent.and_then(|parent| parent_position(players, items, shots, parent)) {
+            // LateUpdateSim reads parentObject.position without asking whether
+            // it went this pass: a shot that lands against a wall in Simulate
+            // still holds the end where it landed.
+            let position = match rope.parent {
+                Some(RopeParent::Shot(shot, born)) if shots[shot].born_tick == born => {
+                    Some(shots[shot].position)
+                }
+                parent => parent.and_then(|parent| parent_position(players, items, shots, parent)),
+            };
+            if let Some(position) = position {
                 rope.physics.segment[0] = position;
             }
             if rope.hook_active {
