@@ -23524,8 +23524,11 @@ impl RolloutWorld {
         // RaycastToClosest visits rounded rectangles, circles, then boxes.
         for kind in [2u32, 0, 1] {
             for (entity, row) in self.entities.iter().copied().enumerate() {
+                let exited_body = (row.flags & E_ACTIVE == 0)
+                    .then(|| self.exited_form_body(entity))
+                    .flatten();
                 if row.kind != kind
-                    || row.flags & E_ACTIVE == 0
+                    || (row.flags & E_ACTIVE == 0 && exited_body.is_none())
                     || excluded == Some(entity)
                     || mask & (1 << row.layer) == 0
                     || self.left_form_row(entity)
@@ -23534,6 +23537,9 @@ impl RolloutWorld {
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
                 let distance = match kind {
+                    1 if let Some(collider) = exited_body => {
+                        collider.raycast(origin, direction).map(|hit| hit.near)
+                    }
                     0 => Circle {
                         center,
                         radius: Fix::from_raw(row.radius),
@@ -25501,6 +25507,23 @@ impl RolloutWorld {
                 && entity != Self::blink_player_entity(slot)
                 && slot.owned_rows().contains(&entity)
         })
+    }
+
+    /// A slime body whose form ExitAbility left earlier this pass: the body is
+    /// active again with the hurtbox onExitAbility synced (SlimeController.cs:251),
+    /// while its row stays inactive until the next refresh.
+    fn exited_form_body(&self, entity: usize) -> Option<OrientedBox> {
+        self.players
+            .iter()
+            .find(|slot| {
+                slot.body_entity == entity
+                    && slot.base.alive
+                    && slot.active == ActiveAbility::None
+                    && !slot.base.dash.active
+                    && !slot.blink_tunnel_active
+                    && !slot.teleport_effect_active
+            })
+            .map(|slot| slot.base.collider)
     }
 
     fn blink_player_entity(slot: &PlayerSlot) -> usize {
@@ -39010,6 +39033,10 @@ mod tests {
         }
         world.entities[entity].flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
         let position = world.abilityless_clones[0].base.position;
+        // An idle slime's body is live whatever its row says; lift the
+        // duplicated slime off the ray so only its clone is in the way.
+        world.players[1].base.position += Vec2::UP * Fix::from_int(10);
+        world.players[1].base.sync_collider();
 
         world.shoot_blink_ray(
             position - Vec2::RIGHT * Fix::from_int(10),
