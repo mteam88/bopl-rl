@@ -7899,7 +7899,10 @@ impl RolloutWorld {
                             slot.facing_right = !slot.facing_right;
                         }
                         slot.obs_state = STATE_LAND;
-                        slot.state_ticks += LAND_TICKS + 2;
+                        // An instant ability leaves the state machine running
+                        // this pass, and it counts the pass off the land.
+                        slot.state_ticks += LAND_TICKS
+                            + if data.abilities[ability as usize].instant { 1 } else { 2 };
                     }
                     // EnterAbilityClearRope leaves the slime's PlayerBody
                     // this post-gravity history for the form's exit.
