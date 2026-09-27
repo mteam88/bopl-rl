@@ -6088,6 +6088,9 @@ impl RolloutWorld {
         if has_clones {
             self.abilityless_clone_contacts();
         }
+        if has(ABILITY_GRAPPLING_HOOK) {
+            self.grapple_hook_callbacks();
+        }
         for i in 0..self.scratch.slime_shoves.len() {
             let (pushed, other, lower_id) = self.scratch.slime_shoves[i];
             // A slime killed by an earlier callback shoves its destroyed

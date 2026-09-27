@@ -85,6 +85,10 @@ pub(crate) struct RolloutRope {
     /// The platform was removed; the attachment lets go in its next UpdateSim
     /// and holds the end at `platform_anchor` until then.
     pub platform_gone: bool,
+    /// Where the hook met a platform this pass. RopeHook.OnCollide takes the
+    /// surface coordinate after DetPhysics synced the platform the contact
+    /// passes pushed.
+    pub hook_hit: Option<Vec2>,
     pub black_hole: Option<usize>,
     pub black_hole_local: Vec2,
     pub black_hole_reel_frames: usize,
@@ -171,6 +175,7 @@ fn empty_rope() -> RolloutRope {
         platform_top: true,
         platform_attach_tick: 0,
         platform_gone: false,
+        hook_hit: None,
         black_hole: None,
         black_hole_local: Vec2::ZERO,
         black_hole_reel_frames: 0,
@@ -229,6 +234,7 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
         rope.platform_top = true;
         rope.platform_attach_tick = 0;
         rope.platform_gone = false;
+        rope.hook_hit = None;
         rope.black_hole = None;
         rope.black_hole_local = Vec2::ZERO;
         rope.black_hole_reel_frames = 0;
@@ -277,6 +283,7 @@ impl RolloutWorld {
             self.platforms[platform].surface.position(platform_local, Fix::ZERO)
         });
         rope.platform_gone = false;
+        rope.hook_hit = None;
         rope.platform_pull = PLATFORM_PULL;
         rope.platform_top = true;
         rope.platform_attach_tick = self.tick;
@@ -1141,6 +1148,24 @@ impl RolloutWorld {
         }
     }
 
+    /// RopeHook.OnCollide's AttachToPlatform, on the platform pose DetPhysics
+    /// synced after every contact pass.
+    pub(super) fn grapple_hook_callbacks(&mut self) {
+        for rope in &mut self.ropes {
+            let Some(position) = rope.hook_hit.take() else {
+                continue;
+            };
+            let Some(platform) = rope.platform else {
+                continue;
+            };
+            let surface = &self.platforms[platform].surface;
+            if let Ok(local) = surface.local_position(position, Fix::ZERO) {
+                rope.platform_local = local;
+                rope.platform_anchor = surface.position(local, Fix::ZERO);
+            }
+        }
+    }
+
     pub(super) fn grapple_hook_contacts(&mut self) {
         let source = &data::get().ropes;
         for rope_index in 0..self.ropes.len() {
@@ -1180,6 +1205,7 @@ impl RolloutWorld {
                 rope.platform = Some(platform);
                 rope.platform_local = local;
                 rope.platform_anchor = anchor;
+                rope.hook_hit = Some(position);
                 rope.platform_pull = source.platform_pull;
                 rope.reel_in = true;
                 rope.hook_active = false;
