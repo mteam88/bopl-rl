@@ -23524,11 +23524,14 @@ impl RolloutWorld {
         // RaycastToClosest visits rounded rectangles, circles, then boxes.
         for kind in [2u32, 0, 1] {
             for (entity, row) in self.entities.iter().copied().enumerate() {
-                let exited_body = (row.flags & E_ACTIVE == 0)
-                    .then(|| self.exited_form_body(entity))
+                let synced_box = (row.flags & E_ACTIVE == 0)
+                    .then(|| {
+                        self.exited_form_body(entity)
+                            .or_else(|| self.entered_gun_form(entity, data))
+                    })
                     .flatten();
                 if row.kind != kind
-                    || (row.flags & E_ACTIVE == 0 && exited_body.is_none())
+                    || (row.flags & E_ACTIVE == 0 && synced_box.is_none())
                     || excluded == Some(entity)
                     || mask & (1 << row.layer) == 0
                     || self.left_form_row(entity)
@@ -23537,7 +23540,7 @@ impl RolloutWorld {
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
                 let distance = match kind {
-                    1 if let Some(collider) = exited_body => {
+                    1 if let Some(collider) = synced_box => {
                         collider.raycast(origin, direction).map(|hit| hit.near)
                     }
                     0 => Circle {
@@ -25526,6 +25529,32 @@ impl RolloutWorld {
                     && !slot.teleport_effect_active
             })
             .map(|slot| slot.base.collider)
+    }
+
+    /// A gun form entered earlier this pass: GunTransform.OnEnterAbility synced
+    /// its hurtbox at the entry pose (GunTransform.cs:67-68), while its row
+    /// stays inactive until the next refresh.
+    fn entered_gun_form(&self, entity: usize, data: &data::RolloutData) -> Option<OrientedBox> {
+        let slot = self.players.iter().find(|slot| {
+            slot.base.alive
+                && !slot.blink_tunnel_active
+                && Self::blink_player_entity(slot) == entity
+        })?;
+        let extents = match slot.active {
+            ActiveAbility::Freeze => data.freeze.hurtbox_extents,
+            ActiveAbility::Blink => data.blink.hurtbox_extents,
+            ActiveAbility::GrowthRay => data.scale_rays.growth.hurtbox_extents,
+            ActiveAbility::ShrinkRay => data.scale_rays.shrink.hurtbox_extents,
+            ActiveAbility::Duplicator => data.duplicator.hurtbox_extents,
+            _ => return None,
+        };
+        // DPhysicsBox rebuilds its axes from the aligned scalar rotation.
+        let basis = Vec2::angle(slot.gun.collider_up.perp_cw().normalized_angle());
+        Some(OrientedBox::from_basis(
+            slot.gun.hurtbox_center,
+            basis,
+            data::surface_extents(extents) * slot.base.scale,
+        ))
     }
 
     fn blink_player_entity(slot: &PlayerSlot) -> usize {
