@@ -22846,8 +22846,11 @@ impl RolloutWorld {
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
                 // DetPhysics.MoveObjectOutOfWalls: the first overlapping
                 // rounded rect in collider order pushes the boulder fully out.
+                // Only the transform moves; the collider stays where
+                // UpdatePhysicsPositions put it until the next Simulate.
                 let mut shape = self.platforms[platform].collider;
                 shape.inner.center = position;
+                let collider_position = position;
                 let position = position
                     + self
                         .platforms
@@ -22861,7 +22864,7 @@ impl RolloutWorld {
                             positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0]
                         });
                 self.platforms[platform].surface.center = position;
-                self.platforms[platform].collider.inner.center = position;
+                self.platforms[platform].collider.inner.center = collider_position;
                 self.platform_dynamics[platform].composite_position = position;
                 self.platform_dynamics[platform].home_position = position;
                 self.platform_dynamics[platform].body.velocity = Vec2::ZERO;
