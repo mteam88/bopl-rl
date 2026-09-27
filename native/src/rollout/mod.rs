@@ -16793,8 +16793,9 @@ impl RolloutWorld {
                         state.ticks = 0;
                     }
                     5 => {
+                        // The turn callback only flips the sprite's scale;
+                        // facingRight already turned when the turn began.
                         let state = &mut self.players[index].macho_throw;
-                        state.facing_right = !state.facing_right;
                         state.phase = 4;
                         state.ticks = 0;
                     }
@@ -16886,8 +16887,6 @@ impl RolloutWorld {
                 if !aligned {
                     self.players[index].macho_throw.phase = 3;
                     self.players[index].macho_throw.ticks = 0;
-                    self.players[index].macho_throw.facing_right =
-                        !self.players[index].macho_throw.facing_right;
                 }
                 move_input = input;
             }
