@@ -23218,6 +23218,7 @@ impl RolloutWorld {
                     || row.flags & E_ACTIVE == 0
                     || excluded == Some(entity)
                     || mask & (1 << row.layer) == 0
+                    || self.left_form_row(entity)
                 {
                     continue;
                 }
@@ -25147,6 +25148,16 @@ impl RolloutWorld {
     fn collides(&self, entity: usize) -> bool {
         entity != usize::MAX
             && self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
+    }
+
+    /// A form row whose GameObject ExitAbility deactivated earlier this pass;
+    /// its row is only marked inactive at the next refresh.
+    fn left_form_row(&self, entity: usize) -> bool {
+        self.players.iter().any(|slot| {
+            entity != slot.body_entity
+                && entity != Self::blink_player_entity(slot)
+                && slot.owned_rows().contains(&entity)
+        })
     }
 
     fn blink_player_entity(slot: &PlayerSlot) -> usize {
