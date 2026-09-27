@@ -2166,8 +2166,11 @@ pub struct PlayerSlot {
     pub rope: Option<usize>,
     pub rope_top: bool,
     pub rope_attach_tick: u32,
-    pub rope_prev_imposed: Vec2,
-    pub rope_prev_external: Vec2,
+    /// PlayerBody's private prevImposedVel and prevExternalVel, per body: the
+    /// slime's, then each ability slot's form. A body keeps its own until it
+    /// next steps with a rope, so a form hands the rope back to a slime whose
+    /// history is from before the form.
+    pub rope_prev: [(Vec2, Vec2); 4],
     /// PlayerBody.extraSwingForce: SlimeController's airborne steer on a
     /// rope, added to the rope force by the slime body's next late pass.
     pub rope_swing_force: Vec2,
@@ -2441,6 +2444,11 @@ pub struct PlayerSlot {
 }
 
 impl PlayerSlot {
+    /// Which PlayerBody carries the rope: the slime's, or the active form's.
+    fn rope_body(&self) -> usize {
+        if self.active == ActiveAbility::None { 0 } else { 1 + self.active_slot }
+    }
+
     /// GunTransform.OnEnterAbility syncs the hurtbox after SyncPhysicsTo has
     /// zeroed an airborne rotation or aligned a grounded one to the surface
     /// normal at the re-snapped position (alignRotation).
@@ -3951,8 +3959,7 @@ impl RolloutWorld {
                 rope: None,
                 rope_top: false,
                 rope_attach_tick: 0,
-                rope_prev_imposed: Vec2::ZERO,
-                rope_prev_external: Vec2::ZERO,
+                rope_prev: [(Vec2::ZERO, Vec2::ZERO); 4],
                 rope_swing_force: Vec2::ZERO,
                 web_swing: [rope_abilities::WebSwingState::default(); 3],
                 grapple: [rope_abilities::GrappleState::default(); 3],
@@ -4724,6 +4731,7 @@ impl RolloutWorld {
                 slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
                 slot.timers[2] = Fix::from_int(100_000);
                 slot.ability_instantiated[2] = false;
+                slot.rope_prev[3] = (Vec2::ZERO, Vec2::ZERO);
                 slot.forms[2] = FormScale::default();
                 slot.drill_hitbox_entities[2] = [usize::MAX; 3];
                 slot.black_hole_castable[2] = true;
@@ -7875,6 +7883,11 @@ impl RolloutWorld {
                         slot.obs_state = STATE_LAND;
                         slot.state_ticks += LAND_TICKS + 2;
                     }
+                    // EnterAbilityClearRope leaves the slime's PlayerBody
+                    // this post-gravity history for the form's exit.
+                    if !data.abilities[ability as usize].instant {
+                        slot.rope_prev[0] = (slot.base.velocity, slot.base.external_velocity);
+                    }
                     slot.ability_origin = frozen.position;
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
                     slot.ability_origin_external = frozen.external_velocity;
@@ -8037,16 +8050,6 @@ impl RolloutWorld {
                     ABILITY_DASH => {
                         // The movement slice implements the dash; unlock its
                         // internal cooldown gate and let base.step enter it.
-                        if self.players[index].rope.is_some() {
-                            // The ordinary PlayerBody updates before
-                            // SlimeController enters Dash. Its private history
-                            // remains parked on the disabled slime and is used
-                            // again by the first late pass after Dash exits.
-                            self.players[index].rope_prev_imposed =
-                                self.players[index].base.velocity;
-                            self.players[index].rope_prev_external =
-                                self.players[index].base.external_velocity;
-                        }
                         self.players[index].base.cooldown = Fix::from_int(100);
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Dash;
@@ -18311,6 +18314,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.ability_generation = slot.ability_generation.wrapping_add(1);
             slot.ability_instantiated = [true; 3];
+            slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
             slot.forms = [FormScale::default(); 3];
             slot.pending_ability_hierarchy = [u32::MAX; 3];
             slot.base.position = position;
@@ -18799,6 +18803,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.ability_generation = slot.ability_generation.wrapping_add(1);
             slot.ability_instantiated = [true; 3];
+            slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
             slot.forms = [FormScale::default(); 3];
             slot.pending_ability_hierarchy = [u32::MAX; 3];
             slot.base.radius = data.player.radius;
@@ -27186,8 +27191,7 @@ impl RolloutWorld {
         // RopeAttachment is the prefab's only MonoUpdatable.
         self.next_spawn_hierarchy += 1;
         let slot = &mut self.players[owner];
-        slot.rope_prev_imposed = slot.base.velocity;
-        slot.rope_prev_external = slot.base.external_velocity;
+        slot.rope_prev[slot.rope_body()] = (slot.base.velocity, slot.base.external_velocity);
         slot.rope = None;
     }
 

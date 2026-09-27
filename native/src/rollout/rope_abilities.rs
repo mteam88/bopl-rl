@@ -359,8 +359,7 @@ impl RolloutWorld {
             }
         }
         let slot = &mut self.players[player];
-        slot.rope_prev_imposed = slot.base.velocity;
-        slot.rope_prev_external = slot.base.external_velocity;
+        slot.rope_prev[slot.rope_body()] = (slot.base.velocity, slot.base.external_velocity);
         slot.rope = rope;
         slot.rope_top = top;
         if rope.is_some() {
@@ -939,9 +938,9 @@ impl RolloutWorld {
                 // The Dash prefab owns a distinct PlayerBody whose private
                 // previous-velocity fields start at zero. Preserve the
                 // inactive ordinary slime's fields for the exit handoff.
-                self.players[player].rope_prev_imposed = self.players[player].base.velocity;
-                self.players[player].rope_prev_external =
-                    self.players[player].base.external_velocity;
+                let slot = &mut self.players[player];
+                slot.rope_prev[slot.rope_body()] =
+                    (slot.base.velocity, slot.base.external_velocity);
             }
         }
         self.players[player].base.external_velocity *= Fix::from_f64(0.95);
@@ -1484,10 +1483,8 @@ impl RolloutWorld {
                     if self.players[player].active == ActiveAbility::Dash {
                         (Vec2::ZERO, Vec2::ZERO)
                     } else {
-                        (
-                            self.players[player].rope_prev_imposed,
-                            self.players[player].rope_prev_external,
-                        )
+                        let slot = &self.players[player];
+                        slot.rope_prev[slot.rope_body()]
                     };
                 let mut imposed = self.players[player].base.velocity
                     - previous_imposed
