@@ -8573,9 +8573,7 @@ impl RolloutWorld {
                             slot.base.move_only(Vec2::ZERO, terrain!(self));
                         }
                         let published = slot.base.position;
-                        self.form_body_move(index, jump_pressed);
-                        self.players[index].reported_position = published;
-                        self.players[index].reported_tick = self.tick;
+                        self.spike_form_move(index, published, jump_pressed);
                         return;
                     }
                     ABILITY_ENGINE => {
@@ -11160,12 +11158,21 @@ impl RolloutWorld {
                 .move_only(Vec2::ZERO, terrain!(self));
         }
         // PlayerBody carries a grapple rope into the form.
-        self.form_body_move(index, jump_pressed);
-        self.players[index].reported_position = published_position;
-        self.players[index].reported_tick = self.tick;
+        self.spike_form_move(index, published_position, jump_pressed);
         if exit_now {
             self.exit_spike_cast(index);
         }
+    }
+
+    fn spike_form_move(&mut self, index: usize, published: Vec2, jump_pressed: bool) {
+        self.form_body_move(index, jump_pressed);
+        // DetPhysics syncs the box to the body Move aligned to the surface.
+        let slot = &mut self.players[index];
+        slot.spike_cast.collider_position = slot.base.position;
+        slot.spike_cast.collider_up = slot.base.up;
+        slot.spike_cast.collider_rotation = slot.base.rotation;
+        slot.reported_position = published;
+        slot.reported_tick = self.tick;
     }
 
     fn exit_spike_cast(&mut self, index: usize) {
