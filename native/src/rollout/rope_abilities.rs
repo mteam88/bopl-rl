@@ -567,6 +567,8 @@ impl RolloutWorld {
             rope.hook_velocity = launch * source.grapple_speed;
             rope.hook_end_player = nearby_player.unwrap_or(player);
         }
+        // FireHook zeroes the shooter's self-imposed velocity on both branches.
+        self.players[player].base.velocity = Vec2::ZERO;
         if let Some(target) = nearby_player {
             self.players[target].base.velocity = Vec2::ZERO;
             self.attach_player_rope(target, None, false);
@@ -577,7 +579,6 @@ impl RolloutWorld {
                 ..GrappleState::default()
             };
         } else {
-            self.players[player].base.velocity = Vec2::ZERO;
             self.attach_player_rope(player, None, false);
             self.attach_player_rope(player, Some(rope_index), false);
             self.players[player].grapple[ability_slot] = GrappleState {
