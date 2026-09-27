@@ -1680,6 +1680,12 @@ pub struct BlackHoleState {
     pub previous_target_size: Fix,
     pub target_size: Fix,
     pub radius: Fix,
+    /// BlackHole.startRadius, read in Awake from the collider's serialized
+    /// startRadius. A duplicate copies the source collider's, which the
+    /// source's Init already overwrote with the radius it registered.
+    pub start_radius: Fix,
+    /// The radius this hole's collider registered with.
+    pub collider_start_radius: Fix,
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
@@ -2669,6 +2675,8 @@ pub struct RolloutWorld {
     /// interpolation.
     pickup_wobble_cache: Vec<Fix>,
     pub black_holes: Vec<BlackHoleState>,
+    /// Duplicated holes waiting for BlackHole.Init on the next pass.
+    pub pending_black_holes: Vec<BlackHoleState>,
     pub duplicated_rocks: Vec<DuplicatedRock>,
     pub abilityless_clones: Vec<AbilitylessClone>,
     pub macho_boulders: Vec<MachoBoulder>,
@@ -2852,6 +2860,7 @@ impl RolloutWorld {
             ability_pickups: Vec::with_capacity(4),
             pickup_wobble_cache: Vec::with_capacity(2048),
             black_holes: Vec::with_capacity(16),
+            pending_black_holes: Vec::new(),
             duplicated_rocks: Vec::with_capacity(MAX_PLAYERS * 8),
             abilityless_clones: Vec::with_capacity(MAX_PLAYERS * 16),
             macho_boulders: Vec::with_capacity(16),
@@ -2959,6 +2968,7 @@ impl RolloutWorld {
         self.arrows.clone_from(&src.arrows);
         self.ability_pickups.clone_from(&src.ability_pickups);
         self.black_holes.clone_from(&src.black_holes);
+        self.pending_black_holes.clone_from(&src.pending_black_holes);
         self.duplicated_rocks.clone_from(&src.duplicated_rocks);
         self.abilityless_clones.clone_from(&src.abilityless_clones);
         self.macho_boulders.clone_from(&src.macho_boulders);
@@ -3067,6 +3077,7 @@ impl RolloutWorld {
             ability_pickups: _,
             pickup_wobble_cache: _,
             black_holes: _,
+            pending_black_holes: _,
             duplicated_rocks: _,
             abilityless_clones: _,
             macho_boulders: _,
@@ -3199,6 +3210,7 @@ impl RolloutWorld {
         self.arrows.clear();
         self.ability_pickups.clear();
         self.black_holes.clear();
+        self.pending_black_holes.clear();
         self.duplicated_rocks.clear();
         self.abilityless_clones.clear();
         self.macho_boulders.clear();
@@ -5399,6 +5411,7 @@ impl RolloutWorld {
         if has(ABILITY_DUPLICATOR) {
             self.register_pending_duplicated_pickups(data);
             self.register_pending_abilityless_clones();
+            self.register_pending_black_holes(data);
         }
         // A projectile fired during the prior updater pass has a lower
         // allocated hierarchy than an ability prefab instantiated by a later
@@ -13049,17 +13062,21 @@ impl RolloutWorld {
     /// `UpdateSize` at timeSinceLastGrowth = 0 evaluates `SizeGrowthAnim` at
     /// zero and lerps from prevTargetSize = 100, so the registered circle is
     /// `size * (startRadius * 0.01)`, not `startRadius`.
-    fn black_hole_initial_radius(target_size: Fix, data: &data::RolloutData) -> Fix {
+    fn black_hole_initial_radius(
+        start_radius: Fix,
+        target_size: Fix,
+        data: &data::RolloutData,
+    ) -> Fix {
         let t = data.black_hole.size_curve.evaluate(Fix::ZERO);
         let size =
             (Fix::from_int(100) * (Fix::ONE - t) + target_size * t).max(data.black_hole.min_size);
-        let candidate = size * (data.black_hole.start_radius * Fix::from_f32(0.01));
+        let candidate = size * (start_radius * Fix::from_f32(0.01));
         // UpdateSize returns early and leaves the collider alone when the
         // candidate is under minSize (BlackHole.cs:199-201).
         if candidate >= data.black_hole.min_size {
             candidate
         } else {
-            data.black_hole.start_radius
+            start_radius
         }
     }
 
@@ -13087,7 +13104,8 @@ impl RolloutWorld {
         // hole.radius from inside the player loop, ahead of black_holes_tick, so
         // a Magnet player ordered after the caster queried the wrong circle on
         // the cast tick.
-        let initial_radius = Self::black_hole_initial_radius(target_size, data);
+        let initial_radius =
+            Self::black_hole_initial_radius(data.black_hole.start_radius, target_size, data);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -13118,6 +13136,8 @@ impl RolloutWorld {
             previous_target_size: Fix::from_int(100),
             target_size,
             radius: initial_radius,
+            start_radius: data.black_hole.start_radius,
+            collider_start_radius: initial_radius,
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
@@ -13256,7 +13276,7 @@ impl RolloutWorld {
             // size 100, +79 at 115, +89 at 130, +137 at 200. That radius feeds the
             // influence gate, the eat-contact tests and the exported entity
             // radius, so copy the C# grouping literally rather than the algebra.
-            let unit = data.black_hole.start_radius * Fix::from_f32(0.01);
+            let unit = hole.start_radius * Fix::from_f32(0.01);
             let candidate = size * unit;
             // C# returns early when the candidate is below minSize and leaves the
             // previous radius in place (BlackHole.cs:199-201) - it never clamps up
@@ -23448,42 +23468,65 @@ impl RolloutWorld {
         let position = source.position + direction * source.radius * Fix::from_int(2);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.black_hole.updatable_count;
-        let entity = self.entities.len();
-        let id = self.next_id();
-        self.entities.push(CEntity {
-            id,
-            kind: 0,
-            layer: data.black_hole.layer,
-            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
-            hierarchy: 100_000_000 + hierarchy_base + data.black_hole.hole_collider_hierarchy,
-            x: position.x.raw(),
-            y: position.y.raw(),
-            radius: source.radius.raw(),
-            inverse_mass: -Fix::ONE.raw(),
-            ..CEntity::default()
-        });
+        let target_size = Fix::from_int(100) + source.mass.abs() * data.black_hole.growth;
+        // The clone's BlackHole.Init runs with the next pass's new updatables,
+        // which is when its circle registers (register_pending_black_holes).
+        // SetMass(source) leaves the unset velocity at zero, then
+        // AddForce(mass * dir * 6) divides the mass back out.
+        let velocity = if source.mass == Fix::ZERO {
+            Vec2::ZERO
+        } else {
+            source.mass * direction * Fix::from_int(6) / source.mass
+        };
         let clone = BlackHoleState {
             active: true,
             born_tick: self.tick,
-            entity: Some(entity),
+            entity: None,
             hierarchy_base,
             owner: 0,
             position,
-            // SetMass(source), then AddForce(mass * dir * 6).
-            velocity: direction * Fix::from_int(6),
+            velocity,
             mass: source.mass,
             time_since_growth: Fix::ZERO,
             previous_target_size: Fix::from_int(100),
-            target_size: Fix::from_int(100) + source.mass.abs() * data.black_hole.growth,
-            radius: source.radius,
+            target_size,
+            radius: Fix::ZERO,
+            start_radius: source.collider_start_radius,
+            collider_start_radius: Fix::ZERO,
             duplicated: true,
             duplicate_lifespan: 480,
             duplicate_shake_offset: Vec2::ZERO,
         };
-        if let Some(free) = self.black_holes.iter().position(|hole| !hole.active) {
-            self.black_holes[free] = clone;
-        } else {
-            self.black_holes.push(clone);
+        self.pending_black_holes.push(clone);
+    }
+
+    fn register_pending_black_holes(&mut self, data: &data::RolloutData) {
+        for mut hole in std::mem::take(&mut self.pending_black_holes) {
+            hole.radius =
+                Self::black_hole_initial_radius(hole.start_radius, hole.target_size, data);
+            hole.collider_start_radius = hole.radius;
+            let entity = self.entities.len();
+            let id = self.next_id();
+            self.entities.push(CEntity {
+                id,
+                kind: 0,
+                layer: data.black_hole.layer,
+                flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+                hierarchy: 100_000_000
+                    + hole.hierarchy_base
+                    + data.black_hole.hole_collider_hierarchy,
+                x: hole.position.x.raw(),
+                y: hole.position.y.raw(),
+                radius: hole.radius.raw(),
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            });
+            hole.entity = Some(entity);
+            if let Some(free) = self.black_holes.iter().position(|hole| !hole.active) {
+                self.black_holes[free] = hole;
+            } else {
+                self.black_holes.push(hole);
+            }
         }
     }
 
