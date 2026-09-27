@@ -2589,6 +2589,20 @@ impl PlayerSlot {
     }
 }
 
+/// Where DetPhysics queues a collision callback: by pair category (0
+/// Circle/Circle, 1 Circle/Box, 2 Box/Box), then in SortAndSweep pair order,
+/// by the later and then the earlier bounding-box minimum on the sweep axis.
+type CallbackKey = (u8, Fix, Fix);
+
+/// A hitbox's collision callback, run at its place in DetPhysics' queue.
+#[derive(Clone, Copy)]
+enum CallbackHit {
+    /// PlayerCollision.OnCollide with a lethal hitbox.
+    Kill { player: usize, killer: u32, cause: u32 },
+    /// Missile.OnCollide with an explosion's box.
+    MissileBlast { missile: usize },
+}
+
 /// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
 /// are meaningless between ticks; never copied by `fork_from`).
 #[derive(Default)]
@@ -2623,6 +2637,8 @@ struct PlatformScratch {
     /// Guided-Missile Box/Box manifolds. Every manifold is captured before
     /// either Missile callback destroys a participant.
     missile_contacts: Vec<(usize, usize, Contact)>,
+    /// This pass's hitbox callbacks, run together by `run_callback_hits`.
+    callback_hits: Vec<(CallbackKey, CallbackHit)>,
     missile_detonations: Vec<usize>,
     /// Arrow Circle/RoundedRectangle manifolds of one DetPhysics pass, in
     /// resolution order.
@@ -2888,6 +2904,7 @@ impl RolloutWorld {
                 pickup_window: Vec::with_capacity(16),
                 pickup_contacts: Vec::with_capacity(32),
                 missile_contacts: Vec::with_capacity(256),
+                callback_hits: Vec::with_capacity(16),
                 missile_detonations: Vec::with_capacity(128),
                 arrow_platform_contacts: Vec::with_capacity(64),
                 slime_shoves: Vec::with_capacity(8),
@@ -6178,6 +6195,7 @@ impl RolloutWorld {
         if has(ABILITY_TESLA) {
             self.tesla_contacts(data);
         }
+        self.run_callback_hits(data);
         if has_clones {
             self.abilityless_clone_contacts();
         }
@@ -12684,13 +12702,14 @@ impl RolloutWorld {
         // Circle/Box and Box/Box callbacks run after all rigid-body groups.
         // Player colliders are triggers, so contact only schedules callbacks:
         // PlayerCollision sees the persistent LethalTerrain Explosion first.
-        let mut victims = [false; MAX_PLAYERS];
-        for spike in self.spike_attacks.iter().copied() {
+        for spike_index in 0..self.spike_attacks.len() {
+            let spike = self.spike_attacks[spike_index];
             if !spike.active || spike.macho_carried || spike.platform_index >= self.platforms.len()
             {
                 continue;
             }
             let attack_box = self.spike_attack_box(spike, data);
+            let mut victims = [false; MAX_PLAYERS];
             for cloud in &mut self.smoke_clouds {
                 if !cloud.active || !cloud.registered {
                     continue;
@@ -12711,7 +12730,7 @@ impl RolloutWorld {
                 }
             }
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if *victim || !self.playable(player_index) {
+                if !self.playable(player_index) {
                     continue;
                 }
                 let slot = &self.players[player_index];
@@ -12778,13 +12797,14 @@ impl RolloutWorld {
                     crate::physics::contact::box_box(player_box, attack_box).is_some()
                 };
             }
-        }
-        for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-            if victim && self.playable(player_index) {
-                // Spike's Explosion.PlayerOwnerId is never assigned and
-                // therefore remains zero, which is neither a live player id
-                // nor the game's environmental sentinel.
-                self.kill(player_index, 0, CAUSE_OTHER, true, true);
+            let hitbox_min = self.box_sweep_min(attack_box);
+            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
+                if victim {
+                    // Spike's Explosion.PlayerOwnerId is never assigned and
+                    // therefore remains zero, which is neither a live player id
+                    // nor the game's environmental sentinel.
+                    self.queue_callback_kill(player_index, false, hitbox_min, 0, CAUSE_OTHER);
+                }
             }
         }
     }
@@ -12964,20 +12984,15 @@ impl RolloutWorld {
                 }
             }
         }
-        let count = self.players.len();
-        let mut order = [0usize; MAX_PLAYERS];
-        for (index, slot) in order.iter_mut().enumerate() {
-            *slot = index;
-        }
-        order[..count].sort_by_key(|&index| victims[index]);
-        for &player_index in &order[..count] {
-            if victims[player_index].is_some() && self.playable(player_index) {
+        for (player_index, victim) in victims.iter().enumerate().take(self.players.len()) {
+            if let Some(key) = *victim {
                 // Both prefabs carry Explosion and an IPlayerIdHolder, but
                 // SimpleSparkNode/StretchableLightning never assign
                 // Explosion.PlayerOwnerId. PlayerCollision therefore uses
                 // its zero default for kill attribution even though the RL
                 // entity row publishes the holder's actual owner.
-                self.kill(player_index, 0, CAUSE_OTHER, true, true);
+                let hit = CallbackHit::Kill { player: player_index, killer: 0, cause: CAUSE_OTHER };
+                self.scratch.callback_hits.push((key, hit));
             }
         }
         self.retired_tesla_contacts.clear();
@@ -31932,15 +31947,15 @@ impl RolloutWorld {
                 };
             }
             let killer = explosion.killer();
-            let (order, count) = self.victims_in_sweep_order(&victims);
-            for &player_index in &order[..count] {
-                if self.playable(player_index) {
+            let hitbox_min = self.box_sweep_min(hitbox);
+            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
+                if victim {
                     let cause = if self.players[player_index].base.id == killer {
                         CAUSE_ACCIDENT
                     } else {
                         CAUSE_OTHER
                     };
-                    self.kill(player_index, killer, cause, true, true);
+                    self.queue_callback_kill(player_index, false, hitbox_min, killer, cause);
                 }
             }
         }
@@ -31989,24 +32004,18 @@ impl RolloutWorld {
             } else {
                 0
             };
-            let (order, count) = self.victims_in_sweep_order(&victims);
-            let sweep_x = self.sweep_x();
-            for &player_index in &order[..count] {
-                let key = (
-                    !self.player_is_circle(player_index),
-                    self.player_sweep_min(player_index, sweep_x),
-                );
-                self.blast_hit_missiles(hitbox, Some(key), data);
-                if self.playable(player_index) {
+            let hitbox_min = self.box_sweep_min(hitbox);
+            for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
+                if victim {
                     let cause = if killer == self.players[player_index].base.id {
                         CAUSE_ACCIDENT
                     } else {
                         CAUSE_OTHER
                     };
-                    self.kill(player_index, killer, cause, true, true);
+                    self.queue_callback_kill(player_index, false, hitbox_min, killer, cause);
                 }
             }
-            self.blast_hit_missiles(hitbox, None, data);
+            self.queue_blast_hit_missiles(hitbox, data);
         }
     }
 
@@ -32021,43 +32030,86 @@ impl RolloutWorld {
         })
     }
 
-    /// Missile.OnCollide for the missiles touching this blast whose Box/Box
-    /// callback comes before the one keyed `until`, in sweep order.
-    fn blast_hit_missiles(
-        &mut self,
-        hitbox: OrientedBox,
-        until: Option<(bool, Fix)>,
-        data: &data::RolloutData,
-    ) {
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        loop {
-            let next = self
-                .guided_missiles
-                .iter()
-                .enumerate()
-                .filter(|(_, missile)| missile.active && missile.blast_hit)
-                .filter_map(|(index, missile)| {
-                    let missile_box = OrientedBox::from_basis(
-                        missile.position,
-                        Vec2::angle(missile.body.orientation),
-                        data.missile.spark_extents * missile.scale,
-                    );
-                    crate::physics::contact::box_box(missile_box, hitbox)?;
-                    let min = axis(missile_box.center)
-                        - axis(missile_box.right).abs()
-                        - axis(missile_box.up).abs();
-                    Some(((true, min), index))
-                })
-                .filter(|&(key, _)| until.is_none_or(|until| key < until))
-                .min();
-            let Some((_, index)) = next else {
-                break;
-            };
+    /// Queues Missile.OnCollide for the missiles touching this blast. The
+    /// pairs are Box/Box.
+    fn queue_blast_hit_missiles(&mut self, hitbox: OrientedBox, data: &data::RolloutData) {
+        let hitbox_min = self.box_sweep_min(hitbox);
+        for index in 0..self.guided_missiles.len() {
             let missile = self.guided_missiles[index];
-            self.spawn_missile_explosion(missile.position, missile.owner, false, Fix::ONE, data);
-            self.destroy_guided_missile(index, true);
+            if !missile.active || !missile.blast_hit {
+                continue;
+            }
+            let missile_box = OrientedBox::from_basis(
+                missile.position,
+                Vec2::angle(missile.body.orientation),
+                data.missile.spark_extents * missile.scale,
+            );
+            if crate::physics::contact::box_box(missile_box, hitbox).is_none() {
+                continue;
+            }
+            let missile_min = self.box_sweep_min(missile_box);
+            let key = (2, hitbox_min.max(missile_min), hitbox_min.min(missile_min));
+            self.scratch.callback_hits.push((key, CallbackHit::MissileBlast { missile: index }));
         }
+    }
+
+    /// The low edge of a box on the broadphase sweep axis.
+    fn box_sweep_min(&self, b: OrientedBox) -> Fix {
+        if self.sweep_x() {
+            b.center.x - b.right.x.abs() - b.up.x.abs()
+        } else {
+            b.center.y - b.right.y.abs() - b.up.y.abs()
+        }
+    }
+
+    /// Queues PlayerCollision.OnCollide for a lethal hitbox touching the
+    /// player's registered shape.
+    fn queue_callback_kill(
+        &mut self,
+        player_index: usize,
+        hitbox_is_circle: bool,
+        hitbox_min: Fix,
+        killer: u32,
+        cause: u32,
+    ) {
+        let player_min = self.player_sweep_min(player_index, self.sweep_x());
+        let category = 2 - hitbox_is_circle as u8 - self.player_is_circle(player_index) as u8;
+        let key = (category, hitbox_min.max(player_min), hitbox_min.min(player_min));
+        let hit = CallbackHit::Kill { player: player_index, killer, cause };
+        self.scratch.callback_hits.push((key, hit));
+    }
+
+    /// DetPhysics runs every OnCollide after all contact groups resolved, in
+    /// ToMakeCallBacks order: the Circle/Circle pairs, then Circle/Box, then
+    /// Box/Box. A slime inside a Tesla node's circle and a MineExplosion's box
+    /// therefore dies to the node. Later kills of a dead slime do nothing.
+    fn run_callback_hits(&mut self, data: &data::RolloutData) {
+        let mut hits = std::mem::take(&mut self.scratch.callback_hits);
+        hits.sort_by_key(|&(key, _)| key);
+        for &(_, hit) in &hits {
+            match hit {
+                CallbackHit::Kill { player, killer, cause } => {
+                    if self.playable(player) {
+                        self.kill(player, killer, cause, true, true);
+                    }
+                }
+                CallbackHit::MissileBlast { missile } => {
+                    let missile_state = self.guided_missiles[missile];
+                    if missile_state.active {
+                        self.spawn_missile_explosion(
+                            missile_state.position,
+                            missile_state.owner,
+                            false,
+                            Fix::ONE,
+                            data,
+                        );
+                        self.destroy_guided_missile(missile, true);
+                    }
+                }
+            }
+        }
+        hits.clear();
+        self.scratch.callback_hits = hits;
     }
 
     /// The orb at Beam's staff tip is an Explosion circle (orbAnim.prefab,
@@ -32102,9 +32154,11 @@ impl RolloutWorld {
                 };
             }
             let killer = orb.owner as u32 + 1;
+            let hitbox_min = if self.sweep_x() { hitbox.center.x } else { hitbox.center.y }
+                - hitbox.radius;
             for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-                if victim && self.playable(player_index) {
-                    self.kill(player_index, killer, CAUSE_OTHER, true, true);
+                if victim {
+                    self.queue_callback_kill(player_index, true, hitbox_min, killer, CAUSE_OTHER);
                 }
             }
         }
@@ -32175,33 +32229,6 @@ impl RolloutWorld {
         let (center, half) = self.player_bounds(player_index);
         let reach = half + Vec2::new(circle.radius, circle.radius);
         (circle.center.x - center.x).abs() < reach.x && (circle.center.y - center.y).abs() < reach.y
-    }
-
-    /// The players flagged in `victims`, in the order DetPhysics dispatches
-    /// their callbacks with one hitbox. SortAndSweep pairs the hitbox with
-    /// each overlapping collider in order of bounding-box minimum on the sweep
-    /// axis, and the callbacks run in manifold order.
-    fn victims_in_sweep_order(
-        &self,
-        victims: &[bool; MAX_PLAYERS],
-    ) -> ([usize; MAX_PLAYERS], usize) {
-        let sweep_x = self.sweep_x();
-        let mut order = [0; MAX_PLAYERS];
-        let mut count = 0;
-        for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-            if victim {
-                order[count] = player_index;
-                count += 1;
-            }
-        }
-        // DetPhysics queues callbacks one pair category at a time, and every
-        // category holding a circle runs before the one holding two boxes
-        // (circle/circle, then circle/box, then box/box), so a circular form
-        // dies before a box-shaped body in the same blast.
-        order[..count].sort_by_key(|&player_index| {
-            (!self.player_is_circle(player_index), self.player_sweep_min(player_index, sweep_x))
-        });
-        (order, count)
     }
 
     /// `player_hit_by_box` for a circle hitbox.
@@ -32297,7 +32324,9 @@ impl RolloutWorld {
                     crate::physics::contact::box_box(shape, hitbox).is_some()
                 };
                 if hit {
-                    self.kill(player_index, smear.owner as u32 + 1, CAUSE_OTHER, true, true);
+                    let hitbox_min = self.box_sweep_min(hitbox);
+                    let killer = smear.owner as u32 + 1;
+                    self.queue_callback_kill(player_index, false, hitbox_min, killer, CAUSE_OTHER);
                 }
             }
         }
@@ -32428,14 +32457,15 @@ impl RolloutWorld {
                 };
             }
             let killer = explosion.owner as u32 + 1;
+            let hitbox_min = self.box_sweep_min(hitbox);
             for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-                if victim && self.playable(player_index) {
+                if victim {
                     let cause = if self.players[player_index].base.id == killer {
                         CAUSE_ACCIDENT
                     } else {
                         CAUSE_OTHER
                     };
-                    self.kill(player_index, killer, cause, true, true);
+                    self.queue_callback_kill(player_index, false, hitbox_min, killer, cause);
                 }
             }
         }
@@ -38939,6 +38969,7 @@ mod tests {
         });
 
         world.tesla_contacts(data::get());
+        world.run_callback_hits(data::get());
 
         assert_eq!(world.players[1].deaths, 1);
         assert!(world.retired_tesla_contacts.is_empty());
