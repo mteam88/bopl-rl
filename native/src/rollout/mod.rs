@@ -9790,6 +9790,9 @@ impl RolloutWorld {
                     * st.top_speed;
                 st.grounded_speed = if st.moving_right { speed } else { -speed };
             }
+            // PlayerBody still drifts the grounded form by its velocity before
+            // DetPhysics syncs the hurtbox; LateUpdateSim snaps it back.
+            self.form_body_step(index);
             return;
         }
 
