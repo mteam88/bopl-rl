@@ -32924,6 +32924,9 @@ impl RolloutWorld {
                 }
             }
             if !self.abilityless_clones[clone_index].base.alive {
+                // The clone's DestroyIfOutsideSceneBounds instantiates the
+                // water/bounds effect too.
+                self.next_spawn_hierarchy += data::get().player.boundary_effect_updatable_count;
                 self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT);
                 continue;
             }
