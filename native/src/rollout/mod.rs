@@ -17849,17 +17849,41 @@ impl RolloutWorld {
         }
     }
 
+    /// A slime that left its form earlier this pass: onExitAbility already
+    /// deactivated the form and synced the hurtbox (SlimeController.cs:251),
+    /// but its rows show neither until DetPhysics syncs them.
+    fn left_form_this_pass(&self, slot: &PlayerSlot) -> bool {
+        slot.base.alive
+            && slot.active == ActiveAbility::None
+            && !slot.teleport_effect_active
+            && !slot.blink_tunnel_active
+            && self.entities.get(slot.body_entity).is_some_and(|row| row.flags & E_ACTIVE == 0)
+    }
+
     fn teleport_query(&self, query: Circle, mask: u32, hits: &mut [usize; 100]) -> usize {
         let mut count = 0usize;
         // DetPhysics.CircleCastAll visits its circle, box and rounded-rect
         // registries in that order and stops at the fixed 100-entry buffer.
         for kind in [0u32, 1, 2] {
             for (entity, row) in self.entities.iter().copied().enumerate() {
-                if row.kind != kind
-                    || row.flags & E_ACTIVE == 0
-                    || row.flags & (E_REMOVED | E_DESTROYED) != 0
-                    || mask & (1u32 << row.layer) == 0
-                {
+                if row.kind != kind || mask & (1u32 << row.layer) == 0 {
+                    continue;
+                }
+                if let Some(slot) = self.players.iter().find(|slot| {
+                    self.left_form_this_pass(slot) && slot.owned_rows().contains(&entity)
+                }) {
+                    if entity == slot.body_entity
+                        && crate::physics::contact::circle_box(query, slot.base.collider).is_some()
+                    {
+                        hits[count] = entity;
+                        count += 1;
+                        if count == hits.len() {
+                            return count;
+                        }
+                    }
+                    continue;
+                }
+                if row.flags & E_ACTIVE == 0 || row.flags & (E_REMOVED | E_DESTROYED) != 0 {
                     continue;
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
@@ -17933,10 +17957,14 @@ impl RolloutWorld {
     }
 
     fn teleport_entity(&mut self, entity: usize, shift: Vec2, data: &data::RolloutData) {
-        if entity >= self.entities.len()
-            || self.entities[entity].flags & E_ACTIVE == 0
-            || self.teleport_skips_entity(entity)
-        {
+        if entity >= self.entities.len() || self.teleport_skips_entity(entity) {
+            return;
+        }
+        let exited_hurtbox = self
+            .players
+            .iter()
+            .any(|slot| slot.body_entity == entity && self.left_form_this_pass(slot));
+        if self.entities[entity].flags & E_ACTIVE == 0 && !exited_hurtbox {
             return;
         }
 
@@ -18103,6 +18131,11 @@ impl RolloutWorld {
             let marker = self.teleport_marker_pool[marker_index];
             if !marker.active {
                 continue;
+            }
+            for index in 0..self.players.len() {
+                if self.left_form_this_pass(&self.players[index]) {
+                    self.players[index].base.sync_collider();
+                }
             }
             let from = self.players[owner].teleport_pending_position;
             let diff = marker.position - from;
