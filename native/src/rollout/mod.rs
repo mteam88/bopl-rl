@@ -28514,15 +28514,18 @@ impl RolloutWorld {
         self.remove_thrown_item(item_index, true);
     }
 
-    #[inline]
-    fn active_player_position(&self, player_index: usize) -> Option<Vec2> {
-        let player = &self.players[player_index];
-        let entity = Self::blink_player_entity(player);
-        if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
-            return None;
-        }
-        let row = self.entities[entity];
-        Some(Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)))
+    /// Whether the player's slime or form object is live in the scene by its
+    /// state, which a form change on this pass has already updated.
+    fn slime_present(&self, index: usize) -> bool {
+        let slot = &self.players[index];
+        slot.base.alive
+            && !slot.slime_destroyed()
+            && slot.unspawned == 0
+            && slot.respawn_ticks == 0
+            && !slot.revival_clone_pending
+            && !slot.stock_clone_pending
+            && !slot.teleport_effect_active
+            && !slot.blink_tunnel_active
     }
 
     /// Mjolnir.TryFindOwnerPosition searches live SlimeControllers first,
@@ -28533,14 +28536,7 @@ impl RolloutWorld {
         // synced collider rows lag a form change on its own pass and sit at a
         // form's collider offset, so the player's state decides instead.
         let slot = &self.players[owner];
-        let present = slot.base.alive
-            && !slot.slime_destroyed()
-            && slot.unspawned == 0
-            && slot.respawn_ticks == 0
-            && !slot.revival_clone_pending
-            && !slot.stock_clone_pending
-            && !slot.teleport_effect_active
-            && !slot.blink_tunnel_active;
+        let present = self.slime_present(owner);
         if slot.active == ActiveAbility::None && present {
             return Some(slot.base.position);
         }
@@ -28927,9 +28923,10 @@ impl RolloutWorld {
                 let hit_radius =
                     hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
                 // SlimeController.body.position: the slime's own transform,
-                // which the synced collider row trails by this pass's move.
+                // which the synced collider row trails by this pass's move. A
+                // form that ended this pass has already reactivated it.
                 let position = self.mjolnir_view(player_index, item.hierarchy_base);
-                if self.active_player_position(player_index).is_some()
+                if self.slime_present(player_index)
                     && (position - item_position).length_squared() < hit_radius * hit_radius
                 {
                     victims |= 1 << player_index;
@@ -32244,6 +32241,14 @@ impl RolloutWorld {
         self.rebuild_bounds();
     }
 
+    /// Platforms instantiated mid-game - Duplicator copies included, which
+    /// keep their source's definition - register their updaters after the
+    /// players.
+    fn runtime_spawned_platform(&self, i: usize) -> bool {
+        self.platform_defs[i] == usize::MAX
+            || self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some()
+    }
+
     /// AnimateVelocity then ShakablePlatform for one half of the platform
     /// list, one platform at a time in registration order (a spawned
     /// platform's ResizablePlatform sits between the two). Both draw from the
@@ -32262,7 +32267,7 @@ impl RolloutWorld {
         let mut shook = false;
         for k in 0..self.platforms.len() {
             let i = if k < authored { order[k] } else { k };
-            if (self.platform_defs[i] == usize::MAX) != runtime_spawned {
+            if self.runtime_spawned_platform(i) != runtime_spawned {
                 continue;
             }
             self.platform_spring(data, updater_dt, i);
@@ -32322,7 +32327,7 @@ impl RolloutWorld {
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active
                 || !self.platform_dynamics[i].surface_shape_dirty
-                || (self.platform_defs[i] == usize::MAX) != runtime_spawned
+                || self.runtime_spawned_platform(i) != runtime_spawned
             {
                 continue;
             }
@@ -32347,7 +32352,7 @@ impl RolloutWorld {
     fn platform_body_scale_tick(&mut self, runtime_spawned: bool) {
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active
-                || (self.platform_defs[i] == usize::MAX) != runtime_spawned
+                || self.runtime_spawned_platform(i) != runtime_spawned
             {
                 continue;
             }
