@@ -692,6 +692,9 @@ pub struct TimeStopEffect {
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedSpike {
     pub active: bool,
+    /// When it joined its platform's composite, in that platform's
+    /// `attach_count`. CreateMultiComposite re-attaches in that order.
+    pub attach_order: u32,
     /// The owning player's ability slot for a cast spike. Duplicator copies
     /// are not referenced by a Spike ability instance.
     pub owner_slot: Option<(usize, usize)>,
@@ -751,6 +754,9 @@ pub struct PlantCastState {
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedEngine {
     pub active: bool,
+    /// When it joined its platform's composite, in that platform's
+    /// `attach_count`. CreateMultiComposite re-attaches in that order.
+    pub attach_order: u32,
     /// MachoThrow2 detached this child from its platform composite and hid
     /// the GameObject while the replacement boulder is being animated.
     pub macho_carried: bool,
@@ -786,6 +792,9 @@ pub struct SpawnedEngine {
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedTeslaNode {
     pub active: bool,
+    /// When it joined its platform's composite, in that platform's
+    /// `attach_count`. CreateMultiComposite re-attaches in that order.
+    pub attach_order: u32,
     /// MachoThrow2 temporarily deparents and hides the selected node.
     pub macho_carried: bool,
     pub born_tick: u32,
@@ -1230,6 +1239,9 @@ pub struct PlatformDynamics {
     /// observation bridge still exports this child body unchanged.
     pub root_body: Body,
     pub attached_children: u32,
+    /// Children attached so far, including departed ones; stamps
+    /// `attach_order`.
+    pub attach_count: u32,
     /// CompositeBody.position is separate from the rounded-rectangle child
     /// centre. Box/RR positional correction can move the former without
     /// moving the latter until a later operation rebuilds the composite.
@@ -3722,6 +3734,7 @@ impl RolloutWorld {
                 surface_shape_dirty: false,
                 root_body: p.body,
                 attached_children: 0,
+                attach_count: 0,
                 composite_position: intro_surface.center,
                 composite_rebuild: false,
                 home_position: intro_surface.center,
@@ -5894,6 +5907,17 @@ impl RolloutWorld {
                 self.entities[e].flags = E_REMOVED;
             }
         }
+        // Includes a Tesla line an updater (SimpleSparkNode.UpdateSim) destroyed
+        // earlier in this pass.
+        let entities = &mut self.entities;
+        self.destroyed_tesla_lines.retain(|line| {
+            if line.pending {
+                true
+            } else {
+                entities[line.entity].flags = E_REMOVED;
+                false
+            }
+        });
         for i in 0..self.platforms.len() {
             let unsynced = std::mem::replace(&mut self.platform_dynamics[i].shake_unsynced, Vec2::ZERO);
             self.platforms[i].collider.inner.center += unsynced;
@@ -11181,7 +11205,7 @@ impl RolloutWorld {
             + (data.tesla.node_collider_offset * scale).complex_mul(relative_right);
         let relative_rotation = node_rotation - parent_rotation;
 
-        self.attach_child_body(platform_index, data.tesla.node_body);
+        let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -11196,6 +11220,7 @@ impl RolloutWorld {
             ..CEntity::default()
         });
         let node = SpawnedTeslaNode {
+            attach_order,
             active: true,
             macho_carried: false,
             born_tick: self.tick,
@@ -11403,7 +11428,7 @@ impl RolloutWorld {
             + (data.engine.rocket_collider_offset * scale).complex_mul(relative_right);
         let relative_rotation = rocket_rotation - parent_rotation;
 
-        self.attach_child_body(platform_index, data.engine.rocket_body);
+        let attach_order = self.attach_child_body(platform_index, data.engine.rocket_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let collider_extents = data::surface_extents(data.engine.rocket_extents * scale);
@@ -11426,6 +11451,7 @@ impl RolloutWorld {
             ..CEntity::default()
         });
         let engine = SpawnedEngine {
+            attach_order,
             active: true,
             macho_carried: false,
             born_tick: self.tick,
@@ -11497,7 +11523,7 @@ impl RolloutWorld {
         }
     }
 
-    fn attach_child_body(&mut self, platform_index: usize, child: Body) {
+    fn attach_child_body(&mut self, platform_index: usize, child: Body) -> u32 {
         let dynamics = &mut self.platform_dynamics[platform_index];
         let extending_composite = dynamics.attached_children != 0;
         if !extending_composite {
@@ -11523,6 +11549,8 @@ impl RolloutWorld {
             dynamics.body.force = Vec2::ZERO;
         }
         dynamics.attached_children += 1;
+        dynamics.attach_count += 1;
+        dynamics.attach_count
     }
 
     fn remove_engine(&mut self, engine_index: usize) {
@@ -11545,36 +11573,35 @@ impl RolloutWorld {
     /// first. MachoThrow2's pickup calls Remove*FromComposite directly.
     fn rebuild_platform_attachment_body(&mut self, platform_index: usize, synced: bool) {
         let old = self.platform_dynamics[platform_index].body;
-        let mut mass = Fix::ONE
-            / self.platform_dynamics[platform_index]
-                .root_body
-                .inverse_mass;
-        let mut moment = Fix::ONE
-            / self.platform_dynamics[platform_index]
-                .root_body
-                .inverse_inertia;
-        let mut count = 0u32;
+        // CreateMultiComposite folds the remaining children into the rect's
+        // body one CombineBodies at a time, circles (Tesla nodes) before boxes
+        // (spikes, engines), each list in attach order. Every step takes the
+        // reciprocal of the last rounded inverse, so the order shows.
+        let mut children = Vec::new();
+        for node in &self.tesla_nodes {
+            if node.active && !node.macho_carried && node.platform_index == platform_index {
+                children.push((0, node.attach_order, node.body));
+            }
+        }
         for spike in &self.spike_attacks {
             if spike.active && !spike.macho_carried && spike.platform_index == platform_index {
-                mass += Fix::ONE / spike.body.inverse_mass;
-                moment += Fix::ONE / spike.body.inverse_inertia;
-                count += 1;
+                children.push((1, spike.attach_order, spike.body));
             }
         }
         for engine in &self.engines {
             if engine.active && !engine.macho_carried && engine.platform_index == platform_index {
-                mass += Fix::ONE / engine.body.inverse_mass;
-                moment += Fix::ONE / engine.body.inverse_inertia;
-                count += 1;
+                children.push((1, engine.attach_order, engine.body));
             }
         }
-        for node in &self.tesla_nodes {
-            if node.active && !node.macho_carried && node.platform_index == platform_index {
-                mass += Fix::ONE / node.body.inverse_mass;
-                moment += Fix::ONE / node.body.inverse_inertia;
-                count += 1;
-            }
+        children.sort_by_key(|&(shape, order, _)| (shape, order));
+        let root = self.platform_dynamics[platform_index].root_body;
+        let (mut inverse_mass, mut inverse_inertia) = (root.inverse_mass, root.inverse_inertia);
+        for (_, _, body) in &children {
+            inverse_mass = Fix::ONE / (Fix::ONE / body.inverse_mass + Fix::ONE / inverse_mass);
+            inverse_inertia =
+                Fix::ONE / (Fix::ONE / body.inverse_inertia + Fix::ONE / inverse_inertia);
         }
+        let count = children.len() as u32;
         let dynamics = &mut self.platform_dynamics[platform_index];
         dynamics.body = dynamics.root_body;
         dynamics.body.orientation = old.orientation;
@@ -11587,8 +11614,8 @@ impl RolloutWorld {
             // Remove*FromComposite copies only velocity and angularVelocity
             // from the retired combined body. The rounded rect's own force
             // still joins it in DetPhysics.Simulate.
-            dynamics.body.inverse_mass = Fix::ONE / mass;
-            dynamics.body.inverse_inertia = Fix::ONE / moment;
+            dynamics.body.inverse_mass = inverse_mass;
+            dynamics.body.inverse_inertia = inverse_inertia;
             dynamics.body.velocity = old.velocity;
             dynamics.body.angular_velocity = old.angular_velocity;
             dynamics.body.force = Vec2::ZERO;
@@ -11694,7 +11721,7 @@ impl RolloutWorld {
             + (data.spike.attack_collider_offset * scale).complex_mul(relative_right);
         let relative_rotation = spike_rotation - parent_rotation;
 
-        self.attach_child_body(platform_index, data.spike.attack_body);
+        let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let collider_extents = data::surface_extents(data.spike.attack_extents * scale);
@@ -11718,6 +11745,7 @@ impl RolloutWorld {
             ..CEntity::default()
         });
         let attack = SpawnedSpike {
+            attach_order,
             active: true,
             owner_slot: Some((index, ability_slot)),
             macho_carried: false,
@@ -15939,8 +15967,9 @@ impl RolloutWorld {
             + (data.engine.rocket_collider_offset * source.scale).complex_mul(relative_right);
         let mut child = source.body;
         child.orientation = desired_rotation;
-        self.attach_child_body(platform_index, child);
+        let attach_order = self.attach_child_body(platform_index, child);
         let engine = &mut self.engines[engine_index];
+        engine.attach_order = attach_order;
         engine.macho_carried = false;
         engine.born_tick = self.tick;
         engine.platform_index = platform_index;
@@ -15997,8 +16026,9 @@ impl RolloutWorld {
             + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);
         let mut child_body = source.body;
         child_body.orientation = desired_rotation;
-        self.attach_child_body(platform_index, child_body);
+        let attach_order = self.attach_child_body(platform_index, child_body);
         let node = &mut self.tesla_nodes[node_index];
+        node.attach_order = attach_order;
         node.macho_carried = false;
         node.born_tick = self.tick;
         node.platform_index = platform_index;
@@ -16074,8 +16104,9 @@ impl RolloutWorld {
             + (data.spike.attack_collider_offset * source.scale).complex_mul(relative_right);
         let mut child_body = source.body;
         child_body.orientation = desired_rotation;
-        self.attach_child_body(platform_index, child_body);
+        let attach_order = self.attach_child_body(platform_index, child_body);
         let spike = &mut self.spike_attacks[spike_index];
+        spike.attach_order = attach_order;
         spike.macho_carried = false;
         spike.born_tick = self.tick;
         spike.platform_index = platform_index;
@@ -16206,6 +16237,7 @@ impl RolloutWorld {
             surface_shape_dirty: false,
             root_body: data.macho_throw.boulder_body,
             attached_children: 0,
+            attach_count: 0,
             composite_position: position,
             composite_rebuild: false,
             transform_rotation: None,
@@ -23453,7 +23485,7 @@ impl RolloutWorld {
             + (data.spike.attack_collider_offset * source.scale).complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.spike.attack_updatable_count;
-        self.attach_child_body(platform_index, data.spike.attack_body);
+        let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let collider_extents = data::surface_extents(data.spike.attack_extents * source.scale);
@@ -23476,6 +23508,7 @@ impl RolloutWorld {
             ..CEntity::default()
         });
         let clone = SpawnedSpike {
+            attach_order,
             active: true,
             owner_slot: None,
             macho_carried: false,
@@ -23541,7 +23574,7 @@ impl RolloutWorld {
             + (data.engine.rocket_collider_offset * source.scale).complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.engine.rocket_updatable_count;
-        self.attach_child_body(platform_index, data.engine.rocket_body);
+        let attach_order = self.attach_child_body(platform_index, data.engine.rocket_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let collider_extents = data::surface_extents(data.engine.rocket_extents * source.scale);
@@ -23564,6 +23597,7 @@ impl RolloutWorld {
             ..CEntity::default()
         });
         let clone = SpawnedEngine {
+            attach_order,
             active: true,
             macho_carried: false,
             born_tick: self.tick,
@@ -23635,7 +23669,7 @@ impl RolloutWorld {
             + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.tesla.node_updatable_count;
-        self.attach_child_body(platform_index, data.tesla.node_body);
+        let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -23650,6 +23684,7 @@ impl RolloutWorld {
             ..CEntity::default()
         });
         let clone = SpawnedTeslaNode {
+            attach_order,
             active: true,
             macho_carried: false,
             born_tick: self.tick,
@@ -26851,6 +26886,7 @@ impl RolloutWorld {
             surface_shape_dirty: false,
             root_body: pd.spawn_body,
             attached_children: 0,
+            attach_count: 0,
             composite_position: position,
             composite_rebuild: false,
             home_position: position,
