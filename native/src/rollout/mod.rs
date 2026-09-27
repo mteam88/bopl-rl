@@ -19908,17 +19908,9 @@ impl RolloutWorld {
         // DPhysicsBox publishes the basis from the start of SparkShot's pass;
         // PlayerPhysics may align the live transform later in that pass.
         self.players[index].missile.collider_rotation = self.players[index].base.rotation;
-        // Missile.prefab is boundary/ability 5/6 - DestroyIfOutsideSceneBounds
-        // 5, SparkShot 6, PlayerBody 8 - so the boundary runs ahead of the
-        // whole of SparkShot's update, not just ahead of the integration. On
-        // the pass it fires, SparkShot never spawns the projectile, never
-        // advances its phase counters and never steers the live one, which is
-        // what the port used to do a step too many of. The Ability-ordered
-        // Player.Position publish already happened before this function ran.
-        // SparkShot's ExitAbility does not unground.
-        if self.ability_boundary_kill(index, false) {
-            return;
-        }
+        // The form's updatables run SpriteAnimator, Ability, PlayerCollision,
+        // PlayerPhysics, DestroyIfOutsideSceneBounds, SparkShot, DPhysicsBox,
+        // PlayerBody. The animator's callbacks advance the phases first.
         let state = &mut self.players[index].missile;
         state.ticks += 1;
         match state.phase {
@@ -19970,16 +19962,38 @@ impl RolloutWorld {
             _ => {}
         }
 
+        // PlayerPhysics' gravity raycast can attach the form, and move it
+        // onto the surface, before the boundary check sees it.
+        if !self.players[index].base.grounded {
+            let slot = &mut self.players[index];
+            let space = slot.base.space;
+            crate::player_physics::apply_gravity(
+                &mut slot.base.velocity,
+                data.missile.constants.gravity_accel,
+                data.missile.constants.gravity_modifier,
+                data.missile.constants.gravity_max_fall_speed,
+                space,
+            )
+            .expect("valid Missile gravity constants");
+            slot.base.collision_rays(terrain!(self));
+            if slot.base.grounded {
+                slot.missile.collider_rotation = slot.base.rotation;
+            }
+        }
+        // On the pass the boundary fires, SparkShot never steers the live
+        // projectile. SparkShot's ExitAbility does not unground.
+        if self.ability_boundary_kill(index, false) {
+            return;
+        }
+
         let button = 2u8 << self.players[index].active_slot;
         if self.players[index].missile.phase == 2 && action.buttons & button == 0 {
             self.players[index].missile.phase = 3;
             self.players[index].missile.ticks = 0;
         }
 
-        // PlayerPhysics is registered before SparkShot on this prefab. Its
-        // gravity raycast can therefore attach the form before SparkShot's
-        // own landing-exit check; SparkShot then observes a grounded body,
-        // calls Move(zero), and still steers the live projectile this pass.
+        // A form PlayerPhysics attached observes a grounded body, calls
+        // Move(zero), and still steers the live projectile this pass.
         self.steer_active_missile(index, action, DT, data);
 
         if self.players[index].base.grounded {
@@ -19993,56 +20007,31 @@ impl RolloutWorld {
             slot.base.position += slot.base.external_velocity * DT;
             slot.base.external_velocity *= Fix::from_f64(0.95);
         } else {
-            {
-                let slot = &mut self.players[index];
-                let space = slot.base.space;
-                crate::player_physics::apply_gravity(
-                    &mut slot.base.velocity,
-                    data.missile.constants.gravity_accel,
-                    data.missile.constants.gravity_modifier,
-                    data.missile.constants.gravity_max_fall_speed,
-                    space,
-                )
-                .expect("valid Missile gravity constants");
-                slot.base.collision_rays(terrain!(self));
-                if slot.base.grounded {
-                    slot.missile.collider_rotation = slot.base.rotation;
-                }
-            }
+            self.players[index].base.collision_rays(terrain!(self));
             if self.players[index].base.grounded {
-                self.players[index]
-                    .base
-                    .move_only(Vec2::ZERO, terrain!(self));
                 let slot = &mut self.players[index];
-                slot.base.position += slot.base.external_velocity * DT;
-                slot.base.external_velocity *= Fix::from_f64(0.95);
-            } else {
-                self.players[index].base.collision_rays(terrain!(self));
-                if self.players[index].base.grounded {
-                    let slot = &mut self.players[index];
-                    // SparkShot's landing exit hands over isFacingRight true.
-                    slot.facing_right = true;
-                    slot.active = ActiveAbility::None;
-                    slot.obs_state = STATE_LAND;
-                    slot.state_ticks = LAND_TICKS + 2;
-                    // Ability.ExitAbility publishes the collider DetPhysics
-                    // last synced, as Ability.UpdateSim already did this pass.
-                    return;
-                }
-                let slot = &mut self.players[index];
-                crate::player_physics::air_movement(
-                    &mut slot.base.velocity,
-                    Fix::ZERO,
-                    data.missile.constants.air_accel,
-                    data.missile.constants.max_speed,
-                )
-                .expect("valid Missile air constants");
-                slot.base.collision_rays(terrain!(self));
-                if !slot.base.grounded {
-                    slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-                }
-                slot.base.external_velocity *= Fix::from_f64(0.95);
+                // SparkShot's landing exit hands over isFacingRight true.
+                slot.facing_right = true;
+                slot.active = ActiveAbility::None;
+                slot.obs_state = STATE_LAND;
+                slot.state_ticks = LAND_TICKS + 2;
+                // Ability.ExitAbility publishes the collider DetPhysics
+                // last synced, as Ability.UpdateSim already did this pass.
+                return;
             }
+            let slot = &mut self.players[index];
+            crate::player_physics::air_movement(
+                &mut slot.base.velocity,
+                Fix::ZERO,
+                data.missile.constants.air_accel,
+                data.missile.constants.max_speed,
+            )
+            .expect("valid Missile air constants");
+            slot.base.collision_rays(terrain!(self));
+            if !slot.base.grounded {
+                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            }
+            slot.base.external_velocity *= Fix::from_f64(0.95);
         }
     }
 
