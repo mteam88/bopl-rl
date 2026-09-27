@@ -11235,8 +11235,11 @@ impl RolloutWorld {
     /// it, before LateUpdateSim puts a grounded body back on its platform.
     fn plant_cast_form_move(&mut self, index: usize, published: Vec2, jump_pressed: bool) {
         self.form_body_move(index, jump_pressed);
+        // DetPhysics syncs the box to the body Move aligned to the surface.
         let slot = &mut self.players[index];
         slot.plant_cast.collider_position = slot.base.position;
+        slot.plant_cast.collider_up = slot.base.up;
+        slot.plant_cast.collider_rotation = slot.base.rotation;
         slot.reported_position = published;
         slot.reported_tick = self.tick;
     }
