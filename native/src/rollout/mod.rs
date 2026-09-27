@@ -32242,7 +32242,11 @@ impl RolloutWorld {
             let shape = self.macho_throw_box(player_index, data::get());
             return crate::physics::contact::box_box(shape, hitbox).is_some();
         }
-        if !self.collides(entity) {
+        // MagnetGun.OnEnterAbility's hurtbox.UpdatePhysicsPositions already
+        // put the entry pose in the row, which turns active only on publish.
+        let entering_magnet =
+            entity == player.magnet_entity && self.entities[entity].flags & E_ACTIVE == 0;
+        if !entering_magnet && !self.collides(entity) {
             return false;
         }
         let row = self.entities[entity];
