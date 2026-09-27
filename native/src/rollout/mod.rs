@@ -866,6 +866,9 @@ pub struct MissileFormState {
     pub phase: u8,
     pub ticks: u32,
     pub projectile: Option<usize>,
+    /// Which missile `projectile` held. Another spawn can take the pool slot
+    /// once it is destroyed, when SparkShot's sparkBody reads null.
+    pub projectile_hierarchy: u32,
     pub collider_rotation: Fix,
 }
 
@@ -19805,7 +19808,10 @@ impl RolloutWorld {
         let Some(projectile) = self.players[index].missile.projectile else {
             return;
         };
-        if !self.guided_missiles[projectile].active || !self.guided_missiles[projectile].registered
+        let missile = &self.guided_missiles[projectile];
+        if !missile.active
+            || !missile.registered
+            || missile.hierarchy_base != self.players[index].missile.projectile_hierarchy
         {
             return;
         }
@@ -19849,7 +19855,9 @@ impl RolloutWorld {
                 state.phase = 1;
                 state.ticks = 0;
                 let projectile = self.spawn_guided_missile(index, data);
-                self.players[index].missile.projectile = Some(projectile);
+                let state = &mut self.players[index].missile;
+                state.projectile = Some(projectile);
+                state.projectile_hierarchy = self.guided_missiles[projectile].hierarchy_base;
             }
             1 if state.ticks > data.missile.enter_to_idle_ticks => {
                 state.phase = 2;
