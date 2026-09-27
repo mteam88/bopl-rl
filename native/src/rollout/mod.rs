@@ -31902,6 +31902,12 @@ impl RolloutWorld {
             return crate::physics::contact::box_box(player.base.collider, hitbox).is_some();
         }
         let entity = Self::blink_player_entity(player);
+        if entity == player.macho_throw_entity && self.entities[entity].flags & E_ACTIVE == 0 {
+            // The entry pass: OnEnterAbility already enabled and placed the
+            // hurtbox, and its row only turns active when the pass publishes.
+            let shape = self.macho_throw_box(player_index, data::get());
+            return crate::physics::contact::box_box(shape, hitbox).is_some();
+        }
         if !self.collides(entity) {
             return false;
         }
