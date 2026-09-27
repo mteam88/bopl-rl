@@ -833,6 +833,10 @@ pub struct SpawnedTeslaNode {
     pub connected: bool,
     pub lethal: bool,
     pub enter_ticks: u32,
+    /// Ticks left on an EnterOrb whose connection broke first. The orb's own
+    /// animator still runs it out and its callback makes the node lethal
+    /// until the next UpdateSim finds it unconnected.
+    pub orb_enter_left: u32,
     pub line_hierarchy_base: u32,
     pub line_born_tick: u32,
     pub line_entity: Option<usize>,
@@ -11528,6 +11532,19 @@ impl RolloutWorld {
             return;
         }
         let child = self.tesla_nodes[node_index].child;
+        // The parent's EnterOrb ends after `enter_ticks` + 1 passes, the
+        // child's one pass later.
+        let enter = data::get().tesla.enter_ticks;
+        let elapsed = self.tesla_nodes[node_index].enter_ticks;
+        if !self.tesla_nodes[node_index].lethal {
+            self.tesla_nodes[node_index].orb_enter_left = enter + 1 - elapsed;
+        }
+        if let Some(child) = child
+            && child < self.tesla_nodes.len()
+            && !self.tesla_nodes[child].lethal
+        {
+            self.tesla_nodes[child].orb_enter_left = enter + 2 - elapsed;
+        }
         self.tesla_nodes[node_index].connected = false;
         self.tesla_nodes[node_index].lethal = false;
         self.tesla_nodes[node_index].enter_ticks = 0;
@@ -12363,6 +12380,8 @@ impl RolloutWorld {
         self.next_spawn_hierarchy += data.tesla.lightning_updatable_count;
         self.tesla_nodes[node_index].connected = true;
         self.tesla_nodes[node_index].enter_ticks = 0;
+        self.tesla_nodes[node_index].orb_enter_left = 0;
+        self.tesla_nodes[child_index].orb_enter_left = 0;
         self.tesla_nodes[node_index].line_hierarchy_base = hierarchy_base;
         self.tesla_nodes[node_index].line_born_tick = self.tick;
         self.tesla_nodes[node_index].line_entity = None;
@@ -12422,6 +12441,15 @@ impl RolloutWorld {
             }
             if !self.tesla_nodes[node_index].connected {
                 self.tesla_nodes[node_index].lethal = false;
+            }
+        }
+
+        if self.player_time_scale >= Fix::from_f32(0.01) {
+            for node in &mut self.tesla_nodes {
+                if node.active && !node.macho_carried && node.orb_enter_left > 0 {
+                    node.orb_enter_left -= 1;
+                    node.lethal |= node.orb_enter_left == 0;
+                }
             }
         }
 
