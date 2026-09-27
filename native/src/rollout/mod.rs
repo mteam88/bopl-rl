@@ -20598,6 +20598,40 @@ impl RolloutWorld {
         // PlayerBody advance the live ability body later in this pass.
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
+        // SpriteAnimator is the first updatable on every ThrowItem2 prefab, so
+        // the exit animation's ExitAbility callback runs on the pass it ends,
+        // before DestroyIfOutsideSceneBounds can kill the form.
+        if self.players[index].throw_item.phase == 1 {
+            let exit_ticks = if self.players[index].throw_item.grounded {
+                gd.ground_exit_ticks
+            } else {
+                gd.air_exit_ticks
+            };
+            if self.players[index].throw_item.ticks >= exit_ticks {
+                let slot = &mut self.players[index];
+                slot.active = ActiveAbility::None;
+                let grounded = slot.base.grounded;
+                if grounded {
+                    // ThrowItem2 marks a grounded exit as `justlanded`.
+                    // SlimeController starts `land` after the slime's own
+                    // animator has already updated in this pass.
+                    slot.obs_state = STATE_LAND;
+                    slot.state_ticks = LAND_TICKS + 2;
+                } else {
+                    slot.exit_to_fall();
+                    slot.base.rotation = Fix::ZERO;
+                    slot.base.up = Vec2::UP;
+                    slot.base.collision_rays(terrain!(self));
+                }
+                // The exit callback leaves Player.Position where
+                // Ability.UpdateSim published it, and a slime that EnterFall's
+                // raycasts land is attached where it hit, not re-synced.
+                if grounded {
+                    self.sync_exit_to_ground(index, data);
+                }
+                return;
+            }
+        }
         // Every ThrowItem2 prefab - Mjolnir, Poke ball, Banana peel, Smoke,
         // Grenade_0 - orders DestroyIfOutsideSceneBounds 5, ThrowItem2 6,
         // PlayerBody 7, so the boundary component runs ahead of the whole
@@ -20677,37 +20711,6 @@ impl RolloutWorld {
             self.thrown_items[item_index].position = self.throw_dummy_position(index, gd);
         }
 
-        if self.players[index].throw_item.phase == 1 {
-            let exit_ticks = if self.players[index].throw_item.grounded {
-                gd.ground_exit_ticks
-            } else {
-                gd.air_exit_ticks
-            };
-            if self.players[index].throw_item.ticks > exit_ticks {
-                let slot = &mut self.players[index];
-                slot.active = ActiveAbility::None;
-                let grounded = slot.base.grounded;
-                if grounded {
-                    // ThrowItem2 marks a grounded exit as `justlanded`.
-                    // SlimeController starts `land` after the slime's own
-                    // animator has already updated in this pass.
-                    slot.obs_state = STATE_LAND;
-                    slot.state_ticks = LAND_TICKS + 2;
-                } else {
-                    slot.exit_to_fall();
-                    slot.base.rotation = Fix::ZERO;
-                    slot.base.up = Vec2::UP;
-                    slot.base.collision_rays(terrain!(self));
-                }
-                // The exit callback leaves Player.Position where
-                // Ability.UpdateSim published it, and a slime that EnterFall's
-                // raycasts land is attached where it hit, not re-synced.
-                if grounded {
-                    self.sync_exit_to_ground(index, data);
-                }
-                return;
-            }
-        }
         if self.players[index].base.grounded {
             // PlayerPhysics.Move(Vec2.zero) slides along the authored surface
             // but leaves Fire's recoil in selfImposedVelocity. PlayerBody
