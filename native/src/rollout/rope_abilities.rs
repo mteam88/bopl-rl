@@ -1037,34 +1037,8 @@ impl RolloutWorld {
                 self.ropes[index].physics.segment[0] = anchor;
                 continue;
             }
-            if let Some(parent) = self.ropes[index].parent {
-                if parent_position(&self.players, &self.thrown_items, &self.portal_shots, parent).is_none() {
-                    self.deattach_rope(index, true);
-                    self.ropes[index].parent = None;
-                    continue;
-                }
-                let physics = &self.ropes[index].physics;
-                if physics.time_since_hook_arrived > Fix::ZERO && !physics.detached && !stopped {
-                    // AddForceAtPosition at the parent's own centre: no torque.
-                    let force = (physics.segment[0] - physics.segment[1]) * ATTACHMENT_PULL;
-                    let body = match parent {
-                        RopeParent::Rock(player) => &mut self.players[player].rock.body,
-                        RopeParent::Item(item, _) => &mut self.thrown_items[item].body,
-                        RopeParent::Shot(shot, _) => &mut self.portal_shots[shot].body,
-                    };
-                    body.apply_impulse(force, Vec2::ZERO);
-                }
-                for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
-                    if (self.ropes[index].physics.segment[segment]
-                        - self.ropes[index].physics.segment[segment + 1])
-                        .length_squared()
-                        > PLATFORM_BREAK_STRETCH
-                    {
-                        self.deattach_rope(index, true);
-                        self.ropes[index].parent = None;
-                        break;
-                    }
-                }
+            // RopeAttachment on an object runs in rope_parents_update.
+            if self.ropes[index].parent.is_some() {
                 continue;
             }
             if std::mem::take(&mut self.ropes[index].platform_gone) {
@@ -1144,6 +1118,49 @@ impl RolloutWorld {
         }
         if moved_platform {
             self.platforms_changed();
+        }
+    }
+
+    /// RopeAttachment.UpdateSim for a hook caught on an object. The
+    /// attachment is created when the hook lands, so it updates after the
+    /// object it holds: a Portal Gun shot that lands and goes this pass is
+    /// already gone when the attachment looks.
+    pub(super) fn rope_parents_update(&mut self) {
+        let stopped = self.player_time_scale < Fix::from_f32(0.01);
+        for index in 0..self.ropes.len() {
+            if !self.ropes[index].physics.enabled || self.ropes[index].born_tick == self.tick {
+                continue;
+            }
+            let Some(parent) = self.ropes[index].parent else {
+                continue;
+            };
+            if parent_position(&self.players, &self.thrown_items, &self.portal_shots, parent).is_none() {
+                self.deattach_rope(index, true);
+                self.ropes[index].parent = None;
+                continue;
+            }
+            let physics = &self.ropes[index].physics;
+            if physics.time_since_hook_arrived > Fix::ZERO && !physics.detached && !stopped {
+                // AddForceAtPosition at the parent's own centre: no torque.
+                let force = (physics.segment[0] - physics.segment[1]) * ATTACHMENT_PULL;
+                let body = match parent {
+                    RopeParent::Rock(player) => &mut self.players[player].rock.body,
+                    RopeParent::Item(item, _) => &mut self.thrown_items[item].body,
+                    RopeParent::Shot(shot, _) => &mut self.portal_shots[shot].body,
+                };
+                body.apply_impulse(force, Vec2::ZERO);
+            }
+            for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
+                if (self.ropes[index].physics.segment[segment]
+                    - self.ropes[index].physics.segment[segment + 1])
+                    .length_squared()
+                    > PLATFORM_BREAK_STRETCH
+                {
+                    self.deattach_rope(index, true);
+                    self.ropes[index].parent = None;
+                    break;
+                }
+            }
         }
     }
 
