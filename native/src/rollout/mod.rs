@@ -33192,7 +33192,12 @@ impl RolloutWorld {
             if stopped {
                 self.abilityless_clones[clone_index].base.external_velocity *= Fix::from_f64(0.95);
             } else {
-                let action = actions[owner].aim_action();
+                // A clone has no abilities, so of the owner's buttons only jump
+                // reaches it; the ability buttons would otherwise start a Dash.
+                let action = Action {
+                    buttons: actions[owner].aim_action().buttons & 1,
+                    ..actions[owner].aim_action()
+                };
                 let movement = actions[owner].input_direction(self.players[owner].keyboard);
                 let clone = &mut self.abilityless_clones[clone_index];
                 // SlimeController jumps on the owner's jumpButton_PressedThisFrame.
