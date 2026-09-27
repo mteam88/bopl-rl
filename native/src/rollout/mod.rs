@@ -19990,7 +19990,8 @@ impl RolloutWorld {
                     slot.active = ActiveAbility::None;
                     slot.obs_state = STATE_LAND;
                     slot.state_ticks = LAND_TICKS + 2;
-                    slot.reported_position = slot.base.position;
+                    // Ability.ExitAbility publishes the collider DetPhysics
+                    // last synced, as Ability.UpdateSim already did this pass.
                     return;
                 }
                 let slot = &mut self.players[index];
