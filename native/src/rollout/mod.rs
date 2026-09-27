@@ -9357,6 +9357,19 @@ impl RolloutWorld {
                             slot.timers[s] = Fix::ZERO;
                             slot.active = ActiveAbility::Beam;
                             slot.active_slot = s;
+                            // Ability.EnterAbility scales the box (Ability.cs:105), then
+                            // Beam.OnEnterAbility's SetExtents stores One / extents outright
+                            // (Beam.cs:222, 235; Box.cs:41).
+                            let extents = if grounded {
+                                data.beam.hurtbox_extents
+                            } else {
+                                data.beam.air_extents
+                            };
+                            let scale = slot.player_scale;
+                            let form = &mut slot.forms[s];
+                            form.set_scale(scale, extents, data.beam.radius);
+                            form.inverse_extents =
+                                Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
                             slot.ability_entry_action = action;
                             slot.telemetry.ability_activations[s] += 1;
                             slot.facing_right = local_facing_right;
@@ -15596,7 +15609,8 @@ impl RolloutWorld {
     }
 
     /// A slime hurtbox row keeps the inverse extents its rescaling left, Q32
-    /// drift included, where the row itself only gives right and up.
+    /// drift included, where the row itself only gives right and up. An active
+    /// form's box keeps the ones its own DPhysicsBox stored.
     fn hurtbox_inverse_extents(
         players: &[PlayerSlot],
         clones: &[AbilitylessClone],
@@ -15604,10 +15618,17 @@ impl RolloutWorld {
     ) -> Option<Vec2> {
         players
             .iter()
-            .map(|slot| (slot.body_entity, slot.base.collider))
-            .chain(clones.iter().filter_map(|clone| clone.entity.map(|e| (e, clone.base.collider))))
-            .find(|&(owned, collider)| owned == entity && collider.inverse_extents != Vec2::ZERO)
-            .map(|(_, collider)| collider.inverse_extents)
+            .flat_map(|slot| {
+                let form = (slot.active != ActiveAbility::None).then(|| {
+                    (Self::blink_player_entity(slot), slot.forms[slot.active_slot].inverse_extents)
+                });
+                [(slot.body_entity, slot.base.collider.inverse_extents)].into_iter().chain(form)
+            })
+            .chain(clones.iter().filter_map(|clone| {
+                clone.entity.map(|e| (e, clone.base.collider.inverse_extents))
+            }))
+            .find(|&(owned, inverse_extents)| owned == entity && inverse_extents != Vec2::ZERO)
+            .map(|(_, inverse_extents)| inverse_extents)
     }
 
     #[allow(clippy::too_many_arguments)]
