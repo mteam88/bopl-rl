@@ -893,6 +893,9 @@ pub struct ThrowItemState {
     /// assigns this vector directly, while DPhysicsBox derives its axes from
     /// `collider_rotation`; keep both because the angle round trip is lossy.
     pub collider_right: Vec2,
+    /// Hurtbox centre ThrowItem2.OnEnterAbility synced, which BlackHole
+    /// reads until the next DetPhysics pass.
+    pub entry_center: Vec2,
 }
 
 #[derive(Clone, Copy)]
@@ -8128,6 +8131,7 @@ impl RolloutWorld {
                             grounded,
                             direction: Vec2::UP,
                             collider_rotation: slot.base.rotation,
+                            entry_center: form_position,
                             ..ThrowItemState::default()
                         };
                         if grounded {
@@ -13451,6 +13455,15 @@ impl RolloutWorld {
                     player.beam.entry_center
                 } else if player.active == ActiveAbility::BlackHole {
                     player.black_hole_cast.entry_center
+                } else if matches!(
+                    player.active,
+                    ActiveAbility::Grenade
+                        | ActiveAbility::Smoke
+                        | ActiveAbility::Tack
+                        | ActiveAbility::Mjolnir
+                        | ActiveAbility::PokeBall
+                ) {
+                    player.throw_item.entry_center
                 } else {
                     player.base.collider.center
                 };
