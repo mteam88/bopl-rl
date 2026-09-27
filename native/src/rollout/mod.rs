@@ -2232,8 +2232,9 @@ pub struct PlayerSlot {
     /// A platform destroyed later in the previous updater pass. Unity keeps
     /// the rider grounded until its own next update, then ungrounds it. The
     /// pass-end DestroyImmediate already nulled attachedGround, so UnGround
-    /// skips its 0.05 separation.
-    pub ground_destroyed: bool,
+    /// skips its 0.05 separation. The surface is where it died: a Bow firing
+    /// before it ungrounds still reads currentNormal off the dead body.
+    pub ground_destroyed: Option<Surface>,
     pub bow: BowState,
     pub rock: RockState,
     pub roll: RollState,
@@ -4001,7 +4002,7 @@ impl RolloutWorld {
                 reported_position: spawn,
                 reported_tick: u32::MAX,
                 form_exit: None,
-                ground_destroyed: false,
+                ground_destroyed: None,
                 bow: BowState::default(),
                 rock: RockState::default(),
                 roll: RollState::default(),
@@ -6199,7 +6200,7 @@ impl RolloutWorld {
             // does not follow the ground (QuantumTunnel.cs:136).
             if !slot.base.alive
                 || !slot.base.grounded
-                || slot.ground_destroyed
+                || slot.ground_destroyed.is_some()
                 || slot.rewind.rewinding
                 || slot.blink_tunnel_active
             {
@@ -7750,11 +7751,12 @@ impl RolloutWorld {
             return;
         }
         // A Beam form finds its lost ground inside Beam.MovePlayer instead,
-        // and BlackHoleClap exits on it at the top of its UpdateSim.
+        // BlackHoleClap exits on it at the top of its UpdateSim, and
+        // BowTransform finds it after OldUpdate, which may still fire off it.
         // ThrowItem2 finds it inside its own Move, after the grounded-throw
         // exit test, so it leaves the form one pass later. MachoThrow2 finds
         // it in MachoMove, after the rest of its UpdateSim.
-        let throw_form = matches!(
+        let finds_it_later = matches!(
             self.players[index].active,
             ActiveAbility::Grenade
                 | ActiveAbility::Smoke
@@ -7763,9 +7765,12 @@ impl RolloutWorld {
                 | ActiveAbility::PokeBall
                 | ActiveAbility::Throw
         );
-        if !matches!(self.players[index].active, ActiveAbility::Beam | ActiveAbility::BlackHole)
-            && std::mem::take(&mut self.players[index].ground_destroyed)
-            && !throw_form
+        if !matches!(
+            self.players[index].active,
+            ActiveAbility::Beam | ActiveAbility::BlackHole | ActiveAbility::Bow
+        )
+            && std::mem::take(&mut self.players[index].ground_destroyed).is_some()
+            && !finds_it_later
         {
             let slot = &mut self.players[index];
             // Ordinary SlimeController explicitly zeros rotation before
@@ -13016,7 +13021,7 @@ impl RolloutWorld {
         if self.players[index].base.grounded {
             // BlackHoleClap exits on a ground that IsDestroyed or inactive
             // (BlackHoleClap.cs:135), before its row leaves the list.
-            let ground_live = !std::mem::take(&mut self.players[index].ground_destroyed)
+            let ground_live = std::mem::take(&mut self.players[index].ground_destroyed).is_none()
                 && self.players[index].base.ground.is_some_and(|id| {
                     self.platforms.iter().zip(&self.platform_entities).any(|(platform, &entity)| {
                         platform.id == id
@@ -15366,7 +15371,7 @@ impl RolloutWorld {
     /// re-reads the staff against the zeroed rotation. Nothing else moves the
     /// form that pass.
     fn beam_lost_ground(&mut self, index: usize) -> bool {
-        if !std::mem::take(&mut self.players[index].ground_destroyed) {
+        if std::mem::take(&mut self.players[index].ground_destroyed).is_none() {
             return false;
         }
         let slot = &mut self.players[index];
@@ -17065,7 +17070,7 @@ impl RolloutWorld {
                 });
         // On a destroyed ground MachoMove UnGrounds with its rotation zeroed
         // and returns before the landing raycasts.
-        self.players[index].ground_destroyed = false;
+        self.players[index].ground_destroyed = None;
         self.players[index]
             .base
             .macho_move(move_input, roundedness, terrain!(self));
@@ -26975,7 +26980,11 @@ impl RolloutWorld {
         let platforms: &[Platform] = terrain.platforms;
         // BowTransform.UpdateSim ungrounds a Bow whose ground went inactive and
         // lets it fall in the same pass; UnGround still lifts it off that
-        // surface (BowTransform.cs:214-218, PlayerPhysics.cs:366-370).
+        // surface (BowTransform.cs:214-218, PlayerPhysics.cs:366-370). A
+        // destroyed ground is already null, so there is no lift.
+        if std::mem::take(&mut slot.ground_destroyed).is_some() && slot.base.grounded {
+            slot.base.force_unground(platforms);
+        }
         if slot.base.grounded {
             slot.base.unground_inactive(platforms);
         }
@@ -27112,10 +27121,13 @@ impl RolloutWorld {
             // the shooter slams onto the platform and exits on landing.
             // currentNormal(body) is read now, so a turning platform gives
             // this pass's normal rather than the up the last Move aligned to.
-            let normal = slot
-                .base
-                .platform(platforms)
-                .map_or(slot.base.up, |platform| platform.surface.normal(slot.base.position));
+            let normal = match &slot.ground_destroyed {
+                Some(surface) => surface.normal(slot.base.position),
+                None => slot
+                    .base
+                    .platform(platforms)
+                    .map_or(slot.base.up, |platform| platform.surface.normal(slot.base.position)),
+            };
             slot.base.velocity = -(normal * bow.knockback);
             slot.base.force_unground(platforms);
             slot.bow.fire_ticks_left = bow.fire_ground_ticks;
@@ -27590,7 +27602,7 @@ impl RolloutWorld {
             // Every lost-ground check is gated on isGrounded; an airborne
             // body keeps its stale attachedGround.
             if slot.base.alive && slot.base.grounded && slot.base.ground == Some(id) {
-                slot.ground_destroyed = true;
+                slot.ground_destroyed = Some(self.platforms[index].surface.clone());
             }
         }
         for clone in &mut self.abilityless_clones {
@@ -28680,7 +28692,7 @@ impl RolloutWorld {
     /// pass, or DestroyFix'd in a callback (a BlackHole eating it).
     fn ground_gone(&self, index: usize) -> bool {
         let base = &self.players[index].base;
-        self.players[index].ground_destroyed
+        self.players[index].ground_destroyed.is_some()
             || base.ground.is_some_and(|id| {
                 self.platforms.iter().zip(&self.platform_entities).any(|(platform, &entity)| {
                     platform.id == id && self.entities[entity].flags & E_DESTROYED != 0
@@ -39935,7 +39947,7 @@ mod tests {
         world.remove_platform(platform_index);
         assert!(world.players[0].base.grounded);
         assert_eq!(world.players[0].base.ground, Some(platform_id));
-        assert!(world.players[0].ground_destroyed);
+        assert!(world.players[0].ground_destroyed.is_some());
 
         world.player_tick(0, Action::default(), Vec2::ZERO, false, data::get());
         assert!(!world.players[0].base.grounded);

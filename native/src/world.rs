@@ -979,12 +979,14 @@ impl Player {
     /// PlayerPhysics.UnGround lifts the body off attachedGround, which still
     /// names a platform that went inactive; only a destroyed one is null.
     pub(crate) fn force_unground(&mut self, platforms: &[Platform]) {
-        if let Some(platform) = platforms.iter().find(|p| Some(p.id) == self.ground) {
-            let surface = platform.surface.clone();
-            let mut motion = self.ground_state();
-            motion.unground(Some(&surface), false);
-            self.apply_ground_state(motion);
-        }
+        // A removed ground is a destroyed attachedGround, already null: no lift.
+        let surface = platforms
+            .iter()
+            .find(|p| Some(p.id) == self.ground)
+            .map(|platform| platform.surface.clone());
+        let mut motion = self.ground_state();
+        motion.unground(surface.as_ref(), false);
+        self.apply_ground_state(motion);
     }
     /// PlayerPhysics.UnGround(nullRotation: false) when the ground has gone
     /// inactive: attachedGround still names it, so the body still lifts off
