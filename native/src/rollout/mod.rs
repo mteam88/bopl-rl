@@ -19736,9 +19736,16 @@ impl RolloutWorld {
                 let Some(row) = self.entities.get(entity).copied() else {
                     continue;
                 };
-                let Some(hit) = Self::raycast_entity_row(row, origin, direction)
-                    .filter(|hit| hit.near <= distance_limit)
-                else {
+                // A slime that left its form earlier this pass has its box where
+                // onExitAbility's UpdatePhysicsPositions put it
+                // (SlimeController.cs:251), while its row still holds the pose
+                // from before the form until DetPhysics syncs it.
+                let hit = if player.active == ActiveAbility::None && row.flags & E_ACTIVE == 0 {
+                    player.base.collider.raycast(origin, direction)
+                } else {
+                    Self::raycast_entity_row(row, origin, direction)
+                };
+                let Some(hit) = hit.filter(|hit| hit.near <= distance_limit) else {
                     continue;
                 };
                 self.scratch.ray_hits.push(SortedRayHit {
@@ -27299,6 +27306,9 @@ impl RolloutWorld {
                     slot.reported_position = slot.base.position;
                     slot.reported_tick = self.tick;
                     slot.base.collision_rays(terrain!(self));
+                    // SlimeController.onExitAbility syncs the hurtbox, so later
+                    // updaters this pass (a Dash's raycast) see the exit position.
+                    slot.base.sync_collider();
                 }
             }
         }
