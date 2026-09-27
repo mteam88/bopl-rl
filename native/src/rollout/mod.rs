@@ -16743,6 +16743,8 @@ impl RolloutWorld {
             slot.base.grounded_speed = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.exit_to_fall();
+            // EnterFall's velocity raycasts may land the slime at once.
+            slot.base.collision_rays(terrain!(self));
         }
     }
 
