@@ -33453,6 +33453,10 @@ impl RolloutWorld {
         // Circle/Circle between Rock forms first resolves both BoplBodies,
         // then queues the same manifold normal to both BounceBall callbacks.
         // Neither form owns a PlayerCollision component, so it is nonlethal.
+        // SortAndSweep makes A the rock whose box starts first on the sweep
+        // axis, which fixes the normal's sign for both bounces.
+        let mut pairs = [(0usize, 0usize); MAX_PLAYERS * MAX_PLAYERS];
+        let mut pair_count = 0;
         for a in 0..self.players.len() {
             if self.players[a].active != ActiveAbility::Rock || !self.playable(a) {
                 continue;
@@ -33464,44 +33468,42 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let ca = Circle {
-                    center: self.players[a].base.position,
-                    radius: self.players[a].rock.collider_radius,
-                };
-                let cb = Circle {
-                    center: self.players[b].base.position,
-                    radius: self.players[b].rock.collider_radius,
-                };
-                if let Some(contact) = crate::physics::contact::circle_circle(ca, cb) {
-                    let (left, right) = self.players.split_at_mut(b);
-                    let a_position = left[a].base.position;
-                    let b_position = right[0].base.position;
-                    resolve(
-                        contact,
-                        &mut left[a].rock.body,
-                        &mut right[0].rock.body,
-                        a_position,
-                        b_position,
-                    );
-                    let correction = positional_correction(
-                        contact,
-                        left[a].rock.body.inverse_mass,
-                        right[0].rock.body.inverse_mass,
-                        false,
-                    );
-                    left[a].base.position += correction[0];
-                    right[0].base.position += correction[1];
-                    let impulse =
-                        contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
-                    if left[a].rope.is_none() {
-                        left[a].rock.body.force += impulse;
-                    }
-                    if right[0].rope.is_none() {
-                        right[0].rock.body.force += impulse;
-                    }
-                    left[a].base.velocity = left[a].rock.body.velocity;
-                    right[0].base.velocity = right[0].rock.body.velocity;
+                pairs[pair_count] = if rock_min(b) < rock_min(a) { (b, a) } else { (a, b) };
+                pair_count += 1;
+            }
+        }
+        let pairs = &mut pairs[..pair_count];
+        pairs.sort_by_key(|&(a, b)| (rock_min(b), rock_min(a)));
+        for &(a, b) in pairs.iter() {
+            let ca = Circle {
+                center: self.players[a].base.position,
+                radius: self.players[a].rock.collider_radius,
+            };
+            let cb = Circle {
+                center: self.players[b].base.position,
+                radius: self.players[b].rock.collider_radius,
+            };
+            let Some(contact) = crate::physics::contact::circle_circle(ca, cb) else {
+                continue;
+            };
+            let [first, second] = self.players.get_disjoint_mut([a, b]).unwrap();
+            let a_position = first.base.position;
+            let b_position = second.base.position;
+            resolve(contact, &mut first.rock.body, &mut second.rock.body, a_position, b_position);
+            let correction = positional_correction(
+                contact,
+                first.rock.body.inverse_mass,
+                second.rock.body.inverse_mass,
+                false,
+            );
+            first.base.position += correction[0];
+            second.base.position += correction[1];
+            let impulse = contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
+            for rock in [first, second] {
+                if rock.rope.is_none() {
+                    rock.rock.body.force += impulse;
                 }
+                rock.base.velocity = rock.rock.body.velocity;
             }
         }
 
