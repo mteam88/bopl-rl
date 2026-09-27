@@ -1500,6 +1500,8 @@ pub struct GunState {
     /// bypass retains the gun form's aimed FixTransform basis for its final
     /// DetPhysics sync instead of zeroing it through GunTransform.ExitAbility.
     pub forced_exit_tick: u32,
+    /// That retained FixTransform: its right vector and rotation.
+    pub forced_exit_basis: (Vec2, Fix),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -25926,6 +25928,7 @@ impl RolloutWorld {
                 | ActiveAbility::Duplicator
         ) {
             slot.gun.forced_exit_tick = self.tick;
+            slot.gun.forced_exit_basis = (slot.base.up.perp_cw(), slot.base.rotation);
         }
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
@@ -36018,10 +36021,9 @@ impl RolloutWorld {
                         (synced, rotation)
                     } else if forced_exit {
                         // The bypass leaves the disabled form's FixTransform on
-                        // its aimed basis, but `exit_form_for_freeze` has
-                        // already zeroed the shared body rotation for the
-                        // restored slime, so the aim is what survives here.
-                        (synced, slot.gun.aim.normalized_angle())
+                        // its aimed basis, which `exit_form_for_freeze` saved
+                        // before zeroing the shared body for the restored slime.
+                        (synced, slot.gun.forced_exit_basis.1)
                     } else {
                         (exit_position, Fix::ZERO)
                     };
@@ -36029,8 +36031,10 @@ impl RolloutWorld {
                     // DPhysicsBox translates its authored offset with the
                     // exact FixTransform basis copied/assigned by GunTransform,
                     // while its axes are rebuilt from the scalar angle.
-                    let offset_basis = if freezing || forced_exit {
+                    let offset_basis = if freezing {
                         slot.gun.collider_up.perp_cw()
+                    } else if forced_exit {
+                        slot.gun.forced_exit_basis.0
                     } else {
                         basis
                     };
