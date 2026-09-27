@@ -20795,51 +20795,56 @@ impl RolloutWorld {
             return;
         }
         let config = throw_config(data, ability);
-        let new_collider_id = self.thrown_items[item_index]
-            .entity
-            .is_none()
-            .then(|| self.next_id());
         let scale = self.players[index].player_scale;
-        let base_id = self.players[index].base.id;
         let item = &mut self.thrown_items[item_index];
         item.hurt_owner_delay = config.hurt_owner_delay * scale;
         item.body.force += Vec2::UP * (scale * config.min_force * Fix::from_int(60));
         if item.entity.is_none() {
-            item.id = new_collider_id.expect("forced throw collider id");
-            let entity = self.entities.len();
-            item.entity = Some(entity);
-            self.entities.push(CEntity {
-                id: item.id,
-                kind: 0,
-                layer: config.item_layer,
-                // Same rule as Fire: Tack's payload binds its Projectile id in
-                // BananaPeel's first updater pass, which a held payload has
-                // already passed through, so the row is owned the moment
-                // ManualInit registers the collider. Mjolnir and Poke ball
-                // gate that pass on the collider existing, so they take the
-                // owner from their own tick later in this same pass instead.
-                owner: if ability == ABILITY_TACK && item.launched {
-                    base_id
-                } else {
-                    0
-                },
-                flags: E_ACTIVE | E_ENABLED,
-                hierarchy: 100_000_000 + item.hierarchy_base + config.item_collider_hierarchy,
-                x: item.position.x.raw(),
-                y: item.position.y.raw(),
-                vx: item.body.velocity.x.raw(),
-                vy: item.body.velocity.y.raw(),
-                rotation: item.body.orientation.raw(),
-                angular_velocity: item.body.angular_velocity.raw(),
-                radius: (config.item_radius * item.scale).raw(),
-                inverse_mass: item.body.inverse_mass.raw(),
-                ..CEntity::default()
-            });
-            if by_callback {
-                item.callback_registered_tick = self.tick;
-            }
+            self.register_held_item(item_index, by_callback, data);
         }
         self.players[index].throw_item.has_fired = true;
+    }
+
+    /// DPhysicsCircle.ManualInit on a held ThrowItem2 payload.
+    fn register_held_item(&mut self, item_index: usize, by_callback: bool, data: &data::RolloutData) {
+        let ability = self.thrown_items[item_index].ability;
+        let config = throw_config(data, ability);
+        let base_id = self.players[self.thrown_items[item_index].owner].base.id;
+        let id = self.next_id();
+        let item = &mut self.thrown_items[item_index];
+        item.id = id;
+        let entity = self.entities.len();
+        item.entity = Some(entity);
+        self.entities.push(CEntity {
+            id: item.id,
+            kind: 0,
+            layer: config.item_layer,
+            // Same rule as Fire: Tack's payload binds its Projectile id in
+            // BananaPeel's first updater pass, which a held payload has
+            // already passed through, so the row is owned the moment
+            // ManualInit registers the collider. Mjolnir and Poke ball
+            // gate that pass on the collider existing, so they take the
+            // owner from their own tick later in this same pass instead.
+            owner: if ability == ABILITY_TACK && item.launched {
+                base_id
+            } else {
+                0
+            },
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000 + item.hierarchy_base + config.item_collider_hierarchy,
+            x: item.position.x.raw(),
+            y: item.position.y.raw(),
+            vx: item.body.velocity.x.raw(),
+            vy: item.body.velocity.y.raw(),
+            rotation: item.body.orientation.raw(),
+            angular_velocity: item.body.angular_velocity.raw(),
+            radius: (config.item_radius * item.scale).raw(),
+            inverse_mass: item.body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        if by_callback {
+            item.callback_registered_tick = self.tick;
+        }
     }
 
     /// GunTransform.UpdateSim for the ray-gun form. Freeze is the first user:
@@ -25935,6 +25940,18 @@ impl RolloutWorld {
             slot.gun.forced_exit_tick = self.tick;
             slot.gun.forced_exit_basis = (slot.base.up.perp_cw(), slot.base.rotation);
         }
+        if matches!(
+            slot.active,
+            ActiveAbility::Grenade
+                | ActiveAbility::Smoke
+                | ActiveAbility::Tack
+                | ActiveAbility::Mjolnir
+                | ActiveAbility::PokeBall
+        ) {
+            // The throw form's box syncs once more from its FixTransform,
+            // which LateUpdateSim last turned onto the surface.
+            slot.throw_item.collider_rotation = slot.base.rotation;
+        }
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
         slot.base.radius = data.player.radius;
@@ -29109,6 +29126,36 @@ impl RolloutWorld {
                 continue;
             }
             let ability = self.thrown_items[item_index].ability;
+            // Grenade.UpdateSim lets go of a payload whose ThrowItem2 form was
+            // deactivated without its ExitAbility, as a freeze ray does: the
+            // payload is thrown where it hangs, with a second's owner grace.
+            if self.thrown_items[item_index].entity.is_none()
+                && self.thrown_items[item_index].born_tick < self.tick
+                && matches!(
+                    ability,
+                    ABILITY_GRENADE
+                        | ABILITY_SMOKE
+                        | ABILITY_TACK
+                        | ABILITY_MJOLNIR
+                        | ABILITY_POKE_BALL
+                )
+            {
+                let thrower = &self.players[self.thrown_items[item_index].owner];
+                let holding = thrower.throw_item.item == Some(item_index)
+                    && matches!(
+                        thrower.active,
+                        ActiveAbility::Grenade
+                            | ActiveAbility::Smoke
+                            | ActiveAbility::Tack
+                            | ActiveAbility::Mjolnir
+                            | ActiveAbility::PokeBall
+                    )
+                    && active_throw_ability(thrower.active) == ability;
+                if !holding {
+                    self.thrown_items[item_index].hurt_owner_delay = Fix::ONE;
+                    self.register_held_item(item_index, false, data);
+                }
+            }
             // Grenade.UpdateSim comes first on the Grenade and SmokeGrenade
             // prefabs, so a fuse that runs out on the pass the item leaves the
             // bounds detonates it before DestroyIfOutsideSceneBounds sees it.
