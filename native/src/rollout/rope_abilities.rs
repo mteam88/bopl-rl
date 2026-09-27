@@ -346,14 +346,17 @@ impl RolloutWorld {
                     self.players[player].cooldowns[ability_slot] = Fix::from_int(10_000);
                 }
             }
+            // The countdown waits while no web is held and a new cast does not
+            // reset it, so a strand released just before a recast times out
+            // the new web instead (WebSwing.cs:96-109).
             let state = self.players[player].web_swing[ability_slot];
-            if state.linger_left > Fix::ZERO {
+            if state.linger_left > Fix::ZERO
+                && let Some(rope) = state.rope
+            {
                 let left = state.linger_left - DT;
                 self.players[player].web_swing[ability_slot].linger_left = left;
                 if left <= Fix::ZERO {
-                    if let Some(rope) = state.rope {
-                        self.disable_rope(rope);
-                    }
+                    self.disable_rope(rope);
                     self.players[player].web_swing[ability_slot].rope = None;
                 }
             }
@@ -413,7 +416,12 @@ impl RolloutWorld {
                 remains = self.ropes[rope_index].physics.reel(8, false);
             }
             if !remains {
-                let endpoint = self.ropes[rope_index].physics.count - 1;
+                // HookshotInstant lands the slime on the end it does not hold.
+                let endpoint = if self.players[player].rope_top {
+                    self.ropes[rope_index].physics.count - 1
+                } else {
+                    0
+                };
                 let delta = self.ropes[rope_index].physics.segment[endpoint]
                     - self.players[player].base.position;
                 if !self.players[player].base.grounded {
@@ -665,17 +673,21 @@ impl RolloutWorld {
         self.attach_player_rope(player, None, false);
         self.attach_player_rope(player, Some(rope), false);
         if self.players[player].base.grounded {
-            self.players[player].base.force_unground(&self.platforms);
-            self.players[player].base.rotation = Fix::ZERO;
-            self.players[player].base.up = Vec2::UP;
-            self.players[player].base.velocity += Vec2::UP * WEB_GROUNDED_POP;
+            // UnGround raises OnNoLongerGrounded: State.fall.
+            let slot = &mut self.players[player];
+            slot.base.force_unground(&self.platforms);
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.base.velocity += Vec2::UP * WEB_GROUNDED_POP;
+            slot.obs_state = STATE_FALL;
+            slot.state_ticks = 0;
         }
         self.players[player].web_swing[ability_slot] = WebSwingState {
             rope: Some(rope),
             rope_number: number,
             cooldown_set: false,
             fire_tick: self.tick as i32,
-            linger_left: Fix::ZERO,
+            linger_left: self.players[player].web_swing[ability_slot].linger_left,
         };
     }
 
@@ -890,15 +902,15 @@ impl RolloutWorld {
                 self.ropes[index].physics.time_since_hook_arrived += DT * self.player_time_scale;
             }
             // Rope.UpdateSim drops a rope with both ends offscreen or either
-            // end twice as far out (below the water counts as offscreen).
+            // end twice as far out (below the water counts as offscreen). The
+            // hook's own RopeAttachment then destroys the hook with it.
             let physics = &self.ropes[index].physics;
             let (first, last) = (physics.segment[0], physics.segment[physics.count - 1]);
             if (offscreen(first, water, Fix::ONE) && offscreen(last, water, Fix::ONE))
                 || offscreen(first, water, Fix::from_int(2))
                 || offscreen(last, water, Fix::from_int(2))
             {
-                self.ropes[index].physics.enabled = false;
-                self.ropes[index].disabled_this_frame = true;
+                self.disable_rope(index);
                 continue;
             }
             if let Some(hole_index) = self.ropes[index].black_hole {
