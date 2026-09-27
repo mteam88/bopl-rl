@@ -31046,8 +31046,8 @@ impl RolloutWorld {
 
         // Tesla nodes are circle children of their platform's CompositeBody
         // and share this pass; participants from NODE up are nodes. Portal
-        // shots are Projectile-layer circles like the items; participants
-        // from SHOT up are shots.
+        // shots are item-layer circles like the items; participants from
+        // SHOT up are shots.
         const NODE: usize = 1 << 16;
         const SHOT: usize = 1 << 15;
         let items = &self.thrown_items;
@@ -31133,9 +31133,10 @@ impl RolloutWorld {
             let current_min = axis(current_swept.center) - current_swept.radius;
             window.retain(|&prior| axis(swept(prior).center) + swept(prior).radius > current_min);
             for &prior in window.iter() {
-                // Shots only meet items here. Nodes of one platform share
-                // its composite, which DetPhysics never tests against itself.
-                if prior >= SHOT && current >= SHOT && (prior < NODE || current < NODE)
+                // Shots meet items and each other here, not nodes. Nodes of
+                // one platform share its composite, which DetPhysics never
+                // tests against itself.
+                if prior >= SHOT && current >= SHOT && (prior >= NODE) != (current >= NODE)
                     || prior >= NODE
                         && current >= NODE
                         && nodes[prior - NODE].platform_index
@@ -31186,6 +31187,35 @@ impl RolloutWorld {
                 self.platform_dynamics[b_platform].body = body_b;
                 self.platform_dynamics[b_platform].composite_position += correction[1];
                 self.tesla_nodes[b_index - NODE].collider_center += correction[1];
+                continue;
+            }
+            if (SHOT..NODE).contains(&a_index) && (SHOT..NODE).contains(&b_index) {
+                // The item layer collides with itself, so two portal shots
+                // bounce off each other; neither callback lands off a wall.
+                let (a, b) = (a_index - SHOT, b_index - SHOT);
+                let mut body_a = self.portal_shots[a].body;
+                let mut body_b = self.portal_shots[b].body;
+                let (a_position, b_position) =
+                    (self.portal_shots[a].position, self.portal_shots[b].position);
+                resolve(contact, &mut body_a, &mut body_b, a_position, b_position);
+                let correction =
+                    positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
+                let sides = [(a, body_a, correction[0]), (b, body_b, correction[1])];
+                for (shot_index, body, delta) in sides {
+                    let shot = &mut self.portal_shots[shot_index];
+                    shot.body = body;
+                    shot.position += delta;
+                    if let Some(entity) = shot.entity {
+                        let shot = *shot;
+                        let row = &mut self.entities[entity];
+                        row.x = shot.position.x.raw();
+                        row.y = shot.position.y.raw();
+                        row.vx = shot.body.velocity.x.raw();
+                        row.vy = shot.body.velocity.y.raw();
+                        row.rotation = shot.body.orientation.raw();
+                        row.angular_velocity = shot.body.angular_velocity.raw();
+                    }
+                }
                 continue;
             }
             if (SHOT..NODE).contains(&a_index) || (SHOT..NODE).contains(&b_index) {

@@ -646,12 +646,17 @@ impl RolloutWorld {
             }
             self.ropes[index].reel_out_time += DT;
             self.ropes[index].rope_time += DT;
+            // Rope.UpdateSim times out a rope whose hook has not arrived, even
+            // one already reeled out to full length.
+            if self.ropes[index].physics.time_since_hook_arrived < Fix::ZERO
+                && self.ropes[index].rope_time > source.rope_max_travel_time
+            {
+                self.disable_rope(index);
+                continue;
+            }
             if self.ropes[index].reel_in {
                 // Arrival leaves the current segment count fixed; player
                 // input performs the later reel-in and deletion.
-            } else if self.ropes[index].rope_time > source.rope_max_travel_time {
-                self.disable_rope(index);
-                continue;
             } else {
                 let count = self.ropes[index].physics.count;
                 let direction = (self.ropes[index].physics.segment[count - 1]
@@ -690,6 +695,22 @@ impl RolloutWorld {
                     } else {
                         self.ropes[index].reel_in = true;
                     }
+                }
+            }
+            // The flying hook's RopeAttachment updates between Rope and
+            // RopeHook. A rope stretched past its break length is let go and
+            // the hook destroyed; the Rope keeps reeling out until it times out.
+            let physics = &self.ropes[index].physics;
+            if self.ropes[index].hook_active
+                && (0..physics.count - 2).any(|segment| {
+                    (physics.segment[segment] - physics.segment[segment + 1]).length_squared()
+                        > PLATFORM_BREAK_STRETCH
+                })
+            {
+                self.deattach_rope(index, true);
+                self.ropes[index].hook_active = false;
+                if let Some(entity) = self.ropes[index].hook_entity {
+                    self.entities[entity].flags = E_REMOVED;
                 }
             }
             if self.ropes[index].hook_active {
