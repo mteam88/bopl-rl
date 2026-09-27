@@ -7660,6 +7660,20 @@ impl RolloutWorld {
             })
     }
 
+    /// PlayerInfo.upVector on ability entry (SlimeController.cs:666): the
+    /// normalized ground normal at the body when grounded, not PlayerBody.up;
+    /// the re-normalisation can move the unit normal by an LSB.
+    fn entry_up(&self, index: usize) -> Vec2 {
+        let base = &self.players[index].base;
+        if !base.grounded {
+            return Vec2::UP;
+        }
+        base.ground
+            .and_then(|id| self.platforms.iter().find(|p| p.id == id))
+            .map_or(base.up, |p| p.surface.normal(base.position))
+            .normalized()
+    }
+
     fn player_tick(
         &mut self,
         index: usize,
@@ -8959,18 +8973,13 @@ impl RolloutWorld {
                         self.players[index].active_slot = s;
                         self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
+                        let aim = self.entry_up(index);
                         let slot = &mut self.players[index];
                         // BowTransform.OnEnterAbility: aim starts at
-                        // PlayerInfo.upVector = Normalized(ground normal) when
-                        // grounded, else Vec2.up (SlimeController.cs:666); the
-                        // re-normalisation moves the unit normal by an LSB.
-                        // Airborne entry slows to a tenth (slow-mo).
+                        // PlayerInfo.upVector. Airborne entry slows to a tenth
+                        // (slow-mo).
                         slot.bow = BowState {
-                            aim: if slot.base.grounded {
-                                slot.base.up.normalized()
-                            } else {
-                                Vec2::UP
-                            },
+                            aim,
                             ..BowState::default()
                         };
                         // Ability.EnterAbility scales the box, then
@@ -9239,20 +9248,10 @@ impl RolloutWorld {
                         // MulByNegI(ground normal) when grounded (taken before the
                         // facing flip, SlimeController.cs:659).
                         let self_imposed = self.entry_self_imposed(index);
-                        let (position, rotation, player_up, scale) = {
+                        let player_up = self.entry_up(index);
+                        let (position, rotation, scale) = {
                             let slot = &self.players[index];
-                            (
-                                slot.base.position,
-                                slot.base.rotation,
-                                if slot.base.grounded {
-                                    // SlimeController snapshots PlayerInfo.upVector as the
-                                    // normalized attached-ground normal, not PlayerBody.up.
-                                    slot.base.up.normalized()
-                                } else {
-                                    Vec2::UP
-                                },
-                                slot.player_scale,
-                            )
+                            (slot.base.position, slot.base.rotation, slot.player_scale)
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
