@@ -2615,6 +2615,8 @@ struct PlatformScratch {
     item_window: Vec<usize>,
     item_contacts: Vec<(usize, usize, Contact)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
+    /// Sweep keys of the item and Tesla node wall manifolds, resolved as one batch.
+    circle_wall_order: Vec<(Fix, Fix, bool, usize)>,
     pickup_order: Vec<usize>,
     pickup_window: Vec<usize>,
     pickup_contacts: Vec<(usize, usize, Contact)>,
@@ -2879,6 +2881,7 @@ impl RolloutWorld {
                 item_window: Vec::with_capacity(192),
                 item_contacts: Vec::with_capacity(256),
                 item_platform_contacts: Vec::with_capacity(256),
+                circle_wall_order: Vec::with_capacity(256),
                 pickup_order: Vec::with_capacity(16),
                 pickup_window: Vec::with_capacity(16),
                 pickup_contacts: Vec::with_capacity(32),
@@ -6119,7 +6122,7 @@ impl RolloutWorld {
         // DetPhysics corrects every Circle/RR pair before any Circle/Circle
         // one, so an item's wall correction moves it before an arrow's
         // manifold with it is built.
-        if has_thrown_item {
+        if has_thrown_item || has(ABILITY_TESLA) {
             for item in &mut self.thrown_items {
                 item.swept_position = item.position;
             }
@@ -30997,6 +31000,8 @@ impl RolloutWorld {
         // the pair's later bounding box on the sweep axis, then the earlier
         // one's. A wall two items touch sees the first item's impulse and
         // correction before the second's.
+        let node_contacts = std::mem::take(&mut self.scratch.tesla_wall_contacts);
+        let mut order = std::mem::take(&mut self.scratch.circle_wall_order);
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let item_min = |item_index: usize| {
@@ -31020,7 +31025,29 @@ impl RolloutWorld {
             let (a, b) = (item_min(item_index), platform_min(platform_index));
             (a.max(b), a.min(b))
         });
-        for &(item_index, platform_index, contact) in &all_contacts {
+        // Tesla nodes' wall pairs are in the same Circle/RoundedRectangle
+        // batch, so their impulses interleave with the items' in sweep order.
+        let node_min = |node_index: usize| {
+            let node = &self.tesla_nodes[node_index];
+            axis(node.collider_center) - data.tesla.node_radius * node.collider_scale
+        };
+        order.clear();
+        order.extend(all_contacts.iter().enumerate().map(|(k, &(item_index, platform_index, _))| {
+            let (a, b) = (item_min(item_index), platform_min(platform_index));
+            (a.max(b), a.min(b), false, k)
+        }));
+        order.extend(node_contacts.iter().enumerate().map(|(k, &(node_index, wall_index, _))| {
+            let (a, b) = (node_min(node_index), platform_min(wall_index));
+            (a.max(b), a.min(b), true, k)
+        }));
+        order.sort_by_key(|&(high, low, _, _)| (high, low));
+        for &(_, _, node, k) in &order {
+            if node {
+                let (node_index, wall_index, contact) = node_contacts[k];
+                self.resolve_tesla_wall_contact(node_index, wall_index, contact);
+                continue;
+            }
+            let (item_index, platform_index, contact) = all_contacts[k];
             let (platform_center, own_inverse_mass) = self.platform_contact_frame(platform_index);
             let item = &mut self.thrown_items[item_index];
             let platform_body = &mut self.platform_dynamics[platform_index].body;
@@ -31030,9 +31057,11 @@ impl RolloutWorld {
             item.position += correction[0];
             self.shift_platform_collider(platform_index, correction[1]);
         }
-        if !all_contacts.is_empty() {
+        if !order.is_empty() {
             self.platforms_changed();
         }
+        self.scratch.tesla_wall_contacts = node_contacts;
+        self.scratch.circle_wall_order = order;
 
         for item_index in 0..self.thrown_items.len() {
             if !self.thrown_items[item_index].active
@@ -33502,6 +33531,8 @@ impl RolloutWorld {
     /// captured before resolution, as DetPhysics does for each shape group.
     /// A Tesla node's circle is a child of its platform's CompositeBody, so a
     /// Circle/RoundedRect contact with another wall moves the whole composite.
+    /// Only the manifolds are built here: thrown_item_platform_contacts
+    /// resolves them in sweep order with the items' walls.
     fn tesla_wall_contacts(&mut self, data: &data::RolloutData) {
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.tesla_wall_contacts.clear();
@@ -33531,58 +33562,34 @@ impl RolloutWorld {
                 }
             }
         }
-        // Resolved in SortAndSweep order, as rocks_contacts: two nodes
-        // touching one wall hand it their impulses in sweep order.
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let node_min = |node_index: usize| {
-            let node = &self.tesla_nodes[node_index];
-            axis(node.collider_center) - data.tesla.node_radius * node.collider_scale
-        };
-        let wall_min = |wall_index: usize| {
-            let wall = scratch
-                .callback_colliders
-                .get(wall_index)
-                .filter(|_| scratch.callback_tick == Some(self.tick))
-                .or(scratch.circle_colliders.get(wall_index))
-                .copied()
-                .unwrap_or(self.platforms[wall_index].collider);
-            axis(wall.inner.center)
-                - axis(wall.inner.right).abs()
-                - axis(wall.inner.up).abs()
-                - wall.radius
-        };
-        let mut contacts = std::mem::take(&mut scratch.tesla_wall_contacts);
-        contacts.sort_by_key(|&(node_index, wall_index, _)| {
-            let (a, b) = (node_min(node_index), wall_min(wall_index));
-            (a.max(b), a.min(b))
-        });
-        scratch.tesla_wall_contacts = contacts;
-        let mut changed_platform = false;
-        for &(node_index, wall_index, contact) in &scratch.tesla_wall_contacts {
-            let node = self.tesla_nodes[node_index];
-            let parent_index = node.platform_index;
-            let parent_position = self.platform_dynamics[parent_index].composite_position;
-            let (wall_position, wall_inverse_mass) = self.platform_contact_frame(wall_index);
-            let (node_body, wall_body) = if parent_index < wall_index {
-                let (left, right) = self.platform_dynamics.split_at_mut(wall_index);
-                (&mut left[parent_index].body, &mut right[0].body)
-            } else {
-                let (left, right) = self.platform_dynamics.split_at_mut(parent_index);
-                (&mut right[0].body, &mut left[wall_index].body)
-            };
-            resolve(contact, node_body, wall_body, parent_position, wall_position);
-            let correction =
-                positional_correction(contact, node.body.inverse_mass, wall_inverse_mass, false);
-            self.platform_dynamics[parent_index].composite_position += correction[0];
-            self.tesla_nodes[node_index].collider_center += correction[0];
-            self.shift_platform_collider(wall_index, correction[1]);
-            changed_platform = true;
-        }
         self.scratch = scratch;
-        if changed_platform {
-            self.platforms_changed();
-        }
+    }
+
+    /// Resolves one Tesla node's wall manifold, queued by tesla_wall_contacts.
+    /// The node's impulse and correction move its platform's composite.
+    fn resolve_tesla_wall_contact(
+        &mut self,
+        node_index: usize,
+        wall_index: usize,
+        contact: Contact,
+    ) {
+        let node = self.tesla_nodes[node_index];
+        let parent_index = node.platform_index;
+        let parent_position = self.platform_dynamics[parent_index].composite_position;
+        let (wall_position, wall_inverse_mass) = self.platform_contact_frame(wall_index);
+        let (node_body, wall_body) = if parent_index < wall_index {
+            let (left, right) = self.platform_dynamics.split_at_mut(wall_index);
+            (&mut left[parent_index].body, &mut right[0].body)
+        } else {
+            let (left, right) = self.platform_dynamics.split_at_mut(parent_index);
+            (&mut right[0].body, &mut left[wall_index].body)
+        };
+        resolve(contact, node_body, wall_body, parent_position, wall_position);
+        let correction =
+            positional_correction(contact, node.body.inverse_mass, wall_inverse_mass, false);
+        self.platform_dynamics[parent_index].composite_position += correction[0];
+        self.tesla_nodes[node_index].collider_center += correction[0];
+        self.shift_platform_collider(wall_index, correction[1]);
     }
 
     fn rocks_contacts(&mut self, data: &data::RolloutData) {
