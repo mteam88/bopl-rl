@@ -16789,6 +16789,12 @@ impl RolloutWorld {
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
         self.players[index].base.gravity_step(terrain!(self));
+        // DestroyIfOutsideSceneBounds (5) runs before PlayerBody, and
+        // MachoThrow2.ExitAbility drops the held boulder.
+        if self.ability_boundary_kill(index, false) {
+            self.drop_macho_held_boulder(index, data);
+            return;
+        }
         self.form_body_move(index, jump_pressed);
 
         let button = 2u8 << self.players[index].active_slot;
