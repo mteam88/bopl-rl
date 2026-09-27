@@ -89,8 +89,9 @@ pub(crate) struct RolloutRope {
     /// surface coordinate after DetPhysics synced the platform the contact
     /// passes pushed.
     pub hook_hit: Option<Vec2>,
+    /// RopeHook.OnCollide takes the hit collider's centre, so a rope that
+    /// meets a black hole hangs off the hole's centre.
     pub black_hole: Option<usize>,
-    pub black_hole_local: Vec2,
     pub black_hole_reel_frames: usize,
     /// A body the hook stuck to through AttachToNonPlatform: the rope hangs
     /// off its collider centre and pulls on it.
@@ -177,7 +178,6 @@ fn empty_rope() -> RolloutRope {
         platform_gone: false,
         hook_hit: None,
         black_hole: None,
-        black_hole_local: Vec2::ZERO,
         black_hole_reel_frames: 0,
         parent: None,
         segment_ids: [0; MAX_SEGMENTS - 1],
@@ -236,7 +236,6 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
         rope.platform_gone = false;
         rope.hook_hit = None;
         rope.black_hole = None;
-        rope.black_hole_local = Vec2::ZERO;
         rope.black_hole_reel_frames = 0;
         rope.parent = None;
         rope.hook_active = false;
@@ -288,7 +287,6 @@ impl RolloutWorld {
         rope.platform_top = true;
         rope.platform_attach_tick = self.tick;
         rope.black_hole = None;
-        rope.black_hole_local = Vec2::ZERO;
         rope.black_hole_reel_frames = 0;
         rope.parent = None;
         rope.segment_ids = segment_ids;
@@ -1020,7 +1018,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let hole = self.black_holes[hole_index];
-                let anchor = hole.position + self.ropes[index].black_hole_local;
+                let anchor = hole.position;
                 if self.ropes[index].physics.time_since_hook_arrived > Fix::ZERO
                     && !self.ropes[index].physics.detached
                     && !stopped
@@ -1325,7 +1323,6 @@ impl RolloutWorld {
                 break;
             }
             if let Some(hole_index) = attached_hole {
-                let hole = self.black_holes[hole_index];
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.mass_start = Fix::ONE;
                 rope.physics.force_start = Vec2::ZERO;
@@ -1335,7 +1332,6 @@ impl RolloutWorld {
                 rope.time_air_start = Fix::ONE;
                 rope.platform = None;
                 rope.black_hole = Some(hole_index);
-                rope.black_hole_local = position - hole.position;
                 rope.black_hole_reel_frames = 0;
                 rope.reel_in = true;
                 rope.hook_active = false;
@@ -1589,7 +1585,7 @@ impl RolloutWorld {
                 && self.black_holes[hole_index].active
             {
                 let hole = self.black_holes[hole_index];
-                rope.physics.segment[0] = hole.position + rope.black_hole_local;
+                rope.physics.segment[0] = hole.position;
             }
             if let Some(position) = rope.parent.and_then(|parent| parent_position(players, items, shots, parent)) {
                 rope.physics.segment[0] = position;
