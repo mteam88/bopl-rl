@@ -13338,7 +13338,11 @@ impl RolloutWorld {
 
             for player_index in 0..self.players.len() {
                 let player = &self.players[player_index];
-                if !player.base.alive || player.out || player.respawn_ticks > 0 {
+                if !player.base.alive
+                    || player.out
+                    || player.respawn_ticks > 0
+                    || player.blink_tunnel_active
+                {
                     continue;
                 }
                 let entity = match player.active {
@@ -13445,7 +13449,8 @@ impl RolloutWorld {
 
             for clone_index in 0..self.abilityless_clones.len() {
                 let clone = &self.abilityless_clones[clone_index];
-                if !clone.active {
+                // DetPhysics.IsActive skips a slime hidden in a Blink tunnel.
+                if !clone.active || clone.blink_tunnel_active {
                     continue;
                 }
                 let Some(_entity) = clone.entity else {
@@ -25406,8 +25411,13 @@ impl RolloutWorld {
         clone.blink_tunnel_age = Fix::ZERO;
         clone.blink_tunnel_released = false;
         clone.blink_reactivated_tick = None;
+        // The hidden slime's transform is its body's, ahead of the collider
+        // row synced before this pass's move.
+        let position = clone.base.position;
         if let Some(entity) = clone.entity {
             self.entities[entity].flags &= !E_ACTIVE;
+            self.entities[entity].x = position.x.raw();
+            self.entities[entity].y = position.y.raw();
         }
     }
 
@@ -36996,10 +37006,11 @@ impl RolloutWorld {
         });
         for &index in &clone_order[..clone_count] {
             let clone = &self.abilityless_clones[index];
+            let active = if clone.blink_tunnel_active { 0 } else { S_ACTIVE };
             slimes.push(CSlime {
                 id: clone.entity.map_or(0, |entity| self.entities[entity].id),
                 owner: clone.base.id,
-                flags: S_ACTIVE | S_SPAWNED | S_SIMULATED | S_ABILITYLESS,
+                flags: active | S_SPAWNED | S_SIMULATED | S_ABILITYLESS,
                 state: clone.obs_state,
                 x: clone.base.position.x.raw(),
                 y: clone.base.position.y.raw(),
