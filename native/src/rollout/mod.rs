@@ -35981,13 +35981,16 @@ impl RolloutWorld {
             let body_active = body.flags & E_ACTIVE != 0;
             // onEnterAbility deactivates the slime after this pass's Move
             // (SlimeController.cs:1084); its frozen FixTransform is what the
-            // hurtbox shows for the rest of the ability.
+            // hurtbox shows for the rest of the ability. DetPhysics syncs that
+            // FixTransform every pass (DetPhysics.cs:2498-2530), so a slime
+            // that left one form and cast the next this pass shows the new one.
             let (center, angle) = if body_active || slime_teleporting {
                 (synced, rotation)
             } else {
                 (slot.ability_origin, slot.ability_origin_rotation)
             };
-            if body_active || body_was_active || slime_teleporting {
+            let in_form = alive && (dashing || in_ability);
+            if body_active || body_was_active || slime_teleporting || in_form {
                 body.x = center.x.raw();
                 body.y = center.y.raw();
                 // The hurtbox has PlayerBody movement on the same GameObject
@@ -37084,7 +37087,8 @@ impl RolloutWorld {
             } else {
                 (slot.ability_origin, slot.ability_origin_rotation)
             };
-            if body_active || body_was_active || teleporting {
+            let in_form = alive && (dashing || in_ability);
+            if body_active || body_was_active || teleporting || in_form {
                 body.x = center.x.raw();
                 body.y = center.y.raw();
                 body.vx = 0;
