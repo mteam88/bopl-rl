@@ -1732,6 +1732,10 @@ pub struct MachoThrowState {
     pub facing_right: bool,
     pub current_dummy_pos: Vec2,
     pub held_boulder: Option<usize>,
+    /// LateUpdateSim's UpdateHeldBoulder pose, taken after DetPhysics pushed
+    /// the body. It moves only the boulder's body, so it is unobserved unless
+    /// Fire launches from it before the next UpdateSim rewrites the pose.
+    pub late_pose: Option<(Vec2, Fix)>,
     /// RocketEngine selected by pickUpNearbyAttachables. The source keeps the
     /// same inactive object until SpawnBoulder reparents and reinitializes it.
     pub picked_engine: Option<usize>,
@@ -6307,6 +6311,21 @@ impl RolloutWorld {
                     outward = Vec2::UP;
                 }
                 self.land_portal_shot(shot_index, outward, false, data);
+            }
+            // The shot prefab's DestroyIfOutsideSceneBounds (DoNotDestroyUp)
+            // runs after PortalShot and drops it below the water or past the
+            // side blast zones, with no portal.
+            let shot = &mut self.portal_shots[shot_index];
+            if shot.active
+                && (shot.position.y < data.maps[self.map].lower_boundary()
+                    || shot.position.x.abs() > Fix::from_f64(131.25))
+            {
+                shot.active = false;
+                shot.registered = false;
+                if let Some(entity) = shot.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                    self.entities[entity].owner = 0;
+                }
             }
         }
     }
@@ -15926,18 +15945,14 @@ impl RolloutWorld {
             return;
         }
         let velocity = self.platform_dynamics[platform_index].body.velocity;
+        let position = self.macho_held_position(index, data);
+        let rotation = self.players[index].base.rotation;
         if sync_pose {
-            // This is the pre-physics UpdateSim write. LateUpdateSim writes
-            // the same FixTransform pose after collider synchronization, so
-            // it is intentionally deferred until the following pass here.
-            let position = self.macho_held_position(index, data);
-            let rotation = self.players[index].base.rotation;
-            self.platforms[platform_index].surface.center = position;
-            self.platforms[platform_index].collider.inner.center = position;
-            self.platform_dynamics[platform_index].composite_position = position;
-            self.platform_dynamics[platform_index].home_position = position;
-            self.platform_dynamics[platform_index].transform_rotation = Some(rotation);
-            self.platforms_changed();
+            // The pre-physics UpdateSim write.
+            self.players[index].macho_throw.late_pose = None;
+            self.place_macho_boulder(platform_index, position, rotation);
+        } else {
+            self.players[index].macho_throw.late_pose = Some((position, rotation));
         }
         self.platform_dynamics[platform_index].body.velocity = Vec2::ZERO;
         self.platform_dynamics[platform_index].body.angular_velocity = Fix::ZERO;
@@ -15948,6 +15963,15 @@ impl RolloutWorld {
         // moves the result by up to 17 raw per component.
         self.players[index].base.external_velocity +=
             velocity * data.macho_throw.force_from_boulder / Fix::from_int(35) * Fix::from_int(35);
+    }
+
+    fn place_macho_boulder(&mut self, platform_index: usize, position: Vec2, rotation: Fix) {
+        self.platforms[platform_index].surface.center = position;
+        self.platforms[platform_index].collider.inner.center = position;
+        self.platform_dynamics[platform_index].composite_position = position;
+        self.platform_dynamics[platform_index].home_position = position;
+        self.platform_dynamics[platform_index].transform_rotation = Some(rotation);
+        self.platforms_changed();
     }
 
     fn macho_shrink_ground(&mut self, index: usize, data: &data::RolloutData) {
@@ -16503,6 +16527,9 @@ impl RolloutWorld {
         let platform_index = self.macho_boulders[boulder_index].platform_index;
         if platform_index >= self.platforms.len() {
             return;
+        }
+        if !quick && let Some((position, rotation)) = self.players[index].macho_throw.late_pose.take() {
+            self.place_macho_boulder(platform_index, position, rotation);
         }
         let body_right = self.players[index].base.up.perp_cw();
         let body_up = self.players[index].base.up;
@@ -27273,18 +27300,8 @@ impl RolloutWorld {
                 continue;
             };
             if platform_index == index {
-                let top = rope.platform_top;
-                rope.physics
-                    .set_mass(data::get().ropes.non_platform_mass, top, Fix::ONE);
-                if top {
-                    rope.time_air_start = Fix::from_int(100);
-                    rope.physics.force_start = Vec2::ZERO;
-                } else {
-                    rope.time_air_end = Fix::from_int(100);
-                    rope.physics.force_end = Vec2::ZERO;
-                }
-                rope.physics.detach(top);
                 rope.platform = None;
+                rope.platform_gone = true;
             } else if platform_index > index {
                 rope.platform = Some(platform_index - 1);
             }

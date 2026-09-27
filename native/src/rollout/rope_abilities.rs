@@ -82,6 +82,9 @@ pub(crate) struct RolloutRope {
     pub platform_top: bool,
     /// A dynamically instantiated RopeAttachment joins Updater next pass.
     pub platform_attach_tick: u32,
+    /// The platform was removed; the attachment lets go in its next UpdateSim
+    /// and holds the end at `platform_anchor` until then.
+    pub platform_gone: bool,
     pub black_hole: Option<usize>,
     pub black_hole_local: Vec2,
     pub black_hole_reel_frames: usize,
@@ -167,6 +170,7 @@ fn empty_rope() -> RolloutRope {
         platform_pull: PLATFORM_PULL,
         platform_top: true,
         platform_attach_tick: 0,
+        platform_gone: false,
         black_hole: None,
         black_hole_local: Vec2::ZERO,
         black_hole_reel_frames: 0,
@@ -224,6 +228,7 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
         rope.platform_pull = PLATFORM_PULL;
         rope.platform_top = true;
         rope.platform_attach_tick = 0;
+        rope.platform_gone = false;
         rope.black_hole = None;
         rope.black_hole_local = Vec2::ZERO;
         rope.black_hole_reel_frames = 0;
@@ -271,6 +276,7 @@ impl RolloutWorld {
         rope.platform_anchor = platform.map_or(Vec2::ZERO, |platform| {
             self.platforms[platform].surface.position(platform_local, Fix::ZERO)
         });
+        rope.platform_gone = false;
         rope.platform_pull = PLATFORM_PULL;
         rope.platform_top = true;
         rope.platform_attach_tick = self.tick;
@@ -1015,6 +1021,11 @@ impl RolloutWorld {
                 }
                 continue;
             }
+            if std::mem::take(&mut self.ropes[index].platform_gone) {
+                let top = self.ropes[index].platform_top;
+                self.deattach_rope(index, top);
+                continue;
+            }
             let Some(platform) = self.ropes[index].platform else {
                 continue;
             };
@@ -1447,8 +1458,16 @@ impl RolloutWorld {
                 } else {
                     rope.physics.count - 1
                 };
-                rope.platform_anchor =
-                    self.platforms[platform].surface.position(rope.platform_local, Fix::ZERO);
+                // RepositionOnParent skips a destroyed platform, and the end
+                // stays where the attachment last stood (RopeAttachment.cs).
+                if self.entities[self.platform_entities[platform]].flags & E_DESTROYED == 0 {
+                    rope.platform_anchor =
+                        self.platforms[platform].surface.position(rope.platform_local, Fix::ZERO);
+                }
+                rope.physics.segment[endpoint] = rope.platform_anchor;
+            }
+            if rope.platform_gone {
+                let endpoint = if rope.platform_top { 0 } else { rope.physics.count - 1 };
                 rope.physics.segment[endpoint] = rope.platform_anchor;
             }
             if rope.born_tick != self.tick
