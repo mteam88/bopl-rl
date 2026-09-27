@@ -7897,7 +7897,12 @@ impl RolloutWorld {
                     // the sprite in the same callback, so the ability aims
                     // from the flipped facing. The held update_obs_state
                     // counts this pass, which the land animation also does.
-                    if slot.base.grounded && slot.obs_state == STATE_FALL {
+                    // A timed ragdoll that expired on the ground left
+                    // State.fall on a slime that stays attached
+                    // (SlimeController.cs:268, 1054-1060), and no attachToGround
+                    // fires to land it.
+                    let resting_fall = slot.ragdoll_grounded_fall && slot.base.grounded;
+                    if slot.base.grounded && slot.obs_state == STATE_FALL && !resting_fall {
                         if slot.base.attach_upside_down == Some(true) {
                             slot.facing_right = !slot.facing_right;
                         }
@@ -7923,7 +7928,7 @@ impl RolloutWorld {
                     if slot.base.grounded && !frozen.grounded {
                         slot.obs_state = STATE_FALL;
                         slot.state_ticks = 0;
-                    } else if slot.obs_state == STATE_FALL && frozen.grounded {
+                    } else if slot.obs_state == STATE_FALL && frozen.grounded && !resting_fall {
                         if frozen.attach_upside_down == Some(true) {
                             slot.facing_right = !slot.facing_right;
                         }
@@ -7937,6 +7942,10 @@ impl RolloutWorld {
                     // this post-gravity history for the form's exit.
                     if !data.abilities[ability as usize].instant {
                         slot.rope_prev[0] = (slot.base.velocity, slot.base.external_velocity);
+                        // onExitAbility always sets a fresh state
+                        // (SlimeController.cs:227-250), so the ragdoll's
+                        // grounded fall ends with the form.
+                        slot.ragdoll_grounded_fall = false;
                     }
                     slot.ability_origin = frozen.position;
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
