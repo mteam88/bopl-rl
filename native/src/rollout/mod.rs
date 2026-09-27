@@ -5729,7 +5729,7 @@ impl RolloutWorld {
                 }
             }
             if self.players[index].active == ActiveAbility::Roll {
-                self.roll_contacts_for(index, data);
+                self.roll_contacts_for(index, false, data);
             }
             // The shared movement slice marks a body dead when its previous
             // position is beyond a blast boundary. Convert that marker into
@@ -6119,6 +6119,11 @@ impl RolloutWorld {
         }
         if has_thrown_item {
             self.thrown_items_contacts(data);
+        }
+        if has(ABILITY_ROLL) {
+            for roller in 0..self.players.len() {
+                self.roll_contacts_for(roller, true, data);
+            }
         }
         if has(ABILITY_GRENADE) {
             self.grenade_explosion_contacts(data);
@@ -33546,21 +33551,29 @@ impl RolloutWorld {
     /// Roll.CollideExtraHurtBoxes plus the live circle/circle-or-box contact.
     /// The source dispatches every swept centre, but PlayerCollision accepts
     /// only the first kill in a frame; a fixed victim bitset has that result.
-    fn roll_contacts_for(&mut self, roller: usize, data: &data::RolloutData) {
+    /// Roll.Move's CollideExtraHurtBoxes walks the substep hurtboxes during
+    /// the updater pass; the hurtbox itself is a `main` DetPhysics contact at
+    /// its synced collider.
+    fn roll_contacts_for(&mut self, roller: usize, main: bool, data: &data::RolloutData) {
         if self.players[roller].active != ActiveAbility::Roll
             || !self.players[roller].roll.lethal
             || !self.playable(roller)
         {
             return;
         }
-        let mut centers = [Vec2::ZERO; 31];
-        let swept_len = usize::from(self.players[roller].roll.swept_len);
-        centers[..swept_len].copy_from_slice(&self.players[roller].roll.swept[..swept_len]);
-        centers[swept_len] = self.players[roller].base.position;
+        let mut centers = [Vec2::ZERO; 30];
+        let count = if main {
+            centers[0] = self.players[roller].base.collider.center;
+            1
+        } else {
+            let swept_len = usize::from(self.players[roller].roll.swept_len);
+            centers[..swept_len].copy_from_slice(&self.players[roller].roll.swept[..swept_len]);
+            swept_len
+        };
         let roller_entity = self.players[roller].roll_entity;
         let roller_id = self.players[roller].base.id;
 
-        for &center in &centers[..=swept_len] {
+        for &center in &centers[..count] {
             self.scratch.ray_hits.clear();
             let query = Circle {
                 center,
