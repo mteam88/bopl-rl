@@ -6074,7 +6074,7 @@ impl RolloutWorld {
         }
         self.scratch.circle_colliders.clear();
         self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
-        for node in &mut self.tesla_nodes {
+        for node in self.tesla_nodes.iter_mut().chain(&mut self.retired_tesla_contacts) {
             node.swept_center = node.collider_center;
         }
         self.ability_pickup_pair_contacts(data);
@@ -12810,6 +12810,13 @@ impl RolloutWorld {
                 center: node.collider_center,
                 radius: data.tesla.node_radius * node.collider_scale,
             };
+            // SortAndSweep pairs the node by its bounding box from before this
+            // pass's contacts pushed its platform; the manifold tests where
+            // they left it.
+            let swept_node = Circle {
+                center: node.swept_center,
+                ..node_circle
+            };
             let line = if node.line_active && node.line_collider_enabled {
                 Some(OrientedBox {
                     center: node.line_center,
@@ -12911,7 +12918,8 @@ impl RolloutWorld {
                     (
                         0,
                         axis(player.center) - player.radius,
-                        crate::physics::contact::circle_circle(node_circle, player).is_some(),
+                        swept_node.bounds_overlap(player)
+                            && crate::physics::contact::circle_circle(node_circle, player).is_some(),
                         line.is_some_and(|line| {
                             crate::physics::contact::circle_box(player, line).is_some()
                         }),
@@ -12928,10 +12936,17 @@ impl RolloutWorld {
                             Fix::ONE / up.length(),
                         ),
                     };
+                    let reach = Vec2::new(
+                        right.x.abs() + up.x.abs() + swept_node.radius,
+                        right.y.abs() + up.y.abs() + swept_node.radius,
+                    );
+                    let offset = swept_node.center - player.center;
                     (
                         1,
                         box_min(player),
-                        crate::physics::contact::circle_box(node_circle, player).is_some(),
+                        offset.x.abs() < reach.x
+                            && offset.y.abs() < reach.y
+                            && crate::physics::contact::circle_box(node_circle, player).is_some(),
                         line.is_some_and(|line| {
                             crate::physics::contact::box_box(player, line).is_some()
                         }),
@@ -12941,7 +12956,7 @@ impl RolloutWorld {
                     (pass, player_min.max(other_min), player_min.min(other_min))
                 };
                 let node_key = node_hit
-                    .then(|| pair(node_pass, axis(node_circle.center) - node_circle.radius));
+                    .then(|| pair(node_pass, axis(swept_node.center) - swept_node.radius));
                 let line_key = line
                     .filter(|_| line_hit)
                     .map(|line| pair(node_pass + 1, box_min(line)));
@@ -38883,6 +38898,7 @@ mod tests {
             active: true,
             lethal: true,
             collider_center: position,
+            swept_center: position,
             collider_scale: Fix::ONE,
             ..SpawnedTeslaNode::default()
         });
