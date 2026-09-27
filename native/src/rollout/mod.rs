@@ -6097,6 +6097,17 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // SlimeController.OnCollide only runs for a Box/Box contact, and
+            // the Throw form's hurtbox sits above its transform.
+            if self.players[other].active == ActiveAbility::Throw
+                && crate::physics::contact::box_box(
+                    self.players[pushed].base.collider,
+                    self.macho_throw_box(other, data),
+                )
+                .is_none()
+            {
+                continue;
+            }
             let other_position = self.players[other].base.position;
             self.players[pushed].base.push_from(other_position, lower_id);
         }
@@ -7419,6 +7430,17 @@ impl RolloutWorld {
     /// Player-layer trigger. The active ability has no
     /// SlimeController callback; the ordinary slime on the other
     /// side still receives its one-sided overlap push.
+    /// The Throw form's hurtbox as DetPhysics last synced it.
+    fn macho_throw_box(&self, index: usize, data: &data::RolloutData) -> OrientedBox {
+        let throw = &self.players[index].macho_throw;
+        let offset = throw.collider_right.complex_mul(data.macho_throw.collider_offset);
+        OrientedBox::from_basis(
+            throw.collider_position + offset,
+            throw.collider_basis,
+            data::surface_extents(data.macho_throw.hurtbox_extents),
+        )
+    }
+
     fn slime_collider_enabled(slot: &PlayerSlot) -> bool {
         match slot.active {
             ActiveAbility::None
