@@ -31,13 +31,26 @@ const WEB_RELEASE_BOOST: Fix = Fix::from_raw(4_810_363_371);
 const WEB_GROUNDED_POP: Fix = Fix::from_raw(15_032_385_536);
 const WEB_LINGER: Fix = Fix::from_raw(3_865_470_464);
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub(crate) struct WebSwingState {
     pub rope: Option<usize>,
     pub rope_number: u32,
     pub cooldown_set: bool,
     pub fire_tick: i32,
     pub linger_left: Fix,
+}
+
+impl Default for WebSwingState {
+    /// WebSwing.hasHadCooldownSet starts true: no strand to clean up yet.
+    fn default() -> Self {
+        Self {
+            rope: None,
+            rope_number: 0,
+            cooldown_set: true,
+            fire_tick: -1000,
+            linger_left: Fix::ZERO,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -72,9 +85,9 @@ pub(crate) struct RolloutRope {
     pub black_hole: Option<usize>,
     pub black_hole_local: Vec2,
     pub black_hole_reel_frames: usize,
-    /// A Rock-form player the hook stuck to: it has no PlayerBody, so the
-    /// rope hangs off its centre through AttachToNonPlatform.
-    pub rock: Option<usize>,
+    /// A body the hook stuck to through AttachToNonPlatform: the rope hangs
+    /// off its collider centre and pulls on it.
+    pub parent: Option<RopeParent>,
     pub segment_ids: [u32; MAX_SEGMENTS - 1],
     pub hook_active: bool,
     pub hook_remove_next: bool,
@@ -86,6 +99,35 @@ pub(crate) struct RolloutRope {
     pub rope_time: Fix,
     pub reel_out_time: Fix,
     pub reel_in: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RopeParent {
+    /// A Rock-form player: it has no PlayerBody for the rope to join.
+    Rock(usize),
+    /// A thrown item by slot and id, so a reused slot reads as destroyed.
+    Item(usize, u32),
+    /// A Portal Gun shot by slot and birth tick.
+    Shot(usize, u32),
+}
+
+/// Where a live parent's collider centre is, or None once it is gone.
+fn parent_position(
+    players: &[PlayerSlot],
+    items: &[ThrownItem],
+    shots: &[PortalShotState],
+    parent: RopeParent,
+) -> Option<Vec2> {
+    match parent {
+        RopeParent::Rock(player) => (players[player].active == ActiveAbility::Rock
+            && players[player].base.alive)
+            .then_some(players[player].base.position),
+        RopeParent::Item(item, id) => {
+            (items[item].active && items[item].id == id).then_some(items[item].position)
+        }
+        RopeParent::Shot(shot, born) => (shots[shot].active && shots[shot].born_tick == born)
+            .then_some(shots[shot].position),
+    }
 }
 
 /// Rope.isOffscreen, with every bound scaled by `scale` for isFarOffscreen.
@@ -128,7 +170,7 @@ fn empty_rope() -> RolloutRope {
         black_hole: None,
         black_hole_local: Vec2::ZERO,
         black_hole_reel_frames: 0,
-        rock: None,
+        parent: None,
         segment_ids: [0; MAX_SEGMENTS - 1],
         hook_active: false,
         hook_remove_next: false,
@@ -185,7 +227,7 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
         rope.black_hole = None;
         rope.black_hole_local = Vec2::ZERO;
         rope.black_hole_reel_frames = 0;
-        rope.rock = None;
+        rope.parent = None;
         rope.hook_active = false;
         rope.hook_remove_next = false;
         rope.hook_entity = None;
@@ -235,7 +277,7 @@ impl RolloutWorld {
         rope.black_hole = None;
         rope.black_hole_local = Vec2::ZERO;
         rope.black_hole_reel_frames = 0;
-        rope.rock = None;
+        rope.parent = None;
         rope.segment_ids = segment_ids;
         let body = &mut rope.physics;
         body.count = SEGMENTS;
@@ -943,18 +985,22 @@ impl RolloutWorld {
                 self.ropes[index].physics.segment[0] = anchor;
                 continue;
             }
-            if let Some(rock) = self.ropes[index].rock {
-                if self.players[rock].active != ActiveAbility::Rock || !self.players[rock].base.alive
-                {
+            if let Some(parent) = self.ropes[index].parent {
+                if parent_position(&self.players, &self.thrown_items, &self.portal_shots, parent).is_none() {
                     self.deattach_rope(index, true);
-                    self.ropes[index].rock = None;
+                    self.ropes[index].parent = None;
                     continue;
                 }
                 let physics = &self.ropes[index].physics;
                 if physics.time_since_hook_arrived > Fix::ZERO && !physics.detached && !stopped {
-                    // AddForceAtPosition at the rock's own centre: no torque.
+                    // AddForceAtPosition at the parent's own centre: no torque.
                     let force = (physics.segment[0] - physics.segment[1]) * ATTACHMENT_PULL;
-                    self.players[rock].rock.body.apply_impulse(force, Vec2::ZERO);
+                    let body = match parent {
+                        RopeParent::Rock(player) => &mut self.players[player].rock.body,
+                        RopeParent::Item(item, _) => &mut self.thrown_items[item].body,
+                        RopeParent::Shot(shot, _) => &mut self.portal_shots[shot].body,
+                    };
+                    body.apply_impulse(force, Vec2::ZERO);
                 }
                 for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
                     if (self.ropes[index].physics.segment[segment]
@@ -963,7 +1009,7 @@ impl RolloutWorld {
                         > PLATFORM_BREAK_STRETCH
                     {
                         self.deattach_rope(index, true);
-                        self.ropes[index].rock = None;
+                        self.ropes[index].parent = None;
                         break;
                     }
                 }
@@ -1204,8 +1250,43 @@ impl RolloutWorld {
                     break;
                 }
             }
-            if let Some(rock) = victim.filter(|&v| self.players[v].active == ActiveAbility::Rock) {
-                let scale = self.players[rock].rock.scale;
+            let mut parent = victim
+                .filter(|&v| self.players[v].active == ActiveAbility::Rock)
+                .map(RopeParent::Rock);
+            if victim.is_none() {
+                // Thrown items sit on the item layer, which the hook's Rope
+                // layer collides with.
+                parent = self.thrown_items.iter().enumerate().find_map(|(index, item)| {
+                    let body = Circle {
+                        center: item.position,
+                        radius: item.collider_radius,
+                    };
+                    (item.active
+                        && item.entity.is_some()
+                        && crate::physics::contact::circle_circle(circle, body).is_some())
+                    .then_some(RopeParent::Item(index, item.id))
+                });
+            }
+            if victim.is_none() && parent.is_none() {
+                // Portal Gun shots share the item layer.
+                let radius = data::get().portal_gun.shot_radius;
+                parent = self.portal_shots.iter().enumerate().find_map(|(index, shot)| {
+                    let body = Circle {
+                        center: shot.position,
+                        radius,
+                    };
+                    (shot.active
+                        && shot.registered
+                        && crate::physics::contact::circle_circle(circle, body).is_some())
+                    .then_some(RopeParent::Shot(index, shot.born_tick))
+                });
+            }
+            if let Some(parent) = parent {
+                let scale = match parent {
+                    RopeParent::Rock(player) => self.players[player].rock.scale,
+                    RopeParent::Item(item, _) => self.thrown_items[item].scale,
+                    RopeParent::Shot(..) => Fix::ONE,
+                };
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.mass_start = Fix::ONE;
                 rope.physics.force_start = Vec2::ZERO;
@@ -1213,7 +1294,7 @@ impl RolloutWorld {
                 rope.physics.set_mass(source.non_platform_mass, true, scale);
                 rope.time_air_start = Fix::ONE;
                 rope.platform = None;
-                rope.rock = Some(rock);
+                rope.parent = Some(parent);
                 rope.reel_in = true;
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
@@ -1345,6 +1426,7 @@ impl RolloutWorld {
                 }
             }
         }
+        let (players, items, shots) = (&self.players, &self.thrown_items, &self.portal_shots);
         for rope in &mut self.ropes {
             // DetPhysics.VeryLateRopeUpdate clears this for all 128 pool
             // entries, including bodies disabled during the current pass.
@@ -1377,10 +1459,8 @@ impl RolloutWorld {
                 let hole = self.black_holes[hole_index];
                 rope.physics.segment[0] = hole.position + rope.black_hole_local;
             }
-            if let Some(rock) = rope.rock
-                && self.players[rock].active == ActiveAbility::Rock
-            {
-                rope.physics.segment[0] = self.players[rock].base.position;
+            if let Some(position) = rope.parent.and_then(|parent| parent_position(players, items, shots, parent)) {
+                rope.physics.segment[0] = position;
             }
             if rope.hook_active {
                 rope.physics.segment[0] = rope.hook_position;
