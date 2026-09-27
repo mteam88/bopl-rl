@@ -2064,6 +2064,13 @@ impl Shockwave {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum PlatformPass {
+    Authored,
+    Duplicated,
+    Spawned,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ActiveAbility {
     None,
     Dash,
@@ -5743,6 +5750,9 @@ impl RolloutWorld {
                 self.kill_with(index, ENVIRONMENT, cause, false, false, false);
             }
         }
+        self.platform_bounds_tick(PlatformPass::Duplicated);
+        self.platform_motion_tick(data, updater_dt, PlatformPass::Duplicated);
+        self.platform_body_scale_tick(PlatformPass::Duplicated);
         if has(ABILITY_MAGNET) {
             self.magnet_parries_tick(data);
         }
@@ -5798,13 +5808,13 @@ impl RolloutWorld {
         // prefab that created and steers them, but ahead of the effects that
         // later hit them: a Gust wave or explosion spawned after the platform
         // pushes it after its AnimateVelocity spring has read the velocity.
-        self.platform_bounds_tick(true);
+        self.platform_bounds_tick(PlatformPass::Spawned);
         // ResizablePlatform sits behind AnimateVelocity in the clone's
         // prefab, so its unconditional ResizePlatform follows the spring. A
         // spawned platform's ShakablePlatform also runs after them, so a
         // Beam or Meteor landing on it shakes it on the same pass.
-        self.platform_motion_tick(data, updater_dt, true);
-        self.platform_body_scale_tick(true);
+        self.platform_motion_tick(data, updater_dt, PlatformPass::Spawned);
+        self.platform_body_scale_tick(PlatformPass::Spawned);
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT);
         }
@@ -32243,12 +32253,18 @@ impl RolloutWorld {
         self.rebuild_bounds();
     }
 
-    /// Platforms instantiated mid-game - Duplicator copies included, which
-    /// keep their source's definition - register their updaters after the
-    /// players.
-    fn runtime_spawned_platform(&self, i: usize) -> bool {
-        self.platform_defs[i] == usize::MAX
-            || self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some()
+    /// Which updater pass a platform's components run in. Platforms
+    /// instantiated mid-game register after the players; a Duplicator copy
+    /// keeps its source's definition but also registers ahead of the ropes
+    /// and holes spawned after it.
+    fn platform_pass(&self, i: usize) -> PlatformPass {
+        if self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some() {
+            PlatformPass::Duplicated
+        } else if self.platform_defs[i] == usize::MAX {
+            PlatformPass::Spawned
+        } else {
+            PlatformPass::Authored
+        }
     }
 
     /// AnimateVelocity then ShakablePlatform for one half of the platform
@@ -32262,18 +32278,18 @@ impl RolloutWorld {
         &mut self,
         data: &data::RolloutData,
         updater_dt: Fix,
-        runtime_spawned: bool,
+        pass: PlatformPass,
     ) {
         let order = &data.maps[self.map].update_order;
-        let authored = if runtime_spawned { 0 } else { order.len() };
+        let authored = if pass == PlatformPass::Authored { order.len() } else { 0 };
         let mut shook = false;
         for k in 0..self.platforms.len() {
             let i = if k < authored { order[k] } else { k };
-            if self.runtime_spawned_platform(i) != runtime_spawned {
+            if self.platform_pass(i) != pass {
                 continue;
             }
             self.platform_spring(data, updater_dt, i);
-            if runtime_spawned {
+            if pass != PlatformPass::Authored {
                 self.platform_resizable(data, i);
             }
             shook |= self.platform_shake(data, updater_dt, i);
@@ -32325,11 +32341,11 @@ impl RolloutWorld {
     /// a scale change into the cached extents and radius. A runtime-spawned
     /// platform's StickyRR runs behind the ability that spawned it, so that
     /// ability still reads the bounds from before the change.
-    fn platform_bounds_tick(&mut self, runtime_spawned: bool) {
+    fn platform_bounds_tick(&mut self, pass: PlatformPass) {
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active
                 || !self.platform_dynamics[i].surface_shape_dirty
-                || self.runtime_spawned_platform(i) != runtime_spawned
+                || self.platform_pass(i) != pass
             {
                 continue;
             }
@@ -32351,10 +32367,10 @@ impl RolloutWorld {
     /// non-resizable body follows a DPhysics scale change with its mass and
     /// inertia. A runtime-spawned platform updates behind the prefab that
     /// spawned it, so it sees that pass's Macho excavation.
-    fn platform_body_scale_tick(&mut self, runtime_spawned: bool) {
+    fn platform_body_scale_tick(&mut self, pass: PlatformPass) {
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active
-                || self.runtime_spawned_platform(i) != runtime_spawned
+                || self.platform_pass(i) != pass
             {
                 continue;
             }
@@ -32380,8 +32396,8 @@ impl RolloutWorld {
     }
 
     fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        self.platform_bounds_tick(false);
-        self.platform_motion_tick(data, updater_dt, false);
+        self.platform_bounds_tick(PlatformPass::Authored);
+        self.platform_motion_tick(data, updater_dt, PlatformPass::Authored);
 
         // BoplBody is the last updater on every platform (StickyRR,
         // AnimateVelocity, ShakablePlatform, ..., BoplBody), so the spring
@@ -32414,7 +32430,7 @@ impl RolloutWorld {
                 self.platforms[i].surface.bounds_radius = self.platforms[i].collider.radius;
             }
         }
-        self.platform_body_scale_tick(false);
+        self.platform_body_scale_tick(PlatformPass::Authored);
 
         // AntiLockPlatform runs after AnimateVelocity: add the ordinary force
         // and re-home at the pre-integration position, preserving the existing
