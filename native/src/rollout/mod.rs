@@ -11151,20 +11151,22 @@ impl RolloutWorld {
                 return;
             }
         }
-        // The recover animation's exit callback runs before Spike.UpdateSim,
-        // like the cast's CastSpike, so the exit pass has no Move.
-        let exit_now = self.players[index].spike_cast.phase == 1
-            && self.players[index].spike_cast.ticks > data.spike.recover_ticks;
-        if self.players[index].base.grounded && !exit_now {
+        // The recover animation's exit callback runs in SpriteAnimator, ahead
+        // of Spike and PlayerBody, so the exit pass has no Move and no body
+        // step.
+        if self.players[index].spike_cast.phase == 1
+            && self.players[index].spike_cast.ticks > data.spike.recover_ticks
+        {
+            self.exit_spike_cast(index);
+            return;
+        }
+        if self.players[index].base.grounded {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
         }
         // PlayerBody carries a grapple rope into the form.
         self.spike_form_move(index, published_position, jump_pressed);
-        if exit_now {
-            self.exit_spike_cast(index);
-        }
     }
 
     fn spike_form_move(&mut self, index: usize, published: Vec2, jump_pressed: bool) {
