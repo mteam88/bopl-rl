@@ -1162,6 +1162,31 @@ impl RolloutWorld {
             self.rope_rectangles
                 .extend(self.platforms.iter().map(|platform| platform.collider));
         }
+        // SortAndSweep*_ropes sweeps the axis along which the rounded
+        // rectangles alone spread widest about the mean of every active
+        // collider, so a rope lists its rectangles by bounding-box minimum on
+        // that axis, then by index.
+        let mut mean = Vec2::ZERO;
+        let mut active_count = 0usize;
+        for (platform, rectangle) in self.platforms.iter().zip(&self.rope_rectangles) {
+            if platform.active {
+                mean += rectangle.inner.center;
+                active_count += 1;
+            }
+        }
+        for entity in self.entities.iter().filter(|entity| entity.kind != 2 && entity.flags & 3 == 3) {
+            mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
+            active_count += 1;
+        }
+        if active_count != 0 {
+            mean = mean / Fix::from_int(active_count as i64);
+        }
+        let mut variance = Vec2::ZERO;
+        for rectangle in &self.rope_rectangles {
+            let delta = mean - rectangle.inner.center;
+            variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
+        }
+        let sweep_x = variance.x > variance.y;
         for rope in &mut self.ropes {
             if !rope.physics.enabled {
                 continue;
@@ -1169,6 +1194,9 @@ impl RolloutWorld {
             rope.physics.collision_count = 0;
             let bounds = rope.physics.bounds();
             for (platform, rectangle) in self.rope_rectangles.iter().enumerate() {
+                if !self.platforms[platform].active {
+                    continue;
+                }
                 let rb = rectangle.bounds();
                 if bounds[1].x <= rb.min.x
                     || bounds[0].x >= rb.max.x
@@ -1184,6 +1212,14 @@ impl RolloutWorld {
                 rope.physics.colliding_rects[at] = platform;
                 rope.physics.collision_count += 1;
             }
+            let rectangles = &self.rope_rectangles;
+            let minimum = |index: usize| {
+                let rb = rectangles[index].bounds();
+                if sweep_x { rb.min.x } else { rb.min.y }
+            };
+            rope.physics.colliding_rects[..rope.physics.collision_count].sort_unstable_by(|&a, &b| {
+                minimum(a).partial_cmp(&minimum(b)).unwrap().then(a.cmp(&b))
+            });
             rope.physics.step(
                 RopeConfig {
                     dt: physics_dt,
