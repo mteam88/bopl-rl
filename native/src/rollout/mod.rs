@@ -7752,7 +7752,8 @@ impl RolloutWorld {
         // A Beam form finds its lost ground inside Beam.MovePlayer instead,
         // and BlackHoleClap exits on it at the top of its UpdateSim.
         // ThrowItem2 finds it inside its own Move, after the grounded-throw
-        // exit test, so it leaves the form one pass later.
+        // exit test, so it leaves the form one pass later. MachoThrow2 finds
+        // it in MachoMove, after the rest of its UpdateSim.
         let throw_form = matches!(
             self.players[index].active,
             ActiveAbility::Grenade
@@ -7760,6 +7761,7 @@ impl RolloutWorld {
                 | ActiveAbility::Tack
                 | ActiveAbility::Mjolnir
                 | ActiveAbility::PokeBall
+                | ActiveAbility::Throw
         );
         if !matches!(self.players[index].active, ActiveAbility::Beam | ActiveAbility::BlackHole)
             && std::mem::take(&mut self.players[index].ground_destroyed)
@@ -17061,6 +17063,9 @@ impl RolloutWorld {
                         Fix::ONE
                     }
                 });
+        // On a destroyed ground MachoMove UnGrounds with its rotation zeroed
+        // and returns before the landing raycasts.
+        self.players[index].ground_destroyed = false;
         self.players[index]
             .base
             .macho_move(move_input, roundedness, terrain!(self));
