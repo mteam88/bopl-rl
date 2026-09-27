@@ -16677,6 +16677,10 @@ impl RolloutWorld {
             None
         };
         let slot = &mut self.players[index];
+        // Ability.ExitAbility publishes the form's position before
+        // SyncPhysicsTo moves the slime.
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = self.tick;
         slot.active = ActiveAbility::None;
         slot.facing_right = slot.macho_throw.facing_right;
         slot.base.radius = data.player.radius;
@@ -16710,8 +16714,6 @@ impl RolloutWorld {
             slot.base.up = Vec2::UP;
             slot.exit_to_fall();
         }
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
     }
 
     fn macho_throw_tick(
@@ -16722,15 +16724,12 @@ impl RolloutWorld {
         advance_animation: bool,
         data: &data::RolloutData,
     ) {
-        // PlayerPhysics (hierarchy 3) applies gravity, then PlayerBody
-        // (hierarchy 7) integrates before MachoThrow2 (hierarchy 8) changes
-        // movement for the following pass. The pooled form runs all three on
-        // its entry pass too; only its animator's entry frame is already
+        // The form's SpriteAnimator (hierarchy 1) runs its callbacks first,
+        // then Ability publishes the position, PlayerPhysics (3) applies
+        // gravity and PlayerBody (7) integrates before MachoThrow2 (8) changes
+        // movement for the following pass. The pooled form runs all of them
+        // on its entry pass too; only its animator's entry frame is already
         // counted (`ticks: 1`), represented by `advance_animation == false`.
-        self.players[index].reported_position = self.players[index].base.position;
-        self.players[index].reported_tick = self.tick;
-        self.players[index].base.gravity_step(terrain!(self));
-        self.form_body_move(index, jump_pressed);
         if advance_animation {
             self.players[index].macho_throw.ticks += 1;
             let phase = self.players[index].macho_throw.phase;
@@ -16787,6 +16786,10 @@ impl RolloutWorld {
                 }
             }
         }
+        self.players[index].reported_position = self.players[index].base.position;
+        self.players[index].reported_tick = self.tick;
+        self.players[index].base.gravity_step(terrain!(self));
+        self.form_body_move(index, jump_pressed);
 
         let button = 2u8 << self.players[index].active_slot;
         if !self.players[index].macho_throw.released && action.buttons & button == 0 {
