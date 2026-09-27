@@ -22177,7 +22177,9 @@ impl RolloutWorld {
         data: &data::RolloutData,
     ) -> Vec2 {
         let slot = &self.players[index];
-        let direction = slot.magnet.aim.normalized_safe();
+        // RaycastForWalls takes inputVector as UpdateSim divided it by its
+        // magnitude; only TryPullItems and Fire normalize it again.
+        let direction = slot.magnet.aim;
         let offset_x =
             slot.magnet_firepoint_offsets[slot.active_slot].x
                 + slot.magnet_extra_offsets[slot.active_slot].x;
