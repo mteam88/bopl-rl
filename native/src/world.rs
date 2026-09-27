@@ -532,7 +532,15 @@ fn ray_group_candidates(
 ) -> u64 {
     let travel = velocity * dt;
     let end = position + travel;
-    let spread = radius * Fix::from_f64(1.5);
+    let mut spread = radius * Fix::from_f64(1.5);
+    // The rays start a radius along Vec2.NormalizedSafe(velocity). Below
+    // about 2^-8 per axis the squared components lose their low bits, so that
+    // "unit" direction can be half again too long and the side rays start
+    // well outside 1.5 radii.
+    let tiny = Fix::from_raw(1 << 24);
+    if velocity.x.abs() < tiny && velocity.y.abs() < tiny {
+        spread = spread * velocity.normalized_safe().length().max(Fix::ONE);
+    }
     let grow = Vec2::new(spread, spread);
     let mut segment = SegmentBox::empty();
     segment.add(position - grow);
