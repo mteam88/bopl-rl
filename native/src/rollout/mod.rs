@@ -9211,6 +9211,11 @@ impl RolloutWorld {
                             // receives the entry tick after OnEnterAbility.
                             ticks: 1,
                             facing_right,
+                            // OnEnterAbility's hurtbox.UpdatePhysicsPositions.
+                            collider_position: form_position,
+                            collider_right: slot.base.up.perp_cw(),
+                            collider_rotation: slot.base.rotation,
+                            collider_basis: Vec2::angle(slot.base.rotation),
                             ..MachoThrowState::default()
                         };
                         slot.base.position = form_position;
@@ -13466,6 +13471,8 @@ impl RolloutWorld {
                         | ActiveAbility::PokeBall
                 ) {
                     player.throw_item.entry_center
+                } else if player.active == ActiveAbility::Throw {
+                    self.macho_throw_box(player_index, data).center
                 } else {
                     player.base.collider.center
                 };
