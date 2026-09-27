@@ -6132,6 +6132,9 @@ impl RolloutWorld {
         if has_thrown_item || has(ABILITY_TESLA) {
             self.thrown_item_pair_contacts(data);
         }
+        if has(ABILITY_MJOLNIR) {
+            self.mjolnir_wall_pushes(data);
+        }
         if has_thrown_item {
             self.thrown_items_contacts(data);
         }
@@ -30921,20 +30924,6 @@ impl RolloutWorld {
                 row.angular_velocity = body.angular_velocity.raw();
             }
 
-            if item.ability == ABILITY_MJOLNIR
-                && item.launched
-                && item.age >= data.mjolnir.clang_grace_seconds
-            {
-                let force = body.velocity.normalized_safe() * data.mjolnir.platform_push_force;
-                for &(platform_index, _) in &contacts[..contact_count] {
-                    self.platform_dynamics[platform_index].body.force += force;
-                }
-                self.platforms_changed();
-                if self.thrown_items[item_index].phase == 0 {
-                    self.thrown_items[item_index].phase = 1;
-                }
-            }
-
             if item.ability == ABILITY_TACK
                 && !item.settled
                 && item.launched
@@ -30965,6 +30954,33 @@ impl RolloutWorld {
             }
         }
         self.scratch.item_platform_contacts = all_contacts;
+    }
+
+    /// Mjolnir.OnCollide on its wall manifolds. DetPhysics runs every
+    /// callback after all contact types resolved, so the push follows the
+    /// hammer's velocity after its Circle/Circle contacts too.
+    fn mjolnir_wall_pushes(&mut self, data: &data::RolloutData) {
+        let contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
+        for &(item_index, platform_index, _) in &contacts {
+            let item = self.thrown_items[item_index];
+            if item.ability != ABILITY_MJOLNIR
+                || !item.active
+                || item.entity.is_none()
+                || item.callback_registered_tick == self.tick
+                || self.blink_object_hidden(item.entity)
+                || !item.launched
+                || item.age < data.mjolnir.clang_grace_seconds
+            {
+                continue;
+            }
+            let force = item.body.velocity.normalized_safe() * data.mjolnir.platform_push_force;
+            self.platform_dynamics[platform_index].body.force += force;
+            self.platforms_changed();
+            if item.phase == 0 {
+                self.thrown_items[item_index].phase = 1;
+            }
+        }
+        self.scratch.item_platform_contacts = contacts;
     }
 
     /// Item circles participate in ordinary rigid-body contacts.
