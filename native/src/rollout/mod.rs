@@ -15280,6 +15280,13 @@ impl RolloutWorld {
                 self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
                 self.stop_beam(index);
                 self.exit_beam(index, false, data);
+                // The landing exits `justlanded`, so attachToGround sets
+                // State.land after EnterIdle (SlimeController.cs:238-240).
+                let slot = &mut self.players[index];
+                if slot.base.grounded {
+                    slot.obs_state = STATE_LAND;
+                    slot.state_ticks = LAND_TICKS + 2;
+                }
                 return;
             }
         } else if self.players[index].base.grounded {
