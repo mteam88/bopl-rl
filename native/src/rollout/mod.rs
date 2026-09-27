@@ -33334,6 +33334,32 @@ impl RolloutWorld {
                 count += 1;
             }
         }
+        if count > 1 {
+            // The Box/RoundedRect callbacks run in SortAndSweep pair order: by
+            // the later bounding box's rank on the sweep axis, then the
+            // earlier's.
+            let sweep_x = self.sweep_x();
+            let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+            let min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
+            let key = |index: usize| {
+                let slot = &self.players[index];
+                let a = min(slot.base.collider);
+                colliders
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, collider)| {
+                        self.platforms[i].active
+                            && Some(self.platforms[i].id) != slot.base.ground
+                            && collider.overlaps(slot.base.position)
+                    })
+                    .map(|(_, collider)| {
+                        let b = min(collider.inner) - collider.radius;
+                        (a.max(b), a.min(b))
+                    })
+                    .min()
+            };
+            squished[..count].sort_by_key(|&index| key(index));
+        }
         for &index in &squished[..count] {
             self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
         }

@@ -976,8 +976,10 @@ impl Player {
         };
     }
     /// Detach from the ground without the jump impulse (PlayerPhysics.UnGround).
+    /// PlayerPhysics.UnGround lifts the body off attachedGround, which still
+    /// names a platform that went inactive; only a destroyed one is null.
     pub(crate) fn force_unground(&mut self, platforms: &[Platform]) {
-        if let Some(platform) = self.platform(platforms) {
+        if let Some(platform) = platforms.iter().find(|p| Some(p.id) == self.ground) {
             let surface = platform.surface.clone();
             let mut motion = self.ground_state();
             motion.unground(Some(&surface), false);
