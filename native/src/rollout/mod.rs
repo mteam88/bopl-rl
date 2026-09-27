@@ -28966,12 +28966,10 @@ impl RolloutWorld {
                 }
                 let hit_radius =
                     hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
-                if self
-                    .active_player_position(player_index)
-                    .is_some_and(|position| {
-                        (position - item_position).length_squared() < hit_radius * hit_radius
-                    })
-                {
+                // The form's own transform, live even on the pass it was
+                // entered, before its collider row is synced.
+                let position = self.players[player_index].base.position;
+                if (position - item_position).length_squared() < hit_radius * hit_radius {
                     victims |= 1 << player_index;
                 }
             }
