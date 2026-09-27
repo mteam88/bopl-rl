@@ -8421,6 +8421,11 @@ impl RolloutWorld {
                         slot.base.grounded_speed = Fix::ZERO;
                         slot.base.velocity = body.velocity;
                         slot.base.external_velocity = Vec2::ZERO;
+                        // The Rock's Ability.UpdateSim publishes the placed body
+                        // later in this same updater pass; a grounded entry sits
+                        // off the slime's own position (BounceBall.cs:131).
+                        slot.reported_position = form_position;
+                        slot.reported_tick = self.tick;
                         slot.rock = RockState {
                             body,
                             collider_radius,
