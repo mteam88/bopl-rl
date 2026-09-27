@@ -10322,7 +10322,7 @@ impl RolloutWorld {
             if target == index || !self.playable_slot(player) {
                 continue;
             }
-            let entity = Self::blink_player_entity(player);
+            let entity = Self::hurtbox_entity(player);
             let Some(row) = self.entities.get(entity).copied() else {
                 continue;
             };
@@ -13480,65 +13480,23 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let entity = match player.active {
-                    ActiveAbility::None => player.body_entity,
-                    ActiveAbility::Dash => player.dash_entity,
-                    ActiveAbility::Bow => player.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => player.throw_entity,
-                    ActiveAbility::Mine => player.mine_entity,
-                    ActiveAbility::Rock => player.rock_entity,
-                    ActiveAbility::Roll => player.roll_entity,
-                    ActiveAbility::Meteor => player.meteor_entity,
-                    ActiveAbility::Push => player.push_entity,
-                    ActiveAbility::Freeze => player.freeze_entity,
-                    ActiveAbility::Blink => player.blink_entity,
-                    ActiveAbility::GrowthRay => player.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
-                    ActiveAbility::Duplicator => player.duplicator_entity,
-                    ActiveAbility::Magnet => player.magnet_entity,
-                    ActiveAbility::Spike => player.spike_entity,
-                    ActiveAbility::Engine => player.engine_entity,
-                    ActiveAbility::Tesla => player.tesla_entity,
-                    ActiveAbility::TimeStop => player.time_stop_entity,
-                    ActiveAbility::Gust => player.gust_entity,
-                    ActiveAbility::Revival => player.revival_entity,
-                    ActiveAbility::BlackHole => player.black_hole_entity,
-                    ActiveAbility::Throw => player.macho_throw_entity,
-                    ActiveAbility::Drill => player.drill_entity,
-                    ActiveAbility::Beam => player.beam_entity,
-                    ActiveAbility::Platform => player.circle_entity,
-                };
+                let entity = Self::hurtbox_entity(player);
                 if entity == usize::MAX {
                     continue;
                 }
                 let row = self.entities[entity];
                 // A form's DPhysicsBox centre moves only in its OnEnterAbility
                 // and in DetPhysics' sync, so BlackHole reads the box where the
-                // last DetPhysics pass published it. On the entry pass it
-                // reads the centre OnEnterAbility synced.
+                // last DetPhysics pass published it, or where a sync since put it.
+                // On the entry pass it reads the centre OnEnterAbility synced.
                 let player = &self.players[player_index];
-                let body_position = if row.kind != 1
-                    || row.flags & E_ACTIVE != 0
-                    || player.active == ActiveAbility::Magnet
-                {
+                let body_position = if row.kind != 1 || row.flags & E_ACTIVE != 0 {
                     Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y))
+                } else if let Some(collider) = self.synced_hurtbox(player_index, data) {
+                    collider.center
                 } else if player.active == ActiveAbility::Mine {
                     player.base.collider.center
                         + player.throw_item.collider_right.complex_mul(data.mine.collider_offset)
-                } else if matches!(
-                    player.active,
-                    ActiveAbility::Freeze
-                        | ActiveAbility::Blink
-                        | ActiveAbility::GrowthRay
-                        | ActiveAbility::ShrinkRay
-                        | ActiveAbility::Duplicator
-                ) {
-                    player.gun.hurtbox_center
                 } else if player.active == ActiveAbility::Beam {
                     player.beam.entry_center
                 } else if player.active == ActiveAbility::BlackHole {
@@ -13552,8 +13510,6 @@ impl RolloutWorld {
                         | ActiveAbility::PokeBall
                 ) {
                     player.throw_item.entry_center
-                } else if player.active == ActiveAbility::Throw {
-                    self.macho_throw_box(player_index, data).center
                 } else {
                     player.base.collider.center
                 };
@@ -15690,7 +15646,7 @@ impl RolloutWorld {
             .iter()
             .flat_map(|slot| {
                 let form = (slot.active != ActiveAbility::None).then(|| {
-                    (Self::blink_player_entity(slot), slot.forms[slot.active_slot].inverse_extents)
+                    (Self::hurtbox_entity(slot), slot.forms[slot.active_slot].inverse_extents)
                 });
                 [(slot.body_entity, slot.base.collider.inverse_extents)].into_iter().chain(form)
             })
@@ -17919,31 +17875,21 @@ impl RolloutWorld {
         }
     }
 
-    /// A slime that left its form earlier this pass: onExitAbility already
-    /// deactivated the form and synced the hurtbox (SlimeController.cs:251),
-    /// but its rows show neither until DetPhysics syncs them.
-    fn left_form_this_pass(&self, slot: &PlayerSlot) -> bool {
-        slot.base.alive
-            && slot.active == ActiveAbility::None
-            && !slot.teleport_effect_active
-            && !slot.blink_tunnel_active
-            && self.entities.get(slot.body_entity).is_some_and(|row| row.flags & E_ACTIVE == 0)
-    }
-
     fn teleport_query(&self, query: Circle, mask: u32, hits: &mut [usize; 100]) -> usize {
         let mut count = 0usize;
         // DetPhysics.CircleCastAll visits its circle, box and rounded-rect
         // registries in that order and stops at the fixed 100-entry buffer.
         for kind in [0u32, 1, 2] {
             for (entity, row) in self.entities.iter().copied().enumerate() {
-                if row.kind != kind || mask & (1u32 << row.layer) == 0 {
+                if row.kind != kind
+                    || mask & (1u32 << row.layer) == 0
+                    || self.left_form_row(entity)
+                {
                     continue;
                 }
-                if let Some(slot) = self.players.iter().find(|slot| {
-                    self.left_form_this_pass(slot) && slot.owned_rows().contains(&entity)
-                }) {
-                    if entity == slot.body_entity
-                        && crate::physics::contact::circle_box(query, slot.base.collider).is_some()
+                if row.flags & E_ACTIVE == 0 {
+                    if let Some(collider) = self.synced_row_box(entity, data::get())
+                        && crate::physics::contact::circle_box(query, collider).is_some()
                     {
                         hits[count] = entity;
                         count += 1;
@@ -17953,7 +17899,7 @@ impl RolloutWorld {
                     }
                     continue;
                 }
-                if row.flags & E_ACTIVE == 0 || row.flags & (E_REMOVED | E_DESTROYED) != 0 {
+                if row.flags & (E_REMOVED | E_DESTROYED) != 0 {
                     continue;
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
@@ -18030,18 +17976,15 @@ impl RolloutWorld {
         if entity >= self.entities.len() || self.teleport_skips_entity(entity) {
             return;
         }
-        let exited_hurtbox = self
-            .players
-            .iter()
-            .any(|slot| slot.body_entity == entity && self.left_form_this_pass(slot));
-        if self.entities[entity].flags & E_ACTIVE == 0 && !exited_hurtbox {
+        let row_active = self.entities[entity].flags & E_ACTIVE != 0;
+        if !row_active && self.synced_row_box(entity, data).is_none() {
             return;
         }
 
         if let Some(player_index) = self
             .players
             .iter()
-            .position(|slot| slot.base.alive && Self::blink_player_entity(slot) == entity)
+            .position(|slot| slot.base.alive && Self::hurtbox_entity(slot) == entity)
         {
             let has_player_physics = !matches!(
                 self.players[player_index].active,
@@ -18201,11 +18144,6 @@ impl RolloutWorld {
             let marker = self.teleport_marker_pool[marker_index];
             if !marker.active {
                 continue;
-            }
-            for index in 0..self.players.len() {
-                if self.left_form_this_pass(&self.players[index]) {
-                    self.players[index].base.sync_collider();
-                }
             }
             let from = self.players[owner].teleport_pending_position;
             let diff = marker.position - from;
@@ -19449,7 +19387,7 @@ impl RolloutWorld {
                 // ability updater. This covers every circle/box form without
                 // rebuilding its offset, aim basis or scale a second time.
                 let player = &self.players[player_index];
-                let entity = Self::blink_player_entity(player);
+                let entity = Self::hurtbox_entity(player);
                 if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
                     continue;
                 }
@@ -19832,39 +19770,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let entity = match player.active {
-                    ActiveAbility::None => player.body_entity,
-                    ActiveAbility::Dash => player.dash_entity,
-                    ActiveAbility::Bow => player.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => player.throw_entity,
-                    ActiveAbility::Mine => player.mine_entity,
-                    ActiveAbility::Rock => player.rock_entity,
-                    ActiveAbility::Roll => player.roll_entity,
-                    ActiveAbility::Meteor => player.meteor_entity,
-                    ActiveAbility::Push => player.push_entity,
-                    ActiveAbility::Freeze => player.freeze_entity,
-                    ActiveAbility::Blink => player.blink_entity,
-                    ActiveAbility::GrowthRay => player.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
-                    ActiveAbility::Duplicator => player.duplicator_entity,
-                    ActiveAbility::Magnet => player.magnet_entity,
-                    ActiveAbility::Spike => player.spike_entity,
-                    ActiveAbility::Engine => player.engine_entity,
-                    ActiveAbility::Tesla => player.tesla_entity,
-                    ActiveAbility::TimeStop => player.time_stop_entity,
-                    ActiveAbility::Gust => player.gust_entity,
-                    ActiveAbility::Revival => player.revival_entity,
-                    ActiveAbility::BlackHole => player.black_hole_entity,
-                    ActiveAbility::Throw => player.macho_throw_entity,
-                    ActiveAbility::Drill => player.drill_entity,
-                    ActiveAbility::Beam => player.beam_entity,
-                    ActiveAbility::Platform => player.circle_entity,
-                };
+                let entity = Self::hurtbox_entity(player);
                 // Dash runs before the DetPhysics stage. Its RaycastAll sees
                 // the collider pose last synchronized by DetPhysics, exactly
                 // the pose retained in the entity row. This also preserves
@@ -19872,14 +19778,14 @@ impl RolloutWorld {
                 let Some(row) = self.entities.get(entity).copied() else {
                     continue;
                 };
-                // A slime that left its form earlier this pass has its box where
-                // onExitAbility's UpdatePhysicsPositions put it
-                // (SlimeController.cs:251), while its row still holds the pose
-                // from before the form until DetPhysics syncs it.
-                let hit = if player.active == ActiveAbility::None && row.flags & E_ACTIVE == 0 {
-                    player.base.collider.raycast(origin, direction)
-                } else {
-                    Self::raycast_entity_row(row, origin, direction)
+                // A box synced mid-pass since (a slime that left or entered a
+                // form earlier this pass) is where that sync put it.
+                let synced = (row.flags & E_ACTIVE == 0)
+                    .then(|| self.synced_hurtbox(target, data::get()))
+                    .flatten();
+                let hit = match synced {
+                    Some(collider) => collider.raycast(origin, direction),
+                    None => Self::raycast_entity_row(row, origin, direction),
                 };
                 let Some(hit) = hit.filter(|hit| hit.near <= distance_limit) else {
                     continue;
@@ -22314,7 +22220,7 @@ impl RolloutWorld {
             } else {
                 // An ability form is hit through its own collider, and the
                 // distance is measured to that collider's transform.
-                let entity = Self::blink_player_entity(player);
+                let entity = Self::hurtbox_entity(player);
                 if !self.collides(entity) {
                     continue;
                 }
@@ -23526,7 +23432,7 @@ impl RolloutWorld {
             return;
         }
         if let Some(victim) = self.players.iter().position(|slot| {
-            self.playable_slot(slot) && Self::blink_player_entity(slot) == hit.entity
+            self.playable_slot(slot) && Self::hurtbox_entity(slot) == hit.entity
         }) {
             self.duplicate_player_target(victim, hit.position, direction, data);
             return;
@@ -23671,10 +23577,7 @@ impl RolloutWorld {
         for kind in [2u32, 0, 1] {
             for (entity, row) in self.entities.iter().copied().enumerate() {
                 let synced_box = (row.flags & E_ACTIVE == 0)
-                    .then(|| {
-                        self.exited_form_body(entity)
-                            .or_else(|| self.entered_gun_form(entity, data))
-                    })
+                    .then(|| self.synced_row_box(entity, data))
                     .flatten();
                 if row.kind != kind
                     || (row.flags & E_ACTIVE == 0 && synced_box.is_none())
@@ -25233,7 +25136,7 @@ impl RolloutWorld {
         if let Some(victim) = self
             .players
             .iter()
-            .position(|slot| self.playable_slot(slot) && Self::blink_player_entity(slot) == entity)
+            .position(|slot| self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity)
         {
             self.begin_scale_change(victim, 0, growth, ray.changer_updatable_count);
             return;
@@ -25587,7 +25490,7 @@ impl RolloutWorld {
         if let Some(victim) = self
             .players
             .iter()
-            .position(|slot| self.playable_slot(slot) && Self::blink_player_entity(slot) == entity)
+            .position(|slot| self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity)
         {
             self.begin_blink_tunnel(caster, victim, data);
             return;
@@ -25655,38 +25558,27 @@ impl RolloutWorld {
     fn left_form_row(&self, entity: usize) -> bool {
         self.players.iter().any(|slot| {
             entity != slot.body_entity
-                && entity != Self::blink_player_entity(slot)
+                && entity != Self::hurtbox_entity(slot)
                 && slot.owned_rows().contains(&entity)
         })
     }
 
-    /// A slime body whose form ExitAbility left earlier this pass: the body is
-    /// active again with the hurtbox onExitAbility synced (SlimeController.cs:251),
-    /// while its row stays inactive until the next refresh.
-    fn exited_form_body(&self, entity: usize) -> Option<OrientedBox> {
-        self.players
-            .iter()
-            .find(|slot| {
-                slot.body_entity == entity
-                    && slot.base.alive
-                    && slot.active == ActiveAbility::None
-                    && !slot.base.dash.active
-                    && !slot.blink_tunnel_active
-                    && !slot.teleport_effect_active
-            })
-            .map(|slot| slot.base.collider)
-    }
-
-    /// A gun form entered earlier this pass: GunTransform.OnEnterAbility synced
-    /// its hurtbox at the entry pose (GunTransform.cs:67-68), while its row
-    /// stays inactive until the next refresh.
-    fn entered_gun_form(&self, entity: usize, data: &data::RolloutData) -> Option<OrientedBox> {
-        let slot = self.players.iter().find(|slot| {
-            slot.base.alive
-                && !slot.blink_tunnel_active
-                && Self::blink_player_entity(slot) == entity
-        })?;
+    /// The hurtbox DetPhysics holds for a slime whose row is stale. onExitAbility
+    /// (SlimeController.cs:251) and the OnEnterAbility of GunTransform
+    /// (GunTransform.cs:67-68), MachoThrow and MagnetGun (MagnetGun.cs:295) sync it
+    /// mid-pass, while the row keeps its flags, and all but Magnet's its pose, until
+    /// the next refresh. Other forms' boxes move only in DetPhysics' own sync.
+    fn synced_hurtbox(&self, index: usize, data: &data::RolloutData) -> Option<OrientedBox> {
+        let slot = &self.players[index];
+        if !slot.base.alive || slot.blink_tunnel_active {
+            return None;
+        }
         let extents = match slot.active {
+            ActiveAbility::None if !slot.base.dash.active && !slot.teleport_effect_active => {
+                return Some(slot.base.collider);
+            }
+            ActiveAbility::Throw => return Some(self.macho_throw_box(index, data)),
+            ActiveAbility::Magnet => return Some(Self::row_box(self.entities[slot.magnet_entity])),
             ActiveAbility::Freeze => data.freeze.hurtbox_extents,
             ActiveAbility::Blink => data.blink.hurtbox_extents,
             ActiveAbility::GrowthRay => data.scale_rays.growth.hurtbox_extents,
@@ -25703,7 +25595,26 @@ impl RolloutWorld {
         ))
     }
 
-    fn blink_player_entity(slot: &PlayerSlot) -> usize {
+    /// `synced_hurtbox` of the player whose current hurtbox is this row.
+    fn synced_row_box(&self, entity: usize, data: &data::RolloutData) -> Option<OrientedBox> {
+        self.players
+            .iter()
+            .position(|slot| Self::hurtbox_entity(slot) == entity)
+            .and_then(|index| self.synced_hurtbox(index, data))
+    }
+
+    fn row_box(row: CEntity) -> OrientedBox {
+        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+        OrientedBox {
+            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+            right,
+            up,
+            inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+        }
+    }
+
+    fn hurtbox_entity(slot: &PlayerSlot) -> usize {
         match slot.active {
             ActiveAbility::None => slot.body_entity,
             ActiveAbility::Dash => slot.dash_entity,
@@ -26241,7 +26152,7 @@ impl RolloutWorld {
             return;
         }
         if let Some(victim) = self.players.iter().position(|slot| {
-            self.playable_slot(slot) && Self::blink_player_entity(slot) == hit.entity
+            self.playable_slot(slot) && Self::hurtbox_entity(slot) == hit.entity
         }) {
             // The modeled gameplay invulnerability source reachable from the
             // rollout ABI is Poke Ball capture. Spawn shielding and Machoman's
@@ -28652,7 +28563,7 @@ impl RolloutWorld {
             if !self.playable_slot(player) {
                 continue;
             }
-            let entity = Self::blink_player_entity(player);
+            let entity = Self::hurtbox_entity(player);
             if entity == usize::MAX
                 || self.entities[entity].layer != LAYER_PLAYER
                 || self.entities[entity].flags & E_ACTIVE == 0
@@ -28709,7 +28620,7 @@ impl RolloutWorld {
             if !self.playable_slot(player) {
                 continue;
             }
-            let entity = Self::blink_player_entity(player);
+            let entity = Self::hurtbox_entity(player);
             if entity != usize::MAX
                 && Some(entity) != ignored
                 && self.entities[entity].layer == LAYER_PLAYER
@@ -32207,7 +32118,7 @@ impl RolloutWorld {
             let collider = player.base.collider;
             return (collider.center, half(collider.right, collider.up));
         }
-        let row = self.entities[Self::blink_player_entity(player)];
+        let row = self.entities[Self::hurtbox_entity(player)];
         let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
         if row.kind == 0 {
             let radius = Fix::from_raw(row.radius);
@@ -32221,7 +32132,7 @@ impl RolloutWorld {
     fn player_is_circle(&self, player_index: usize) -> bool {
         let player = &self.players[player_index];
         !matches!(player.active, ActiveAbility::None | ActiveAbility::Dash)
-            && self.entities[Self::blink_player_entity(player)].kind == 0
+            && self.entities[Self::hurtbox_entity(player)].kind == 0
     }
 
     /// The low edge, on the broadphase sweep axis, of the player's registered
@@ -32269,7 +32180,7 @@ impl RolloutWorld {
         if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
             return crate::physics::contact::circle_box(hitbox, player.base.collider).is_some();
         }
-        let entity = Self::blink_player_entity(player);
+        let entity = Self::hurtbox_entity(player);
         if !self.collides(entity) {
             return false;
         }
@@ -32294,31 +32205,24 @@ impl RolloutWorld {
         if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
             return crate::physics::contact::box_box(player.base.collider, hitbox).is_some();
         }
-        let entity = Self::blink_player_entity(player);
-        if entity == player.macho_throw_entity && self.entities[entity].flags & E_ACTIVE == 0 {
-            // The entry pass: OnEnterAbility already enabled and placed the
+        let entity = Self::hurtbox_entity(player);
+        if entity != usize::MAX && self.entities[entity].flags & E_ACTIVE == 0 {
+            // The entry pass: OnEnterAbility already enabled and synced the
             // hurtbox, and its row only turns active when the pass publishes.
-            let shape = self.macho_throw_box(player_index, data::get());
-            return crate::physics::contact::box_box(shape, hitbox).is_some();
+            return self
+                .synced_hurtbox(player_index, data::get())
+                .is_some_and(|shape| crate::physics::contact::box_box(shape, hitbox).is_some());
         }
-        // MagnetGun.OnEnterAbility's hurtbox.UpdatePhysicsPositions already
-        // put the entry pose in the row, which turns active only on publish.
-        let entering_magnet =
-            entity == player.magnet_entity && self.entities[entity].flags & E_ACTIVE == 0;
-        if !entering_magnet && !self.collides(entity) {
+        if !self.collides(entity) {
             return false;
         }
         let row = self.entities[entity];
-        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
         if row.kind == 0 {
+            let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
             let circle = Circle { center, radius: Fix::from_raw(row.radius) };
             return crate::physics::contact::circle_box(circle, hitbox).is_some();
         }
-        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-        let inverse_extents = Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length());
-        let shape = OrientedBox { center, right, up, inverse_extents };
-        crate::physics::contact::box_box(shape, hitbox).is_some()
+        crate::physics::contact::box_box(Self::row_box(row), hitbox).is_some()
     }
 
     /// MeteorSmear carries Explosion with its hitbox live for the smear's whole
@@ -32340,7 +32244,7 @@ impl RolloutWorld {
                 if player_index == smear.owner || !self.playable(player_index) {
                     continue;
                 }
-                let row = self.entities[Self::blink_player_entity(&self.players[player_index])];
+                let row = self.entities[Self::hurtbox_entity(&self.players[player_index])];
                 if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED) {
                     continue;
                 }
@@ -33953,7 +33857,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let entity = Self::blink_player_entity(&self.players[victim]);
+                let entity = Self::hurtbox_entity(&self.players[victim]);
                 if entity == usize::MAX
                     || self.entities[entity].layer != LAYER_PLAYER
                     || !self.circle_entity_bounds_overlap(swept[rock_index], entity)
@@ -34161,7 +34065,7 @@ impl RolloutWorld {
             for hit_offset in 0..hit_count {
                 let entity = self.scratch.ray_hits[hit_offset].index;
                 if let Some(target) = self.players.iter().position(|slot| {
-                    self.playable_slot(slot) && Self::blink_player_entity(slot) == entity
+                    self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity
                 }) {
                     self.kill(target, roller_id, CAUSE_OTHER, true, true);
                     continue;
@@ -34183,7 +34087,7 @@ impl RolloutWorld {
                 }
                 let entity = self.scratch.ray_hits[hit_offset].index;
                 if let Some(target) = self.players.iter().position(|slot| {
-                    self.playable_slot(slot) && Self::blink_player_entity(slot) == entity
+                    self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity
                 }) {
                     if self.players[target].active == ActiveAbility::Rock
                         || (self.players[target].active == ActiveAbility::Roll
@@ -37282,7 +37186,7 @@ impl RolloutWorld {
         }
         for slot in &self.players {
             if slot.base.alive && slot.blink_tunnel_active && slot.active != ActiveAbility::None {
-                let form = Self::blink_player_entity(slot);
+                let form = Self::hurtbox_entity(slot);
                 if form != usize::MAX {
                     self.entities[form].flags &= !E_ACTIVE;
                 }
