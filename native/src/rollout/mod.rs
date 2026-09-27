@@ -32846,6 +32846,19 @@ impl RolloutWorld {
                 clone.base.ground = None;
                 clone.base.grounded_speed = Fix::ZERO;
             }
+            let stopped =
+                self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner];
+            let terrain = Terrain {
+                platforms: &self.platforms,
+                bounds: &self.bounds,
+            };
+            if !stopped {
+                // A clone's PlayerPhysics.UpdateSim also runs before its
+                // SlimeController: gravity and the landing raycasts come first.
+                let clone = &mut self.abilityless_clones[clone_index].base;
+                clone.begin_pass();
+                clone.gravity_step(terrain);
+            }
             // OldUpdate's Player.SetPosition: with the slime destroyed or
             // disabled, the first clone to update takes the player's position.
             if (self.players[owner].slime_gone
@@ -32857,19 +32870,16 @@ impl RolloutWorld {
                     self.abilityless_clones[clone_index].base.position;
                 self.players[owner].reported_tick = self.tick;
             }
-            if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner] {
+            if stopped {
                 self.abilityless_clones[clone_index].base.external_velocity *= Fix::from_f64(0.95);
             } else {
                 let action = actions[owner].aim_action();
                 let movement = actions[owner].input_direction(self.players[owner].keyboard);
-                let terrain = Terrain {
-                    platforms: &self.platforms,
-                    bounds: &self.bounds,
-                };
                 let clone = &mut self.abilityless_clones[clone_index];
                 // SlimeController jumps on the owner's jumpButton_PressedThisFrame.
                 clone.base.previous_jump = !jump_pressed[owner];
-                clone.base.step_with_input(action, movement, terrain);
+                clone.base.capture_pre_move(terrain.platforms);
+                clone.base.move_step(action, movement, terrain);
                 if clone.obs_state != STATE_RAGDOLL {
                     Self::slime_state_switch(
                         &mut clone.base,
