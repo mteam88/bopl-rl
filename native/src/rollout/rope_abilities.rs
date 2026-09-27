@@ -1151,9 +1151,17 @@ impl RolloutWorld {
 
     pub(super) fn ropes_physics(&mut self, physics_dt: Fix) {
         let space = data::get().maps[self.map].is_space();
+        // DetPhysics.Simulate steps the ropes after integrating the rounded
+        // bodies, before any contact corrects them.
         self.rope_rectangles.clear();
-        self.rope_rectangles
-            .extend(self.platforms.iter().map(|platform| platform.collider));
+        if self.scratch.callback_tick == Some(self.tick)
+            && self.scratch.callback_colliders.len() == self.platforms.len()
+        {
+            self.rope_rectangles.extend_from_slice(&self.scratch.callback_colliders);
+        } else {
+            self.rope_rectangles
+                .extend(self.platforms.iter().map(|platform| platform.collider));
+        }
         for rope in &mut self.ropes {
             if !rope.physics.enabled {
                 continue;
