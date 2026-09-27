@@ -22886,18 +22886,41 @@ impl RolloutWorld {
                 let mut shape = self.platforms[platform].collider;
                 shape.inner.center = position;
                 let collider_position = position;
-                let position = position
-                    + self
-                        .platforms
+                let wall_push = self
+                    .platforms
+                    .iter()
+                    .enumerate()
+                    .filter(|&(other, wall)| other != platform && wall.active)
+                    .find_map(|(_, wall)| {
+                        crate::physics::contact::rounded_rounded(shape, wall.collider)
+                    })
+                    .map(|contact| positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0]);
+                // Failing that, the first overlapping terrain circle in
+                // registration order, a Tesla node, is tested as (circle,
+                // boulder), and the circle's own correction, away from the
+                // boulder, is what moves the boulder (DetPhysics.cs:2631-2644).
+                let node_push = || {
+                    self.tesla_nodes
                         .iter()
-                        .enumerate()
-                        .filter(|&(other, wall)| other != platform && wall.active)
-                        .find_map(|(_, wall)| {
-                            crate::physics::contact::rounded_rounded(shape, wall.collider)
+                        .filter(|node| node.active && !node.macho_carried)
+                        .filter_map(|node| {
+                            let entity = &self.entities[node.entity?];
+                            if entity.flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
+                                return None;
+                            }
+                            let circle = Circle {
+                                center: node.collider_center,
+                                radius: data.tesla.node_radius * node.collider_scale,
+                            };
+                            crate::physics::contact::circle_rounded(circle, shape)
+                                .map(|contact| (entity.id, contact))
                         })
-                        .map_or(Vec2::ZERO, |contact| {
+                        .min_by_key(|&(id, _)| id)
+                        .map(|(_, contact)| {
                             positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0]
-                        });
+                        })
+                };
+                let position = position + wall_push.or_else(node_push).unwrap_or(Vec2::ZERO);
                 self.platforms[platform].surface.center = position;
                 self.platforms[platform].collider.inner.center = collider_position;
                 self.platform_dynamics[platform].composite_position = position;
