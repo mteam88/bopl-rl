@@ -19904,6 +19904,10 @@ impl RolloutWorld {
             3 if state.ticks > data.missile.idle_ticks => {
                 let slot = &mut self.players[index];
                 slot.active = ActiveAbility::None;
+                // Ability.ExitAbility publishes the collider DetPhysics last
+                // synced, before the slime's own raycasts can land it.
+                slot.reported_position = slot.base.position;
+                slot.reported_tick = self.tick;
                 // SparkShot.Finish exits without `justlanded`. The ordinary
                 // SlimeController therefore enters Idle when the form is
                 // attached, even if the form originally entered in Fall.
@@ -19928,8 +19932,6 @@ impl RolloutWorld {
                     slot.exit_to_fall();
                     slot.base.collision_rays(terrain!(self));
                 }
-                slot.reported_position = slot.base.position;
-                slot.reported_tick = self.tick;
                 return;
             }
             _ => {}
@@ -22301,7 +22303,16 @@ impl RolloutWorld {
                 arrow.magnet_hold_ticks = 3;
             }
             MagnetHeld::Player(i) => {
-                if self.players[i].active != ActiveAbility::None {
+                if self.players[i].active == ActiveAbility::Throw {
+                    // MachoThrow2.ExitAbility overwrites the packet with the
+                    // form's own grounding, so SyncPhysicsTo sets the slime
+                    // back on its platform. MagnetGun reads heldPosition from
+                    // the slime after that, before UnGround lifts it.
+                    let grounded = self.players[i].base.grounded;
+                    self.exit_macho_throw(i, grounded, data);
+                    self.players[i].form_exit = Some((self.tick, position));
+                    self.players[index].magnet.held_position = self.players[i].base.position;
+                } else if self.players[i].active != ActiveAbility::None {
                     self.exit_form_for_freeze(i, data);
                     self.players[i].base.position = position;
                     self.players[i].reported_position = position;
@@ -35629,7 +35640,7 @@ impl RolloutWorld {
                         // A timed exit leaves the box at the form's pose;
                         // the slime that lands or re-grounds turns on its own.
                         let rotation = if missile_row {
-                            slot.base.rotation
+                            slot.missile.collider_rotation
                         } else {
                             slot.throw_item.collider_rotation
                         };
