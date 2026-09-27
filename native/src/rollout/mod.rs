@@ -32264,12 +32264,21 @@ impl RolloutWorld {
     }
 
     /// Which updater pass a platform's components run in. Platforms
-    /// instantiated mid-game register after the players; a Duplicator copy
-    /// keeps its source's definition but also registers ahead of the ropes
-    /// and holes spawned after it.
+    /// instantiated mid-game register after the players. A Duplicator copy
+    /// keeps its source's definition, and runs ahead of the ropes when it was
+    /// instantiated before all of them (a hole only adds force, in any order).
     fn platform_pass(&self, i: usize) -> PlatformPass {
         if self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some() {
-            PlatformPass::Duplicated
+            let id = self.entities[self.platform_entities[i]].id;
+            if self
+                .ropes
+                .iter()
+                .all(|rope| !rope.physics.enabled || id < rope.segment_ids[0])
+            {
+                PlatformPass::Duplicated
+            } else {
+                PlatformPass::Spawned
+            }
         } else if self.platform_defs[i] == usize::MAX {
             PlatformPass::Spawned
         } else {
