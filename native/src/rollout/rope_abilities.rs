@@ -515,6 +515,7 @@ impl RolloutWorld {
         for candidate in 0..self.players.len() {
             if candidate != player
                 && self.playable(candidate)
+                && self.players[candidate].active != ActiveAbility::Rock
                 && crate::physics::contact::circle_box(
                     player_query,
                     self.players[candidate].base.collider,
@@ -522,6 +523,28 @@ impl RolloutWorld {
                 .is_some()
             {
                 // CircleCastClosestPlayers retains the final matching box.
+                nearby_player = Some(candidate);
+            }
+        }
+        // Circles follow the boxes with the cast radius scaled by 1.5, so a
+        // Rock ball in reach wins over any slime.
+        let circle_query = Circle {
+            center: position,
+            radius: source.grapple_player_cast_radius * Fix::from_f64(1.5),
+        };
+        for candidate in 0..self.players.len() {
+            if candidate != player
+                && self.playable(candidate)
+                && self.players[candidate].active == ActiveAbility::Rock
+                && crate::physics::contact::circle_circle(
+                    circle_query,
+                    Circle {
+                        center: self.players[candidate].base.position,
+                        radius: self.players[candidate].rock.collider_radius,
+                    },
+                )
+                .is_some()
+            {
                 nearby_player = Some(candidate);
             }
         }
@@ -570,9 +593,27 @@ impl RolloutWorld {
         // FireHook zeroes the shooter's self-imposed velocity on both branches.
         self.players[player].base.velocity = Vec2::ZERO;
         if let Some(target) = nearby_player {
-            self.players[target].base.velocity = Vec2::ZERO;
-            self.attach_player_rope(target, None, false);
-            self.attach_player_rope(target, Some(rope_index), false);
+            if self.players[target].active == ActiveAbility::Rock {
+                // BounceBall.AttachRope lets the old rope go and leaves the
+                // ball's velocity alone. UpdateRopeAttachment then drops the
+                // new rope, whose number is not the one the ball entered with.
+                if let Some(old) = self.players[target].rope.take() {
+                    let rock = &data::get().rock;
+                    let mass = if rock.rope_player_mass == Fix::ZERO {
+                        Fix::from_f64(0.5)
+                    } else {
+                        rock.rope_player_mass
+                    };
+                    let old = &mut self.ropes[old];
+                    old.time_air_end = Fix::from_int(100);
+                    old.physics.force_end = -Vec2::UP * ROPE_GRAVITY;
+                    old.physics.set_mass(mass, false, Fix::ONE);
+                }
+            } else {
+                self.players[target].base.velocity = Vec2::ZERO;
+                self.attach_player_rope(target, None, false);
+                self.attach_player_rope(target, Some(rope_index), false);
+            }
             self.players[player].cooldowns[ability_slot] = source.grapple_cooldown;
             self.players[player].grapple[ability_slot] = GrappleState {
                 cooldown_set: true,
