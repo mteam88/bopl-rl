@@ -36349,7 +36349,9 @@ impl RolloutWorld {
                         // The bypass leaves the disabled form's FixTransform on
                         // its aimed basis, which `exit_form_for_freeze` saved
                         // before zeroing the shared body for the restored slime.
-                        (synced, slot.gun.forced_exit_basis.1)
+                        // It stays where ExitAbility published it (Ability.cs:150-152);
+                        // the restored slime may move on this pass.
+                        (exit_position, slot.gun.forced_exit_basis.1)
                     } else {
                         (exit_position, Fix::ZERO)
                     };
