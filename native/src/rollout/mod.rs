@@ -16206,6 +16206,8 @@ impl RolloutWorld {
         else {
             return;
         };
+        // pickUpNearbyAttachables opens with srr.UpdateBounds().
+        self.update_surface_bounds(platform_index);
         let player_local = self.players[owner].base.local;
         let circumference = self.platforms[platform_index].surface.circumference();
         let mut best_fraction = Fix::MAX;
@@ -32547,18 +32549,24 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let inner = self.platforms[i].collider.inner;
-            let extents = Vec2::new(
-                Fix::ONE / inner.inverse_extents.x,
-                Fix::ONE / inner.inverse_extents.y,
-            );
-            let radius = self.platforms[i].collider.radius;
-            self.platforms[i].surface.extents = extents;
-            self.platforms[i].surface.radius = radius;
-            self.platforms[i].surface.bounds_radius = radius;
-            self.platform_dynamics[i].surface_shape_dirty = false;
-            self.platforms_changed();
+            self.update_surface_bounds(i);
         }
+    }
+
+    /// StickyRoundedRectangle.UpdateBounds: re-read the collider's current
+    /// shape into the cached perimeter.
+    fn update_surface_bounds(&mut self, i: usize) {
+        let inner = self.platforms[i].collider.inner;
+        let extents = Vec2::new(
+            Fix::ONE / inner.inverse_extents.x,
+            Fix::ONE / inner.inverse_extents.y,
+        );
+        let radius = self.platforms[i].collider.radius;
+        self.platforms[i].surface.extents = extents;
+        self.platforms[i].surface.radius = radius;
+        self.platforms[i].surface.bounds_radius = radius;
+        self.platform_dynamics[i].surface_shape_dirty = false;
+        self.platforms_changed();
     }
 
     /// BoplBody.UpdateSim, the last updater on each platform: a
