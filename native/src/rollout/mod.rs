@@ -22874,7 +22874,10 @@ impl RolloutWorld {
                 self.platform_dynamics[platform].home_position = position;
                 self.platform_dynamics[platform].body.velocity = Vec2::ZERO;
                 self.macho_boulders[i].held = true;
+                // The Magnet's own surface move and raycasts later this pass
+                // query the collider where it now stands.
                 self.platforms_changed();
+                self.rebuild_bounds();
             }
             MagnetHeld::AbilityPickup(i) => {
                 let velocity = self.ability_pickups[i].body.velocity;
