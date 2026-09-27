@@ -22348,6 +22348,20 @@ impl RolloutWorld {
                     self.exit_macho_throw(i, grounded, data);
                     self.players[i].form_exit = Some((self.tick, position));
                     self.players[index].magnet.held_position = self.players[i].base.position;
+                } else if self.players[i].active == ActiveAbility::Drill {
+                    // Drill.ExitAbility hands the packet its body's velocities,
+                    // so EnterFall's rays leave the fire point along the
+                    // drill's motion. ApplyRagDoll then zeroes only the
+                    // self-imposed part.
+                    self.deactivate_drill_hitboxes(i);
+                    let (velocity, external) =
+                        (self.players[i].base.velocity, self.players[i].base.external_velocity);
+                    self.exit_form_for_freeze_at(i, position, velocity, external, data);
+                    let slot = &mut self.players[i];
+                    slot.facing_right = (velocity + external).x >= Fix::ZERO;
+                    slot.base.velocity = Vec2::ZERO;
+                    slot.form_exit = Some((self.tick, position));
+                    self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active != ActiveAbility::None {
                     self.exit_form_for_freeze(i, data);
                     self.players[i].base.position = position;
@@ -25858,6 +25872,18 @@ impl RolloutWorld {
     }
 
     fn exit_form_for_freeze(&mut self, victim: usize, data: &data::RolloutData) {
+        let position = self.players[victim].base.position;
+        self.exit_form_for_freeze_at(victim, position, Vec2::ZERO, Vec2::ZERO, data);
+    }
+
+    fn exit_form_for_freeze_at(
+        &mut self,
+        victim: usize,
+        position: Vec2,
+        velocity: Vec2,
+        external_velocity: Vec2,
+        data: &data::RolloutData,
+    ) {
         let was_bow = self.players[victim].active == ActiveAbility::Bow;
         let deferred = was_bow && self.players[victim].base.grounded;
         let slot = &mut self.players[victim];
@@ -25877,8 +25903,9 @@ impl RolloutWorld {
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
         slot.base.radius = data.player.radius;
-        slot.base.velocity = Vec2::ZERO;
-        slot.base.external_velocity = Vec2::ZERO;
+        slot.base.position = position;
+        slot.base.velocity = velocity;
+        slot.base.external_velocity = external_velocity;
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.base.grounded = false;
