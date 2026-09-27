@@ -38926,6 +38926,8 @@ mod tests {
         world.reset(&test_config()).unwrap();
         let data = data::get();
         world.duplicate_player_target(1, Vec2::ZERO, Vec2::UP, data);
+        world.tick += 1;
+        world.register_pending_abilityless_clones();
         let entity = world.abilityless_clones[0].entity.unwrap();
         for row in &mut world.entities {
             row.flags = 0;
@@ -38993,7 +38995,7 @@ mod tests {
 
         world.duplicate_black_hole(0, Vec2::RIGHT, data::get());
 
-        assert_eq!(world.black_holes[1].duplicate_lifespan, 480);
+        assert_eq!(world.pending_black_holes[0].duplicate_lifespan, 480);
     }
 
     #[test]
@@ -39116,7 +39118,7 @@ mod tests {
         world.duplicate_black_hole(0, Vec2::RIGHT, data::get());
 
         assert_eq!(
-            world.black_holes[1].previous_target_size,
+            world.pending_black_holes[0].previous_target_size,
             Fix::from_int(100)
         );
     }
@@ -39616,7 +39618,7 @@ mod tests {
         world.players[0].base.grounded = true;
         world.players[0].base.ground = Some(platform.id);
         world.players[0].base.local = Fix::ZERO;
-        world.players[0].base.velocity = Vec2::RIGHT * Fix::from_int(3);
+        world.players[0].base.grounded_speed = Fix::from_int(3);
         world.players[0].base.external_velocity = Vec2::RIGHT;
         world.players[0].timers[0] = Fix::from_int(100);
 
