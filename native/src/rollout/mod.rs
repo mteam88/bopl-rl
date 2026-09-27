@@ -29020,6 +29020,9 @@ impl RolloutWorld {
     fn arrows_contacts(&mut self, data: &data::RolloutData) {
         let radius = data.arrow.radius;
         self.arrow_platform_contacts(data);
+        // Circle/Box player hits, killed in SortAndSweep callback order:
+        // (sweep key, arrow owner, victim).
+        let mut player_hits: Vec<((Fix, Fix), u32, usize)> = Vec::new();
         for i in 0..self.arrows.len() {
             if !self.arrows[i].active
                 || !self.arrows[i].registered
@@ -29506,8 +29509,6 @@ impl RolloutWorld {
                 continue;
             }
 
-            let mut victims = [usize::MAX; MAX_PLAYERS];
-            let mut victim_count = 0;
             // Arrow runs in DetPhysics after every player-form collider was
             // synchronized. Use the retained row so Circle/Box dispatch,
             // rotation and scale match every active form. Rock was consumed
@@ -29559,19 +29560,20 @@ impl RolloutWorld {
                     continue;
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                let hit = if row.kind == 0 {
-                    crate::physics::contact::circle_circle(
+                let (hit, row_min) = if row.kind == 0 {
+                    let hit = crate::physics::contact::circle_circle(
                         circle,
                         Circle {
                             center,
                             radius: Fix::from_raw(row.radius),
                         },
                     )
-                    .is_some()
+                    .is_some();
+                    (hit, axis(center) - Fix::from_raw(row.radius))
                 } else if row.kind == 1 {
                     let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
                     let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    right != Vec2::ZERO
+                    let hit = right != Vec2::ZERO
                         && up != Vec2::ZERO
                         && crate::physics::contact::circle_box(
                             circle,
@@ -29585,30 +29587,28 @@ impl RolloutWorld {
                                 ),
                             },
                         )
-                        .is_some()
+                        .is_some();
+                    (hit, axis(center) - axis(right).abs() - axis(up).abs())
                 } else {
-                    false
+                    (false, Fix::ZERO)
                 };
                 if hit {
-                    victims[victim_count] = j;
-                    victim_count += 1;
+                    let arrow_min = axis(circle.center) - circle.radius;
+                    let key = (arrow_min.max(row_min), arrow_min.min(row_min));
+                    player_hits.push((key, arrow.owner, j));
                 }
             }
-
-            for &victim in &victims[..victim_count] {
-                if !self.players[victim].base.alive {
-                    continue;
-                }
-                let victim_id = self.players[victim].base.id;
-                let cause = if arrow.owner == victim_id {
-                    CAUSE_ACCIDENT
-                } else {
-                    CAUSE_OTHER
-                };
-                self.kill(victim, arrow.owner, cause, true, true);
-                if arrow.owner != victim_id && arrow.owner >= 1 {
-                    self.players[arrow.owner as usize - 1].telemetry.arrow_hits += 1;
-                }
+        }
+        player_hits.sort_by_key(|&(key, ..)| key);
+        for (_, owner, victim) in player_hits {
+            if !self.players[victim].base.alive {
+                continue;
+            }
+            let victim_id = self.players[victim].base.id;
+            let cause = if owner == victim_id { CAUSE_ACCIDENT } else { CAUSE_OTHER };
+            self.kill(victim, owner, cause, true, true);
+            if owner != victim_id && owner >= 1 {
+                self.players[owner as usize - 1].telemetry.arrow_hits += 1;
             }
         }
     }
