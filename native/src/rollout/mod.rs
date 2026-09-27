@@ -34778,15 +34778,13 @@ impl RolloutWorld {
         // where hasBeenDettached lives - the bit RlObservation.cs:89 publishes
         // as entity flag 32 on every rope node.
         //
-        // Only the slime's own rope. A player inside an ability form left
-        // PlayerBody.ropeBody null on entry (Ability.cs:139-146,
-        // PlayerBody.cs:275-280) and leaves through Ability.ExitAbility, which
-        // hands the rope on without ever detaching it; the rope such a form
-        // still holds belongs to BounceBall, whose AttachRope has no Dettach
-        // call at all (BounceBall.cs:205-223). Every kill() site that models
-        // ExitAbility rather than killPlayer is reached with a live form, so
-        // the active-ability test separates the two exactly.
-        if self.players[index].active == ActiveAbility::None && self.players[index].rope.is_some() {
+        // A form's own PlayerBody holds the rope from Ability.EnterAbility
+        // (Ability.cs:99-102), so killing the form through its PlayerCollision
+        // detaches it the same way; a dead ExitAbility hands it back to the
+        // slime, whose killPlayer detaches it (SlimeController.cs:210-219).
+        // Only Rock has no PlayerBody: its rope belongs to BounceBall, whose
+        // AttachRope has no Dettach call at all (BounceBall.cs:205-223).
+        if self.players[index].active != ActiveAbility::Rock && self.players[index].rope.is_some() {
             let top = self.players[index].rope_top;
             self.attach_player_rope(index, None, top);
         }
