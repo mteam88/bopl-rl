@@ -31509,47 +31509,53 @@ impl RolloutWorld {
                     continue;
                 }
             }
+            // GrenadeExplode.Detonate has no guard against a second call, and
+            // DetPhysics dispatches every queued callback, so a grenade spawns
+            // one Explosion for each explosion or player pair that sets it off.
+            let mut detonations = 0;
             if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE) {
-                let hit_grenade_explosion = self.grenade_explosions.iter().any(|explosion| {
-                    explosion.active
-                        && explosion.registered
-                        && explosion.age == 1
-                        && crate::physics::contact::circle_box(
-                            circle,
-                            OrientedBox::from_basis(
-                                explosion.position,
-                                Vec2::RIGHT,
-                                data.grenade.explosion_extents * explosion.scale,
-                            ),
-                        )
-                        .is_some()
-                });
-                let hit_missile_explosion = self.missile_explosions.iter().any(|explosion| {
-                    explosion.active
-                        && explosion.registered
-                        && explosion.age == 1
-                        && crate::physics::contact::circle_box(
-                            circle,
-                            OrientedBox::from_basis(
-                                explosion.position,
-                                Vec2::RIGHT,
-                                data.missile.explosion_extents * explosion.scale,
-                            ),
-                        )
-                        .is_some()
-                });
-                if hit_grenade_explosion
-                    || hit_missile_explosion
-                    || self.smoke_explosion_hits(circle, data)
-                {
-                    if item.ability == ABILITY_GRENADE {
-                        self.detonate_grenade(item_index, true, data);
-                        continue;
-                    }
-                    if item.detonates_on_owner {
-                        self.detonate_smoke(item_index, true, data);
-                        continue;
-                    }
+                let grenade_explosion_hits = self
+                    .grenade_explosions
+                    .iter()
+                    .filter(|explosion| {
+                        explosion.active
+                            && explosion.registered
+                            && explosion.age == 1
+                            && crate::physics::contact::circle_box(
+                                circle,
+                                OrientedBox::from_basis(
+                                    explosion.position,
+                                    Vec2::RIGHT,
+                                    data.grenade.explosion_extents * explosion.scale,
+                                ),
+                            )
+                            .is_some()
+                    })
+                    .count();
+                let missile_explosion_hits = self
+                    .missile_explosions
+                    .iter()
+                    .filter(|explosion| {
+                        explosion.active
+                            && explosion.registered
+                            && explosion.age == 1
+                            && crate::physics::contact::circle_box(
+                                circle,
+                                OrientedBox::from_basis(
+                                    explosion.position,
+                                    Vec2::RIGHT,
+                                    data.missile.explosion_extents * explosion.scale,
+                                ),
+                            )
+                            .is_some()
+                    })
+                    .count();
+                detonations = grenade_explosion_hits
+                    + missile_explosion_hits
+                    + self.smoke_explosion_hits(circle, data);
+                if detonations > 0 && item.ability == ABILITY_SMOKE && item.detonates_on_owner {
+                    self.detonate_smoke(item_index, true, data);
+                    continue;
                 }
             }
             if item.ability == ABILITY_MINE && matches!(self.thrown_items[item_index].phase, 1 | 2)
@@ -31625,7 +31631,7 @@ impl RolloutWorld {
                     || hit_tack
                     || hit_grenade_explosion
                     || hit_mine_explosion
-                    || self.smoke_explosion_hits(mine_circle, data)
+                    || self.smoke_explosion_hits(mine_circle, data) > 0
                 {
                     let mine = &mut self.thrown_items[item_index];
                     mine.time_since_anticipation =
@@ -31642,7 +31648,6 @@ impl RolloutWorld {
             }
 
             let owner_id = item.owner as u32 + 1;
-            let mut detonate = false;
             // The pair comes from the broadphase, swept before a wall or an
             // arrow corrected the item this pass; the manifold then tests the
             // corrected circle.
@@ -31713,19 +31718,28 @@ impl RolloutWorld {
                         // registered, such as Growth Ray's box.
                         _ => {
                             let h = self.player_hit_by_circle(player_index, circle);
-                            detonate |= h;
+                            detonations += h as usize;
                             continue;
                         }
                     };
                     crate::physics::contact::circle_box(circle, hurtbox).is_some()
                 };
-                detonate |= hit;
+                detonations += hit as usize;
             }
             // SmokeGrenadeExplode2.OnCollide ignores every contact, not only
             // the owner's, until hurtOwnerDelay has run out.
-            if detonate {
+            if detonations > 0 {
                 if item.ability != ABILITY_SMOKE {
                     self.detonate_grenade(item_index, true, data);
+                    for _ in 1..detonations {
+                        self.spawn_grenade_explosion(
+                            item.position,
+                            item.owner,
+                            true,
+                            item.scale,
+                            data,
+                        );
+                    }
                 } else if item.detonates_on_owner {
                     self.detonate_smoke(item_index, true, data);
                 }
@@ -31990,23 +32004,28 @@ impl RolloutWorld {
 
     /// Whether SortAndSweep pairs the circle with the player's shape: their
     /// bounding boxes overlap strictly on both axes.
-    /// A burning smoke cloud's Explosion hits on its first registered pass,
-    /// like a grenade's, so it sets off grenades and mines too.
-    fn smoke_explosion_hits(&self, circle: Circle, data: &data::RolloutData) -> bool {
-        self.smoke_explosions.iter().any(|explosion| {
-            explosion.active
-                && explosion.registered
-                && explosion.age == 1
-                && crate::physics::contact::circle_box(
-                    circle,
-                    OrientedBox::from_basis(
-                        explosion.position + data.smoke.explosion_collider_offset * explosion.scale,
-                        Vec2::RIGHT,
-                        data.smoke.explosion_extents * explosion.scale,
-                    ),
-                )
-                .is_some()
-        })
+    /// How many burning smoke cloud Explosions overlap the circle. They hit on
+    /// their first registered pass, like a grenade's, so they set off grenades
+    /// and mines too.
+    fn smoke_explosion_hits(&self, circle: Circle, data: &data::RolloutData) -> usize {
+        self.smoke_explosions
+            .iter()
+            .filter(|explosion| {
+                explosion.active
+                    && explosion.registered
+                    && explosion.age == 1
+                    && crate::physics::contact::circle_box(
+                        circle,
+                        OrientedBox::from_basis(
+                            explosion.position
+                                + data.smoke.explosion_collider_offset * explosion.scale,
+                            Vec2::RIGHT,
+                            data.smoke.explosion_extents * explosion.scale,
+                        ),
+                    )
+                    .is_some()
+            })
+            .count()
     }
 
     fn player_swept_pairs(&self, player_index: usize, circle: Circle) -> bool {
