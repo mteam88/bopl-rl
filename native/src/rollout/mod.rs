@@ -890,6 +890,9 @@ pub struct ThrowItemState {
     pub fire_input_time: Fix,
     pub direction: Vec2,
     pub item: Option<usize>,
+    /// Which payload `item` held. Another spawn can take the pool slot once
+    /// it is destroyed, when ThrowItem2's grenade reads null.
+    pub item_hierarchy: u32,
     pub collider_rotation: Fix,
     /// FixTransform.right used for the collider offset. Ground alignment
     /// assigns this vector directly, while DPhysicsBox derives its axes from
@@ -20601,8 +20604,7 @@ impl RolloutWorld {
                     // The held grenade has no registered collider because its
                     // DPhysicsCircle uses manuallyCallInit. Keep only the
                     // payload state until release calls `Fire`.
-                    let item = self.spawn_held_item(index, data);
-                    self.players[index].throw_item.item = Some(item);
+                    self.spawn_held_item(index, data);
                 }
             }
         }
@@ -20615,8 +20617,7 @@ impl RolloutWorld {
         }
 
         if self.players[index].throw_item.phase == 0
-            && let Some(item_index) = self.players[index].throw_item.item
-            && self.thrown_items[item_index].active
+            && let Some(item_index) = self.held_throw_item(index)
         {
             self.thrown_items[item_index].position = self.throw_dummy_position(index, gd);
         }
@@ -20743,7 +20744,17 @@ impl RolloutWorld {
         slot.base.position + dummy.complex_mul(Vec2::angle(slot.base.rotation))
     }
 
-    fn spawn_held_item(&mut self, index: usize, data: &data::RolloutData) -> usize {
+    /// ThrowItem2.grenade while it is alive. A destroyed payload reads null
+    /// even after another spawn has taken its pool slot.
+    fn held_throw_item(&self, index: usize) -> Option<usize> {
+        let state = &self.players[index].throw_item;
+        state.item.filter(|&item| {
+            self.thrown_items[item].active
+                && self.thrown_items[item].hierarchy_base == state.item_hierarchy
+        })
+    }
+
+    fn spawn_held_item(&mut self, index: usize, data: &data::RolloutData) {
         let ability = active_throw_ability(self.players[index].active);
         let config = throw_config(data, ability);
         // SpawnGrenade(dummyPos()).
@@ -20804,25 +20815,29 @@ impl RolloutWorld {
         };
         // A held payload has no collider until ManualInit, which appends a
         // fresh row; the free slot's old row stays removed.
-        if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
-            self.thrown_items[free] = item;
-            free
-        } else {
-            self.thrown_items.push(item);
-            self.thrown_items.len() - 1
-        }
+        let item_index =
+            if let Some(free) = self.thrown_items.iter().position(|item| !item.active) {
+                self.thrown_items[free] = item;
+                free
+            } else {
+                self.thrown_items.push(item);
+                self.thrown_items.len() - 1
+            };
+        let state = &mut self.players[index].throw_item;
+        state.item = Some(item_index);
+        state.item_hierarchy = hierarchy_base;
     }
 
     fn fire_thrown_item(&mut self, index: usize, data: &data::RolloutData) {
         let ability = active_throw_ability(self.players[index].active);
         let gd = throw_config(data, ability);
-        let item_index = self.players[index]
-            .throw_item
-            .item
-            .unwrap_or_else(|| self.spawn_held_item(index, data));
-        let new_collider_id = (self.thrown_items[item_index].active
-            && self.thrown_items[item_index].entity.is_none())
-        .then(|| self.next_id());
+        if self.players[index].throw_item.item.is_none() {
+            self.spawn_held_item(index, data);
+        }
+        let held = self.held_throw_item(index);
+        let new_collider_id = held
+            .filter(|&item| self.thrown_items[item].entity.is_none())
+            .map(|_| self.next_id());
         let slot = &mut self.players[index];
         let state = &mut slot.throw_item;
         let direction = state.direction;
@@ -20848,7 +20863,7 @@ impl RolloutWorld {
         // direction is floored once. Scaling the direction first costs up to
         // 159 raw per component before the sixty-fold impulse conversion.
         let impulse_force = direction * (slot.player_scale * force) * Fix::from_int(60);
-        if self.thrown_items[item_index].active {
+        if let Some(item_index) = held {
             let item = &mut self.thrown_items[item_index];
             if item.entity.is_none() {
                 item.pending_shake = position - item.position;
@@ -20888,7 +20903,6 @@ impl RolloutWorld {
         }
         slot.base.velocity -= gd.knockback * direction;
         state.has_fired = true;
-        state.item = Some(item_index);
         state.phase = 1;
         state.ticks = 0;
     }
@@ -20912,12 +20926,9 @@ impl RolloutWorld {
         {
             return;
         }
-        let Some(item_index) = self.players[index].throw_item.item else {
+        let Some(item_index) = self.held_throw_item(index) else {
             return;
         };
-        if !self.thrown_items[item_index].active {
-            return;
-        }
         let config = throw_config(data, ability);
         let scale = self.players[index].player_scale;
         let item = &mut self.thrown_items[item_index];
@@ -29363,8 +29374,9 @@ impl RolloutWorld {
                         | ABILITY_POKE_BALL
                 )
             {
-                let thrower = &self.players[self.thrown_items[item_index].owner];
-                let holding = thrower.throw_item.item == Some(item_index)
+                let owner = self.thrown_items[item_index].owner;
+                let thrower = &self.players[owner];
+                let holding = self.held_throw_item(owner) == Some(item_index)
                     && matches!(
                         thrower.active,
                         ActiveAbility::Grenade
