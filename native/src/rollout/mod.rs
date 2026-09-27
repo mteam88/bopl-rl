@@ -9650,14 +9650,6 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Drill {
-            // DestroyIfOutsideSceneBounds observes the position left by the
-            // preceding pass before Drill's PlayerBody advances again.
-            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
-                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
-                self.players[index].reported_position = self.players[index].base.position;
-                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
-                return;
-            }
             self.drill_tick(index, action, data, true);
             return;
         }
@@ -14476,6 +14468,15 @@ impl RolloutWorld {
                 return;
             } else {
                 drill.ticks += 1;
+            }
+            // DestroyIfOutsideSceneBounds (hierarchy 3) follows the
+            // SpriteAnimator (2), so an exit animation ending this pass leaves
+            // first. It observes the position left by the preceding pass,
+            // before Drill's PlayerBody advances again.
+            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+                return;
             }
         }
 
