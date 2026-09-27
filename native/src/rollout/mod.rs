@@ -7687,8 +7687,7 @@ impl RolloutWorld {
             if slot.base.grounded {
                 slot.rewind.attached_ground = slot.base.ground;
             }
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
+            self.form_body_move(index, jump_pressed);
             return;
         }
         // A Beam form finds its lost ground inside Beam.MovePlayer instead,
