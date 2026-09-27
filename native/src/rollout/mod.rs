@@ -14607,6 +14607,12 @@ impl RolloutWorld {
     fn drill_contacts(&mut self) {
         let mut victims = [false; MAX_PLAYERS];
         let mut killers = [0u32; MAX_PLAYERS];
+        // The kills land in the callbacks' SortAndSweep pair order: by the
+        // later bounding box's minimum on the sweep axis, then the earlier's.
+        let mut keys = [(Fix::ZERO, Fix::ZERO); MAX_PLAYERS];
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
         for attacker in 0..self.players.len() {
             let slot = &self.players[attacker];
             if !self.playable(attacker)
@@ -14641,7 +14647,7 @@ impl RolloutWorld {
                     ),
                 };
                 for victim in 0..self.players.len() {
-                    if victim == attacker || victims[victim] || !self.playable(victim) {
+                    if victim == attacker || !self.playable(victim) {
                         continue;
                     }
                     let other = &self.players[victim];
@@ -14683,6 +14689,18 @@ impl RolloutWorld {
                     }
                     let row = self.entities[entity];
                     let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                    let row_min = if row.kind == 0 {
+                        axis(center) - Fix::from_raw(row.radius)
+                    } else {
+                        axis(center)
+                            - Fix::from_raw(if sweep_x { row.right_x } else { row.right_y }).abs()
+                            - Fix::from_raw(if sweep_x { row.up_x } else { row.up_y }).abs()
+                    };
+                    let hitbox_min = box_min(hitbox);
+                    let key = (row_min.max(hitbox_min), row_min.min(hitbox_min));
+                    if victims[victim] && keys[victim] <= key {
+                        continue;
+                    }
                     let hit = if row.kind == 0 {
                         crate::physics::contact::circle_box(
                             Circle {
@@ -14713,11 +14731,18 @@ impl RolloutWorld {
                     if hit {
                         victims[victim] = true;
                         killers[victim] = killer;
+                        keys[victim] = key;
                     }
                 }
             }
         }
-        for victim in 0..self.players.len() {
+        let mut order = [0usize; MAX_PLAYERS];
+        let count = self.players.len();
+        for (index, slot) in order[..count].iter_mut().enumerate() {
+            *slot = index;
+        }
+        order[..count].sort_by_key(|&victim| keys[victim]);
+        for &victim in &order[..count] {
             if victims[victim] && self.playable(victim) {
                 self.kill(victim, killers[victim], CAUSE_OTHER, true, true);
             }
