@@ -30277,8 +30277,14 @@ impl RolloutWorld {
                     }
                     continue;
                 }
+                // DetPhysics resolves every pair before any callback runs, so
+                // each platform and player the box touched calls OnCollide at
+                // the corrected position.
                 let owner = missile.owner;
-                self.spawn_missile_explosion(center, owner, false, Fix::ONE, data);
+                let hits = contact_count + self.guided_missile_player_hits(missile, missile_box);
+                for _ in 0..hits {
+                    self.spawn_missile_explosion(center, owner, false, Fix::ONE, data);
+                }
                 self.destroy_guided_missile(missile_index, true);
                 if let Some(entity) = missile.entity {
                     let row = &mut self.entities[entity];
@@ -30441,85 +30447,97 @@ impl RolloutWorld {
                 continue;
             }
 
-            let hit_player = self.players.iter().enumerate().any(|(index, player)| {
-                if !self.playable(index) || missile.magnet_holder == Some(index) {
-                    return false;
+            let hits = self.guided_missile_player_hits(missile, missile_box);
+            if hits > 0 {
+                for _ in 0..hits {
+                    self.spawn_missile_explosion(
+                        missile.position,
+                        missile.owner,
+                        false,
+                        Fix::ONE,
+                        data,
+                    );
                 }
-                let entity = match player.active {
-                    ActiveAbility::None => player.body_entity,
-                    ActiveAbility::Dash => player.dash_entity,
-                    ActiveAbility::Bow => player.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => player.throw_entity,
-                    ActiveAbility::Mine => player.mine_entity,
-                    ActiveAbility::Rock => player.rock_entity,
-                    ActiveAbility::Roll => player.roll_entity,
-                    ActiveAbility::Meteor => player.meteor_entity,
-                    ActiveAbility::Push => player.push_entity,
-                    ActiveAbility::Freeze => player.freeze_entity,
-                    ActiveAbility::Blink => player.blink_entity,
-                    ActiveAbility::GrowthRay => player.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
-                    ActiveAbility::Duplicator => player.duplicator_entity,
-                    ActiveAbility::Magnet => player.magnet_entity,
-                    ActiveAbility::Spike => player.spike_entity,
-                    ActiveAbility::Engine => player.engine_entity,
-                    ActiveAbility::Tesla => player.tesla_entity,
-                    ActiveAbility::TimeStop => player.time_stop_entity,
-                    ActiveAbility::Gust => player.gust_entity,
-                    ActiveAbility::Revival => player.revival_entity,
-                    ActiveAbility::BlackHole => player.black_hole_entity,
-                    ActiveAbility::Throw => player.macho_throw_entity,
-                    ActiveAbility::Drill => player.drill_entity,
-                    ActiveAbility::Beam => player.beam_entity,
-                    ActiveAbility::Platform => player.circle_entity,
-                };
-                if !self.collides(entity) {
-                    return false;
-                }
-                let row = self.entities[entity];
-                if row.kind == 0 {
-                    crate::physics::contact::circle_box(
-                        Circle {
-                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                            radius: Fix::from_raw(row.radius),
-                        },
-                        missile_box,
-                    )
-                    .is_some()
-                } else {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    crate::physics::contact::box_box(
-                        OrientedBox {
-                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                            right,
-                            up,
-                            inverse_extents: Vec2::new(
-                                Fix::ONE / right.length(),
-                                Fix::ONE / up.length(),
-                            ),
-                        },
-                        missile_box,
-                    )
-                    .is_some()
-                }
-            });
-            if hit_player {
-                self.spawn_missile_explosion(
-                    missile.position,
-                    missile.owner,
-                    false,
-                    Fix::ONE,
-                    data,
-                );
                 self.destroy_guided_missile(missile_index, true);
             }
         }
+    }
+
+    /// DetPhysics queues one Missile.OnCollide per touching Player-layer
+    /// collider, and each callback instantiates its own explosion.
+    fn guided_missile_player_hits(
+        &self,
+        missile: GuidedMissile,
+        missile_box: OrientedBox,
+    ) -> usize {
+        self.players.iter().enumerate().filter(|&(index, player)| {
+            if !self.playable(index) || missile.magnet_holder == Some(index) {
+                return false;
+            }
+            let entity = match player.active {
+                ActiveAbility::None => player.body_entity,
+                ActiveAbility::Dash => player.dash_entity,
+                ActiveAbility::Bow => player.bow_entity,
+                ActiveAbility::Grenade
+                | ActiveAbility::Smoke
+                | ActiveAbility::Tack
+                | ActiveAbility::Mjolnir
+                | ActiveAbility::PokeBall
+                | ActiveAbility::Missile => player.throw_entity,
+                ActiveAbility::Mine => player.mine_entity,
+                ActiveAbility::Rock => player.rock_entity,
+                ActiveAbility::Roll => player.roll_entity,
+                ActiveAbility::Meteor => player.meteor_entity,
+                ActiveAbility::Push => player.push_entity,
+                ActiveAbility::Freeze => player.freeze_entity,
+                ActiveAbility::Blink => player.blink_entity,
+                ActiveAbility::GrowthRay => player.growth_ray_entity,
+                ActiveAbility::ShrinkRay => player.shrink_ray_entity,
+                ActiveAbility::Duplicator => player.duplicator_entity,
+                ActiveAbility::Magnet => player.magnet_entity,
+                ActiveAbility::Spike => player.spike_entity,
+                ActiveAbility::Engine => player.engine_entity,
+                ActiveAbility::Tesla => player.tesla_entity,
+                ActiveAbility::TimeStop => player.time_stop_entity,
+                ActiveAbility::Gust => player.gust_entity,
+                ActiveAbility::Revival => player.revival_entity,
+                ActiveAbility::BlackHole => player.black_hole_entity,
+                ActiveAbility::Throw => player.macho_throw_entity,
+                ActiveAbility::Drill => player.drill_entity,
+                ActiveAbility::Beam => player.beam_entity,
+                ActiveAbility::Platform => player.circle_entity,
+            };
+            if !self.collides(entity) {
+                return false;
+            }
+            let row = self.entities[entity];
+            if row.kind == 0 {
+                crate::physics::contact::circle_box(
+                    Circle {
+                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                        radius: Fix::from_raw(row.radius),
+                    },
+                    missile_box,
+                )
+                .is_some()
+            } else {
+                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                crate::physics::contact::box_box(
+                    OrientedBox {
+                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                        right,
+                        up,
+                        inverse_extents: Vec2::new(
+                            Fix::ONE / right.length(),
+                            Fix::ONE / up.length(),
+                        ),
+                    },
+                    missile_box,
+                )
+                .is_some()
+            }
+        }).count()
     }
 
     /// DetPhysics resolves Circle/RoundedRectangle before Circle/Circle.
