@@ -1731,6 +1731,9 @@ pub struct AbilitylessClone {
     /// Black Hole pull from a hole registered after this clone: it lands
     /// after the clone's PlayerBody.UpdateSim has decayed externalVelocity.
     pub late_pull: Vec2,
+    /// The platform it stood on was removed; its next SlimeController pass
+    /// finds the destroyed attachedGround and ungrounds.
+    pub ground_destroyed: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2348,6 +2351,9 @@ pub struct PlayerSlot {
     /// Player.Position when that tie kept an earlier write of this pass over
     /// the one in `reported_position`, with the pass it belongs to.
     pub tie_position: Option<(u32, Vec2)>,
+    /// A pass the disabled SlimeController left Player.Position unset, so a
+    /// body clone's SetPosition wins it.
+    pub unpublished_tick: Option<u32>,
     pub gold_mushroom: [GoldMushroomState; 3],
     pub rewind: RewindState,
     /// SlimeController.currentState as the policy observes it. The .NET enum
@@ -4034,6 +4040,7 @@ impl RolloutWorld {
                 blink_tunnel_released: false,
                 blink_tunnel_end_tick: None,
                 tie_position: None,
+                unpublished_tick: None,
                 gold_mushroom: [GoldMushroomState::default(); 3],
                 rewind: RewindState::default(),
                 obs_state: STATE_FALL,
@@ -20318,6 +20325,8 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         if !slot.teleport_effect_active && !slot.blink_tunnel_active && slot.freeze_form_exit_tick != tick {
             slot.reported_position = slot.base.position;
+        } else {
+            slot.unpublished_tick = Some(tick);
         }
         slot.reported_tick = tick;
     }
@@ -23672,6 +23681,7 @@ impl RolloutWorld {
             blink_tunnel_released: false,
             blink_reactivated_tick: None,
             late_pull: Vec2::ZERO,
+            ground_destroyed: false,
         };
         if let Some(free) = self
             .abilityless_clones
@@ -27322,6 +27332,11 @@ impl RolloutWorld {
             // body keeps its stale attachedGround.
             if slot.base.alive && slot.base.grounded && slot.base.ground == Some(id) {
                 slot.ground_destroyed = true;
+            }
+        }
+        for clone in &mut self.abilityless_clones {
+            if clone.active && clone.base.grounded && clone.base.ground == Some(id) {
+                clone.ground_destroyed = true;
             }
         }
         let entity = self.platform_entities[index];
@@ -32483,9 +32498,22 @@ impl RolloutWorld {
             if owner >= actions.len() {
                 continue;
             }
-            // OldUpdate's Player.SetPosition: with the slime destroyed, the
-            // first clone to update takes the player's position.
-            if self.players[owner].slime_gone && !positioned[owner] {
+            let clone = &mut self.abilityless_clones[clone_index];
+            if std::mem::take(&mut clone.ground_destroyed) {
+                // PlayerPhysics skipped gravity while still grounded.
+                clone.base.rotation = Fix::ZERO;
+                clone.base.up = Vec2::UP;
+                clone.base.skip_next_gravity = true;
+                clone.base.grounded = false;
+                clone.base.ground = None;
+                clone.base.grounded_speed = Fix::ZERO;
+            }
+            // OldUpdate's Player.SetPosition: with the slime destroyed or
+            // disabled, the first clone to update takes the player's position.
+            if (self.players[owner].slime_gone
+                || self.players[owner].unpublished_tick == Some(self.tick))
+                && !positioned[owner]
+            {
                 positioned[owner] = true;
                 self.players[owner].reported_position =
                     self.abilityless_clones[clone_index].base.position;
