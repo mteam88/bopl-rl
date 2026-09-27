@@ -1546,9 +1546,6 @@ pub struct MagnetState {
     pub has_fired: bool,
     pub held: MagnetHeld,
     pub held_position: Vec2,
-    /// Source `extraOffset`, selected from the held object's scale or the
-    /// authored Rock/Boulder offsets and included in CurrentFirePoint.
-    pub extra_offset: Vec2,
     /// TryPickupNearbyItems contributes this cast-pass circle to MagnetGun's
     /// allocation-free StaticUpdate parry sweep.
     pub parry_registered: bool,
@@ -2247,6 +2244,9 @@ pub struct PlayerSlot {
     /// Each equipped MagnetGun prefab mutates its serialized FirepointOffset
     /// by Ability.OnScaleChanged's incremental scale multiplier.
     pub magnet_firepoint_offsets: [Vec2; 3],
+    /// Each MagnetGun's `extraOffset`, set from the object it picks up and
+    /// never cleared: it outlasts the hold and the use, into the next cast.
+    pub magnet_extra_offsets: [Vec2; 3],
     pub magnet_prev_scales: [Fix; 3],
     /// PlayerPhysics.gravity_modifier on each slot's GunTransform or MagnetGun
     /// form. Entering airborne sets 0.03 and firing sets 1, but entering
@@ -4010,6 +4010,7 @@ impl RolloutWorld {
                 gun: GunState::default(),
                 magnet: MagnetState::default(),
                 magnet_firepoint_offsets: [data.magnet.firepoint_offset; 3],
+                magnet_extra_offsets: [Vec2::ZERO; 3],
                 magnet_prev_scales: [Fix::ONE; 3],
                 gun_gravity: [Fix::ONE; 3],
                 ragdoll: RagdollState::default(),
@@ -4795,6 +4796,7 @@ impl RolloutWorld {
         if ability == ABILITY_MAGNET {
             self.players[player_index].magnet_firepoint_offsets[ability_slot] =
                 data.magnet.firepoint_offset;
+            self.players[player_index].magnet_extra_offsets[ability_slot] = Vec2::ZERO;
             self.players[player_index].magnet_prev_scales[ability_slot] = Fix::ONE;
         }
 
@@ -18431,6 +18433,7 @@ impl RolloutWorld {
             slot.gun = GunState::default();
             slot.magnet = MagnetState::default();
             slot.magnet_firepoint_offsets = [data.magnet.firepoint_offset; 3];
+            slot.magnet_extra_offsets = [Vec2::ZERO; 3];
             slot.magnet_prev_scales = [Fix::ONE; 3];
             slot.gun_gravity = [Fix::ONE; 3];
             slot.blink_tunnel_active = false;
@@ -18909,6 +18912,7 @@ impl RolloutWorld {
             slot.gun = GunState::default();
             slot.magnet = MagnetState::default();
             slot.magnet_firepoint_offsets = [data.magnet.firepoint_offset; 3];
+            slot.magnet_extra_offsets = [Vec2::ZERO; 3];
             slot.magnet_prev_scales = [Fix::ONE; 3];
             slot.gun_gravity = [Fix::ONE; 3];
             slot.blink_tunnel_active = false;
@@ -21584,7 +21588,6 @@ impl RolloutWorld {
             // enterPause changes heldItemState to nothing. BoplBody's own
             // countdown releases its holder on the following updater passes.
             state.held = MagnetHeld::Nothing;
-            state.extra_offset = Vec2::ZERO;
         }
 
         if matches!(self.players[index].magnet.phase, 1 | 2) {
@@ -22010,7 +22013,8 @@ impl RolloutWorld {
         let up = right.perp();
         // OnScaleChanged scales the serialized firepoint while extraOffset is
         // assigned in world units from the selected object.
-        let offset = slot.magnet_firepoint_offsets[slot.active_slot] + slot.magnet.extra_offset;
+        let offset = slot.magnet_firepoint_offsets[slot.active_slot]
+            + slot.magnet_extra_offsets[slot.active_slot];
         slot.base.position + up * offset.y + right * offset.x
     }
 
@@ -22046,7 +22050,8 @@ impl RolloutWorld {
         let slot = &self.players[index];
         let direction = slot.magnet.aim.normalized_safe();
         let offset_x =
-            slot.magnet_firepoint_offsets[slot.active_slot].x + slot.magnet.extra_offset.x;
+            slot.magnet_firepoint_offsets[slot.active_slot].x
+                + slot.magnet_extra_offsets[slot.active_slot].x;
         let root = firepoint - slot.magnet.body_right * offset_x;
         let side = data.magnet.raycast_offset * slot.base.scale;
         let distance = offset_x + Fix::from_int(1000);
@@ -22431,7 +22436,7 @@ impl RolloutWorld {
             slot.magnet.time_spent_pulling = Fix::ZERO;
             slot.magnet.held = held;
             slot.magnet.held_position = position;
-            slot.magnet.extra_offset = extra;
+            slot.magnet_extra_offsets[slot.active_slot] = extra;
             let divisor = if boulder_recoil {
                 Fix::from_int(35)
             } else {
@@ -22579,7 +22584,6 @@ impl RolloutWorld {
         slot.magnet.animation = 2;
         slot.magnet.animation_ticks = 0;
         slot.magnet.held = MagnetHeld::Nothing;
-        slot.magnet.extra_offset = Vec2::ZERO;
         slot.base.external_velocity +=
             direction * data.magnet.parry_push_strength * Fix::from_int(35);
     }
@@ -22683,7 +22687,6 @@ impl RolloutWorld {
             let state = &mut self.players[index].magnet;
             state.held = MagnetHeld::Nothing;
             state.phase = 4;
-            state.extra_offset = Vec2::ZERO;
             return;
         }
 
@@ -22715,7 +22718,6 @@ impl RolloutWorld {
             let state = &mut self.players[index].magnet;
             state.held = MagnetHeld::Nothing;
             state.phase = 2;
-            state.extra_offset = Vec2::ZERO;
             return;
         }
 
@@ -22974,7 +22976,6 @@ impl RolloutWorld {
 
     fn magnet_fire_held_item(&mut self, index: usize, direction: Vec2, data: &data::RolloutData) {
         let held = core::mem::take(&mut self.players[index].magnet.held);
-        self.players[index].magnet.extra_offset = Vec2::ZERO;
         match held {
             MagnetHeld::Arrow(i) => {
                 if let Some(arrow) = self.arrows.get_mut(i) {
@@ -23078,7 +23079,6 @@ impl RolloutWorld {
 
     fn drop_magnet_held_item(&mut self, index: usize) {
         let held = core::mem::take(&mut self.players[index].magnet.held);
-        self.players[index].magnet.extra_offset = Vec2::ZERO;
         self.magnet_release_handle(index, held);
     }
 
