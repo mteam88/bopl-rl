@@ -20,6 +20,8 @@ const PLATFORM_HEAVINESS: Fix = Fix::from_raw(42_949_672);
 const PLATFORM_PULL: Fix = Fix::from_raw(-42_949_672_960);
 const BOULDER_PULL: Fix = Fix::from_raw(-21_474_836_480);
 const PLATFORM_BREAK_STRETCH: Fix = Fix::from_raw(429_496_729_600);
+/// RopeAttachment.pullStr, the pull on a non-platform parent's body.
+const ATTACHMENT_PULL: Fix = Fix::from_raw(-12_884_901_888);
 
 const WEB_MAX_LENGTH: Fix = Fix::from_raw(85_899_345_920);
 const WEB_SHORTEN: Fix = Fix::from_raw(3_693_671_710);
@@ -70,6 +72,9 @@ pub(crate) struct RolloutRope {
     pub black_hole: Option<usize>,
     pub black_hole_local: Vec2,
     pub black_hole_reel_frames: usize,
+    /// A Rock-form player the hook stuck to: it has no PlayerBody, so the
+    /// rope hangs off its centre through AttachToNonPlatform.
+    pub rock: Option<usize>,
     pub segment_ids: [u32; MAX_SEGMENTS - 1],
     pub hook_active: bool,
     pub hook_remove_next: bool,
@@ -123,6 +128,7 @@ fn empty_rope() -> RolloutRope {
         black_hole: None,
         black_hole_local: Vec2::ZERO,
         black_hole_reel_frames: 0,
+        rock: None,
         segment_ids: [0; MAX_SEGMENTS - 1],
         hook_active: false,
         hook_remove_next: false,
@@ -179,6 +185,7 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
         rope.black_hole = None;
         rope.black_hole_local = Vec2::ZERO;
         rope.black_hole_reel_frames = 0;
+        rope.rock = None;
         rope.hook_active = false;
         rope.hook_remove_next = false;
         rope.hook_entity = None;
@@ -228,6 +235,7 @@ impl RolloutWorld {
         rope.black_hole = None;
         rope.black_hole_local = Vec2::ZERO;
         rope.black_hole_reel_frames = 0;
+        rope.rock = None;
         rope.segment_ids = segment_ids;
         let body = &mut rope.physics;
         body.count = SEGMENTS;
@@ -275,19 +283,21 @@ impl RolloutWorld {
         if let Some(old) = self.players[player].rope {
             let (mass, ignore_gravity) = self.rope_body_tuning(player);
             let force = if ignore_gravity { Vec2::ZERO } else { -Vec2::UP * ROPE_GRAVITY };
-            let old_top = self.players[player].rope_top;
+            // PlayerBody.AttachRope releases the old rope at the end the call
+            // names, not the end the body held: HookshotInstant and WebSwing
+            // pass the bottom end even for a player hooked by the top.
             let old_rope = &mut self.ropes[old].physics;
-            if old_top {
+            if top {
                 old_rope.force_start = force;
             } else {
                 old_rope.force_end = force;
             }
             if rope.is_none() {
-                old_rope.detach(old_top);
+                old_rope.detach(top);
             } else {
-                old_rope.set_mass(mass, old_top, Fix::ONE);
+                old_rope.set_mass(mass, top, Fix::ONE);
             }
-            if old_top {
+            if top {
                 self.ropes[old].time_air_start = Fix::from_int(100);
             } else {
                 self.ropes[old].time_air_end = Fix::from_int(100);
@@ -921,6 +931,32 @@ impl RolloutWorld {
                 self.ropes[index].physics.segment[0] = anchor;
                 continue;
             }
+            if let Some(rock) = self.ropes[index].rock {
+                if self.players[rock].active != ActiveAbility::Rock || !self.players[rock].base.alive
+                {
+                    self.deattach_rope(index, true);
+                    self.ropes[index].rock = None;
+                    continue;
+                }
+                let physics = &self.ropes[index].physics;
+                if physics.time_since_hook_arrived > Fix::ZERO && !physics.detached && !stopped {
+                    // AddForceAtPosition at the rock's own centre: no torque.
+                    let force = (physics.segment[0] - physics.segment[1]) * ATTACHMENT_PULL;
+                    self.players[rock].rock.body.apply_impulse(force, Vec2::ZERO);
+                }
+                for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
+                    if (self.ropes[index].physics.segment[segment]
+                        - self.ropes[index].physics.segment[segment + 1])
+                        .length_squared()
+                        > PLATFORM_BREAK_STRETCH
+                    {
+                        self.deattach_rope(index, true);
+                        self.ropes[index].rock = None;
+                        break;
+                    }
+                }
+                continue;
+            }
             let Some(platform) = self.ropes[index].platform else {
                 continue;
             };
@@ -1138,18 +1174,43 @@ impl RolloutWorld {
             let end_player = self.ropes[rope_index].hook_end_player;
             let mut victim = None;
             for player in 0..self.players.len() {
-                if (player == owner || player == end_player)
-                    || !self.playable(player)
-                    || crate::physics::contact::circle_box(
-                        circle,
-                        self.players[player].base.collider,
-                    )
-                    .is_none()
-                {
+                if (player == owner || player == end_player) || !self.playable(player) {
                     continue;
                 }
-                victim = Some(player);
-                break;
+                let slot = &self.players[player];
+                let hit = if slot.active == ActiveAbility::Rock {
+                    let rock = Circle {
+                        center: slot.base.position,
+                        radius: slot.rock.collider_radius,
+                    };
+                    crate::physics::contact::circle_circle(circle, rock).is_some()
+                } else {
+                    crate::physics::contact::circle_box(circle, slot.base.collider).is_some()
+                };
+                if hit {
+                    victim = Some(player);
+                    break;
+                }
+            }
+            if let Some(rock) = victim.filter(|&v| self.players[v].active == ActiveAbility::Rock) {
+                let scale = self.players[rock].rock.scale;
+                let rope = &mut self.ropes[rope_index];
+                rope.physics.mass_start = Fix::ONE;
+                rope.physics.force_start = Vec2::ZERO;
+                rope.physics.time_since_hook_arrived = Fix::ZERO;
+                rope.physics.set_mass(source.non_platform_mass, true, scale);
+                rope.time_air_start = Fix::ONE;
+                rope.platform = None;
+                rope.rock = Some(rock);
+                rope.reel_in = true;
+                rope.hook_active = false;
+                rope.hook_remove_next = true;
+                if let Some(entity) = rope.hook_entity {
+                    // Hitbox-only teardown, as for a wall (RopeHook.cs:182-189).
+                    self.entities[entity].flags =
+                        (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
+                }
+                continue;
             }
             if let Some(victim) = victim {
                 if let Some(old) = self.players[victim].rope
@@ -1303,6 +1364,11 @@ impl RolloutWorld {
             {
                 let hole = self.black_holes[hole_index];
                 rope.physics.segment[0] = hole.position + rope.black_hole_local;
+            }
+            if let Some(rock) = rope.rock
+                && self.players[rock].active == ActiveAbility::Rock
+            {
+                rope.physics.segment[0] = self.players[rock].base.position;
             }
             if rope.hook_active {
                 rope.physics.segment[0] = rope.hook_position;
