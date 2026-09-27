@@ -7729,7 +7729,7 @@ impl RolloutWorld {
             }
         }
         let ragdoll_ended = self.players[index].ragdoll.active;
-        if ragdoll_ended && self.ragdoll_player_tick(index, action) {
+        if ragdoll_ended && self.ragdoll_player_tick(index, action, jump_pressed) {
             let scale = self.players[index].player_scale;
             self.players[index].set_ordinary_body_scale(scale);
             return;
@@ -26161,7 +26161,7 @@ impl RolloutWorld {
     /// The ragdolled slime's pass. Returns false when the ragdoll ends in it:
     /// SlimeController then carries on through OldUpdate and Move like any
     /// other pass, with PlayerPhysics.UpdateSim already done here.
-    fn ragdoll_player_tick(&mut self, index: usize, action: Action) -> bool {
+    fn ragdoll_player_tick(&mut self, index: usize, action: Action, jump_pressed: bool) -> bool {
         let slot = &mut self.players[index];
         // Both flags stand for PlayerPhysics.skipNextUpdate, which the
         // ragdolled slime's PlayerPhysics still consumes every pass.
@@ -26223,8 +26223,15 @@ impl RolloutWorld {
                 slot.timers[s] = Fix::from_f64(0.01);
             }
         }
-        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-        slot.base.external_velocity *= Fix::from_f64(0.95);
+        // PlayerBody.UpdateSim runs its rope branch whatever the slime's state
+        // (PlayerBody.cs:162-239), so a ragdolled or frozen slime still swings
+        // on its web.
+        if slot.rope.is_some() {
+            self.rope_body_move(index, jump_pressed);
+        } else {
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        }
         true
     }
 
