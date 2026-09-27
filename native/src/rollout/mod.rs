@@ -24620,9 +24620,9 @@ impl RolloutWorld {
                 let new = shake(PLATFORM, platform_index) * progress * Fix::from_f32(0.25);
                 let delta = new - old;
                 self.platform_dynamics[platform_index].duplicate_shake_offset = new;
+                // The shake moves the FixTransform; DetPhysics copies it into
+                // the collider and CompositeBody only at the next Simulate.
                 self.platforms[platform_index].surface.center += delta;
-                self.platforms[platform_index].collider.inner.center += delta;
-                self.platform_dynamics[platform_index].composite_position += delta;
                 self.platforms_changed();
             }
         }
