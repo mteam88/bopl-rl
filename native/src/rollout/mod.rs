@@ -29252,7 +29252,17 @@ impl RolloutWorld {
         }
         // Mjolnir.UpdateSim also begins one pass after release. The fixed
         // player bitset replaces the source HashSet without allocating.
-        for item_index in 0..self.thrown_items.len() {
+        // Updater runs the hammers in hierarchy order, not item slot order:
+        // an older hammer still sees its owner alive when a newer one kills
+        // that owner, and only vanishes the pass after (Mjolnir.cs:126-131).
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        order.clear();
+        order.extend(
+            (0..self.thrown_items.len())
+                .filter(|&index| self.thrown_items[index].ability == ABILITY_MJOLNIR),
+        );
+        order.sort_unstable_by_key(|&index| self.thrown_items[index].hierarchy_base);
+        for &item_index in &order {
             if self.blink_object_hidden(self.thrown_items[item_index].entity) {
                 continue;
             }
@@ -29417,6 +29427,7 @@ impl RolloutWorld {
                 }
             }
         }
+        self.scratch.item_order = order;
 
         // Mjolnir has a lower runtime hierarchy than a subsequently spawned
         // Gust Shockwave. Its recall update therefore observes the Init
