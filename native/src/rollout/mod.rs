@@ -555,7 +555,9 @@ pub struct ThrownItem {
     pub prev_chase_dir: Vec2,
     pub prev_rand_vector: Vec2,
     pub prev_velocity_change: Vec2,
-    /// The last shake's net move, which the collider only takes at the next Simulate.
+    /// A FixTransform move the collider only takes at the next Simulate: a
+    /// Mine's last shake, or Fire's throw from where ManualInit found the
+    /// payload in the hand.
     pub pending_shake: Vec2,
     /// Poke Ball capture state. `None` is the ordinary flying/fizzle phase.
     pub capture_victim: Option<usize>,
@@ -20544,23 +20546,7 @@ impl RolloutWorld {
             && let Some(item_index) = self.players[index].throw_item.item
             && self.thrown_items[item_index].active
         {
-            let slot = &self.players[index];
-            let local_sign = if slot.facing_right {
-                -Fix::ONE
-            } else {
-                Fix::ONE
-            };
-            let mut dummy = if slot.throw_item.grounded {
-                *gd.ground_dummy.last().expect("Grenade ground dummy")
-            } else {
-                *gd.air_dummy.last().expect("Grenade air dummy")
-            };
-            // Unlike Fire's authored vector-wide mirror, dummyPos flips only
-            // the child's local x coordinate.
-            dummy *= slot.player_scale;
-            dummy.x *= local_sign;
-            self.thrown_items[item_index].position =
-                slot.base.position + dummy.complex_mul(Vec2::angle(slot.base.rotation));
+            self.thrown_items[item_index].position = self.throw_dummy_position(index, gd);
         }
 
         if self.players[index].throw_item.phase == 1 {
@@ -20665,9 +20651,31 @@ impl RolloutWorld {
         }
     }
 
+    /// ThrowItem2.dummyPos: where the held payload sits in the hand.
+    fn throw_dummy_position(&self, index: usize, config: ThrowConfig) -> Vec2 {
+        let slot = &self.players[index];
+        let local_sign = if slot.facing_right {
+            -Fix::ONE
+        } else {
+            Fix::ONE
+        };
+        let mut dummy = if slot.throw_item.grounded {
+            *config.ground_dummy.last().expect("Grenade ground dummy")
+        } else {
+            *config.air_dummy.last().expect("Grenade air dummy")
+        };
+        // Unlike Fire's authored vector-wide mirror, dummyPos flips only
+        // the child's local x coordinate.
+        dummy *= slot.player_scale;
+        dummy.x *= local_sign;
+        slot.base.position + dummy.complex_mul(Vec2::angle(slot.base.rotation))
+    }
+
     fn spawn_held_item(&mut self, index: usize, data: &data::RolloutData) -> usize {
         let ability = active_throw_ability(self.players[index].active);
         let config = throw_config(data, ability);
+        // SpawnGrenade(dummyPos()).
+        let position = self.throw_dummy_position(index, config);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += config.item_updatable_count;
         let item = ThrownItem {
@@ -20683,7 +20691,7 @@ impl RolloutWorld {
             hierarchy_base,
             entity: None,
             callback_registered_tick: u32::MAX,
-            position: self.players[index].base.position,
+            position,
             swept_position: self.players[index].base.position,
             body: Body {
                 orientation: self.players[index].base.rotation,
@@ -20770,6 +20778,9 @@ impl RolloutWorld {
         let impulse_force = direction * (slot.player_scale * force) * Fix::from_int(60);
         if self.thrown_items[item_index].active {
             let item = &mut self.thrown_items[item_index];
+            if item.entity.is_none() {
+                item.pending_shake = position - item.position;
+            }
             item.position = position;
             // SpawnGrenade instantiated the payload with the form rotation.
             // Fire repositions and initializes it without rotating the held
@@ -28964,6 +28975,9 @@ impl RolloutWorld {
                 continue;
             }
             let item = &mut self.thrown_items[item_index];
+            if item.ability != ABILITY_MINE {
+                item.pending_shake = Vec2::ZERO;
+            }
             if updater_dt > Fix::ZERO && item.active && item.magnet_holder.is_some() {
                 item.magnet_hold_ticks -= 1;
                 if item.magnet_hold_ticks == 0 {
