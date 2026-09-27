@@ -17277,6 +17277,30 @@ impl RolloutWorld {
                     * Fix::from_int(60);
                 item.body.apply_impulse(impulse, Vec2::ZERO);
             }
+            // A Portal Gun shot is an item-layer circle with its own BoplBody.
+            let shot_radius = data::get().portal_gun.shot_radius;
+            for shot in &mut self.portal_shots {
+                if !shot.active
+                    || !shot.registered
+                    || crate::physics::contact::circle_circle(
+                        query,
+                        Circle {
+                            center: shot.position,
+                            radius: shot_radius,
+                        },
+                    )
+                    .is_none()
+                {
+                    continue;
+                }
+                let direction = shot.position - position;
+                let distance =
+                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+                let impulse = direction.normalized_safe()
+                    * (wave.default_force / distance)
+                    * Fix::from_int(60);
+                shot.body.apply_impulse(impulse, Vec2::ZERO);
+            }
         }
         if wave.collision_mask & (1 << LAYER_PROJECTILE) != 0 {
             let arrow_radius = data::get().arrow.radius;
