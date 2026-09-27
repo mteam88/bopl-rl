@@ -8563,6 +8563,9 @@ impl RolloutWorld {
                             return;
                         }
                         self.roll_tick(index, action, data);
+                        if self.players[index].active == ActiveAbility::Roll {
+                            self.form_body_step(index);
+                        }
                         return;
                     }
                     ABILITY_METEOR => {
@@ -9570,24 +9573,24 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Roll {
-            let boundary_position = self.players[index].base.position;
-            let outside_before_player_body = self.players[index].base.outside_bounds();
             self.roll_tick(index, action, data);
             // Roll.UpdateSim runs before DestroyIfOutsideSceneBounds, but the
             // PlayerBody component that advances the transform is later than
-            // both. The boundary therefore observes the position from the
-            // preceding pass. If Roll exited during its own update the ability
-            // object is already inactive and the boundary component does not
-            // run.
-            if self.players[index].active == ActiveAbility::Roll
-                && self.players[index].base.alive
-                && outside_before_player_body
-            {
-                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
-                self.players[index].base.position = boundary_position;
-                self.players[index].reported_position = boundary_position;
-                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+            // both. The boundary therefore observes the preceding pass's
+            // position as Roll's own raycasts left it: a fall that attaches to
+            // a platform just above the water is pulled back inside. If Roll
+            // exited during its own update the ability object is already
+            // inactive and the boundary component does not run.
+            if self.players[index].active != ActiveAbility::Roll {
+                return;
             }
+            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                self.players[index].reported_position = self.players[index].base.position;
+                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+                return;
+            }
+            self.form_body_step(index);
             return;
         }
         if self.players[index].active == ActiveAbility::Meteor {
@@ -9896,8 +9899,8 @@ impl RolloutWorld {
                 st.grounded_speed = if st.moving_right { speed } else { -speed };
             }
             // PlayerBody still drifts the grounded form by its velocity before
-            // DetPhysics syncs the hurtbox; LateUpdateSim snaps it back.
-            self.form_body_step(index);
+            // DetPhysics syncs the hurtbox; LateUpdateSim snaps it back. The
+            // caller steps the body after the form's boundary check.
             return;
         }
 
@@ -9932,9 +9935,7 @@ impl RolloutWorld {
         }
         if short && self.players[index].base.velocity.y < Fix::ZERO {
             self.exit_roll(index, false, data);
-            return;
         }
-        self.form_body_step(index);
     }
 
     fn roll_move_grounded(&mut self, index: usize, data: &data::RolloutData) {
