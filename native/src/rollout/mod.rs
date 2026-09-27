@@ -6302,14 +6302,30 @@ impl RolloutWorld {
                 let ground = clone.base.ground.and_then(|ground| {
                     self.platforms.iter().position(|platform| platform.id == ground)
                 });
-                if clone.active
-                    && !clone.blink_tunnel_active
-                    && let Some(platform_index) = ground
-                    && self.platforms[platform_index].active
-                    && self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED
-                        == 0
+                let Some(platform_index) = ground else {
+                    continue;
+                };
+                if !clone.active
+                    || clone.blink_tunnel_active
+                    || self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED
+                        != 0
                 {
+                    continue;
+                }
+                let platform = &self.platforms[platform_index];
+                if platform.active {
                     clone.base.late_step(&self.platforms);
+                } else if self.platform_dynamics[platform_index].blink_deactivated_tick
+                    == Some(self.tick)
+                    && clone.base.alive
+                    && clone.base.grounded
+                    && !clone.base.dash.active
+                {
+                    // As for a player: the wall's QuantumTunnel hid it after
+                    // the clone's updaters, and LateUpdate still follows it.
+                    let base = &mut clone.base;
+                    base.position = platform.surface.position(base.local, base.radius);
+                    base.align(platform);
                 }
             }
         }
@@ -33167,10 +33183,28 @@ impl RolloutWorld {
             }
             let stopped =
                 self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner];
-            let terrain = Terrain {
-                platforms: &self.platforms,
-                bounds: &self.bounds,
+            // A wall QuantumTunnel registered after this clone hides its wall
+            // (QuantumTunnel.cs:136) only after the clone's updaters, while the
+            // Blink tunnel step or a later BlackHole has already hidden it here.
+            let hierarchy = self.abilityless_clones[clone_index].hierarchy_base;
+            let hidden_later = |index: usize| {
+                let state = &self.platform_dynamics[index];
+                state.blink_deactivated_tick == Some(self.tick)
+                    && state.blink_tunnel_hierarchy > hierarchy
             };
+            let unhidden: Vec<Platform>;
+            let platforms: &[Platform] = if (0..self.platforms.len()).any(hidden_later) {
+                unhidden = (self.platforms.iter().enumerate())
+                    .map(|(index, platform)| Platform {
+                        active: platform.active || hidden_later(index),
+                        ..platform.clone()
+                    })
+                    .collect();
+                &unhidden
+            } else {
+                &self.platforms
+            };
+            let terrain = Terrain { platforms, bounds: &self.bounds };
             if !stopped {
                 // A clone's PlayerPhysics.UpdateSim also runs before its
                 // SlimeController: gravity and the landing raycasts come first.
