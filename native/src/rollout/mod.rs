@@ -5447,8 +5447,9 @@ impl RolloutWorld {
         if has(ABILITY_GRENADE) || has(ABILITY_SMOKE) {
             self.register_pending_grenade_explosions(data);
         }
+        let mut drowned_clouds = 0;
         if has(ABILITY_SMOKE) {
-            self.register_pending_smoke(data);
+            drowned_clouds = self.register_pending_smoke(data);
         }
         if has(ABILITY_TIME_STOP) {
             self.register_pending_time_stops();
@@ -5863,6 +5864,9 @@ impl RolloutWorld {
         if has(ABILITY_METEOR) {
             self.meteor_smears_tick(data);
         }
+        // A cloud born under water is appended to the updatables, so its
+        // bounds check spawns the two-updatable splash after every older one.
+        self.next_spawn_hierarchy += 2 * drowned_clouds;
         if has(ABILITY_DUPLICATOR) {
             self.register_pending_duplicated_items(data);
         }
@@ -17116,7 +17120,9 @@ impl RolloutWorld {
         }
     }
 
-    fn register_pending_smoke(&mut self, data: &data::RolloutData) {
+    /// Returns how many new clouds drowned before their collider appeared.
+    fn register_pending_smoke(&mut self, data: &data::RolloutData) -> u32 {
+        let mut drowned = 0;
         for cloud_index in 0..self.smoke_clouds.len() {
             let cloud = self.smoke_clouds[cloud_index];
             if !cloud.active || cloud.registered || cloud.born_tick >= self.tick {
@@ -17129,9 +17135,9 @@ impl RolloutWorld {
             // draw above) before their bounds updater in the same pass. A
             // cloud born below WaterHeight is destroyed before its collider
             // can appear in the public entity rows, instantiating the
-            // two-updatable water splash.
+            // two-updatable water splash at the end of the pass.
             if cloud.position.y < data::get().maps[self.map].lower_boundary() {
-                self.next_spawn_hierarchy += 2;
+                drowned += 1;
                 self.remove_smoke_cloud(cloud_index);
                 continue;
             }
@@ -17204,6 +17210,7 @@ impl RolloutWorld {
             };
             self.smoke_explosions[explosion_index].registered = true;
         }
+        drowned
     }
 
     fn apply_explosion_shockwave(&mut self, position: Vec2, wave: data::ExplosionShockwaveData) {
