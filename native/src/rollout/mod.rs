@@ -28536,6 +28536,18 @@ impl RolloutWorld {
         self.remove_thrown_item(item_index, true);
     }
 
+    /// Whether a grounded player's attachedGround IsDestroyed: removed this
+    /// pass, or DestroyFix'd in a callback (a BlackHole eating it).
+    fn ground_gone(&self, index: usize) -> bool {
+        let base = &self.players[index].base;
+        self.players[index].ground_destroyed
+            || base.ground.is_some_and(|id| {
+                self.platforms.iter().zip(&self.platform_entities).any(|(platform, &entity)| {
+                    platform.id == id && self.entities[entity].flags & E_DESTROYED != 0
+                })
+            })
+    }
+
     /// Whether the player's slime or form object is live in the scene by its
     /// state, which a form change on this pass has already updated.
     fn slime_present(&self, index: usize) -> bool {

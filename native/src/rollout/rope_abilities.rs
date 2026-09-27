@@ -1434,9 +1434,11 @@ impl RolloutWorld {
             // a newly spawned grounded rope therefore keeps Initialize's
             // final point until the next pass. Before the hook arrives the end
             // keeps PlayerBody's integrated point (PlayerPhysics.cs:147).
-            // RewindRecorder disables PlayerPhysics for the whole rewind.
+            // RewindRecorder disables PlayerPhysics for the whole rewind, and
+            // a destroyed attachedGround skips the whole grounded branch.
             if self.players[player].base.grounded
                 && !self.players[player].rewind.rewinding
+                && !self.ground_gone(player)
                 && self.ropes[rope_index].physics.time_since_hook_arrived > Fix::ZERO
                 && self.ropes[rope_index].born_tick != self.tick
                 && self.players[player].rope_attach_tick != self.tick
