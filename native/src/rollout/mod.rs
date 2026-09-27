@@ -798,6 +798,10 @@ pub struct SpawnedTeslaNode {
     /// MachoThrow2 temporarily deparents and hides the selected node.
     pub macho_carried: bool,
     pub born_tick: u32,
+    /// When it was placed (PlaceSparkNode or a Duplicator copy). Its updater
+    /// starts the pass after; a MachoThrow2 reattachment is already registered
+    /// and keeps its place in the ring buffer.
+    pub spawn_tick: u32,
     pub owner: usize,
     pub ability_slot: usize,
     pub ability_generation: u32,
@@ -808,6 +812,9 @@ pub struct SpawnedTeslaNode {
     pub relative_center: Vec2,
     pub relative_rotation: Fix,
     pub collider_center: Vec2,
+    /// `collider_center` when DetPhysics took its bounding boxes this pass,
+    /// before any contact pass pushed the platform.
+    pub swept_center: Vec2,
     pub collider_rotation: Fix,
     pub surface_offset: Fix,
     /// Raw FixTransform scale drives authored attachment offsets.
@@ -1552,6 +1559,7 @@ pub struct FrozenSolidState {
     pub victim: usize,
     pub freeze_left: Fix,
     pub freeze_position: Vec2,
+    pub hierarchy_base: u32,
 }
 
 /// A ScaleChanger prefab has no collider row. It joins Updater on the pass
@@ -2204,6 +2212,10 @@ pub struct PlayerSlot {
     /// Live FrozenSolid instances pinning this slime. Ground contact does not
     /// end the refreshed ragdoll while any of them remains active.
     pub frozen_solid_count: u16,
+    /// (pass, FrozenSolid hierarchy, body position before that FrozenSolid
+    /// pinned it). An earlier-spawned Mjolnir updates before the ice and so
+    /// strikes the body where the ragdoll moved it.
+    pub frozen_unpinned: (u32, u32, Vec2),
     /// A lower-hierarchy transformed form was cancelled by Freeze after this
     /// pass's Player.UpdatePlayer publication. Keep that earlier publication
     /// while the restored SlimeController finishes its same-pass movement.
@@ -3934,6 +3946,7 @@ impl RolloutWorld {
                 gun_gravity: [Fix::ONE; 3],
                 ragdoll: RagdollState::default(),
                 frozen_solid_count: 0,
+                frozen_unpinned: (u32::MAX, 0, Vec2::ZERO),
                 freeze_form_exit_tick: u32::MAX,
                 ragdoll_grounded_fall: false,
                 obs_state_held_this_tick: false,
@@ -5185,7 +5198,6 @@ impl RolloutWorld {
                     slot.obs_state = STATE_IDLE;
                 }
             }
-            _ if held => {}
             STATE_RUN => {
                 // `!flag5 || Fix.Sign(fix * prevInput) < 0`
                 // (SlimeController.cs:862). The reversal is measured against
@@ -5196,13 +5208,15 @@ impl RolloutWorld {
                 // source does not stop for that.
                 let reversed = (align > Fix::ZERO && previous_align < Fix::ZERO)
                     || (align < Fix::ZERO && previous_align > Fix::ZERO);
-                if !moving || reversed {
+                if !held && (!moving || reversed) {
                     slot.obs_state = STATE_STOP;
                     slot.state_ticks = STOP_TICKS;
                 }
             }
+            // Stop and turn end on their animations, which advance on a held
+            // pass too; only their switch cases wait.
             STATE_STOP => {
-                if moving && input_right != slot.facing_right {
+                if !held && moving && input_right != slot.facing_right {
                     slot.obs_state = STATE_TURN;
                     slot.state_ticks = TURN_TICKS;
                     slot.facing_right = input_right;
@@ -5214,7 +5228,7 @@ impl RolloutWorld {
                 }
             }
             STATE_TURN => {
-                if !moving {
+                if !held && !moving {
                     slot.obs_state = STATE_STOP;
                     slot.state_ticks = STOP_TICKS;
                 } else {
@@ -5224,6 +5238,7 @@ impl RolloutWorld {
                     }
                 }
             }
+            _ if held => {}
             _ => {
                 // idle (and anything unexpected).
                 if moving {
@@ -5928,6 +5943,9 @@ impl RolloutWorld {
         }
         self.scratch.circle_colliders.clear();
         self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
+        for node in &mut self.tesla_nodes {
+            node.swept_center = node.collider_center;
+        }
         self.ability_pickup_pair_contacts(data);
         if has_rope {
             self.ropes_physics(physics_dt);
@@ -11075,7 +11093,9 @@ impl RolloutWorld {
             let enter_stop = alignment.abs() >= Fix::from_f32(0.2)
                 && (alignment >= Fix::ZERO) != slot.facing_right;
             slot.obs_state = if enter_stop { STATE_STOP } else { STATE_IDLE };
-            slot.state_ticks = if enter_stop { STOP_TICKS } else { 0 };
+            // The stop begins after the SpriteAnimator's pass, which the held
+            // update_obs_state below still counts.
+            slot.state_ticks = if enter_stop { STOP_TICKS + 1 } else { 0 };
             slot.obs_state_held_this_tick = true;
         } else {
             slot.base.up = Vec2::UP;
@@ -11161,7 +11181,7 @@ impl RolloutWorld {
                 && node.ability_generation == ability_generation
             {
                 count += 1;
-                if oldest.is_none_or(|old: usize| node.born_tick < self.tesla_nodes[old].born_tick)
+                if oldest.is_none_or(|old: usize| node.spawn_tick < self.tesla_nodes[old].spawn_tick)
                 {
                     oldest = Some(node_index);
                 }
@@ -11224,6 +11244,7 @@ impl RolloutWorld {
             active: true,
             macho_carried: false,
             born_tick: self.tick,
+            spawn_tick: self.tick,
             owner: index,
             ability_slot,
             ability_generation,
@@ -11235,6 +11256,7 @@ impl RolloutWorld {
             relative_rotation,
             collider_center: parent_position
                 + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            swept_center: Vec2::ZERO,
             collider_rotation: node_rotation,
             surface_offset,
             scale,
@@ -12136,7 +12158,7 @@ impl RolloutWorld {
         for node_index in 0..self.tesla_nodes.len() {
             if !self.tesla_nodes[node_index].active
                 || self.tesla_nodes[node_index].macho_carried
-                || self.tesla_nodes[node_index].born_tick >= self.tick
+                || self.tesla_nodes[node_index].spawn_tick >= self.tick
             {
                 continue;
             }
@@ -12226,12 +12248,12 @@ impl RolloutWorld {
                 {
                     self.tesla_nodes[node_index].flicker_was_stopped = true;
                 }
+                let dt = if self.time_stop_protected[owner] {
+                    DT
+                } else {
+                    updater_dt
+                };
                 if self.tesla_nodes[node_index].flicker_ticks == 0 {
-                    let dt = if self.time_stop_protected[owner] {
-                        DT
-                    } else {
-                        updater_dt
-                    };
                     self.tesla_nodes[node_index].flicker_time += dt;
                     if self.tesla_nodes[node_index].flicker_time > data.tesla.flicker_period {
                         self.tesla_nodes[node_index].line_collider_enabled = false;
@@ -12242,15 +12264,15 @@ impl RolloutWorld {
                     if self.tesla_nodes[node_index].flicker_ticks > data.tesla.flicker_ticks + 1 {
                         self.tesla_nodes[node_index].line_collider_enabled = true;
                         // SpriteAnimator invokes UnFlicker before the later
-                        // StretchableLightning updater. If that animation was
-                        // paused by Time Stop, the restoration pass both
-                        // re-enables the line and advances its new cycle.
+                        // StretchableLightning updater, so the restoration
+                        // pass both re-enables the line and advances its new
+                        // cycle; after a Time Stop pause, by a full step.
                         self.tesla_nodes[node_index].flicker_time = if core::mem::take(
                             &mut self.tesla_nodes[node_index].flicker_was_stopped,
                         ) {
                             DT
                         } else {
-                            Fix::ZERO
+                            dt
                         };
                         self.tesla_nodes[node_index].flicker_ticks = 0;
                     }
@@ -12443,7 +12465,12 @@ impl RolloutWorld {
     }
 
     fn tesla_contacts(&mut self, data: &data::RolloutData) {
-        let mut victims = [false; MAX_PLAYERS];
+        // PlayerCollision kills in DetPhysics' callback order: Circle/Circle,
+        // then Circle/Box, then Box/Box pairs, each in sort-and-sweep order.
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
+        let mut victims: [Option<(u8, Fix, Fix)>; MAX_PLAYERS] = [None; MAX_PLAYERS];
         for node in self
             .tesla_nodes
             .iter()
@@ -12509,7 +12536,7 @@ impl RolloutWorld {
                 }
             }
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if *victim || !self.playable(player_index) {
+                if !self.playable(player_index) {
                     continue;
                 }
                 let slot = &self.players[player_index];
@@ -12550,15 +12577,19 @@ impl RolloutWorld {
                     continue;
                 }
                 let row = self.entities[entity];
-                let overlaps = if row.kind == 0 {
+                let (node_pass, player_min, node_hit, line_hit) = if row.kind == 0 {
                     let player = Circle {
                         center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
                         radius: Fix::from_raw(row.radius),
                     };
-                    crate::physics::contact::circle_circle(node_circle, player).is_some()
-                        || line.is_some_and(|line| {
+                    (
+                        0,
+                        axis(player.center) - player.radius,
+                        crate::physics::contact::circle_circle(node_circle, player).is_some(),
+                        line.is_some_and(|line| {
                             crate::physics::contact::circle_box(player, line).is_some()
-                        })
+                        }),
+                    )
                 } else {
                     let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
                     let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
@@ -12571,18 +12602,36 @@ impl RolloutWorld {
                             Fix::ONE / up.length(),
                         ),
                     };
-                    crate::physics::contact::circle_box(node_circle, player).is_some()
-                        || line.is_some_and(|line| {
+                    (
+                        1,
+                        box_min(player),
+                        crate::physics::contact::circle_box(node_circle, player).is_some(),
+                        line.is_some_and(|line| {
                             crate::physics::contact::box_box(player, line).is_some()
-                        })
+                        }),
+                    )
                 };
-                if overlaps {
-                    *victim = true;
+                let pair = |pass: u8, other_min: Fix| {
+                    (pass, player_min.max(other_min), player_min.min(other_min))
+                };
+                let node_key = node_hit
+                    .then(|| pair(node_pass, axis(node_circle.center) - node_circle.radius));
+                let line_key = line
+                    .filter(|_| line_hit)
+                    .map(|line| pair(node_pass + 1, box_min(line)));
+                if let Some(key) = [*victim, node_key, line_key].into_iter().flatten().min() {
+                    *victim = Some(key);
                 }
             }
         }
-        for (player_index, victim) in victims.into_iter().enumerate().take(self.players.len()) {
-            if victim && self.playable(player_index) {
+        let count = self.players.len();
+        let mut order = [0usize; MAX_PLAYERS];
+        for (index, slot) in order.iter_mut().enumerate() {
+            *slot = index;
+        }
+        order[..count].sort_by_key(|&index| victims[index]);
+        for &player_index in &order[..count] {
+            if victims[player_index].is_some() && self.playable(player_index) {
                 // Both prefabs carry Explosion and an IPlayerIdHolder, but
                 // SimpleSparkNode/StretchableLightning never assign
                 // Explosion.PlayerOwnerId. PlayerCollision therefore uses
@@ -16450,12 +16499,18 @@ impl RolloutWorld {
             slot.base.rotation = rotation;
         }
         slot.base.constants = data.player.constants.clone();
+        // Every MachoThrow2 exit passes a fresh AbilityExitInfo and ExitAbility
+        // never fills externalVelocity, so SyncPhysicsTo clears the push.
+        slot.base.external_velocity = Vec2::ZERO;
         if ordinary_ground.is_none() {
             slot.base.rotation = Fix::ZERO;
         }
         if grounded && slot.base.ground.is_some() {
+            // EnterIdle. The slime's OldUpdate already passed this updater
+            // pass, so its state switch waits for the next one.
             slot.obs_state = STATE_IDLE;
             slot.state_ticks = 0;
+            slot.obs_state_held_this_tick = true;
         } else {
             slot.base.grounded = false;
             slot.base.ground = None;
@@ -23688,6 +23743,7 @@ impl RolloutWorld {
             active: true,
             macho_carried: false,
             born_tick: self.tick,
+            spawn_tick: self.tick,
             owner: caster,
             ability_slot: self.players[caster].active_slot,
             ability_generation: self.players[caster].ability_generation,
@@ -23699,6 +23755,7 @@ impl RolloutWorld {
             relative_rotation: rotation - parent_rotation,
             collider_center: parent_position
                 + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            swept_center: Vec2::ZERO,
             collider_rotation: rotation,
             surface_offset,
             scale: source.scale,
@@ -25495,6 +25552,7 @@ impl RolloutWorld {
 
     fn begin_freeze(&mut self, victim: usize, duration: Fix) {
         let freeze_position = self.players[victim].base.position;
+        let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data::get().freeze.frozen_updatable_count;
         let state = FrozenSolidState {
             active: true,
@@ -25502,6 +25560,7 @@ impl RolloutWorld {
             victim,
             freeze_left: duration,
             freeze_position,
+            hierarchy_base,
         };
         if let Some(free) = self.frozen_solids.iter().position(|effect| !effect.active) {
             self.frozen_solids[free] = state;
@@ -25593,6 +25652,15 @@ impl RolloutWorld {
         true
     }
 
+    /// The slime body a Mjolnir with `hierarchy` sees in its update.
+    fn mjolnir_view(&self, index: usize, hierarchy: u32) -> Vec2 {
+        let slot = &self.players[index];
+        match slot.frozen_unpinned {
+            (tick, ice, position) if tick == self.tick && ice > hierarchy => position,
+            _ => slot.base.position,
+        }
+    }
+
     fn frozen_solids_tick(&mut self, updater_dt: Fix) {
         for effect_index in 0..self.frozen_solids.len() {
             let effect = self.frozen_solids[effect_index];
@@ -25630,6 +25698,7 @@ impl RolloutWorld {
                 slot.timers.fill(Fix::ZERO);
                 continue;
             }
+            slot.frozen_unpinned = (self.tick, effect.hierarchy_base, slot.base.position);
             slot.base.position = effect.freeze_position;
             slot.base.velocity = Vec2::ZERO;
             slot.obs_state = STATE_RAGDOLL;
@@ -26151,9 +26220,14 @@ impl RolloutWorld {
         // The shipped levels all originate from PlatformDef entries. Spawned
         // resizable platforms are handled by the dynamic-object duplication
         // path, which supplies their prefab hierarchy separately.
+        // DuplicateObject renumbers the source's updatables from 1 through
+        // GetComponentsInChildren, which skips a source Blink has hidden; the
+        // clone then keeps the scene's own hierarchy numbers.
+        let hidden = self.entities[self.platform_entities[source]].flags & E_ACTIVE == 0;
         let (updatable_count, collider_hierarchy) = if definition != usize::MAX {
             let def = &data.maps[self.map].platforms[definition];
-            (def.updatable_count, def.duplicate_collider_hierarchy)
+            let collider = if hidden { def.hierarchy } else { def.duplicate_collider_hierarchy };
+            (def.updatable_count, collider)
         } else {
             (7, 5)
         };
@@ -27707,13 +27781,27 @@ impl RolloutWorld {
         } else {
             let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
             let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+            // A slime hurtbox keeps the inverse extents its rescaling left,
+            // Q32 drift included.
+            let hurtbox = self
+                .players
+                .iter()
+                .map(|slot| (slot.body_entity, slot.base.collider))
+                .chain(self.abilityless_clones.iter().filter_map(|clone| {
+                    clone.entity.map(|entity| (entity, clone.base.collider))
+                }))
+                .find(|&(owned, collider)| owned == entity && collider.inverse_extents != Vec2::ZERO);
+            let inverse_extents = match hurtbox {
+                Some((_, collider)) => collider.inverse_extents,
+                None => Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+            };
             crate::physics::contact::circle_box(
                 query,
                 OrientedBox {
                     center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
                     right,
                     up,
-                    inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+                    inverse_extents,
                 },
             )
         }
@@ -28479,12 +28567,9 @@ impl RolloutWorld {
                     hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
                 // SlimeController.body.position: the slime's own transform,
                 // which the synced collider row trails by this pass's move.
-                if self
-                    .active_player_position(player_index)
-                    .is_some_and(|_| {
-                        let position = self.players[player_index].base.position;
-                        (position - item_position).length_squared() < hit_radius * hit_radius
-                    })
+                let position = self.mjolnir_view(player_index, item.hierarchy_base);
+                if self.active_player_position(player_index).is_some()
+                    && (position - item_position).length_squared() < hit_radius * hit_radius
                 {
                     victims |= 1 << player_index;
                 }
@@ -28541,6 +28626,9 @@ impl RolloutWorld {
                     continue;
                 }
                 self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+                // DropAbilities reads the body before the later ice pins it.
+                self.players[player_index].base.position =
+                    self.mjolnir_view(player_index, item.hierarchy_base);
                 self.kill(player_index, owner as u32 + 1, CAUSE_OTHER, false, false);
             }
             for &clone_index in &clone_victims[..clone_victim_count] {
@@ -30349,10 +30437,22 @@ impl RolloutWorld {
                 self.scratch.item_order.push(SHOT + index);
             }
         }
+        // The broadphase pairs the bounding boxes taken before any Circle/RR
+        // correction; the manifold then tests the corrected circles.
+        let swept = |index: usize| {
+            let center = if index >= NODE {
+                nodes[index - NODE].swept_center
+            } else if index >= SHOT {
+                shots[index - SHOT].position
+            } else {
+                items[index].swept_position
+            };
+            Circle { center, radius: circle(index).radius }
+        };
         let order = &mut self.scratch.item_order;
         order.sort_unstable_by(|&a, &b| {
-            let a_min = axis(circle(a).center) - circle(a).radius;
-            let b_min = axis(circle(b).center) - circle(b).radius;
+            let a_min = axis(swept(a).center) - swept(a).radius;
+            let b_min = axis(swept(b).center) - swept(b).radius;
             a_min.cmp(&b_min).then(a.cmp(&b))
         });
 
@@ -30361,9 +30461,9 @@ impl RolloutWorld {
         window.clear();
         contacts.clear();
         for &current in order.iter() {
-            let current_circle = circle(current);
-            let current_min = axis(current_circle.center) - current_circle.radius;
-            window.retain(|&prior| axis(circle(prior).center) + circle(prior).radius > current_min);
+            let current_swept = swept(current);
+            let current_min = axis(current_swept.center) - current_swept.radius;
+            window.retain(|&prior| axis(swept(prior).center) + swept(prior).radius > current_min);
             for &prior in window.iter() {
                 // Shots only meet items here. Nodes of one platform share
                 // its composite, which DetPhysics never tests against itself.
@@ -30375,16 +30475,16 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let prior_circle = circle(prior);
-                if other(prior_circle.center) + prior_circle.radius
-                    <= other(current_circle.center) - current_circle.radius
-                    || other(prior_circle.center) - prior_circle.radius
-                        >= other(current_circle.center) + current_circle.radius
+                let prior_swept = swept(prior);
+                if other(prior_swept.center) + prior_swept.radius
+                    <= other(current_swept.center) - current_swept.radius
+                    || other(prior_swept.center) - prior_swept.radius
+                        >= other(current_swept.center) + current_swept.radius
                 {
                     continue;
                 }
                 if let Some(contact) =
-                    crate::physics::contact::circle_circle(prior_circle, current_circle)
+                    crate::physics::contact::circle_circle(circle(prior), circle(current))
                 {
                     contacts.push((prior, current, contact));
                 }
@@ -32089,7 +32189,7 @@ impl RolloutWorld {
                     .step_with_input(action, movement, terrain);
             }
             if !self.abilityless_clones[clone_index].base.alive {
-                self.kill_abilityless_clone(clone_index, 0, CAUSE_ACCIDENT);
+                self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT);
                 continue;
             }
             self.abilityless_clones[clone_index].base.sync_collider();

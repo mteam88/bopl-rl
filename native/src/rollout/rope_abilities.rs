@@ -833,6 +833,21 @@ impl RolloutWorld {
         rope.previous[..rope.count].copy_from_slice(&rope.segment[..rope.count]);
     }
 
+    /// RopeAttachment.Deattach: the freed endpoint takes an unheld end's
+    /// mass, air time and force before RopeBody.Dettach.
+    fn deattach_rope(&mut self, index: usize, top: bool) {
+        let rope = &mut self.ropes[index];
+        rope.physics.set_mass(data::get().ropes.non_platform_mass, top, Fix::ONE);
+        if top {
+            rope.time_air_start = Fix::from_int(100);
+            rope.physics.force_start = Vec2::ZERO;
+        } else {
+            rope.time_air_end = Fix::from_int(100);
+            rope.physics.force_end = Vec2::ZERO;
+        }
+        rope.physics.detach(top);
+    }
+
     pub(super) fn ropes_update(&mut self) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         let mut moved_platform = false;
@@ -849,14 +864,7 @@ impl RolloutWorld {
                     || self.blink_object_hidden(self.black_holes[hole_index].entity)
                     || self.black_holes[hole_index].mass <= Fix::ZERO
                 {
-                    self.ropes[index].physics.set_mass(
-                        data::get().ropes.non_platform_mass,
-                        true,
-                        Fix::ONE,
-                    );
-                    self.ropes[index].time_air_start = Fix::from_int(100);
-                    self.ropes[index].physics.force_start = Vec2::ZERO;
-                    self.ropes[index].physics.detach(true);
+                    self.deattach_rope(index, true);
                     self.ropes[index].black_hole = None;
                     continue;
                 }
@@ -890,7 +898,7 @@ impl RolloutWorld {
                 || self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
             {
                 let top = self.ropes[index].platform_top;
-                self.ropes[index].physics.detach(top);
+                self.deattach_rope(index, top);
                 self.ropes[index].platform = None;
                 continue;
             }
@@ -944,7 +952,7 @@ impl RolloutWorld {
                     .length_squared()
                     > PLATFORM_BREAK_STRETCH
                 {
-                    self.ropes[index].physics.detach(top);
+                    self.deattach_rope(index, top);
                     self.ropes[index].platform = None;
                     break;
                 }
