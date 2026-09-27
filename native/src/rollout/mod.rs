@@ -2629,6 +2629,8 @@ struct PlatformScratch {
     arrow_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Slime-vs-slime shoves of one DetPhysics pass: (pushed, other, lower id).
     slime_shoves: Vec<(usize, usize, bool)>,
+    /// Grounded slimes a wall squished this pass, in callback order.
+    squished: Vec<usize>,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
@@ -4168,6 +4170,7 @@ impl RolloutWorld {
             if i < SLIME_AWAKE_TICK {
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT, DT);
+                    self.kill_squished();
                 }
                 continue;
             }
@@ -4176,6 +4179,7 @@ impl RolloutWorld {
                 self.spawn_animation_overlap_pushes();
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT, DT);
+                    self.kill_squished();
                 }
                 // The recorder starts sampling on the pass the slime wakes.
                 self.record_warmup_rewind(i);
@@ -4193,6 +4197,7 @@ impl RolloutWorld {
                 self.record_warmup_rewind(i);
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT, DT);
+                    self.kill_squished();
                 }
                 continue;
             }
@@ -5095,6 +5100,7 @@ impl RolloutWorld {
             }
         }
         self.platforms_tick(data, DT, DT);
+        self.kill_squished();
         for slot in &mut self.players {
             if slot.base.alive {
                 slot.base.late_step(&self.platforms);
@@ -6081,6 +6087,7 @@ impl RolloutWorld {
         if has_rope {
             self.ropes_physics(physics_dt);
         }
+        self.kill_squished();
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_contacts();
         }
@@ -34153,7 +34160,8 @@ impl RolloutWorld {
     /// PlayerCollision kills a grounded slime when a different wall's
     /// rounded rectangle contains its squish point (the stock player prefab
     /// uses the body centre). Player boxes are triggers, so this is a
-    /// callback effect rather than a rigid-body response.
+    /// callback effect rather than a rigid-body response, so the kills wait
+    /// for `kill_squished`.
     fn squish_grounded(&mut self, colliders: &[RoundedRect]) {
         let mut squished = [usize::MAX; MAX_PLAYERS];
         let mut count = 0;
@@ -34202,9 +34210,20 @@ impl RolloutWorld {
             };
             squished[..count].sort_by_key(|&index| key(index));
         }
-        for &index in &squished[..count] {
+        self.scratch.squished.clear();
+        self.scratch.squished.extend_from_slice(&squished[..count]);
+    }
+
+    /// DetPhysics runs every OnCollide callback after Simulate has stepped the
+    /// ropes (DetPhysics.cs:2926, 3197), so a squished slime's killPlayer
+    /// detaches its rope only after this pass's rope step.
+    fn kill_squished(&mut self) {
+        let squished = std::mem::take(&mut self.scratch.squished);
+        for &index in &squished {
             self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
         }
+        self.scratch.squished = squished;
+        self.scratch.squished.clear();
     }
 
     fn platforms_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
