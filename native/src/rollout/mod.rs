@@ -28572,14 +28572,14 @@ impl RolloutWorld {
     /// Mjolnir.TryFindOwnerPosition searches live SlimeControllers first,
     /// then active Ability objects. An abilityless clone therefore becomes
     /// the recall target while the owner's original slime is transformed.
-    fn mjolnir_owner_position(&self, owner: usize) -> Option<Vec2> {
+    fn mjolnir_owner_position(&self, owner: usize, hierarchy: u32) -> Option<Vec2> {
         // Both the slime and an Ability answer with their own transform. The
         // synced collider rows lag a form change on its own pass and sit at a
         // form's collider offset, so the player's state decides instead.
         let slot = &self.players[owner];
         let present = self.slime_present(owner);
         if slot.active == ActiveAbility::None && present {
-            return Some(slot.base.position);
+            return Some(self.mjolnir_view(owner, hierarchy));
         }
         if let Some(clone) = self
             .abilityless_clones
@@ -29047,7 +29047,8 @@ impl RolloutWorld {
                     self.remove_thrown_item(item_index, false);
                     continue;
                 }
-                let Some(owner_position) = self.mjolnir_owner_position(owner) else {
+                let hierarchy = self.thrown_items[item_index].hierarchy_base;
+                let Some(owner_position) = self.mjolnir_owner_position(owner, hierarchy) else {
                     continue;
                 };
                 let to_owner = owner_position + Vec2::UP * Fix::from_f32(1.1)
