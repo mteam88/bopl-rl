@@ -251,24 +251,33 @@ impl RolloutWorld {
         index
     }
 
+    /// RopePlayerMass01 and ignoreGravityWhenRoped of the PlayerBody that
+    /// carries the rope: 0.5 with gravity on the slime and most forms.
+    fn rope_body_tuning(&self, player: usize) -> (Fix, bool) {
+        match self.players[player].active {
+            ActiveAbility::Beam => (Fix::from_raw(3_006_477_056), true),
+            ActiveAbility::TimeStop => (Fix::from_raw(3_435_973_888), true),
+            ActiveAbility::Revival => (Fix::from_raw(3_865_470_464), true),
+            ActiveAbility::Platform => (Fix::ONE, true),
+            _ => (Fix::from_f64(0.5), false),
+        }
+    }
+
     pub(super) fn attach_player_rope(&mut self, player: usize, rope: Option<usize>, top: bool) {
         if let Some(old) = self.players[player].rope {
+            let (mass, ignore_gravity) = self.rope_body_tuning(player);
+            let force = if ignore_gravity { Vec2::ZERO } else { -Vec2::UP * ROPE_GRAVITY };
             let old_top = self.players[player].rope_top;
             let old_rope = &mut self.ropes[old].physics;
-            old_rope.force_end = if old_top {
-                old_rope.force_end
+            if old_top {
+                old_rope.force_start = force;
             } else {
-                -Vec2::UP * ROPE_GRAVITY
-            };
-            old_rope.force_start = if old_top {
-                -Vec2::UP * ROPE_GRAVITY
-            } else {
-                old_rope.force_start
-            };
+                old_rope.force_end = force;
+            }
             if rope.is_none() {
                 old_rope.detach(old_top);
             } else {
-                old_rope.set_mass(Fix::from_f64(0.5), old_top, Fix::ONE);
+                old_rope.set_mass(mass, old_top, Fix::ONE);
             }
             if old_top {
                 self.ropes[old].time_air_start = Fix::from_int(100);
@@ -781,10 +790,13 @@ impl RolloutWorld {
                     self.ropes[rope_index].time_air_end += DT;
                     self.ropes[rope_index].time_air_end
                 };
-                self.ropes[rope_index]
-                    .physics
-                    .set_mass(Fix::from_f64(0.5), top, Fix::ONE);
-                let amount = (time * Fix::from_int(2)).clamp(Fix::ZERO, Fix::ONE);
+                let (mass, ignore_gravity) = self.rope_body_tuning(player);
+                self.ropes[rope_index].physics.set_mass(mass, top, Fix::ONE);
+                let amount = if ignore_gravity {
+                    Fix::ONE - mass
+                } else {
+                    (time * Fix::from_int(2)).clamp(Fix::ZERO, Fix::ONE)
+                };
                 let offset = self.ropes[rope_index].physics.segment[endpoint]
                     - self.players[player].base.position;
                 let length = offset.length();
@@ -1149,6 +1161,11 @@ impl RolloutWorld {
             let Some(rope_index) = self.players[player].rope else {
                 continue;
             };
+            // A Rock form's PlayerBody is inactive; BounceBall's own late
+            // update checks the stretch and its UpdateSim sets the force.
+            if self.players[player].active == ActiveAbility::Rock {
+                continue;
+            }
             if !self.ropes[rope_index].physics.enabled {
                 self.players[player].rope = None;
                 continue;
@@ -1214,9 +1231,12 @@ impl RolloutWorld {
                             self.players[player].rope_prev_external,
                         )
                     };
-                let imposed = self.players[player].base.velocity
+                let mut imposed = self.players[player].base.velocity
                     - previous_imposed
                     - Vec2::UP * Fix::from_int(10);
+                if self.rope_body_tuning(player).1 {
+                    imposed.y = Fix::ZERO;
+                }
                 let mut external =
                     self.players[player].base.external_velocity - previous_external;
                 // Only the slime's own PlayerBody carries the steer; an

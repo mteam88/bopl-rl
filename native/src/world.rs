@@ -819,7 +819,7 @@ impl Player {
             self.gravity_step(terrain);
             self.dash.radius = self.radius;
         }
-        self.capture_pre_move();
+        self.capture_pre_move(terrain.platforms);
         self.move_step(action, input, terrain);
     }
     /// Start of this body's updater pass, before PlayerPhysics.UpdateSim.
@@ -832,8 +832,16 @@ impl Player {
     /// OldUpdate. Everything OldUpdate reads about the ground is sampled here,
     /// because Move does not run until SlimeController.cs:1084 - long after
     /// OldUpdate has finished with it.
-    pub(crate) fn capture_pre_move(&mut self) {
-        self.pre_move_up = self.up;
+    ///
+    /// InputGroundAlignment and `fix2` take the attached ground's normal at
+    /// the body (StickyRoundedRectangle.currentNormal), not the slime's own
+    /// `up`, which lags a platform that tilted under it since the last align.
+    pub(crate) fn capture_pre_move(&mut self, platforms: &[Platform]) {
+        self.pre_move_up = self
+            .grounded
+            .then(|| platforms.iter().find(|p| Some(p.id) == self.ground))
+            .flatten()
+            .map_or(self.up, |p| p.surface.normal(self.position));
         self.pre_move_grounded = self.grounded;
     }
     /// SlimeController.UpdateSim after PlayerPhysics.UpdateSim has applied

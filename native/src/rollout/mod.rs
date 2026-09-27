@@ -1706,6 +1706,9 @@ pub struct AbilitylessClone {
     pub owner: usize,
     pub base: Player,
     pub obs_state: u32,
+    pub state_ticks: u32,
+    pub facing_right: bool,
+    pub prev_input_align: Fix,
     pub captured_by_ball: Option<usize>,
     pub poke_invulnerable: bool,
     pub blink_tunnel_active: bool,
@@ -2231,6 +2234,10 @@ pub struct PlayerSlot {
     /// own pass, so the grounded EnterStop/EnterIdle it installs survives the
     /// exit tick untouched and the state machine resumes on the next one.
     pub obs_state_held_this_tick: bool,
+    /// The slime GameObject was disabled when its updater slot came round.
+    pub obs_state_disabled_this_tick: bool,
+    /// A rewind suppressed the slime's input when its updater slot came round.
+    pub obs_input_suppressed_this_tick: bool,
     /// One live Poke Ball pinning this victim. More than one physics callback
     /// can capture the same slime from a prebuilt manifold set; this points to
     /// a remaining captor when another one pops.
@@ -3950,6 +3957,8 @@ impl RolloutWorld {
                 freeze_form_exit_tick: u32::MAX,
                 ragdoll_grounded_fall: false,
                 obs_state_held_this_tick: false,
+                obs_state_disabled_this_tick: false,
+                obs_input_suppressed_this_tick: false,
                 captured_by_ball: None,
                 poke_invulnerable: false,
                 callback_killed_tick: None,
@@ -5032,6 +5041,14 @@ impl RolloutWorld {
     fn update_obs_state(&mut self, index: usize, dir: Vec2) {
         let slot = &mut self.players[index];
         let held = std::mem::take(&mut slot.obs_state_held_this_tick);
+        let disabled = std::mem::take(&mut slot.obs_state_disabled_this_tick);
+        // SlimeController.suppressInput zeroes inputVector and flag5
+        // (SlimeController.cs:806-814).
+        let dir = if std::mem::take(&mut slot.obs_input_suppressed_this_tick) {
+            Vec2::ZERO
+        } else {
+            dir
+        };
         if slot.ragdoll_grounded_fall {
             if slot.base.grounded {
                 return;
@@ -5045,9 +5062,35 @@ impl RolloutWorld {
             || slot.obs_state == STATE_RAGDOLL
             || slot.active != ActiveAbility::None
             || slot.base.dash.active
+            // A Teleport or Blink tunnel that disabled the slime before its
+            // updater slot stops both SlimeController and its SpriteAnimator.
+            || disabled
         {
             return;
         }
+        Self::slime_state_switch(
+            &mut slot.base,
+            &mut slot.obs_state,
+            &mut slot.state_ticks,
+            &mut slot.facing_right,
+            &mut slot.prev_input_align,
+            dir,
+            held,
+        );
+    }
+
+    /// The part of `update_obs_state` an ability-less clone's SlimeController
+    /// runs as well: the grounded/airborne test, AlignTransformAir and
+    /// `switch (currentState)`.
+    fn slime_state_switch(
+        base: &mut Player,
+        obs_state: &mut u32,
+        state_ticks: &mut u32,
+        facing_right: &mut bool,
+        prev_align: &mut Fix,
+        dir: Vec2,
+        held: bool,
+    ) {
         // SlimeController stores this pass's ground alignment in `prevInput`
         // at the end of OldUpdate (SlimeController.cs:889), on every pass that
         // reaches the state switch - airborne included.
@@ -5092,8 +5135,8 @@ impl RolloutWorld {
         // ground moved 27/748 dash-missile-platform games and improved nothing
         // against the oracle (clean 245 either way, compared ticks 182480 ->
         // 182370). Do not re-derive this one from the C# alone.
-        let pre_up = slot.base.pre_move_up;
-        let ground_align = if slot.base.pre_move_grounded {
+        let pre_up = base.pre_move_up;
+        let ground_align = if base.pre_move_grounded {
             dir.dot(Vec2::new(pre_up.y, -pre_up.x))
         } else {
             dir.x
@@ -5104,19 +5147,19 @@ impl RolloutWorld {
         // not the test here: PlantObjectOnPlatform's exit holds the state
         // switch from a callback that runs *after* OldUpdate has already
         // stored `prevInput`.
-        let previous_align = if slot.base.instant_cast_this_pass {
-            slot.prev_input_align
+        let previous_align = if base.instant_cast_this_pass {
+            *prev_align
         } else {
-            std::mem::replace(&mut slot.prev_input_align, ground_align)
+            std::mem::replace(prev_align, ground_align)
         };
         // PlayerPhysics.Jump ungrounds the body and OnNoLongerGrounded sets
         // State.fall (SlimeController.cs:956-958) before Move's air raycasts
         // can re-attach it on the same pass (PlayerPhysics.cs:236-238), which
         // then lands it again through attachToGround.
-        let jumped = std::mem::take(&mut slot.base.jumped_this_frame);
-        if jumped || !slot.base.grounded {
-            slot.obs_state = STATE_FALL;
-            slot.state_ticks = 0;
+        let jumped = std::mem::take(&mut base.jumped_this_frame);
+        if jumped || !base.grounded {
+            *obs_state = STATE_FALL;
+            *state_ticks = 0;
         }
         // The last statement of OldUpdate is `if (!IsGrounded())
         // AlignTransformAir()` (SlimeController.cs:890-892). That IsGrounded()
@@ -5124,21 +5167,21 @@ impl RolloutWorld {
         // that only walked off the ledge inside Move still took the grounded
         // branch and did not re-aim. A pass that entered an ability returned
         // long before reaching this line.
-        if !held && (!slot.base.pre_move_grounded || jumped) {
+        if !held && (!base.pre_move_grounded || jumped) {
             // AlignTransformAir (SlimeController.cs:967-982): consume the
             // ground normal Jump() left behind, then aim from the raw stick
             // against MIN_TURNSPEED 0.02 - not from the ground alignment, and
             // with no DEADZONE test.
-            if std::mem::take(&mut slot.base.was_upside_down) {
-                slot.facing_right = !slot.facing_right;
+            if std::mem::take(&mut base.was_upside_down) {
+                *facing_right = !*facing_right;
             }
             if dir.x < -Fix::from_f32(0.02) {
-                slot.facing_right = false;
+                *facing_right = false;
             } else if dir.x > Fix::from_f32(0.02) {
-                slot.facing_right = true;
+                *facing_right = true;
             }
         }
-        if !slot.base.grounded {
+        if !base.grounded {
             return;
         }
         // SlimeController flag5: stick magnitude past DEADZONE 0.4 (the
@@ -5153,7 +5196,7 @@ impl RolloutWorld {
             && (align.abs() >= Fix::from_f32(0.2)
                 || (into_ground && align.abs() >= Fix::from_f32(0.01)));
         let input_right = align >= Fix::ZERO;
-        match slot.obs_state {
+        match *obs_state {
             // attachToGround and the land animation are PlayerPhysics/animator
             // callbacks, so they still land and chain on a held tick; only
             // `switch (currentState)` below is what OldUpdate returns before.
@@ -5165,20 +5208,20 @@ impl RolloutWorld {
                 // the instant the raycast attached, recorded by
                 // `Player::attach`; the end-of-tick `up` has already rotated
                 // away from it on a moving or steeply curved surface.
-                if slot.base.attach_upside_down == Some(true) {
-                    slot.facing_right = !slot.facing_right;
+                if base.attach_upside_down == Some(true) {
+                    *facing_right = !*facing_right;
                 }
                 // A landing in PlayerPhysics.UpdateSim precedes OldUpdate, so
                 // this pass's `case State.land` already re-aims (see below).
-                if slot.base.pre_move_grounded
+                if base.pre_move_grounded
                     && !jumped
                     && !held
                     && (align.abs() >= Fix::from_f32(0.2) || into_ground)
                 {
-                    slot.facing_right = align >= Fix::ZERO;
+                    *facing_right = align >= Fix::ZERO;
                 }
-                slot.obs_state = STATE_LAND;
-                slot.state_ticks += LAND_TICKS;
+                *obs_state = STATE_LAND;
+                *state_ticks += LAND_TICKS;
             }
             STATE_LAND => {
                 // `case State.land: if (Fix.Abs(fix) >= GROUNDALIGNMENTDEADZONE
@@ -5191,11 +5234,11 @@ impl RolloutWorld {
                 // EnterAbility skips it while the animator still advances the
                 // land timer below.
                 if !held && (align.abs() >= Fix::from_f32(0.2) || into_ground) {
-                    slot.facing_right = align >= Fix::ZERO;
+                    *facing_right = align >= Fix::ZERO;
                 }
-                slot.state_ticks = slot.state_ticks.saturating_sub(1);
-                if slot.state_ticks == 0 {
-                    slot.obs_state = STATE_IDLE;
+                *state_ticks = state_ticks.saturating_sub(1);
+                if *state_ticks == 0 {
+                    *obs_state = STATE_IDLE;
                 }
             }
             STATE_RUN => {
@@ -5209,32 +5252,32 @@ impl RolloutWorld {
                 let reversed = (align > Fix::ZERO && previous_align < Fix::ZERO)
                     || (align < Fix::ZERO && previous_align > Fix::ZERO);
                 if !held && (!moving || reversed) {
-                    slot.obs_state = STATE_STOP;
-                    slot.state_ticks = STOP_TICKS;
+                    *obs_state = STATE_STOP;
+                    *state_ticks = STOP_TICKS;
                 }
             }
             // Stop and turn end on their animations, which advance on a held
             // pass too; only their switch cases wait.
             STATE_STOP => {
-                if !held && moving && input_right != slot.facing_right {
-                    slot.obs_state = STATE_TURN;
-                    slot.state_ticks = TURN_TICKS;
-                    slot.facing_right = input_right;
+                if !held && moving && input_right != *facing_right {
+                    *obs_state = STATE_TURN;
+                    *state_ticks = TURN_TICKS;
+                    *facing_right = input_right;
                 } else {
-                    slot.state_ticks = slot.state_ticks.saturating_sub(1);
-                    if slot.state_ticks == 0 {
-                        slot.obs_state = STATE_IDLE;
+                    *state_ticks = state_ticks.saturating_sub(1);
+                    if *state_ticks == 0 {
+                        *obs_state = STATE_IDLE;
                     }
                 }
             }
             STATE_TURN => {
                 if !held && !moving {
-                    slot.obs_state = STATE_STOP;
-                    slot.state_ticks = STOP_TICKS;
+                    *obs_state = STATE_STOP;
+                    *state_ticks = STOP_TICKS;
                 } else {
-                    slot.state_ticks = slot.state_ticks.saturating_sub(1);
-                    if slot.state_ticks == 0 {
-                        slot.obs_state = STATE_RUN;
+                    *state_ticks = state_ticks.saturating_sub(1);
+                    if *state_ticks == 0 {
+                        *obs_state = STATE_RUN;
                     }
                 }
             }
@@ -5242,10 +5285,10 @@ impl RolloutWorld {
             _ => {
                 // idle (and anything unexpected).
                 if moving {
-                    slot.obs_state = STATE_RUN;
-                    slot.facing_right = input_right;
+                    *obs_state = STATE_RUN;
+                    *facing_right = input_right;
                 } else {
-                    slot.obs_state = STATE_IDLE;
+                    *obs_state = STATE_IDLE;
                 }
             }
         }
@@ -7500,6 +7543,7 @@ impl RolloutWorld {
         if !self.playable(index) {
             if self.players[index].teleport_effect_active || self.players[index].blink_tunnel_active
             {
+                self.players[index].obs_state_disabled_this_tick = true;
                 return;
             }
             self.respawn_tick(index, movement_input, jump_pressed, data);
@@ -7524,6 +7568,7 @@ impl RolloutWorld {
             // calls Move(zero), and PlayerBody remains live ahead of the
             // recorder.
             let slot = &mut self.players[index];
+            slot.obs_input_suppressed_this_tick = true;
             for timer in &mut slot.timers {
                 *timer += DT;
             }
@@ -7583,7 +7628,7 @@ impl RolloutWorld {
             // 1084). `update_obs_state` is the tail of OldUpdate but runs at
             // the end of the tick, so the ground frame OldUpdate actually read
             // has to be carried across to it.
-            slot.base.capture_pre_move();
+            slot.base.capture_pre_move(&self.platforms);
             // Player.UpdatePlayer published before SlimeController discovers
             // that an attached Blink wall was disabled. Preserve that value
             // on the one detachment pass; the live slime body already moves
@@ -7656,18 +7701,31 @@ impl RolloutWorld {
                 }
                 {
                     let slot = &mut self.players[index];
+                    // SlimeController.UpdateSim ungrounds a slime whose ground
+                    // was destroyed before OldUpdate (SlimeController.cs:
+                    // 1061-1065), and OnNoLongerGrounded sets State.fall.
+                    if !slot.base.grounded
+                        && matches!(
+                            slot.obs_state,
+                            STATE_IDLE | STATE_RUN | STATE_LAND | STATE_STOP | STATE_TURN
+                        )
+                    {
+                        slot.obs_state = STATE_FALL;
+                        slot.state_ticks = 0;
+                    }
                     // A landing in this pass's PlayerPhysics.UpdateSim already
                     // set State.land through attachToGround
                     // (SlimeController.cs:1126-1128) before EnterAbility
                     // freezes the state machine. A ceiling landing flipped
                     // the sprite in the same callback, so the ability aims
-                    // from the flipped facing.
+                    // from the flipped facing. The held update_obs_state
+                    // counts this pass, which the land animation also does.
                     if slot.base.grounded && slot.obs_state == STATE_FALL {
                         if slot.base.attach_upside_down == Some(true) {
                             slot.facing_right = !slot.facing_right;
                         }
                         slot.obs_state = STATE_LAND;
-                        slot.state_ticks += LAND_TICKS;
+                        slot.state_ticks += LAND_TICKS + 1;
                     }
                     // The first pass after a tunnel: OldUpdate's publish of the
                     // pre-entry body wins the tie against EnterAbility's and
@@ -7682,6 +7740,19 @@ impl RolloutWorld {
                     // shows for the rest of the ability.
                     let mut frozen = slot.base.clone();
                     frozen.move_only(movement_input, terrain!(self));
+                    // That Move still raises OnNoLongerGrounded and
+                    // attachToGround (SlimeController.cs:955-957, 1126-1134),
+                    // after this pass's SpriteAnimator.
+                    if slot.base.grounded && !frozen.grounded {
+                        slot.obs_state = STATE_FALL;
+                        slot.state_ticks = 0;
+                    } else if slot.obs_state == STATE_FALL && frozen.grounded {
+                        if frozen.attach_upside_down == Some(true) {
+                            slot.facing_right = !slot.facing_right;
+                        }
+                        slot.obs_state = STATE_LAND;
+                        slot.state_ticks += LAND_TICKS + 2;
+                    }
                     slot.ability_origin = frozen.position;
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
                     slot.ability_origin_external = frozen.external_velocity;
@@ -9154,7 +9225,7 @@ impl RolloutWorld {
                         if self.ability_boundary_kill(index, false) {
                             return;
                         }
-                        self.beam_tick(index, action, false, data);
+                        self.beam_tick(index, action, jump_pressed, false, data);
                         return;
                     }
                     ABILITY_PLATFORM => {
@@ -9382,7 +9453,7 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Beam {
-            self.beam_tick(index, action, true, data);
+            self.beam_tick(index, action, jump_pressed, true, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
@@ -9624,9 +9695,7 @@ impl RolloutWorld {
             self.exit_roll(index, false, data);
             return;
         }
-        let slot = &mut self.players[index];
-        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-        slot.base.external_velocity *= Fix::from_f64(0.95);
+        self.form_body_step(index);
     }
 
     fn roll_move_grounded(&mut self, index: usize, data: &data::RolloutData) {
@@ -9801,11 +9870,15 @@ impl RolloutWorld {
                 }
                 slot.base.align(platform);
             }
+            // Roll runs after the slime's OldUpdate and SpriteAnimator: the
+            // state switch waits for the next pass, and a landing animation
+            // counts its LAND_TICKS + 1 passes from there.
             slot.obs_state = STATE_IDLE;
             slot.state_ticks = 0;
+            slot.obs_state_held_this_tick = true;
             if just_landed {
                 slot.obs_state = STATE_LAND;
-                slot.state_ticks = LAND_TICKS;
+                slot.state_ticks = LAND_TICKS + 2;
             }
         } else {
             slot.base.position = exit_position;
@@ -9985,9 +10058,7 @@ impl RolloutWorld {
                 if self.ability_boundary_kill(index, false) {
                     return;
                 }
-                let slot = &mut self.players[index];
-                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-                slot.base.external_velocity *= Fix::from_f64(0.95);
+                self.form_body_step(index);
             }
             _ => {
                 self.players[index].meteor.dash_updates += 1;
@@ -11093,9 +11164,10 @@ impl RolloutWorld {
             let enter_stop = alignment.abs() >= Fix::from_f32(0.2)
                 && (alignment >= Fix::ZERO) != slot.facing_right;
             slot.obs_state = if enter_stop { STATE_STOP } else { STATE_IDLE };
-            // The stop begins after the SpriteAnimator's pass, which the held
-            // update_obs_state below still counts.
-            slot.state_ticks = if enter_stop { STOP_TICKS + 1 } else { 0 };
+            // The ability exits after this pass's SpriteAnimator, so the stop
+            // animation runs its STOP_TICKS + 1 passes from the next tick on;
+            // the held update_obs_state below still counts this one.
+            slot.state_ticks = if enter_stop { STOP_TICKS + 2 } else { 0 };
             slot.obs_state_held_this_tick = true;
         } else {
             slot.base.up = Vec2::UP;
@@ -11212,7 +11284,7 @@ impl RolloutWorld {
         self.next_spawn_hierarchy += data.tesla.node_updatable_count;
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
-        let inverse_basis = Vec2::angle(-parent_rotation);
+        let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let node_right = normal.perp_cw();
         let node_rotation = node_right.normalized_angle();
         let surface_offset = data.tesla.plant_offset.y * scale;
@@ -11437,7 +11509,7 @@ impl RolloutWorld {
         self.next_spawn_hierarchy += data.engine.rocket_updatable_count;
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
-        let inverse_basis = Vec2::angle(-parent_rotation);
+        let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let rocket_right = normal.perp_cw();
         let rocket_rotation = rocket_right.normalized_angle();
         let surface_offset = data.engine.plant_offset.y * scale;
@@ -11719,7 +11791,7 @@ impl RolloutWorld {
             .expect("spike surface ray hit has a perimeter coordinate");
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
-        let parent_inverse_basis = Vec2::angle(-parent_rotation);
+        let parent_inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let spike_right = normal.perp_cw();
         let spike_rotation = spike_right.normalized_angle();
         let surface_offset = data.spike.down_thrust.evaluate(Fix::ZERO) + data.spike.surface_offset;
@@ -11935,7 +12007,7 @@ impl RolloutWorld {
         let spike_right = Vec2::angle(parent_rotation + attack.relative_rotation);
         let root_position = platform.surface.position(attack.local, Fix::ZERO)
             + spike_right.perp() * attack.surface_offset;
-        let inverse_basis = Vec2::angle(-parent_rotation);
+        let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let relative_right = spike_right.complex_mul(inverse_basis);
         // Scale inside the complex multiply, per DPhysicsBox.cs:456 and
         // FixTransform.cs:100-103; see cast_spike.
@@ -11950,6 +12022,9 @@ impl RolloutWorld {
     /// of that pose (ResizablePlatform.cs:69-87, RocketEngine.cs:180-193,
     /// SimpleSparkNode.cs:305-318, SpikeAttack.cs:144-158). A child placed
     /// this pass still has the pose it was placed with, which this repeats.
+    /// Every RepositionOnParent undoes the parent rotation with
+    /// `new Vec2(PiTimes2 - rotation)`; FastSin floors its table index, so
+    /// that is not the Vec2::angle(-rotation) a composite combine uses.
     fn reposition_platform_children(&mut self, platform: usize, data: &data::RolloutData) {
         let tick = self.tick;
         let settled = |active: bool, carried: bool, on: usize, born: u32| {
@@ -11962,7 +12037,8 @@ impl RolloutWorld {
             }
         }
         let parent_position = self.platforms[platform].surface.center;
-        let inverse_basis = Vec2::angle(-self.platform_dynamics[platform].body.orientation);
+        let inverse_basis =
+            Vec2::angle(Fix::TAU - self.platform_dynamics[platform].body.orientation);
         let surface = &self.platforms[platform].surface;
         let relative = |local: Fix, rotation: Fix, surface_offset: Fix, offset: Vec2| {
             let right = Vec2::angle(rotation);
@@ -12340,6 +12416,26 @@ impl RolloutWorld {
         node.line_up = line.up;
         node.line_inverse_extents = line.inverse_extents;
         node.line_rotation = line_rotation;
+        // The physics sync moves the box to this pose before the broadphase
+        // averages every collider, the inactive line included, to pick its
+        // sweep axis.
+        if let Some(entity) = node.line_entity {
+            self.entities[entity].x = line.center.x.raw();
+            self.entities[entity].y = line.center.y.raw();
+        }
+    }
+
+    fn spike_attack_box(&self, spike: SpawnedSpike, data: &data::RolloutData) -> OrientedBox {
+        let parent = &self.platform_dynamics[spike.platform_index];
+        let basis = Vec2::angle(parent.body.orientation + spike.relative_rotation);
+        let scaled_extents = data.spike.attack_extents * spike.scale;
+        let extents = data::surface_extents(scaled_extents);
+        OrientedBox {
+            center: spike.collider_center,
+            right: basis * extents.x,
+            up: (Vec2::UP * extents.y).complex_mul(basis),
+            inverse_extents: Vec2::new(Fix::ONE / scaled_extents.x, Fix::ONE / scaled_extents.y),
+        }
     }
 
     fn spike_contacts(&mut self, data: &data::RolloutData) {
@@ -12352,20 +12448,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let parent = &self.platform_dynamics[spike.platform_index];
-            let basis = Vec2::angle(parent.body.orientation + spike.relative_rotation);
-            let center = spike.collider_center;
-            let scaled_extents = data.spike.attack_extents * spike.scale;
-            let extents = data::surface_extents(scaled_extents);
-            let attack_box = OrientedBox {
-                center,
-                right: basis * extents.x,
-                up: (Vec2::UP * extents.y).complex_mul(basis),
-                inverse_extents: Vec2::new(
-                    Fix::ONE / scaled_extents.x,
-                    Fix::ONE / scaled_extents.y,
-                ),
-            };
+            let attack_box = self.spike_attack_box(spike, data);
             for cloud in &mut self.smoke_clouds {
                 if !cloud.active || !cloud.registered {
                     continue;
@@ -12773,9 +12856,8 @@ impl RolloutWorld {
             )
             .expect("valid Black Hole air constants");
         }
+        self.form_body_step(index);
         let slot = &mut self.players[index];
-        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-        slot.base.external_velocity *= Fix::from_f64(0.95);
         // The hurtbox is a DPhysicsBox, and DPhysicsBox.UpdateSim is empty
         // (DPhysicsBox.cs:374-376) - its hierarchyNumber 7 does nothing. The
         // collider follows the body through UpdatePhysicsPositions, which
@@ -14676,8 +14758,10 @@ impl RolloutWorld {
                         slot.base.local = local;
                     }
                 }
+                // EnterIdle; the slime's OldUpdate already passed this pass.
                 slot.obs_state = STATE_IDLE;
                 slot.state_ticks = 0;
+                slot.obs_state_held_this_tick = true;
                 if enter_jump {
                     // A jump press leaves Beam with enterJump, and the slime
                     // jumps off the ground it lands on (SlimeController.cs:242).
@@ -14706,6 +14790,7 @@ impl RolloutWorld {
         &mut self,
         index: usize,
         action: Action,
+        jump_pressed: bool,
         advance_animation: bool,
         data: &data::RolloutData,
     ) {
@@ -14811,13 +14896,9 @@ impl RolloutWorld {
         if let Some(orb) = self.players[index].beam.orb {
             self.beam_orbs[orb].held_tick = Some(self.tick);
         }
-        // PlayerBody precedes Beam on the prefab. Its damping is unscaled,
-        // including while time is stopped.
-        {
-            let body = &mut self.players[index].base;
-            body.position += (body.velocity + body.external_velocity) * DT;
-            body.external_velocity *= Fix::from_f64(0.95);
-        }
+        // PlayerBody precedes Beam on the prefab, carrying any rope the slime
+        // held. Its damping is unscaled, including while time is stopped.
+        self.form_body_move(index, jump_pressed);
 
         if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
             return;
@@ -15250,11 +15331,29 @@ impl RolloutWorld {
         }
     }
 
+    /// A slime hurtbox row keeps the inverse extents its rescaling left, Q32
+    /// drift included, where the row itself only gives right and up.
+    fn hurtbox_inverse_extents(
+        players: &[PlayerSlot],
+        clones: &[AbilitylessClone],
+        entity: usize,
+    ) -> Option<Vec2> {
+        players
+            .iter()
+            .map(|slot| (slot.body_entity, slot.base.collider))
+            .chain(clones.iter().filter_map(|clone| clone.entity.map(|e| (e, clone.base.collider))))
+            .find(|&(owned, collider)| owned == entity && collider.inverse_extents != Vec2::ZERO)
+            .map(|(_, collider)| collider.inverse_extents)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn beam_raycast(
         platforms: &[Platform],
         swept: Option<&[RoundedRect]>,
         platform_entities: &[usize],
         entities: &[CEntity],
+        players: &[PlayerSlot],
+        clones: &[AbilitylessClone],
         origin: Vec2,
         direction: Vec2,
         maximum: Fix,
@@ -15286,7 +15385,7 @@ impl RolloutWorld {
             }
         }
         for kind in [0, 1] {
-            for row in entities {
+            for (entity, row) in entities.iter().enumerate() {
                 if row.kind != kind
                     || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
                     || mask & (1u32 << row.layer) == 0
@@ -15306,16 +15405,9 @@ impl RolloutWorld {
                     if right == Vec2::ZERO || up == Vec2::ZERO {
                         continue;
                     }
-                    OrientedBox {
-                        center,
-                        right,
-                        up,
-                        inverse_extents: Vec2::new(
-                            Fix::ONE / right.length(),
-                            Fix::ONE / up.length(),
-                        ),
-                    }
-                    .raycast(origin, direction)
+                    let inverse_extents = Self::hurtbox_inverse_extents(players, clones, entity)
+                        .unwrap_or_else(|| Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()));
+                    OrientedBox { center, right, up, inverse_extents }.raycast(origin, direction)
                 };
                 if let Some(hit) = hit
                     && hit.near < result.distance
@@ -15339,6 +15431,7 @@ impl RolloutWorld {
         .then_some(self.scratch.callback_colliders.as_slice());
         let platform_entities = &self.platform_entities;
         let entities = &self.entities;
+        let (players, clones) = (&self.players, &self.abilityless_clones);
         self.beam_graph.step_into(
             &self.beam_inputs,
             &mut |origin, direction, distance, mask| {
@@ -15347,6 +15440,8 @@ impl RolloutWorld {
                     swept,
                     platform_entities,
                     entities,
+                    players,
+                    clones,
                     origin,
                     direction,
                     distance,
@@ -16010,7 +16105,7 @@ impl RolloutWorld {
             .surface
             .position(local, Fix::ZERO)
             + desired_up * source.surface_offset;
-        let inverse_basis = Vec2::angle(-parent_rotation);
+        let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let relative_right = desired_right.complex_mul(inverse_basis);
         let relative_center = (root - parent_position).complex_mul(inverse_basis)
             + (data.engine.rocket_collider_offset * source.scale).complex_mul(relative_right);
@@ -16069,7 +16164,7 @@ impl RolloutWorld {
             .surface
             .position(local, Fix::ZERO)
             + desired_up * source.surface_offset;
-        let inverse_basis = Vec2::angle(-parent_rotation);
+        let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let relative_right = desired_right.complex_mul(inverse_basis);
         let relative_center = (root - parent_position).complex_mul(inverse_basis)
             + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);
@@ -16147,7 +16242,7 @@ impl RolloutWorld {
             .surface
             .position(local, Fix::ZERO)
             + desired_up * surface_offset;
-        let inverse_basis = Vec2::angle(-parent_rotation);
+        let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let relative_right = desired_right.complex_mul(inverse_basis);
         let relative_center = (root - parent_position).complex_mul(inverse_basis)
             + (data.spike.attack_collider_offset * source.scale).complex_mul(relative_right);
@@ -16538,9 +16633,7 @@ impl RolloutWorld {
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
         self.players[index].base.gravity_step(terrain!(self));
-        let slot = &mut self.players[index];
-        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-        slot.base.external_velocity *= Fix::from_f64(0.95);
+        self.form_body_move(index, jump_pressed);
         if advance_animation {
             self.players[index].macho_throw.ticks += 1;
             let phase = self.players[index].macho_throw.phase;
@@ -19168,10 +19261,18 @@ impl RolloutWorld {
         }
     }
 
+    /// `form_body_move` with the jump edge of this pass's input.
+    fn form_body_step(&mut self, index: usize) {
+        let slot = &self.players[index];
+        let jump_pressed = slot.last_action.buttons & 1 != 0 && !slot.base.previous_jump;
+        self.form_body_move(index, jump_pressed);
+    }
+
     /// base.step with the dash shove check from World::step.
-    /// PlayerBody.UpdateSim on a form that has one (Dash, the QuickSpells): a
-    /// rope constrains the body, otherwise it drifts by its velocity, which a
-    /// pull such as Black Hole's or Magnet's makes nonzero while the form waits.
+    /// PlayerBody.UpdateSim on an ability form; every prefab but Rock has one,
+    /// and Ability.EnterAbility hands it the slime's rope. A rope constrains
+    /// the body, otherwise it drifts by its velocity, which a pull such as
+    /// Black Hole's or Magnet's makes nonzero while the form waits.
     fn form_body_move(&mut self, index: usize, jump_pressed: bool) {
         if self.players[index].rope.is_some() {
             self.rope_body_move(index, jump_pressed);
@@ -19678,8 +19779,10 @@ impl RolloutWorld {
                         slot.base.align(platform);
                     }
                     slot.base.radius = data.player.radius;
+                    // EnterIdle; the slime's OldUpdate already passed this pass.
                     slot.obs_state = STATE_IDLE;
                     slot.state_ticks = 0;
+                    slot.obs_state_held_this_tick = true;
                 } else {
                     slot.base.radius = data.player.radius;
                     slot.exit_to_fall();
@@ -19939,9 +20042,8 @@ impl RolloutWorld {
                 slot.throw_item.collider_right = slot.base.up.perp_cw();
                 self.sync_exit_to_ground(index, data);
             } else {
-                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-                slot.base.external_velocity *= Fix::from_f64(0.95);
                 slot.throw_item.collider_right = slot.base.up.perp_cw();
+                self.form_body_step(index);
             }
         }
     }
@@ -20249,11 +20351,9 @@ impl RolloutWorld {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
-            let this = &mut *self;
-            let slot = &mut this.players[index];
+            let slot = &mut self.players[index];
             slot.throw_item.collider_rotation = slot.base.rotation;
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
+            self.form_body_step(index);
         } else {
             // ThrowItem2 keeps its own PlayerBody live throughout the aerial
             // form. Before release it uses the authored 0.03 gravity modifier
@@ -20309,8 +20409,7 @@ impl RolloutWorld {
                 slot.reported_position = slot.base.position;
                 self.sync_exit_to_ground(index, data);
             } else {
-                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-                slot.base.external_velocity *= Fix::from_f64(0.95);
+                self.form_body_step(index);
             }
         }
     }
@@ -21120,9 +21219,7 @@ impl RolloutWorld {
         }
 
         // PlayerBody.UpdateSim, hierarchy 8.
-        let slot = &mut self.players[index];
-        slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-        slot.base.external_velocity *= Fix::from_f64(0.95);
+        self.form_body_step(index);
     }
 
     fn magnet_ability_update_scale(&mut self, index: usize) {
@@ -23409,6 +23506,9 @@ impl RolloutWorld {
             owner: victim,
             base,
             obs_state: STATE_FALL,
+            state_ticks: 0,
+            facing_right: true,
+            prev_input_align: Fix::ZERO,
             captured_by_ball: None,
             poke_invulnerable: false,
             blink_tunnel_active: false,
@@ -23524,7 +23624,7 @@ impl RolloutWorld {
         );
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
-        let inverse_basis = Vec2::angle(-parent_rotation);
+        let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let surface_position = self.platforms[platform_index]
             .surface
             .position(local, Fix::ZERO);
@@ -23613,7 +23713,7 @@ impl RolloutWorld {
         );
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
-        let inverse_basis = Vec2::angle(-parent_rotation);
+        let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let surface_position = self.platforms[platform_index]
             .surface
             .position(local, Fix::ZERO);
@@ -23708,7 +23808,7 @@ impl RolloutWorld {
         );
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
-        let inverse_basis = Vec2::angle(-parent_rotation);
+        let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let surface_position = self.platforms[platform_index]
             .surface
             .position(local, Fix::ZERO);
@@ -24705,7 +24805,7 @@ impl RolloutWorld {
                 .surface
                 .position(spike.local, Fix::ZERO)
                 + right.perp() * spike.surface_offset;
-            let inverse_basis = Vec2::angle(-parent_rotation);
+            let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
             let relative_right = right.complex_mul(inverse_basis);
             let relative_center = (root - parent_position).complex_mul(inverse_basis)
                 + (data.spike.attack_collider_offset * scale).complex_mul(relative_right);
@@ -24737,7 +24837,7 @@ impl RolloutWorld {
                 .surface
                 .position(engine.local, Fix::ZERO)
                 + right.perp() * engine.surface_offset;
-            let inverse_basis = Vec2::angle(-parent_rotation);
+            let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
             let relative_right = right.complex_mul(inverse_basis);
             let relative_center = (root - parent_position).complex_mul(inverse_basis)
                 + (data.engine.rocket_collider_offset * scale).complex_mul(relative_right);
@@ -24771,7 +24871,7 @@ impl RolloutWorld {
                 .surface
                 .position(node.local, Fix::ZERO)
                 + right.perp() * node.surface_offset;
-            let inverse_basis = Vec2::angle(-parent_rotation);
+            let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
             let relative_right = right.complex_mul(inverse_basis);
             let relative_center = (root - parent_position).complex_mul(inverse_basis)
                 + (data.tesla.node_collider_offset * scale).complex_mul(relative_right);
@@ -26425,8 +26525,9 @@ impl RolloutWorld {
             }
         }
 
-        // Movement (UpdateSim).
+        // Movement (UpdateSim). PlayerBody integrates after BowTransform.
         let mut exit = false;
+        let mut integrate = false;
         let this = &mut *self;
         let slot = &mut this.players[index];
         let terrain = Terrain {
@@ -26469,8 +26570,7 @@ impl RolloutWorld {
             } else if slot.base.velocity.length() > bow.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * bow.max_slow_mo_speed;
             }
-            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
+            integrate = true;
         } else {
             // Post-fire flight. BowTransform raycasts immediately after full
             // gravity, before its later aerial-control blend. This matters
@@ -26507,8 +26607,7 @@ impl RolloutWorld {
                 if slot.base.velocity.length() > bow.constants.max_speed {
                     slot.base.velocity = slot.base.velocity.normalized() * bow.constants.max_speed;
                 }
-                slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-                slot.base.external_velocity *= Fix::from_f64(0.95);
+                integrate = true;
             }
         }
         // `body.up = inputVector` (BowTransform.cs:244-247), the tail of
@@ -26524,6 +26623,9 @@ impl RolloutWorld {
             if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == tick) {
                 slot.tie_position = Some((tick, ability_publish));
             }
+        }
+        if integrate {
+            self.form_body_step(index);
         }
     }
 
@@ -27781,20 +27883,9 @@ impl RolloutWorld {
         } else {
             let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
             let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-            // A slime hurtbox keeps the inverse extents its rescaling left,
-            // Q32 drift included.
-            let hurtbox = self
-                .players
-                .iter()
-                .map(|slot| (slot.body_entity, slot.base.collider))
-                .chain(self.abilityless_clones.iter().filter_map(|clone| {
-                    clone.entity.map(|entity| (entity, clone.base.collider))
-                }))
-                .find(|&(owned, collider)| owned == entity && collider.inverse_extents != Vec2::ZERO);
-            let inverse_extents = match hurtbox {
-                Some((_, collider)) => collider.inverse_extents,
-                None => Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
-            };
+            let inverse_extents =
+                Self::hurtbox_inverse_extents(&self.players, &self.abilityless_clones, entity)
+                    .unwrap_or_else(|| Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()));
             crate::physics::contact::circle_box(
                 query,
                 OrientedBox {
@@ -29303,7 +29394,7 @@ impl RolloutWorld {
                 if let Some(contact) = crate::physics::contact::circle_circle(
                     Circle {
                         center: player.base.position,
-                        radius: data.rock.radius * player.rock.scale,
+                        radius: player.rock.collider_radius,
                     },
                     circle,
                 ) {
@@ -32184,9 +32275,19 @@ impl RolloutWorld {
                     platforms: &self.platforms,
                     bounds: &self.bounds,
                 };
-                self.abilityless_clones[clone_index]
-                    .base
-                    .step_with_input(action, movement, terrain);
+                let clone = &mut self.abilityless_clones[clone_index];
+                clone.base.step_with_input(action, movement, terrain);
+                if clone.obs_state != STATE_RAGDOLL {
+                    Self::slime_state_switch(
+                        &mut clone.base,
+                        &mut clone.obs_state,
+                        &mut clone.state_ticks,
+                        &mut clone.facing_right,
+                        &mut clone.prev_input_align,
+                        movement,
+                        false,
+                    );
+                }
             }
             if !self.abilityless_clones[clone_index].base.alive {
                 self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT);
@@ -32767,6 +32868,63 @@ impl RolloutWorld {
                     left[a].base.velocity = left[a].rock.body.velocity;
                     right[0].base.velocity = right[0].rock.body.velocity;
                 }
+            }
+        }
+
+        // Circle/Box: a Spike attack is a solid box child of its platform's
+        // CompositeBody, so a Rock bounces off it. ResolveCollision takes the
+        // combined body at CompositeBody.position; PositionalCorrection the
+        // box's own inverse mass, moving the box and CompositeBody.position.
+        // BounceBall adds no bounce for the LethalTerrain layer.
+        for rock_index in 0..self.players.len() {
+            if self.players[rock_index].active != ActiveAbility::Rock || !self.playable(rock_index)
+            {
+                continue;
+            }
+            for spike_index in 0..self.spike_attacks.len() {
+                let spike = self.spike_attacks[spike_index];
+                if !spike.active
+                    || spike.macho_carried
+                    || spike.platform_index >= self.platforms.len()
+                    || spike.body.inverse_mass <= Fix::ZERO
+                    || spike.entity.is_none_or(|entity| self.entities[entity].flags & 3 != 3)
+                {
+                    continue;
+                }
+                let attack_box = self.spike_attack_box(spike, data);
+                let bounds = attack_box.bounds(Fix::ZERO);
+                let rock = swept[rock_index];
+                if rock.center.x + rock.radius <= bounds.min.x
+                    || rock.center.x - rock.radius >= bounds.max.x
+                    || rock.center.y + rock.radius <= bounds.min.y
+                    || rock.center.y - rock.radius >= bounds.max.y
+                {
+                    continue;
+                }
+                let circle = Circle {
+                    center: self.players[rock_index].base.position,
+                    radius: self.players[rock_index].rock.collider_radius,
+                };
+                let Some(contact) = crate::physics::contact::circle_box(circle, attack_box) else {
+                    continue;
+                };
+                let platform = spike.platform_index;
+                let rock_position = self.players[rock_index].base.position;
+                let composite_position = self.platform_dynamics[platform].composite_position;
+                let rock_body = &mut self.players[rock_index].rock.body;
+                let platform_body = &mut self.platform_dynamics[platform].body;
+                resolve(contact, rock_body, platform_body, rock_position, composite_position);
+                let correction = positional_correction(
+                    contact,
+                    rock_body.inverse_mass,
+                    spike.body.inverse_mass,
+                    false,
+                );
+                let rock_velocity = rock_body.velocity;
+                self.players[rock_index].base.position += correction[0];
+                self.players[rock_index].base.velocity = rock_velocity;
+                self.platform_dynamics[platform].composite_position += correction[1];
+                self.spike_attacks[spike_index].collider_center += correction[1];
             }
         }
 
@@ -38767,7 +38925,7 @@ mod tests {
         world.exit_engine_cast(0);
 
         assert_eq!(world.players[0].obs_state, STATE_STOP);
-        assert_eq!(world.players[0].state_ticks, STOP_TICKS);
+        assert_eq!(world.players[0].state_ticks, STOP_TICKS + 2);
 
         world.players[0].active = ActiveAbility::Tesla;
         world.players[0].last_movement_input = Vec2::RIGHT;
