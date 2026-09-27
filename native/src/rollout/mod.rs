@@ -1600,6 +1600,8 @@ pub struct DuplicatePlatformState {
     pub original_center: Vec2,
     pub original_right: Vec2,
     pub original_up: Vec2,
+    /// srrRotationOnInitialize, which the copy takes when it spawns.
+    pub original_rotation: Fix,
     pub effect_scale: Fix,
     pub spawn_position: Vec2,
     pub spawner_hierarchy: u32,
@@ -13726,14 +13728,9 @@ impl RolloutWorld {
                     platform_index += 1;
                     continue;
                 }
-                // CollisionInformation retains the narrow-phase collider
-                // copied before platform/platform positional corrections.
-                let collider = self
-                    .scratch
-                    .callback_colliders
-                    .get(platform_index)
-                    .copied()
-                    .unwrap_or(self.platforms[platform_index].collider);
+                // The Circle/RoundedRect narrow phase follows the
+                // platform/platform and box/platform corrections.
+                let collider = self.circle_collider(platform_index);
                 if crate::physics::contact::circle_rounded(
                     Circle {
                         center: hole.position,
@@ -26444,6 +26441,9 @@ impl RolloutWorld {
             original_center: surface.center,
             original_right: right,
             original_up: up,
+            original_rotation: self.platform_dynamics[source]
+                .transform_rotation
+                .unwrap_or(self.platform_dynamics[source].body.orientation),
             effect_scale: scale,
             spawn_position,
             spawner_hierarchy,
@@ -26560,7 +26560,8 @@ impl RolloutWorld {
             }
         }
         for (source, position, effect) in spawn {
-            self.spawn_duplicate_platform(source, position, effect.spawner_hierarchy, data);
+            let rotation = effect.original_rotation;
+            self.spawn_duplicate_platform(source, position, rotation, effect.spawner_hierarchy, data);
             self.black_holes_pull_spawned_platform(effect.hierarchy_base, data);
         }
     }
@@ -26615,6 +26616,7 @@ impl RolloutWorld {
         &mut self,
         source: usize,
         position: Vec2,
+        rotation: Fix,
         spawner_hierarchy: u32,
         data: &data::RolloutData,
     ) {
@@ -26667,7 +26669,11 @@ impl RolloutWorld {
         dynamics.root_body.angular_velocity = Fix::ZERO;
         dynamics.composite_position = position;
         dynamics.home_position = position;
-        dynamics.home_rotation = dynamics.body.orientation;
+        // DuplicatePlatformEffect writes the source's rotation from when the
+        // ray hit into the copy's FixTransform, where AnimateVelocity.Init
+        // homes it next pass.
+        dynamics.home_rotation = rotation;
+        dynamics.transform_rotation = Some(rotation);
         dynamics.shake_time = Fix::ZERO;
         dynamics.shake_duration = Fix::ZERO;
         dynamics.shake_amount = Fix::ZERO;
