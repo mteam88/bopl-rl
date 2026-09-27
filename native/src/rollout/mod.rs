@@ -31066,13 +31066,6 @@ impl RolloutWorld {
                 row.vy = 0;
                 row.angular_velocity = 0;
             }
-
-            // SmokeGrenadeExplode2 differs from the ordinary Grenade callback:
-            // once owner contact is enabled, every collision (including a
-            // rounded wall) detonates the smoke payload.
-            if item.ability == ABILITY_SMOKE && item.detonates_on_owner {
-                self.detonate_smoke(item_index, true, data);
-            }
         }
         self.scratch.item_platform_contacts = all_contacts;
     }
@@ -31407,10 +31400,23 @@ impl RolloutWorld {
             row.angular_velocity = item.body.angular_velocity.raw();
         }
         // SmokeGrenadeExplode2 accepts every non-projectile collision once
-        // its owner gate is open. Manifolds were all constructed before this
-        // callback phase, so destroying one Smoke does not erase later pairs.
+        // its owner gate is open, a rounded wall included. Manifolds were all
+        // constructed before this callback phase, so destroying one Smoke
+        // does not erase later pairs, and a Smoke on a wall still takes its
+        // Circle/Circle contacts; the wall callbacks were queued first.
         let mut smoke_callbacks = [usize::MAX; 64];
         let mut smoke_callback_count = 0;
+        for &(item_index, _, _) in &self.scratch.item_platform_contacts {
+            let item = self.thrown_items[item_index];
+            if item.active
+                && item.ability == ABILITY_SMOKE
+                && item.detonates_on_owner
+                && smoke_callback_count < smoke_callbacks.len()
+            {
+                smoke_callbacks[smoke_callback_count] = item_index;
+                smoke_callback_count += 1;
+            }
+        }
         for &(a_index, b_index, _) in contacts.iter() {
             // A portal shot's Projectile does not ignite explosives.
             if (SHOT..NODE).contains(&a_index) || (SHOT..NODE).contains(&b_index) {
