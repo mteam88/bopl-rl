@@ -15260,6 +15260,21 @@ impl RolloutWorld {
             )
             .expect("valid Beam aerial constants");
             self.players[index].base.collision_rays(terrain!(self));
+            // Beam.MovePlayer then lands on the first active wall its circle
+            // overlaps, even after a ray hit (Beam.cs:556-560).
+            let circle = Circle {
+                center: self.players[index].base.position,
+                radius: self.players[index].base.radius,
+            };
+            if let Some(wall) = self.platforms.iter().position(|platform| {
+                platform.active
+                    && crate::physics::contact::circle_box_overlaps(
+                        Circle { radius: circle.radius + platform.collider.radius, ..circle },
+                        platform.collider.inner,
+                    )
+            }) {
+                self.players[index].base.attach(&self.platforms[wall], circle.center);
+            }
             if self.players[index].base.grounded {
                 // The orb collider still syncs to the prior late pose this pass.
                 self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
