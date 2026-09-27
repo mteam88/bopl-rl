@@ -33778,6 +33778,19 @@ impl RolloutWorld {
         }
     }
 
+    /// The boulder a locked Magnet holds: MagnetGun has its PlayerCollision
+    /// ignore the grabbed collider until the lock ends.
+    fn magnet_locked_platform(&self, slot: &PlayerSlot) -> Option<usize> {
+        match slot.magnet.held {
+            MagnetHeld::Boulder(boulder)
+                if slot.active == ActiveAbility::Magnet && slot.magnet.phase == 3 =>
+            {
+                Some(self.macho_boulders[boulder].platform_index)
+            }
+            _ => None,
+        }
+    }
+
     /// the updater pass: resize, integration, broad phase, narrow phase,
     /// collision impulse, positional correction, and transform sync.
     /// PlayerCollision kills a grounded slime when a different wall's
@@ -33797,6 +33810,7 @@ impl RolloutWorld {
                 && colliders.iter().enumerate().any(|(i, collider)| {
                     self.platforms[i].active
                         && Some(self.platforms[i].id) != slot.base.ground
+                        && self.magnet_locked_platform(slot) != Some(i)
                         && collider.overlaps(slot.base.position)
                 })
             {
@@ -33820,6 +33834,7 @@ impl RolloutWorld {
                     .filter(|&(i, collider)| {
                         self.platforms[i].active
                             && Some(self.platforms[i].id) != slot.base.ground
+                            && self.magnet_locked_platform(slot) != Some(i)
                             && collider.overlaps(slot.base.position)
                     })
                     .map(|(_, collider)| {
