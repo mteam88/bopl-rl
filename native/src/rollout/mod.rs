@@ -2550,7 +2550,6 @@ struct PlatformScratch {
     engine_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
     tesla_wall_contacts: Vec<(usize, usize, Contact)>,
-    squished: Vec<usize>,
     item_order: Vec<usize>,
     item_window: Vec<usize>,
     item_contacts: Vec<(usize, usize, Contact)>,
@@ -6080,7 +6079,11 @@ impl RolloutWorld {
         }
         for i in 0..self.scratch.slime_shoves.len() {
             let (pushed, other, lower_id) = self.scratch.slime_shoves[i];
-            if !self.players[pushed].base.alive {
+            // A slime killed by an earlier callback shoves its destroyed
+            // body, not the one a stock respawns.
+            if !self.players[pushed].base.alive
+                || self.players[pushed].callback_killed_tick == Some(self.tick)
+            {
                 continue;
             }
             let other_position = self.players[other].base.position;
@@ -6130,7 +6133,32 @@ impl RolloutWorld {
                 }
                 continue;
             }
-            self.players[index].base.late_step(&self.platforms);
+            // SyncRotationToPlatform is off on the gun, Bow, Dash, Magnet
+            // and quick-spell prefabs: a grounded form keeps its own angle.
+            let keeps_rotation = matches!(
+                self.players[index].active,
+                ActiveAbility::Dash
+                    | ActiveAbility::Bow
+                    | ActiveAbility::Freeze
+                    | ActiveAbility::Blink
+                    | ActiveAbility::GrowthRay
+                    | ActiveAbility::ShrinkRay
+                    | ActiveAbility::Duplicator
+                    | ActiveAbility::Magnet
+                    | ActiveAbility::Gust
+                    | ActiveAbility::TimeStop
+                    | ActiveAbility::Revival
+            );
+            let platforms = &self.platforms;
+            let base = &mut self.players[index].base;
+            if keeps_rotation {
+                if !base.dash.active {
+                    let platform = base.platform(platforms).expect("grounded rider has a platform");
+                    base.position = platform.surface.position(base.local, base.radius);
+                }
+            } else {
+                base.late_step(platforms);
+            }
         }
         if has_clones {
             for clone in &mut self.abilityless_clones {
@@ -25109,6 +25137,9 @@ impl RolloutWorld {
             self.drop_magnet_held_item(victim);
         }
         let slot = &mut self.players[victim];
+        // QuantumTunnel.Init reassigns the victim's rotation, which rebuilds
+        // its basis from the angle and drops the exact aimed vector.
+        slot.base.up = Vec2::angle(slot.base.rotation).perp();
         slot.blink_tunnel_active = true;
         slot.blink_tunnel_born_tick = self.tick;
         slot.blink_tunnel_age = Fix::ZERO;
@@ -33215,6 +33246,35 @@ impl RolloutWorld {
 
     /// the updater pass: resize, integration, broad phase, narrow phase,
     /// collision impulse, positional correction, and transform sync.
+    /// PlayerCollision kills a grounded slime when a different wall's
+    /// rounded rectangle contains its squish point (the stock player prefab
+    /// uses the body centre). Player boxes are triggers, so this is a
+    /// callback effect rather than a rigid-body response.
+    fn squish_grounded(&mut self, colliders: &[RoundedRect]) {
+        let mut squished = [usize::MAX; MAX_PLAYERS];
+        let mut count = 0;
+        for (index, slot) in self.players.iter().enumerate() {
+            // Roll enables PlayerCollision.isSquishable on entry, then
+            // ReleaseDash disables it for the lethal rolling form.
+            if slot.base.alive
+                && slot.respawn_ticks == 0
+                && slot.base.grounded
+                && (slot.active != ActiveAbility::Roll || !slot.roll.lethal)
+                && colliders.iter().enumerate().any(|(i, collider)| {
+                    self.platforms[i].active
+                        && Some(self.platforms[i].id) != slot.base.ground
+                        && collider.overlaps(slot.base.position)
+                })
+            {
+                squished[count] = index;
+                count += 1;
+            }
+        }
+        for &index in &squished[..count] {
+            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
+        }
+    }
+
     fn platforms_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
         for index in 0..self.platforms.len() {
             if self.platform_dynamics[index].composite_rebuild {
@@ -33292,6 +33352,12 @@ impl RolloutWorld {
             && !disturbed
             && !self.spawned.iter().any(|spawn| spawn.active)
         {
+            // Walls that stand still still squish a slime walked into them.
+            let mut colliders = std::mem::take(&mut self.scratch.box_callback_colliders);
+            colliders.clear();
+            colliders.extend(self.platforms.iter().map(|p| p.collider));
+            self.squish_grounded(&colliders);
+            self.scratch.box_callback_colliders = colliders;
             return;
         }
         // Everything below may move a body.
@@ -33692,40 +33758,11 @@ impl RolloutWorld {
             }
         }
 
-        // PlayerCollision kills a grounded slime when a different wall's
-        // rounded rectangle contains its squish point (the stock player
-        // prefab uses the body centre). Player boxes are triggers, so this is
-        // a callback effect rather than a rigid-body response. The Box/RR
-        // group runs after the RR/RR corrections, so its copy of the wall
-        // already carries them.
-        let callback_colliders = &scratch.box_callback_colliders;
-        scratch.squished.clear();
-        scratch.squished.extend(
-            self.players
-                .iter()
-                .enumerate()
-                .filter(|(_, slot)| {
-                    slot.base.alive && slot.respawn_ticks == 0 && slot.base.grounded
-                })
-                // Roll enables PlayerCollision.isSquishable on entry, then
-                // ReleaseDash disables it for the lethal rolling form.
-                .filter(|(_, slot)| slot.active != ActiveAbility::Roll || !slot.roll.lethal)
-                .filter(|(_, slot)| {
-                    callback_colliders.iter().enumerate().any(|(i, &collider)| {
-                        Some(self.platforms[i].id) != slot.base.ground
-                            && collider.overlaps(slot.base.position)
-                    })
-                })
-                .map(|(index, _)| index),
-        );
-        let mut squished = [usize::MAX; MAX_PLAYERS];
-        let squished_count = scratch.squished.len();
-        for (target, &index) in squished.iter_mut().zip(&scratch.squished) {
-            *target = index;
-        }
-        for &index in &squished[..squished_count] {
-            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
-        }
+        // The Box/RR group runs after the RR/RR corrections, so its copy of
+        // the wall already carries them.
+        let colliders = std::mem::take(&mut self.scratch.box_callback_colliders);
+        self.squish_grounded(&colliders);
+        self.scratch.box_callback_colliders = colliders;
 
         // Riders follow in game_tick's late phase. PlatformTransform itself is
         // intentionally not synchronized: its UpdateSim copied the platform's

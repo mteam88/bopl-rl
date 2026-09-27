@@ -83,6 +83,14 @@ pub(crate) struct RolloutRope {
     pub reel_in: bool,
 }
 
+/// Rope.isOffscreen, with every bound scaled by `scale` for isFarOffscreen.
+fn offscreen(point: Vec2, water: Fix, scale: Fix) -> bool {
+    point.x > Fix::from_f32(131.25) * scale
+        || point.x < Fix::from_f32(-131.25) * scale
+        || point.y > Fix::from_f32(72.5) * scale
+        || point.y < water * scale
+}
+
 fn empty_rope() -> RolloutRope {
     RolloutRope {
         physics: Rope {
@@ -863,12 +871,25 @@ impl RolloutWorld {
     pub(super) fn ropes_update(&mut self) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         let mut moved_platform = false;
+        let water = data::get().maps[self.map].scene_water_height();
         for index in 0..self.ropes.len() {
             if !self.ropes[index].physics.enabled || self.ropes[index].born_tick == self.tick {
                 continue;
             }
             if self.ropes[index].physics.time_since_hook_arrived >= Fix::ZERO {
                 self.ropes[index].physics.time_since_hook_arrived += DT * self.player_time_scale;
+            }
+            // Rope.UpdateSim drops a rope with both ends offscreen or either
+            // end twice as far out (below the water counts as offscreen).
+            let physics = &self.ropes[index].physics;
+            let (first, last) = (physics.segment[0], physics.segment[physics.count - 1]);
+            if (offscreen(first, water, Fix::ONE) && offscreen(last, water, Fix::ONE))
+                || offscreen(first, water, Fix::from_int(2))
+                || offscreen(last, water, Fix::from_int(2))
+            {
+                self.ropes[index].physics.enabled = false;
+                self.ropes[index].disabled_this_frame = true;
+                continue;
             }
             if let Some(hole_index) = self.ropes[index].black_hole {
                 if hole_index >= self.black_holes.len()
