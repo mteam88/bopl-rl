@@ -25459,10 +25459,13 @@ impl RolloutWorld {
             // ShootQuantum creates one QuantumTunnel updater for a newly hit
             // wall, then asks ShakablePlatform for its serialized one-second shake.
             // The map updater already ran this pass, so its first random
-            // displacement is sampled on the next pass.
+            // displacement is sampled on the next pass. A wall still in its
+            // delay keeps its registered tunnel, whose DelayedInit restarts
+            // the delay and still counts it later this pass.
             if !self.platform_dynamics[platform_index].blink_tunnel_active {
-                self.platform_dynamics[platform_index].blink_tunnel_hierarchy =
-                    self.next_spawn_hierarchy;
+                let dynamics = &mut self.platform_dynamics[platform_index];
+                dynamics.blink_tunnel_hierarchy = self.next_spawn_hierarchy;
+                dynamics.blink_tunnel_born_tick = self.tick;
                 self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
             }
             let dynamics = &mut self.platform_dynamics[platform_index];
@@ -25471,7 +25474,6 @@ impl RolloutWorld {
             dynamics.shake_amount = data.blink.wall_shake;
             dynamics.meteor_shake_curve = false;
             dynamics.blink_tunnel_active = true;
-            dynamics.blink_tunnel_born_tick = self.tick;
             dynamics.blink_tunnel_initialized = false;
             dynamics.blink_tunnel_delay = Fix::ZERO;
             dynamics.blink_tunnel_age = Fix::ZERO;
