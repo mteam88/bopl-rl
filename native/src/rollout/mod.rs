@@ -5519,11 +5519,15 @@ impl RolloutWorld {
                 slot.ability_time = Fix::ZERO;
             }
         }
-        let mut jump_pressed_by_player = [false; MAX_PLAYERS];
-        for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
+        // A clapped hole's Init registers its circle at the start of the next
+        // pass, ahead of every player's updaters.
+        for index in 0..self.players.len() {
             if let Some((position, hierarchy)) = self.players[index].pending_black_hole.take() {
                 self.spawn_black_hole(index, position, hierarchy, data);
             }
+        }
+        let mut jump_pressed_by_player = [false; MAX_PLAYERS];
+        for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
             // An ordinary slime's drop test closes its grounded Move instead
             // (`player_tick`).
             if self.playable(index) && self.players[index].active != ActiveAbility::None {
