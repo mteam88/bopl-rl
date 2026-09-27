@@ -2417,9 +2417,16 @@ pub struct PlayerSlot {
 
 impl PlayerSlot {
     /// GunTransform.OnEnterAbility syncs the hurtbox after SyncPhysicsTo has
-    /// zeroed an airborne rotation or aligned a grounded one to the surface.
-    fn sync_gun_hurtbox(&mut self, offset: Vec2) {
-        self.gun.collider_up = if self.base.grounded { self.base.up } else { Vec2::UP };
+    /// zeroed an airborne rotation or aligned a grounded one to the surface
+    /// normal at the re-snapped position (alignRotation).
+    fn sync_gun_hurtbox(&mut self, offset: Vec2, platforms: &[Platform]) {
+        self.gun.collider_up = if !self.base.grounded {
+            Vec2::UP
+        } else if let Some(platform) = self.base.platform(platforms) {
+            platform.surface.normal(self.base.position)
+        } else {
+            self.base.up
+        };
         self.gun.hurtbox_center = self.base.position
             + self.gun.collider_up.perp_cw().complex_mul(offset * self.base.scale);
     }
@@ -8614,7 +8621,8 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
-                        self.players[index].sync_gun_hurtbox(data.freeze.collider_offset);
+                        self.players[index]
+                            .sync_gun_hurtbox(data.freeze.collider_offset, &self.platforms);
                         self.freeze_tick(index, action, data);
                         return;
                     }
@@ -8661,7 +8669,8 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
-                        self.players[index].sync_gun_hurtbox(data.blink.collider_offset);
+                        self.players[index]
+                            .sync_gun_hurtbox(data.blink.collider_offset, &self.platforms);
                         self.blink_tick(index, action, data);
                         return;
                     }
@@ -8712,7 +8721,8 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
-                        self.players[index].sync_gun_hurtbox(ray.collider_offset);
+                        self.players[index]
+                            .sync_gun_hurtbox(ray.collider_offset, &self.platforms);
                         self.scale_ray_tick(index, action, data);
                         return;
                     }
@@ -8765,7 +8775,8 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
-                        self.players[index].sync_gun_hurtbox(data.duplicator.collider_offset);
+                        self.players[index]
+                            .sync_gun_hurtbox(data.duplicator.collider_offset, &self.platforms);
                         self.duplicator_tick(index, action, data);
                         return;
                     }
