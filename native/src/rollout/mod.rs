@@ -5953,7 +5953,7 @@ impl RolloutWorld {
             }
         }
         if has_clones {
-            self.abilityless_clones_tick(actions);
+            self.abilityless_clones_tick(actions, &jump_pressed_by_player);
         }
         if has_clones && has(ABILITY_BLINK) {
             self.blink_clone_tunnels_tick(data, updater_dt);
@@ -23188,6 +23188,17 @@ impl RolloutWorld {
             self.duplicate_player_target(victim, hit.position, direction, data);
             return;
         }
+        // A form entered this pass has no row until the export, but its
+        // collider already stands where the slime's stale row does.
+        if let Some(victim) = self
+            .players
+            .iter()
+            .position(|slot| self.playable_slot(slot) && slot.body_entity == hit.entity)
+        {
+            let position = self.players[victim].base.position;
+            self.duplicate_player_clone(victim, position, direction, data);
+            return;
+        }
         if let Some(platform_index) = self
             .platform_entities
             .iter()
@@ -23642,7 +23653,17 @@ impl RolloutWorld {
             }
             return;
         }
+        let position = self.players[victim].base.position;
+        self.duplicate_player_clone(victim, position, direction, data);
+    }
 
+    fn duplicate_player_clone(
+        &mut self,
+        victim: usize,
+        position: Vec2,
+        direction: Vec2,
+        data: &data::RolloutData,
+    ) {
         // SpawnAbilityLessClone rejects the seventeenth clone for an owner.
         if self
             .abilityless_clones
@@ -23676,7 +23697,6 @@ impl RolloutWorld {
         };
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += 8;
-        let position = source.position;
         let collider = OrientedBox::from_basis(position, Vec2::RIGHT, data.player.hurtbox_extents);
         let base = Player {
             alive: true,
@@ -32543,7 +32563,11 @@ impl RolloutWorld {
         }
     }
 
-    fn abilityless_clones_tick(&mut self, actions: &[CAction]) {
+    fn abilityless_clones_tick(
+        &mut self,
+        actions: &[CAction],
+        jump_pressed: &[bool; MAX_PLAYERS],
+    ) {
         let mut positioned = [false; MAX_PLAYERS];
         for clone_index in 0..self.abilityless_clones.len() {
             if !self.abilityless_clones[clone_index].active
@@ -32597,6 +32621,8 @@ impl RolloutWorld {
                     bounds: &self.bounds,
                 };
                 let clone = &mut self.abilityless_clones[clone_index];
+                // SlimeController jumps on the owner's jumpButton_PressedThisFrame.
+                clone.base.previous_jump = !jump_pressed[owner];
                 clone.base.step_with_input(action, movement, terrain);
                 if clone.obs_state != STATE_RAGDOLL {
                     Self::slime_state_switch(
