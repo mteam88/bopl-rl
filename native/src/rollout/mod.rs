@@ -5864,6 +5864,7 @@ impl RolloutWorld {
         self.platform_motion_tick(data, updater_dt, PlatformPass::Duplicated);
         self.platform_body_scale_tick(PlatformPass::Duplicated);
         self.platform_orbits_tick(data, updater_dt, PlatformPass::Duplicated);
+        self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Duplicated);
         if has(ABILITY_MAGNET) {
             self.magnet_parries_tick(data);
         }
@@ -5941,6 +5942,7 @@ impl RolloutWorld {
         self.platform_motion_tick(data, updater_dt, PlatformPass::Spawned);
         self.platform_body_scale_tick(PlatformPass::Spawned);
         self.platform_orbits_tick(data, updater_dt, PlatformPass::Spawned);
+        self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Spawned);
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT);
         }
@@ -27356,6 +27358,12 @@ impl RolloutWorld {
         if definition != usize::MAX && data.maps[self.map].platforms[definition].orbit.is_some() {
             self.orbits.push((self.platforms.len() - 1, 0));
         }
+        // So does its VectorFieldPlatform (VectorFieldPlatform.cs:33-45).
+        if definition != usize::MAX
+            && data.maps[self.map].platforms[definition].vector_field.is_some()
+        {
+            self.vector_fields.push(self.platforms.len() - 1);
+        }
         self.platforms_changed();
         // The duplicate is instantiated during the updater pass and joins the
         // same pass's DetPhysics simulation. Later collision rays therefore
@@ -33414,7 +33422,15 @@ impl RolloutWorld {
         }
         self.platform_body_scale_tick(PlatformPass::Authored);
         self.platform_orbits_tick(data, updater_dt, PlatformPass::Authored);
+        self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Authored);
+    }
 
+    fn platform_vector_fields_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        pass: PlatformPass,
+    ) {
         // VectorFieldPlatform runs after the platform's ordinary spring,
         // ShakablePlatform and collider updater. Maps without one keep this
         // list empty, so they pay no per-platform scan.
@@ -33424,7 +33440,12 @@ impl RolloutWorld {
             let map = &data.maps[self.map];
             let mut moved = false;
             for &platform_index in &self.vector_fields {
-                if !self.platforms[platform_index].active {
+                if !self.platforms[platform_index].active
+                    || self.platform_pass(platform_index) != pass
+                    || self.platform_dynamics[platform_index]
+                        .init_tick
+                        .is_some_and(|t| t > self.tick)
+                {
                     continue;
                 }
                 let Some(field) = map.platforms[self.platform_defs[platform_index]]
