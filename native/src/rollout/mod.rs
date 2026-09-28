@@ -26690,8 +26690,12 @@ impl RolloutWorld {
         }
     }
 
+    /// FrozenSolid.UpdateSim in hierarchy order: two ices on one slime each pin
+    /// it, and the later one's position and release are the ones that stand.
     fn frozen_solids_tick(&mut self, updater_dt: Fix) {
-        for effect_index in 0..self.frozen_solids.len() {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.frozen_solids, |effect| effect.hierarchy_base);
+        for &effect_index in &order {
             let effect = self.frozen_solids[effect_index];
             if !effect.active || self.tick <= effect.born_tick {
                 continue;
@@ -26752,6 +26756,7 @@ impl RolloutWorld {
                 slot.timers.fill(Fix::ZERO);
             }
         }
+        self.scratch.item_order = order;
     }
 
     /// ScaleChanger.UpdateSim in Updater hierarchy order. Two rays on one target
