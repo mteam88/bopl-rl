@@ -2623,6 +2623,8 @@ enum CallbackHit {
     Kill { player: usize, killer: u32, cause: u32 },
     /// Missile.OnCollide with an explosion's box.
     MissileBlast { missile: usize },
+    /// An abilityless clone's PlayerCollision.OnCollide with a lethal hitbox.
+    CloneKill { clone: usize, killer: u32 },
 }
 
 /// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
@@ -6267,10 +6269,10 @@ impl RolloutWorld {
         if has(ABILITY_TESLA) {
             self.tesla_contacts(data);
         }
-        self.run_callback_hits(data);
         if has_clones {
             self.abilityless_clone_contacts();
         }
+        self.run_callback_hits(data);
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_callbacks();
         }
@@ -32332,6 +32334,9 @@ impl RolloutWorld {
                         self.destroy_guided_missile(missile, true);
                     }
                 }
+                CallbackHit::CloneKill { clone, killer } => {
+                    self.kill_abilityless_clone(clone, killer, CAUSE_OTHER);
+                }
             }
         }
         hits.clear();
@@ -33664,7 +33669,10 @@ impl RolloutWorld {
         }
     }
 
+    /// Queues each lethal hitbox touching an abilityless clone: the first to
+    /// run in DetPhysics' callback order kills it and takes the credit.
     fn abilityless_clone_contacts(&mut self) {
+        let sweep_x = self.sweep_x();
         for clone_index in 0..self.abilityless_clones.len() {
             if !self.abilityless_clones[clone_index].active
                 || self.blink_object_hidden(self.abilityless_clones[clone_index].entity)
@@ -33674,7 +33682,7 @@ impl RolloutWorld {
             let clone_entity = self.abilityless_clones[clone_index].entity;
             let clone_owner = self.abilityless_clones[clone_index].base.id;
             let clone_box = self.abilityless_clones[clone_index].base.collider;
-            let mut killer = None;
+            let clone_min = self.box_sweep_min(clone_box);
             for (entity, row) in self.entities.iter().copied().enumerate() {
                 if Some(entity) == clone_entity
                     || row.flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED
@@ -33693,6 +33701,8 @@ impl RolloutWorld {
                     continue;
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
                 let overlaps = if row.kind == 0 {
                     crate::physics::contact::circle_box(
                         Circle {
@@ -33703,8 +33713,6 @@ impl RolloutWorld {
                     )
                     .is_some()
                 } else {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
                     right != Vec2::ZERO
                         && up != Vec2::ZERO
                         && crate::physics::contact::box_box(
@@ -33721,13 +33729,19 @@ impl RolloutWorld {
                         )
                         .is_some()
                 };
-                if overlaps {
-                    killer = Some(row.owner);
-                    break;
+                if !overlaps {
+                    continue;
                 }
-            }
-            if let Some(killer) = killer {
-                self.kill_abilityless_clone(clone_index, killer, CAUSE_OTHER);
+                let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+                let row_min = if row.kind == 0 {
+                    axis(center) - Fix::from_raw(row.radius)
+                } else {
+                    axis(center) - axis(right).abs() - axis(up).abs()
+                };
+                let category = 2 - (row.kind == 0) as u8;
+                let key = (category, row_min.max(clone_min), row_min.min(clone_min));
+                let hit = CallbackHit::CloneKill { clone: clone_index, killer: row.owner };
+                self.scratch.callback_hits.push((key, hit));
             }
         }
     }
