@@ -8718,6 +8718,11 @@ impl RolloutWorld {
                             };
                             slot.base.position = form_position;
                             slot.base.radius = data.missile.physics_radius;
+                            // The form's Ability.UpdateSim runs on the entry
+                            // pass ahead of its PlayerPhysics and PlayerBody,
+                            // publishing the collider SparkShot just synced.
+                            slot.reported_position = form_position;
+                            slot.reported_tick = self.tick;
                             if grounded {
                                 // PlayerPhysics.SyncPhysicsTo clears only the
                                 // self-imposed velocity. PlayerInfo's external
