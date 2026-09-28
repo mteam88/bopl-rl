@@ -35363,7 +35363,11 @@ impl RolloutWorld {
             if let Some(rotation) = dynamics.transform_rotation.take() {
                 dynamics.body.orientation = rotation;
             }
-            let shift = dynamics.body.integrate(physics_dt, Fix::from_int(-40));
+            let shift = if dynamics.attached_children != 0 {
+                dynamics.body.integrate_composite(physics_dt, Fix::from_int(-40))
+            } else {
+                dynamics.body.integrate(physics_dt, Fix::from_int(-40))
+            };
             let orientation = dynamics.body.orientation;
             let basis = match dynamics.basis {
                 Some((rotation, basis)) if rotation == orientation => basis,
