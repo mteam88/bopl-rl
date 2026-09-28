@@ -2611,6 +2611,7 @@ impl PlayerSlot {
             ABILITY_REVIVAL => &mut self.revival_entity,
             ABILITY_PLATFORM => &mut self.circle_entity,
             ABILITY_TIME_STOP => &mut self.time_stop_entity,
+            ABILITY_ROCK => &mut self.rock_entity,
             _ => return None,
         })
     }
@@ -2634,46 +2635,15 @@ impl PlayerSlot {
     }
 
     /// Every collider row the slime and its ability objects own. A dead
-    /// slime's rows leave DetPhysics together.
-    fn owned_rows(&self) -> [usize; 35] {
+    /// slime's rows leave DetPhysics together. PlayerCollision destroys the
+    /// prefabs in `abilities` (PlayerCollision.cs:203-210), so one a pickup
+    /// replaced in AddAdditionalAbility stays behind.
+    fn owned_rows(&self) -> [usize; 4] {
         [
             self.body_entity,
             self.form_entities[0],
             self.form_entities[1],
             self.form_entities[2],
-            self.dash_entities[0],
-            self.dash_entities[1],
-            self.dash_entities[2],
-            self.circle_entity,
-            self.rock_entity,
-            self.roll_entity,
-            self.meteor_entity,
-            self.black_hole_entity,
-            self.macho_throw_entity,
-            self.drill_entity,
-            self.beam_entity,
-            self.push_entity,
-            self.freeze_entities[0],
-            self.freeze_entities[1],
-            self.freeze_entities[2],
-            self.growth_ray_entity,
-            self.shrink_ray_entity,
-            self.blink_entity,
-            self.duplicator_entity,
-            self.magnet_entity,
-            self.bow_entity,
-            // Every ThrowItem2 slot owns its own hurtbox; `throw_entity` is
-            // only the one currently selected.
-            self.throw_entities[0],
-            self.throw_entities[1],
-            self.throw_entities[2],
-            self.mine_entity,
-            self.gust_entity,
-            self.revival_entity,
-            self.spike_entity,
-            self.time_stop_entity,
-            self.engine_entity,
-            self.tesla_entity,
         ]
     }
 
@@ -4964,6 +4934,7 @@ impl RolloutWorld {
                 slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
                 slot.timers[2] = Fix::from_int(100_000);
                 slot.ability_instantiated[2] = false;
+                slot.form_entities[2] = usize::MAX;
                 slot.rope_prev[3] = (Vec2::ZERO, Vec2::ZERO);
                 slot.forms[2] = FormScale::default();
                 slot.drill_hitbox_entities[2] = [usize::MAX; 3];
@@ -8686,13 +8657,13 @@ impl RolloutWorld {
                         // Ability.EnterAbility rescales the form's own collider
                         // from the scale it was left at, keeping its Q32 residue;
                         // a new form starts from the prefab radius.
-                        let collider_radius = if self.players[index].rock_entity == usize::MAX {
+                        let collider_radius = if self.players[index].form_entities[s] == usize::MAX {
                             data.rock.radius
                         } else {
                             let rock = &self.players[index].rock;
                             rock.collider_radius * (Fix::ONE / rock.scale)
                         };
-                        if self.players[index].rock_entity == usize::MAX {
+                        if self.players[index].form_entities[s] == usize::MAX {
                             let id = self.next_id();
                             let entity = self.entities.len();
                             self.entities.push(CEntity {
@@ -8708,6 +8679,7 @@ impl RolloutWorld {
                                 inverse_mass: data.rock.body.inverse_mass.raw(),
                                 ..CEntity::default()
                             });
+                            self.players[index].form_entities[s] = entity;
                             self.players[index].rock_entity = entity;
                         }
                         let self_imposed = self.entry_self_imposed(index);
@@ -19058,40 +19030,7 @@ impl RolloutWorld {
             if !self.players[index].stock_clone_pending {
                 continue;
             }
-            for entity in [
-                self.players[index].body_entity,
-                self.players[index].dash_entities[0],
-                self.players[index].dash_entities[1],
-                self.players[index].dash_entities[2],
-                self.players[index].circle_entity,
-                self.players[index].rock_entity,
-                self.players[index].roll_entity,
-                self.players[index].push_entity,
-                self.players[index].freeze_entities[0],
-                self.players[index].freeze_entities[1],
-                self.players[index].freeze_entities[2],
-                self.players[index].blink_entity,
-                self.players[index].growth_ray_entity,
-                self.players[index].shrink_ray_entity,
-                self.players[index].duplicator_entity,
-                self.players[index].magnet_entity,
-                self.players[index].bow_entity,
-                self.players[index].throw_entities[0],
-                self.players[index].throw_entities[1],
-                self.players[index].throw_entities[2],
-                self.players[index].mine_entity,
-                self.players[index].gust_entity,
-                self.players[index].revival_entity,
-                self.players[index].spike_entity,
-                self.players[index].time_stop_entity,
-                self.players[index].engine_entity,
-                self.players[index].tesla_entity,
-                self.players[index].meteor_entity,
-                self.players[index].black_hole_entity,
-                self.players[index].macho_throw_entity,
-                self.players[index].drill_entity,
-                self.players[index].beam_entity,
-            ] {
+            for entity in self.players[index].owned_rows() {
                 if entity != usize::MAX {
                     self.entities[entity].flags = E_REMOVED;
                 }
