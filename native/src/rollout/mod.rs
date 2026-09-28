@@ -8721,6 +8721,10 @@ impl RolloutWorld {
                     }
                     ABILITY_MISSILE => {
                         let grounded = self.players[index].base.grounded;
+                        // SyncPhysicsTo's UpdateScale brings the form's
+                        // PlayerPhysics radius to Player.Scale before placing it.
+                        let form_radius =
+                            data.missile.physics_radius * self.players[index].player_scale;
                         let form_position = if grounded {
                             let base = &self.players[index].base;
                             base.ground
@@ -8728,9 +8732,7 @@ impl RolloutWorld {
                                     self.platforms.iter().find(|platform| platform.id == ground)
                                 })
                                 .map_or(base.position, |platform| {
-                                    platform
-                                        .surface
-                                        .position(base.local, data.missile.physics_radius)
+                                    platform.surface.position(base.local, form_radius)
                                 })
                         } else {
                             self.players[index].base.position
@@ -8748,7 +8750,7 @@ impl RolloutWorld {
                                 ..MissileFormState::default()
                             };
                             slot.base.position = form_position;
-                            slot.base.radius = data.missile.physics_radius;
+                            slot.base.radius = form_radius;
                             // The form's Ability.UpdateSim runs on the entry
                             // pass ahead of its PlayerPhysics and PlayerBody,
                             // publishing the collider SparkShot just synced.
@@ -20991,22 +20993,14 @@ impl RolloutWorld {
                 // SparkShot.Finish exits without `justlanded`. The ordinary
                 // SlimeController therefore enters Idle when the form is
                 // attached, even if the form originally entered in Fall.
-                // SyncPhysicsTo keeps the form body's surface position while
-                // rebuilding LocalPlatformPos for the ordinary slime radius.
+                // SyncPhysicsTo places the slime from the form's
+                // LocalPlatformPos, not its body, so ground that moved since
+                // the form's last LateUpdateSim carries the slime with it.
                 if slot.base.grounded {
-                    if let Some(platform) = slot.base.platform(&self.platforms)
-                        && let Ok(local) = platform
-                            .surface
-                            .local_position(slot.base.position, data.player.radius)
-                    {
-                        slot.base.local = local;
-                        slot.base.align(platform);
-                    }
-                    slot.base.radius = data.player.radius;
                     // EnterIdle; the slime's OldUpdate already passed this pass.
                     slot.obs_state = STATE_IDLE;
                     slot.state_ticks = 0;
-                    slot.obs_state_held_this_tick = true;
+                    self.sync_exit_to_ground(index);
                 } else {
                     slot.base.radius = data.player.radius;
                     slot.exit_to_fall();
