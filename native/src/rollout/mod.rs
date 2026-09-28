@@ -32434,6 +32434,115 @@ impl RolloutWorld {
                 left[b_index].position += correction[1];
             }
         }
+        // The Circle/Box group follows, built from the corrected circles:
+        // items and Portal shots against the RocketEngine boxes of platform
+        // composites. ResolveCollision swaps the engine for its combined body
+        // and position; PositionalCorrection takes the engine's own inverse
+        // mass and moves its collider and CompositeBody.position.
+        let mut engine_contacts = [(usize::MAX, usize::MAX, Contact::default()); 64];
+        let mut engine_contact_count = 0;
+        for &index in self.scratch.item_order.iter() {
+            if index >= NODE {
+                continue;
+            }
+            let circle = if index >= SHOT {
+                Circle {
+                    center: self.portal_shots[index - SHOT].position,
+                    radius: data.portal_gun.shot_radius,
+                }
+            } else {
+                let item = self.thrown_items[index];
+                Circle { center: item.position, radius: thrown_item_radius(data, item) }
+            };
+            for (engine_index, engine) in self.engines.iter().enumerate() {
+                if !engine.active
+                    || engine.macho_carried
+                    || engine.platform_index >= self.platforms.len()
+                    || engine_contact_count == engine_contacts.len()
+                {
+                    continue;
+                }
+                let basis = Vec2::angle(engine.collider_rotation);
+                let extents = data.engine.rocket_extents * engine.scale;
+                let surface = data::surface_extents(extents);
+                let rocket = OrientedBox {
+                    center: engine.collider_center,
+                    right: basis * surface.x,
+                    up: (Vec2::UP * surface.y).complex_mul(basis),
+                    inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+                };
+                if let Some(contact) = crate::physics::contact::circle_box(circle, rocket) {
+                    engine_contacts[engine_contact_count] = (index, engine_index, contact);
+                    engine_contact_count += 1;
+                }
+            }
+        }
+        let engine_contacts = &mut engine_contacts[..engine_contact_count];
+        let circle_min = |index: usize| {
+            if index >= SHOT {
+                axis(self.portal_shots[index - SHOT].position) - data.portal_gun.shot_radius
+            } else {
+                let item = self.thrown_items[index];
+                axis(item.swept_position) - thrown_item_radius(data, item)
+            }
+        };
+        let engine_min = |engine_index: usize| {
+            let engine = self.engines[engine_index];
+            let basis = Vec2::angle(engine.collider_rotation);
+            let surface = data::surface_extents(data.engine.rocket_extents * engine.scale);
+            axis(engine.collider_center)
+                - axis(basis * surface.x).abs()
+                - axis((Vec2::UP * surface.y).complex_mul(basis)).abs()
+        };
+        engine_contacts.sort_by_key(|&(index, engine_index, _)| {
+            let (a, b) = (circle_min(index), engine_min(engine_index));
+            (a.max(b), a.min(b))
+        });
+        for &(index, engine_index, contact) in engine_contacts.iter() {
+            let engine = self.engines[engine_index];
+            let platform = engine.platform_index;
+            let (mut circle_body, circle_position) = if index >= SHOT {
+                let shot = self.portal_shots[index - SHOT];
+                (shot.body, shot.position)
+            } else {
+                (self.thrown_items[index].body, self.thrown_items[index].position)
+            };
+            let mut platform_body = self.platform_dynamics[platform].body;
+            resolve(
+                contact,
+                &mut circle_body,
+                &mut platform_body,
+                circle_position,
+                self.platform_dynamics[platform].composite_position,
+            );
+            let correction = positional_correction(
+                contact,
+                circle_body.inverse_mass,
+                engine.body.inverse_mass,
+                false,
+            );
+            if index >= SHOT {
+                let shot = &mut self.portal_shots[index - SHOT];
+                shot.body = circle_body;
+                shot.position += correction[0];
+                if let Some(entity) = shot.entity {
+                    let shot = *shot;
+                    let row = &mut self.entities[entity];
+                    row.x = shot.position.x.raw();
+                    row.y = shot.position.y.raw();
+                    row.vx = shot.body.velocity.x.raw();
+                    row.vy = shot.body.velocity.y.raw();
+                    row.rotation = shot.body.orientation.raw();
+                    row.angular_velocity = shot.body.angular_velocity.raw();
+                }
+            } else {
+                self.thrown_items[index].body = circle_body;
+                self.thrown_items[index].position += correction[0];
+            }
+            self.platform_dynamics[platform].body = platform_body;
+            self.platform_dynamics[platform].composite_position += correction[1];
+            self.engines[engine_index].collider_center += correction[1];
+        }
         for item in &self.thrown_items {
             let Some(entity) = item.entity.filter(|_| item.active) else {
                 continue;
@@ -32482,6 +32591,20 @@ impl RolloutWorld {
                     smoke_callbacks[smoke_callback_count] = item_index;
                     smoke_callback_count += 1;
                 }
+            }
+        }
+        for &(item_index, _, _) in engine_contacts.iter() {
+            if item_index >= SHOT {
+                continue;
+            }
+            let item = self.thrown_items[item_index];
+            if item.active
+                && item.ability == ABILITY_SMOKE
+                && item.detonates_on_owner
+                && smoke_callback_count < smoke_callbacks.len()
+            {
+                smoke_callbacks[smoke_callback_count] = item_index;
+                smoke_callback_count += 1;
             }
         }
         for &item_index in &smoke_callbacks[..smoke_callback_count] {
