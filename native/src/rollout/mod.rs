@@ -1449,6 +1449,9 @@ pub struct FormScale {
     /// FixTransform.offset, which SetScale_DPhysicsOnly multiplies by
     /// `new / old` (FixTransform.cs:99-103).
     pub offset: Vec2,
+    /// A circle form's DPhysicsCircle.radius, which its Scale setter
+    /// multiplies by `(1 / old) * new` (DPhysicsCircle.cs:214-221).
+    pub circle_radius: Fix,
 }
 
 impl FormScale {
@@ -1464,6 +1467,7 @@ impl FormScale {
                 radius,
                 physics_scale: Fix::ONE,
                 offset: Vec2::ZERO,
+                circle_radius: Fix::ZERO,
             };
         }
         let ratio = (Fix::ONE / self.scale) * value;
@@ -1480,6 +1484,21 @@ impl FormScale {
             self.offset = offset;
         }
         self.offset = self.offset * (value / old);
+    }
+
+    /// `potentialCollider.Scale = Player.Scale` for a circle form, clamped to
+    /// the prefab's MinScale (Fix)0.3f and MaxScale 3.
+    fn set_circle_scale(&mut self, value: Fix, radius: Fix) {
+        if self.scale == Fix::ZERO {
+            *self = FormScale {
+                scale: Fix::ONE,
+                circle_radius: radius,
+                ..FormScale::default()
+            };
+        }
+        let value = hurtbox_scale(value);
+        self.circle_radius *= (Fix::ONE / self.scale) * value;
+        self.scale = value;
     }
 
     /// PlayerPhysics.UpdateScale.
@@ -6659,7 +6678,7 @@ impl RolloutWorld {
             self.meteor_smear_contacts();
         }
         if has(ABILITY_BEAM) {
-            self.beam_orb_contacts(data);
+            self.beam_orb_contacts();
         }
         if has(ABILITY_SMOKE) {
             self.smoke_contacts(data);
@@ -10312,6 +10331,13 @@ impl RolloutWorld {
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
+                        // Ability.EnterAbility scales the form's hurtbox, and
+                        // the form's Ability.UpdateSim assigns the same scale
+                        // again later in this pass; each assignment keeps the
+                        // `(1 / old) * new` residue.
+                        let scale = slot.player_scale;
+                        slot.forms[s].set_circle_scale(scale, data.platform.hurtbox_radius);
+                        slot.forms[s].set_circle_scale(scale, data.platform.hurtbox_radius);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
                         // before PlayerPhysics.Move (SlimeController.cs:1067,
@@ -10479,6 +10505,11 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Platform {
+            // Ability (hierarchy 1) assigns Player.Scale to the hurtbox ahead
+            // of PlatformTransform every pass.
+            let slot = &mut self.players[index];
+            let scale = slot.player_scale;
+            slot.forms[slot.active_slot].set_circle_scale(scale, data.platform.hurtbox_radius);
             self.platform_ability_tick(index, action, data, DT);
             // PlatformTransform updates before its own
             // DestroyIfOutsideSceneBounds component. Unlike the ordinary
@@ -33798,7 +33829,7 @@ impl RolloutWorld {
                         circle,
                         Circle {
                             center: player.base.position,
-                            radius: data.platform.hurtbox_radius * player.player_scale,
+                            radius: player.forms[player.active_slot].circle_radius,
                         },
                     )
                     .is_some()
@@ -33899,7 +33930,7 @@ impl RolloutWorld {
                     crate::physics::contact::circle_box(
                         Circle {
                             center: player.base.position,
-                            radius: data.platform.hurtbox_radius * player.player_scale,
+                            radius: player.forms[player.active_slot].circle_radius,
                         },
                         hitbox,
                     )
@@ -33952,7 +33983,7 @@ impl RolloutWorld {
                     crate::physics::contact::circle_box(
                         Circle {
                             center: player.base.position,
-                            radius: data.platform.hurtbox_radius * player.player_scale,
+                            radius: player.forms[player.active_slot].circle_radius,
                         },
                         hitbox,
                     )
@@ -34082,7 +34113,7 @@ impl RolloutWorld {
     /// The orb at Beam's staff tip is an Explosion circle (orbAnim.prefab,
     /// canHurtOwner 0) whose hitbox StartBeam enables and StopOrbAnim
     /// disables (Beam.cs:344, 395), so it kills any other player it touches.
-    fn beam_orb_contacts(&mut self, data: &data::RolloutData) {
+    fn beam_orb_contacts(&mut self) {
         for orb_index in 0..self.beam_orbs.len() {
             let orb = self.beam_orbs[orb_index];
             let Some(entity) = orb.entity else {
@@ -34111,7 +34142,7 @@ impl RolloutWorld {
                 {
                     let hurtbox = Circle {
                         center: player.base.position,
-                        radius: data.platform.hurtbox_radius * player.player_scale,
+                        radius: player.forms[player.active_slot].circle_radius,
                     };
                     crate::physics::contact::circle_circle(hitbox, hurtbox).is_some()
                 } else if player.active == ActiveAbility::Platform {
@@ -34405,7 +34436,7 @@ impl RolloutWorld {
                     crate::physics::contact::circle_box(
                         Circle {
                             center: player.base.position,
-                            radius: data.platform.hurtbox_radius * player.player_scale,
+                            radius: player.forms[player.active_slot].circle_radius,
                         },
                         hitbox,
                     )
@@ -39238,8 +39269,7 @@ impl RolloutWorld {
                     circle.rotation = rotation.raw();
                 }
                 if transforming {
-                    // The hurtbox takes the slime's scale on entry.
-                    circle.radius = (data.platform.hurtbox_radius * slot.player_scale).raw();
+                    circle.radius = slot.forms[slot.active_slot].circle_radius.raw();
                 }
             }
             // Gust's QuickSpell body is a circle with the FixTransform's
