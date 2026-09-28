@@ -20670,6 +20670,21 @@ impl RolloutWorld {
                 return;
             }
         }
+        // The enter animation's callback spawns the held payload the same way
+        // (ThrowItem2.cs:151-163), so a form the boundary kills on that pass
+        // still releases it.
+        let state = &self.players[index].throw_item;
+        let enter_ticks = if state.grounded {
+            gd.ground_enter_ticks
+        } else {
+            gd.air_enter_ticks
+        };
+        if state.phase == 0 && state.item.is_none() && state.ticks + 1 > enter_ticks {
+            // The held grenade has no registered collider because its
+            // DPhysicsCircle uses manuallyCallInit. Keep only the payload
+            // state until release calls `Fire`.
+            self.spawn_held_item(index, data);
+        }
         // Every ThrowItem2 prefab - Mjolnir, Poke ball, Banana peel, Smoke,
         // Grenade_0 - orders DestroyIfOutsideSceneBounds 5, ThrowItem2 6,
         // PlayerBody 7, so the boundary component runs ahead of the whole
@@ -20718,23 +20733,6 @@ impl RolloutWorld {
         let state = &mut self.players[index].throw_item;
         state.ticks += 1;
         state.time_passed += DT;
-        if state.phase == 0 {
-            let enter_ticks = if state.grounded {
-                gd.ground_enter_ticks
-            } else {
-                gd.air_enter_ticks
-            };
-            if state.ticks > enter_ticks {
-                if state.has_inputted_fire {
-                    self.fire_thrown_item(index, data);
-                } else if state.item.is_none() {
-                    // The held grenade has no registered collider because its
-                    // DPhysicsCircle uses manuallyCallInit. Keep only the
-                    // payload state until release calls `Fire`.
-                    self.spawn_held_item(index, data);
-                }
-            }
-        }
 
         if self.players[index].throw_item.phase == 0
             && self.players[index].throw_item.item.is_some()
