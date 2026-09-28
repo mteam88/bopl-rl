@@ -6404,7 +6404,7 @@ impl RolloutWorld {
         // DetPhysics corrects every Circle/RR pair before any Circle/Circle
         // one, so an item's wall correction moves it before an arrow's
         // manifold with it is built.
-        if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_ROCK) || has(ABILITY_PORTAL_GUN) {
+        if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_ROCK) || has(ABILITY_PORTAL_GUN) || has(ABILITY_BOW) {
             for item in &mut self.thrown_items {
                 item.swept_position = item.position;
             }
@@ -30928,7 +30928,10 @@ impl RolloutWorld {
     /// its platform before the wall callback destroys it
     /// (DetPhysics.cs:3195-3199), and a platform two arrows land on sees the
     /// first one's impulse before the second's.
-    fn arrow_platform_contacts(&mut self, data: &data::RolloutData) {
+    /// Arrows' Circle/RoundedRectangle manifolds. They resolve in sweep order
+    /// with the items', Tesla nodes', rocks' and portal shots'
+    /// (thrown_item_platform_contacts).
+    fn arrow_wall_manifolds(&mut self, data: &data::RolloutData) {
         let radius = data.arrow.radius;
         let mut contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
         contacts.clear();
@@ -30951,45 +30954,20 @@ impl RolloutWorld {
                 }
             }
         }
-        if contacts.is_empty() {
-            self.scratch.arrow_platform_contacts = contacts;
-            return;
-        }
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let arrow_min = |i: usize| axis(self.arrows[i].position) - radius * self.arrows[i].scale;
-        let platform_min = |p: usize| {
-            let swept = self
-                .scratch
-                .callback_colliders
-                .get(p)
-                .filter(|_| self.scratch.callback_tick == Some(self.tick))
-                .copied()
-                .unwrap_or_else(|| self.circle_collider(p));
-            axis(swept.inner.center)
-                - axis(swept.inner.right).abs()
-                - axis(swept.inner.up).abs()
-                - swept.radius
-        };
-        contacts.sort_by_key(|&(i, p, _)| {
-            let (a, b) = (arrow_min(i), platform_min(p));
-            (a.max(b), a.min(b))
-        });
-        for &(i, p, contact) in &contacts {
-            let (platform_center, own_inverse_mass) = self.platform_contact_frame(p);
-            let mut arrow_body = self.arrows[i].body(&data.arrow.body);
-            let platform_body = &mut self.platform_dynamics[p].body;
-            resolve(contact, &mut arrow_body, platform_body, self.arrows[i].position, platform_center);
-            let correction =
-                positional_correction(contact, arrow_body.inverse_mass, own_inverse_mass, false);
-            let arrow = &mut self.arrows[i];
-            arrow.velocity = arrow_body.velocity;
-            arrow.angular_velocity = arrow_body.angular_velocity;
-            arrow.position += correction[0];
-            self.shift_platform_collider(p, correction[1]);
-        }
-        self.platforms_changed();
         self.scratch.arrow_platform_contacts = contacts;
+    }
+
+    fn resolve_arrow_wall_contact(&mut self, i: usize, p: usize, contact: Contact, data: &data::RolloutData) {
+        let (platform_center, own_inverse_mass) = self.platform_contact_frame(p);
+        let mut arrow_body = self.arrows[i].body(&data.arrow.body);
+        let platform_body = &mut self.platform_dynamics[p].body;
+        resolve(contact, &mut arrow_body, platform_body, self.arrows[i].position, platform_center);
+        let correction = positional_correction(contact, arrow_body.inverse_mass, own_inverse_mass, false);
+        let arrow = &mut self.arrows[i];
+        arrow.velocity = arrow_body.velocity;
+        arrow.angular_velocity = arrow_body.angular_velocity;
+        arrow.position += correction[0];
+        self.shift_platform_collider(p, correction[1]);
     }
 
     /// DetPhysics contact group order for Arrow's circle is Circle/RR,
@@ -30999,7 +30977,6 @@ impl RolloutWorld {
     /// the arrow continues flying.
     fn arrows_contacts(&mut self, data: &data::RolloutData) {
         let radius = data.arrow.radius;
-        self.arrow_platform_contacts(data);
         // Circle/Box player hits, killed in SortAndSweep callback order:
         // (sweep key, arrow owner, victim).
         let mut player_hits: Vec<((Fix, Fix), u32, usize)> = Vec::new();
@@ -32108,6 +32085,7 @@ impl RolloutWorld {
         // DetPhysics constructs every Circle/RoundedRectangle manifold before
         // it resolves the first pair. A correction from an earlier item must
         // therefore not change the manifold already queued for a later item.
+        self.arrow_wall_manifolds(data);
         let mut all_contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
         all_contacts.clear();
         for (item_index, item) in self.thrown_items.iter().copied().enumerate() {
@@ -32145,6 +32123,7 @@ impl RolloutWorld {
         let mut node_contacts = std::mem::take(&mut self.scratch.tesla_wall_contacts);
         let rock_contacts = std::mem::take(&mut self.scratch.rock_wall_contacts);
         let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
+        let arrow_contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
         let mut order = std::mem::take(&mut self.scratch.circle_wall_order);
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
@@ -32188,6 +32167,10 @@ impl RolloutWorld {
         };
         const ROCK: u8 = 2;
         const SHOT: u8 = 3;
+        const ARROW: u8 = 4;
+        let arrow_min = |arrow_index: usize| {
+            axis(self.arrows[arrow_index].position) - data.arrow.radius * self.arrows[arrow_index].scale
+        };
         order.clear();
         order.extend(all_contacts.iter().enumerate().map(|(k, &(item_index, platform_index, _))| {
             let (a, b) = (item_min(item_index), platform_min(platform_index));
@@ -32205,6 +32188,10 @@ impl RolloutWorld {
             let (a, b) = (shot_min(shot_index), platform_min(wall_index));
             (a.max(b), a.min(b), SHOT, k)
         }));
+        order.extend(arrow_contacts.iter().enumerate().map(|(k, &(arrow_index, wall_index, _))| {
+            let (a, b) = (arrow_min(arrow_index), platform_min(wall_index));
+            (a.max(b), a.min(b), ARROW, k)
+        }));
         order.sort_by_key(|&(high, low, _, _)| (high, low));
         for &(_, _, kind, k) in &order {
             if kind == NODE {
@@ -32220,6 +32207,11 @@ impl RolloutWorld {
             if kind == SHOT {
                 let (shot_index, wall_index, contact) = shot_contacts[k];
                 self.resolve_portal_shot_wall_contact(shot_index, wall_index, contact);
+                continue;
+            }
+            if kind == ARROW {
+                let (arrow_index, wall_index, contact) = arrow_contacts[k];
+                self.resolve_arrow_wall_contact(arrow_index, wall_index, contact, data);
                 continue;
             }
             let (item_index, platform_index, contact) = all_contacts[k];
@@ -32246,6 +32238,8 @@ impl RolloutWorld {
         self.land_portal_shots_on_walls(&shot_contacts, data);
         shot_contacts.clear();
         self.scratch.portal_shot_wall_contacts = shot_contacts;
+        // Arrow.OnCollide reads them in arrows_contacts.
+        self.scratch.arrow_platform_contacts = arrow_contacts;
 
         for item_index in 0..self.thrown_items.len() {
             if !self.thrown_items[item_index].active
