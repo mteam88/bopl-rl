@@ -2526,7 +2526,6 @@ pub struct PlayerSlot {
     /// controller fields. Preserve that pre-callback row for the current pass.
     pub late_obs_tick: u32,
     pub late_obs_position: Vec2,
-    pub late_obs_velocity: Vec2,
     pub late_obs_rotation: Fix,
     pub late_obs_state: u32,
     pub missile: MissileFormState,
@@ -4420,7 +4419,6 @@ impl RolloutWorld {
                 callback_killed_tick: None,
                 late_obs_tick: u32::MAX,
                 late_obs_position: spawn,
-                late_obs_velocity: Vec2::ZERO,
                 late_obs_rotation: Fix::ZERO,
                 late_obs_state: STATE_FALL,
                 missile: MissileFormState::default(),
@@ -30490,7 +30488,6 @@ impl RolloutWorld {
             let slot = &mut self.players[victim];
             slot.late_obs_tick = self.tick;
             slot.late_obs_position = slot.base.position;
-            slot.late_obs_velocity = slot.base.velocity + slot.base.external_velocity;
             slot.late_obs_rotation = slot.base.rotation;
             slot.late_obs_state = slot.obs_state;
             slot.captured_by_ball = Some(item_index);
@@ -30501,13 +30498,6 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             if sync_collider {
                 slot.base.sync_collider();
-            } else {
-                // A physics-callback capture happens after PlayerBody has
-                // published this pass. ApplyRagDoll zeroes only the
-                // self-imposed velocity, so the late observation keeps the
-                // external one; updater captures retain the velocity sampled
-                // before the PlayerBody phase.
-                slot.late_obs_velocity = slot.base.external_velocity;
             }
             slot.late_obs_position = capture_position;
             slot.late_obs_state = STATE_FALL;
@@ -39928,9 +39918,11 @@ impl RolloutWorld {
             }
             let (slime_position, velocity, rotation, state) =
                 if slot.late_obs_tick.checked_add(1) == Some(self.tick) {
+                    // ApplyRagDoll zeroes selfImposedVelocity and leaves
+                    // externalVelocity alone; the row reads both live.
                     (
                         slot.late_obs_position,
-                        slot.late_obs_velocity,
+                        slot.base.velocity + slot.base.external_velocity,
                         slot.late_obs_rotation,
                         slot.late_obs_state,
                     )
