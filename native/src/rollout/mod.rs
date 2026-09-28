@@ -30404,10 +30404,11 @@ impl RolloutWorld {
                 slot.base.sync_collider();
             } else {
                 // A physics-callback capture happens after PlayerBody has
-                // published this pass. BeginCapture's zero velocity is what
-                // the late observation sees; updater captures retain the
-                // velocity sampled before the PlayerBody phase.
-                slot.late_obs_velocity = Vec2::ZERO;
+                // published this pass. ApplyRagDoll zeroes only the
+                // self-imposed velocity, so the late observation keeps the
+                // external one; updater captures retain the velocity sampled
+                // before the PlayerBody phase.
+                slot.late_obs_velocity = slot.base.external_velocity;
             }
             slot.late_obs_position = capture_position;
             slot.late_obs_state = STATE_FALL;
