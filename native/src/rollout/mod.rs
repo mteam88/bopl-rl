@@ -11684,6 +11684,32 @@ impl RolloutWorld {
         let restored_cooldown = ability
             .effect_cooldown
             .expect("Gold Mushroom restored cooldown");
+        // The kick uses the jumpStrength of whichever PlayerPhysics holds the
+        // player: the slime's, or the form's own, which is lower for guns
+        // and throw forms (SuperStarEffect.UpdateSim).
+        let jump_strength = match self.players[index].active {
+            ActiveAbility::None => data.player.constants.jump_strength,
+            ActiveAbility::Bow => data.bow.constants.jump_strength,
+            ActiveAbility::BlackHole => data.black_hole.constants.jump_strength,
+            ActiveAbility::Beam => data.beam.constants.jump_strength,
+            ActiveAbility::Grenade => data.grenade.constants.jump_strength,
+            ActiveAbility::Missile => data.missile.constants.jump_strength,
+            ActiveAbility::Mine => data.mine.constants.jump_strength,
+            ActiveAbility::Throw => data.macho_throw.constants.jump_strength,
+            ActiveAbility::Freeze => data.freeze.constants.jump_strength,
+            ActiveAbility::Blink => data.blink.constants.jump_strength,
+            ActiveAbility::Roll => data.roll.constants.jump_strength,
+            ActiveAbility::Meteor => data.meteor.constants.jump_strength,
+            ActiveAbility::GrowthRay => data.scale_rays.growth.constants.jump_strength,
+            ActiveAbility::ShrinkRay => data.scale_rays.shrink.constants.jump_strength,
+            ActiveAbility::Duplicator => data.duplicator.constants.jump_strength,
+            ActiveAbility::Magnet => data.magnet.constants.jump_strength,
+            ActiveAbility::Tack => data.tack.constants.jump_strength,
+            ActiveAbility::Mjolnir => data.mjolnir.constants.jump_strength,
+            ActiveAbility::PokeBall => data.poke_ball.constants.jump_strength,
+            ActiveAbility::Smoke => data.smoke.constants.jump_strength,
+            _ => self.players[index].base.constants.jump_strength,
+        };
         let slot = &mut self.players[index];
         for effect_slot in 0..slot.gold_mushroom.len() {
             let effect = &mut slot.gold_mushroom[effect_slot];
@@ -11706,8 +11732,8 @@ impl RolloutWorld {
             // a Blink tunnel deactivates whichever holds the player, so there
             // is nothing to kick (SuperStarEffect.UpdateSim).
             let hidden = slot.teleport_effect_active || slot.blink_tunnel_active;
-            if jump_pressed && !slot.base.grounded && !hidden {
-                slot.base.velocity.y = slot.base.constants.jump_strength * air_jump;
+            if jump_pressed && !slot.base.grounded && slot.rope.is_none() && !hidden {
+                slot.base.velocity.y = jump_strength * air_jump;
             }
             if effect.time >= duration {
                 effect.active = false;
