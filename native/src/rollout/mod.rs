@@ -981,6 +981,32 @@ struct ThrowConfig<'a> {
     item_body: Body,
 }
 
+/// HitboxCombo.UpdateHitBoxPositionsAndScale for the active Drill slot's
+/// boxes, at the pose `drill.hitbox_*` holds (HitboxCombo.cs:87-98).
+fn place_drill_hitbox_rows(entities: &mut [CEntity], slot: &PlayerSlot, data: &data::RolloutData) {
+    for (hitbox_index, &entity) in slot.drill_hitbox_entities[slot.active_slot].iter().enumerate() {
+        if entity == usize::MAX {
+            continue;
+        }
+        let row = &mut entities[entity];
+        let (offset, extents) = data.drill.hitboxes[hitbox_index];
+        let basis = slot.drill.hitbox_up.perp_cw();
+        let center = slot.drill.hitbox_position + (offset * slot.player_scale).complex_mul(basis);
+        let collider = OrientedBox::from_basis(
+            center,
+            Vec2::angle(slot.drill.hitbox_rotation),
+            extents * slot.player_scale,
+        );
+        row.x = center.x.raw();
+        row.y = center.y.raw();
+        row.right_x = collider.right.x.raw();
+        row.right_y = collider.right.y.raw();
+        row.up_x = collider.up.x.raw();
+        row.up_y = collider.up.y.raw();
+        row.rotation = slot.drill.hitbox_rotation.raw();
+    }
+}
+
 fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
     if ability == ABILITY_SMOKE {
         let d = &data.smoke;
@@ -10053,6 +10079,13 @@ impl RolloutWorld {
                             right,
                             data::surface_extents(data.drill.hurtbox_extents) * scale,
                         );
+                        // OnEnterAbility moves the hitbox combo to the entry
+                        // pose and syncs it, so a form that dies this pass
+                        // leaves its boxes there (Drill.cs:178-181).
+                        slot.drill.hitbox_position = slot.base.position;
+                        slot.drill.hitbox_up = slot.base.up;
+                        slot.drill.hitbox_rotation = slot.base.rotation;
+                        place_drill_hitbox_rows(&mut self.entities, &self.players[index], data);
                         self.drill_tick(index, action, data, false);
                         return;
                     }
@@ -15339,15 +15372,15 @@ impl RolloutWorld {
             } else {
                 drill.ticks += 1;
             }
-            // DestroyIfOutsideSceneBounds (hierarchy 3) follows the
-            // SpriteAnimator (2), so an exit animation ending this pass leaves
-            // first. It observes the position left by the preceding pass,
-            // before Drill's PlayerBody advances again.
-            if self.players[index].base.alive && self.players[index].base.outside_bounds() {
-                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
-                self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
-                return;
-            }
+        }
+        // DestroyIfOutsideSceneBounds (hierarchy 3) follows the
+        // SpriteAnimator (2), so an exit animation ending this pass leaves
+        // first. It observes the position left by the preceding pass, before
+        // Drill's PlayerBody advances again. It also runs on the entry pass,
+        // where onEnterAbility has placed the body and turned off the slime's
+        // own boundary component.
+        if self.form_bounds_kill(index, data) {
+            return;
         }
 
         // PlayerBody (hierarchy 6) advances before Drill (hierarchy 7). Its
@@ -39244,36 +39277,17 @@ impl RolloutWorld {
                 }
             }
             let drill_hitboxes_active = drilling && slot.drill.phase != 0;
-            for (hitbox_index, &entity) in slot.drill_hitbox_entities[slot.active_slot]
-                .iter()
-                .enumerate()
-            {
+            for &entity in &slot.drill_hitbox_entities[slot.active_slot] {
                 if entity == usize::MAX {
                     continue;
                 }
-                let row = &mut self.entities[entity];
-                row.flags = if drill_hitboxes_active {
+                self.entities[entity].flags = if drill_hitboxes_active {
                     E_ACTIVE | E_ENABLED | E_TRIGGER
                 } else {
                     E_ENABLED | E_TRIGGER
                 };
-                let (offset, extents) = data.drill.hitboxes[hitbox_index];
-                let basis = slot.drill.hitbox_up.perp_cw();
-                let center =
-                    slot.drill.hitbox_position + (offset * slot.player_scale).complex_mul(basis);
-                let collider = OrientedBox::from_basis(
-                    center,
-                    Vec2::angle(slot.drill.hitbox_rotation),
-                    extents * slot.player_scale,
-                );
-                row.x = center.x.raw();
-                row.y = center.y.raw();
-                row.right_x = collider.right.x.raw();
-                row.right_y = collider.right.y.raw();
-                row.up_x = collider.up.x.raw();
-                row.up_y = collider.up.y.raw();
-                row.rotation = slot.drill.hitbox_rotation.raw();
             }
+            place_drill_hitbox_rows(&mut self.entities, slot, data);
             if time_stop_e != usize::MAX {
                 let circle = &mut self.entities[time_stop_e];
                 let was_active = circle.flags & E_ACTIVE != 0;
