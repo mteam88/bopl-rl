@@ -18071,7 +18071,12 @@ impl RolloutWorld {
         let lower_boundary = data.maps[self.map].lower_boundary();
         for boulder_index in 0..self.macho_boulders.len() {
             let boulder = self.macho_boulders[boulder_index];
-            if !boulder.active || boulder.platform_index >= self.platforms.len() {
+            // A boulder spawned this pass waits in toBeAddedUpdatables; its
+            // DestroyIfOutsideSceneBounds first runs on the next pass.
+            if !boulder.active
+                || boulder.platform_index >= self.platforms.len()
+                || boulder.born_tick == self.tick
+            {
                 continue;
             }
             // Boulder.prefab only destroys below the water boundary:
