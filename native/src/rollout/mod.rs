@@ -21897,13 +21897,6 @@ impl RolloutWorld {
         self.players[index].throw_item.collider_rotation = self.players[index].base.rotation;
         let ability = active_throw_ability(self.players[index].active);
         let gd = throw_config(data, ability);
-        // Ability.UpdateSim assigns Player.Scale to the box every pass, and
-        // PlayerPhysics UpdateScales the form's radius to it.
-        let slot = &mut self.players[index];
-        let scale = slot.player_scale;
-        let form = &mut slot.forms[slot.active_slot];
-        form.set_scale(scale, gd.hurtbox_extents, data.player.radius);
-        slot.base.radius = form.physics_radius();
         let aim = action.direction();
         // Ability.UpdateSim publishes Player.Position before ThrowItem2 and
         // PlayerBody advance the live ability body later in this pass.
@@ -21945,6 +21938,15 @@ impl RolloutWorld {
                 return;
             }
         }
+        // Ability (2) and PlayerPhysics (4) follow the animator, so the exit
+        // above leaves them unrun: on every other pass Ability.UpdateSim
+        // assigns Player.Scale to the box, and PlayerPhysics UpdateScales the
+        // form's radius to it.
+        let slot = &mut self.players[index];
+        let scale = slot.player_scale;
+        let form = &mut slot.forms[slot.active_slot];
+        form.set_scale(scale, gd.hurtbox_extents, data.player.radius);
+        slot.base.radius = form.physics_radius();
         // The enter animation's callback spawns the held payload the same way
         // (ThrowItem2.cs:151-163), so a form the boundary kills on that pass
         // still releases it.
