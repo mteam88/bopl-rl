@@ -37865,8 +37865,14 @@ impl RolloutWorld {
         for (i, slot) in players.iter().enumerate() {
             let mut player_flags = 0;
             // A winning player's later Player.Kill is ignored even though
-            // PlayerCollision still destroys the physical slime object.
-            let slime_alive = if slot.won { !slot.out } else { slot.base.alive };
+            // PlayerCollision still destroys the physical slime object
+            // (Player.cs:443-447); a slime its clones outlived before the win
+            // was already counted off (Player.cs:472-474).
+            let slime_alive = if slot.won {
+                !slot.out && !slot.slime_gone
+            } else {
+                slot.base.alive
+            };
             // Clones keep Player.IsAlive up after the slime itself is gone.
             let handler_alive = slime_alive || (slot.slime_gone && !slot.out);
             if handler_alive {
