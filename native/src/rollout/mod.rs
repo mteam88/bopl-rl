@@ -12201,6 +12201,9 @@ impl RolloutWorld {
             slot.cast_spell.collider_right = slot.base.up.perp_cw();
             slot.cast_spell.collider_rotation = slot.base.rotation;
         }
+        if !self.players[index].base.grounded && self.time_stop_cast_airborne(index) {
+            return;
+        }
         let button = 2u8 << self.players[index].active_slot;
         let phase = self.players[index].cast_spell.phase;
         if phase <= 1 {
@@ -12279,6 +12282,76 @@ impl RolloutWorld {
         }
         self.players[index].reported_position = published_position;
         self.players[index].reported_tick = self.tick;
+        // PlayerBody follows CastSpell in the prefab. The form has no gravity
+        // (ApplyGravity off), so an airborne caster moves only by the
+        // push-out velocity, which PlayerBody then damps.
+        let slot = &mut self.players[index];
+        if !slot.base.grounded {
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        }
+    }
+
+    /// CastSpell.UpdateSim's airborne branch: push out of overlapping walls,
+    /// die if squished between two, then air resistance. Returns whether the
+    /// caster was killed.
+    fn time_stop_cast_airborne(&mut self, index: usize) -> bool {
+        // Time stop.prefab: inverseMass 0.05, airResistance01 0.97.
+        let inverse_mass = Fix::from_raw(214_748_368);
+        let air_resistance = Fix::from_raw(4_166_118_400);
+        let slot = &self.players[index];
+        let entity = slot.time_stop_entity;
+        let radius = if entity == usize::MAX {
+            data::get().time_stop.hurtbox_radius
+        } else {
+            Fix::from_raw(self.entities[entity].radius)
+        };
+        // CircleCastAll is centred on the FixTransform, but the manifold uses
+        // the registered circle, which keeps its offset pose from the last
+        // sync (OnEnterAbility's UpdatePhysicsPositions, then Simulate).
+        let cast = Circle { center: slot.base.position, radius };
+        let own = Circle {
+            center: slot.cast_spell.collider_position
+                + slot.cast_spell.collider_right.complex_mul(data::get().time_stop.collider_offset),
+            radius,
+        };
+        // Both casts fill a five-entry buffer; walls are the rounded rects.
+        let mut hits = [0usize; 5];
+        let mut count = 0usize;
+        for (wall, platform) in self.platforms.iter().enumerate() {
+            if count == hits.len() {
+                break;
+            }
+            if platform.active
+                && crate::physics::contact::circle_rounded(cast, platform.collider).is_some()
+            {
+                hits[count] = wall;
+                count += 1;
+            }
+        }
+        for &wall in &hits[..count] {
+            if let Some(contact) =
+                crate::physics::contact::circle_rounded(own, self.platforms[wall].collider)
+            {
+                let force = -contact.normal * contact.penetration * inverse_mass;
+                self.players[index].base.external_velocity += force * Fix::from_int(35);
+            }
+        }
+        let position = self.players[index].base.position;
+        if count >= 2
+            && hits[..count].iter().any(|&wall| self.platforms[wall].collider.overlaps(position))
+        {
+            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, false, true);
+            return true;
+        }
+        let body = &mut self.players[index].base;
+        body.velocity *= air_resistance;
+        body.external_velocity *= air_resistance;
+        if (body.velocity + body.external_velocity).length_squared() > Fix::from_int(35) {
+            body.velocity *= air_resistance;
+            body.external_velocity *= air_resistance;
+        }
+        false
     }
 
     fn spike_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
