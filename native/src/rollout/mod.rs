@@ -24282,7 +24282,7 @@ impl RolloutWorld {
         // ShootDuplicator overwrites an initial below-water hit with the
         // casting gun's own Player body, then duplicates it upward. This is
         // independent of whether the triple ray found another collider.
-        if !already_hit_water && origin.y <= Fix::from_f32(-11.3) {
+        if !already_hit_water && origin.y <= data.maps[self.map].scene_water_height() {
             let position = self.players[caster].base.position;
             self.duplicate_player_target(caster, position, Vec2::UP, data);
             return;
@@ -25973,7 +25973,7 @@ impl RolloutWorld {
             self.duplicator_raycast_one(origin, direction, max_distance, mask, None, data)
         });
 
-        if !already_hit_water && origin.y <= Fix::from_f32(-11.3) {
+        if !already_hit_water && origin.y <= data.maps[self.map].scene_water_height() {
             self.begin_scale_change(caster, 0, growth, ray.changer_updatable_count);
             return;
         }
@@ -26356,7 +26356,7 @@ impl RolloutWorld {
 
         // Casting below the water plane deliberately feeds the gun's own
         // Player-layer body to BlinkObject after drawing the reflected ray.
-        if !already_hit_water && origin.y <= Fix::from_f32(-11.3) {
+        if !already_hit_water && origin.y <= data.maps[self.map].scene_water_height() {
             self.begin_blink_tunnel(caster, caster, data);
             return;
         }
