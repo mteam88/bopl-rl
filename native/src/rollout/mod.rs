@@ -1360,6 +1360,10 @@ pub struct PlatformDynamics {
     /// base shrinks back ten seconds after its last growth.
     pub base_scale: Fix,
     pub time_since_scaled_up: Fix,
+    /// Arrows stuck to this platform. Each stays parented to it with its
+    /// Arrow updatable (Arrow.cs:100, 124-128), so DuplicateObject copies
+    /// and numbers it along with the platform.
+    pub stuck_arrows: u32,
     /// StickyRoundedRectangle.UpdateBounds follows its collider updater on
     /// the pass after a later MachoThrow2 scale write.
     pub surface_shape_dirty: bool,
@@ -4249,6 +4253,7 @@ impl RolloutWorld {
                 min_scale: p.min_scale,
                 base_scale: p.base_scale,
                 time_since_scaled_up: Fix::ZERO,
+                stuck_arrows: 0,
                 surface_shape_dirty: false,
                 root_body: p.body,
                 attached_children: 0,
@@ -18151,6 +18156,7 @@ impl RolloutWorld {
             min_scale: data.macho_throw.boulder_min_scale,
             base_scale: Fix::ONE,
             time_since_scaled_up: Fix::ZERO,
+            stuck_arrows: 0,
             surface_shape_dirty: false,
             root_body: data.macho_throw.boulder_body,
             attached_children: 0,
@@ -28900,6 +28906,7 @@ impl RolloutWorld {
         } else {
             (7, 5)
         };
+        let updatable_count = updatable_count + self.platform_dynamics[source].stuck_arrows;
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += updatable_count;
 
@@ -29766,6 +29773,7 @@ impl RolloutWorld {
             min_scale: Fix::from_f32(0.1),
             base_scale: Fix::ONE,
             time_since_scaled_up: Fix::ZERO,
+            stuck_arrows: 0,
             surface_shape_dirty: false,
             root_body: pd.spawn_body,
             attached_children: 0,
@@ -32013,7 +32021,10 @@ impl RolloutWorld {
             // (Arrow.cs:124-128); the next pass removes it. That callback
             // precedes all player shape groups: an arrow overlapping terrain
             // and a player in the same pass never reaches PlayerCollision.
-            if self.scratch.arrow_platform_contacts.iter().any(|&(a, ..)| a == i) {
+            if let Some(&(_, p, _)) =
+                self.scratch.arrow_platform_contacts.iter().find(|&&(a, ..)| a == i)
+            {
+                self.platform_dynamics[p].stuck_arrows += 1;
                 self.destroy_arrow(i);
                 if let Some(entity) = arrow.entity {
                     let e = &mut self.entities[entity];
