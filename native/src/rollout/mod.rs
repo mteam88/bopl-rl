@@ -7909,6 +7909,16 @@ impl RolloutWorld {
                 slot.base.rotation = Fix::ZERO;
                 slot.base.up = Vec2::UP;
                 slot.base.skip_next_gravity = true;
+                // UnGround raises OnNoLongerGrounded, which sets State.fall
+                // at once (SlimeController.cs:1061-1065, 956-958), so a Move
+                // that lands this pass restarts the land animation.
+                if matches!(
+                    slot.obs_state,
+                    STATE_IDLE | STATE_RUN | STATE_LAND | STATE_STOP | STATE_TURN
+                ) {
+                    slot.obs_state = STATE_FALL;
+                    slot.state_ticks = 0;
+                }
             }
             slot.base.grounded = false;
             slot.base.ground = None;
