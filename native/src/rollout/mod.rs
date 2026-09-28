@@ -28391,9 +28391,11 @@ impl RolloutWorld {
             // ScaleEffect sets the platform to the effect's scale, measures the
             // copy's spawn position off the resized collider and sets the old
             // scale back, each through the Scale setter (DuplicatePlatformEffect.cs:97-140).
+            // The effect is instantiated after the platform it scales, so it
+            // updates after that platform's StickyRR.UpdateBounds.
             let source = snapshot.source;
             let source_scale = self.platform_dynamics[source].scale;
-            self.set_platform_scale(source, effect_scale, false);
+            self.set_platform_scale(source, effect_scale, true);
             let collider = self.platforms[source].collider;
             let extents = Vec2::new(
                 Fix::ONE / collider.inner.inverse_extents.x,
@@ -28420,12 +28422,12 @@ impl RolloutWorld {
                         * right
                         * (collider.radius + extents.x + scale)
             };
-            self.set_platform_scale(source, source_scale, false);
+            self.set_platform_scale(source, source_scale, true);
             self.duplicate_platform_effects[effect_index].effect_scale = effect_scale;
             self.duplicate_platform_effects[effect_index].spawn_position = spawn_position;
 
             let scale = self.platform_dynamics[source].scale;
-            self.set_platform_scale(source, scale.min(scale * (Fix::ONE - loss) + loss), false);
+            self.set_platform_scale(source, scale.min(scale * (Fix::ONE - loss) + loss), true);
             let source_center = self.platforms[snapshot.source].surface.center;
             // AsRoundedRect rebuilds the box from the live extents but keeps the
             // collider's startRadius (DPhysicsRoundedRect.cs:426-447).
