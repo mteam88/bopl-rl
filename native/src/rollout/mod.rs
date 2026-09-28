@@ -24955,9 +24955,10 @@ impl RolloutWorld {
             clone.position = position;
             clone.body = Body {
                 velocity: (position - source.position).normalized_safe() * speed,
-                // duplicateBoplBody explicitly copies the live FixTransform
-                // rotation after the cloned BoplBody starts from prefab state.
-                orientation: source.body.orientation,
+                // duplicateBoplBody copies the live FixTransform rotation, then
+                // ShootDuplicator sets `up` from the original, which recomputes
+                // the rotation through Vec2.NormalizedVectorAngle.
+                orientation: Vec2::angle(source.body.orientation).normalized_angle(),
                 ..prefab_body
             };
             // duplicateBoplBody applies the copied collider scale after the
@@ -25074,7 +25075,9 @@ impl RolloutWorld {
                 hierarchy_base,
                 position: source.position
                     + direction * data.smoke.cloud_duplicate_spacing * source.scale,
-                rotation: source.rotation,
+                // ShootDuplicator sets the copy's `up` from the original, which
+                // recomputes its rotation through Vec2.NormalizedVectorAngle.
+                rotation: Vec2::angle(source.rotation).normalized_angle(),
                 body: source.body,
                 scale: source.scale,
                 owner: source.owner,
