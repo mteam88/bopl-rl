@@ -28383,6 +28383,8 @@ impl RolloutWorld {
             let entity = self.pooled_row(self.arrows[i].entity);
             self.arrows[i].entity = Some(entity);
             let arrow = &mut self.arrows[i];
+            // DPhysicsCircle.Init adds the circle at its spawn FixTransform
+            // before this pass's updaters, so a Dash raycast already hits it.
             self.entities[entity] = CEntity {
                 id: arrow.id,
                 kind: 0,
@@ -28393,6 +28395,10 @@ impl RolloutWorld {
                 hierarchy: 100_000_000
                     + arrow.hierarchy_base
                     + data::get().arrow.collider_hierarchy,
+                x: arrow.position.x.raw(),
+                y: arrow.position.y.raw(),
+                vx: arrow.velocity.x.raw(),
+                vy: arrow.velocity.y.raw(),
                 radius: (radius * arrow.scale).raw(),
                 inverse_mass: arrow.inverse_mass.raw(),
                 ..CEntity::default()
