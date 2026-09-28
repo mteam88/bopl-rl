@@ -1396,6 +1396,9 @@ pub struct PlatformDynamics {
     pub duplicate_spawner_hierarchy: Option<u32>,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
+    /// DPhysicsRoundedRect.startRadius: the radius the collider was built
+    /// with, which `AsRoundedRect` still reports after the body is resized.
+    pub start_radius: Fix,
     /// StickyRoundedRectangle.DropAllAttachedPlayers. The platform updater
     /// decrements this before player prefabs run; a Meteor landing writes two
     /// after that updater, so later players can be ejected immediately and
@@ -4208,6 +4211,7 @@ impl RolloutWorld {
                 blink_deactivated_tick: None,
                 blink_reactivated_tick: None,
                 basis: None,
+                start_radius: p.start_radius,
             });
             self.platforms_changed();
             self.platform_defs.push(index);
@@ -17681,6 +17685,7 @@ impl RolloutWorld {
             blink_deactivated_tick: None,
             blink_reactivated_tick: None,
             basis: None,
+            start_radius: radius,
         });
         self.platform_defs.push(usize::MAX);
         self.platform_entities.push(entity);
@@ -28201,9 +28206,25 @@ impl RolloutWorld {
             let scale = self.platform_dynamics[source].scale;
             self.set_platform_scale(source, scale.min(scale * (Fix::ONE - loss) + loss), false);
             let source_center = self.platforms[snapshot.source].surface.center;
-            let mut query = self.platforms[snapshot.source].collider;
+            // AsRoundedRect rebuilds the box from the live extents but keeps the
+            // collider's startRadius (DPhysicsRoundedRect.cs:426-447).
+            let mut query = self.platforms[source].collider;
+            let basis = self.platforms[source].surface.right;
+            let live = query.inner.inverse_extents;
+            let cast_extents = Vec2::new(Fix::ONE / live.x, Fix::ONE / live.y);
+            let inverse = |extent: Fix| {
+                if extent == Fix::ZERO {
+                    Fix::ZERO
+                } else {
+                    (Fix::ONE / extent).abs()
+                }
+            };
             query.inner.center = spawn_position;
-            query.radius += Fix::ONE;
+            query.inner.right = basis * cast_extents.x;
+            query.inner.up = basis.perp() * cast_extents.y;
+            query.inner.inverse_extents =
+                Vec2::new(inverse(cast_extents.x), inverse(cast_extents.y));
+            query.radius = self.platform_dynamics[source].start_radius + Fix::ONE;
             for platform_index in 0..self.platforms.len() {
                 if !self.platforms[platform_index].active
                     || crate::physics::contact::rounded_rounded(
@@ -28392,6 +28413,7 @@ impl RolloutWorld {
 
         let mut dynamics = self.platform_dynamics[source];
         dynamics.scale = copy_scale;
+        dynamics.start_radius = effect_radius / effect_scale;
         if dynamics.attached_children != 0 || dynamics.composite_rebuild {
             // The effect unparents the source's terrain children around
             // DuplicateObject (DuplicatePlatformEffect.cs:298-316), so the copy
@@ -29232,6 +29254,7 @@ impl RolloutWorld {
             blink_deactivated_tick: None,
             blink_reactivated_tick: None,
             basis: None,
+            start_radius: pd.spawn_radius * scale,
         });
         self.next_platform_id += 1;
         self.platform_defs.push(usize::MAX);
