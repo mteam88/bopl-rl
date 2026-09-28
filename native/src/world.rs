@@ -1016,6 +1016,14 @@ impl Player {
         motion.unground(surface.as_ref(), true);
         self.apply_ground_state(motion);
     }
+    /// The same UnGround off a ground DestroyFix'd earlier in this updater:
+    /// the reference only reads as null once the pass ends (Updater.cs:89-110,
+    /// 339), so the body still lifts off its surface.
+    pub(crate) fn unground_level_off(&mut self, surface: &Surface) {
+        let mut motion = self.ground_state();
+        motion.unground(Some(surface), true);
+        self.apply_ground_state(motion);
+    }
     pub(crate) fn late_step(&mut self, platforms: &[Platform]) {
         if self.alive && self.grounded && !self.dash.active {
             let platform = self.platform(platforms).unwrap();

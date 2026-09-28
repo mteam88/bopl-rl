@@ -16367,13 +16367,14 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
-    fn macho_shrink_ground(&mut self, index: usize, data: &data::RolloutData) {
+    /// Returns whether the shrink destroyed the ground.
+    fn macho_shrink_ground(&mut self, index: usize, data: &data::RolloutData) -> bool {
         let Some(platform_index) = self.players[index]
             .base
             .ground
             .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
         else {
-            return;
+            return false;
         };
         let dynamics = self.platform_dynamics[platform_index];
         let collider = self.platforms[platform_index].collider;
@@ -16388,7 +16389,9 @@ impl RolloutWorld {
         let dynamics = &self.platform_dynamics[platform_index];
         if dynamics.scale <= dynamics.min_scale {
             self.remove_platform(platform_index);
+            return true;
         }
+        false
     }
 
     /// MachoThrow2.pickUpNearbyAttachables scans platform children first and
@@ -17174,13 +17177,14 @@ impl RolloutWorld {
         if phase == 0 && self.players[index].macho_throw.grabbing_dirt {
             unreachable!();
         }
+        let mut shrunk_away = false;
         if phase == 1 && self.players[index].macho_throw.grabbing_dirt {
             let frame = Self::macho_animation_frame(
                 self.players[index].macho_throw.ticks,
                 &data.macho_throw.grab_frame_ticks,
             );
             if frame > data.macho_throw.shrink_after_frames {
-                self.macho_shrink_ground(index, data);
+                shrunk_away = self.macho_shrink_ground(index, data);
             }
         }
 
@@ -17261,8 +17265,14 @@ impl RolloutWorld {
                     }
                 });
         // On a destroyed ground MachoMove UnGrounds with its rotation zeroed
-        // and returns before the landing raycasts.
-        self.players[index].ground_destroyed = None;
+        // and returns before the landing raycasts (PlayerPhysics.cs:216-219).
+        // A ground this pass's shrink destroyed is not null yet, so UnGround
+        // still lifts the form off it.
+        let destroyed = self.players[index].ground_destroyed.take();
+        if let Some(surface) = destroyed.filter(|_| shrunk_away) {
+            self.players[index].base.unground_level_off(&surface);
+            return;
+        }
         self.players[index]
             .base
             .macho_move(move_input, roundedness, terrain!(self));
