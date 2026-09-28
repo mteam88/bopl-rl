@@ -27061,6 +27061,12 @@ impl RolloutWorld {
         dynamics.duplicate_spawner_hierarchy = Some(spawner_hierarchy);
         dynamics.duplicate_lifespan = i32::MAX;
         dynamics.duplicate_shake_offset = Vec2::ZERO;
+        // A QuantumTunnel restores only its own Victim (QuantumTunnel.cs:163-166):
+        // the copy of a wall Blink hid is born as inactive as it and stays so,
+        // and one of a wall whose tunnel is still waiting is never hidden.
+        dynamics.blink_tunnel_active = false;
+        dynamics.blink_tunnel_initialized = false;
+        dynamics.blink_deactivated_tick = None;
 
         let source_row = self.entities[self.platform_entities[source]];
         let entity = self.entities.len();
