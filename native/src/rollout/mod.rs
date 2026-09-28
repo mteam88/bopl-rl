@@ -11798,9 +11798,13 @@ impl RolloutWorld {
         if !self.tesla_nodes[node_index].lethal {
             self.tesla_nodes[node_index].orb_enter_left = enter + 1 - elapsed;
         }
+        // Once this connection's EnterOrb on the child has ended, a child
+        // that is not lethal is loading in its own connection instead, and
+        // there is nothing of this one left to finish.
         if let Some(child) = child
             && child < self.tesla_nodes.len()
             && !self.tesla_nodes[child].lethal
+            && elapsed <= enter + 1
         {
             self.tesla_nodes[child].orb_enter_left = enter + 2 - elapsed;
         }
