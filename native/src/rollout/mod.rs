@@ -2535,6 +2535,29 @@ impl PlayerSlot {
     fn force_unground(&mut self, platforms: &[Platform], tick: u32) {
         force_unground(&mut self.base, &mut self.ground_destroyed, platforms, tick);
     }
+    /// The surface of a ground an updater destroyed earlier in this pass,
+    /// which attachedGround still names until the drain.
+    fn dead_ground(&self, tick: u32) -> Option<&Surface> {
+        self.ground_destroyed.as_ref().and_then(|lost| lost.attached(tick))
+    }
+    /// PlayerPhysics.Move on a grounded body whose ground was destroyed: the
+    /// IsDestroyed test UnGround()s it and returns (PlayerPhysics.cs:216-219,
+    /// 262-266). A ground destroyed earlier in this pass still lifts the body
+    /// and nulls its rotation; returns whether that happened. A null one is
+    /// left to the move helpers' missing-ground UnGround.
+    fn move_off_destroyed(&mut self, tick: u32) -> bool {
+        if !self.base.grounded {
+            return false;
+        }
+        let Some(lost) = self.ground_destroyed.take() else {
+            return false;
+        };
+        let Some(surface) = lost.attached(tick) else {
+            return false;
+        };
+        self.base.unground_off(Some(surface), true);
+        true
+    }
     /// Which PlayerBody carries the rope: the slime's, or the active form's.
     fn rope_body(&self) -> usize {
         if self.active == ActiveAbility::None { 0 } else { 1 + self.active_slot }
@@ -7978,12 +8001,15 @@ impl RolloutWorld {
                 | ActiveAbility::PokeBall
                 | ActiveAbility::Throw
         );
+        // MagnetGun's own check misses a ground destroyed earlier in this
+        // pass, which its later Move(zero) finds (MagnetGun.cs:1212, 1249).
         let lost = if matches!(
             self.players[index].active,
             ActiveAbility::Beam
                 | ActiveAbility::BlackHole
                 | ActiveAbility::Bow
                 | ActiveAbility::Missile
+                | ActiveAbility::Magnet
         ) {
             None
         } else {
@@ -22054,6 +22080,9 @@ impl RolloutWorld {
             self.fire_magnet(index, data);
         }
 
+        // The check sees null or inactive, not IsDestroyed: a ground an
+        // updater destroyed earlier in this pass is still attachedGround
+        // (MagnetGun.cs:1212, Updater.cs:89-110, 339-350).
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -22061,7 +22090,8 @@ impl RolloutWorld {
                     .base
                     .ground
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                    .is_none());
+                    .is_none()
+                    && self.players[index].dead_ground(self.tick).is_none());
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
@@ -22104,7 +22134,9 @@ impl RolloutWorld {
                 return;
             }
         }
-        if self.players[index].base.grounded {
+        if self.players[index].base.grounded
+            && !self.players[index].move_off_destroyed(self.tick)
+        {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
@@ -23593,11 +23625,15 @@ impl RolloutWorld {
         if self.players[index].magnet.phase == 3 {
             self.magnet_fire_held_item(index, aim, data);
         }
+        // currentNormal off attachedGround, which may be one destroyed
+        // earlier in this pass (MagnetGun.cs:407).
         let normal = self.players[index]
             .base
             .ground
             .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-            .map(|platform| platform.surface.normal(self.players[index].base.position));
+            .map(|platform| &platform.surface)
+            .or(self.players[index].dead_ground(self.tick))
+            .map(|surface| surface.normal(self.players[index].base.position));
         let grounded = self.players[index].base.grounded;
         let slot = &mut self.players[index];
         slot.magnet.has_fired = true;
