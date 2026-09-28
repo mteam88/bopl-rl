@@ -16478,6 +16478,12 @@ impl RolloutWorld {
             if !orb.active {
                 continue;
             }
+            // Updater skips an inactive GameObject, so an orb deactivated
+            // before its holder died stays behind rather than destroying
+            // itself, and one a later Beam instance left parked plays no exit.
+            if orb.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0) {
+                continue;
+            }
             if self.players[orb.owner].active != ActiveAbility::Beam {
                 // Beam.OnEnterAbility holds the orb through
                 // DisableIfNotHeld_deter.HoldThisFrame on the very pass it
@@ -16489,12 +16495,6 @@ impl RolloutWorld {
                 // Likewise a form that left during its own UpdateSim held
                 // the orb first.
                 if orb.born_tick == self.tick || orb.held_tick == Some(self.tick) {
-                    continue;
-                }
-                // Updater skips an inactive GameObject, so an orb deactivated
-                // before its holder died stays behind rather than destroying
-                // itself.
-                if orb.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0) {
                     continue;
                 }
                 let destroy = orb.holder_destroyed.is_some_and(|tick| tick < self.tick);
