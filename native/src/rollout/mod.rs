@@ -14498,7 +14498,7 @@ impl RolloutWorld {
             }
             for clone_index in 0..self.abilityless_clones.len() {
                 let clone = &self.abilityless_clones[clone_index];
-                if !clone.active || self.blink_object_hidden(clone.entity) {
+                if !clone.active || self.abilityless_clone_hidden(clone) {
                     continue;
                 }
                 let body = clone.base.collider;
@@ -26094,6 +26094,12 @@ impl RolloutWorld {
             })
     }
 
+    /// A clone in its own QuantumTunnel or an object tunnel is an inactive
+    /// GameObject, which DetPhysics skips (QuantumTunnel.cs:136).
+    fn abilityless_clone_hidden(&self, clone: &AbilitylessClone) -> bool {
+        clone.blink_tunnel_active || self.blink_object_hidden(clone.entity)
+    }
+
     /// Whether a Blink tunnel let the object go during this pass.
     fn blink_object_released(&self, entity: Option<usize>) -> bool {
         let Some(entity) = entity else {
@@ -32025,7 +32031,11 @@ impl RolloutWorld {
                 }
                 if victim.is_none() {
                     for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
-                        if !clone.active || !clone.base.alive || clone.owner == owner {
+                        if !clone.active
+                            || !clone.base.alive
+                            || clone.owner == owner
+                            || self.abilityless_clone_hidden(clone)
+                        {
                             continue;
                         }
                         if crate::physics::contact::circle_box(circle, clone.base.collider)
@@ -33753,7 +33763,7 @@ impl RolloutWorld {
                 || !clone.base.alive
                 || clone.entity.is_none()
                 || clone.captured_by_ball.is_some()
-                || self.blink_object_hidden(clone.entity)
+                || self.abilityless_clone_hidden(clone)
             {
                 continue;
             }
@@ -33775,7 +33785,7 @@ impl RolloutWorld {
                     || !other_clone.base.alive
                     || other_clone.entity.is_none()
                     || other_clone.captured_by_ball.is_some()
-                    || self.blink_object_hidden(other_clone.entity)
+                    || self.abilityless_clone_hidden(other_clone)
                 {
                     continue;
                 }
@@ -33869,7 +33879,7 @@ impl RolloutWorld {
         let sweep_x = self.sweep_x();
         for clone_index in 0..self.abilityless_clones.len() {
             if !self.abilityless_clones[clone_index].active
-                || self.blink_object_hidden(self.abilityless_clones[clone_index].entity)
+                || self.abilityless_clone_hidden(&self.abilityless_clones[clone_index])
             {
                 continue;
             }
