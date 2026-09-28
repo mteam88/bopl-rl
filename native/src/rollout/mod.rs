@@ -2071,6 +2071,9 @@ pub struct TeleportObjectEffect {
     pub entity_id: u32,
     pub age: Fix,
     pub restore_flags: u32,
+    /// The pass that reactivated the object. The effect updates after every
+    /// updater of the object it hid, so those skip that pass.
+    pub revealed_tick: Option<u32>,
 }
 
 /// One invisible Portal endpoint. Portals have no DetPhysics collider or
@@ -18866,6 +18869,7 @@ impl RolloutWorld {
                     && self.entities[effect.entity].flags & (E_REMOVED | E_DESTROYED) == 0
                 {
                     self.entities[effect.entity].flags = effect.restore_flags;
+                    self.teleport_object_effects[index].revealed_tick = Some(self.tick);
                     if let Some(platform_index) = self
                         .platform_entities
                         .iter()
@@ -27013,6 +27017,7 @@ impl RolloutWorld {
             entity_id,
             age: Fix::ZERO,
             restore_flags: self.entities[entity].flags,
+            revealed_tick: None,
         };
         if let Some(index) = self
             .teleport_object_effects
@@ -27036,6 +27041,21 @@ impl RolloutWorld {
             self.platforms[platform_index].active = false;
             self.platforms_changed();
         }
+    }
+
+    /// A TeleportedObjectEffect reactivated this object during this pass,
+    /// after the object's own updaters were skipped.
+    fn teleport_revealed_this_pass(&self, entity: Option<usize>) -> bool {
+        let Some(entity) = entity else {
+            return false;
+        };
+        let entity_id = self.entities.get(entity).map_or(0, |row| row.id);
+        self.teleport_object_effects.iter().any(|effect| {
+            !effect.active
+                && effect.revealed_tick == Some(self.tick)
+                && effect.entity == entity
+                && effect.entity_id == entity_id
+        })
     }
 
     #[inline]
@@ -30664,6 +30684,9 @@ impl RolloutWorld {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         hierarchy_order(&mut order, &self.thrown_items, |item| item.hierarchy_base);
         for &item_index in &order {
+            if self.teleport_revealed_this_pass(self.thrown_items[item_index].entity) {
+                continue;
+            }
             let hierarchy = self.thrown_items[item_index].hierarchy_base;
             if self.thrown_items[item_index].active
                 && self.scratch.ropes_updated_below < hierarchy
