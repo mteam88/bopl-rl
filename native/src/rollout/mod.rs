@@ -16615,6 +16615,10 @@ impl RolloutWorld {
             self.tesla_nodes[attachable_index].platform_index = usize::MAX;
             if let Some(entity) = self.tesla_nodes[attachable_index].entity {
                 self.entities[entity].flags &= !(E_ACTIVE | E_COMPOSITE);
+                // SimpleSparkNode.Deactivate puts both nodes back on
+                // NonLethalTerrain, the inactive one too (SimpleSparkNode.cs:
+                // 152-184).
+                self.entities[entity].layer = data.tesla.node_layer;
             }
             self.players[owner].macho_throw.picked_tesla = Some(attachable_index);
             self.rebuild_platform_attachment_body(old_platform, false);
