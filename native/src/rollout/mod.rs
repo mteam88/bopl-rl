@@ -2804,13 +2804,24 @@ struct PlatformScratch {
     ray_hits: Vec<SortedRayHit>,
     duplicate_shake_order: Vec<(u32, u8, usize)>,
     duplicate_shake_offsets: Vec<(u8, usize, Vec2)>,
-    /// Grenade explosions, smoke clouds and smoke explosions awaiting their
-    /// Init: (hierarchy base, kind, index into its list).
-    pending_explosives: Vec<(u32, PendingExplosive, usize)>,
+    /// Objects awaiting their Init: (hierarchy base, kind, index into its
+    /// list; 3 * player + slot for a picked ability).
+    pending_objects: Vec<(u32, PendingObject, usize)>,
 }
 
 #[derive(Clone, Copy)]
-enum PendingExplosive {
+enum PendingObject {
+    Arrow,
+    DuplicatedPickup,
+    AbilitylessClone,
+    BlackHole,
+    PickedAbility,
+    Mine,
+    GuidedMissile,
+    MissileExplosion,
+    RevivalMarker,
+    TeleportMarker,
+    TeslaLine,
     GrenadeExplosion,
     SmokeCloud,
     SmokeExplosion,
@@ -4978,16 +4989,6 @@ impl RolloutWorld {
         self.scratch.pickup_order = order;
     }
 
-    fn register_pending_picked_abilities(&mut self, data: &data::RolloutData) {
-        for player_index in 0..self.players.len() {
-            for ability_slot in 0..3 {
-                if !self.players[player_index].ability_instantiated[ability_slot] {
-                    self.ensure_equipped_ability_registered(player_index, ability_slot, data);
-                }
-            }
-        }
-    }
-
     /// Register the Awake work of an inactive ability prefab created by a
     /// pickup. Updater/DetPhysics expose it on the pass after the callback.
     fn ensure_equipped_ability_registered(
@@ -5658,42 +5659,11 @@ impl RolloutWorld {
                 self.remove_platform(platform_index, false);
             }
         }
-        if has(ABILITY_BOW) {
-            self.register_pending_arrows();
-        }
-        if has(ABILITY_DUPLICATOR) {
-            self.register_pending_duplicated_pickups(data);
-            self.register_pending_abilityless_clones();
-            self.register_pending_black_holes(data);
-        }
-        // A projectile fired during the prior updater pass has a lower
-        // allocated hierarchy than an ability prefab instantiated by a later
-        // pickup collision callback. Updater initializes in that hierarchy
-        // order, so expose the Arrow before the replacement ability row.
-        if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
-            self.register_pending_picked_abilities(data);
-        }
-        if has(ABILITY_MINE) {
-            self.register_pending_mines(data);
-        }
-        if has(ABILITY_MISSILE) {
-            self.register_pending_guided_missiles(data);
-        }
-        if has_mine_explosion {
-            self.register_pending_missile_explosions(data);
-        }
+        let drowned_clouds = self.register_pending_objects(data);
         if has(ABILITY_REVIVAL) {
-            self.register_pending_revival_markers(data);
             self.register_pending_revival_clones(data);
         }
-        if has(ABILITY_TELEPORT) {
-            self.register_pending_teleport_markers(data);
-        }
         self.register_pending_stock_clones(data);
-        let mut drowned_clouds = 0;
-        if has(ABILITY_GRENADE) || has(ABILITY_SMOKE) {
-            drowned_clouds = self.register_pending_explosives(data);
-        }
         if has(ABILITY_TIME_STOP) {
             self.register_pending_time_stops();
         }
@@ -12861,6 +12831,26 @@ impl RolloutWorld {
         self.tesla_nodes[child_index].enter_ticks = 0;
     }
 
+    /// The collider of the StretchableLightning a connection instantiated.
+    fn register_tesla_line(&mut self, node_index: usize, data: &data::RolloutData) {
+        let node = self.tesla_nodes[node_index];
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 1,
+            layer: data.tesla.lightning_layer,
+            owner: node.owner as u32 + 1,
+            flags: E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000
+                + node.line_hierarchy_base
+                + data.tesla.lightning_collider_hierarchy,
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        });
+        self.tesla_nodes[node_index].line_entity = Some(entity);
+    }
+
     fn tesla_nodes_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         self.destroyed_tesla_lines.retain(|line| {
             if line.destroy_tick < self.tick {
@@ -12926,36 +12916,6 @@ impl RolloutWorld {
             }
         }
 
-        // A connection's StretchableLightning registers its collider as Updater
-        // runs the new objects' Inits, in hierarchy order (Updater.cs:270-276).
-        hierarchy_order(&mut order, &self.tesla_nodes, |node| node.line_hierarchy_base);
-        for &node_index in &order {
-            let node = self.tesla_nodes[node_index];
-            if !node.active
-                || node.macho_carried
-                || !node.connected
-                || node.child.is_none()
-                || node.line_entity.is_some()
-                || node.line_born_tick >= self.tick
-            {
-                continue;
-            }
-            let entity = self.entities.len();
-            let id = self.next_id();
-            self.entities.push(CEntity {
-                id,
-                kind: 1,
-                layer: data.tesla.lightning_layer,
-                owner: node.owner as u32 + 1,
-                flags: E_ENABLED | E_TRIGGER,
-                hierarchy: 100_000_000
-                    + node.line_hierarchy_base
-                    + data.tesla.lightning_collider_hierarchy,
-                inverse_mass: -Fix::ONE.raw(),
-                ..CEntity::default()
-            });
-            self.tesla_nodes[node_index].line_entity = Some(entity);
-        }
         self.scratch.item_order = order;
 
         for node_index in 0..self.tesla_nodes.len() {
@@ -17677,60 +17637,50 @@ impl RolloutWorld {
         }
     }
 
-    fn register_pending_revival_markers(&mut self, data: &data::RolloutData) {
-        for marker_index in 0..self.revival_marker_pool.len() {
-            let marker = self.revival_marker_pool[marker_index];
-            if !marker.active || marker.registered || marker.born_tick >= self.tick {
-                continue;
-            }
-            let entity = self.entities.len();
-            let id = self.next_id();
-            self.entities.push(CEntity {
-                id,
-                kind: 0,
-                layer: data.revival.marker_layer,
-                owner: marker.owner as u32 + 1,
-                flags: E_ACTIVE | E_ENABLED,
-                hierarchy: 100_000_000
-                    + marker.hierarchy_base
-                    + data.revival.marker_collider_hierarchy,
-                x: (marker.position + data.revival.marker_offset).x.raw(),
-                y: (marker.position + data.revival.marker_offset).y.raw(),
-                radius: data.revival.marker_radius.raw(),
-                inverse_mass: marker.body.inverse_mass.raw(),
-                ..CEntity::default()
-            });
-            self.revival_marker_pool[marker_index].registered = true;
-            self.revival_marker_pool[marker_index].entity = Some(entity);
-        }
+    fn register_revival_marker(&mut self, marker_index: usize, data: &data::RolloutData) {
+        let marker = self.revival_marker_pool[marker_index];
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: data.revival.marker_layer,
+            owner: marker.owner as u32 + 1,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000
+                + marker.hierarchy_base
+                + data.revival.marker_collider_hierarchy,
+            x: (marker.position + data.revival.marker_offset).x.raw(),
+            y: (marker.position + data.revival.marker_offset).y.raw(),
+            radius: data.revival.marker_radius.raw(),
+            inverse_mass: marker.body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        self.revival_marker_pool[marker_index].registered = true;
+        self.revival_marker_pool[marker_index].entity = Some(entity);
     }
 
-    fn register_pending_teleport_markers(&mut self, data: &data::RolloutData) {
-        for marker_index in 0..self.teleport_marker_pool.len() {
-            let marker = self.teleport_marker_pool[marker_index];
-            if !marker.active || marker.registered || marker.born_tick >= self.tick {
-                continue;
-            }
-            let entity = self.entities.len();
-            let id = self.next_id();
-            self.entities.push(CEntity {
-                id,
-                kind: 0,
-                layer: data.teleport.marker_layer,
-                owner: 0,
-                flags: E_ACTIVE | E_ENABLED,
-                hierarchy: 100_000_000
-                    + marker.hierarchy_base
-                    + data.teleport.marker_collider_hierarchy,
-                x: (marker.position + data.teleport.marker_offset).x.raw(),
-                y: (marker.position + data.teleport.marker_offset).y.raw(),
-                radius: data.teleport.marker_radius.raw(),
-                inverse_mass: data.teleport.marker_body.inverse_mass.raw(),
-                ..CEntity::default()
-            });
-            self.teleport_marker_pool[marker_index].registered = true;
-            self.teleport_marker_pool[marker_index].entity = Some(entity);
-        }
+    fn register_teleport_marker(&mut self, marker_index: usize, data: &data::RolloutData) {
+        let marker = self.teleport_marker_pool[marker_index];
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: data.teleport.marker_layer,
+            owner: 0,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000
+                + marker.hierarchy_base
+                + data.teleport.marker_collider_hierarchy,
+            x: (marker.position + data.teleport.marker_offset).x.raw(),
+            y: (marker.position + data.teleport.marker_offset).y.raw(),
+            radius: data.teleport.marker_radius.raw(),
+            inverse_mass: data.teleport.marker_body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        self.teleport_marker_pool[marker_index].registered = true;
+        self.teleport_marker_pool[marker_index].entity = Some(entity);
     }
 
     /// The row a pooled object registers into. DetPhysics appends a new
@@ -17751,17 +17701,25 @@ impl RolloutWorld {
         self.entities.len() - 1
     }
 
-    /// Remove callback-destroyed items, register the grenade explosions,
-    /// smoke clouds and smoke explosions queued by the preceding pass, and
-    /// execute their Init calls before the updater loop begins. Updater
-    /// initializes new updatables sorted by hierarchy (Updater.cs:270-276),
-    /// so their colliders join DetPhysics in the order they were
-    /// instantiated, whatever their kind. Returns how many new clouds
-    /// drowned before their collider appeared.
-    fn register_pending_explosives(&mut self, data: &data::RolloutData) -> u32 {
+    /// Remove callback-destroyed items, then register the objects the
+    /// preceding pass instantiated and execute their Init calls before the
+    /// updater loop begins. Updater initializes new updatables sorted by
+    /// hierarchy (Updater.cs:258-282), so their colliders join DetPhysics and
+    /// take their ids in the order they were instantiated, whatever their
+    /// kind. Returns how many new clouds drowned before their collider
+    /// appeared.
+    fn register_pending_objects(&mut self, data: &data::RolloutData) -> u32 {
         for item in &self.thrown_items {
             if !item.active
                 && let Some(entity) = item.entity
+                && self.entities[entity].flags & E_DESTROYED != 0
+            {
+                self.entities[entity].flags = E_REMOVED;
+            }
+        }
+        for missile in &self.guided_missiles {
+            if !missile.active
+                && let Some(entity) = missile.entity
                 && self.entities[entity].flags & E_DESTROYED != 0
             {
                 self.entities[entity].flags = E_REMOVED;
@@ -17771,37 +17729,120 @@ impl RolloutWorld {
         let pending_since = |active: bool, registered: bool, born_tick: u32| {
             active && !registered && born_tick < tick
         };
-        let mut pending = std::mem::take(&mut self.scratch.pending_explosives);
+        let mut pending = std::mem::take(&mut self.scratch.pending_objects);
         pending.clear();
+        for (index, arrow) in self.arrows.iter().enumerate() {
+            if pending_since(arrow.active, arrow.registered, arrow.born_tick) {
+                pending.push((arrow.hierarchy_base, PendingObject::Arrow, index));
+            }
+        }
+        for (index, pickup) in self.ability_pickups.iter().enumerate() {
+            if pickup.duplicated
+                && pending_since(pickup.active, pickup.entity.is_some(), pickup.born_tick)
+            {
+                pending.push((pickup.hierarchy_base, PendingObject::DuplicatedPickup, index));
+            }
+        }
+        for (index, clone) in self.abilityless_clones.iter().enumerate() {
+            if pending_since(clone.active, clone.entity.is_some(), clone.born_tick) {
+                pending.push((clone.hierarchy_base, PendingObject::AbilitylessClone, index));
+            }
+        }
+        for (index, hole) in self.pending_black_holes.iter().enumerate() {
+            pending.push((hole.hierarchy_base, PendingObject::BlackHole, index));
+        }
+        if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
+            for (index, player) in self.players.iter().enumerate() {
+                for slot in 0..3 {
+                    if !player.ability_instantiated[slot] {
+                        pending.push((
+                            player.pending_ability_hierarchy[slot],
+                            PendingObject::PickedAbility,
+                            3 * index + slot,
+                        ));
+                    }
+                }
+            }
+        }
+        for (index, item) in self.thrown_items.iter().enumerate() {
+            if item.ability == ABILITY_MINE
+                && pending_since(item.active, item.entity.is_some(), item.born_tick)
+            {
+                pending.push((item.hierarchy_base, PendingObject::Mine, index));
+            }
+        }
+        for (index, missile) in self.guided_missiles.iter().enumerate() {
+            if pending_since(missile.active, missile.registered, missile.born_tick) {
+                pending.push((missile.hierarchy_base, PendingObject::GuidedMissile, index));
+            }
+        }
+        for (index, explosion) in self.missile_explosions.iter().enumerate() {
+            if pending_since(explosion.active, explosion.registered, explosion.born_tick) {
+                pending.push((explosion.hierarchy_base, PendingObject::MissileExplosion, index));
+            }
+        }
+        for (index, marker) in self.revival_marker_pool.iter().enumerate() {
+            if pending_since(marker.active, marker.registered, marker.born_tick) {
+                pending.push((marker.hierarchy_base, PendingObject::RevivalMarker, index));
+            }
+        }
+        for (index, marker) in self.teleport_marker_pool.iter().enumerate() {
+            if pending_since(marker.active, marker.registered, marker.born_tick) {
+                pending.push((marker.hierarchy_base, PendingObject::TeleportMarker, index));
+            }
+        }
+        for (index, node) in self.tesla_nodes.iter().enumerate() {
+            if !node.macho_carried
+                && node.connected
+                && node.child.is_some()
+                && pending_since(node.active, node.line_entity.is_some(), node.line_born_tick)
+            {
+                pending.push((node.line_hierarchy_base, PendingObject::TeslaLine, index));
+            }
+        }
         for (index, explosion) in self.grenade_explosions.iter().enumerate() {
             if pending_since(explosion.active, explosion.registered, explosion.born_tick) {
-                pending.push((explosion.hierarchy_base, PendingExplosive::GrenadeExplosion, index));
+                pending.push((explosion.hierarchy_base, PendingObject::GrenadeExplosion, index));
             }
         }
         for (index, cloud) in self.smoke_clouds.iter().enumerate() {
             if pending_since(cloud.active, cloud.registered, cloud.born_tick) {
-                pending.push((cloud.hierarchy_base, PendingExplosive::SmokeCloud, index));
+                pending.push((cloud.hierarchy_base, PendingObject::SmokeCloud, index));
             }
         }
         for (index, explosion) in self.smoke_explosions.iter().enumerate() {
             if pending_since(explosion.active, explosion.registered, explosion.born_tick) {
-                pending.push((explosion.hierarchy_base, PendingExplosive::SmokeExplosion, index));
+                pending.push((explosion.hierarchy_base, PendingObject::SmokeExplosion, index));
             }
         }
-        pending.sort_unstable_by_key(|&(hierarchy_base, _, _)| hierarchy_base);
+        pending.sort_unstable_by_key(|&(hierarchy_base, _, index)| (hierarchy_base, index));
         let mut drowned = 0;
         for &(_, kind, index) in &pending {
             match kind {
-                PendingExplosive::GrenadeExplosion => self.register_grenade_explosion(index, data),
-                PendingExplosive::SmokeCloud => {
+                PendingObject::Arrow => self.register_arrow(index),
+                PendingObject::DuplicatedPickup => self.register_duplicated_pickup(index, data),
+                PendingObject::AbilitylessClone => self.register_abilityless_clone(index),
+                PendingObject::BlackHole => self.register_black_hole(index, data),
+                PendingObject::PickedAbility => {
+                    self.ensure_equipped_ability_registered(index / 3, index % 3, data)
+                }
+                PendingObject::Mine => self.register_mine(index, data),
+                PendingObject::GuidedMissile => self.register_guided_missile(index, data),
+                PendingObject::MissileExplosion => self.register_missile_explosion(index, data),
+                PendingObject::RevivalMarker => self.register_revival_marker(index, data),
+                PendingObject::TeleportMarker => self.register_teleport_marker(index, data),
+                PendingObject::TeslaLine => self.register_tesla_line(index, data),
+                PendingObject::GrenadeExplosion => self.register_grenade_explosion(index, data),
+                PendingObject::SmokeCloud => {
                     if !self.register_smoke_cloud(index, data) {
                         drowned += 1;
                     }
                 }
-                PendingExplosive::SmokeExplosion => self.register_smoke_explosion(index, data),
+                PendingObject::SmokeExplosion => self.register_smoke_explosion(index, data),
             }
         }
-        self.scratch.pending_explosives = pending;
+        self.pending_black_holes.clear();
+        self.scratch.pending_objects = pending;
         drowned
     }
 
@@ -24434,33 +24475,32 @@ impl RolloutWorld {
         self.pending_black_holes.push(clone);
     }
 
-    fn register_pending_black_holes(&mut self, data: &data::RolloutData) {
-        for mut hole in std::mem::take(&mut self.pending_black_holes) {
-            hole.radius =
-                Self::black_hole_initial_radius(hole.start_radius, hole.target_size, data);
-            hole.collider_start_radius = hole.radius;
-            let entity = self.entities.len();
-            let id = self.next_id();
-            self.entities.push(CEntity {
-                id,
-                kind: 0,
-                layer: data.black_hole.layer,
-                flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
-                hierarchy: 100_000_000
-                    + hole.hierarchy_base
-                    + data.black_hole.hole_collider_hierarchy,
-                x: hole.position.x.raw(),
-                y: hole.position.y.raw(),
-                radius: hole.radius.raw(),
-                inverse_mass: -Fix::ONE.raw(),
-                ..CEntity::default()
-            });
-            hole.entity = Some(entity);
-            if let Some(free) = self.black_holes.iter().position(|hole| !hole.active) {
-                self.black_holes[free] = hole;
-            } else {
-                self.black_holes.push(hole);
-            }
+    fn register_black_hole(&mut self, index: usize, data: &data::RolloutData) {
+        let mut hole = self.pending_black_holes[index];
+        hole.radius =
+            Self::black_hole_initial_radius(hole.start_radius, hole.target_size, data);
+        hole.collider_start_radius = hole.radius;
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: data.black_hole.layer,
+            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000
+                + hole.hierarchy_base
+                + data.black_hole.hole_collider_hierarchy,
+            x: hole.position.x.raw(),
+            y: hole.position.y.raw(),
+            radius: hole.radius.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        });
+        hole.entity = Some(entity);
+        if let Some(free) = self.black_holes.iter().position(|hole| !hole.active) {
+            self.black_holes[free] = hole;
+        } else {
+            self.black_holes.push(hole);
         }
     }
 
@@ -25563,41 +25603,32 @@ impl RolloutWorld {
         self.scratch.duplicate_shake_offsets = shake_offsets;
     }
 
-    fn register_pending_duplicated_pickups(&mut self, data: &data::RolloutData) {
-        for index in 0..self.ability_pickups.len() {
-            let pickup = self.ability_pickups[index];
-            if !pickup.active
-                || !pickup.duplicated
-                || pickup.entity.is_some()
-                || pickup.born_tick >= self.tick
-            {
-                continue;
-            }
-            let entity = self.entities.len();
-            let id = self.next_id();
-            let center = pickup.position + data.pickup.offset * pickup.scale;
-            self.entities.push(CEntity {
-                id,
-                kind: 0,
-                layer: data.pickup.layer,
-                flags: E_ACTIVE,
-                hierarchy: 100_000_000 + pickup.hierarchy_base + data.pickup.collider_hierarchy,
-                x: center.x.raw(),
-                y: center.y.raw(),
-                vx: pickup.body.velocity.x.raw(),
-                vy: pickup.body.velocity.y.raw(),
-                radius: (data.pickup.radius * pickup.scale).raw(),
-                rotation: pickup.body.orientation.raw(),
-                angular_velocity: pickup.body.angular_velocity.raw(),
-                inverse_mass: pickup.body.inverse_mass.raw(),
-                ..CEntity::default()
-            });
-            let pickup = &mut self.ability_pickups[index];
-            pickup.entity = Some(entity);
-            // DynamicAbilityPickup.initSelf calls InitPickup(..., Vec2.up)
-            // when the cloned updater initializes.
-            pickup.body.force += Vec2::UP * data.pickup.launch_force * Fix::from_int(60);
-        }
+    fn register_duplicated_pickup(&mut self, index: usize, data: &data::RolloutData) {
+        let pickup = self.ability_pickups[index];
+        let entity = self.entities.len();
+        let id = self.next_id();
+        let center = pickup.position + data.pickup.offset * pickup.scale;
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: data.pickup.layer,
+            flags: E_ACTIVE,
+            hierarchy: 100_000_000 + pickup.hierarchy_base + data.pickup.collider_hierarchy,
+            x: center.x.raw(),
+            y: center.y.raw(),
+            vx: pickup.body.velocity.x.raw(),
+            vy: pickup.body.velocity.y.raw(),
+            radius: (data.pickup.radius * pickup.scale).raw(),
+            rotation: pickup.body.orientation.raw(),
+            angular_velocity: pickup.body.angular_velocity.raw(),
+            inverse_mass: pickup.body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        let pickup = &mut self.ability_pickups[index];
+        pickup.entity = Some(entity);
+        // DynamicAbilityPickup.initSelf calls InitPickup(..., Vec2.up)
+        // when the cloned updater initializes.
+        pickup.body.force += Vec2::UP * data.pickup.launch_force * Fix::from_int(60);
     }
 
     fn register_pending_duplicated_items(&mut self, data: &data::RolloutData) {
@@ -28917,183 +28948,129 @@ impl RolloutWorld {
         }
     }
 
-    /// Mine.Init draws its hover offset from the shared RNG (Mine.cs:77-80), and
-    /// Updater runs the new objects' Inits in hierarchy order (Updater.cs:270-276).
-    fn register_pending_mines(&mut self, data: &data::RolloutData) {
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        hierarchy_order(&mut order, &self.thrown_items, |item| item.hierarchy_base);
-        for &index in &order {
-            let item = self.thrown_items[index];
-            if !item.active
-                || item.ability != ABILITY_MINE
-                || item.entity.is_some()
-                || item.born_tick >= self.tick
-            {
-                continue;
-            }
-            let id = self.next_id();
-            self.entities.push(CEntity::default());
-            let entity = self.entities.len() - 1;
-            let random_offset =
-                Fix::ONE - self.rng.fix_range(Fix::ZERO, Fix::from_int(2)) * data.mine.hover_period;
-            let item = &mut self.thrown_items[index];
-            item.id = id;
-            item.entity = Some(entity);
-            item.random_offset = random_offset;
-            self.entities[entity] = CEntity {
-                id,
-                kind: 0,
-                layer: data.mine.item_layer,
-                // Item does not implement IPlayerIdHolder; the owner is used
-                // internally by Mine but its observation owner remains zero.
-                owner: 0,
-                flags: E_ACTIVE | E_ENABLED,
-                hierarchy: 100_000_000 + item.hierarchy_base + data.mine.item_collider_hierarchy,
-                x: item.position.x.raw(),
-                y: item.position.y.raw(),
-                vx: item.body.velocity.x.raw(),
-                vy: item.body.velocity.y.raw(),
-                radius: (data.mine.item_radius * item.scale).raw(),
-                rotation: item.body.orientation.raw(),
-                angular_velocity: item.body.angular_velocity.raw(),
-                inverse_mass: item.body.inverse_mass.raw(),
-                ..CEntity::default()
-            };
-        }
-        self.scratch.item_order = order;
+    /// Mine.Init draws its hover offset from the shared RNG (Mine.cs:77-80).
+    fn register_mine(&mut self, index: usize, data: &data::RolloutData) {
+        let id = self.next_id();
+        self.entities.push(CEntity::default());
+        let entity = self.entities.len() - 1;
+        let random_offset =
+            Fix::ONE - self.rng.fix_range(Fix::ZERO, Fix::from_int(2)) * data.mine.hover_period;
+        let item = &mut self.thrown_items[index];
+        item.id = id;
+        item.entity = Some(entity);
+        item.random_offset = random_offset;
+        self.entities[entity] = CEntity {
+            id,
+            kind: 0,
+            layer: data.mine.item_layer,
+            // Item does not implement IPlayerIdHolder; the owner is used
+            // internally by Mine but its observation owner remains zero.
+            owner: 0,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000 + item.hierarchy_base + data.mine.item_collider_hierarchy,
+            x: item.position.x.raw(),
+            y: item.position.y.raw(),
+            vx: item.body.velocity.x.raw(),
+            vy: item.body.velocity.y.raw(),
+            radius: (data.mine.item_radius * item.scale).raw(),
+            rotation: item.body.orientation.raw(),
+            angular_velocity: item.body.angular_velocity.raw(),
+            inverse_mass: item.body.inverse_mass.raw(),
+            ..CEntity::default()
+        };
     }
 
-    /// Updater defers objects instantiated during a pass until the next pass.
-    /// Register them before player/ability updates so same-tick dash casts can
-    /// see the newly live projectile, then let arrows_tick advance them later.
-    fn register_pending_arrows(&mut self) {
+    fn register_arrow(&mut self, i: usize) {
         let radius = data::get().arrow.radius;
-        for i in 0..self.arrows.len() {
-            if !self.arrows[i].active
-                || self.arrows[i].registered
-                || self.arrows[i].born_tick >= self.tick
-            {
-                continue;
-            }
-            let entity = self.pooled_row(self.arrows[i].entity);
-            self.arrows[i].entity = Some(entity);
-            let arrow = &mut self.arrows[i];
-            // DPhysicsCircle.Init adds the circle at its spawn FixTransform
-            // before this pass's updaters, so a Dash raycast already hits it.
-            self.entities[entity] = CEntity {
-                id: arrow.id,
-                kind: 0,
-                layer: LAYER_PROJECTILE,
-                owner: arrow.owner,
-                flags: E_ACTIVE | E_ENABLED | E_PROJECTILE,
-                reserved: [ABILITY_BOW, 0],
-                hierarchy: 100_000_000
-                    + arrow.hierarchy_base
-                    + data::get().arrow.collider_hierarchy,
-                x: arrow.position.x.raw(),
-                y: arrow.position.y.raw(),
-                vx: arrow.velocity.x.raw(),
-                vy: arrow.velocity.y.raw(),
-                radius: (radius * arrow.scale).raw(),
-                inverse_mass: arrow.inverse_mass.raw(),
-                ..CEntity::default()
-            };
-            arrow.registered = true;
-        }
+        let entity = self.pooled_row(self.arrows[i].entity);
+        self.arrows[i].entity = Some(entity);
+        let arrow = &mut self.arrows[i];
+        // DPhysicsCircle.Init adds the circle at its spawn FixTransform
+        // before this pass's updaters, so a Dash raycast already hits it.
+        self.entities[entity] = CEntity {
+            id: arrow.id,
+            kind: 0,
+            layer: LAYER_PROJECTILE,
+            owner: arrow.owner,
+            flags: E_ACTIVE | E_ENABLED | E_PROJECTILE,
+            reserved: [ABILITY_BOW, 0],
+            hierarchy: 100_000_000
+                + arrow.hierarchy_base
+                + data::get().arrow.collider_hierarchy,
+            x: arrow.position.x.raw(),
+            y: arrow.position.y.raw(),
+            vx: arrow.velocity.x.raw(),
+            vy: arrow.velocity.y.raw(),
+            radius: (radius * arrow.scale).raw(),
+            inverse_mass: arrow.inverse_mass.raw(),
+            ..CEntity::default()
+        };
+        arrow.registered = true;
     }
 
-    fn register_pending_guided_missiles(&mut self, data: &data::RolloutData) {
-        for missile in &self.guided_missiles {
-            if !missile.active
-                && let Some(entity) = missile.entity
-                && self.entities[entity].flags & E_DESTROYED != 0
-            {
-                self.entities[entity].flags = E_REMOVED;
-            }
-        }
-        for index in 0..self.guided_missiles.len() {
-            let missile = self.guided_missiles[index];
-            if !missile.active || missile.registered || missile.born_tick >= self.tick {
-                continue;
-            }
-            let entity = self.pooled_row(missile.entity);
-            self.guided_missiles[index].entity = Some(entity);
-            let id = self.next_id();
-            let collider = OrientedBox::from_basis(
-                missile.position,
-                Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents * missile.scale,
-            );
-            self.entities[entity] = CEntity {
-                id,
-                kind: 1,
-                layer: data.missile.spark_layer,
-                flags: E_ACTIVE | E_ENABLED,
-                hierarchy: 100_000_000
-                    + missile.hierarchy_base
-                    + data.missile.spark_collider_hierarchy,
-                x: missile.position.x.raw(),
-                y: missile.position.y.raw(),
-                vx: missile.body.velocity.x.raw(),
-                vy: missile.body.velocity.y.raw(),
-                right_x: collider.right.x.raw(),
-                right_y: collider.right.y.raw(),
-                up_x: collider.up.x.raw(),
-                up_y: collider.up.y.raw(),
-                rotation: missile.body.orientation.raw(),
-                angular_velocity: missile.body.angular_velocity.raw(),
-                inverse_mass: missile.body.inverse_mass.raw(),
-                ..CEntity::default()
-            };
-            self.guided_missiles[index].registered = true;
-        }
+    fn register_guided_missile(&mut self, index: usize, data: &data::RolloutData) {
+        let missile = self.guided_missiles[index];
+        let entity = self.pooled_row(missile.entity);
+        self.guided_missiles[index].entity = Some(entity);
+        let id = self.next_id();
+        let collider = OrientedBox::from_basis(
+            missile.position,
+            Vec2::angle(missile.body.orientation),
+            data.missile.spark_extents * missile.scale,
+        );
+        self.entities[entity] = CEntity {
+            id,
+            kind: 1,
+            layer: data.missile.spark_layer,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000
+                + missile.hierarchy_base
+                + data.missile.spark_collider_hierarchy,
+            x: missile.position.x.raw(),
+            y: missile.position.y.raw(),
+            vx: missile.body.velocity.x.raw(),
+            vy: missile.body.velocity.y.raw(),
+            right_x: collider.right.x.raw(),
+            right_y: collider.right.y.raw(),
+            up_x: collider.up.x.raw(),
+            up_y: collider.up.y.raw(),
+            rotation: missile.body.orientation.raw(),
+            angular_velocity: missile.body.angular_velocity.raw(),
+            inverse_mass: missile.body.inverse_mass.raw(),
+            ..CEntity::default()
+        };
+        self.guided_missiles[index].registered = true;
     }
 
-    fn register_pending_missile_explosions(&mut self, data: &data::RolloutData) {
-        // Mine detonations use this same prefab but do not pass through the
-        // Grenade registration path that normally retires callback-destroyed
-        // thrown-item rows before registering the queued explosion.
-        for item in &self.thrown_items {
-            if !item.active
-                && let Some(entity) = item.entity
-                && self.entities[entity].flags & E_DESTROYED != 0
-            {
-                self.entities[entity].flags = E_REMOVED;
-            }
-        }
-        for index in 0..self.missile_explosions.len() {
-            let explosion = self.missile_explosions[index];
-            if !explosion.active || explosion.registered || explosion.born_tick >= self.tick {
-                continue;
-            }
-            let entity = self.pooled_row(explosion.entity);
-            self.missile_explosions[index].entity = Some(entity);
-            let id = self.next_id();
-            let collider = OrientedBox::from_basis(
-                explosion.position,
-                Vec2::RIGHT,
-                data.missile.explosion_extents * explosion.scale,
-            );
-            self.entities[entity] = CEntity {
-                id,
-                kind: 1,
-                layer: data.missile.explosion_layer,
-                flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
-                hierarchy: 100_000_000
-                    + explosion.hierarchy_base
-                    + data.missile.explosion_collider_hierarchy,
-                x: explosion.position.x.raw(),
-                y: explosion.position.y.raw(),
-                right_x: collider.right.x.raw(),
-                right_y: collider.right.y.raw(),
-                up_x: collider.up.x.raw(),
-                up_y: collider.up.y.raw(),
-                inverse_mass: -Fix::ONE.raw(),
-                ..CEntity::default()
-            };
-            self.missile_explosions[index].registered = true;
-            self.apply_explosion_shockwave(explosion.position, data.missile.explosion_shockwave);
-        }
+    fn register_missile_explosion(&mut self, index: usize, data: &data::RolloutData) {
+        let explosion = self.missile_explosions[index];
+        let entity = self.pooled_row(explosion.entity);
+        self.missile_explosions[index].entity = Some(entity);
+        let id = self.next_id();
+        let collider = OrientedBox::from_basis(
+            explosion.position,
+            Vec2::RIGHT,
+            data.missile.explosion_extents * explosion.scale,
+        );
+        self.entities[entity] = CEntity {
+            id,
+            kind: 1,
+            layer: data.missile.explosion_layer,
+            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000
+                + explosion.hierarchy_base
+                + data.missile.explosion_collider_hierarchy,
+            x: explosion.position.x.raw(),
+            y: explosion.position.y.raw(),
+            right_x: collider.right.x.raw(),
+            right_y: collider.right.y.raw(),
+            up_x: collider.up.x.raw(),
+            up_y: collider.up.y.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        };
+        self.missile_explosions[index].registered = true;
+        self.apply_explosion_shockwave(explosion.position, data.missile.explosion_shockwave);
     }
 
     fn spawn_missile_explosion(
@@ -34282,21 +34259,14 @@ impl RolloutWorld {
         }
     }
 
-    /// The clone prefab's hurtbox joins DetPhysics when the updater
-    /// initializes it on the following tick (DPhysicsBox.Init).
-    fn register_pending_abilityless_clones(&mut self) {
-        for clone_index in 0..self.abilityless_clones.len() {
-            let clone = &self.abilityless_clones[clone_index];
-            if !clone.active || clone.entity.is_some() || clone.born_tick >= self.tick {
-                continue;
-            }
-            let hierarchy = 100_000_000 + clone.hierarchy_base + 6;
-            let entity = self.entities.len();
-            let id = self.next_id();
-            self.entities.push(CEntity { id, hierarchy, ..CEntity::default() });
-            self.abilityless_clones[clone_index].entity = Some(entity);
-            self.sync_abilityless_clone_entity(clone_index);
-        }
+    fn register_abilityless_clone(&mut self, clone_index: usize) {
+        let clone = &self.abilityless_clones[clone_index];
+        let hierarchy = 100_000_000 + clone.hierarchy_base + 6;
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity { id, hierarchy, ..CEntity::default() });
+        self.abilityless_clones[clone_index].entity = Some(entity);
+        self.sync_abilityless_clone_entity(clone_index);
     }
 
     fn sync_abilityless_clone_entity(&mut self, clone_index: usize) {
@@ -40348,7 +40318,7 @@ mod tests {
         let data = data::get();
         world.duplicate_player_target(1, Vec2::ZERO, Vec2::UP, data);
         world.tick += 1;
-        world.register_pending_abilityless_clones();
+        world.register_pending_objects(data);
         let entity = world.abilityless_clones[0].entity.unwrap();
         for row in &mut world.entities {
             row.flags = 0;
@@ -41278,7 +41248,7 @@ mod tests {
             ..TeleportMarker::default()
         });
 
-        world.register_pending_teleport_markers(data::get());
+        world.register_pending_objects(data::get());
 
         let entity = world.teleport_marker_pool[0].entity.unwrap();
         assert_eq!(
