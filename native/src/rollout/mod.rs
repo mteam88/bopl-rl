@@ -6112,7 +6112,6 @@ impl RolloutWorld {
         if has_rope {
             self.ropes_physics(physics_dt);
         }
-        self.kill_squished();
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_contacts();
         }
@@ -6160,6 +6159,11 @@ impl RolloutWorld {
             }
             self.thrown_item_platform_contacts(data);
         }
+        // That was the last correction that moves a wall. The squish callback
+        // queued in the Box/RR group runs only after every group's corrections
+        // (DetPhysics.cs:3195-3199), so a form's dead ExitAbility ungrounds off
+        // the wall where the item pushes left it.
+        self.kill_squished();
         if has(ABILITY_BOW) {
             self.arrows_contacts(data);
         }
