@@ -23390,6 +23390,10 @@ impl RolloutWorld {
                 // registration order, a Tesla node, is tested as (circle,
                 // boulder), and the circle's own correction, away from the
                 // boulder, is what moves the boulder (DetPhysics.cs:2631-2644).
+                // MoveObjectOutOfWalls starts with UpdatePhysicsPositions, which
+                // re-places the nodes planted on the boulder itself on its moved
+                // transform (DetPhysics.cs:2533-2535, DPhysicsRoundedRect.cs:387-401).
+                let right = self.platforms[platform].surface.right;
                 let node_push = || {
                     self.tesla_nodes
                         .iter()
@@ -23399,8 +23403,13 @@ impl RolloutWorld {
                             if entity.flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
                                 return None;
                             }
+                            let center = if node.platform_index == platform {
+                                position + node.relative_center.complex_mul(right)
+                            } else {
+                                node.collider_center
+                            };
                             let circle = Circle {
-                                center: node.collider_center,
+                                center,
                                 radius: data.tesla.node_radius * node.collider_scale,
                             };
                             crate::physics::contact::circle_rounded(circle, shape)
