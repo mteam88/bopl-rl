@@ -3236,11 +3236,13 @@ fn empty_state() -> Box<CState> {
     })
 }
 
-fn new_beam_graph(data: &data::RolloutData) -> crate::beam::graph::Graph {
+/// Beam's water reflection tests Constants.WATER_HEIGHT and skips it on a
+/// space level (Beam.cs:446, 604).
+fn new_beam_graph(data: &data::RolloutData, space: bool) -> crate::beam::graph::Graph {
     crate::beam::graph::Graph::new(crate::beam::graph::Config {
         maximum: data.beam.maximum_distance,
         water: Fix::from_f32(-11.22),
-        space: false,
+        space,
         mask: data.beam.hit_mask,
         cross_offset: data.beam.cross_offset,
         environmental_player: 1000,
@@ -3333,7 +3335,7 @@ impl RolloutWorld {
             ropes: rope_abilities::rope_pool(),
             next_rope_number: 0,
             rope_rectangles: Vec::with_capacity(64),
-            beam_graph: new_beam_graph(data::get()),
+            beam_graph: new_beam_graph(data::get(), false),
             beam_snapshot: crate::beam::graph::Snapshot::default(),
             beam_inputs: Vec::with_capacity(MAX_PLAYERS),
             sudden_death: false,
@@ -3688,7 +3690,7 @@ impl RolloutWorld {
         self.beam_pool.clear();
         self.next_rope_number = 0;
         self.rope_rectangles.clear();
-        self.beam_graph = new_beam_graph(data);
+        self.beam_graph = new_beam_graph(data, data.maps[self.map].is_space());
         self.beam_snapshot = crate::beam::graph::Snapshot::default();
         self.beam_inputs.clear();
         self.players.clear();
