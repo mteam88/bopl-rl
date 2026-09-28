@@ -34696,7 +34696,6 @@ impl RolloutWorld {
         }
         // Everything below may move a body.
         self.intro_contacts_pending = false;
-        self.platforms_changed();
         // ResizablePlatform follows AnimateVelocity in its prefab
         // (ResizablePlatform.prefab component order), so the spring impulse
         // above used the pre-resize mass while DetPhysics integrates it with
@@ -34725,6 +34724,9 @@ impl RolloutWorld {
         for index in removal_destroys {
             self.remove_platform(index);
         }
+        // Resizes and removals rebuild the raycast bounds themselves; the
+        // integration and corrections below move the bodies after that.
+        self.platforms_changed();
 
         // DetPhysics integrates every rounded body before it constructs any
         // contacts. Only dropped boulders and springless sudden-death bodies
