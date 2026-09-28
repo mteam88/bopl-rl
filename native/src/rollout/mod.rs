@@ -12634,7 +12634,12 @@ impl RolloutWorld {
             }
         });
 
-        for node_index in 0..self.tesla_nodes.len() {
+        // SimpleSparkNode.UpdateSim in hierarchy order (SimpleSparkNode.cs:224-245):
+        // a node reads its partners' state, and connecting instantiates the
+        // lightning, claiming spawn hierarchy.
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.tesla_nodes, |node| node.hierarchy_base);
+        for &node_index in &order {
             if !self.tesla_nodes[node_index].active
                 || self.tesla_nodes[node_index].macho_carried
                 || self.tesla_nodes[node_index].spawn_tick >= self.tick
@@ -12684,6 +12689,38 @@ impl RolloutWorld {
             }
         }
 
+        // A connection's StretchableLightning registers its collider as Updater
+        // runs the new objects' Inits, in hierarchy order (Updater.cs:270-276).
+        hierarchy_order(&mut order, &self.tesla_nodes, |node| node.line_hierarchy_base);
+        for &node_index in &order {
+            let node = self.tesla_nodes[node_index];
+            if !node.active
+                || node.macho_carried
+                || !node.connected
+                || node.child.is_none()
+                || node.line_entity.is_some()
+                || node.line_born_tick >= self.tick
+            {
+                continue;
+            }
+            let entity = self.entities.len();
+            let id = self.next_id();
+            self.entities.push(CEntity {
+                id,
+                kind: 1,
+                layer: data.tesla.lightning_layer,
+                owner: node.owner as u32 + 1,
+                flags: E_ENABLED | E_TRIGGER,
+                hierarchy: 100_000_000
+                    + node.line_hierarchy_base
+                    + data.tesla.lightning_collider_hierarchy,
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            });
+            self.tesla_nodes[node_index].line_entity = Some(entity);
+        }
+        self.scratch.item_order = order;
+
         for node_index in 0..self.tesla_nodes.len() {
             if !self.tesla_nodes[node_index].active
                 || self.tesla_nodes[node_index].macho_carried
@@ -12692,26 +12729,6 @@ impl RolloutWorld {
             {
                 continue;
             }
-            if self.tesla_nodes[node_index].line_entity.is_none()
-                && self.tesla_nodes[node_index].line_born_tick < self.tick
-            {
-                let entity = self.entities.len();
-                let id = self.next_id();
-                self.entities.push(CEntity {
-                    id,
-                    kind: 1,
-                    layer: data.tesla.lightning_layer,
-                    owner: self.tesla_nodes[node_index].owner as u32 + 1,
-                    flags: E_ENABLED | E_TRIGGER,
-                    hierarchy: 100_000_000
-                        + self.tesla_nodes[node_index].line_hierarchy_base
-                        + data.tesla.lightning_collider_hierarchy,
-                    inverse_mass: -Fix::ONE.raw(),
-                    ..CEntity::default()
-                });
-                self.tesla_nodes[node_index].line_entity = Some(entity);
-            }
-
             if self.player_time_scale >= Fix::from_f32(0.01) {
                 self.tesla_nodes[node_index].enter_ticks += 1;
             }
