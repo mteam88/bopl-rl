@@ -35971,7 +35971,10 @@ impl RolloutWorld {
                 radius: Fix::ZERO,
             };
             for (wall_index, platform) in self.platforms.iter().enumerate() {
-                if wall_index == parent_index || !platform.active {
+                if wall_index == parent_index
+                    || !platform.active
+                    || !Self::box_swept_with_wall(attack_rr, scratch.callback_colliders[wall_index])
+                {
                     continue;
                 }
                 if let Some(contact) =
@@ -36015,7 +36018,10 @@ impl RolloutWorld {
                 radius: Fix::ZERO,
             };
             for (wall_index, platform) in self.platforms.iter().enumerate() {
-                if wall_index == parent_index || !platform.active {
+                if wall_index == parent_index
+                    || !platform.active
+                    || !Self::box_swept_with_wall(box_rr, scratch.callback_colliders[wall_index])
+                {
                     continue;
                 }
                 if let Some(contact) =
@@ -36135,6 +36141,23 @@ impl RolloutWorld {
         // transformed owner is handled by deaths_tick using the position it
         // copied before physics. The separate ResizablePlatform prefab has no
         // boundary component: it remains a collidable body after that death.
+    }
+
+    /// DetPhysics pairs a Box with a RoundedRect only if their bounding boxes,
+    /// taken before the RoundedRect/RoundedRect corrections, strictly overlap
+    /// (SortAndSweep). A wall those corrections push into a box this pass is
+    /// not tested against it.
+    fn box_swept_with_wall(box_rr: RoundedRect, wall: RoundedRect) -> bool {
+        let bounds = |r: RoundedRect| {
+            let extent = Vec2::new(
+                r.inner.right.x.abs() + r.inner.up.x.abs() + r.radius,
+                r.inner.right.y.abs() + r.inner.up.y.abs() + r.radius,
+            );
+            [r.inner.center - extent, r.inner.center + extent]
+        };
+        let [a_min, a_max] = bounds(box_rr);
+        let [b_min, b_max] = bounds(wall);
+        a_max.x > b_min.x && a_min.x < b_max.x && a_max.y > b_min.y && a_min.y < b_max.y
     }
 
     /// A wall as the Circle/RoundedRect narrow phase saw it this pass.
