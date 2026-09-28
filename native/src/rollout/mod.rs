@@ -8399,7 +8399,9 @@ impl RolloutWorld {
                                 )
                                 .expect("valid Missile air constants");
                                 slot.base.collision_rays(terrain!(self));
-                                if !slot.base.grounded {
+                                if slot.base.grounded {
+                                    slot.missile.collider_rotation = slot.base.rotation;
+                                } else {
                                     slot.base.position +=
                                         (slot.base.velocity + slot.base.external_velocity) * DT;
                                 }
@@ -20326,7 +20328,11 @@ impl RolloutWorld {
             )
             .expect("valid Missile air constants");
             slot.base.collision_rays(terrain!(self));
-            if !slot.base.grounded {
+            // A landing in Move's own query attaches the form and aligns its
+            // FixTransform, which DetPhysics publishes before LateUpdateSim.
+            if slot.base.grounded {
+                slot.missile.collider_rotation = slot.base.rotation;
+            } else {
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             }
             slot.base.external_velocity *= Fix::from_f64(0.95);
