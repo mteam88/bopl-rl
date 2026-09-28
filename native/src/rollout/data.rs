@@ -1262,6 +1262,10 @@ pub struct PlatformDef {
     pub surface: Surface,
     /// The collider's authored half-extents (`startExtents * scale`); the
     /// surface carries the perimeter's `One / (One / e)` reading instead.
+    /// A Duplicator copy's StickyRoundedRectangle.Awake caches these and
+    /// `start_radius` before its collider exists.
+    pub start_extents: Vec2,
+    pub start_radius: Fix,
     /// DPhysicsRoundedRect's stored inverse extents. GrowOnStart updates this
     /// incrementally (`inverseExtents /= ratio`), which is observably different
     /// from recomputing `One / finalExtents` before the first contact.
@@ -2479,6 +2483,8 @@ fn map_def(raw: &RawMap) -> MapDef {
                     radius: Fix::from_raw(p.radius) * base_scale,
                     bounds_radius: Fix::from_raw(p.radius) * base_scale,
                 },
+                start_extents: authored_extents,
+                start_radius: Fix::from_raw(p.radius) * authored_scale,
                 collider_inverse_extents,
                 collider_axis_extents,
                 hierarchy: p.hierarchy,

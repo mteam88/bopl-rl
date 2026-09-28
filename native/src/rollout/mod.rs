@@ -1617,6 +1617,8 @@ pub struct DuplicatePlatformState {
     pub spawn_position: Vec2,
     pub spawner_hierarchy: u32,
     pub hierarchy_base: u32,
+    /// The pass a later Blink release already stepped this effect in.
+    pub stepped_tick: Option<u32>,
 }
 
 /// Per-player platform ability state (PlatformTransform.cs).
@@ -2372,6 +2374,8 @@ pub struct PlayerSlot {
     /// the end of the visual lifetime, then reenables it on a later pass.
     pub blink_tunnel_active: bool,
     pub blink_tunnel_born_tick: u32,
+    /// The tunnel's first updater hierarchy; its release steps earlier ones.
+    pub blink_tunnel_hierarchy: u32,
     pub blink_tunnel_age: Fix,
     pub blink_tunnel_released: bool,
     /// The pass the tunnel reenabled the victim. Nothing publishes
@@ -4105,6 +4109,7 @@ impl RolloutWorld {
                 teleport_effect_time: Fix::ZERO,
                 blink_tunnel_active: false,
                 blink_tunnel_born_tick: 0,
+                blink_tunnel_hierarchy: 0,
                 blink_tunnel_age: Fix::ZERO,
                 blink_tunnel_released: false,
                 blink_tunnel_end_tick: None,
@@ -5529,6 +5534,16 @@ impl RolloutWorld {
         }
         if has(ABILITY_DUPLICATOR) {
             self.duplicated_objects_tick();
+            // ShakablePlatform.Init reruns a new Duplicator copy's UpdateBounds
+            // (ShakablePlatform.cs:106-111) ahead of its first updater pass.
+            for i in 0..self.platforms.len() {
+                if self.platforms[i].active
+                    && self.platform_dynamics[i].init_tick == Some(self.tick)
+                    && self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some()
+                {
+                    self.update_surface_bounds(i);
+                }
+            }
         }
         // Updatables earlier than a TimeStop effect observe the scale from
         // the start of the pass. DetPhysics observes any scale written by the
@@ -5953,7 +5968,7 @@ impl RolloutWorld {
             self.scale_changers_tick(data);
         }
         if has(ABILITY_DUPLICATOR) {
-            self.duplicate_platform_effects_tick(data, updater_dt);
+            self.duplicate_platform_effects_tick(data, updater_dt, None);
         }
         if has(ABILITY_METEOR) {
             self.meteor_smears_tick(data);
@@ -25738,6 +25753,7 @@ impl RolloutWorld {
         let caster_slot = self.players[caster].active_slot;
         self.players[caster].cooldowns[caster_slot] = data.blink.on_player_hit_cooldown;
         if !self.players[victim].blink_tunnel_active {
+            self.players[victim].blink_tunnel_hierarchy = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
         }
         let rope_top = self.players[victim].rope_top;
@@ -25942,6 +25958,10 @@ impl RolloutWorld {
                 && self.players[victim].blink_tunnel_age
                     >= data.blink.player_duration - data.blink.tunnel_release_duration
             {
+                // A DuplicatePlatformEffect registered before this tunnel has
+                // already spawned its copy, which the release may land on.
+                let hierarchy = self.players[victim].blink_tunnel_hierarchy;
+                self.duplicate_platform_effects_tick(data, updater_dt, Some(hierarchy));
                 if self.players[victim].base.grounded {
                     self.release_grounded_blink_player(victim);
                     // AttachToGround aligns the swallowed form's own body,
@@ -26825,6 +26845,7 @@ impl RolloutWorld {
             spawn_position,
             spawner_hierarchy,
             hierarchy_base: self.next_spawn_hierarchy,
+            stepped_tick: None,
         };
         if let Some(slot) = self
             .duplicate_platform_effects
@@ -26843,16 +26864,27 @@ impl RolloutWorld {
         dynamics.meteor_shake_curve = false;
     }
 
-    fn duplicate_platform_effects_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// `before` steps only the effects registered before that updater.
+    fn duplicate_platform_effects_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        before: Option<u32>,
+    ) {
         if updater_dt == Fix::ZERO {
             return;
         }
         let mut spawn = Vec::new();
         for effect_index in 0..self.duplicate_platform_effects.len() {
             let snapshot = self.duplicate_platform_effects[effect_index];
-            if !snapshot.active || snapshot.born_tick == self.tick {
+            if !snapshot.active
+                || snapshot.born_tick == self.tick
+                || snapshot.stepped_tick == Some(self.tick)
+                || before.is_some_and(|before| snapshot.hierarchy_base >= before)
+            {
                 continue;
             }
+            self.duplicate_platform_effects[effect_index].stepped_tick = Some(self.tick);
             if snapshot.source >= self.platforms.len() {
                 self.duplicate_platform_effects[effect_index].active = false;
                 continue;
@@ -27023,6 +27055,24 @@ impl RolloutWorld {
         platform.surface.center = position;
         platform.collider.inner.center = position;
         self.next_platform_id += 1;
+        // The copy's StickyRoundedRectangle.Awake runs inside DuplicateObject,
+        // before the effect initializes its collider, so UpdateBounds caches the
+        // serialized startExtents and startRadius (StickyRoundedRectangle.cs:99,
+        // DPhysicsRoundedRect.cs:351-361) until ShakablePlatform.Init reruns it.
+        // A copy's own start values are the live shape its effect wrote into
+        // them (DuplicatePlatformEffect.cs:329-331).
+        if platform.active {
+            let authored = definition != usize::MAX
+                && self.platform_dynamics[source].duplicate_spawner_hierarchy.is_none();
+            let (extents, radius) = if authored {
+                let def = &data.maps[self.map].platforms[definition];
+                (def.start_extents, def.start_radius)
+            } else {
+                (platform.surface.extents, platform.collider.radius)
+            };
+            platform.surface.extents = extents;
+            platform.surface.bounds_radius = radius;
+        }
 
         for dynamics in &mut self.platform_dynamics {
             if dynamics.duplicate_spawner_hierarchy == Some(spawner_hierarchy)
@@ -38746,7 +38796,7 @@ mod tests {
             .spawn_position;
 
         world.tick += 1;
-        world.duplicate_platform_effects_tick(data::get(), DT);
+        world.duplicate_platform_effects_tick(data::get(), DT, None);
 
         let expected = Fix::from_int(2) * (Fix::ONE - Fix::from_f64(0.2)) + Fix::from_f64(0.2);
         assert_eq!(world.platform_dynamics[source].scale, expected);
