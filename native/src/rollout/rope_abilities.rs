@@ -1199,6 +1199,11 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // A wall QuantumTunnel registered before this rope (ShootQuantum
+            // reuses a wall's tunnel) has already hidden or restored its wall
+            // when the RopeAttachment asks activeInHierarchy.
+            let hierarchy = self.ropes[index].hierarchy;
+            self.blink_platform_tunnels_tick(data::get(), DT * self.player_time_scale, Some(hierarchy));
             if self.ropes[index].physics.time_since_hook_arrived >= Fix::ZERO {
                 self.ropes[index].physics.time_since_hook_arrived += DT * self.player_time_scale;
             }
@@ -1261,6 +1266,7 @@ impl RolloutWorld {
             }
             if platform >= self.platforms.len()
                 || self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
+                || !self.platforms[platform].active
             {
                 let top = self.ropes[index].platform_top;
                 self.deattach_rope(index, top);
