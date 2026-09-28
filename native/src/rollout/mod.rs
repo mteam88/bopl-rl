@@ -27251,6 +27251,17 @@ impl RolloutWorld {
         }
 
         let mut dynamics = self.platform_dynamics[source];
+        if dynamics.attached_children != 0 || dynamics.composite_rebuild {
+            // The effect unparents the source's terrain children around
+            // DuplicateObject (DuplicatePlatformEffect.cs:298-316), so the copy
+            // is a lone rounded rect on its own body.
+            let orientation = dynamics.body.orientation;
+            dynamics.body = dynamics.root_body;
+            dynamics.body.orientation = orientation;
+            dynamics.attached_children = 0;
+            dynamics.attach_count = 0;
+            dynamics.composite_rebuild = false;
+        }
         // InstantiateFixed builds a fresh PhysicsBody from BoplBody's
         // StartVelocity fields; it does not copy the source collider's live
         // velocity/force accumulator.
