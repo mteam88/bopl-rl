@@ -20397,18 +20397,9 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                if crate::physics::contact::circle_circle(
-                    query,
-                    Circle {
-                        center: cloud.position,
-                        radius: data.smoke.cloud_base_radius * cloud.scale,
-                    },
-                )
-                .is_some()
-                {
-                    wave.smoke_indices[wave.smoke_count] = cloud_index;
-                    wave.smoke_count += 1;
-                }
+                // The cast already tested the cloud's live, animated radius.
+                wave.smoke_indices[wave.smoke_count] = cloud_index;
+                wave.smoke_count += 1;
             }
             // RigidBodyAffector bypasses IPhysicsCollider and calls
             // BlackHole.AddForce during every curve sample.
