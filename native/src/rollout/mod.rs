@@ -36428,6 +36428,17 @@ impl RolloutWorld {
                 .form_exit
                 .filter(|&(tick, _)| tick == self.tick)
                 .map_or(slot.reported_position, |(_, position)| position);
+            // A gun form a freeze ray forced out this pass. The bypass's
+            // Ability.ExitAbility skips GunTransform.ExitAbility's rotation
+            // reset (FreezeRayGun.cs:128, GunTransform.cs:84-98), so the form
+            // stays synced on its aimed basis where it stood. One entered on
+            // this pass never published active, but EnterAbility gave it its
+            // owner.
+            let forced_exit_e = if slot.gun.forced_exit_tick == self.tick {
+                slot.gun.forced_exit_entity
+            } else {
+                usize::MAX
+            };
             let dash_exit_rotation = slot.base.dash.exit_rotation;
             let data = data::get();
 
@@ -36811,11 +36822,7 @@ impl RolloutWorld {
                 } else {
                     E_ENABLED | E_TRIGGER
                 };
-                // A form the ray forces out on the pass it was entered never
-                // published active, but EnterAbility gave it its owner and the
-                // bypass's ExitAbility still leaves it synced where it stood.
-                let forced_exit =
-                    slot.gun.forced_exit_tick == self.tick && slot.gun.forced_exit_entity == freeze_e;
+                let forced_exit = forced_exit_e == freeze_e;
                 if freezing || forced_exit {
                     freeze_box.owner = slot.base.id;
                 }
@@ -36874,19 +36881,24 @@ impl RolloutWorld {
                 } else {
                     E_ENABLED | E_TRIGGER
                 };
-                if blinking {
+                let forced_exit = forced_exit_e == blink_e;
+                if blinking || forced_exit {
                     blink_box.owner = slot.base.id;
                 }
-                if (alive && blinking) || was_active {
+                if (alive && blinking) || was_active || forced_exit {
                     let (root, rotation, scale) = if blinking {
                         // Latched at the shot, as at the Freeze row above.
                         (synced, rotation, slot.base.scale)
+                    } else if forced_exit {
+                        (exit_position, slot.gun.forced_exit_basis.1, slot.base.scale)
                     } else {
                         (exit_position, Fix::ZERO, slot.base.scale)
                     };
                     let basis = Vec2::angle(rotation);
                     let offset_basis = if blinking {
                         slot.gun.collider_up.perp_cw()
+                    } else if forced_exit {
+                        slot.gun.forced_exit_basis.0
                     } else {
                         basis
                     };
@@ -36922,19 +36934,24 @@ impl RolloutWorld {
                 } else {
                     E_ENABLED | E_TRIGGER
                 };
-                if active {
+                let forced_exit = forced_exit_e == ray_e;
+                if active || forced_exit {
                     ray_box.owner = slot.base.id;
                 }
-                if (alive && active) || was_active {
+                if (alive && active) || was_active || forced_exit {
                     let (root, rotation, scale) = if active {
                         // Latched at the shot, as at the Freeze row above.
                         (synced, rotation, slot.base.scale)
+                    } else if forced_exit {
+                        (exit_position, slot.gun.forced_exit_basis.1, slot.base.scale)
                     } else {
                         (exit_position, Fix::ZERO, slot.base.scale)
                     };
                     let basis = Vec2::angle(rotation);
                     let offset_basis = if active {
                         slot.gun.collider_up.perp_cw()
+                    } else if forced_exit {
+                        slot.gun.forced_exit_basis.0
                     } else {
                         basis
                     };
@@ -36963,19 +36980,24 @@ impl RolloutWorld {
                 } else {
                     E_ENABLED | E_TRIGGER
                 };
-                if duplicating {
+                let forced_exit = forced_exit_e == duplicator_e;
+                if duplicating || forced_exit {
                     row.owner = slot.base.id;
                 }
-                if (alive && duplicating) || was_active {
+                if (alive && duplicating) || was_active || forced_exit {
                     let (root, rotation, scale) = if duplicating {
                         // Latched at the shot, as at the Freeze row above.
                         (synced, rotation, slot.base.scale)
+                    } else if forced_exit {
+                        (exit_position, slot.gun.forced_exit_basis.1, slot.base.scale)
                     } else {
                         (exit_position, Fix::ZERO, slot.base.scale)
                     };
                     let basis = Vec2::angle(rotation);
                     let offset_basis = if duplicating {
                         slot.gun.collider_up.perp_cw()
+                    } else if forced_exit {
+                        slot.gun.forced_exit_basis.0
                     } else {
                         basis
                     };
