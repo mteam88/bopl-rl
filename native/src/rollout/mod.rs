@@ -2261,6 +2261,11 @@ pub struct PlayerSlot {
     /// skips its 0.05 separation. The surface is where it died: a Bow firing
     /// before it ungrounds still reads currentNormal off the dead body.
     pub ground_destroyed: Option<Surface>,
+    /// The pass UpdateDuplicatedObjects destroyed that ground, ahead of the
+    /// updaters (Updater.cs:285-288): until the pass-end DestroyImmediate it
+    /// is IsDestroyed but not null, so that pass's UnGround still lifts the
+    /// body 0.05 off it (PlayerPhysics.cs:366-370).
+    pub ground_destroyed_tick: Option<u32>,
     pub bow: BowState,
     pub rock: RockState,
     pub roll: RollState,
@@ -2567,6 +2572,14 @@ impl PlayerSlot {
     fn restore_slime_radius(&mut self) {
         self.base.radius = self.exit_slime_radius();
         self.physics_scale = self.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+    }
+
+    /// UnGround's lift off a lost ground (PlayerPhysics.cs:366-370), which
+    /// only a Duplicator copy expiring on this very pass still provides.
+    fn lift_off_destroyed_ground(&mut self, surface: &Surface, tick: u32) {
+        if std::mem::take(&mut self.ground_destroyed_tick) == Some(tick) {
+            self.base.position += surface.normal(self.base.position) * Fix::from_f32(0.05);
+        }
     }
 
     fn set_ordinary_body_scale(&mut self, scale: Fix) {
@@ -4070,6 +4083,7 @@ impl RolloutWorld {
                 reported_tick: u32::MAX,
                 form_exit: None,
                 ground_destroyed: None,
+                ground_destroyed_tick: None,
                 bow: BowState::default(),
                 rock: RockState::default(),
                 roll: RollState::default(),
@@ -7898,16 +7912,21 @@ impl RolloutWorld {
                 | ActiveAbility::PokeBall
                 | ActiveAbility::Throw
         );
-        if !matches!(
+        let lost = if matches!(
             self.players[index].active,
             ActiveAbility::Beam
                 | ActiveAbility::BlackHole
                 | ActiveAbility::Bow
                 | ActiveAbility::Missile
-        )
-            && std::mem::take(&mut self.players[index].ground_destroyed).is_some()
+        ) {
+            None
+        } else {
+            std::mem::take(&mut self.players[index].ground_destroyed)
+        };
+        if let Some(surface) = lost
             && !finds_it_later
         {
+            let tick = self.tick;
             let slot = &mut self.players[index];
             // Ordinary SlimeController explicitly zeros rotation before
             // UnGround(false). PlayerPhysics already skipped gravity earlier
@@ -7928,6 +7947,7 @@ impl RolloutWorld {
                     slot.state_ticks = 0;
                 }
             }
+            slot.lift_off_destroyed_ground(&surface, tick);
             slot.base.grounded = false;
             slot.base.ground = None;
             slot.base.grounded_speed = Fix::ZERO;
@@ -15572,10 +15592,12 @@ impl RolloutWorld {
     /// re-reads the staff against the zeroed rotation. Nothing else moves the
     /// form that pass.
     fn beam_lost_ground(&mut self, index: usize) -> bool {
-        if std::mem::take(&mut self.players[index].ground_destroyed).is_none() {
+        let Some(surface) = std::mem::take(&mut self.players[index].ground_destroyed) else {
             return false;
-        }
+        };
+        let tick = self.tick;
         let slot = &mut self.players[index];
+        slot.lift_off_destroyed_ground(&surface, tick);
         slot.base.grounded = false;
         slot.base.ground = None;
         slot.base.grounded_speed = Fix::ZERO;
@@ -24969,7 +24991,13 @@ impl RolloutWorld {
             self.platform_dynamics[platform_index].duplicate_lifespan -= 1;
             let lifespan = self.platform_dynamics[platform_index].duplicate_lifespan;
             if lifespan < 0 {
+                let id = self.platforms[platform_index].id;
                 self.remove_platform(platform_index);
+                for slot in &mut self.players {
+                    if slot.ground_destroyed.is_some() && slot.base.ground == Some(id) {
+                        slot.ground_destroyed_tick = Some(self.tick);
+                    }
+                }
             } else if lifespan < 60 {
                 let progress = Fix::ONE - Fix::from_int(i64::from(lifespan)) / Fix::from_int(60);
                 let old = self.platform_dynamics[platform_index].duplicate_shake_offset;
@@ -27513,8 +27541,12 @@ impl RolloutWorld {
         // BowTransform.UpdateSim ungrounds a Bow whose ground went inactive and
         // lets it fall in the same pass; UnGround still lifts it off that
         // surface (BowTransform.cs:214-218, PlayerPhysics.cs:366-370). A
-        // destroyed ground is already null, so there is no lift.
-        if std::mem::take(&mut slot.ground_destroyed).is_some() && slot.base.grounded {
+        // destroyed ground is already null, so there is no lift, unless it is
+        // a Duplicator copy that expired earlier in this same pass.
+        if let Some(surface) = std::mem::take(&mut slot.ground_destroyed)
+            && slot.base.grounded
+        {
+            slot.lift_off_destroyed_ground(&surface, tick);
             slot.base.force_unground(platforms);
         }
         if slot.base.grounded {
