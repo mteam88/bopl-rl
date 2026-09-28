@@ -6422,6 +6422,9 @@ impl RolloutWorld {
         if has_thrown_item || has(ABILITY_TESLA) {
             self.thrown_item_pair_contacts(data);
         }
+        if has(ABILITY_SPIKE) {
+            self.spike_wall_callbacks(data);
+        }
         if has(ABILITY_MJOLNIR) {
             self.mjolnir_wall_pushes(data);
         }
@@ -13119,6 +13122,31 @@ impl RolloutWorld {
             direction,
         );
         self.spike_attacks[spike_index].pushed_this_frame = true;
+    }
+
+    /// SpikeAttack.OnCollide for its Box/RR manifolds with walls. DetPhysics
+    /// runs every callback after all groups resolved, so the knock on the
+    /// wall and the push back on the spike's own platform land after the
+    /// Circle/RR, Circle/Circle and Circle/Box impulses of this pass.
+    fn spike_wall_callbacks(&mut self, data: &data::RolloutData) {
+        let contacts = std::mem::take(&mut self.scratch.spike_wall_contacts);
+        if self.player_time_scale >= Fix::from_f32(0.01) {
+            for &(spike_index, wall_index, contact) in &contacts {
+                if self.spike_attacks[spike_index].time >= data.spike.push_time {
+                    continue;
+                }
+                let spike_root = self.spike_attack_root(spike_index, data);
+                let direction = (contact.point - spike_root).normalized_safe();
+                let wall_arm =
+                    (contact.point - self.platforms[wall_index].surface.center).normalized_safe();
+                self.platform_dynamics[wall_index]
+                    .body
+                    .apply_impulse(direction * data.spike.knock_wall, wall_arm);
+                self.spike_attack_self_push(spike_index, contact.point, data.spike.knock_wall, data);
+            }
+        }
+        self.scratch.spike_wall_contacts = contacts;
+        self.scratch.spike_wall_contacts.clear();
     }
 
     fn spike_contacts(&mut self, data: &data::RolloutData) {
@@ -36091,24 +36119,6 @@ impl RolloutWorld {
         }
         order.clear();
         scratch.circle_wall_order = order;
-
-        if self.player_time_scale >= Fix::from_f32(0.01) {
-            for contact_index in 0..self.scratch.spike_wall_contacts.len() {
-                let (spike_index, wall_index, contact) =
-                    self.scratch.spike_wall_contacts[contact_index];
-                if self.spike_attacks[spike_index].time >= data.spike.push_time {
-                    continue;
-                }
-                let spike_root = self.spike_attack_root(spike_index, data);
-                let direction = (contact.point - spike_root).normalized_safe();
-                let wall_arm =
-                    (contact.point - self.platforms[wall_index].surface.center).normalized_safe();
-                self.platform_dynamics[wall_index]
-                    .body
-                    .apply_impulse(direction * data.spike.knock_wall, wall_arm);
-                self.spike_attack_self_push(spike_index, contact.point, data.spike.knock_wall, data);
-            }
-        }
 
         // The Box/RR group runs after the RR/RR corrections, so its copy of
         // the wall already carries them.
