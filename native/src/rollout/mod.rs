@@ -33678,7 +33678,12 @@ impl RolloutWorld {
         jump_pressed: &[bool; MAX_PLAYERS],
     ) {
         let mut positioned = [false; MAX_PLAYERS];
-        for clone_index in 0..self.abilityless_clones.len() {
+        // PlayerPhysics and SlimeController.UpdateSim in hierarchy order: the
+        // first clone to update reports the player's position, and a clone may
+        // fill a slot freed below an older one.
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.abilityless_clones, |clone| clone.hierarchy_base);
+        for &clone_index in &order {
             if !self.abilityless_clones[clone_index].active
                 || self.abilityless_clones[clone_index].born_tick >= self.tick
                 || self.abilityless_clones[clone_index].blink_tunnel_active
@@ -33790,6 +33795,7 @@ impl RolloutWorld {
             self.abilityless_clones[clone_index].base.sync_collider();
             self.sync_abilityless_clone_entity(clone_index);
         }
+        self.scratch.item_order = order;
         for clone in &mut self.abilityless_clones {
             clone.base.external_velocity += std::mem::take(&mut clone.late_pull);
         }
