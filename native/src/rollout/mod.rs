@@ -32179,11 +32179,22 @@ impl RolloutWorld {
             };
             Circle { center, radius: circle(index).radius }
         };
+        // AABBXComparer/AABBYComparer break a tie on the minimum by the
+        // circle's registry index, which is its row order.
+        let row = |index: usize| {
+            if index >= NODE {
+                nodes[index - NODE].entity
+            } else if index >= SHOT {
+                shots[index - SHOT].entity
+            } else {
+                items[index].entity
+            }
+        };
         let order = &mut self.scratch.item_order;
         order.sort_unstable_by(|&a, &b| {
             let a_min = axis(swept(a).center) - swept(a).radius;
             let b_min = axis(swept(b).center) - swept(b).radius;
-            a_min.cmp(&b_min).then(a.cmp(&b))
+            a_min.cmp(&b_min).then(row(a).cmp(&row(b)))
         });
 
         let window = &mut self.scratch.item_window;
