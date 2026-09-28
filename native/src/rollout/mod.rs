@@ -19674,10 +19674,19 @@ impl RolloutWorld {
         let mut new_circle_count = 0usize;
         let mut new_box_entities = [usize::MAX; MAX_PLAYERS * 4];
         let mut new_box_count = 0usize;
+        // The clones were instantiated in kill order, which their reserved
+        // player hierarchy records.
+        let mut pending = [0usize; MAX_PLAYERS];
+        let mut pending_count = 0usize;
         for index in 0..self.players.len() {
-            if !self.players[index].stock_clone_pending {
-                continue;
+            if self.players[index].stock_clone_pending {
+                pending[pending_count] = index;
+                pending_count += 1;
             }
+        }
+        pending[..pending_count]
+            .sort_unstable_by_key(|&index| self.players[index].stock_clone_player_hierarchy);
+        for &index in &pending[..pending_count] {
             for entity in self.players[index].owned_rows() {
                 if entity != usize::MAX {
                     self.entities[entity].flags = E_REMOVED;
