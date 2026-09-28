@@ -27024,7 +27024,6 @@ impl RolloutWorld {
         if updater_dt == Fix::ZERO {
             return;
         }
-        let mut spawn = Vec::new();
         for effect_index in 0..self.duplicate_platform_effects.len() {
             let snapshot = self.duplicate_platform_effects[effect_index];
             if !snapshot.active
@@ -27114,14 +27113,15 @@ impl RolloutWorld {
             if self.duplicate_platform_effects[effect_index].time
                 > data.duplicator.platform_shake_duration
             {
-                spawn.push((snapshot.source, spawn_position, snapshot));
+                // The copy spawns inside this effect's UpdateSim
+                // (DuplicatePlatformEffect.cs:282-311), so the overlap cast of
+                // an effect registered later already pushes it.
                 self.duplicate_platform_effects[effect_index].active = false;
+                let (source, rotation) = (snapshot.source, snapshot.original_rotation);
+                let spawner = snapshot.spawner_hierarchy;
+                self.spawn_duplicate_platform(source, spawn_position, rotation, spawner, data);
+                self.black_holes_pull_spawned_platform(snapshot.hierarchy_base, data);
             }
-        }
-        for (source, position, effect) in spawn {
-            let rotation = effect.original_rotation;
-            self.spawn_duplicate_platform(source, position, rotation, effect.spawner_hierarchy, data);
-            self.black_holes_pull_spawned_platform(effect.hierarchy_base, data);
         }
     }
 
