@@ -19556,6 +19556,12 @@ impl RolloutWorld {
             slot.active = ActiveAbility::None;
             slot.ability_origin_scale = slot.player_scale;
             slot.rock = RockState::default();
+            // The clone's WebSwing and HookshotInstant are new instances: a
+            // strand the dead slime let go keeps hanging, since only the
+            // destroyed instance's UpdateCooldowns would time it out
+            // (WebSwing.cs:98-110).
+            slot.web_swing = [rope_abilities::WebSwingState::default(); 3];
+            slot.grapple = [rope_abilities::GrappleState::default(); 3];
             slot.roll = RollState::default();
             slot.meteor = MeteorState::default();
             slot.push = PushState::default();
@@ -20015,6 +20021,12 @@ impl RolloutWorld {
             slot.active = ActiveAbility::None;
             slot.ability_origin_scale = slot.player_scale;
             slot.rock = RockState::default();
+            // The clone's WebSwing and HookshotInstant are new instances: a
+            // strand the dead slime let go keeps hanging, since only the
+            // destroyed instance's UpdateCooldowns would time it out
+            // (WebSwing.cs:98-110).
+            slot.web_swing = [rope_abilities::WebSwingState::default(); 3];
+            slot.grapple = [rope_abilities::GrappleState::default(); 3];
             slot.roll = RollState::default();
             slot.meteor = MeteorState::default();
             slot.push = PushState::default();
