@@ -4512,19 +4512,25 @@ impl RolloutWorld {
         data: &data::RolloutData,
         updater_dt: Fix,
     ) {
+        // DynamicAbilityPickup.UpdateSim runs in hierarchy order, and each swap
+        // and vibration draws from the shared RNG; a Duplicator copy can take a
+        // freed slot below an older pickup.
         let wobble = self.ability_pickup_wobble(data);
-        for index in 0..self.ability_pickups.len() {
-            if self.ability_pickups[index].hierarchy_base < hierarchy {
-                self.ability_pickup_tick(index, data, updater_dt, wobble);
-            }
+        let mut order = std::mem::take(&mut self.scratch.pickup_order);
+        order.clear();
+        order.extend(
+            (0..self.ability_pickups.len())
+                .filter(|&index| self.ability_pickups[index].hierarchy_base < hierarchy),
+        );
+        order.sort_unstable_by_key(|&index| (self.ability_pickups[index].hierarchy_base, index));
+        for &index in &order {
+            self.ability_pickup_tick(index, data, updater_dt, wobble);
         }
+        self.scratch.pickup_order = order;
     }
 
     fn ability_pickups_tick_remaining(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        let wobble = self.ability_pickup_wobble(data);
-        for index in 0..self.ability_pickups.len() {
-            self.ability_pickup_tick(index, data, updater_dt, wobble);
-        }
+        self.ability_pickups_tick_before(u32::MAX, data, updater_dt);
     }
 
     fn ability_pickup_wobble(&mut self, data: &data::RolloutData) -> Fix {
