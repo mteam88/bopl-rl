@@ -9121,6 +9121,21 @@ impl RolloutWorld {
                     }
                     ABILITY_MINE => {
                         let grounded = self.players[index].base.grounded;
+                        // Ability.EnterAbility scales the box, then
+                        // SyncPhysicsTo's UpdateScale brings the form's radius
+                        // to it before placing the form from the slime's local.
+                        let form_radius = {
+                            let slot = &mut self.players[index];
+                            let scale = slot.player_scale;
+                            let form = &mut slot.forms[s];
+                            form.set_scale_offset(
+                                scale,
+                                data.mine.hurtbox_extents,
+                                data.player.radius,
+                                data.mine.collider_offset,
+                            );
+                            form.physics_radius()
+                        };
                         let form_position = if grounded {
                             let base = &self.players[index].base;
                             base.ground
@@ -9128,7 +9143,7 @@ impl RolloutWorld {
                                     self.platforms.iter().find(|platform| platform.id == ground)
                                 })
                                 .map_or(base.position, |platform| {
-                                    platform.surface.position(base.local, data.player.radius)
+                                    platform.surface.position(base.local, form_radius)
                                 })
                         } else {
                             self.players[index].base.position
@@ -9148,6 +9163,7 @@ impl RolloutWorld {
                             ..ThrowItemState::default()
                         };
                         slot.base.position = form_position;
+                        slot.base.radius = form_radius;
                         self.mine_throw_tick(index, action, data);
                         return;
                     }
@@ -14195,7 +14211,7 @@ impl RolloutWorld {
                     collider.center
                 } else if player.active == ActiveAbility::Mine {
                     player.base.collider.center
-                        + player.throw_item.collider_right.complex_mul(data.mine.collider_offset)
+                        + player.throw_item.collider_right.complex_mul(player.forms[player.active_slot].offset)
                 } else if player.active == ActiveAbility::Beam {
                     player.beam.entry_center
                 } else if player.active == ActiveAbility::BlackHole {
@@ -21131,6 +21147,18 @@ impl RolloutWorld {
     /// callback, its circle auto-registers on the following scheduler pass,
     /// and grounded throws are forced along the attached surface normal.
     fn mine_throw_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        // Ability.UpdateSim assigns Player.Scale to the box every pass, the
+        // entering one included, and PlayerPhysics UpdateScales the radius.
+        let slot = &mut self.players[index];
+        let scale = slot.player_scale;
+        let form = &mut slot.forms[slot.active_slot];
+        form.set_scale_offset(
+            scale,
+            data.mine.hurtbox_extents,
+            data.player.radius,
+            data.mine.collider_offset,
+        );
+        slot.base.radius = form.physics_radius();
         self.players[index].throw_item.collider_rotation = self.players[index].base.rotation;
         // Mine.prefab is boundary/ability 5/6 - DestroyIfOutsideSceneBounds 5,
         // ThrowItem 6, PlayerBody 8 - so the boundary runs *before* ThrowItem's
@@ -21234,7 +21262,9 @@ impl RolloutWorld {
                     slot.exit_to_fall();
                     slot.base.rotation = Fix::ZERO;
                     slot.base.up = Vec2::UP;
+                    slot.restore_slime_radius();
                     slot.base.collision_rays(terrain!(self));
+                    slot.set_ordinary_body_scale(slot.player_scale);
                 }
                 if grounded {
                     self.sync_exit_to_ground(index);
@@ -38184,12 +38214,14 @@ impl RolloutWorld {
                     // from the normalized angle, but applies `offset` with
                     // FixTransform.right itself; those vectors can differ by
                     // a few Q32 units after the angle round trip.
-                    let center = root
-                        + slot
-                            .throw_item
-                            .collider_right
-                            .complex_mul(data.mine.collider_offset);
-                    let hurtbox = OrientedBox::from_basis(
+                    let mine_form = slot.forms[slot.active_slot];
+                    let offset = if mine_form.scale == Fix::ZERO {
+                        data.mine.collider_offset
+                    } else {
+                        mine_form.offset
+                    };
+                    let center = root + slot.throw_item.collider_right.complex_mul(offset);
+                    let hurtbox = mine_form.hurtbox(
                         center,
                         basis,
                         data::surface_extents(data.mine.hurtbox_extents),
