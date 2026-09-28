@@ -381,6 +381,7 @@ const ENVIRONMENT: u32 = 0xFFFF_FFFF;
 /// PlatformTransform.cursorSensitivity.
 const CURSOR_SENSITIVITY: Fix = Fix::from_raw(107_374_182_400); // 25.0
 
+/// SceneBounds.ClampInsideCameraMaxBounds with QuickSpell's (2, 2) offset.
 fn clamp_revival_position(mut position: Vec2) -> Vec2 {
     // SceneBounds.cs constants are authored through single-precision casts.
     let margin = Fix::from_int(2);
@@ -392,7 +393,6 @@ fn clamp_revival_position(mut position: Vec2) -> Vec2 {
         Fix::from_raw(-111_669_149_696) + margin,
         Fix::from_raw(171_798_691_840) - margin,
     );
-    position.y = position.y.max(Fix::from_raw(-48_533_131_264));
     position
 }
 
@@ -6446,7 +6446,7 @@ impl RolloutWorld {
             self.smoke_clouds_integrate(physics_dt);
         }
         if has(ABILITY_REVIVAL) {
-            self.revival_markers_integrate(physics_dt);
+            self.revival_markers_integrate(physics_dt, data.maps[self.map].is_space());
         }
         if has(ABILITY_ROCK) {
             self.rocks_integrate(physics_dt);
@@ -6959,10 +6959,16 @@ impl RolloutWorld {
         }
     }
 
-    fn revival_markers_integrate(&mut self, physics_dt: Fix) {
+    fn revival_markers_integrate(&mut self, physics_dt: Fix, space: bool) {
         for marker in &mut self.revival_marker_pool {
             if !marker.active || !marker.registered {
                 continue;
+            }
+            // RevivePositionIndicator.UpdateSim keeps the marker inside the
+            // camera bounds and, off a space level, above SceneBounds.WaterHeight.
+            marker.position = clamp_revival_position(marker.position);
+            if !space {
+                marker.position.y = marker.position.y.max(Fix::from_f32(-11.3));
             }
             if physics_dt > Fix::ZERO && marker.magnet_holder.is_some() {
                 marker.magnet_hold_ticks -= 1;
