@@ -20502,7 +20502,7 @@ impl RolloutWorld {
         }
         // On the pass the boundary fires, SparkShot never steers the live
         // projectile. SparkShot's ExitAbility does not unground.
-        let ground_destroyed = std::mem::take(&mut self.players[index].ground_destroyed).is_some();
+        let lost = std::mem::take(&mut self.players[index].ground_destroyed);
         if self.ability_boundary_kill(index, false) {
             return;
         }
@@ -20513,14 +20513,19 @@ impl RolloutWorld {
             self.players[index].missile.ticks = 0;
         }
 
-        // A grounded form whose ground was destroyed or went inactive exits
-        // where it stands, unattached, level and facing right
-        // (SparkShot.cs:164-178). PlayerPhysics skipped gravity while it was
-        // still grounded.
+        // A grounded form whose ground is null or went inactive exits where it
+        // stands, unattached, level and facing right (SparkShot.cs:164-178).
+        // PlayerPhysics skipped gravity while it was still grounded. A ground
+        // an updater destroyed earlier in this pass is neither until the
+        // drain (Updater.cs:89-110, 339-350): the form stays in, and its
+        // Move(zero) finds the ground IsDestroyed and UnGround()s it, lifting
+        // and nulling the rotation, before it steers (PlayerPhysics.cs:262-266).
+        let dead = lost.as_ref().and_then(|lost| lost.attached(self.tick)).cloned();
         let ground_inactive = self.players[index].base.ground.is_some_and(|ground| {
             self.platforms.iter().any(|platform| platform.id == ground && !platform.active)
         });
-        if self.players[index].base.grounded && (ground_destroyed || ground_inactive) {
+        let grounded = self.players[index].base.grounded;
+        if grounded && ((lost.is_some() && dead.is_none()) || ground_inactive) {
             let slot = &mut self.players[index];
             slot.active = ActiveAbility::None;
             slot.reported_position = slot.base.position;
@@ -20538,11 +20543,23 @@ impl RolloutWorld {
             return;
         }
 
+        let moved_off = grounded && dead.is_some();
+        if moved_off {
+            let slot = &mut self.players[index];
+            slot.base.unground_off(dead.as_ref(), true);
+            slot.base.ground = None;
+            slot.missile.collider_rotation = Fix::ZERO;
+        }
         // A form PlayerPhysics attached observes a grounded body, calls
         // Move(zero), and still steers the live projectile this pass.
         self.steer_active_missile(index, action, DT, data);
 
-        if self.players[index].base.grounded {
+        if moved_off {
+            // Move returned at its UnGround; PlayerBody integrates the body.
+            let slot = &mut self.players[index];
+            slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
+            slot.base.external_velocity *= Fix::from_f64(0.95);
+        } else if self.players[index].base.grounded {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
