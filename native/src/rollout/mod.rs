@@ -7876,7 +7876,7 @@ impl RolloutWorld {
             return;
         }
         // A Beam form finds its lost ground inside Beam.MovePlayer instead,
-        // BlackHoleClap exits on it at the top of its UpdateSim, and
+        // BlackHoleClap and SparkShot exit on it in their UpdateSim, and
         // BowTransform finds it after OldUpdate, which may still fire off it.
         // ThrowItem2 finds it inside its own Move, after the grounded-throw
         // exit test, so it leaves the form one pass later. MachoThrow2 finds
@@ -7892,7 +7892,10 @@ impl RolloutWorld {
         );
         if !matches!(
             self.players[index].active,
-            ActiveAbility::Beam | ActiveAbility::BlackHole | ActiveAbility::Bow
+            ActiveAbility::Beam
+                | ActiveAbility::BlackHole
+                | ActiveAbility::Bow
+                | ActiveAbility::Missile
         )
             && std::mem::take(&mut self.players[index].ground_destroyed).is_some()
             && !finds_it_later
@@ -20349,6 +20352,7 @@ impl RolloutWorld {
         }
         // On the pass the boundary fires, SparkShot never steers the live
         // projectile. SparkShot's ExitAbility does not unground.
+        let ground_destroyed = std::mem::take(&mut self.players[index].ground_destroyed).is_some();
         if self.ability_boundary_kill(index, false) {
             return;
         }
@@ -20357,6 +20361,31 @@ impl RolloutWorld {
         if self.players[index].missile.phase == 2 && action.buttons & button == 0 {
             self.players[index].missile.phase = 3;
             self.players[index].missile.ticks = 0;
+        }
+
+        // A grounded form whose ground was destroyed or went inactive exits
+        // where it stands, unattached, level and facing right
+        // (SparkShot.cs:164-178). PlayerPhysics skipped gravity while it was
+        // still grounded.
+        let ground_inactive = self.players[index].base.ground.is_some_and(|ground| {
+            self.platforms.iter().any(|platform| platform.id == ground && !platform.active)
+        });
+        if self.players[index].base.grounded && (ground_destroyed || ground_inactive) {
+            let slot = &mut self.players[index];
+            slot.active = ActiveAbility::None;
+            slot.reported_position = slot.base.position;
+            slot.reported_tick = self.tick;
+            slot.facing_right = true;
+            slot.base.grounded = false;
+            slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.missile.collider_rotation = Fix::ZERO;
+            slot.base.radius = data.player.radius;
+            slot.exit_to_fall();
+            slot.base.collision_rays(terrain!(self));
+            return;
         }
 
         // A form PlayerPhysics attached observes a grounded body, calls
