@@ -32227,14 +32227,11 @@ impl RolloutWorld {
             let current_min = axis(current_swept.center) - current_swept.radius;
             window.retain(|&prior| axis(swept(prior).center) + swept(prior).radius > current_min);
             for &prior in window.iter() {
-                // Shots meet items and each other here, not nodes. Nodes of
-                // one platform share its composite, which DetPhysics never
-                // tests against itself.
-                if prior >= SHOT && current >= SHOT && (prior >= NODE) != (current >= NODE)
-                    || prior >= NODE
-                        && current >= NODE
-                        && nodes[prior - NODE].platform_index
-                            == nodes[current - NODE].platform_index
+                // Nodes of one platform share its composite, which DetPhysics
+                // never tests against itself.
+                if prior >= NODE
+                    && current >= NODE
+                    && nodes[prior - NODE].platform_index == nodes[current - NODE].platform_index
                 {
                     continue;
                 }
@@ -32312,6 +32309,61 @@ impl RolloutWorld {
                 }
                 continue;
             }
+            if a_index >= NODE || b_index >= NODE {
+                // ResolveCollision swaps a composite child for its combined
+                // body and position; PositionalCorrection still takes the
+                // child's own inverse mass, and moves the child collider and
+                // CompositeBody.position, not the platform's own collider.
+                // The other circle is an item or a portal shot.
+                let other_first = b_index >= NODE;
+                let (other_index, node_index) = if other_first {
+                    (a_index, b_index - NODE)
+                } else {
+                    (b_index, a_index - NODE)
+                };
+                let (mut other_body, other_position) = if other_index >= SHOT {
+                    let shot = self.portal_shots[other_index - SHOT];
+                    (shot.body, shot.position)
+                } else {
+                    let item = self.thrown_items[other_index];
+                    (item.body, item.position)
+                };
+                let node = self.tesla_nodes[node_index];
+                let platform = node.platform_index;
+                let platform_center = self.platform_dynamics[platform].composite_position;
+                let mut platform_body = self.platform_dynamics[platform].body;
+                let (other_delta, node_delta) = if other_first {
+                    resolve(contact, &mut other_body, &mut platform_body, other_position, platform_center);
+                    let c = positional_correction(contact, other_body.inverse_mass, node.body.inverse_mass, false);
+                    (c[0], c[1])
+                } else {
+                    resolve(contact, &mut platform_body, &mut other_body, platform_center, other_position);
+                    let c = positional_correction(contact, node.body.inverse_mass, other_body.inverse_mass, false);
+                    (c[1], c[0])
+                };
+                if other_index >= SHOT {
+                    let shot = &mut self.portal_shots[other_index - SHOT];
+                    shot.body = other_body;
+                    shot.position += other_delta;
+                    if let Some(entity) = shot.entity {
+                        let shot = *shot;
+                        let row = &mut self.entities[entity];
+                        row.x = shot.position.x.raw();
+                        row.y = shot.position.y.raw();
+                        row.vx = shot.body.velocity.x.raw();
+                        row.vy = shot.body.velocity.y.raw();
+                        row.rotation = shot.body.orientation.raw();
+                        row.angular_velocity = shot.body.angular_velocity.raw();
+                    }
+                } else {
+                    self.thrown_items[other_index].body = other_body;
+                    self.thrown_items[other_index].position += other_delta;
+                }
+                self.platform_dynamics[platform].body = platform_body;
+                self.platform_dynamics[platform].composite_position += node_delta;
+                self.tesla_nodes[node_index].collider_center += node_delta;
+                continue;
+            }
             if (SHOT..NODE).contains(&a_index) || (SHOT..NODE).contains(&b_index) {
                 // PortalShot's Projectile does not ignite explosives and its
                 // own callback only lands on walls: the impulse is all.
@@ -32359,39 +32411,6 @@ impl RolloutWorld {
                     row.rotation = shot.body.orientation.raw();
                     row.angular_velocity = shot.body.angular_velocity.raw();
                 }
-                continue;
-            }
-            if a_index >= NODE || b_index >= NODE {
-                // ResolveCollision swaps a composite child for its combined
-                // body and position; PositionalCorrection still takes the
-                // child's own inverse mass, and moves the child collider and
-                // CompositeBody.position, not the platform's own collider.
-                let item_first = b_index >= NODE;
-                let (item_index, node_index) = if item_first {
-                    (a_index, b_index - NODE)
-                } else {
-                    (b_index, a_index - NODE)
-                };
-                let item = self.thrown_items[item_index];
-                let node = self.tesla_nodes[node_index];
-                let platform = node.platform_index;
-                let platform_center = self.platform_dynamics[platform].composite_position;
-                let mut item_body = item.body;
-                let mut platform_body = self.platform_dynamics[platform].body;
-                let (item_delta, node_delta) = if item_first {
-                    resolve(contact, &mut item_body, &mut platform_body, item.position, platform_center);
-                    let c = positional_correction(contact, item_body.inverse_mass, node.body.inverse_mass, false);
-                    (c[0], c[1])
-                } else {
-                    resolve(contact, &mut platform_body, &mut item_body, platform_center, item.position);
-                    let c = positional_correction(contact, node.body.inverse_mass, item_body.inverse_mass, false);
-                    (c[1], c[0])
-                };
-                self.thrown_items[item_index].body = item_body;
-                self.thrown_items[item_index].position += item_delta;
-                self.platform_dynamics[platform].body = platform_body;
-                self.platform_dynamics[platform].composite_position += node_delta;
-                self.tesla_nodes[node_index].collider_center += node_delta;
                 continue;
             }
             let a = self.thrown_items[a_index];
