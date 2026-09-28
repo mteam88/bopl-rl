@@ -1290,6 +1290,9 @@ pub struct PlatformDynamics {
     /// DuplicatePlatformEffect asks AnimateVelocity to suppress its home
     /// spring on the next pass and re-home at the displaced body position.
     pub float_next_frame: bool,
+    /// This pass's AnimateVelocity step: its tick, the impulse it added, the
+    /// impulse it would have added floating, and the position it read.
+    pub spring_step: Option<(u32, Vec2, Vec2, Vec2)>,
     pub home_position: Vec2,
     pub home_rotation: Fix,
     pub speed: Fix,
@@ -3885,6 +3888,7 @@ impl RolloutWorld {
                 transform_rotation: None,
                 init_tick: None,
                 float_next_frame: false,
+                spring_step: None,
                 home_rotation: p.body.orientation,
                 speed: p.speed,
                 mu: p.mu,
@@ -16856,6 +16860,7 @@ impl RolloutWorld {
             transform_rotation: None,
             init_tick: None,
             float_next_frame: false,
+            spring_step: None,
             home_position: position,
             home_rotation: Fix::ZERO,
             speed: Fix::ZERO,
@@ -27105,9 +27110,20 @@ impl RolloutWorld {
                 } else {
                     inverse_mass
                 };
+                // A platform registered after this effect runs its AnimateVelocity
+                // after it (AnimateVelocity.cs:146-150, 191), on this pass.
+                let later = self.entities[self.platform_entities[platform_index]].hierarchy
+                    > 100_000_000 + snapshot.hierarchy_base;
                 let dynamics = &mut self.platform_dynamics[platform_index];
                 dynamics.body.force += direction * data.duplicator.platform_overlap_force / divisor;
-                dynamics.float_next_frame = true;
+                match dynamics.spring_step {
+                    Some((tick, added, floating, position)) if later && tick == self.tick => {
+                        dynamics.body.force += floating - added;
+                        dynamics.home_position = position;
+                        dynamics.spring_step = Some((tick, floating, floating, position));
+                    }
+                    _ => dynamics.float_next_frame = true,
+                }
             }
             self.duplicate_platform_effects[effect_index].time += updater_dt;
             if self.duplicate_platform_effects[effect_index].time
@@ -27258,6 +27274,7 @@ impl RolloutWorld {
         // The clone's AnimateVelocity is not initialized by DuplicateObject;
         // it homes where this pass's integration left it, on the next pass.
         dynamics.init_tick = Some(self.tick + 1);
+        dynamics.spring_step = None;
         dynamics.duplicate_spawner_hierarchy = Some(spawner_hierarchy);
         dynamics.duplicate_lifespan = i32::MAX;
         dynamics.duplicate_shake_offset = Vec2::ZERO;
@@ -27973,6 +27990,7 @@ impl RolloutWorld {
             transform_rotation: None,
             init_tick: Some(self.tick + 1),
             float_next_frame: false,
+            spring_step: None,
             home_rotation: Fix::ZERO,
             speed: pd.spawn_speed,
             mu: pd.spawn_mu,
@@ -32995,6 +33013,10 @@ impl RolloutWorld {
         };
         let impulse = spring * updater_dt / dynamics.body.inverse_mass;
         dynamics.body.force += impulse * Fix::from_int(60);
+        let floating =
+            -dynamics.body.velocity * dynamics.mu * updater_dt / dynamics.body.inverse_mass;
+        let (added, floating) = (impulse * Fix::from_int(60), floating * Fix::from_int(60));
+        dynamics.spring_step = Some((self.tick, added, floating, position));
         if dynamics.interpolate_rotation_home {
             let mut angle_delta = dynamics.home_rotation - dynamics.body.orientation;
             if angle_delta.abs() > Fix::PI {
