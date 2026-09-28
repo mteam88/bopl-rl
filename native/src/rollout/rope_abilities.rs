@@ -76,7 +76,8 @@ pub(crate) struct RolloutRope {
     pub platform: Option<usize>,
     pub platform_local: Fix,
     /// RopeAttachment's own fixTrans.position: placed on attach and by each
-    /// RepositionOnParent, and read by the next pull before it moves again.
+    /// RepositionOnParent, or on an object parent's position, and read by
+    /// the next pull before it moves again.
     pub platform_anchor: Vec2,
     /// RopeAttachment.effectivePlatformPullStr switches on Boulder parents.
     pub platform_pull: Fix,
@@ -1330,22 +1331,28 @@ impl RolloutWorld {
             let Some(parent) = self.ropes[index].parent else {
                 continue;
             };
-            if parent_position(&self.players, &self.thrown_items, &self.portal_shots, parent).is_none() {
+            let Some(position) =
+                parent_position(&self.players, &self.thrown_items, &self.portal_shots, parent)
+            else {
                 self.deattach_rope(index, true);
                 self.ropes[index].parent = None;
                 continue;
-            }
+            };
             let physics = &self.ropes[index].physics;
             if physics.time_since_hook_arrived > Fix::ZERO && !physics.detached && !stopped {
-                // AddForceAtPosition at the parent's own centre: no torque.
+                // AddForceAtPosition at the attachment's own position, which
+                // only a hook landing on its cast tick leaves off the parent's
+                // centre (DPhysicsCircle.cs:377-393).
                 let force = (physics.segment[0] - physics.segment[1]) * ATTACHMENT_PULL;
+                let arm = (self.ropes[index].platform_anchor - position).normalized_safe();
                 let body = match parent {
                     RopeParent::Rock(player) => &mut self.players[player].rock.body,
                     RopeParent::Item(item, _) => &mut self.thrown_items[item].body,
                     RopeParent::Shot(shot, _) => &mut self.portal_shots[shot].body,
                 };
-                body.apply_impulse(force, Vec2::ZERO);
+                body.apply_impulse(force, arm);
             }
+            self.ropes[index].platform_anchor = position;
             for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
                 if (self.ropes[index].physics.segment[segment]
                     - self.ropes[index].physics.segment[segment + 1])
@@ -1656,6 +1663,9 @@ impl RolloutWorld {
                 rope.physics.set_mass(source.non_platform_mass, true, scale);
                 rope.time_air_start = Fix::ONE;
                 rope.platform = None;
+                // The attachment shares the hook's GameObject, so its
+                // transform stays on the hook until a pass re-places it.
+                rope.platform_anchor = rope.hook_position;
                 rope.parent = Some(parent);
                 rope.reel_in = true;
                 rope.hook_active = false;
@@ -1856,14 +1866,18 @@ impl RolloutWorld {
             }
             // LateUpdateSim reads parentObject.position without asking whether
             // it went this pass: a shot that lands against a wall in Simulate
-            // still holds the end where it landed.
+            // still holds the end where it landed. A hook that lands on its
+            // cast tick leaves the end on the hook: the attachment has no late
+            // pass yet (RopeAttachment.cs:170-178).
             let position = match rope.parent {
+                _ if rope.born_tick == self.tick => None,
                 Some(RopeParent::Shot(shot, born)) if shots[shot].born_tick == born => {
                     Some(shots[shot].position)
                 }
                 parent => parent.and_then(|parent| parent_position(players, items, shots, parent)),
             };
             if let Some(position) = position {
+                rope.platform_anchor = position;
                 rope.physics.segment[0] = position;
             }
             if rope.hook_active {
