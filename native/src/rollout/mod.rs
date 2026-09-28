@@ -29692,18 +29692,15 @@ impl RolloutWorld {
                 }
             }
         }
-        // Mjolnir.UpdateSim also begins one pass after release. The fixed
-        // player bitset replaces the source HashSet without allocating.
-        // Updater runs the hammers in hierarchy order, not item slot order:
-        // an older hammer still sees its owner alive when a newer one kills
-        // that owner, and only vanishes the pass after (Mjolnir.cs:126-131).
+        // Each item's updaters in Updater hierarchy order: Mjolnir.UpdateSim,
+        // Grenade.UpdateSim and DestroyIfOutsideSceneBounds. A hammer's kills
+        // and a fuse or the bounds setting off an item claim spawn hierarchy, a
+        // smoke detonation draws from the shared RNG, and an older hammer still
+        // sees its owner alive when a newer one kills that owner, only vanishing
+        // the pass after (Mjolnir.cs:126-131). The ropes older than an item
+        // update before it.
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        order.clear();
-        order.extend(
-            (0..self.thrown_items.len())
-                .filter(|&index| self.thrown_items[index].ability == ABILITY_MJOLNIR),
-        );
-        order.sort_unstable_by_key(|&index| self.thrown_items[index].hierarchy_base);
+        hierarchy_order(&mut order, &self.thrown_items, |item| item.hierarchy_base);
         for &item_index in &order {
             let hierarchy = self.thrown_items[item_index].hierarchy_base;
             if self.thrown_items[item_index].active
@@ -29712,301 +29709,29 @@ impl RolloutWorld {
                 self.ropes_update(self.scratch.ropes_updated_below..hierarchy);
                 self.scratch.ropes_updated_below = hierarchy;
             }
-            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
-                continue;
-            }
-            if !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].ability != ABILITY_MJOLNIR
-                || self.thrown_items[item_index].born_tick >= self.tick
-                || (self.thrown_items[item_index].duplicated
-                    && self.thrown_items[item_index].born_tick + 1 >= self.tick)
-            {
-                continue;
-            }
-            // Mjolnir.UpdateSim leaves the payload entirely under ThrowItem2
-            // control until Grenade.hasBeenThrown is set by Fire. Its manual
-            // collider registration is the corresponding pooled-state edge.
-            if !self.thrown_items[item_index].launched
-                && self.thrown_items[item_index].entity.is_none()
-            {
-                continue;
-            }
-            {
+            if self.thrown_items[item_index].ability == ABILITY_MJOLNIR {
+                self.mjolnir_tick(item_index, data, updater_dt);
+                // Mjolnir has a lower runtime hierarchy than a subsequently
+                // spawned Gust Shockwave. Its recall update therefore observes
+                // the Init impulse, while the regular Shockwave impulse lands
+                // afterward and before DetPhysics integration.
+                let hidden = self.blink_object_hidden(self.thrown_items[item_index].entity);
                 let item = &mut self.thrown_items[item_index];
-                if !item.launched {
-                    item.launched = true;
-                    item.body.angular_velocity = if item.body.velocity.x >= Fix::ZERO {
-                        Fix::from_int(-11)
-                    } else {
-                        Fix::from_int(11)
-                    };
-                    if let Some(entity) = item.entity {
-                        self.entities[entity].owner = item.owner as u32 + 1;
-                    }
-                }
-                item.age += updater_dt;
-            }
-            if self.thrown_items[item_index].age > data.mjolnir.max_flight_seconds {
-                self.remove_thrown_item(item_index, false);
-                continue;
-            }
-
-            let item = self.thrown_items[item_index];
-            let item_position = item.position;
-            let owner = item.owner;
-            let hammer_radius = data.mjolnir.item_radius * item.scale;
-            let mut victims = 0u8;
-            let mut clone_victims = [usize::MAX; MAX_PLAYERS];
-            let mut clone_victim_count = 0;
-
-            // FindObjectsOfType<SlimeController> visits the live ordinary
-            // slime objects before the subsequently spawned empty clones.
-            for player_index in 0..self.players.len() {
-                if player_index == owner
-                    || !self.playable(player_index)
-                    || self.players[player_index].active != ActiveAbility::None
-                    || self.players[player_index].poke_invulnerable
-                    || item.killed_players & (1 << player_index) != 0
-                {
-                    continue;
-                }
-                let hit_radius =
-                    hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
-                // SlimeController.body.position: the slime's own transform,
-                // which the synced collider row trails by this pass's move. A
-                // form that ended this pass has already reactivated it.
-                let position = self.mjolnir_view(player_index, item.hierarchy_base);
-                if self.slime_present(player_index)
-                    && (position - item_position).length_squared() < hit_radius * hit_radius
-                {
-                    victims |= 1 << player_index;
+                if !hidden && item.active && item.pending_gust_impulse != Vec2::ZERO {
+                    item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
+                    item.pending_gust_impulse = Vec2::ZERO;
                 }
             }
-            for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
-                let player_index = clone.owner;
-                if !clone.active
-                    || player_index == owner
-                    || !self.playable(player_index)
-                    || (item.killed_players | victims) & (1 << player_index) != 0
-                {
-                    continue;
-                }
-                let hit_radius =
-                    hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
-                if (clone.base.position - item_position).length_squared() < hit_radius * hit_radius
-                {
-                    victims |= 1 << player_index;
-                    clone_victims[clone_victim_count] = clone_index;
-                    clone_victim_count += 1;
-                }
-            }
-            // Ability objects are enumerated after SlimeControllers. A clone
-            // sharing the player's id can consume alreadyKilled first.
-            for player_index in 0..self.players.len() {
-                if player_index == owner
-                    || !self.playable(player_index)
-                    || self.players[player_index].active == ActiveAbility::None
-                    || self.players[player_index].poke_invulnerable
-                    || (item.killed_players | victims) & (1 << player_index) != 0
-                {
-                    continue;
-                }
-                let hit_radius =
-                    hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
-                // The form's own transform, live even on the pass it was
-                // entered, before its collider row is synced.
-                let position = self.players[player_index].base.position;
-                if (position - item_position).length_squared() < hit_radius * hit_radius {
-                    victims |= 1 << player_index;
-                }
-            }
-            self.thrown_items[item_index].killed_players |= victims;
-            for player_index in 0..self.players.len() {
-                if victims & (1 << player_index) == 0 {
-                    continue;
-                }
-                if clone_victims[..clone_victim_count]
-                    .iter()
-                    .any(|&clone_index| self.abilityless_clones[clone_index].owner == player_index)
-                {
-                    continue;
-                }
-                self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-                // DropAbilities reads the body before the later ice pins it.
-                self.players[player_index].base.position =
-                    self.mjolnir_view(player_index, item.hierarchy_base);
-                self.kill(player_index, owner as u32 + 1, CAUSE_OTHER, false, false);
-            }
-            for &clone_index in &clone_victims[..clone_victim_count] {
-                self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-                self.kill_abilityless_clone(clone_index, owner as u32 + 1, CAUSE_OTHER);
-            }
-
-            if self.thrown_items[item_index].phase == 0 {
-                let damping = (Fix::ONE - data.mjolnir.outbound_drag * updater_dt).max(Fix::ZERO);
-                let item = &mut self.thrown_items[item_index];
-                item.body.velocity *= damping;
-                if item.age > data.mjolnir.clang_grace_seconds
-                    && item.body.velocity.length() < data.mjolnir.return_speed_threshold
-                {
-                    item.phase = 1;
-                }
-            } else {
-                if self.players[owner].out {
-                    self.remove_thrown_item(item_index, false);
-                    continue;
-                }
-                let hierarchy = self.thrown_items[item_index].hierarchy_base;
-                let Some(owner_position) = self.mjolnir_owner_position(owner, hierarchy) else {
-                    continue;
-                };
-                let to_owner = owner_position + Vec2::UP * Fix::from_f32(1.1)
-                    - self.thrown_items[item_index].position;
-                {
-                    let item = &mut self.thrown_items[item_index];
-                    item.body.velocity +=
-                        to_owner.normalized_safe() * data.mjolnir.recall_accel * updater_dt;
-                    let speed = item.body.velocity.length();
-                    if speed > data.mjolnir.recall_max_speed {
-                        item.body.velocity *= data.mjolnir.recall_max_speed / speed;
-                    }
-                }
-                if to_owner.length_squared() < Fix::from_int(4) {
-                    self.remove_thrown_item(item_index, false);
-                }
-            }
+            self.thrown_item_update(item_index, data, updater_dt);
         }
         self.scratch.item_order = order;
 
-        // Mjolnir has a lower runtime hierarchy than a subsequently spawned
-        // Gust Shockwave. Its recall update therefore observes the Init
-        // impulse above, while the regular Shockwave impulse lands afterward
-        // and immediately before DetPhysics integration.
+        // DetPhysics then integrates each body on its own.
         for item_index in 0..self.thrown_items.len() {
-            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
-                continue;
-            }
-            let item = &mut self.thrown_items[item_index];
-            if item.active
-                && item.ability == ABILITY_MJOLNIR
-                && item.pending_gust_impulse != Vec2::ZERO
+            if self.blink_object_hidden(self.thrown_items[item_index].entity)
+                || !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].entity.is_none()
             {
-                item.body
-                    .apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
-                item.pending_gust_impulse = Vec2::ZERO;
-            }
-        }
-
-        for item_index in 0..self.thrown_items.len() {
-            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
-                continue;
-            }
-            if !self.thrown_items[item_index].active {
-                continue;
-            }
-            let ability = self.thrown_items[item_index].ability;
-            // Grenade.UpdateSim lets go of a payload whose ThrowItem2 form was
-            // deactivated without its ExitAbility, as a freeze ray does: the
-            // payload is thrown where it hangs, with a second's owner grace.
-            if self.thrown_items[item_index].entity.is_none()
-                && self.thrown_items[item_index].born_tick < self.tick
-                && matches!(
-                    ability,
-                    ABILITY_GRENADE
-                        | ABILITY_SMOKE
-                        | ABILITY_TACK
-                        | ABILITY_MJOLNIR
-                        | ABILITY_POKE_BALL
-                )
-            {
-                let owner = self.thrown_items[item_index].owner;
-                let thrower = &self.players[owner];
-                let holding = self.held_throw_item(owner) == Some(item_index)
-                    && matches!(
-                        thrower.active,
-                        ActiveAbility::Grenade
-                            | ActiveAbility::Smoke
-                            | ActiveAbility::Tack
-                            | ActiveAbility::Mjolnir
-                            | ActiveAbility::PokeBall
-                    )
-                    && active_throw_ability(thrower.active) == ability;
-                if !holding {
-                    self.thrown_items[item_index].hurt_owner_delay = Fix::ONE;
-                    self.register_held_item(item_index, false, data);
-                }
-            }
-            // Grenade.UpdateSim comes first on the Grenade and SmokeGrenade
-            // prefabs, so a fuse that runs out on the pass the item leaves the
-            // bounds detonates it before DestroyIfOutsideSceneBounds sees it.
-            let timed_out = {
-                let item = &mut self.thrown_items[item_index];
-                if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.born_tick < self.tick
-                {
-                    if item.magnet_holder.is_none() {
-                        item.fuse -= updater_dt;
-                    }
-                    if item.hurt_owner_delay > Fix::ZERO {
-                        item.hurt_owner_delay -= updater_dt;
-                        if item.hurt_owner_delay <= Fix::ZERO {
-                            item.detonates_on_owner = true;
-                        }
-                    }
-                }
-                matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.fuse <= Fix::ZERO
-            };
-            if timed_out {
-                if ability == ABILITY_SMOKE {
-                    self.detonate_smoke(item_index, false, data);
-                } else {
-                    self.detonate_grenade(item_index, false, data);
-                }
-                continue;
-            }
-            // Below the water Grenade, Smoke and Mine instantiate the
-            // two-updatable splash. Past the space floor or the sides the
-            // grenade's UpEffect/XEffect is XGunExplosion, its own unowned
-            // detonation; Smoke's is a two-updatable animation. The other
-            // thrown items have no effect.
-            let item = self.thrown_items[item_index];
-            let map = &data::get().maps[self.map];
-            let side = Fix::from_f64(131.25);
-            let below = item.position.y < map.lower_boundary();
-            if below || (ability != ABILITY_MINE && item.position.x.abs() > side) {
-                if ability == ABILITY_GRENADE && (map.is_space() || !below) {
-                    let position = if below {
-                        Vec2::new(item.position.x, map.lower_boundary())
-                    } else {
-                        let x = if item.position.x < Fix::ZERO { -side } else { side };
-                        Vec2::new(x, item.position.y)
-                    };
-                    self.spawn_grenade_explosion(position, item.owner, false, Fix::ONE, data);
-                } else if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE) {
-                    self.next_spawn_hierarchy += 2;
-                }
-                self.remove_thrown_item(item_index, false);
-                continue;
-            }
-            if ability == ABILITY_MINE {
-                let item = self.thrown_items[item_index];
-                let boundary_position = if item.position.y > Fix::from_f64(72.5) {
-                    Some(Vec2::new(item.position.x, Fix::from_f64(72.5)))
-                } else if item.position.x < Fix::from_f64(-131.25) {
-                    Some(Vec2::new(Fix::from_f64(-131.25), item.position.y))
-                } else if item.position.x > Fix::from_f64(131.25) {
-                    Some(Vec2::new(Fix::from_f64(131.25), item.position.y))
-                } else {
-                    None
-                };
-                if let Some(position) = boundary_position {
-                    // DestroyIfOutsideSceneBounds instantiates MineExplosion
-                    // without assigning Explosion.PlayerOwnerId.
-                    self.spawn_missile_explosion(position, item.owner, false, Fix::ONE, data);
-                    self.remove_thrown_item(item_index, false);
-                    continue;
-                }
-            }
-            if self.thrown_items[item_index].entity.is_none() {
                 continue;
             }
             let item = &mut self.thrown_items[item_index];
@@ -30023,6 +29748,291 @@ impl RolloutWorld {
             row.angular_velocity = item.body.angular_velocity.raw();
             row.radius = item.collider_radius.raw();
             row.inverse_mass = item.body.inverse_mass.raw();
+        }
+    }
+
+    /// Mjolnir.UpdateSim, from one pass after release. The fixed player bitset
+    /// replaces the source HashSet without allocating.
+    fn mjolnir_tick(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
+        if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+            return;
+        }
+        if !self.thrown_items[item_index].active
+            || self.thrown_items[item_index].ability != ABILITY_MJOLNIR
+            || self.thrown_items[item_index].born_tick >= self.tick
+            || (self.thrown_items[item_index].duplicated
+                && self.thrown_items[item_index].born_tick + 1 >= self.tick)
+        {
+            return;
+        }
+        // Mjolnir.UpdateSim leaves the payload entirely under ThrowItem2
+        // control until Grenade.hasBeenThrown is set by Fire. Its manual
+        // collider registration is the corresponding pooled-state edge.
+        if !self.thrown_items[item_index].launched
+            && self.thrown_items[item_index].entity.is_none()
+        {
+            return;
+        }
+        {
+            let item = &mut self.thrown_items[item_index];
+            if !item.launched {
+                item.launched = true;
+                item.body.angular_velocity = if item.body.velocity.x >= Fix::ZERO {
+                    Fix::from_int(-11)
+                } else {
+                    Fix::from_int(11)
+                };
+                if let Some(entity) = item.entity {
+                    self.entities[entity].owner = item.owner as u32 + 1;
+                }
+            }
+            item.age += updater_dt;
+        }
+        if self.thrown_items[item_index].age > data.mjolnir.max_flight_seconds {
+            self.remove_thrown_item(item_index, false);
+            return;
+        }
+
+        let item = self.thrown_items[item_index];
+        let item_position = item.position;
+        let owner = item.owner;
+        let hammer_radius = data.mjolnir.item_radius * item.scale;
+        let mut victims = 0u8;
+        let mut clone_victims = [usize::MAX; MAX_PLAYERS];
+        let mut clone_victim_count = 0;
+
+        // FindObjectsOfType<SlimeController> visits the live ordinary
+        // slime objects before the subsequently spawned empty clones.
+        for player_index in 0..self.players.len() {
+            if player_index == owner
+                || !self.playable(player_index)
+                || self.players[player_index].active != ActiveAbility::None
+                || self.players[player_index].poke_invulnerable
+                || item.killed_players & (1 << player_index) != 0
+            {
+                continue;
+            }
+            let hit_radius =
+                hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
+            // SlimeController.body.position: the slime's own transform,
+            // which the synced collider row trails by this pass's move. A
+            // form that ended this pass has already reactivated it.
+            let position = self.mjolnir_view(player_index, item.hierarchy_base);
+            if self.slime_present(player_index)
+                && (position - item_position).length_squared() < hit_radius * hit_radius
+            {
+                victims |= 1 << player_index;
+            }
+        }
+        for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
+            let player_index = clone.owner;
+            if !clone.active
+                || player_index == owner
+                || !self.playable(player_index)
+                || (item.killed_players | victims) & (1 << player_index) != 0
+            {
+                continue;
+            }
+            let hit_radius =
+                hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
+            if (clone.base.position - item_position).length_squared() < hit_radius * hit_radius
+            {
+                victims |= 1 << player_index;
+                clone_victims[clone_victim_count] = clone_index;
+                clone_victim_count += 1;
+            }
+        }
+        // Ability objects are enumerated after SlimeControllers. A clone
+        // sharing the player's id can consume alreadyKilled first.
+        for player_index in 0..self.players.len() {
+            if player_index == owner
+                || !self.playable(player_index)
+                || self.players[player_index].active == ActiveAbility::None
+                || self.players[player_index].poke_invulnerable
+                || (item.killed_players | victims) & (1 << player_index) != 0
+            {
+                continue;
+            }
+            let hit_radius =
+                hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
+            // The form's own transform, live even on the pass it was
+            // entered, before its collider row is synced.
+            let position = self.players[player_index].base.position;
+            if (position - item_position).length_squared() < hit_radius * hit_radius {
+                victims |= 1 << player_index;
+            }
+        }
+        self.thrown_items[item_index].killed_players |= victims;
+        for player_index in 0..self.players.len() {
+            if victims & (1 << player_index) == 0 {
+                continue;
+            }
+            if clone_victims[..clone_victim_count]
+                .iter()
+                .any(|&clone_index| self.abilityless_clones[clone_index].owner == player_index)
+            {
+                continue;
+            }
+            self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+            // DropAbilities reads the body before the later ice pins it.
+            self.players[player_index].base.position =
+                self.mjolnir_view(player_index, item.hierarchy_base);
+            self.kill(player_index, owner as u32 + 1, CAUSE_OTHER, false, false);
+        }
+        for &clone_index in &clone_victims[..clone_victim_count] {
+            self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+            self.kill_abilityless_clone(clone_index, owner as u32 + 1, CAUSE_OTHER);
+        }
+
+        if self.thrown_items[item_index].phase == 0 {
+            let damping = (Fix::ONE - data.mjolnir.outbound_drag * updater_dt).max(Fix::ZERO);
+            let item = &mut self.thrown_items[item_index];
+            item.body.velocity *= damping;
+            if item.age > data.mjolnir.clang_grace_seconds
+                && item.body.velocity.length() < data.mjolnir.return_speed_threshold
+            {
+                item.phase = 1;
+            }
+        } else {
+            if self.players[owner].out {
+                self.remove_thrown_item(item_index, false);
+                return;
+            }
+            let hierarchy = self.thrown_items[item_index].hierarchy_base;
+            let Some(owner_position) = self.mjolnir_owner_position(owner, hierarchy) else {
+                return;
+            };
+            let to_owner = owner_position + Vec2::UP * Fix::from_f32(1.1)
+                - self.thrown_items[item_index].position;
+            {
+                let item = &mut self.thrown_items[item_index];
+                item.body.velocity +=
+                    to_owner.normalized_safe() * data.mjolnir.recall_accel * updater_dt;
+                let speed = item.body.velocity.length();
+                if speed > data.mjolnir.recall_max_speed {
+                    item.body.velocity *= data.mjolnir.recall_max_speed / speed;
+                }
+            }
+            if to_owner.length_squared() < Fix::from_int(4) {
+                self.remove_thrown_item(item_index, false);
+            }
+        }
+    }
+
+    /// Grenade.UpdateSim and DestroyIfOutsideSceneBounds, for every thrown item.
+    fn thrown_item_update(
+        &mut self,
+        item_index: usize,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+    ) {
+        if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+            return;
+        }
+        if !self.thrown_items[item_index].active {
+            return;
+        }
+        let ability = self.thrown_items[item_index].ability;
+        // Grenade.UpdateSim lets go of a payload whose ThrowItem2 form was
+        // deactivated without its ExitAbility, as a freeze ray does: the
+        // payload is thrown where it hangs, with a second's owner grace.
+        if self.thrown_items[item_index].entity.is_none()
+            && self.thrown_items[item_index].born_tick < self.tick
+            && matches!(
+                ability,
+                ABILITY_GRENADE
+                    | ABILITY_SMOKE
+                    | ABILITY_TACK
+                    | ABILITY_MJOLNIR
+                    | ABILITY_POKE_BALL
+            )
+        {
+            let owner = self.thrown_items[item_index].owner;
+            let thrower = &self.players[owner];
+            let holding = self.held_throw_item(owner) == Some(item_index)
+                && matches!(
+                    thrower.active,
+                    ActiveAbility::Grenade
+                        | ActiveAbility::Smoke
+                        | ActiveAbility::Tack
+                        | ActiveAbility::Mjolnir
+                        | ActiveAbility::PokeBall
+                )
+                && active_throw_ability(thrower.active) == ability;
+            if !holding {
+                self.thrown_items[item_index].hurt_owner_delay = Fix::ONE;
+                self.register_held_item(item_index, false, data);
+            }
+        }
+        // Grenade.UpdateSim comes first on the Grenade and SmokeGrenade
+        // prefabs, so a fuse that runs out on the pass the item leaves the
+        // bounds detonates it before DestroyIfOutsideSceneBounds sees it.
+        let timed_out = {
+            let item = &mut self.thrown_items[item_index];
+            if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.born_tick < self.tick
+            {
+                if item.magnet_holder.is_none() {
+                    item.fuse -= updater_dt;
+                }
+                if item.hurt_owner_delay > Fix::ZERO {
+                    item.hurt_owner_delay -= updater_dt;
+                    if item.hurt_owner_delay <= Fix::ZERO {
+                        item.detonates_on_owner = true;
+                    }
+                }
+            }
+            matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.fuse <= Fix::ZERO
+        };
+        if timed_out {
+            if ability == ABILITY_SMOKE {
+                self.detonate_smoke(item_index, false, data);
+            } else {
+                self.detonate_grenade(item_index, false, data);
+            }
+            return;
+        }
+        // Below the water Grenade, Smoke and Mine instantiate the
+        // two-updatable splash. Past the space floor or the sides the
+        // grenade's UpEffect/XEffect is XGunExplosion, its own unowned
+        // detonation; Smoke's is a two-updatable animation. The other
+        // thrown items have no effect.
+        let item = self.thrown_items[item_index];
+        let map = &data::get().maps[self.map];
+        let side = Fix::from_f64(131.25);
+        let below = item.position.y < map.lower_boundary();
+        if below || (ability != ABILITY_MINE && item.position.x.abs() > side) {
+            if ability == ABILITY_GRENADE && (map.is_space() || !below) {
+                let position = if below {
+                    Vec2::new(item.position.x, map.lower_boundary())
+                } else {
+                    let x = if item.position.x < Fix::ZERO { -side } else { side };
+                    Vec2::new(x, item.position.y)
+                };
+                self.spawn_grenade_explosion(position, item.owner, false, Fix::ONE, data);
+            } else if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE) {
+                self.next_spawn_hierarchy += 2;
+            }
+            self.remove_thrown_item(item_index, false);
+            return;
+        }
+        if ability == ABILITY_MINE {
+            let item = self.thrown_items[item_index];
+            let boundary_position = if item.position.y > Fix::from_f64(72.5) {
+                Some(Vec2::new(item.position.x, Fix::from_f64(72.5)))
+            } else if item.position.x < Fix::from_f64(-131.25) {
+                Some(Vec2::new(Fix::from_f64(-131.25), item.position.y))
+            } else if item.position.x > Fix::from_f64(131.25) {
+                Some(Vec2::new(Fix::from_f64(131.25), item.position.y))
+            } else {
+                None
+            };
+            if let Some(position) = boundary_position {
+                // DestroyIfOutsideSceneBounds instantiates MineExplosion
+                // without assigning Explosion.PlayerOwnerId.
+                self.spawn_missile_explosion(position, item.owner, false, Fix::ONE, data);
+                self.remove_thrown_item(item_index, false);
+                return;
+            }
         }
     }
 
