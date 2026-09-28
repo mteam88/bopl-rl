@@ -28592,6 +28592,10 @@ impl RolloutWorld {
             let def = &data.maps[self.map].platforms[definition];
             let collider = if hidden { def.hierarchy } else { def.duplicate_collider_hierarchy };
             (def.updatable_count, collider)
+        } else if self.platform_dynamics[source].body_resizable {
+            // A Platform ability's ResizablePlatform: six updatables, the
+            // DPhysicsRoundedRect sixth.
+            (data.platform.spawn_updatable_count, data.platform.spawn_collider_hierarchy)
         } else {
             (7, 5)
         };
