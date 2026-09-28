@@ -34453,12 +34453,15 @@ impl RolloutWorld {
         // game's -40 gravity for completeness.
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active {
-                // SyncAllPhysicsObjectsToFixTransformPosition still resets an
-                // inactive rect's rotation, dropping the rounding a resize
-                // earlier in the pass left in its box.
+                // SyncAllPhysicsObjectsToFixTransformPosition still syncs an
+                // inactive rect's box to its FixTransform (DetPhysics.cs:2500-2507):
+                // a Duplicator copy's shake moves it, and resetting the rotation
+                // drops the rounding a resize earlier in the pass left in its box.
                 if self.platform_dynamics[i].attached_children == 0 {
-                    let right = self.platforms[i].surface.right;
+                    let surface = &self.platforms[i].surface;
+                    let (center, right) = (surface.center, surface.right);
                     let inner = &mut self.platforms[i].collider.inner;
+                    inner.center = center;
                     inner.right = (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(right);
                     inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(right);
                 }
