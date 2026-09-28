@@ -10059,6 +10059,19 @@ impl RolloutWorld {
                     }
                     ABILITY_BLACK_HOLE => {
                         let grounded = self.players[index].base.grounded;
+                        // Ability.EnterAbility scales the box, then SyncPhysicsTo
+                        // UpdateScales the radius the form is placed at.
+                        let slot = &mut self.players[index];
+                        let scale = slot.player_scale;
+                        let form = &mut slot.forms[s];
+                        form.set_scale_offset(
+                            scale,
+                            data.black_hole.hurtbox_extents,
+                            data.black_hole.physics_radius,
+                            data.black_hole.collider_offset,
+                        );
+                        let radius = form.physics_radius();
+                        let offset = form.offset;
                         let form_position = if grounded {
                             let base = &self.players[index].base;
                             base.ground
@@ -10068,7 +10081,7 @@ impl RolloutWorld {
                                 .map_or(base.position, |platform| {
                                     platform
                                         .surface
-                                        .position(base.local, data.black_hole.physics_radius)
+                                        .position(base.local, radius)
                                 })
                         } else {
                             self.players[index].base.position
@@ -10085,9 +10098,9 @@ impl RolloutWorld {
                         };
                         slot.base.position = form_position;
                         let up = if grounded { slot.base.up } else { Vec2::UP };
-                        slot.black_hole_cast.entry_center = form_position
-                            + up.perp_cw().complex_mul(data.black_hole.collider_offset);
-                        slot.base.radius = data.black_hole.physics_radius;
+                        slot.black_hole_cast.entry_center =
+                            form_position + up.perp_cw().complex_mul(offset);
+                        slot.base.radius = radius;
                         slot.base.constants = data.black_hole.constants.clone();
                         if grounded {
                             slot.base.velocity = Vec2::ZERO;
@@ -10110,6 +10123,14 @@ impl RolloutWorld {
                         // form's runs instead, before the form has moved. A
                         // cast begun below the plane therefore dies on the
                         // entry tick rather than surviving the cast.
+                        // The form's Ability.UpdateSim assigns the scale again.
+                        let slot = &mut self.players[index];
+                        slot.scale_form(
+                            data.black_hole.hurtbox_extents,
+                            data.black_hole.physics_radius,
+                            data.black_hole.collider_offset,
+                        );
+                        slot.base.radius = slot.forms[s].physics_radius();
                         if self.ability_boundary_kill(index, false) {
                             return;
                         }
@@ -14397,6 +14418,15 @@ impl RolloutWorld {
                 return;
             }
         }
+        // The animator (1) has not exited the form, so Ability (2) assigns
+        // Player.Scale to the box and PlayerPhysics (4) UpdateScales the radius.
+        let slot = &mut self.players[index];
+        slot.scale_form(
+            data.black_hole.hurtbox_extents,
+            data.black_hole.physics_radius,
+            data.black_hole.collider_offset,
+        );
+        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         // BlackHoleClap's DestroyIfOutsideSceneBounds runs before PlayerBody
         // integrates this pass; its ExitAbility publishes the attached
         // position without ungrounding (BlackHoleClap.cs:158).
@@ -39559,10 +39589,16 @@ impl RolloutWorld {
                     } else {
                         (exit_position, slot.base.rotation, slot.base.up.perp_cw())
                     };
-                    let center = position + basis.complex_mul(data.black_hole.collider_offset);
+                    let form = slot.forms[slot.active_slot];
+                    let offset = if form.scale == Fix::ZERO {
+                        data.black_hole.collider_offset
+                    } else {
+                        form.offset
+                    };
+                    let center = position + basis.complex_mul(offset);
                     // DetPhysics rebuilds the box axes from the synced angle
                     // (Box.SetRotation), not from the body's up vector.
-                    let collider = OrientedBox::from_basis(
+                    let collider = form.hurtbox(
                         center,
                         Vec2::angle(rotation),
                         data.black_hole.hurtbox_extents,
