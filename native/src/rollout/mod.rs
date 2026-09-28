@@ -12472,7 +12472,12 @@ impl RolloutWorld {
             .last()
             .map_or(Fix::ZERO, |key| key.time);
         let mut platforms_changed = false;
-        for engine in &mut self.engines {
+        // RocketEngine.UpdateSim in hierarchy order: each flame lights the first
+        // cloud it touches that no earlier engine has lit.
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.engines, |engine| engine.hierarchy_base);
+        for &engine_index in &order {
+            let engine = &mut self.engines[engine_index];
             if !engine.active || engine.macho_carried || engine.born_tick == self.tick {
                 continue;
             }
@@ -12590,6 +12595,7 @@ impl RolloutWorld {
                 _ => {}
             }
         }
+        self.scratch.item_order = order;
         if platforms_changed {
             self.platforms_changed();
         }
