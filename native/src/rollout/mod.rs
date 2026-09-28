@@ -2613,6 +2613,13 @@ pub struct PlayerSlot {
     pub beam_entity: usize,
 }
 
+/// The slime hurtbox clamps an assigned Scale to its serialized bounds,
+/// MinScale `(Fix)0.3f` and MaxScale 3 (Player.prefab), and its FixTransform
+/// takes the clamped value. Player.Scale itself clamps to `(Fix)0.3`.
+fn hurtbox_scale(scale: Fix) -> Fix {
+    scale.clamp(Fix::from_f32(0.3), Fix::from_int(3))
+}
+
 impl PlayerSlot {
     fn force_unground(&mut self, platforms: &[Platform], tick: u32) {
         force_unground(&mut self.base, &mut self.ground_destroyed, platforms, tick);
@@ -2727,7 +2734,7 @@ impl PlayerSlot {
     /// SyncPhysicsTo(AbilityExitInfo)'s UpdateScale: the kept slime radius
     /// catches up to the Player.Scale onExitAbility just gave the hurtbox.
     fn exit_slime_radius(&self) -> Fix {
-        let scale = self.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+        let scale = hurtbox_scale(self.player_scale);
         if scale != self.physics_scale {
             self.slime_radius * (scale / self.physics_scale)
         } else {
@@ -2737,11 +2744,11 @@ impl PlayerSlot {
 
     fn restore_slime_radius(&mut self) {
         self.base.radius = self.exit_slime_radius();
-        self.physics_scale = self.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+        self.physics_scale = hurtbox_scale(self.player_scale);
     }
 
     fn set_ordinary_body_scale(&mut self, scale: Fix) {
-        let scale = scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+        let scale = hurtbox_scale(scale);
         // SlimeController assigns hurtBox.Scale every pass even when the
         // value is unchanged. Q32 `(One / old) * new` is not necessarily one,
         // so the collider's stored inverse extents keep drifting by raw units.
@@ -8488,7 +8495,7 @@ impl RolloutWorld {
                     slot.ability_origin_ground = frozen.ground.filter(|_| frozen.grounded);
                     // SlimeController still writes Player.Scale to its hurtbox
                     // after OldUpdate on the pass it enters an ability.
-                    let scale = slot.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+                    let scale = hurtbox_scale(slot.player_scale);
                     let ratio = (Fix::ONE / slot.body_collider_scale) * scale;
                     slot.body_inverse_extents = slot.body_inverse_extents / ratio;
                     slot.body_collider_scale = scale;
@@ -20538,7 +20545,7 @@ impl RolloutWorld {
             // onExitAbility sets hurtBox.Scale = Player.Scale, and
             // SyncPhysicsTo's UpdateScale follows before the exit rays.
             let slot = &mut self.players[index];
-            let scale = slot.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+            let scale = hurtbox_scale(slot.player_scale);
             slot.base.dash.exit_radius = if scale != slot.physics_scale {
                 slot.base.radius * (scale / slot.physics_scale)
             } else {
@@ -20579,7 +20586,7 @@ impl RolloutWorld {
             }
             if let Some(input) = exit_input {
                 let slot = &mut self.players[index];
-                slot.physics_scale = slot.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
+                slot.physics_scale = hurtbox_scale(slot.player_scale);
                 slot.set_ordinary_body_scale(slot.player_scale);
                 slot.base.sync_collider();
                 self.dash_rope_exit(index, input, data::get().dash.leave_speed);
