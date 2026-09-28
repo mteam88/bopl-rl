@@ -2653,6 +2653,16 @@ struct PlatformScratch {
     ray_hits: Vec<SortedRayHit>,
     duplicate_shake_order: Vec<(u32, u8, usize)>,
     duplicate_shake_offsets: Vec<(u8, usize, Vec2)>,
+    /// Grenade explosions, smoke clouds and smoke explosions awaiting their
+    /// Init: (hierarchy base, kind, index into its list).
+    pending_explosives: Vec<(u32, PendingExplosive, usize)>,
+}
+
+#[derive(Clone, Copy)]
+enum PendingExplosive {
+    GrenadeExplosion,
+    SmokeCloud,
+    SmokeExplosion,
 }
 
 impl PlatformScratch {
@@ -5506,12 +5516,9 @@ impl RolloutWorld {
             self.register_pending_teleport_markers(data);
         }
         self.register_pending_stock_clones(data);
-        if has(ABILITY_GRENADE) || has(ABILITY_SMOKE) {
-            self.register_pending_grenade_explosions(data);
-        }
         let mut drowned_clouds = 0;
-        if has(ABILITY_SMOKE) {
-            drowned_clouds = self.register_pending_smoke(data);
+        if has(ABILITY_GRENADE) || has(ABILITY_SMOKE) {
+            drowned_clouds = self.register_pending_explosives(data);
         }
         if has(ABILITY_TIME_STOP) {
             self.register_pending_time_stops();
@@ -17294,10 +17301,14 @@ impl RolloutWorld {
         self.entities.len() - 1
     }
 
-    /// Remove callback-destroyed items, register explosions queued by the
-    /// preceding pass, and execute both Shockwave.Init calls before the
-    /// updater loop begins.
-    fn register_pending_grenade_explosions(&mut self, data: &data::RolloutData) {
+    /// Remove callback-destroyed items, register the grenade explosions,
+    /// smoke clouds and smoke explosions queued by the preceding pass, and
+    /// execute their Init calls before the updater loop begins. Updater
+    /// initializes new updatables sorted by hierarchy (Updater.cs:270-276),
+    /// so their colliders join DetPhysics in the order they were
+    /// instantiated, whatever their kind. Returns how many new clouds
+    /// drowned before their collider appeared.
+    fn register_pending_explosives(&mut self, data: &data::RolloutData) -> u32 {
         for item in &self.thrown_items {
             if !item.active
                 && let Some(entity) = item.entity
@@ -17306,134 +17317,160 @@ impl RolloutWorld {
                 self.entities[entity].flags = E_REMOVED;
             }
         }
-        for explosion_index in 0..self.grenade_explosions.len() {
-            let explosion = self.grenade_explosions[explosion_index];
-            if !explosion.active || explosion.registered || explosion.born_tick >= self.tick {
-                continue;
+        let tick = self.tick;
+        let pending_since = |active: bool, registered: bool, born_tick: u32| {
+            active && !registered && born_tick < tick
+        };
+        let mut pending = std::mem::take(&mut self.scratch.pending_explosives);
+        pending.clear();
+        for (index, explosion) in self.grenade_explosions.iter().enumerate() {
+            if pending_since(explosion.active, explosion.registered, explosion.born_tick) {
+                pending.push((explosion.hierarchy_base, PendingExplosive::GrenadeExplosion, index));
             }
-            let entity = self.pooled_row(explosion.entity);
-            self.grenade_explosions[explosion_index].entity = Some(entity);
-            let id = self.next_id();
-            let collider = OrientedBox::from_basis(
-                explosion.position,
-                Vec2::RIGHT,
-                data.grenade.explosion_extents * explosion.scale,
-            );
-            self.entities[entity] = CEntity {
-                id,
-                kind: 1,
-                layer: data.grenade.explosion_layer,
-                flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
-                hierarchy: 100_000_000
-                    + explosion.hierarchy_base
-                    + data.grenade.explosion_collider_hierarchy,
-                x: explosion.position.x.raw(),
-                y: explosion.position.y.raw(),
-                right_x: collider.right.x.raw(),
-                right_y: collider.right.y.raw(),
-                up_x: collider.up.x.raw(),
-                up_y: collider.up.y.raw(),
-                inverse_mass: -Fix::ONE.raw(),
-                ..CEntity::default()
-            };
-            self.grenade_explosions[explosion_index].registered = true;
-            for wave in data.grenade.explosion_shockwaves {
-                self.apply_explosion_shockwave(explosion.position, wave);
+        }
+        for (index, cloud) in self.smoke_clouds.iter().enumerate() {
+            if pending_since(cloud.active, cloud.registered, cloud.born_tick) {
+                pending.push((cloud.hierarchy_base, PendingExplosive::SmokeCloud, index));
             }
+        }
+        for (index, explosion) in self.smoke_explosions.iter().enumerate() {
+            if pending_since(explosion.active, explosion.registered, explosion.born_tick) {
+                pending.push((explosion.hierarchy_base, PendingExplosive::SmokeExplosion, index));
+            }
+        }
+        pending.sort_unstable_by_key(|&(hierarchy_base, _, _)| hierarchy_base);
+        let mut drowned = 0;
+        for &(_, kind, index) in &pending {
+            match kind {
+                PendingExplosive::GrenadeExplosion => self.register_grenade_explosion(index, data),
+                PendingExplosive::SmokeCloud => {
+                    if !self.register_smoke_cloud(index, data) {
+                        drowned += 1;
+                    }
+                }
+                PendingExplosive::SmokeExplosion => self.register_smoke_explosion(index, data),
+            }
+        }
+        self.scratch.pending_explosives = pending;
+        drowned
+    }
+
+    /// Register a grenade explosion and execute both Shockwave.Init calls.
+    fn register_grenade_explosion(&mut self, explosion_index: usize, data: &data::RolloutData) {
+        let explosion = self.grenade_explosions[explosion_index];
+        let entity = self.pooled_row(explosion.entity);
+        self.grenade_explosions[explosion_index].entity = Some(entity);
+        let id = self.next_id();
+        let collider = OrientedBox::from_basis(
+            explosion.position,
+            Vec2::RIGHT,
+            data.grenade.explosion_extents * explosion.scale,
+        );
+        self.entities[entity] = CEntity {
+            id,
+            kind: 1,
+            layer: data.grenade.explosion_layer,
+            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000
+                + explosion.hierarchy_base
+                + data.grenade.explosion_collider_hierarchy,
+            x: explosion.position.x.raw(),
+            y: explosion.position.y.raw(),
+            right_x: collider.right.x.raw(),
+            right_y: collider.right.y.raw(),
+            up_x: collider.up.x.raw(),
+            up_y: collider.up.y.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        };
+        self.grenade_explosions[explosion_index].registered = true;
+        for wave in data.grenade.explosion_shockwaves {
+            self.apply_explosion_shockwave(explosion.position, wave);
         }
     }
 
-    /// Returns how many new clouds drowned before their collider appeared.
-    fn register_pending_smoke(&mut self, data: &data::RolloutData) -> u32 {
-        let mut drowned = 0;
-        for cloud_index in 0..self.smoke_clouds.len() {
-            let cloud = self.smoke_clouds[cloud_index];
-            if !cloud.active || cloud.registered || cloud.born_tick >= self.tick {
-                continue;
-            }
-            let delay = self
-                .rng
-                .fix_range(data.smoke.min_ignition_delay, data.smoke.max_ignition_delay);
-            // Newly instantiated cloud prefabs run Init (including the RNG
-            // draw above) before their bounds updater in the same pass. A
-            // cloud born below WaterHeight is destroyed before its collider
-            // can appear in the public entity rows, instantiating the
-            // two-updatable water splash at the end of the pass.
-            if cloud.position.y < data::get().maps[self.map].lower_boundary() {
-                drowned += 1;
-                self.remove_smoke_cloud(cloud_index);
-                continue;
-            }
-            let entity = self.pooled_row(cloud.entity);
-            self.smoke_clouds[cloud_index].entity = Some(entity);
-            let id = self.next_id();
-            self.entities[entity] = CEntity {
-                id,
-                kind: 0,
-                layer: data.smoke.cloud_layer,
-                owner: 0,
-                flags: E_ACTIVE | E_ENABLED,
-                hierarchy: 100_000_000 + cloud.hierarchy_base + data.smoke.cloud_collider_hierarchy,
-                x: cloud.position.x.raw(),
-                y: cloud.position.y.raw(),
-                vx: cloud.body.velocity.x.raw(),
-                vy: cloud.body.velocity.y.raw(),
-                radius: (data.smoke.cloud_radii[0] * cloud.scale).raw(),
-                rotation: cloud.rotation.raw(),
-                inverse_mass: data.smoke.cloud_body.inverse_mass.raw(),
-                ..CEntity::default()
-            };
-            let cloud = &mut self.smoke_clouds[cloud_index];
-            cloud.registered = true;
-            cloud.ignition_time = -Fix::ONE;
-            cloud.ignition_delay = delay;
+    /// Register a smoke cloud. Returns false when it drowned before its
+    /// collider appeared.
+    fn register_smoke_cloud(&mut self, cloud_index: usize, data: &data::RolloutData) -> bool {
+        let cloud = self.smoke_clouds[cloud_index];
+        let delay = self
+            .rng
+            .fix_range(data.smoke.min_ignition_delay, data.smoke.max_ignition_delay);
+        // Newly instantiated cloud prefabs run Init (including the RNG
+        // draw above) before their bounds updater in the same pass. A
+        // cloud born below WaterHeight is destroyed before its collider
+        // can appear in the public entity rows, instantiating the
+        // two-updatable water splash at the end of the pass.
+        if cloud.position.y < data::get().maps[self.map].lower_boundary() {
+            self.remove_smoke_cloud(cloud_index);
+            return false;
         }
+        let entity = self.pooled_row(cloud.entity);
+        self.smoke_clouds[cloud_index].entity = Some(entity);
+        let id = self.next_id();
+        self.entities[entity] = CEntity {
+            id,
+            kind: 0,
+            layer: data.smoke.cloud_layer,
+            owner: 0,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000 + cloud.hierarchy_base + data.smoke.cloud_collider_hierarchy,
+            x: cloud.position.x.raw(),
+            y: cloud.position.y.raw(),
+            vx: cloud.body.velocity.x.raw(),
+            vy: cloud.body.velocity.y.raw(),
+            radius: (data.smoke.cloud_radii[0] * cloud.scale).raw(),
+            rotation: cloud.rotation.raw(),
+            inverse_mass: data.smoke.cloud_body.inverse_mass.raw(),
+            ..CEntity::default()
+        };
+        let cloud = &mut self.smoke_clouds[cloud_index];
+        cloud.registered = true;
+        cloud.ignition_time = -Fix::ONE;
+        cloud.ignition_delay = delay;
+        true
+    }
 
-        for explosion_index in 0..self.smoke_explosions.len() {
-            let explosion = self.smoke_explosions[explosion_index];
-            if !explosion.active || explosion.registered || explosion.born_tick >= self.tick {
-                continue;
-            }
-            let entity = self.pooled_row(explosion.entity);
-            self.smoke_explosions[explosion_index].entity = Some(entity);
-            let id = self.next_id();
-            let extents = data.smoke.explosion_extents * explosion.scale;
-            // SmokeExplosion.prefab's FixTransform offsets its box upward.
-            let center = explosion.position + data.smoke.explosion_collider_offset * explosion.scale;
-            let collider = OrientedBox::from_basis(center, Vec2::RIGHT, extents);
-            self.entities[entity] = CEntity {
-                id,
-                kind: 1,
-                layer: data.smoke.explosion_layer,
-                // No owner: `SmokeGrenadeExplode2.Detonate`
-                // (sim/Gameplay/SmokeGrenadeExplode2.cs:50) instantiates the
-                // SmokeExplosion prefab bare and never assigns it a player id,
-                // and the prefab's root carries only Explosion, SpriteAnimator,
-                // DPhysicsBox, FixTransform and PlaySound
-                // (Assets/GameObject/SmokeExplosion.prefab) -- none of which is
-                // an `IPlayerIdHolder`. `RlObservation.Collider`
-                // (sim/Gameplay/RlObservation.cs:110, 118) therefore publishes
-                // owner 0 for this row, exactly as it does for the grenade,
-                // missile and mine explosions. (Those three prefabs do carry a
-                // `Shockwave`, which *is* an `IPlayerIdHolder`, but nothing in
-                // the simulation ever calls `Shockwave.SetPlayerId`, so its
-                // `ownerId` stays 0 as well.)
-                flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
-                hierarchy: 100_000_000
-                    + explosion.hierarchy_base
-                    + data.smoke.explosion_collider_hierarchy,
-                x: center.x.raw(),
-                y: center.y.raw(),
-                right_x: collider.right.x.raw(),
-                right_y: collider.right.y.raw(),
-                up_x: collider.up.x.raw(),
-                up_y: collider.up.y.raw(),
-                inverse_mass: -Fix::ONE.raw(),
-                ..CEntity::default()
-            };
-            self.smoke_explosions[explosion_index].registered = true;
-        }
-        drowned
+    fn register_smoke_explosion(&mut self, explosion_index: usize, data: &data::RolloutData) {
+        let explosion = self.smoke_explosions[explosion_index];
+        let entity = self.pooled_row(explosion.entity);
+        self.smoke_explosions[explosion_index].entity = Some(entity);
+        let id = self.next_id();
+        let extents = data.smoke.explosion_extents * explosion.scale;
+        // SmokeExplosion.prefab's FixTransform offsets its box upward.
+        let center = explosion.position + data.smoke.explosion_collider_offset * explosion.scale;
+        let collider = OrientedBox::from_basis(center, Vec2::RIGHT, extents);
+        self.entities[entity] = CEntity {
+            id,
+            kind: 1,
+            layer: data.smoke.explosion_layer,
+            // No owner: `SmokeGrenadeExplode2.Detonate`
+            // (sim/Gameplay/SmokeGrenadeExplode2.cs:50) instantiates the
+            // SmokeExplosion prefab bare and never assigns it a player id,
+            // and the prefab's root carries only Explosion, SpriteAnimator,
+            // DPhysicsBox, FixTransform and PlaySound
+            // (Assets/GameObject/SmokeExplosion.prefab) -- none of which is
+            // an `IPlayerIdHolder`. `RlObservation.Collider`
+            // (sim/Gameplay/RlObservation.cs:110, 118) therefore publishes
+            // owner 0 for this row, exactly as it does for the grenade,
+            // missile and mine explosions. (Those three prefabs do carry a
+            // `Shockwave`, which *is* an `IPlayerIdHolder`, but nothing in
+            // the simulation ever calls `Shockwave.SetPlayerId`, so its
+            // `ownerId` stays 0 as well.)
+            flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
+            hierarchy: 100_000_000
+                + explosion.hierarchy_base
+                + data.smoke.explosion_collider_hierarchy,
+            x: center.x.raw(),
+            y: center.y.raw(),
+            right_x: collider.right.x.raw(),
+            right_y: collider.right.y.raw(),
+            up_x: collider.up.x.raw(),
+            up_y: collider.up.y.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        };
+        self.smoke_explosions[explosion_index].registered = true;
     }
 
     fn apply_explosion_shockwave(&mut self, position: Vec2, wave: data::ExplosionShockwaveData) {
