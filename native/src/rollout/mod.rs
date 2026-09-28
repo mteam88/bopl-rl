@@ -2608,7 +2608,8 @@ pub struct PlayerSlot {
     pub circle_entity: usize,
     pub rock_entity: usize,
     pub roll_entity: usize,
-    pub rock_hierarchy: u32,
+    /// Each Rock slot's collider hierarchy, reserved by its prefab.
+    pub rock_hierarchy: [u32; 3],
     pub push_entity: usize,
     /// Current Freeze prefab for each equipped slot. `freeze_entity` below is
     /// the one selected by `active_slot`, retained as the hot-path alias used
@@ -3698,7 +3699,7 @@ impl RolloutWorld {
         let mut form_entities = [[usize::MAX; 3]; MAX_PLAYERS];
         let mut circle_entity = [usize::MAX; MAX_PLAYERS];
         let mut roll_entity = [usize::MAX; MAX_PLAYERS];
-        let mut rock_hierarchy = [0u32; MAX_PLAYERS];
+        let mut rock_hierarchy = [[0u32; 3]; MAX_PLAYERS];
         let mut gust_entity = [usize::MAX; MAX_PLAYERS];
         let mut revival_entity = [usize::MAX; MAX_PLAYERS];
         let mut time_stop_entity = [usize::MAX; MAX_PLAYERS];
@@ -3726,7 +3727,7 @@ impl RolloutWorld {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
                 if ability == ABILITY_ROCK {
-                    rock_hierarchy[i] = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
+                    rock_hierarchy[i][s] = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
                     continue;
                 }
                 let (radius, offset, relative_hierarchy, target) = match ability {
@@ -5146,7 +5147,7 @@ impl RolloutWorld {
         }
 
         if ability == ABILITY_ROCK {
-            self.players[player_index].rock_hierarchy =
+            self.players[player_index].rock_hierarchy[ability_slot] =
                 100_000_000 + hierarchy_base + data.rock.collider_hierarchy;
             return;
         }
@@ -9084,7 +9085,7 @@ impl RolloutWorld {
                                 layer: LAYER_PLAYER,
                                 owner: self.players[index].base.id,
                                 flags: E_ACTIVE | E_ENABLED,
-                                hierarchy: self.players[index].rock_hierarchy,
+                                hierarchy: self.players[index].rock_hierarchy[s],
                                 x: form_position.x.raw(),
                                 y: form_position.y.raw(),
                                 radius: data.rock.radius.raw(),
@@ -19218,13 +19219,13 @@ impl RolloutWorld {
             let mut form_entities = [usize::MAX; 3];
             let mut platform_entity = usize::MAX;
             let mut roll_entity = usize::MAX;
-            let mut rock_hierarchy = 0;
+            let mut rock_hierarchy = [0u32; 3];
             let mut gust_entity = usize::MAX;
             let mut revival_entity = usize::MAX;
             let mut time_stop_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 if abilities[slot] == ABILITY_ROCK {
-                    rock_hierarchy = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
+                    rock_hierarchy[slot] = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
                     continue;
                 }
                 let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
@@ -19661,13 +19662,13 @@ impl RolloutWorld {
             let mut form_entities = [usize::MAX; 3];
             let mut platform_entity = usize::MAX;
             let mut roll_entity = usize::MAX;
-            let mut rock_hierarchy = 0;
+            let mut rock_hierarchy = [0u32; 3];
             let mut gust_entity = usize::MAX;
             let mut revival_entity = usize::MAX;
             let mut time_stop_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
                 if abilities[slot] == ABILITY_ROCK {
-                    rock_hierarchy = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
+                    rock_hierarchy[slot] = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
                     continue;
                 }
                 let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
