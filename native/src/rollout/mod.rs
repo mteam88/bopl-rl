@@ -37989,7 +37989,12 @@ impl RolloutWorld {
             if throw_e != usize::MAX {
                 let throw_box = &mut self.entities[throw_e];
                 let was_active = throw_box.flags & E_ACTIVE != 0;
-                let missile_row = missile_form || (was_active && slot.missile.projectile.is_some());
+                // Each slot's prefab owns its row, so a Missile slot's row
+                // keeps the missile box while another throw form is out.
+                let missile_row = missile_form
+                    || (0..3).any(|s| {
+                        slot.form_entities[s] == throw_e && slot.abilities[s] == ABILITY_MISSILE
+                    });
                 if alive && (throwing || missile_form) {
                     throw_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
                     throw_box.owner = slot.base.id;
