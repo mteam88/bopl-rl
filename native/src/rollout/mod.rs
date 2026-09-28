@@ -2804,6 +2804,8 @@ struct PlatformScratch {
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_spike_hits: Vec<(usize, usize, Vec2)>,
     tesla_wall_contacts: Vec<(usize, usize, Contact)>,
+    /// Portal shots' wall manifolds: (shot, wall, contact).
+    portal_shot_wall_contacts: Vec<(usize, usize, Contact)>,
     item_order: Vec<usize>,
     item_window: Vec<usize>,
     item_contacts: Vec<(usize, usize, Contact)>,
@@ -6402,7 +6404,7 @@ impl RolloutWorld {
         // DetPhysics corrects every Circle/RR pair before any Circle/Circle
         // one, so an item's wall correction moves it before an arrow's
         // manifold with it is built.
-        if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_ROCK) {
+        if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_ROCK) || has(ABILITY_PORTAL_GUN) {
             for item in &mut self.thrown_items {
                 item.swept_position = item.position;
             }
@@ -6838,7 +6840,12 @@ impl RolloutWorld {
         }
     }
 
+    /// Builds the portal shots' wall manifolds. They resolve with the other
+    /// Circle/RoundedRectangle pairs in sweep order, and PortalShot.OnCollide
+    /// lands the shot afterwards as a queued callback.
     fn portal_shots_contacts(&mut self, data: &data::RolloutData) {
+        let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
+        shot_contacts.clear();
         for shot_index in 0..self.portal_shots.len() {
             if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
                 continue;
@@ -6850,33 +6857,34 @@ impl RolloutWorld {
                 center: self.portal_shots[shot_index].position,
                 radius: data.portal_gun.shot_radius,
             };
-            let Some((wall_index, contact)) = (0..self.platforms.len())
+            if let Some((wall_index, contact)) = (0..self.platforms.len())
                 .filter(|&wall_index| self.scratch.swept_pairs(self.tick, wall_index, circle))
                 .find_map(|wall_index| {
                     crate::physics::contact::circle_rounded(circle, self.circle_collider(wall_index))
                         .map(|contact| (wall_index, contact))
                 })
-            else {
-                continue;
-            };
-            let shot_position = self.portal_shots[shot_index].position;
-            let (wall_position, own_inverse_mass) = self.platform_contact_frame(wall_index);
-            let correction = {
-                let shot_body = &mut self.portal_shots[shot_index].body;
-                let wall_body = &mut self.platform_dynamics[wall_index].body;
-                resolve(contact, shot_body, wall_body, shot_position, wall_position);
-                positional_correction(
-                    contact,
-                    shot_body.inverse_mass,
-                    own_inverse_mass,
-                    false,
-                )
-            };
-            self.portal_shots[shot_index].position += correction[0];
-            self.shift_platform_collider(wall_index, correction[1]);
-            if correction[1] != Vec2::ZERO {
-                self.platforms_changed();
+            {
+                shot_contacts.push((shot_index, wall_index, contact));
             }
+        }
+        self.scratch.portal_shot_wall_contacts = shot_contacts;
+    }
+
+    fn resolve_portal_shot_wall_contact(&mut self, shot_index: usize, wall_index: usize, contact: Contact) {
+        let shot_position = self.portal_shots[shot_index].position;
+        let (wall_position, own_inverse_mass) = self.platform_contact_frame(wall_index);
+        let correction = {
+            let shot_body = &mut self.portal_shots[shot_index].body;
+            let wall_body = &mut self.platform_dynamics[wall_index].body;
+            resolve(contact, shot_body, wall_body, shot_position, wall_position);
+            positional_correction(contact, shot_body.inverse_mass, own_inverse_mass, false)
+        };
+        self.portal_shots[shot_index].position += correction[0];
+        self.shift_platform_collider(wall_index, correction[1]);
+    }
+
+    fn land_portal_shots_on_walls(&mut self, shot_contacts: &[(usize, usize, Contact)], data: &data::RolloutData) {
+        for &(shot_index, _, contact) in shot_contacts {
             if let Some(entity) = self.portal_shots[shot_index].entity {
                 let shot = self.portal_shots[shot_index];
                 let row = &mut self.entities[entity];
@@ -32062,6 +32070,7 @@ impl RolloutWorld {
         // correction before the second's.
         let mut node_contacts = std::mem::take(&mut self.scratch.tesla_wall_contacts);
         let rock_contacts = std::mem::take(&mut self.scratch.rock_wall_contacts);
+        let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
         let mut order = std::mem::take(&mut self.scratch.circle_wall_order);
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
@@ -32099,7 +32108,12 @@ impl RolloutWorld {
         };
         const ITEM: u8 = 0;
         const NODE: u8 = 1;
+        // Portal shots are DetPhysics circles in the same batch.
+        let shot_min = |shot_index: usize| {
+            axis(self.portal_shots[shot_index].position) - data.portal_gun.shot_radius
+        };
         const ROCK: u8 = 2;
+        const SHOT: u8 = 3;
         order.clear();
         order.extend(all_contacts.iter().enumerate().map(|(k, &(item_index, platform_index, _))| {
             let (a, b) = (item_min(item_index), platform_min(platform_index));
@@ -32113,6 +32127,10 @@ impl RolloutWorld {
             let (a, b) = (rock_min(rock_index), platform_min(wall_index));
             (a.max(b), a.min(b), ROCK, k)
         }));
+        order.extend(shot_contacts.iter().enumerate().map(|(k, &(shot_index, wall_index, _))| {
+            let (a, b) = (shot_min(shot_index), platform_min(wall_index));
+            (a.max(b), a.min(b), SHOT, k)
+        }));
         order.sort_by_key(|&(high, low, _, _)| (high, low));
         for &(_, _, kind, k) in &order {
             if kind == NODE {
@@ -32123,6 +32141,11 @@ impl RolloutWorld {
             if kind == ROCK {
                 let (rock_index, wall_index, contact) = rock_contacts[k];
                 self.resolve_rock_wall_contact(rock_index, wall_index, contact);
+                continue;
+            }
+            if kind == SHOT {
+                let (shot_index, wall_index, contact) = shot_contacts[k];
+                self.resolve_portal_shot_wall_contact(shot_index, wall_index, contact);
                 continue;
             }
             let (item_index, platform_index, contact) = all_contacts[k];
@@ -32146,6 +32169,9 @@ impl RolloutWorld {
         rock_contacts.clear();
         self.scratch.rock_wall_contacts = rock_contacts;
         self.scratch.circle_wall_order = order;
+        self.land_portal_shots_on_walls(&shot_contacts, data);
+        shot_contacts.clear();
+        self.scratch.portal_shot_wall_contacts = shot_contacts;
 
         for item_index in 0..self.thrown_items.len() {
             if !self.thrown_items[item_index].active
