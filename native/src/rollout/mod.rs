@@ -5974,11 +5974,8 @@ impl RolloutWorld {
             // collider scale before the later ray effect writes its next value.
             self.thrown_item_scale_mass_tick();
         }
-        if has(ABILITY_POKE_BALL) {
-            self.poke_balls_tick(data, updater_dt);
-        }
-        if has(ABILITY_TACK) {
-            self.tacks_tick(data, updater_dt);
+        if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
+            self.poke_balls_and_tacks_tick(data, updater_dt);
         }
         if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
             self.scale_changers_tick(data);
@@ -29143,212 +29140,251 @@ impl RolloutWorld {
         present.then_some(slot.base.position)
     }
 
-    fn poke_balls_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// PokeBall.UpdateSim and BananaPeel.UpdateSim in Updater hierarchy order: the
+    /// first to run owns a capture or a kill, and slot order no longer tracks
+    /// spawn order once the item pool reuses a slot.
+    fn poke_balls_and_tacks_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        order.clear();
+        order.extend((0..self.thrown_items.len()).filter(|&index| {
+            matches!(self.thrown_items[index].ability, ABILITY_POKE_BALL | ABILITY_TACK)
+        }));
+        order.sort_unstable_by_key(|&index| (self.thrown_items[index].hierarchy_base, index));
+        for &item_index in &order {
+            if self.thrown_items[item_index].ability == ABILITY_POKE_BALL {
+                self.poke_ball_tick(item_index, data, updater_dt);
+            } else {
+                self.tack_tick(item_index, data, updater_dt);
+            }
+        }
+        self.scratch.item_order = order;
+    }
+
+    fn poke_ball_tick(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
         // PokeBall.UpdateSim starts on the first pass after ThrowItem2 releases
         // the manually initialized circle. Its victim search and capture state
         // are fixed-size scans over the player slots.
-        for item_index in 0..self.thrown_items.len() {
-            if self.blink_object_hidden(self.thrown_items[item_index].entity) {
-                continue;
+        if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+            return;
+        }
+        if !self.thrown_items[item_index].active
+            || self.thrown_items[item_index].ability != ABILITY_POKE_BALL
+            || self.thrown_items[item_index].entity.is_none()
+            || self.thrown_items[item_index].born_tick >= self.tick
+            || (self.thrown_items[item_index].duplicated
+                && self.thrown_items[item_index].born_tick + 1 >= self.tick)
+        {
+            return;
+        }
+        if !self.thrown_items[item_index].launched {
+            let item = &mut self.thrown_items[item_index];
+            item.launched = true;
+            let speed = item.body.velocity.length().max(Fix::ONE);
+            item.body.angular_velocity = Fix::from_int(-6) * item.body.velocity.x / speed;
+            if let Some(entity) = item.entity {
+                self.entities[entity].owner = item.owner as u32 + 1;
             }
-            if !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].ability != ABILITY_POKE_BALL
-                || self.thrown_items[item_index].entity.is_none()
-                || self.thrown_items[item_index].born_tick >= self.tick
-                || (self.thrown_items[item_index].duplicated
-                    && self.thrown_items[item_index].born_tick + 1 >= self.tick)
+        }
+        self.thrown_items[item_index].age += updater_dt;
+
+        if let Some(victim) = self.thrown_items[item_index].capture_victim {
+            // Every PokeBall keeps its own victim reference. Several
+            // balls may capture the same slime from manifolds queued in
+            // one DetPhysics pass, even after the first callback sets the
+            // shared invulnerability mask.
+            let victim_is_clone = self.thrown_items[item_index].capture_victim_is_clone;
+            let valid = if victim_is_clone {
+                victim < self.abilityless_clones.len()
+                    && self.abilityless_clones[victim].active
+                    && self.abilityless_clones[victim].base.alive
+            } else {
+                victim < self.players.len() && self.playable(victim)
+            };
+            if !valid {
+                if victim_is_clone {
+                    self.release_poke_clone(item_index, victim, data);
+                } else {
+                    self.release_poke_victim(item_index, victim, data);
+                }
+                self.remove_thrown_item(item_index, false);
+                return;
+            }
+            let position = self.thrown_items[item_index].position;
+            if victim_is_clone {
+                let clone = &mut self.abilityless_clones[victim];
+                clone.base.position = position;
+                clone.base.velocity = Vec2::ZERO;
+                clone.base.sync_collider();
+                clone.obs_state = STATE_RAGDOLL;
+            } else {
+                let slot = &mut self.players[victim];
+                slot.base.position = position;
+                slot.base.velocity = Vec2::ZERO;
+                slot.base.sync_collider();
+                slot.obs_state = STATE_RAGDOLL;
+                slot.ragdoll = RagdollState {
+                    active: true,
+                    skip_physics: true,
+                    hold_on_ground: false,
+                    time: Fix::ZERO,
+                    duration: Fix::ONE,
+                };
+            }
+            self.thrown_items[item_index].capture_left -= updater_dt;
+            if self.thrown_items[item_index].capture_left <= Fix::ZERO {
+                if victim_is_clone {
+                    self.release_poke_clone(item_index, victim, data);
+                } else {
+                    self.release_poke_victim(item_index, victim, data);
+                }
+                self.remove_thrown_item(item_index, false);
+            }
+            return;
+        }
+
+        if self.thrown_items[item_index].age > data.poke_ball.fizzle_seconds {
+            self.remove_thrown_item(item_index, false);
+            return;
+        }
+
+        let position = self.thrown_items[item_index].position;
+        let item_scale = self.thrown_items[item_index].scale;
+        let collider_radius = self.thrown_items[item_index].collider_radius;
+        // PokeBall multiplies its already scaled DPhysicsCircle radius by
+        // Scale once more when constructing the proximity query.
+        let radius = collider_radius * item_scale;
+        let owner = self.thrown_items[item_index].owner;
+        let mut nearest = Fix::MAX;
+        let mut victim = None;
+        let mut victim_is_clone = false;
+        let mut victim_owner = usize::MAX;
+        for player_index in 0..self.players.len() {
+            let player = &self.players[player_index];
+            if player_index == owner
+                || !self.playable_slot(player)
+                || player.active != ActiveAbility::None
+                || player.base.dash.active
+                || player.poke_invulnerable
             {
                 continue;
             }
-            if !self.thrown_items[item_index].launched {
-                let item = &mut self.thrown_items[item_index];
-                item.launched = true;
-                let speed = item.body.velocity.length().max(Fix::ONE);
-                item.body.angular_velocity = Fix::from_int(-6) * item.body.velocity.x / speed;
-                if let Some(entity) = item.entity {
-                    self.entities[entity].owner = item.owner as u32 + 1;
-                }
+            let distance = (player.base.position - position).length_squared();
+            if distance < nearest || (distance == nearest && player_index < victim_owner) {
+                nearest = distance;
+                let capture_radius = radius + Fix::from_f32(0.8) * player.player_scale;
+                victim = (distance < capture_radius * capture_radius).then_some(player_index);
+                victim_is_clone = false;
+                victim_owner = player_index;
             }
-            self.thrown_items[item_index].age += updater_dt;
-
-            if let Some(victim) = self.thrown_items[item_index].capture_victim {
-                // Every PokeBall keeps its own victim reference. Several
-                // balls may capture the same slime from manifolds queued in
-                // one DetPhysics pass, even after the first callback sets the
-                // shared invulnerability mask.
-                let victim_is_clone = self.thrown_items[item_index].capture_victim_is_clone;
-                let valid = if victim_is_clone {
-                    victim < self.abilityless_clones.len()
-                        && self.abilityless_clones[victim].active
-                        && self.abilityless_clones[victim].base.alive
-                } else {
-                    victim < self.players.len() && self.playable(victim)
-                };
-                if !valid {
-                    if victim_is_clone {
-                        self.release_poke_clone(item_index, victim, data);
-                    } else {
-                        self.release_poke_victim(item_index, victim, data);
-                    }
-                    self.remove_thrown_item(item_index, false);
-                    continue;
-                }
-                let position = self.thrown_items[item_index].position;
-                if victim_is_clone {
-                    let clone = &mut self.abilityless_clones[victim];
-                    clone.base.position = position;
-                    clone.base.velocity = Vec2::ZERO;
-                    clone.base.sync_collider();
-                    clone.obs_state = STATE_RAGDOLL;
-                } else {
-                    let slot = &mut self.players[victim];
-                    slot.base.position = position;
-                    slot.base.velocity = Vec2::ZERO;
-                    slot.base.sync_collider();
-                    slot.obs_state = STATE_RAGDOLL;
-                    slot.ragdoll = RagdollState {
-                        active: true,
-                        skip_physics: true,
-                        hold_on_ground: false,
-                        time: Fix::ZERO,
-                        duration: Fix::ONE,
-                    };
-                }
-                self.thrown_items[item_index].capture_left -= updater_dt;
-                if self.thrown_items[item_index].capture_left <= Fix::ZERO {
-                    if victim_is_clone {
-                        self.release_poke_clone(item_index, victim, data);
-                    } else {
-                        self.release_poke_victim(item_index, victim, data);
-                    }
-                    self.remove_thrown_item(item_index, false);
-                }
+        }
+        for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
+            if !clone.active
+                || !clone.base.alive
+                || clone.owner == owner
+                || clone.poke_invulnerable
+            {
                 continue;
             }
-
-            if self.thrown_items[item_index].age > data.poke_ball.fizzle_seconds {
-                self.remove_thrown_item(item_index, false);
-                continue;
+            let distance = (clone.base.position - position).length_squared();
+            if distance < nearest || (distance == nearest && clone.owner < victim_owner) {
+                nearest = distance;
+                let capture_radius =
+                    radius + Fix::from_f32(0.8) * self.players[clone.owner].player_scale;
+                victim = (distance < capture_radius * capture_radius).then_some(clone_index);
+                victim_is_clone = true;
+                victim_owner = clone.owner;
             }
-
-            let position = self.thrown_items[item_index].position;
-            let item_scale = self.thrown_items[item_index].scale;
-            let collider_radius = self.thrown_items[item_index].collider_radius;
-            // PokeBall multiplies its already scaled DPhysicsCircle radius by
-            // Scale once more when constructing the proximity query.
-            let radius = collider_radius * item_scale;
-            let owner = self.thrown_items[item_index].owner;
-            let mut nearest = Fix::MAX;
-            let mut victim = None;
-            let mut victim_is_clone = false;
-            let mut victim_owner = usize::MAX;
-            for player_index in 0..self.players.len() {
-                let player = &self.players[player_index];
-                if player_index == owner
-                    || !self.playable_slot(player)
-                    || player.active != ActiveAbility::None
-                    || player.base.dash.active
-                    || player.poke_invulnerable
-                {
-                    continue;
-                }
-                let distance = (player.base.position - position).length_squared();
-                if distance < nearest || (distance == nearest && player_index < victim_owner) {
-                    nearest = distance;
-                    let capture_radius = radius + Fix::from_f32(0.8) * player.player_scale;
-                    victim = (distance < capture_radius * capture_radius).then_some(player_index);
-                    victim_is_clone = false;
-                    victim_owner = player_index;
-                }
-            }
-            for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
-                if !clone.active
-                    || !clone.base.alive
-                    || clone.owner == owner
-                    || clone.poke_invulnerable
-                {
-                    continue;
-                }
-                let distance = (clone.base.position - position).length_squared();
-                if distance < nearest || (distance == nearest && clone.owner < victim_owner) {
-                    nearest = distance;
-                    let capture_radius =
-                        radius + Fix::from_f32(0.8) * self.players[clone.owner].player_scale;
-                    victim = (distance < capture_radius * capture_radius).then_some(clone_index);
-                    victim_is_clone = true;
-                    victim_owner = clone.owner;
-                }
-            }
-            if let Some(victim) = victim {
-                if victim_is_clone {
-                    self.capture_poke_clone(item_index, victim, data);
-                } else {
-                    self.capture_poke_victim(item_index, victim, data, true);
-                }
+        }
+        if let Some(victim) = victim {
+            if victim_is_clone {
+                self.capture_poke_clone(item_index, victim, data);
+            } else {
+                self.capture_poke_victim(item_index, victim, data, true);
             }
         }
     }
 
-    fn tacks_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    fn tack_tick(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
         // BananaPeel.UpdateSim runs before DetPhysics. It starts on the first
         // updater pass after Fire, pins a settled tack before each integration,
         // and performs the armed proximity query without allocating.
-        for item_index in 0..self.thrown_items.len() {
-            // A tunnel's release comes after this updater's turn.
-            let entity = self.thrown_items[item_index].entity;
-            if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
-                continue;
+        // A tunnel's release comes after this updater's turn.
+        let entity = self.thrown_items[item_index].entity;
+        if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
+            return;
+        }
+        if !self.thrown_items[item_index].active
+            || self.thrown_items[item_index].ability != ABILITY_TACK
+            || self.thrown_items[item_index].born_tick >= self.tick
+            || (self.thrown_items[item_index].duplicated
+                && self.thrown_items[item_index].born_tick + 1 >= self.tick)
+        {
+            return;
+        }
+        {
+            let item = &mut self.thrown_items[item_index];
+            if !item.launched {
+                item.launched = true;
+                item.body.angular_velocity = Fix::from_int(4);
+                if let Some(entity) = item.entity {
+                    self.entities[entity].owner = item.owner as u32 + 1;
+                }
             }
-            if !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].ability != ABILITY_TACK
-                || self.thrown_items[item_index].born_tick >= self.tick
-                || (self.thrown_items[item_index].duplicated
-                    && self.thrown_items[item_index].born_tick + 1 >= self.tick)
+            if item.settled {
+                item.position = item.settle_position;
+                item.body.velocity = Vec2::ZERO;
+                item.body.angular_velocity = Fix::ZERO;
+            }
+            item.age += updater_dt;
+        }
+        if self.thrown_items[item_index].age > data.tack.lifetime_seconds {
+            self.remove_thrown_item(item_index, false);
+            return;
+        }
+        if self.thrown_items[item_index].age <= data.tack.arm_seconds {
+            return;
+        }
+        let position = self.thrown_items[item_index].position;
+        let owner = self.thrown_items[item_index].owner;
+        let tack_radius =
+            self.thrown_items[item_index].collider_radius * self.thrown_items[item_index].scale;
+        let mut victim = None;
+        let mut victim_is_clone = false;
+        for player_index in 0..self.players.len() {
+            let player = &self.players[player_index];
+            if !self.playable_slot(player)
+                || player.active != ActiveAbility::None
+                || player.base.dash.active
+                || player.poke_invulnerable
             {
                 continue;
             }
-            {
-                let item = &mut self.thrown_items[item_index];
-                if !item.launched {
-                    item.launched = true;
-                    item.body.angular_velocity = Fix::from_int(4);
-                    if let Some(entity) = item.entity {
-                        self.entities[entity].owner = item.owner as u32 + 1;
-                    }
+            let radius = tack_radius + Fix::from_f32(0.75) * player.player_scale;
+            let in_range = (self.players[player_index].base.position - position)
+                .length_squared()
+                < radius * radius;
+            if player_index == owner && !self.thrown_items[item_index].owner_clear {
+                if !in_range {
+                    self.thrown_items[item_index].owner_clear = true;
                 }
-                if item.settled {
-                    item.position = item.settle_position;
-                    item.body.velocity = Vec2::ZERO;
-                    item.body.angular_velocity = Fix::ZERO;
-                }
-                item.age += updater_dt;
-            }
-            if self.thrown_items[item_index].age > data.tack.lifetime_seconds {
-                self.remove_thrown_item(item_index, false);
                 continue;
             }
-            if self.thrown_items[item_index].age <= data.tack.arm_seconds {
-                continue;
+            if in_range {
+                victim = Some(player_index);
+                break;
             }
-            let position = self.thrown_items[item_index].position;
-            let owner = self.thrown_items[item_index].owner;
-            let tack_radius =
-                self.thrown_items[item_index].collider_radius * self.thrown_items[item_index].scale;
-            let mut victim = None;
-            let mut victim_is_clone = false;
-            for player_index in 0..self.players.len() {
-                let player = &self.players[player_index];
-                if !self.playable_slot(player)
-                    || player.active != ActiveAbility::None
-                    || player.base.dash.active
-                    || player.poke_invulnerable
-                {
+        }
+        if victim.is_none() {
+            for clone_index in 0..self.abilityless_clones.len() {
+                let clone = &self.abilityless_clones[clone_index];
+                if !clone.active || !clone.base.alive {
                     continue;
                 }
-                let radius = tack_radius + Fix::from_f32(0.75) * player.player_scale;
-                let in_range = (self.players[player_index].base.position - position)
-                    .length_squared()
-                    < radius * radius;
+                let player_index = clone.owner;
+                let radius =
+                    tack_radius + Fix::from_f32(0.75) * self.players[player_index].player_scale;
+                let in_range =
+                    (clone.base.position - position).length_squared() < radius * radius;
                 if player_index == owner && !self.thrown_items[item_index].owner_clear {
                     if !in_range {
                         self.thrown_items[item_index].owner_clear = true;
@@ -29356,54 +29392,31 @@ impl RolloutWorld {
                     continue;
                 }
                 if in_range {
-                    victim = Some(player_index);
+                    victim = Some(clone_index);
+                    victim_is_clone = true;
                     break;
                 }
             }
-            if victim.is_none() {
-                for clone_index in 0..self.abilityless_clones.len() {
-                    let clone = &self.abilityless_clones[clone_index];
-                    if !clone.active || !clone.base.alive {
-                        continue;
-                    }
-                    let player_index = clone.owner;
-                    let radius =
-                        tack_radius + Fix::from_f32(0.75) * self.players[player_index].player_scale;
-                    let in_range =
-                        (clone.base.position - position).length_squared() < radius * radius;
-                    if player_index == owner && !self.thrown_items[item_index].owner_clear {
-                        if !in_range {
-                            self.thrown_items[item_index].owner_clear = true;
-                        }
-                        continue;
-                    }
-                    if in_range {
-                        victim = Some(clone_index);
-                        victim_is_clone = true;
-                        break;
-                    }
-                }
+        }
+        if let Some(victim) = victim {
+            let killer = owner as u32 + 1;
+            let cause = if victim_is_clone {
+                CAUSE_OTHER
+            } else if victim == owner {
+                CAUSE_ACCIDENT
+            } else {
+                CAUSE_OTHER
+            };
+            // BananaPeel invokes PlayerCollision.killPlayer from its
+            // updater: it creates the normal death effect, while
+            // DetPhysics removes all killed colliders before contacts.
+            self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+            if victim_is_clone {
+                self.kill_abilityless_clone(victim, killer, cause);
+            } else {
+                self.kill(victim, killer, cause, false, false);
             }
-            if let Some(victim) = victim {
-                let killer = owner as u32 + 1;
-                let cause = if victim_is_clone {
-                    CAUSE_OTHER
-                } else if victim == owner {
-                    CAUSE_ACCIDENT
-                } else {
-                    CAUSE_OTHER
-                };
-                // BananaPeel invokes PlayerCollision.killPlayer from its
-                // updater: it creates the normal death effect, while
-                // DetPhysics removes all killed colliders before contacts.
-                self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-                if victim_is_clone {
-                    self.kill_abilityless_clone(victim, killer, cause);
-                } else {
-                    self.kill(victim, killer, cause, false, false);
-                }
-                self.remove_thrown_item(item_index, false);
-            }
+            self.remove_thrown_item(item_index, false);
         }
     }
 
@@ -39106,7 +39119,7 @@ mod tests {
         });
         world.tick = 2;
 
-        world.poke_balls_tick(data::get(), DT);
+        world.poke_balls_and_tacks_tick(data::get(), DT);
 
         assert!(world.thrown_items[0].capture_victim_is_clone);
         assert_eq!(world.thrown_items[0].capture_victim, Some(0));
