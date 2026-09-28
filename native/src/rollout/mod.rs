@@ -8003,6 +8003,8 @@ impl RolloutWorld {
         );
         // MagnetGun's own check misses a ground destroyed earlier in this
         // pass, which its later Move(zero) finds (MagnetGun.cs:1212, 1249).
+        // ThrowItem2 and MachoThrow2 keep a grounded body's record for their
+        // own Move, which lifts off a ground not yet drained.
         let lost = if matches!(
             self.players[index].active,
             ActiveAbility::Beam
@@ -8010,7 +8012,8 @@ impl RolloutWorld {
                 | ActiveAbility::Bow
                 | ActiveAbility::Missile
                 | ActiveAbility::Magnet
-        ) {
+        ) || finds_it_later && self.players[index].base.grounded
+        {
             None
         } else {
             std::mem::take(&mut self.players[index].ground_destroyed)
@@ -17457,9 +17460,7 @@ impl RolloutWorld {
         // A ground destroyed earlier in this pass (this form's own shrink, a
         // Duplicator copy expiring) is not null yet, so UnGround still lifts
         // the form off it. A null one is Move's missing-ground UnGround.
-        let destroyed = self.players[index].ground_destroyed.take();
-        if let Some(surface) = destroyed.as_ref().and_then(|lost| lost.attached(self.tick)) {
-            self.players[index].base.unground_off(Some(surface), true);
+        if self.players[index].move_off_destroyed(self.tick) {
             return;
         }
         self.players[index]
@@ -21049,13 +21050,15 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.throw_item.direction = aim;
             if slot.throw_item.grounded {
+                // currentNormal off attachedGround, even one destroyed
+                // earlier in this pass (ThrowItem2.cs:252-254).
                 let normal = slot
                     .base
                     .ground
                     .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
-                    .map_or(slot.base.up, |platform| {
-                        platform.surface.normal(slot.base.position)
-                    });
+                    .map(|platform| &platform.surface)
+                    .or(slot.dead_ground(self.tick))
+                    .map_or(slot.base.up, |surface| surface.normal(slot.base.position));
                 slot.facing_right = normal.cross(aim.normalized_safe()) < Fix::ZERO;
             } else {
                 slot.facing_right = aim.x > Fix::ZERO;
@@ -21091,9 +21094,11 @@ impl RolloutWorld {
             // but leaves Fire's recoil in selfImposedVelocity. PlayerBody
             // still integrates it with the external velocity, so DetPhysics
             // sees the drifted body until LateUpdateSim snaps it back.
-            self.players[index]
-                .base
-                .move_only(Vec2::ZERO, terrain!(self));
+            if !self.players[index].move_off_destroyed(self.tick) {
+                self.players[index]
+                    .base
+                    .move_only(Vec2::ZERO, terrain!(self));
+            }
             let slot = &mut self.players[index];
             slot.throw_item.collider_rotation = slot.base.rotation;
             self.form_body_step(index);
