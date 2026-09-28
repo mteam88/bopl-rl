@@ -27271,6 +27271,18 @@ impl RolloutWorld {
         dynamics.root_body.velocity = Vec2::ZERO;
         dynamics.root_body.force = Vec2::ZERO;
         dynamics.root_body.angular_velocity = Fix::ZERO;
+        if definition != usize::MAX {
+            // The fresh body takes BoplBody's serialized mass and inertia
+            // (BoplBody.cs:220-235), not the source's scaled live ones, and
+            // the private prevScale is one (BoplBody.cs:40), so the copy's
+            // first BoplBody pass rescales them by 1 / Scale (cs:332-343).
+            let def = &data.maps[self.map].platforms[definition];
+            for body in [&mut dynamics.body, &mut dynamics.root_body] {
+                body.inverse_mass = def.authored_inverse_mass;
+                body.inverse_inertia = def.authored_inverse_inertia;
+            }
+            dynamics.body_scale = Fix::ONE;
+        }
         dynamics.composite_position = position;
         dynamics.home_position = position;
         // DuplicatePlatformEffect writes the source's rotation from when the

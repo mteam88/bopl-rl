@@ -1287,6 +1287,10 @@ pub struct PlatformDef {
     pub rotation_mu: Fix,
     pub interpolate_rotation_home: bool,
     pub body: crate::physics::Body,
+    /// BoplBody's serialized mass and inertia before GrowOnStart rescaled
+    /// them: what a Duplicator copy's fresh PhysicsBody starts from.
+    pub authored_inverse_mass: Fix,
+    pub authored_inverse_inertia: Fix,
     /// Sudden death sinking (AnimateVelocity.ActivateSuddenDeath).
     pub sudden_death_speed: Fix,
     pub sudden_death_max_delay: Fix,
@@ -2462,6 +2466,7 @@ fn map_def(raw: &RawMap) -> MapDef {
             // the axes DetPhysics publishes are the round-tripped ones.
             let collider_axis_extents = collider_extents;
             let mut platform_body = body(&p.body, rotation);
+            let authored_body = platform_body;
             // GrowOnStart.Init writes the FixTransform scale before the first
             // BoplBody updater pass. Non-resizable bodies then multiply both
             // inverse mass and inverse inertia by prevScale / scaleUp
@@ -2499,6 +2504,8 @@ fn map_def(raw: &RawMap) -> MapDef {
                 rotation_mu: Fix::from_raw(p.animate_velocity.rotation_mu),
                 interpolate_rotation_home: p.animate_velocity.interpolate_rotation_home,
                 body: platform_body,
+                authored_inverse_mass: authored_body.inverse_mass,
+                authored_inverse_inertia: authored_body.inverse_inertia,
                 sudden_death_speed: Fix::from_raw(p.animate_velocity.sudden_death_speed),
                 sudden_death_max_delay: Fix::from_raw(p.animate_velocity.sudden_death_max_delay),
                 sudden_death_acceleration: Fix::from_raw(
