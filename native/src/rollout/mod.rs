@@ -11804,6 +11804,9 @@ impl RolloutWorld {
         let restored_cooldown = ability
             .effect_cooldown
             .expect("Gold Mushroom restored cooldown");
+        let form_jump_speed = ability
+            .form_jump_speed
+            .expect("Gold Mushroom form jump speed");
         // The kick uses the jumpStrength of whichever PlayerPhysics holds the
         // player: the slime's, or the form's own, which is lower for guns
         // and throw forms (SuperStarEffect.UpdateSim).
@@ -11852,8 +11855,22 @@ impl RolloutWorld {
             // a Blink tunnel deactivates whichever holds the player, so there
             // is nothing to kick (SuperStarEffect.UpdateSim).
             let hidden = slot.teleport_effect_active || slot.blink_tunnel_active;
-            if jump_pressed && !slot.base.grounded && slot.rope.is_none() && !hidden {
-                slot.base.velocity.y = jump_strength * air_jump;
+            match slot.active {
+                // A Rock has only a BoplBody: any jump press, grounded or not,
+                // sets its vertical speed to formJumpSpeed.
+                ActiveAbility::Rock => {
+                    if jump_pressed && !hidden {
+                        slot.rock.body.velocity.y = form_jump_speed;
+                    }
+                }
+                // A Drill has a PlayerBody but no PlayerPhysics or BoplBody,
+                // so nothing is kicked.
+                ActiveAbility::Drill => {}
+                _ => {
+                    if jump_pressed && !slot.base.grounded && slot.rope.is_none() && !hidden {
+                        slot.base.velocity.y = jump_strength * air_jump;
+                    }
+                }
             }
             if effect.time >= duration {
                 effect.active = false;
