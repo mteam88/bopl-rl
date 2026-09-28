@@ -8812,19 +8812,33 @@ impl RolloutWorld {
                         // from the slime's surface coordinate on the ground's
                         // current pose and aligns it to the normal there; an
                         // airborne form starts unrotated (PlayerPhysics.cs:525).
+                        // Ability.EnterAbility scales the box first, and
+                        // UpdateScale brings the form's radius to it.
+                        let form_radius = {
+                            let slot = &mut self.players[index];
+                            let scale = slot.player_scale;
+                            let form = &mut slot.forms[s];
+                            form.set_scale(
+                                scale,
+                                throw_config(data, ability).hurtbox_extents,
+                                data.player.radius,
+                            );
+                            form.physics_radius()
+                        };
                         let base = &self.players[index].base;
                         let (form_position, form_rotation) = base
                             .ground
                             .filter(|_| base.grounded)
                             .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
                             .map_or((base.position, Fix::ZERO), |platform| {
-                                let position = platform.surface.position(base.local, base.radius);
+                                let position = platform.surface.position(base.local, form_radius);
                                 let right = platform.surface.normal(position).perp_cw();
                                 (position, right.normalized_angle())
                             });
                         let slot = &mut self.players[index];
                         slot.base.position = form_position;
                         slot.base.rotation = form_rotation;
+                        slot.base.radius = form_radius;
                         slot.timers[s] = Fix::ZERO;
                         slot.active = match ability {
                             ABILITY_TACK => ActiveAbility::Tack,
@@ -21638,6 +21652,13 @@ impl RolloutWorld {
         self.players[index].throw_item.collider_rotation = self.players[index].base.rotation;
         let ability = active_throw_ability(self.players[index].active);
         let gd = throw_config(data, ability);
+        // Ability.UpdateSim assigns Player.Scale to the box every pass, and
+        // PlayerPhysics UpdateScales the form's radius to it.
+        let slot = &mut self.players[index];
+        let scale = slot.player_scale;
+        let form = &mut slot.forms[slot.active_slot];
+        form.set_scale(scale, gd.hurtbox_extents, data.player.radius);
+        slot.base.radius = form.physics_radius();
         let aim = action.direction();
         // Ability.UpdateSim publishes Player.Position before ThrowItem2 and
         // PlayerBody advance the live ability body later in this pass.
@@ -21666,7 +21687,9 @@ impl RolloutWorld {
                     slot.exit_to_fall();
                     slot.base.rotation = Fix::ZERO;
                     slot.base.up = Vec2::UP;
+                    slot.restore_slime_radius();
                     slot.base.collision_rays(terrain!(self));
+                    slot.set_ordinary_body_scale(slot.player_scale);
                 }
                 // The exit callback leaves Player.Position where
                 // Ability.UpdateSim published it, and a slime that EnterFall's
@@ -21710,7 +21733,9 @@ impl RolloutWorld {
             slot.exit_to_fall();
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
+            slot.restore_slime_radius();
             slot.base.collision_rays(terrain!(self));
+            slot.set_ordinary_body_scale(slot.player_scale);
             return;
         }
         if aim != Vec2::ZERO && !self.players[index].throw_item.has_inputted_fire {
@@ -38303,15 +38328,19 @@ impl RolloutWorld {
                         };
                         (exit_position, rotation)
                     };
-                    let hurtbox = OrientedBox::from_basis(
-                        center,
-                        Vec2::angle(rotation),
-                        if missile_row {
-                            data.missile.hurtbox_extents
-                        } else {
-                            throw_config.hurtbox_extents
-                        },
-                    );
+                    let hurtbox = if missile_row {
+                        OrientedBox::from_basis(
+                            center,
+                            Vec2::angle(rotation),
+                            data.missile.hurtbox_extents,
+                        )
+                    } else {
+                        slot.forms[slot.active_slot].hurtbox(
+                            center,
+                            Vec2::angle(rotation),
+                            throw_config.hurtbox_extents,
+                        )
+                    };
                     throw_box.x = center.x.raw();
                     throw_box.y = center.y.raw();
                     throw_box.vx = 0;
