@@ -28247,7 +28247,9 @@ impl RolloutWorld {
                 self.duplicate_platform_effects[effect_index].active = false;
                 let (source, rotation) = (snapshot.source, snapshot.original_rotation);
                 let spawner = snapshot.spawner_hierarchy;
-                self.spawn_duplicate_platform(source, spawn_position, rotation, spawner, data);
+                let shape = (extents, collider.radius, effect_scale);
+                let position = spawn_position;
+                self.spawn_duplicate_platform(source, position, rotation, spawner, shape, data);
                 self.black_holes_pull_spawned_platform(snapshot.hierarchy_base, data);
             }
         }
@@ -28305,6 +28307,7 @@ impl RolloutWorld {
         position: Vec2,
         rotation: Fix,
         spawner_hierarchy: u32,
+        shape: (Vec2, Fix, Fix),
         data: &data::RolloutData,
     ) {
         if source >= self.platforms.len() || source >= self.platform_dynamics.len() {
@@ -28351,6 +28354,31 @@ impl RolloutWorld {
             platform.surface.extents = extents;
             platform.surface.bounds_radius = radius;
         }
+        // The copy's collider starts from the shape ScaleEffect measured, divided
+        // by the scale it measured at, and its Scale setter then multiplies that
+        // back from the copy's unserialized scale of one
+        // (DuplicatePlatformEffect.cs:327-332, DPhysicsRoundedRect.cs:86-135, 404-424).
+        let (effect_extents, effect_radius, effect_scale) = shape;
+        let start = effect_extents / effect_scale;
+        let max_scale = if self.platform_dynamics[source].body_resizable {
+            Fix::from_int(6)
+        } else {
+            Fix::from_int(5)
+        };
+        let copy_scale = effect_scale.clamp(self.platform_dynamics[source].min_scale, max_scale);
+        let inverse = |extent: Fix| {
+            if extent == Fix::ZERO {
+                Fix::ZERO
+            } else {
+                (Fix::ONE / extent).abs()
+            }
+        };
+        let inner = &mut platform.collider.inner;
+        inner.inverse_extents = Vec2::new(inverse(start.x), inverse(start.y)) / copy_scale;
+        inner.right = platform.surface.right * start.x * copy_scale;
+        inner.up = platform.surface.right.perp() * start.y * copy_scale;
+        platform.collider.radius = effect_radius / effect_scale * copy_scale;
+        platform.surface.radius = platform.collider.radius;
 
         for dynamics in &mut self.platform_dynamics {
             if dynamics.duplicate_spawner_hierarchy == Some(spawner_hierarchy)
@@ -28363,6 +28391,7 @@ impl RolloutWorld {
         }
 
         let mut dynamics = self.platform_dynamics[source];
+        dynamics.scale = copy_scale;
         if dynamics.attached_children != 0 || dynamics.composite_rebuild {
             // The effect unparents the source's terrain children around
             // DuplicateObject (DuplicatePlatformEffect.cs:298-316), so the copy
