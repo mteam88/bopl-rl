@@ -22729,6 +22729,16 @@ impl RolloutWorld {
                     slot.base.velocity = Vec2::ZERO;
                     slot.form_exit = Some((self.tick, position));
                     self.players[index].magnet.held_position = self.players[i].base.position;
+                } else if self.players[i].active == ActiveAbility::Magnet {
+                    // The held form's own MagnetGun.ExitAbility ungrounds it
+                    // and hands over its body's position and velocities
+                    // (MagnetGun.cs:356-373). ApplyRagDoll then zeroes only
+                    // the self-imposed part.
+                    self.exit_magnet(i, false, data);
+                    let slot = &mut self.players[i];
+                    slot.base.velocity = Vec2::ZERO;
+                    slot.form_exit = Some((self.tick, slot.base.position));
+                    self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active != ActiveAbility::None {
                     self.exit_form_for_freeze(i, data);
                     self.players[i].base.position = position;
