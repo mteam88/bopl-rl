@@ -25335,7 +25335,7 @@ impl RolloutWorld {
     fn duplicate_attached_local(
         &self,
         platform_index: usize,
-        source_local: Fix,
+        source_position: Vec2,
         source_rotation: Fix,
         orientation_sign: Fix,
         distance: Fix,
@@ -25344,9 +25344,13 @@ impl RolloutWorld {
         let platform_rotation = self.platform_dynamics[platform_index].body.orientation;
         let source_right = Vec2::angle(platform_rotation + source_rotation) * orientation_sign;
         let sign = Fix::from_int(source_right.dot(direction).sign2());
-        (Fix::from_int(1000)
-            + source_local
-            + distance * sign / self.platforms[platform_index].surface.circumference())
+        // ShootDuplicator re-measures the source's place from its transform
+        // with LocalPlayerPosFromPos rather than keeping its local position.
+        let surface = &self.platforms[platform_index].surface;
+        let source_local = surface
+            .local_position(source_position, Fix::ZERO)
+            .expect("positive platform circumference");
+        (Fix::from_int(1000) + source_local + distance * sign / surface.circumference())
         .checked_rem(Fix::ONE, true)
         .expect("positive platform circumference")
     }
@@ -25364,7 +25368,7 @@ impl RolloutWorld {
         let platform_index = source.platform_index;
         let local = self.duplicate_attached_local(
             platform_index,
-            source.local,
+            source.transform_center,
             source.relative_rotation,
             -Fix::ONE,
             Fix::from_int(7),
@@ -25455,7 +25459,7 @@ impl RolloutWorld {
         let platform_index = source.platform_index;
         let local = self.duplicate_attached_local(
             platform_index,
-            source.local,
+            source.transform_center,
             source.relative_rotation,
             Fix::ONE,
             Fix::from_int(7),
@@ -25553,7 +25557,7 @@ impl RolloutWorld {
         let platform_index = source.platform_index;
         let local = self.duplicate_attached_local(
             platform_index,
-            source.local,
+            source.transform_center,
             source.relative_rotation,
             Fix::ONE,
             Fix::from_int(5),
@@ -41417,7 +41421,7 @@ mod tests {
         let source = world.engines[0];
         let expected = world.duplicate_attached_local(
             source.platform_index,
-            source.local,
+            source.transform_center,
             source.relative_rotation,
             Fix::ONE,
             Fix::from_int(7),
