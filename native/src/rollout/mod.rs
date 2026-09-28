@@ -29963,8 +29963,13 @@ impl RolloutWorld {
         if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
             return;
         }
+        // Until Grenade.hasBeenThrown the whole UpdateSim returns: a held tack
+        // neither launches nor ages. Every path that sets it (Fire,
+        // ExitAbility, a lost thrower) also ManualInits the collider.
         if !self.thrown_items[item_index].active
             || self.thrown_items[item_index].ability != ABILITY_TACK
+            || (!self.thrown_items[item_index].launched
+                && self.thrown_items[item_index].entity.is_none())
             || self.thrown_items[item_index].born_tick >= self.tick
             || (self.thrown_items[item_index].duplicated
                 && self.thrown_items[item_index].born_tick + 1 >= self.tick)
