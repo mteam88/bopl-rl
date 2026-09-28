@@ -9820,14 +9820,24 @@ impl RolloutWorld {
                             body_right: Vec2::RIGHT,
                             ..MagnetState::default()
                         };
-                        slot.base.radius = data.magnet.radius;
+                        // Ability.EnterAbility scales the box, then
+                        // SyncPhysicsTo's UpdateScale the radius it places
+                        // the body with.
+                        let scale = slot.player_scale;
+                        let form = &mut slot.forms[s];
+                        form.set_scale(
+                            scale,
+                            data::surface_extents(data.magnet.hurtbox_extents),
+                            data.magnet.radius,
+                        );
+                        slot.base.radius = form.physics_radius();
                         slot.base.constants = data.magnet.constants.clone();
                         slot.base.rotation = Fix::ZERO;
                         if grounded {
                             if let Some(platform) = slot.base.platform(&self.platforms) {
                                 slot.base.position = platform
                                     .surface
-                                    .position(slot.base.local, data.magnet.radius);
+                                    .position(slot.base.local, slot.base.radius);
                             }
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
@@ -9846,13 +9856,14 @@ impl RolloutWorld {
                             let center = slot.base.position
                                 + right.complex_mul(data.magnet.collider_offset * scale);
                             let extents = data::surface_extents(data.magnet.hurtbox_extents) * scale;
+                            let collider = slot.forms[s].hurtbox(center, right, extents);
                             let row = &mut self.entities[slot.magnet_entity];
                             row.x = center.x.raw();
                             row.y = center.y.raw();
-                            row.right_x = (right.x * extents.x).raw();
-                            row.right_y = (right.y * extents.x).raw();
-                            row.up_x = (right.perp().x * extents.y).raw();
-                            row.up_y = (right.perp().y * extents.y).raw();
+                            row.right_x = collider.right.x.raw();
+                            row.right_y = collider.right.y.raw();
+                            row.up_x = collider.up.x.raw();
+                            row.up_y = collider.up.y.raw();
                         }
                         self.magnet_tick(index, action, movement_input, data, false);
                         return;
@@ -22965,7 +22976,7 @@ impl RolloutWorld {
 
         // Ability.UpdateSim, hierarchy 3. PlayerPhysics at hierarchy 4 only
         // updates scale for this prefab because ApplyGravity is disabled.
-        self.magnet_ability_update_scale(index);
+        self.magnet_ability_update_scale(index, data);
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
 
@@ -22978,7 +22989,7 @@ impl RolloutWorld {
         self.form_body_step(index);
     }
 
-    fn magnet_ability_update_scale(&mut self, index: usize) {
+    fn magnet_ability_update_scale(&mut self, index: usize, data: &data::RolloutData) {
         let ability_slot = self.players[index].active_slot;
         let scale = self.players[index].player_scale;
         let previous = self.players[index].magnet_prev_scales[ability_slot];
@@ -22986,6 +22997,16 @@ impl RolloutWorld {
             self.players[index].magnet_firepoint_offsets[ability_slot] *= scale / previous;
             self.players[index].magnet_prev_scales[ability_slot] = scale;
         }
+        // It assigns Player.Scale to the box, and PlayerPhysics UpdateScales
+        // the form's radius to it.
+        let slot = &mut self.players[index];
+        let form = &mut slot.forms[ability_slot];
+        form.set_scale(
+            scale,
+            data::surface_extents(data.magnet.hurtbox_extents),
+            data.magnet.radius,
+        );
+        slot.base.radius = form.physics_radius();
     }
 
     /// MagnetGun.UpdateSim, hierarchy 2. Pull/pickup callbacks are layered
@@ -39214,7 +39235,7 @@ impl RolloutWorld {
                     let basis = Vec2::angle(rotation);
                     let center =
                         root + offset_basis.complex_mul(data.magnet.collider_offset * scale);
-                    let collider = OrientedBox::from_basis(
+                    let collider = slot.forms[slot.active_slot].hurtbox(
                         center,
                         basis,
                         data::surface_extents(data.magnet.hurtbox_extents) * scale,
@@ -41585,14 +41606,14 @@ mod tests {
         let second = Fix::from_f64(0.7);
 
         world.players[0].player_scale = first;
-        world.magnet_ability_update_scale(0);
+        world.magnet_ability_update_scale(0, data::get());
         assert_eq!(
             world.players[0].magnet_firepoint_offsets[0],
             authored * first
         );
 
         world.players[0].player_scale = second;
-        world.magnet_ability_update_scale(0);
+        world.magnet_ability_update_scale(0, data::get());
         assert_eq!(
             world.players[0].magnet_firepoint_offsets[0],
             authored * first * (second / first)
