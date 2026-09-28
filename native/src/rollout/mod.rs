@@ -27281,6 +27281,11 @@ impl RolloutWorld {
         // left to raise its base: a grown copy shrinks back to one.
         dynamics.base_scale = Fix::ONE;
         dynamics.time_since_scaled_up = Fix::ZERO;
+        // DropAllAttachedPlayers' private state is not copied either
+        // (StickyRoundedRectangle.cs:76-80): a copy never ejects its riders.
+        dynamics.drop_players_frames = -1;
+        dynamics.dont_drop_player_id = 0;
+        dynamics.drop_force = Fix::ZERO;
         dynamics.duplicate_spawner_hierarchy = Some(spawner_hierarchy);
         dynamics.duplicate_lifespan = i32::MAX;
         dynamics.duplicate_shake_offset = Vec2::ZERO;
