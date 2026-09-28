@@ -8948,6 +8948,11 @@ impl RolloutWorld {
                         slot.timers[s] = Fix::ZERO;
                         slot.telemetry.ability_activations[s] += 1;
                         if started {
+                            // BeginRewind lets go of the body's rope before it
+                            // ungrounds (RewindRecorder.cs:152).
+                            let top = slot.rope_top;
+                            self.attach_player_rope(index, None, top);
+                            let slot = &mut self.players[index];
                             slot.rewind.attached_ground = attached_ground;
                             slot.force_unground(&self.platforms, self.tick);
                             slot.base.velocity = Vec2::ZERO;
