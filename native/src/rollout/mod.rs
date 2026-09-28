@@ -18542,6 +18542,21 @@ impl RolloutWorld {
                 self.players[player_index].base.up = Vec2::UP;
                 self.players[player_index].obs_state = STATE_FALL;
                 self.players[player_index].state_ticks = 0;
+                // UnGround(nullRotation) zeroes a ThrowItem form's body
+                // rotation too (PlayerPhysics.cs:372-376); its box takes it
+                // at the next sync.
+                if matches!(
+                    self.players[player_index].active,
+                    ActiveAbility::Grenade
+                        | ActiveAbility::Smoke
+                        | ActiveAbility::Tack
+                        | ActiveAbility::Mjolnir
+                        | ActiveAbility::PokeBall
+                        | ActiveAbility::Mine
+                ) {
+                    self.players[player_index].throw_item.collider_rotation = Fix::ZERO;
+                    self.players[player_index].throw_item.collider_right = Vec2::RIGHT;
+                }
             }
             self.players[player_index].base.position += shift;
             self.players[player_index].base.sync_collider();
@@ -37264,11 +37279,12 @@ impl RolloutWorld {
             if slot.slime_destroyed() || slot.revival_clone_pending || slot.stock_clone_pending {
                 continue; // rows were settled by `kill`
             }
-            // A Blink tunnel swallows whatever object the ray hit. For a
-            // player inside a form that is the form (QuantumTunnel.Init
-            // deactivates it); the slime stays in its ability, its box frozen
-            // where the form began.
-            let slime_teleporting = teleporting && !(slot.blink_tunnel_active && in_ability);
+            // A Blink tunnel or a Teleport takes whatever object the ray or
+            // circle hit. For a player inside a form that is the form
+            // (QuantumTunnel.Init and TeleportIndicator.teleportObject
+            // deactivate it, TeleportIndicator.cs:166); the slime stays in its
+            // ability, its box frozen where the form began.
+            let slime_teleporting = teleporting && !in_ability;
             let body = &mut self.entities[body_e];
             let body_was_active = body.flags & E_ACTIVE != 0;
             if !alive {
@@ -38324,7 +38340,10 @@ impl RolloutWorld {
             }
         }
         for slot in &self.players {
-            if slot.base.alive && slot.blink_tunnel_active && slot.active != ActiveAbility::None {
+            if slot.base.alive
+                && (slot.blink_tunnel_active || slot.teleport_effect_active)
+                && slot.active != ActiveAbility::None
+            {
                 let form = Self::hurtbox_entity(slot);
                 if form != usize::MAX {
                     self.entities[form].flags &= !E_ACTIVE;
@@ -38405,7 +38424,7 @@ impl RolloutWorld {
                 body.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
             }
             let body_active = body.flags & E_ACTIVE != 0;
-            let (center, angle) = if body_active || teleporting {
+            let (center, angle) = if body_active || (teleporting && !in_ability) {
                 (synced, rotation)
             } else {
                 (slot.ability_origin, slot.ability_origin_rotation)
@@ -38567,7 +38586,7 @@ impl RolloutWorld {
                 || slot.respawn_spawn_ticks > 0
                 || slot.revival_effect_ticks > 0;
             let mut flags = S_ACTIVE;
-            if slot.teleport_effect_active || (slot.blink_tunnel_active && !in_ability) {
+            if (slot.teleport_effect_active || slot.blink_tunnel_active) && !in_ability {
                 flags = S_SPAWNED | S_SIMULATED;
             } else if respawning {
                 flags |= S_SUPPRESS_INPUT;
@@ -38596,8 +38615,12 @@ impl RolloutWorld {
                     f |= 4;
                 }
                 // Bit 8 and the Bow charge read the form GameObject's
-                // activeInHierarchy, which a Blink tunnel clears.
-                if in_ability && slot.active_slot == s && !slot.blink_tunnel_active {
+                // activeInHierarchy, which a Blink tunnel or a Teleport clears.
+                if in_ability
+                    && slot.active_slot == s
+                    && !slot.blink_tunnel_active
+                    && !slot.teleport_effect_active
+                {
                     f |= 8;
                     if slot.active == ActiveAbility::Bow {
                         // RlObservation reflects BowTransform.loadingFrame
