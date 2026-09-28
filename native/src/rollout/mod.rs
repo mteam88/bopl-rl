@@ -18921,6 +18921,13 @@ impl RolloutWorld {
 
             let slot = &mut self.players[index];
             slot.ability_generation = slot.ability_generation.wrapping_add(1);
+            // The fresh ability instances carry their prefab cooldowns, not
+            // what Invisibility, Gold Mushroom or Web Swing set on the old ones.
+            for (cooldown, &ability) in slot.cooldowns.iter_mut().zip(&slot.abilities) {
+                if ability != ABILITY_NULL {
+                    *cooldown = data.abilities[ability as usize].cooldown;
+                }
+            }
             slot.ability_instantiated = [true; 3];
             slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
             slot.forms = [FormScale::default(); 3];
@@ -19382,6 +19389,13 @@ impl RolloutWorld {
 
             let slot = &mut self.players[index];
             slot.ability_generation = slot.ability_generation.wrapping_add(1);
+            // The fresh ability instances carry their prefab cooldowns, not
+            // what Invisibility, Gold Mushroom or Web Swing set on the old ones.
+            for (cooldown, &ability) in slot.cooldowns.iter_mut().zip(&slot.abilities) {
+                if ability != ABILITY_NULL {
+                    *cooldown = data.abilities[ability as usize].cooldown;
+                }
+            }
             slot.ability_instantiated = [true; 3];
             slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
             slot.forms = [FormScale::default(); 3];
