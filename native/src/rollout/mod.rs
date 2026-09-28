@@ -1773,6 +1773,8 @@ pub struct AbilitylessClone {
     /// The platform it stood on was removed; its next SlimeController pass
     /// finds the destroyed attachedGround and ungrounds.
     pub ground_destroyed: bool,
+    /// The clone's PlayerBody hold on a rope a rope ability hooked it with.
+    pub grip: rope_abilities::RopeGrip,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -5896,8 +5898,17 @@ impl RolloutWorld {
         if has(ABILITY_MAGNET) {
             self.magnet_parries_tick(data);
         }
+        // A rope newer than an abilityless clone updates after the clone's
+        // PlayerBody has moved the rope end it holds.
+        let first_clone = self
+            .abilityless_clones
+            .iter()
+            .filter(|clone| clone.active)
+            .map(|clone| clone.hierarchy_base)
+            .min()
+            .unwrap_or(u32::MAX);
         if has(ABILITY_GRAPPLING_HOOK) {
-            self.grapple_ropes_update();
+            self.grapple_ropes_update(0..first_clone);
         }
         // Updater interleaves the ropes with the Mjolnir hammers by hierarchy:
         // a rope newer than the oldest live hammer waits for the hammer loop in
@@ -5911,7 +5922,7 @@ impl RolloutWorld {
             .unwrap_or(u32::MAX);
         self.scratch.ropes_updated_below = if has_rope { first_hammer } else { u32::MAX };
         if has_rope {
-            self.ropes_update(0..first_hammer);
+            self.ropes_update(0..first_clone.min(first_hammer));
         }
         if has(ABILITY_BEAM) {
             self.beam_orbs_tick(data);
@@ -6117,6 +6128,12 @@ impl RolloutWorld {
         }
         if has_clones {
             self.abilityless_clones_tick(actions, &jump_pressed_by_player);
+        }
+        if has(ABILITY_GRAPPLING_HOOK) && first_clone < u32::MAX {
+            self.grapple_ropes_update(first_clone..u32::MAX);
+        }
+        if has_rope && first_clone < first_hammer {
+            self.ropes_update(first_clone..first_hammer);
         }
         if has_clones && has(ABILITY_BLINK) {
             self.blink_clone_tunnels_tick(data, updater_dt);
@@ -24318,6 +24335,7 @@ impl RolloutWorld {
             blink_reactivated_tick: None,
             late_pull: Vec2::ZERO,
             ground_destroyed: false,
+            grip: rope_abilities::RopeGrip::default(),
         };
         if let Some(free) = self
             .abilityless_clones
@@ -33836,7 +33854,20 @@ impl RolloutWorld {
                 // SlimeController jumps on the owner's jumpButton_PressedThisFrame.
                 clone.base.previous_jump = !jump_pressed[owner];
                 clone.base.capture_pre_move(terrain.platforms);
-                clone.base.move_step(action, movement, terrain);
+                if clone.grip.rope.is_none() {
+                    clone.base.move_step(action, movement, terrain);
+                } else if clone.base.move_unintegrated(action, movement, terrain) {
+                    // SlimeController.cs:1086-1089, then PlayerBody.UpdateSim.
+                    if !clone.base.grounded
+                        && clone.grip.rope.is_some_and(|rope| self.ropes[rope].physics.enabled)
+                    {
+                        clone.grip.swing_force =
+                            Vec2::new(movement.x * data::get().ropes.extra_swing_force, Fix::ZERO);
+                    }
+                    let owner_jumps = jump_pressed[owner]
+                        && clone.grip.rope.is_some_and(|rope| self.ropes[rope].owner == owner);
+                    rope_abilities::carry_rope(&mut clone.base, &mut clone.grip, &mut self.ropes, owner_jumps);
+                }
                 if clone.obs_state != STATE_RAGDOLL {
                     Self::slime_state_switch(
                         &mut clone.base,
@@ -33954,6 +33985,12 @@ impl RolloutWorld {
             return;
         }
         let owner = self.abilityless_clones[clone_index].owner;
+        // PlayerCollision.killPlayer lets go of the body's rope first.
+        let clone = &mut self.abilityless_clones[clone_index];
+        if clone.grip.rope.is_some() {
+            let top = clone.grip.top;
+            rope_abilities::attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, None, top, 0);
+        }
         self.abilityless_clones[clone_index].active = false;
         self.abilityless_clones[clone_index].base.alive = false;
         if let Some(entity) = self.abilityless_clones[clone_index].entity {

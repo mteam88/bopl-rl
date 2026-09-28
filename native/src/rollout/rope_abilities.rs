@@ -149,6 +149,221 @@ fn offscreen(point: Vec2, water: Fix, scale: Fix) -> bool {
         || point.y < water * scale
 }
 
+/// An abilityless clone's PlayerBody hold on a rope: `ropeBody` and
+/// `topAttachment`, the velocities UpdateSim last left for LateUpdateSim to
+/// measure against, and SlimeController's pending `extraSwingForce`.
+#[derive(Clone, Copy, Default)]
+pub struct RopeGrip {
+    pub rope: Option<usize>,
+    pub top: bool,
+    pub attach_tick: u32,
+    pub previous: (Vec2, Vec2),
+    pub swing_force: Vec2,
+}
+
+/// The mass and gravity switch PlayerBody gives the rope end of a slime body
+/// (RopePlayerMass01 0.5, ignoreGravityWhenRoped off).
+const SLIME_ROPE_TUNING: (Fix, bool) = (Fix::from_raw(2_147_483_648), false);
+
+/// PlayerBody.AttachRope's hand-off of the rope it held (PlayerBody.cs:
+/// 253-266): the end falls under gravity unless the body ignores it, and
+/// the rope lets go of that end unless another rope replaces it.
+fn release_rope_end(rope: &mut RolloutRope, top: bool, (mass, ignore_gravity): (Fix, bool), replaced: bool) {
+    let force = if ignore_gravity { Vec2::ZERO } else { -Vec2::UP * ROPE_GRAVITY };
+    if top {
+        rope.physics.force_start = force;
+    } else {
+        rope.physics.force_end = force;
+    }
+    if replaced {
+        rope.physics.set_mass(mass, top, Fix::ONE);
+    } else {
+        rope.physics.detach(top);
+    }
+    if top {
+        rope.time_air_start = Fix::from_int(100);
+    } else {
+        rope.time_air_end = Fix::from_int(100);
+    }
+}
+
+/// What a rope ability's CircleCastClosestPlayers found.
+#[derive(Clone, Copy)]
+enum RopeTarget {
+    Player(usize),
+    Clone(usize),
+}
+
+/// PlayerBody.AttachRope for an abilityless clone's body.
+pub(super) fn attach_grip(
+    body: &Player,
+    grip: &mut RopeGrip,
+    ropes: &mut [RolloutRope],
+    rope: Option<usize>,
+    top: bool,
+    tick: u32,
+) {
+    if let Some(old) = grip.rope {
+        release_rope_end(&mut ropes[old], top, SLIME_ROPE_TUNING, rope.is_some());
+    }
+    grip.previous = (body.velocity, body.external_velocity);
+    grip.rope = rope;
+    grip.top = top;
+    if rope.is_some() {
+        grip.attach_tick = tick;
+    }
+}
+
+/// PlayerBody.UpdateSim's hold on its rope end once the body has moved
+/// (PlayerBody.cs:187-240). True when the rope was detached, and the body
+/// lets go of it.
+fn hold_rope_end(
+    body: &mut Player,
+    rope: &mut RolloutRope,
+    top: bool,
+    (mass, ignore_gravity): (Fix, bool),
+) -> bool {
+    let endpoint = if top { 0 } else { rope.physics.count - 1 };
+    if rope.physics.detached {
+        rope.physics.segment[endpoint] = body.position;
+        return true;
+    }
+    if rope.physics.time_since_hook_arrived <= Fix::ZERO {
+        rope.physics.segment[endpoint] = body.position;
+        if top {
+            rope.time_air_start = Fix::ZERO;
+        } else {
+            rope.time_air_end = Fix::ZERO;
+        }
+        rope.physics.set_mass(Fix::ONE, top, Fix::ONE);
+        if top {
+            rope.physics.force_start = Vec2::ZERO;
+        } else {
+            rope.physics.force_end = Vec2::ZERO;
+        }
+    } else if body.grounded {
+        let mass = Fix::ONE
+            + (Fix::from_f64(0.9) - Fix::ONE)
+                * rope.physics.time_since_hook_arrived.clamp(Fix::ZERO, Fix::ONE);
+        if top {
+            rope.time_air_start = Fix::ZERO;
+        } else {
+            rope.time_air_end = Fix::ZERO;
+        }
+        rope.physics.set_mass(mass, top, Fix::ONE);
+        if top {
+            rope.physics.force_start = Vec2::ZERO;
+        } else {
+            rope.physics.force_end = Vec2::ZERO;
+        }
+    } else {
+        let time = if top {
+            rope.time_air_start += DT;
+            rope.time_air_start
+        } else {
+            rope.time_air_end += DT;
+            rope.time_air_end
+        };
+        rope.physics.set_mass(mass, top, Fix::ONE);
+        let amount = if ignore_gravity {
+            Fix::ONE - mass
+        } else {
+            (time * Fix::from_int(2)).clamp(Fix::ZERO, Fix::ONE)
+        };
+        let offset = rope.physics.segment[endpoint] - body.position;
+        let length = offset.length();
+        if length != Fix::ZERO {
+            let correction = rope.physics.separation - length;
+            let direction = offset / length;
+            rope.physics.segment[endpoint] += direction * correction * (Fix::ONE - amount);
+            body.position -= direction * correction * amount;
+        }
+    }
+    false
+}
+
+/// PlayerPhysics.LateUpdateSim's grounded rope pull: a slack end drags the
+/// body along, and the end is pinned to it. True when the pull throws the
+/// body off its ground, which UnGround does with a null rotation.
+fn pin_grounded_rope_end(
+    body: &mut Player,
+    rope: &mut RolloutRope,
+    top: bool,
+    platforms: &[Platform],
+) -> bool {
+    let endpoint = if top { 0 } else { rope.physics.count - 1 };
+    let delta = rope.physics.segment[endpoint] - body.position;
+    if delta.length_squared() >= Fix::from_raw(300_647_711) {
+        body.external_velocity += delta * GROUNDED_ROPE_STRENGTH;
+    }
+    let mut ungrounded = false;
+    if let Some(platform) = body.platform(platforms)
+        && platform.surface.normal(body.position).dot(body.external_velocity)
+            > Fix::from_int(30)
+    {
+        body.force_unground(platforms);
+        body.rotation = Fix::ZERO;
+        body.up = Vec2::UP;
+        ungrounded = true;
+    }
+    rope.physics.segment[endpoint] = body.position;
+    ungrounded
+}
+
+/// PlayerBody.LateUpdateSim: a rope stretched past maxStretchLength snaps
+/// off the body (PlayerBody.cs:130-139).
+fn overstretched(rope: &RolloutRope) -> bool {
+    (0..rope.physics.count.saturating_sub(2)).any(|segment| {
+        (rope.physics.segment[segment] - rope.physics.segment[segment + 1]).length_squared()
+            > MAX_STRETCH
+    })
+}
+
+/// The force PlayerBody.LateUpdateSim sets on its end: the pass's change in
+/// both velocities, with the player's gravity unless the body ignores it
+/// (PlayerBody.cs:141-152).
+fn rope_end_force(body: &Player, previous: (Vec2, Vec2), ignore_gravity: bool, swing: Vec2) -> Vec2 {
+    let mut imposed = body.velocity - previous.0 - Vec2::UP * Fix::from_int(10);
+    if ignore_gravity {
+        imposed.y = Fix::ZERO;
+    }
+    imposed + (body.external_velocity - previous.1 + swing)
+}
+
+/// PlayerBody.UpdateSim for an abilityless clone gripping a rope
+/// (PlayerBody.cs:159-247). `owner_jumps`: the clone's Player owns the rope
+/// and pressed jump this pass.
+pub(super) fn carry_rope(
+    body: &mut Player,
+    grip: &mut RopeGrip,
+    ropes: &mut [RolloutRope],
+    owner_jumps: bool,
+) {
+    if let Some(index) = grip.rope
+        && ropes[index].physics.enabled
+        && owner_jumps
+        && !body.grounded
+        && !body.jumped_this_frame
+    {
+        let rope = &ropes[index].physics;
+        let endpoint = if grip.top { 0 } else { rope.count - 1 };
+        body.velocity = (rope.segment[endpoint] - rope.previous[endpoint]) / DT;
+        attach_grip(body, grip, ropes, None, grip.top, 0);
+    }
+    if grip.rope.is_some_and(|index| !ropes[index].physics.enabled) {
+        grip.rope = None;
+    }
+    body.position += (body.velocity + body.external_velocity) * DT;
+    if let Some(index) = grip.rope {
+        if hold_rope_end(body, &mut ropes[index], grip.top, SLIME_ROPE_TUNING) {
+            attach_grip(body, grip, ropes, None, grip.top, 0);
+        } else {
+            grip.previous = (body.velocity, body.external_velocity);
+        }
+    }
+    body.external_velocity *= Fix::from_f64(0.95);
+}
+
 fn empty_rope() -> RolloutRope {
     RolloutRope {
         physics: Rope {
@@ -340,27 +555,11 @@ impl RolloutWorld {
 
     pub(super) fn attach_player_rope(&mut self, player: usize, rope: Option<usize>, top: bool) {
         if let Some(old) = self.players[player].rope {
-            let (mass, ignore_gravity) = self.rope_body_tuning(player);
-            let force = if ignore_gravity { Vec2::ZERO } else { -Vec2::UP * ROPE_GRAVITY };
             // PlayerBody.AttachRope releases the old rope at the end the call
             // names, not the end the body held: HookshotInstant and WebSwing
             // pass the bottom end even for a player hooked by the top.
-            let old_rope = &mut self.ropes[old].physics;
-            if top {
-                old_rope.force_start = force;
-            } else {
-                old_rope.force_end = force;
-            }
-            if rope.is_none() {
-                old_rope.detach(top);
-            } else {
-                old_rope.set_mass(mass, top, Fix::ONE);
-            }
-            if top {
-                self.ropes[old].time_air_start = Fix::from_int(100);
-            } else {
-                self.ropes[old].time_air_end = Fix::from_int(100);
-            }
+            let tuning = self.rope_body_tuning(player);
+            release_rope_end(&mut self.ropes[old], top, tuning, rope.is_some());
         }
         let slot = &mut self.players[player];
         slot.rope_prev[slot.rope_body()] = (slot.base.velocity, slot.base.external_velocity);
@@ -526,7 +725,20 @@ impl RolloutWorld {
                 .is_some()
             {
                 // CircleCastClosestPlayers retains the final matching box.
-                nearby_player = Some(candidate);
+                nearby_player = Some(RopeTarget::Player(candidate));
+            }
+        }
+        // The abilityless clones' boxes registered after every slime's, and
+        // the cast skips only the caster's own instance: the caster's own
+        // clones are in reach.
+        for candidate in self.player_layer_clones() {
+            if crate::physics::contact::circle_box(
+                player_query,
+                self.abilityless_clones[candidate].base.collider,
+            )
+            .is_some()
+            {
+                nearby_player = Some(RopeTarget::Clone(candidate));
             }
         }
         // Circles follow the boxes with the cast radius scaled by 1.5, so a
@@ -548,12 +760,14 @@ impl RolloutWorld {
                 )
                 .is_some()
             {
-                nearby_player = Some(candidate);
+                nearby_player = Some(RopeTarget::Player(candidate));
             }
         }
-        let rope_end = nearby_player
-            .map(|target| self.players[target].base.position)
-            .unwrap_or(position);
+        let rope_end = match nearby_player {
+            Some(RopeTarget::Player(target)) => self.players[target].base.position,
+            Some(RopeTarget::Clone(clone)) => self.abilityless_clones[clone].base.position,
+            None => position,
+        };
         let hook_position = rope_end + aim * source.grapple_spawn_offset;
         let hook_id = self.next_id();
         let hook_entity = self.entities.len();
@@ -591,12 +805,24 @@ impl RolloutWorld {
             rope.hook_entity = Some(hook_entity);
             rope.hook_position = hook_position;
             rope.hook_velocity = launch * source.grapple_speed;
-            rope.hook_end_player = nearby_player.unwrap_or(player);
+            rope.hook_end_player = match nearby_player {
+                Some(RopeTarget::Player(target)) => target,
+                Some(RopeTarget::Clone(clone)) => self.abilityless_clones[clone].owner,
+                None => player,
+            };
         }
         // FireHook zeroes the shooter's self-imposed velocity on both branches.
         self.players[player].base.velocity = Vec2::ZERO;
         if let Some(target) = nearby_player {
-            if self.players[target].active == ActiveAbility::Rock {
+            if let RopeTarget::Clone(clone) = target {
+                let tick = self.tick;
+                let clone = &mut self.abilityless_clones[clone];
+                clone.base.velocity = Vec2::ZERO;
+                attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, None, false, tick);
+                attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, Some(rope_index), false, tick);
+            } else if let RopeTarget::Player(target) = target
+                && self.players[target].active == ActiveAbility::Rock
+            {
                 // BounceBall.AttachRope lets the old rope go and leaves the
                 // ball's velocity alone. UpdateRopeAttachment then drops the
                 // new rope, whose number is not the one the ball entered with.
@@ -612,7 +838,7 @@ impl RolloutWorld {
                     old.physics.force_end = -Vec2::UP * ROPE_GRAVITY;
                     old.physics.set_mass(mass, false, Fix::ONE);
                 }
-            } else {
+            } else if let RopeTarget::Player(target) = target {
                 self.players[target].base.velocity = Vec2::ZERO;
                 self.attach_player_rope(target, None, false);
                 self.attach_player_rope(target, Some(rope_index), false);
@@ -634,12 +860,13 @@ impl RolloutWorld {
         }
     }
 
-    pub(super) fn grapple_ropes_update(&mut self) {
+    pub(super) fn grapple_ropes_update(&mut self, hierarchies: std::ops::Range<u32>) {
         let source = &data::get().ropes;
         for index in 0..self.ropes.len() {
             if !self.ropes[index].physics.enabled
                 || self.ropes[index].born_tick == self.tick
                 || self.ropes[index].hook_entity.is_none()
+                || !hierarchies.contains(&self.ropes[index].hierarchy)
             {
                 continue;
             }
@@ -890,74 +1117,10 @@ impl RolloutWorld {
             self.players[player].base.velocity + self.players[player].base.external_velocity;
         self.players[player].base.position += velocity * DT;
         if self.players[player].rope == Some(rope_index) {
-            let endpoint = if top {
-                0
-            } else {
-                self.ropes[rope_index].physics.count - 1
-            };
-            if self.ropes[rope_index].physics.detached {
-                self.ropes[rope_index].physics.segment[endpoint] =
-                    self.players[player].base.position;
+            let tuning = self.rope_body_tuning(player);
+            let body = &mut self.players[player].base;
+            if hold_rope_end(body, &mut self.ropes[rope_index], top, tuning) {
                 self.attach_player_rope(player, None, top);
-            } else if self.ropes[rope_index].physics.time_since_hook_arrived <= Fix::ZERO {
-                self.ropes[rope_index].physics.segment[endpoint] =
-                    self.players[player].base.position;
-                if top {
-                    self.ropes[rope_index].time_air_start = Fix::ZERO;
-                } else {
-                    self.ropes[rope_index].time_air_end = Fix::ZERO;
-                }
-                self.ropes[rope_index]
-                    .physics
-                    .set_mass(Fix::ONE, top, Fix::ONE);
-                if top {
-                    self.ropes[rope_index].physics.force_start = Vec2::ZERO;
-                } else {
-                    self.ropes[rope_index].physics.force_end = Vec2::ZERO;
-                }
-            } else if self.players[player].base.grounded {
-                let mass = Fix::ONE
-                    + (Fix::from_f64(0.9) - Fix::ONE)
-                        * self.ropes[rope_index]
-                            .physics
-                            .time_since_hook_arrived
-                            .clamp(Fix::ZERO, Fix::ONE);
-                if top {
-                    self.ropes[rope_index].time_air_start = Fix::ZERO;
-                } else {
-                    self.ropes[rope_index].time_air_end = Fix::ZERO;
-                }
-                self.ropes[rope_index].physics.set_mass(mass, top, Fix::ONE);
-                if top {
-                    self.ropes[rope_index].physics.force_start = Vec2::ZERO;
-                } else {
-                    self.ropes[rope_index].physics.force_end = Vec2::ZERO;
-                }
-            } else {
-                let time = if top {
-                    self.ropes[rope_index].time_air_start += DT;
-                    self.ropes[rope_index].time_air_start
-                } else {
-                    self.ropes[rope_index].time_air_end += DT;
-                    self.ropes[rope_index].time_air_end
-                };
-                let (mass, ignore_gravity) = self.rope_body_tuning(player);
-                self.ropes[rope_index].physics.set_mass(mass, top, Fix::ONE);
-                let amount = if ignore_gravity {
-                    Fix::ONE - mass
-                } else {
-                    (time * Fix::from_int(2)).clamp(Fix::ZERO, Fix::ONE)
-                };
-                let offset = self.ropes[rope_index].physics.segment[endpoint]
-                    - self.players[player].base.position;
-                let length = offset.length();
-                if length != Fix::ZERO {
-                    let correction = self.ropes[rope_index].physics.separation - length;
-                    let direction = offset / length;
-                    self.ropes[rope_index].physics.segment[endpoint] +=
-                        direction * correction * (Fix::ONE - amount);
-                    self.players[player].base.position -= direction * correction * amount;
-                }
             }
             if self.players[player].active != ActiveAbility::Dash {
                 // The Dash prefab owns a distinct PlayerBody whose private
@@ -1417,6 +1580,37 @@ impl RolloutWorld {
                     break;
                 }
             }
+            // RopeHook ignores bodies by player id, so another player's
+            // clone takes the hook just as that player's slime would.
+            let clone_victim = self.player_layer_clones().into_iter().find(|&index| {
+                let clone = &self.abilityless_clones[index];
+                victim.is_none()
+                    && clone.owner != owner
+                    && clone.owner != end_player
+                    && crate::physics::contact::circle_box(circle, clone.base.collider).is_some()
+            });
+            if let Some(index) = clone_victim {
+                let tick = self.tick;
+                let clone = &mut self.abilityless_clones[index];
+                if let Some(old) = clone.grip.rope
+                    && old != rope_index
+                {
+                    self.ropes[old].physics.detach(true);
+                    self.ropes[old].physics.detach(false);
+                    clone.grip.rope = None;
+                }
+                attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, Some(rope_index), true, tick);
+                let rope = &mut self.ropes[rope_index];
+                rope.physics.time_since_hook_arrived = Fix::ZERO;
+                rope.reel_in = true;
+                rope.hook_active = false;
+                rope.hook_remove_next = true;
+                if let Some(entity) = rope.hook_entity {
+                    self.entities[entity].flags =
+                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                }
+                continue;
+            }
             let mut parent = victim
                 .filter(|&v| self.players[v].active == ActiveAbility::Rock)
                 .map(RopeParent::Rock);
@@ -1498,6 +1692,61 @@ impl RolloutWorld {
         }
     }
 
+    /// The abilityless clones whose Player-layer box DetPhysics holds, in
+    /// the order their boxes registered.
+    fn player_layer_clones(&self) -> Vec<usize> {
+        let mut clones: Vec<usize> = (0..self.abilityless_clones.len())
+            .filter(|&index| {
+                let clone = &self.abilityless_clones[index];
+                clone.active
+                    && clone.base.alive
+                    && clone.entity.is_some()
+                    && clone.captured_by_ball.is_none()
+                    && !self.blink_object_hidden(clone.entity)
+            })
+            .collect();
+        clones.sort_by_key(|&index| self.abilityless_clones[index].entity);
+        clones
+    }
+
+    /// PlayerPhysics and PlayerBody LateUpdateSim for the abilityless clones
+    /// that grip a rope, as `ropes_late` does for a slime.
+    fn clone_ropes_late(&mut self) {
+        for clone_index in self.player_layer_clones() {
+            let clone = &mut self.abilityless_clones[clone_index];
+            let Some(rope_index) = clone.grip.rope else {
+                continue;
+            };
+            if !self.ropes[rope_index].physics.enabled {
+                clone.grip.rope = None;
+                continue;
+            }
+            let top = clone.grip.top;
+            let rope = &mut self.ropes[rope_index];
+            if clone.base.grounded
+                && !clone.ground_destroyed
+                && rope.physics.time_since_hook_arrived > Fix::ZERO
+                && rope.born_tick != self.tick
+                && clone.grip.attach_tick != self.tick
+                && pin_grounded_rope_end(&mut clone.base, rope, top, &self.platforms)
+            {
+                clone.obs_state = STATE_FALL;
+                clone.state_ticks = 0;
+            }
+            if overstretched(rope) {
+                attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, None, top, self.tick);
+                continue;
+            }
+            let swing = std::mem::take(&mut clone.grip.swing_force);
+            let force = rope_end_force(&clone.base, clone.grip.previous, false, swing);
+            if top {
+                rope.physics.force_start = force;
+            } else {
+                rope.physics.force_end = force;
+            }
+        }
+    }
+
     pub(super) fn ropes_late(&mut self) {
         for player in 0..self.players.len() {
             let Some(rope_index) = self.players[player].rope else {
@@ -1513,11 +1762,6 @@ impl RolloutWorld {
                 continue;
             }
             let top = self.players[player].rope_top;
-            let endpoint = if top {
-                0
-            } else {
-                self.ropes[rope_index].physics.count - 1
-            };
             // HookshotInstant attaches after this pass's PlayerBody updater;
             // a newly spawned grounded rope therefore keeps Initialize's
             // final point until the next pass. Before the hook arrives the end
@@ -1531,70 +1775,43 @@ impl RolloutWorld {
                 && self.ropes[rope_index].born_tick != self.tick
                 && self.players[player].rope_attach_tick != self.tick
             {
-                let delta = self.ropes[rope_index].physics.segment[endpoint]
-                    - self.players[player].base.position;
-                if delta.length_squared() >= Fix::from_raw(300_647_711) {
-                    self.players[player].base.external_velocity += delta * GROUNDED_ROPE_STRENGTH;
-                }
-                if let Some(platform) = self.players[player].base.platform(&self.platforms)
-                    && platform
-                        .surface
-                        .normal(self.players[player].base.position)
-                        .dot(self.players[player].base.external_velocity)
-                        > Fix::from_int(30)
+                let slot = &mut self.players[player];
+                // PlayerPhysics.LateUpdateSim's UnGround nulls the rotation
+                // and raises the slime's OnNoLongerGrounded: State.fall.
+                if pin_grounded_rope_end(&mut slot.base, &mut self.ropes[rope_index], top, &self.platforms)
+                    && slot.active == ActiveAbility::None
                 {
-                    // PlayerPhysics.LateUpdateSim's UnGround nulls the rotation
-                    // and raises the slime's OnNoLongerGrounded: State.fall.
-                    let slot = &mut self.players[player];
-                    slot.base.force_unground(&self.platforms);
-                    slot.base.rotation = Fix::ZERO;
-                    slot.base.up = Vec2::UP;
-                    if slot.active == ActiveAbility::None {
-                        slot.obs_state = STATE_FALL;
-                        slot.state_ticks = 0;
-                    }
+                    slot.obs_state = STATE_FALL;
+                    slot.state_ticks = 0;
                 }
-                self.ropes[rope_index].physics.segment[endpoint] =
-                    self.players[player].base.position;
             }
-            for segment in 0..self.ropes[rope_index].physics.count.saturating_sub(2) {
-                if (self.ropes[rope_index].physics.segment[segment]
-                    - self.ropes[rope_index].physics.segment[segment + 1])
-                    .length_squared()
-                    > MAX_STRETCH
-                {
-                    self.attach_player_rope(player, None, top);
-                    break;
-                }
+            if overstretched(&self.ropes[rope_index]) {
+                self.attach_player_rope(player, None, top);
             }
             if self.players[player].rope == Some(rope_index) {
-                let (previous_imposed, previous_external) =
-                    if self.players[player].active == ActiveAbility::Dash {
-                        (Vec2::ZERO, Vec2::ZERO)
-                    } else {
-                        let slot = &self.players[player];
-                        slot.rope_prev[slot.rope_body()]
-                    };
-                let mut imposed = self.players[player].base.velocity
-                    - previous_imposed
-                    - Vec2::UP * Fix::from_int(10);
-                if self.rope_body_tuning(player).1 {
-                    imposed.y = Fix::ZERO;
-                }
-                let mut external =
-                    self.players[player].base.external_velocity - previous_external;
+                let slot = &mut self.players[player];
+                let previous = if slot.active == ActiveAbility::Dash {
+                    (Vec2::ZERO, Vec2::ZERO)
+                } else {
+                    slot.rope_prev[slot.rope_body()]
+                };
                 // Only the slime's own PlayerBody carries the steer; an
                 // ability form's body has none and leaves it pending.
-                if self.players[player].active == ActiveAbility::None {
-                    external += std::mem::take(&mut self.players[player].rope_swing_force);
-                }
-                if top {
-                    self.ropes[rope_index].physics.force_start = imposed + external;
+                let swing = if slot.active == ActiveAbility::None {
+                    std::mem::take(&mut slot.rope_swing_force)
                 } else {
-                    self.ropes[rope_index].physics.force_end = imposed + external;
+                    Vec2::ZERO
+                };
+                let ignore_gravity = self.rope_body_tuning(player).1;
+                let force = rope_end_force(&self.players[player].base, previous, ignore_gravity, swing);
+                if top {
+                    self.ropes[rope_index].physics.force_start = force;
+                } else {
+                    self.ropes[rope_index].physics.force_end = force;
                 }
             }
         }
+        self.clone_ropes_late();
         let (players, items, shots) = (&self.players, &self.thrown_items, &self.portal_shots);
         for rope in &mut self.ropes {
             // DetPhysics.VeryLateRopeUpdate clears this for all 128 pool
