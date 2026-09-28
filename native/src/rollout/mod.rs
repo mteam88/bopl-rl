@@ -37272,6 +37272,7 @@ impl RolloutWorld {
         self.state_entities = entities;
         let mut slimes = std::mem::take(&mut self.slimes);
         self.fill_slimes(&mut slimes);
+        self.number_observed_slimes(&mut slimes);
         self.slimes = slimes;
         let flags = self.flags();
         let sudden_death = self.published_sudden_death();
@@ -37302,6 +37303,7 @@ impl RolloutWorld {
         self.sample_entities = entities;
         let mut slimes = std::mem::take(&mut self.sample_slimes);
         self.fill_slimes(&mut slimes);
+        self.number_observed_slimes(&mut slimes);
         self.sample_slimes = slimes;
         let flags = self.flags();
         let sudden_death = self.published_sudden_death();
@@ -37331,16 +37333,30 @@ impl RolloutWorld {
     /// spawned ahead of it.
     fn number_observed(&mut self, entities: &mut [CEntity]) {
         for row in entities {
-            let internal = row.id as usize;
-            if internal >= self.observed_ids.len() {
-                self.observed_ids.resize(internal + 1, 0);
-            }
-            if self.observed_ids[internal] == 0 {
-                self.last_observed_id += 1;
-                self.observed_ids[internal] = self.last_observed_id;
-            }
-            row.id = self.observed_ids[internal];
+            row.id = self.observed_id(row.id);
         }
+    }
+
+    /// The slimes follow every collider and share their key: a slime is
+    /// numbered as its body's GameObject (RlObservation.cs:100, 281-283).
+    fn number_observed_slimes(&mut self, slimes: &mut [CSlime]) {
+        for slime in slimes {
+            if slime.id != 0 {
+                slime.id = self.observed_id(slime.id);
+            }
+        }
+    }
+
+    fn observed_id(&mut self, internal: u32) -> u32 {
+        let internal = internal as usize;
+        if internal >= self.observed_ids.len() {
+            self.observed_ids.resize(internal + 1, 0);
+        }
+        if self.observed_ids[internal] == 0 {
+            self.last_observed_id += 1;
+            self.observed_ids[internal] = self.last_observed_id;
+        }
+        self.observed_ids[internal]
     }
 
     /// DetPhysics stores one list per shape and observations enumerate
