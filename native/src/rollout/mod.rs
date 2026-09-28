@@ -18799,7 +18799,8 @@ impl RolloutWorld {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         hierarchy_order(&mut order, &self.smoke_clouds, |cloud| cloud.hierarchy_base);
         for &cloud_index in &order {
-            if self.blink_object_hidden(self.smoke_clouds[cloud_index].entity) {
+            let entity = self.smoke_clouds[cloud_index].entity;
+            if self.blink_object_hidden(entity) || self.teleport_revealed_this_pass(entity) {
                 continue;
             }
             if self.smoke_clouds[cloud_index].active
