@@ -36638,26 +36638,6 @@ impl RolloutWorld {
         slot.base.alive && slot.respawn_ticks == 0
     }
 
-    fn rope_drop_icon_overridden(&self, index: usize, data: &data::RolloutData) -> bool {
-        let slot = &self.players[index];
-        let ability = slot.abilities[2];
-        if ability != ABILITY_GRAPPLING_HOOK && ability != ABILITY_WEB_SWING {
-            return false;
-        }
-        if slot.cooldowns[2] == Fix::ZERO {
-            return true;
-        }
-        let query = Circle {
-            center: slot.base.position,
-            radius: data.ropes.grapple_player_cast_radius,
-        };
-        self.players.iter().enumerate().any(|(candidate, player)| {
-            candidate != index
-                && self.playable_slot(player)
-                && crate::physics::contact::circle_box_overlaps(query, player.base.collider)
-        })
-    }
-
     /// `by_callback`: the death came from a DetPhysics collision callback
     /// (after this pass's contacts) rather than an updatable.
     pub fn kill(
@@ -36817,7 +36797,6 @@ impl RolloutWorld {
             }
         }
         self.deactivate_drill_hitboxes(index);
-        let rope_drop_icon_overridden = self.rope_drop_icon_overridden(index, data::get());
         let revival_marker = (!already_won)
             .then(|| {
                 self.players[index]
@@ -37026,9 +37005,10 @@ impl RolloutWorld {
                 let dropped_ability = slot.abilities[2];
                 let horizontal = self.rng.fix_range(Fix::from_f32(-0.3), Fix::from_f32(0.3));
                 let direction = (Vec2::UP + Vec2::new(horizontal, Fix::ZERO)).normalized_safe();
-                if !rope_drop_icon_overridden {
-                    self.spawn_ability_pickup(drop_position, dropped_ability, direction, data::get());
-                }
+                // A rope's icon override keeps the primary sprite in
+                // overiddenSprite, which GetPrimarySprite returns
+                // (AbilityReadyIndicator.cs:71-79, 155-162).
+                self.spawn_ability_pickup(drop_position, dropped_ability, direction, data::get());
             }
         }
     }
@@ -42211,7 +42191,7 @@ mod tests {
     }
 
     #[test]
-    fn rope_icon_override_suppresses_death_drop_after_rng_draw() {
+    fn rope_icon_override_keeps_the_death_drop() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         world.players[0].stocks = 0;
@@ -42226,7 +42206,7 @@ mod tests {
 
         world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT, false, false);
 
-        assert_eq!(world.ability_pickups.len(), pickups);
+        assert_eq!(world.ability_pickups.len(), pickups + 1);
         assert_eq!(world.rng.state, expected_rng.state);
     }
 
