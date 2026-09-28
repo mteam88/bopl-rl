@@ -1602,6 +1602,7 @@ pub struct ScaleChangerState {
     pub current_scale: Fix,
     pub time: Fix,
     pub growth: bool,
+    pub hierarchy_base: u32,
 }
 
 /// DuplicatePlatformEffect keeps the source platform live for its authored
@@ -25371,6 +25372,7 @@ impl RolloutWorld {
         growth: bool,
         updatable_count: u32,
     ) {
+        let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += updatable_count;
         let effect = ScaleChangerState {
             active: true,
@@ -25381,6 +25383,7 @@ impl RolloutWorld {
             current_scale: Fix::ONE,
             time: Fix::ZERO,
             growth,
+            hierarchy_base,
         };
         if let Some(free) = self.scale_changers.iter().position(|state| !state.active) {
             self.scale_changers[free] = effect;
@@ -25433,6 +25436,7 @@ impl RolloutWorld {
                     .map(|state| state.current_scale)
             })
             .unwrap_or(Fix::ONE);
+        let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += updatable_count;
         let effect = ScaleChangerState {
             active: true,
@@ -25443,6 +25447,7 @@ impl RolloutWorld {
             current_scale,
             time: Fix::ZERO,
             growth,
+            hierarchy_base,
         };
         // Retain one inactive record per generic entity so a later ray starts
         // from that object's live FixTransform scale. Active same-entity
@@ -26614,8 +26619,15 @@ impl RolloutWorld {
         }
     }
 
+    /// ScaleChanger.UpdateSim in Updater hierarchy order. Two rays on one target
+    /// do not commute: each add is clamped, and a resize rounds against the
+    /// scale the other just wrote.
     fn scale_changers_tick(&mut self, data: &data::RolloutData) {
-        for index in 0..self.scale_changers.len() {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        order.clear();
+        order.extend(0..self.scale_changers.len());
+        order.sort_unstable_by_key(|&index| (self.scale_changers[index].hierarchy_base, index));
+        for &index in &order {
             let effect = self.scale_changers[index];
             if !effect.active || effect.born_tick >= self.tick {
                 continue;
@@ -26868,6 +26880,7 @@ impl RolloutWorld {
                 .clamp(Fix::from_f32(0.1), Fix::from_int(5));
             self.scale_changers[index].time = time;
         }
+        self.scratch.item_order = order;
     }
 
     fn begin_duplicate_platform(
