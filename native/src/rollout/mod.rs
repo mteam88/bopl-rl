@@ -13515,6 +13515,8 @@ impl RolloutWorld {
 
         if self.player_time_scale >= Fix::from_f32(0.01) {
             for node_index in 0..self.tesla_nodes.len() {
+                // The orb's SpriteAnimator uses the default IsEnabled, so it
+                // pauses while the node is out of the hierarchy.
                 if !self.tesla_node_shown(node_index) {
                     continue;
                 }
