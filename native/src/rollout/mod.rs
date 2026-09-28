@@ -25841,9 +25841,16 @@ impl RolloutWorld {
             return;
         }
         let platform_index = source.platform_index;
+        // LocalPlayerPosFromPos reads the hit child's FixTransform, which
+        // SyncGameObject placed at the collider less its rotated offset.
+        let source_right = Vec2::angle(
+            self.platform_dynamics[platform_index].body.orientation + source.relative_rotation,
+        );
+        let source_position = source.transform_center
+            - (data.spike.attack_collider_offset * source.scale).complex_mul(source_right);
         let local = self.duplicate_attached_local(
             platform_index,
-            source.transform_center,
+            source_position,
             source.relative_rotation,
             -Fix::ONE,
             Fix::from_int(7),
@@ -25933,9 +25940,14 @@ impl RolloutWorld {
             return;
         }
         let platform_index = source.platform_index;
+        // LocalPlayerPosFromPos reads the hit child's FixTransform, which
+        // SyncGameObject placed at the collider less its rotated offset.
+        let source_position = source.transform_center
+            - (data.engine.rocket_collider_offset * source.scale)
+                .complex_mul(Vec2::angle(source.transform_rotation));
         let local = self.duplicate_attached_local(
             platform_index,
-            source.transform_center,
+            source_position,
             source.relative_rotation,
             Fix::ONE,
             Fix::from_int(7),
@@ -26031,9 +26043,13 @@ impl RolloutWorld {
             return;
         }
         let platform_index = source.platform_index;
+        // LocalPlayerPosFromPos reads the hit child's FixTransform, which
+        // SyncGameObject placed at the collider less its rotated offset.
+        let source_position = source.transform_center
+            - source.collider_offset.complex_mul(Vec2::angle(source.transform_rotation));
         let local = self.duplicate_attached_local(
             platform_index,
-            source.transform_center,
+            source_position,
             source.relative_rotation,
             Fix::ONE,
             Fix::from_int(5),
@@ -42083,9 +42099,12 @@ mod tests {
         world.reset(&test_config()).unwrap();
         assert!(world.spawn_engine(0, data::get()));
         let source = world.engines[0];
+        let source_position = source.transform_center
+            - (data::get().engine.rocket_collider_offset * source.scale)
+                .complex_mul(Vec2::angle(source.transform_rotation));
         let expected = world.duplicate_attached_local(
             source.platform_index,
-            source.transform_center,
+            source_position,
             source.relative_rotation,
             Fix::ONE,
             Fix::from_int(7),
