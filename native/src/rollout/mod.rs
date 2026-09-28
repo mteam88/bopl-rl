@@ -20106,14 +20106,23 @@ impl RolloutWorld {
             if !item.active || item.entity.is_none() {
                 continue;
             }
-            let direction = item.position - wave.position;
+            // The regular pass reads the FixTransform after BananaPeel.UpdateSim
+            // pinned a settled tack back to its settle point.
+            let position = if defer_mjolnir && item.ability == ABILITY_TACK && item.settled {
+                item.settle_position
+            } else {
+                item.position
+            };
+            let direction = position - wave.position;
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
             let impulse = direction.normalized_safe()
                 // `fix3 *= scale` before the vector multiply (Shockwave.cs:213).
                 * ((config.default_force / distance) * wave.scale)
                 * strength
                 * Fix::from_int(60);
-            if defer_mjolnir && item.ability == ABILITY_MJOLNIR {
+            // BananaPeel.UpdateSim likewise precedes the wave, and a settled
+            // tack's pin there must not erase the regular-pass impulse.
+            if defer_mjolnir && matches!(item.ability, ABILITY_MJOLNIR | ABILITY_TACK) {
                 item.pending_gust_impulse += impulse;
             } else {
                 item.body.apply_impulse(impulse, Vec2::ZERO);
@@ -29805,6 +29814,11 @@ impl RolloutWorld {
                 self.poke_ball_tick(item_index, data, updater_dt);
             } else {
                 self.tack_tick(item_index, data, updater_dt);
+                let item = &mut self.thrown_items[item_index];
+                if item.active && item.pending_gust_impulse != Vec2::ZERO {
+                    item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
+                }
+                item.pending_gust_impulse = Vec2::ZERO;
             }
         }
         self.scratch.item_order = order;
