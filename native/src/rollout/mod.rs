@@ -27274,6 +27274,9 @@ impl RolloutWorld {
         // The clone's AnimateVelocity is not initialized by DuplicateObject;
         // it homes where this pass's integration left it, on the next pass.
         dynamics.init_tick = Some(self.tick + 1);
+        // actAsFloatingPlatformThisFrame is private (AnimateVelocity.cs:52): a
+        // copy floats only if an effect's cast finds it after it spawns.
+        dynamics.float_next_frame = false;
         dynamics.spring_step = None;
         // Instantiate resets the non-serialized baseScaleForPlatform and
         // timeSinceLastScaledUp (StickyRoundedRectangle.cs:82-83,
