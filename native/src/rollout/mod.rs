@@ -15544,7 +15544,9 @@ impl RolloutWorld {
                     data,
                 );
                 self.remove_engine(engine_index);
-                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                // OnCollide only queues the DestroyFix: the box stays in its
+                // CompositeBody, which still carries it, for the rest of the pass.
+                self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
             }
             for node_index in 0..self.tesla_nodes.len() {
                 let node = self.tesla_nodes[node_index];
@@ -38719,15 +38721,17 @@ impl RolloutWorld {
     fn refresh_engine_entities(&mut self) {
         let data = data::get();
         for engine in &self.engines {
-            if !engine.active
-                || engine.macho_carried
-                || engine.platform_index >= self.platforms.len()
-            {
+            if engine.macho_carried || engine.platform_index >= self.platforms.len() {
                 continue;
             }
             let Some(entity) = engine.entity else {
                 continue;
             };
+            // A box a Black Hole ate this pass still follows its composite.
+            let eaten = self.entities[entity].flags == E_DESTROYED | E_COMPOSITE;
+            if !engine.active && !eaten {
+                continue;
+            }
             let rotation = engine.collider_rotation;
             let basis = Vec2::angle(rotation);
             let center = engine.collider_center;
@@ -38737,7 +38741,9 @@ impl RolloutWorld {
                 kind: 1,
                 layer: data.engine.rocket_layer,
                 owner: 0,
-                flags: if self.attached_hidden(engine.platform_index, engine.entity) {
+                flags: if eaten {
+                    E_DESTROYED | E_COMPOSITE
+                } else if self.attached_hidden(engine.platform_index, engine.entity) {
                     E_ENABLED | E_COMPOSITE
                 } else {
                     E_ACTIVE | E_ENABLED | E_COMPOSITE
