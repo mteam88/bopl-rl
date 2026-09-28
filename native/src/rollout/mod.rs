@@ -927,6 +927,10 @@ pub struct ThrowItemState {
     /// ThrowItem.firedFromTheGround, which stops AirealMovement
     /// (ThrowItem.cs:110, 221-228, 399).
     pub fired_from_ground: bool,
+    /// ThrowItem.exitVelocity: the ground Fire's knockback off the attached
+    /// surface, which ExitAbility hands back instead of the body's velocity
+    /// (ThrowItem.cs:112, 194, 219).
+    pub exit_velocity: Vec2,
 }
 
 #[derive(Clone, Copy)]
@@ -20922,6 +20926,13 @@ impl RolloutWorld {
                 let grounded = self.players[index].base.grounded;
                 let slot = &mut self.players[index];
                 slot.active = ActiveAbility::None;
+                // A form fired from the ground exits with the Fire's
+                // knockback; SyncPhysicsTo drops it again if the slime is
+                // restored onto a live ground (ThrowItem.cs:194,
+                // PlayerPhysics.cs:554-582).
+                if slot.throw_item.fired_from_ground {
+                    slot.base.velocity = slot.throw_item.exit_velocity;
+                }
                 // Ability.ExitAbility publishes before EnterFall's landing
                 // raycasts move the restored slime. The frozen form keeps
                 // the transform a moving ground left it with last pass.
@@ -21125,6 +21136,7 @@ impl RolloutWorld {
         slot.throw_item.ticks = 0;
         slot.throw_item.fired_from_ground = grounded;
         if grounded {
+            slot.throw_item.exit_velocity = -up * data.mine.knockback;
             slot.base.velocity = Vec2::ZERO;
         } else {
             slot.throw_item.gravity_modifier = Fix::ONE;
