@@ -27347,13 +27347,15 @@ impl RolloutWorld {
                     }
                     continue;
                 }
-                let attached_inverse_mass = self
+                // victim.GetBody() answers a composite member with the
+                // combined body, so an attached child weighs as its platform.
+                let attached_platform = self
                     .spike_attacks
                     .iter()
                     .find(|spike| {
                         spike.active && !spike.macho_carried && spike.entity == Some(effect.victim)
                     })
-                    .map(|spike| spike.body.inverse_mass)
+                    .map(|spike| spike.platform_index)
                     .or_else(|| {
                         self.engines
                             .iter()
@@ -27362,7 +27364,7 @@ impl RolloutWorld {
                                     && !engine.macho_carried
                                     && engine.entity == Some(effect.victim)
                             })
-                            .map(|engine| engine.body.inverse_mass)
+                            .map(|engine| engine.platform_index)
                     })
                     .or_else(|| {
                         self.tesla_nodes
@@ -27372,8 +27374,11 @@ impl RolloutWorld {
                                     && !node.macho_carried
                                     && node.entity == Some(effect.victim)
                             })
-                            .map(|node| node.body.inverse_mass)
+                            .map(|node| node.platform_index)
                     });
+                let attached_inverse_mass = attached_platform
+                    .filter(|&platform| platform < self.platform_dynamics.len())
+                    .map(|platform| self.platform_dynamics[platform].body.inverse_mass);
                 let row_inverse_mass = Fix::from_raw(self.entities[effect.victim].inverse_mass);
                 let inverse_mass = attached_inverse_mass.unwrap_or(row_inverse_mass);
                 let multiplier = if inverse_mass > Fix::ZERO
