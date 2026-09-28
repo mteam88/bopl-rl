@@ -1760,6 +1760,7 @@ pub struct AbilitylessClone {
     pub poke_invulnerable: bool,
     pub blink_tunnel_active: bool,
     pub blink_tunnel_born_tick: u32,
+    pub blink_tunnel_hierarchy: u32,
     pub blink_tunnel_age: Fix,
     pub blink_tunnel_released: bool,
     pub blink_reactivated_tick: Option<u32>,
@@ -24301,6 +24302,7 @@ impl RolloutWorld {
             poke_invulnerable: false,
             blink_tunnel_active: false,
             blink_tunnel_born_tick: 0,
+            blink_tunnel_hierarchy: 0,
             blink_tunnel_age: Fix::ZERO,
             blink_tunnel_released: false,
             blink_reactivated_tick: None,
@@ -26008,6 +26010,7 @@ impl RolloutWorld {
         self.players[caster].cooldowns[caster_slot] = data.blink.on_player_hit_cooldown;
         let clone = &mut self.abilityless_clones[clone_index];
         if !clone.blink_tunnel_active {
+            clone.blink_tunnel_hierarchy = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
         }
         clone.blink_tunnel_active = true;
@@ -26244,8 +26247,12 @@ impl RolloutWorld {
         }
     }
 
+    /// QuantumTunnel.UpdateSim for clone victims, in the tunnels' hierarchy
+    /// order (QuantumTunnel.cs:144): each release draws from the shared RNG.
     fn blink_clone_tunnels_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        for clone_index in 0..self.abilityless_clones.len() {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.abilityless_clones, |clone| clone.blink_tunnel_hierarchy);
+        for &clone_index in &order {
             if !self.abilityless_clones[clone_index].active {
                 self.abilityless_clones[clone_index].blink_tunnel_active = false;
                 continue;
@@ -26295,6 +26302,7 @@ impl RolloutWorld {
                 self.entities[entity].flags &= !E_ACTIVE;
             }
         }
+        self.scratch.item_order = order;
     }
 
     /// QuantumTunnel.UpdateSim for rounded-wall victims. The tunnel updater is
