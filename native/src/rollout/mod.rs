@@ -8675,6 +8675,11 @@ impl RolloutWorld {
                         break;
                     }
                     ABILITY_GOLD_MUSHROOM => {
+                        // SuperStar.UseAbility instantiates the SuperStarEffect
+                        // prefab (SuperStar.cs:33).
+                        self.next_spawn_hierarchy += data.abilities[ability as usize]
+                            .effect_updatable_count
+                            .expect("Gold Mushroom effect updatables");
                         let slot = &mut self.players[index];
                         slot.gold_mushroom[s] = GoldMushroomState {
                             active: true,
