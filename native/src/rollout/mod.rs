@@ -2686,8 +2686,9 @@ struct PlatformScratch {
     arrow_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Slime-vs-slime shoves of one DetPhysics pass: (pushed, other, lower id).
     slime_shoves: Vec<(usize, usize, bool)>,
-    /// Grounded slimes a wall squished this pass, in callback order.
-    squished: Vec<usize>,
+    /// Grounded slimes a wall squished this pass, in callback order:
+    /// (abilityless clone, player or clone index).
+    squished: Vec<(bool, usize)>,
     /// Ropes below this hierarchy have run their UpdateSim this pass.
     ropes_updated_below: u32,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
@@ -34722,8 +34723,8 @@ impl RolloutWorld {
     /// callback effect rather than a rigid-body response, so the kills wait
     /// for `kill_squished`.
     fn squish_grounded(&mut self, colliders: &[RoundedRect]) {
-        let mut squished = [usize::MAX; MAX_PLAYERS];
-        let mut count = 0;
+        let mut squished = std::mem::take(&mut self.scratch.squished);
+        squished.clear();
         for (index, slot) in self.players.iter().enumerate() {
             // Roll enables PlayerCollision.isSquishable on entry, then
             // ReleaseDash disables it for the lethal rolling form.
@@ -34731,46 +34732,72 @@ impl RolloutWorld {
                 && slot.respawn_ticks == 0
                 && slot.base.grounded
                 && (slot.active != ActiveAbility::Roll || !slot.roll.lethal)
-                && colliders.iter().enumerate().any(|(i, collider)| {
-                    self.platforms[i].active
-                        && Some(self.platforms[i].id) != slot.base.ground
-                        && self.magnet_locked_platform(slot) != Some(i)
-                        && collider.overlaps(slot.base.position)
-                })
+                && self.squishing_walls(colliders, false, index).next().is_some()
             {
-                squished[count] = index;
-                count += 1;
+                squished.push((false, index));
             }
         }
-        if count > 1 {
+        // An abilityless clone is the same Player.prefab, squishable with the
+        // centre squish point, and PlayerCollision asks that its own ground
+        // is not IsDestroyed (PlayerCollision.cs:327-336).
+        for (index, clone) in self.abilityless_clones.iter().enumerate() {
+            if clone.active
+                && clone.base.alive
+                && clone.entity.is_some()
+                && clone.base.grounded
+                && !clone.ground_destroyed
+                && !self.abilityless_clone_hidden(clone)
+                && self.squishing_walls(colliders, true, index).next().is_some()
+            {
+                squished.push((true, index));
+            }
+        }
+        if squished.len() > 1 {
             // The Box/RoundedRect callbacks run in SortAndSweep pair order: by
             // the later bounding box's rank on the sweep axis, then the
             // earlier's.
             let sweep_x = self.sweep_x();
             let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
             let min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
-            let key = |index: usize| {
-                let slot = &self.players[index];
-                let a = min(slot.base.collider);
-                colliders
-                    .iter()
-                    .enumerate()
-                    .filter(|&(i, collider)| {
-                        self.platforms[i].active
-                            && Some(self.platforms[i].id) != slot.base.ground
-                            && self.magnet_locked_platform(slot) != Some(i)
-                            && collider.overlaps(slot.base.position)
-                    })
-                    .map(|(_, collider)| {
+            squished.sort_by_key(|&(clone, index)| {
+                let base = if clone {
+                    &self.abilityless_clones[index].base
+                } else {
+                    &self.players[index].base
+                };
+                let a = min(base.collider);
+                self.squishing_walls(colliders, clone, index)
+                    .map(|collider| {
                         let b = min(collider.inner) - collider.radius;
                         (a.max(b), a.min(b))
                     })
                     .min()
-            };
-            squished[..count].sort_by_key(|&index| key(index));
+            });
         }
-        self.scratch.squished.clear();
-        self.scratch.squished.extend_from_slice(&squished[..count]);
+        self.scratch.squished = squished;
+    }
+
+    /// The walls squishing a grounded slime (a player, or an abilityless
+    /// clone): other active walls whose rounded rectangle contains its centre.
+    fn squishing_walls<'a>(
+        &'a self,
+        colliders: &'a [RoundedRect],
+        clone: bool,
+        index: usize,
+    ) -> impl Iterator<Item = &'a RoundedRect> + 'a {
+        let (base, locked) = if clone {
+            (&self.abilityless_clones[index].base, None)
+        } else {
+            let slot = &self.players[index];
+            (&slot.base, self.magnet_locked_platform(slot))
+        };
+        colliders.iter().enumerate().filter_map(move |(i, collider)| {
+            (self.platforms[i].active
+                && Some(self.platforms[i].id) != base.ground
+                && locked != Some(i)
+                && collider.overlaps(base.position))
+            .then_some(collider)
+        })
     }
 
     /// DetPhysics runs every OnCollide callback after Simulate has stepped the
@@ -34778,8 +34805,25 @@ impl RolloutWorld {
     /// detaches its rope only after this pass's rope step.
     fn kill_squished(&mut self) {
         let squished = std::mem::take(&mut self.scratch.squished);
-        for &index in &squished {
-            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
+        for &(clone, index) in &squished {
+            if !clone {
+                self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
+                continue;
+            }
+            let entity = self.abilityless_clones[index].entity;
+            let alive = self.abilityless_clones[index].active;
+            // killPlayer(spawnEffect: true) creates the death effect
+            // (PlayerCollision.cs:457).
+            if alive {
+                self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+            }
+            self.kill_abilityless_clone(index, ENVIRONMENT, CAUSE_SQUISHED);
+            // A callback casualty stays visible as destroyed until the next
+            // pass's DetPhysics.Simulate drops it.
+            if let Some(entity) = entity.filter(|_| alive) {
+                self.entities[entity].flags = E_DESTROYED | E_TRIGGER;
+                self.entities[entity].owner = 0;
+            }
         }
         self.scratch.squished = squished;
         self.scratch.squished.clear();
