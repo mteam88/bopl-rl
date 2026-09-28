@@ -16575,9 +16575,11 @@ impl RolloutWorld {
             velocity * data.macho_throw.force_from_boulder / Fix::from_int(35) * Fix::from_int(35);
     }
 
+    /// `hitbox.position` and `hitbox.rotation` write the FixTransform; the
+    /// collider, which a Black Hole's pull reads, stays where DetPhysics left
+    /// it until the next Simulate syncs it (DPhysicsRoundedRect.cs:138-160).
     fn place_macho_boulder(&mut self, platform_index: usize, position: Vec2, rotation: Fix) {
         self.platforms[platform_index].surface.center = position;
-        self.platforms[platform_index].collider.inner.center = position;
         self.platform_dynamics[platform_index].composite_position = position;
         self.platform_dynamics[platform_index].home_position = position;
         self.platform_dynamics[platform_index].transform_rotation = Some(rotation);
