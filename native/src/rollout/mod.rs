@@ -24755,7 +24755,7 @@ impl RolloutWorld {
                 data.missile.clone_count,
                 direction,
                 source.position,
-                data.missile.duplicate_spacing,
+                data.missile.duplicate_spacing * source.scale,
                 data.missile.duplicate_angle,
                 clone_index,
             );
@@ -24775,7 +24775,9 @@ impl RolloutWorld {
                 position,
                 body,
                 up,
-                scale: Fix::ONE,
+                // duplicateBoplBody hands the copy the source's Scale
+                // (ShootDuplicator.cs:280, 694).
+                scale: source.scale,
                 duplicated: true,
                 duplicate_lifespan: 1800,
                 ..GuidedMissile::default()
