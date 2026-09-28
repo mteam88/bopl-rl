@@ -2627,6 +2627,15 @@ impl PlayerSlot {
     }
 }
 
+/// Fills `order` with the slots of `pool` in Updater order: by the hierarchy
+/// each object was spawned with, the slot breaking ties. Pools reuse freed
+/// slots, so slot order stops tracking spawn order once one has been freed.
+fn hierarchy_order<T>(order: &mut Vec<usize>, pool: &[T], hierarchy: impl Fn(&T) -> u32) {
+    order.clear();
+    order.extend(0..pool.len());
+    order.sort_unstable_by_key(|&index| (hierarchy(&pool[index]), index));
+}
+
 /// Where DetPhysics queues a collision callback: by pair category (0
 /// Circle/Circle, 1 Circle/Box, 2 Box/Box), then in SortAndSweep pair order,
 /// by the later and then the earlier bounding-box minimum on the sweep axis.
@@ -28510,8 +28519,12 @@ impl RolloutWorld {
         }
     }
 
+    /// Mine.Init draws its hover offset from the shared RNG (Mine.cs:77-80), and
+    /// Updater runs the new objects' Inits in hierarchy order (Updater.cs:270-276).
     fn register_pending_mines(&mut self, data: &data::RolloutData) {
-        for index in 0..self.thrown_items.len() {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.thrown_items, |item| item.hierarchy_base);
+        for &index in &order {
             let item = self.thrown_items[index];
             if !item.active
                 || item.ability != ABILITY_MINE
@@ -28549,6 +28562,7 @@ impl RolloutWorld {
                 ..CEntity::default()
             };
         }
+        self.scratch.item_order = order;
     }
 
     /// Updater defers objects instantiated during a pass until the next pass.
