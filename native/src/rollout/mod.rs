@@ -2327,6 +2327,9 @@ pub struct PlayerSlot {
     pub invisible_at_form_entry: bool,
     /// Between onEnterAbility and the onExitAbility that answers it.
     pub ability_entered: bool,
+    /// SlimeController.UpdateSim got past OldUpdate this pass, so the caller
+    /// runs its invisibility comparison.
+    pub slime_updated: bool,
     pub ability_time: Fix,
     /// SlimeController/Ability publishes Player.Position before the live body
     /// advances later in the same updater pass.
@@ -4219,6 +4222,7 @@ impl RolloutWorld {
                 was_invisible: false,
                 invisible_at_form_entry: false,
                 ability_entered: false,
+                slime_updated: false,
                 ability_time: Fix::ZERO,
                 reported_position: spawn,
                 reported_tick: u32::MAX,
@@ -5921,6 +5925,17 @@ impl RolloutWorld {
             // (DetPhysics.cs:1724-1727).
             if self.players[index].base.alive {
                 self.drop_destroyed_children();
+            }
+            // After OldUpdate, cast or not, UpdateSim compares isInvisible
+            // with its last look. A new cast on the expiry frame keeps the
+            // player invisible and postpones restoration, permitting chained
+            // Invisibility slots (SlimeController.cs:1073-1077).
+            if std::mem::take(&mut self.players[index].slime_updated) {
+                let slot = &self.players[index];
+                if !slot.invisible && slot.was_invisible {
+                    self.invisibility_ended(index, data);
+                }
+                self.players[index].was_invisible = self.players[index].invisible;
             }
             let exited = {
                 let slot = &self.players[index];
@@ -8034,6 +8049,8 @@ impl RolloutWorld {
         }
         let ragdoll_ended = self.players[index].ragdoll.active;
         if ragdoll_ended && self.ragdoll_player_tick(index, action, jump_pressed) {
+            // A ragdoll's OldUpdate returns after its cooldown loop.
+            self.players[index].slime_updated = true;
             let scale = self.players[index].player_scale;
             self.players[index].set_ordinary_body_scale(scale);
             return;
@@ -8048,6 +8065,7 @@ impl RolloutWorld {
             for timer in &mut slot.timers {
                 *timer += DT;
             }
+            slot.slime_updated = true;
             slot.base.move_only(Vec2::ZERO, terrain!(self));
             // A landing inside Move retargets attachedGround, which the
             // arrival's UnGround lifts off (RewindRecorder.cs:358).
@@ -8199,6 +8217,7 @@ impl RolloutWorld {
         }
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
+            self.players[index].slime_updated = true;
             self.players[index].slime_input = movement_input;
             for s in 0..3 {
                 let slot = &self.players[index];
@@ -9812,19 +9831,6 @@ impl RolloutWorld {
                     _ => {}
                 }
             }
-
-            // This is after OldUpdate, exactly where SlimeController compares
-            // `player.isInvisible` with its previous-frame copy. A new cast on
-            // the expiry frame keeps the player invisible and deliberately
-            // postpones restoration, permitting chained Invisibility slots.
-            let expired = {
-                let slot = &self.players[index];
-                !slot.invisible && slot.was_invisible
-            };
-            if expired {
-                self.invisibility_ended(index, data);
-            }
-            self.players[index].was_invisible = self.players[index].invisible;
         }
 
         if self.players[index].active == ActiveAbility::Bow {
