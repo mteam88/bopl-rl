@@ -5985,11 +5985,14 @@ impl RolloutWorld {
         if has(ABILITY_BLACK_HOLE) {
             self.black_holes_tick(data, updater_dt);
         }
+        if has_rope {
+            self.rope_parents_update(true);
+        }
         if has(ABILITY_PORTAL_GUN) {
             self.portal_shots_tick(data, updater_dt);
         }
         if has_rope {
-            self.rope_parents_update();
+            self.rope_parents_update(false);
         }
         // DynamicAbilityPickup shares the updater-order walk implemented by
         // portals_tick, but authored map spawners can create pickups without

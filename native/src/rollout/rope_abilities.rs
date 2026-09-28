@@ -1319,10 +1319,13 @@ impl RolloutWorld {
     }
 
     /// RopeAttachment.UpdateSim for a hook caught on an object. The
-    /// attachment is created when the hook lands, so it updates after the
-    /// object it holds: a Portal Gun shot that lands and goes this pass is
-    /// already gone when the attachment looks.
-    pub(super) fn rope_parents_update(&mut self) {
+    /// attachment sits on the hook prefab, so it updates in the hook's
+    /// Updater place: after a Portal Gun shot fired before the hook, which
+    /// is already gone when the attachment looks if it landed this pass, and
+    /// before one fired after it, whose first UpdateSim then resets the
+    /// velocity the pull added (PortalShot.cs:60-64). `newer_shots` picks the
+    /// attachments holding a shot fired after their hook.
+    pub(super) fn rope_parents_update(&mut self, newer_shots: bool) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         for index in 0..self.ropes.len() {
             if !self.ropes[index].physics.enabled || self.ropes[index].born_tick == self.tick {
@@ -1331,6 +1334,11 @@ impl RolloutWorld {
             let Some(parent) = self.ropes[index].parent else {
                 continue;
             };
+            let newer_shot = matches!(parent, RopeParent::Shot(shot, _)
+                if self.portal_shots[shot].hierarchy_base > self.ropes[index].hierarchy);
+            if newer_shot != newer_shots {
+                continue;
+            }
             let Some(position) =
                 parent_position(&self.players, &self.thrown_items, &self.portal_shots, parent)
             else {
