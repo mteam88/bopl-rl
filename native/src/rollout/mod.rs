@@ -27275,6 +27275,12 @@ impl RolloutWorld {
         // it homes where this pass's integration left it, on the next pass.
         dynamics.init_tick = Some(self.tick + 1);
         dynamics.spring_step = None;
+        // Instantiate resets the non-serialized baseScaleForPlatform and
+        // timeSinceLastScaledUp (StickyRoundedRectangle.cs:82-83,
+        // DPhysicsRoundedRect.cs:36-37), and the copy has no GrowOnStart pass
+        // left to raise its base: a grown copy shrinks back to one.
+        dynamics.base_scale = Fix::ONE;
+        dynamics.time_since_scaled_up = Fix::ZERO;
         dynamics.duplicate_spawner_hierarchy = Some(spawner_hierarchy);
         dynamics.duplicate_lifespan = i32::MAX;
         dynamics.duplicate_shake_offset = Vec2::ZERO;
