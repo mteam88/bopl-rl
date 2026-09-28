@@ -1772,7 +1772,7 @@ pub struct AbilitylessClone {
     pub late_pull: Vec2,
     /// The platform it stood on was removed; its next SlimeController pass
     /// finds the destroyed attachedGround and ungrounds.
-    pub ground_destroyed: bool,
+    pub ground_destroyed: Option<DestroyedGround>,
     /// The clone's PlayerBody hold on a rope a rope ability hooked it with.
     pub grip: rope_abilities::RopeGrip,
 }
@@ -24364,7 +24364,7 @@ impl RolloutWorld {
             blink_tunnel_released: false,
             blink_reactivated_tick: None,
             late_pull: Vec2::ZERO,
-            ground_destroyed: false,
+            ground_destroyed: None,
             grip: rope_abilities::RopeGrip::default(),
         };
         if let Some(free) = self
@@ -26335,7 +26335,7 @@ impl RolloutWorld {
                 );
                 if self.players[owner].base.grounded {
                     if self.release_grounded_blink_player(owner) {
-                        self.abilityless_clones[clone_index].ground_destroyed = false;
+                        self.abilityless_clones[clone_index].ground_destroyed = None;
                     }
                 } else {
                     self.release_airborne_blink_player(owner);
@@ -28311,7 +28311,8 @@ impl RolloutWorld {
         }
         for clone in &mut self.abilityless_clones {
             if clone.active && clone.base.grounded && clone.base.ground == Some(id) {
-                clone.ground_destroyed = true;
+                let surface = self.platforms[index].surface.clone();
+                clone.ground_destroyed = Some(DestroyedGround { surface, pass });
             }
         }
         self.entities[entity].flags = E_REMOVED;
@@ -33826,14 +33827,16 @@ impl RolloutWorld {
                 continue;
             }
             let clone = &mut self.abilityless_clones[clone_index];
-            if std::mem::take(&mut clone.ground_destroyed) {
-                // PlayerPhysics skipped gravity while still grounded.
+            if let Some(lost) = std::mem::take(&mut clone.ground_destroyed) {
+                // PlayerPhysics skipped gravity while still grounded. The
+                // clone's SlimeController zeros its rotation and UnGrounds like
+                // a slime's, lifting off a ground destroyed earlier this pass
+                // (SlimeController.cs:1061-1065).
                 clone.base.rotation = Fix::ZERO;
                 clone.base.up = Vec2::UP;
                 clone.base.skip_next_gravity = true;
-                clone.base.grounded = false;
+                clone.base.unground_off(lost.attached(self.tick), false);
                 clone.base.ground = None;
-                clone.base.grounded_speed = Fix::ZERO;
             }
             let stopped =
                 self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner];
@@ -34918,7 +34921,7 @@ impl RolloutWorld {
                 && clone.base.alive
                 && clone.entity.is_some()
                 && clone.base.grounded
-                && !clone.ground_destroyed
+                && clone.ground_destroyed.is_none()
                 && !self.abilityless_clone_hidden(clone)
                 && self.squishing_walls(colliders, true, index).next().is_some()
             {

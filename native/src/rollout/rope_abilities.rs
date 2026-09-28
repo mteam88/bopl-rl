@@ -1724,7 +1724,7 @@ impl RolloutWorld {
             let top = clone.grip.top;
             let rope = &mut self.ropes[rope_index];
             if clone.base.grounded
-                && !clone.ground_destroyed
+                && clone.ground_destroyed.is_none()
                 && rope.physics.time_since_hook_arrived > Fix::ZERO
                 && rope.born_tick != self.tick
                 && clone.grip.attach_tick != self.tick
