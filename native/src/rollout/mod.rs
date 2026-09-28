@@ -26165,7 +26165,12 @@ impl RolloutWorld {
                 let hierarchy = self.players[victim].blink_tunnel_hierarchy;
                 self.duplicate_platform_effects_tick(data, updater_dt, Some(hierarchy));
                 if self.players[victim].base.grounded {
-                    self.release_grounded_blink_player(victim);
+                    // AttachToGround replaces a ground destroyed while the
+                    // victim was hidden (PlayerPhysics.cs:496-500).
+                    if self.release_grounded_blink_player(victim) {
+                        self.players[victim].ground_destroyed = None;
+                        self.players[victim].ground_destroyed_tick = None;
+                    }
                     // AttachToGround aligns the swallowed form's own body,
                     // which for a Bow is the rotation its box reads.
                     let slot = &mut self.players[victim];
@@ -26223,7 +26228,9 @@ impl RolloutWorld {
                     &mut self.abilityless_clones[clone_index].base,
                 );
                 if self.players[owner].base.grounded {
-                    self.release_grounded_blink_player(owner);
+                    if self.release_grounded_blink_player(owner) {
+                        self.abilityless_clones[clone_index].ground_destroyed = false;
+                    }
                 } else {
                     self.release_airborne_blink_player(owner);
                 }
@@ -26290,7 +26297,8 @@ impl RolloutWorld {
         }
     }
 
-    fn release_grounded_blink_player(&mut self, victim: usize) {
+    /// Whether the victim was attached to a new ground.
+    fn release_grounded_blink_player(&mut self, victim: usize) -> bool {
         let old_position = self.players[victim].base.position;
         // QuantumTunnel.determinePlayerReleasePosition reads the global
         // SceneBounds.WaterHeight (sim/Gameplay/QuantumTunnel.cs:242, :331),
@@ -26320,7 +26328,7 @@ impl RolloutWorld {
             }
         }
         if count == 0 {
-            return;
+            return false;
         }
         let selected = candidates[self.rng.int_range(0, count as i32) as usize];
         let radius = self.players[victim].base.radius;
@@ -26339,13 +26347,15 @@ impl RolloutWorld {
             if surface_point.y > water_limit && in_bounds && !blocked {
                 let platform = &self.platforms[selected];
                 self.players[victim].base.attach(platform, surface_point);
-                return;
+                return true;
             }
         }
-        if let Ok(surface_point) = self.platforms[selected].collider.closest_point(probe) {
-            let platform = &self.platforms[selected];
-            self.players[victim].base.attach(platform, surface_point);
-        }
+        let Ok(surface_point) = self.platforms[selected].collider.closest_point(probe) else {
+            return false;
+        };
+        let platform = &self.platforms[selected];
+        self.players[victim].base.attach(platform, surface_point);
+        true
     }
 
     fn release_airborne_blink_player(&mut self, victim: usize) {
