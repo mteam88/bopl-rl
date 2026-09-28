@@ -8101,11 +8101,18 @@ impl RolloutWorld {
     }
 
     fn playable(&self, index: usize) -> bool {
+        self.hittable(index) && self.players[index].respawn_spawn_ticks == 0
+    }
+
+    /// Whether DetPhysics tests the slime's hurtbox. A respawned slime is
+    /// vulnerable through its spawn animation: BeforeSpawnInit enables the
+    /// hurtbox and ReSpawn clears invulnerability (SlimeController.cs:516-538,
+    /// 588-600).
+    fn hittable(&self, index: usize) -> bool {
         let slot = &self.players[index];
         slot.base.alive
             && slot.unspawned == 0
             && slot.respawn_ticks == 0
-            && slot.respawn_spawn_ticks == 0
             && !slot.revival_clone_pending
             && !slot.stock_clone_pending
             && slot.revival_effect_ticks == 0
@@ -13780,7 +13787,7 @@ impl RolloutWorld {
                 }
             }
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if !self.playable(player_index) {
+                if !self.hittable(player_index) {
                     continue;
                 }
                 let slot = &self.players[player_index];
@@ -33737,7 +33744,7 @@ impl RolloutWorld {
         for &(_, hit) in &hits {
             match hit {
                 CallbackHit::Kill { player, killer, cause } => {
-                    if self.playable(player) {
+                    if self.hittable(player) {
                         self.kill(player, killer, cause, true, true);
                     }
                 }
