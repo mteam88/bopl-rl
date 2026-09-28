@@ -2172,6 +2172,30 @@ fn scale_ray_data(data: &data::RolloutData, ability: u32) -> &data::ScaleRayData
     }
 }
 
+/// A rider's ground that `Updater.DestroyFix` destroyed. DestroyFix only marks
+/// it IsDestroyed; the pass-end drain DestroyImmediates it (Updater.cs:89-110,
+/// 339-350). Until then attachedGround is not null, so an UnGround in the same
+/// pass still lifts the body 0.05 off it (PlayerPhysics.cs:366-370), while one
+/// on a later pass finds it null.
+#[derive(Clone)]
+pub struct DestroyedGround {
+    /// Where it died: a Bow firing before it ungrounds still reads
+    /// currentNormal off the dead body.
+    pub surface: Surface,
+    /// The pass an updater destroyed it in. A DetPhysics callback casualty (a
+    /// BlackHole eating it) dies after every updater of its pass, so no
+    /// rider's updater ever sees it before the drain.
+    pub pass: Option<u32>,
+}
+
+impl DestroyedGround {
+    /// attachedGround as a rider's updater sees it on `tick`'s pass: the dead
+    /// body before the drain, null after.
+    fn attached(&self, tick: u32) -> Option<&Surface> {
+        (self.pass == Some(tick)).then_some(&self.surface)
+    }
+}
+
 /// One player's match state beyond the movement body.
 #[derive(Clone)]
 pub struct PlayerSlot {
@@ -2261,17 +2285,9 @@ pub struct PlayerSlot {
     /// on from in the same pass (a Magnet Gun steal). The deactivated form
     /// collider stays where the exit published it.
     pub form_exit: Option<(u32, Vec2)>,
-    /// A platform destroyed later in the previous updater pass. Unity keeps
-    /// the rider grounded until its own next update, then ungrounds it. The
-    /// pass-end DestroyImmediate already nulled attachedGround, so UnGround
-    /// skips its 0.05 separation. The surface is where it died: a Bow firing
-    /// before it ungrounds still reads currentNormal off the dead body.
-    pub ground_destroyed: Option<Surface>,
-    /// The pass UpdateDuplicatedObjects destroyed that ground, ahead of the
-    /// updaters (Updater.cs:285-288): until the pass-end DestroyImmediate it
-    /// is IsDestroyed but not null, so that pass's UnGround still lifts the
-    /// body 0.05 off it (PlayerPhysics.cs:366-370).
-    pub ground_destroyed_tick: Option<u32>,
+    /// The ground it stood on was destroyed. Unity keeps the rider grounded
+    /// until its own next update, then ungrounds it.
+    pub ground_destroyed: Option<DestroyedGround>,
     pub bow: BowState,
     pub rock: RockState,
     pub roll: RollState,
@@ -2578,14 +2594,6 @@ impl PlayerSlot {
     fn restore_slime_radius(&mut self) {
         self.base.radius = self.exit_slime_radius();
         self.physics_scale = self.player_scale.clamp(Fix::from_f64(0.3), Fix::from_int(3));
-    }
-
-    /// UnGround's lift off a lost ground (PlayerPhysics.cs:366-370), which
-    /// only a Duplicator copy expiring on this very pass still provides.
-    fn lift_off_destroyed_ground(&mut self, surface: &Surface, tick: u32) {
-        if std::mem::take(&mut self.ground_destroyed_tick) == Some(tick) {
-            self.base.position += surface.normal(self.base.position) * Fix::from_f32(0.05);
-        }
     }
 
     fn set_ordinary_body_scale(&mut self, scale: Fix) {
@@ -4099,7 +4107,6 @@ impl RolloutWorld {
                 reported_tick: u32::MAX,
                 form_exit: None,
                 ground_destroyed: None,
-                ground_destroyed_tick: None,
                 bow: BowState::default(),
                 rock: RockState::default(),
                 roll: RollState::default(),
@@ -7961,7 +7968,7 @@ impl RolloutWorld {
         } else {
             std::mem::take(&mut self.players[index].ground_destroyed)
         };
-        if let Some(surface) = lost
+        if let Some(lost) = lost
             && !finds_it_later
         {
             let tick = self.tick;
@@ -7985,10 +7992,8 @@ impl RolloutWorld {
                     slot.state_ticks = 0;
                 }
             }
-            slot.lift_off_destroyed_ground(&surface, tick);
-            slot.base.grounded = false;
+            slot.base.unground_off(lost.attached(tick), false);
             slot.base.ground = None;
-            slot.base.grounded_speed = Fix::ZERO;
         }
         if !in_ability {
             let slot = &mut self.players[index];
@@ -15681,17 +15686,13 @@ impl RolloutWorld {
     /// re-reads the staff against the zeroed rotation. Nothing else moves the
     /// form that pass.
     fn beam_lost_ground(&mut self, index: usize) -> bool {
-        let Some(surface) = std::mem::take(&mut self.players[index].ground_destroyed) else {
+        let Some(lost) = std::mem::take(&mut self.players[index].ground_destroyed) else {
             return false;
         };
         let tick = self.tick;
         let slot = &mut self.players[index];
-        slot.lift_off_destroyed_ground(&surface, tick);
-        slot.base.grounded = false;
+        slot.base.unground_off(lost.attached(tick), true);
         slot.base.ground = None;
-        slot.base.grounded_speed = Fix::ZERO;
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
         self.beam_on_ungrounded(index);
         true
     }
@@ -16505,14 +16506,13 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
-    /// Returns whether the shrink destroyed the ground.
-    fn macho_shrink_ground(&mut self, index: usize, data: &data::RolloutData) -> bool {
+    fn macho_shrink_ground(&mut self, index: usize, data: &data::RolloutData) {
         let Some(platform_index) = self.players[index]
             .base
             .ground
             .and_then(|id| self.platforms.iter().position(|platform| platform.id == id))
         else {
-            return false;
+            return;
         };
         let dynamics = self.platform_dynamics[platform_index];
         let collider = self.platforms[platform_index].collider;
@@ -16527,9 +16527,7 @@ impl RolloutWorld {
         let dynamics = &self.platform_dynamics[platform_index];
         if dynamics.scale <= dynamics.min_scale {
             self.remove_platform(platform_index, true);
-            return true;
         }
-        false
     }
 
     /// MachoThrow2.pickUpNearbyAttachables scans platform children first and
@@ -17320,14 +17318,13 @@ impl RolloutWorld {
         if phase == 0 && self.players[index].macho_throw.grabbing_dirt {
             unreachable!();
         }
-        let mut shrunk_away = false;
         if phase == 1 && self.players[index].macho_throw.grabbing_dirt {
             let frame = Self::macho_animation_frame(
                 self.players[index].macho_throw.ticks,
                 &data.macho_throw.grab_frame_ticks,
             );
             if frame > data.macho_throw.shrink_after_frames {
-                shrunk_away = self.macho_shrink_ground(index, data);
+                self.macho_shrink_ground(index, data);
             }
         }
 
@@ -17409,11 +17406,12 @@ impl RolloutWorld {
                 });
         // On a destroyed ground MachoMove UnGrounds with its rotation zeroed
         // and returns before the landing raycasts (PlayerPhysics.cs:216-219).
-        // A ground this pass's shrink destroyed is not null yet, so UnGround
-        // still lifts the form off it.
+        // A ground destroyed earlier in this pass (this form's own shrink, a
+        // Duplicator copy expiring) is not null yet, so UnGround still lifts
+        // the form off it. A null one is Move's missing-ground UnGround.
         let destroyed = self.players[index].ground_destroyed.take();
-        if let Some(surface) = destroyed.filter(|_| shrunk_away) {
-            self.players[index].base.unground_level_off(&surface);
+        if let Some(surface) = destroyed.as_ref().and_then(|lost| lost.attached(self.tick)) {
+            self.players[index].base.unground_off(Some(surface), true);
             return;
         }
         self.players[index]
@@ -25084,13 +25082,7 @@ impl RolloutWorld {
             self.platform_dynamics[platform_index].duplicate_lifespan -= 1;
             let lifespan = self.platform_dynamics[platform_index].duplicate_lifespan;
             if lifespan < 0 {
-                let id = self.platforms[platform_index].id;
                 self.remove_platform(platform_index, false);
-                for slot in &mut self.players {
-                    if slot.ground_destroyed.is_some() && slot.base.ground == Some(id) {
-                        slot.ground_destroyed_tick = Some(self.tick);
-                    }
-                }
             } else if lifespan < 60 {
                 let progress = Fix::ONE - Fix::from_int(i64::from(lifespan)) / Fix::from_int(60);
                 let old = self.platform_dynamics[platform_index].duplicate_shake_offset;
@@ -26280,7 +26272,6 @@ impl RolloutWorld {
                     // victim was hidden (PlayerPhysics.cs:496-500).
                     if self.release_grounded_blink_player(victim) {
                         self.players[victim].ground_destroyed = None;
-                        self.players[victim].ground_destroyed_tick = None;
                     }
                     // AttachToGround aligns the swallowed form's own body,
                     // which for a Bow is the rotation its box reads.
@@ -27684,14 +27675,11 @@ impl RolloutWorld {
         let platforms: &[Platform] = terrain.platforms;
         // BowTransform.UpdateSim ungrounds a Bow whose ground went inactive and
         // lets it fall in the same pass; UnGround still lifts it off that
-        // surface (BowTransform.cs:214-218, PlayerPhysics.cs:366-370). A
-        // destroyed ground is already null, so there is no lift, unless it is
-        // a Duplicator copy that expired earlier in this same pass.
-        if let Some(surface) = std::mem::take(&mut slot.ground_destroyed)
+        // surface (BowTransform.cs:214-218, PlayerPhysics.cs:366-370).
+        if let Some(lost) = std::mem::take(&mut slot.ground_destroyed)
             && slot.base.grounded
         {
-            slot.lift_off_destroyed_ground(&surface, tick);
-            slot.base.force_unground(platforms);
+            slot.base.unground_off(lost.attached(tick), false);
         }
         if slot.base.grounded {
             slot.base.unground_inactive(platforms);
@@ -27830,7 +27818,7 @@ impl RolloutWorld {
             // currentNormal(body) is read now, so a turning platform gives
             // this pass's normal rather than the up the last Move aligned to.
             let normal = match &slot.ground_destroyed {
-                Some(surface) => surface.normal(slot.base.position),
+                Some(lost) => lost.surface.normal(slot.base.position),
                 None => slot
                     .base
                     .platform(platforms)
@@ -28311,11 +28299,14 @@ impl RolloutWorld {
     /// their own next updater pass.
     fn remove_platform(&mut self, index: usize, deferred: bool) {
         let id = self.platforms[index].id;
+        let entity = self.platform_entities[index];
+        let pass = (self.entities[entity].flags & E_DESTROYED == 0).then_some(self.tick);
         for slot in &mut self.players {
             // Every lost-ground check is gated on isGrounded; an airborne
             // body keeps its stale attachedGround.
             if slot.base.alive && slot.base.grounded && slot.base.ground == Some(id) {
-                slot.ground_destroyed = Some(self.platforms[index].surface.clone());
+                let surface = self.platforms[index].surface.clone();
+                slot.ground_destroyed = Some(DestroyedGround { surface, pass });
             }
         }
         for clone in &mut self.abilityless_clones {
@@ -28323,7 +28314,6 @@ impl RolloutWorld {
                 clone.ground_destroyed = true;
             }
         }
-        let entity = self.platform_entities[index];
         self.entities[entity].flags = E_REMOVED;
         for spike in &mut self.spike_attacks {
             if !spike.active || spike.macho_carried {
@@ -41071,6 +41061,9 @@ mod tests {
         assert_eq!(world.players[0].base.ground, Some(platform_id));
         assert!(world.players[0].ground_destroyed.is_some());
 
+        // The platform's ResizablePlatform runs after the rider, which only
+        // updates on the next pass, once the drain has nulled its ground.
+        world.tick += 1;
         world.player_tick(0, Action::default(), Vec2::ZERO, false, data::get());
         assert!(!world.players[0].base.grounded);
         assert_eq!(world.players[0].base.ground, None);

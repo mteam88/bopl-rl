@@ -1016,12 +1016,11 @@ impl Player {
         motion.unground(surface.as_ref(), true);
         self.apply_ground_state(motion);
     }
-    /// The same UnGround off a ground DestroyFix'd earlier in this updater:
-    /// the reference only reads as null once the pass ends (Updater.cs:89-110,
-    /// 339), so the body still lifts off its surface.
-    pub(crate) fn unground_level_off(&mut self, surface: &Surface) {
+    /// PlayerPhysics.UnGround off a destroyed ground, which lifts the body
+    /// only while attachedGround is not yet null (`DestroyedGround::attached`).
+    pub(crate) fn unground_off(&mut self, attached: Option<&Surface>, null_rotation: bool) {
         let mut motion = self.ground_state();
-        motion.unground(Some(surface), true);
+        motion.unground(attached, null_rotation);
         self.apply_ground_state(motion);
     }
     pub(crate) fn late_step(&mut self, platforms: &[Platform]) {
