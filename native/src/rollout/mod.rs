@@ -33556,10 +33556,22 @@ impl RolloutWorld {
         pass: PlatformPass,
     ) {
         let order = &data.maps[self.map].update_order;
-        let authored = if pass == PlatformPass::Authored { order.len() } else { 0 };
+        let count = if pass == PlatformPass::Authored { order.len() } else { self.platforms.len() };
         let mut shook = false;
-        for k in 0..self.platforms.len() {
-            let i = if k < authored { order[k] } else { k };
+        for k in 0..count {
+            // The authored platforms update in scene sibling order. A
+            // destroyed one leaves the Updater list and the platform list
+            // both, so each definition is looked up among the live platforms.
+            let i = if pass == PlatformPass::Authored {
+                let Some(i) = (0..self.platforms.len())
+                    .find(|&i| self.platform_defs[i] == order[k] && self.platform_pass(i) == pass)
+                else {
+                    continue;
+                };
+                i
+            } else {
+                k
+            };
             if self.platform_pass(i) != pass {
                 continue;
             }
