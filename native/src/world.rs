@@ -684,11 +684,10 @@ impl Player {
         // The retained attachedGround is read whether or not it is still
         // active (Blink/Teleport can deactivate it under a grounded player
         // before Move ungrounds them), as in move_grounded_scaled; a ground
-        // that no longer exists at all jumps off world up.
-        let platform = self
-            .grounded
-            .then(|| platforms.iter().find(|p| Some(p.id) == self.ground))
-            .flatten();
+        // that no longer exists at all jumps off world up. UnGround still
+        // lifts an airborne body off the ground it last left.
+        let retained = platforms.iter().find(|p| Some(p.id) == self.ground);
+        let platform = retained.filter(|_| self.grounded);
         let normal = platform.map_or(Vec2::UP, |p| p.surface.normal(self.position));
         let amount = ((normal.y + Fix::ONE) / self.constants.jump_normal_scale)
             .min(Fix::ONE)
@@ -699,7 +698,7 @@ impl Player {
         self.position += self.velocity * self.constants.jump_teleport;
         self.jumped_this_frame = true;
         let mut motion = self.ground_state();
-        motion.unground(platform.map(|p| &p.surface), true);
+        motion.unground(retained.map(|p| &p.surface), true);
         self.apply_ground_state(motion);
     }
     /// PlayerPhysics.Move's ground input direction: -1, 0 or 1 along the

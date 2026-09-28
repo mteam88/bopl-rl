@@ -17793,12 +17793,11 @@ impl RolloutWorld {
                     move_input = input;
                 }
                 if frame > data.macho_throw.jump_after_throw_frames && jump_pressed {
-                    if self.players[index].base.grounded {
-                        self.players[index].base.jump_with_strength(
-                            &self.platforms,
-                            data.macho_throw.constants.jump_strength,
-                        );
-                    }
+                    // PlayerPhysics.Jump runs airborne too, off world up.
+                    self.players[index].base.jump_with_strength(
+                        &self.platforms,
+                        data.macho_throw.constants.jump_strength,
+                    );
                     self.exit_macho_throw(index, false, data);
                     return;
                 }
