@@ -804,6 +804,9 @@ pub struct SpawnedEngine {
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
+    /// FixTransform.up as PlaceRocketEngine set it, until the first physics
+    /// sync replaces it with the body rotation's.
+    pub placed_up: Option<Vec2>,
 }
 
 /// One SimpleSparkNode circle and the optional lightning owned by the newer
@@ -842,6 +845,9 @@ pub struct SpawnedTeslaNode {
     pub transform_center: Vec2,
     pub transform_rotation: Fix,
     pub surface_offset: Fix,
+    /// FixTransform.up as PlaceSparkNode set it, until the first physics
+    /// sync replaces it with the body rotation's.
+    pub placed_up: Option<Vec2>,
     /// Raw FixTransform scale drives authored attachment offsets.
     pub scale: Fix,
     /// DPhysicsCircle clamps that raw scale to its prefab limits.
@@ -11913,6 +11919,7 @@ impl RolloutWorld {
             transform_center: center,
             transform_rotation: node_rotation,
             surface_offset,
+            placed_up: Some(normal),
             scale,
             collider_scale,
             offset_scale: scale,
@@ -12171,6 +12178,7 @@ impl RolloutWorld {
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
+            placed_up: Some(normal),
         };
         if let Some(free) = self.engines.iter().position(|engine| !engine.active) {
             self.engines[free] = engine;
@@ -12640,10 +12648,21 @@ impl RolloutWorld {
     /// Every RepositionOnParent undoes the parent rotation with
     /// `new Vec2(PiTimes2 - rotation)`; FastSin floors its table index, so
     /// that is not the Vec2::angle(-rotation) a composite combine uses.
-    fn reposition_platform_children(&mut self, platform: usize, data: &data::RolloutData) {
+    /// `fresh`: the caller runs after this pass's StickyRR.UpdateBounds (a
+    /// ScaleChanger), so an engine or spark node placed this pass against
+    /// the older bounds is re-seated on the refreshed ones.
+    fn reposition_platform_children(
+        &mut self,
+        platform: usize,
+        data: &data::RolloutData,
+        fresh: bool,
+    ) {
         let tick = self.tick;
         let settled = |active: bool, carried: bool, on: usize, born: u32| {
             active && !carried && on == platform && born < tick
+        };
+        let attached = |active: bool, carried: bool, on: usize, born: u32| {
+            settled(active, carried, on, born) || (fresh && active && !carried && on == platform)
         };
         for index in 0..self.spike_attacks.len() {
             let spike = &self.spike_attacks[index];
@@ -12655,28 +12674,34 @@ impl RolloutWorld {
         let inverse_basis =
             Vec2::angle(Fix::TAU - self.platform_dynamics[platform].body.orientation);
         let surface = &self.platforms[platform].surface;
-        let relative = |local: Fix, rotation: Fix, surface_offset: Fix, offset: Vec2| {
-            let right = Vec2::angle(rotation);
-            let root = surface.position(local, Fix::ZERO) + right.perp() * surface_offset;
+        // hitbox.up: the synced body rotation's, or on the pass a child was
+        // placed, the placement normal itself.
+        let up = |rotation: Fix, placed_up: Option<Vec2>, born: u32| match placed_up {
+            Some(up) if born == tick => up,
+            _ => Vec2::angle(rotation).perp(),
+        };
+        let relative = |local: Fix, up: Vec2, surface_offset: Fix, offset: Vec2| {
+            let right = up.perp_cw();
+            let root = surface.position(local, Fix::ZERO) + up * surface_offset;
             (root - parent_position).complex_mul(inverse_basis)
                 + offset.complex_mul(right.complex_mul(inverse_basis))
         };
         for engine in &mut self.engines {
-            if settled(engine.active, engine.macho_carried, engine.platform_index, engine.born_tick)
+            if attached(engine.active, engine.macho_carried, engine.platform_index, engine.born_tick)
             {
                 engine.relative_center = relative(
                     engine.local,
-                    engine.transform_rotation,
+                    up(engine.transform_rotation, engine.placed_up, engine.born_tick),
                     engine.surface_offset,
                     data.engine.rocket_collider_offset * engine.scale,
                 );
             }
         }
         for node in &mut self.tesla_nodes {
-            if settled(node.active, node.macho_carried, node.platform_index, node.born_tick) {
+            if attached(node.active, node.macho_carried, node.platform_index, node.born_tick) {
                 node.relative_center = relative(
                     node.local,
-                    node.transform_rotation,
+                    up(node.transform_rotation, node.placed_up, node.born_tick),
                     node.surface_offset,
                     data.tesla.node_collider_offset * node.scale,
                 );
@@ -16005,7 +16030,7 @@ impl RolloutWorld {
     }
 
     /// DPhysicsRoundedRect.Scale's setter.
-    fn set_platform_scale(&mut self, platform: usize, value: Fix) {
+    fn set_platform_scale(&mut self, platform: usize, value: Fix, fresh: bool) {
         let dynamics = &mut self.platform_dynamics[platform];
         let previous = dynamics.scale;
         if previous > dynamics.base_scale && previous < value {
@@ -16027,7 +16052,7 @@ impl RolloutWorld {
         dynamics.transform_rotation = Some(dynamics.body.orientation);
         // The setter re-seats every attached child before it rescales the
         // collider, so each reads the pre-resize shape.
-        self.reposition_platform_children(platform, data::get());
+        self.reposition_platform_children(platform, data::get(), fresh);
         let collider = &mut self.platforms[platform].collider;
         collider.radius *= ratio;
         collider.inner.right *= ratio;
@@ -16730,7 +16755,7 @@ impl RolloutWorld {
         let area = platform_area(extents.x, extents.y, collider.radius);
         let next =
             dynamics.scale - dynamics.scale * DT * data.macho_throw.platform_scale_reduction / area;
-        self.set_platform_scale(platform_index, next);
+        self.set_platform_scale(platform_index, next, false);
         let dynamics = &self.platform_dynamics[platform_index];
         if dynamics.scale <= dynamics.min_scale {
             self.remove_platform(platform_index, true);
@@ -25016,6 +25041,7 @@ impl RolloutWorld {
             duplicated: true,
             duplicate_lifespan: 1800,
             duplicate_shake_offset: Vec2::ZERO,
+            placed_up: None,
         };
         if let Some(free) = self.engines.iter().position(|engine| !engine.active) {
             self.engines[free] = clone;
@@ -27482,7 +27508,7 @@ impl RolloutWorld {
                     ray.multiplier
                 };
                 let value = dynamics.scale + ray.scale_curve.evaluate(time) * multiplier;
-                self.set_platform_scale(effect.victim, value);
+                self.set_platform_scale(effect.victim, value, true);
                 self.scale_changers[index].time = time;
                 continue;
             }
@@ -33899,7 +33925,7 @@ impl RolloutWorld {
         {
             return;
         }
-        self.reposition_platform_children(i, data);
+        self.reposition_platform_children(i, data, false);
         let radius = self.platforms[i].collider.radius;
         let inner = &mut self.platforms[i].collider.inner;
         // DPhysicsRoundedRect.CalcExtents
@@ -34189,7 +34215,7 @@ impl RolloutWorld {
             {
                 let value = dynamics.scale * (Fix::ONE - updater_dt.clamp(Fix::ZERO, Fix::ONE))
                     + dynamics.base_scale * updater_dt;
-                self.set_platform_scale(i, value);
+                self.set_platform_scale(i, value, false);
                 // UpdateBounds closes StickyRoundedRectangle.UpdateSim, so a
                 // slime walking this pass already sees the eased-back shape.
                 let inner = self.platforms[i].collider.inner;
@@ -35722,7 +35748,7 @@ impl RolloutWorld {
             // The children move before StickyRect.UpdateBounds takes the new
             // size, but after the RoundedRect took its new radius.
             self.platforms[index].surface.radius = radius;
-            self.reposition_platform_children(index, data);
+            self.reposition_platform_children(index, data, false);
             self.reshape_platform(index, extents, radius);
         }
         for (index, vector, cube, mass, controlled) in late_pulls {
