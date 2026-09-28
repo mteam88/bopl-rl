@@ -22088,16 +22088,11 @@ impl RolloutWorld {
                 id: item.id,
                 kind: 0,
                 layer: gd.item_layer,
-                // Tack's payload exposes its Projectile id after BananaPeel's
-                // first updater pass. A payload held through that pass is
-                // already bound when Fire registers its collider; an item
-                // created by Fire stays zero until the following pass. Other
-                // ThrowItem2 roots expose no owner here.
-                owner: if ability == ABILITY_TACK && item.launched {
-                    slot.base.id
-                } else {
-                    0
-                },
+                // Tack's payload exposes its Projectile id once BananaPeel sees
+                // the throw, later in this pass for a held payload and on the
+                // following pass for one created by Fire. Other ThrowItem2
+                // roots expose no owner here.
+                owner: 0,
                 flags: E_ACTIVE | E_ENABLED,
                 hierarchy: 100_000_000 + item.hierarchy_base + gd.item_collider_hierarchy,
                 radius: (gd.item_radius * item.scale).raw(),
@@ -22148,7 +22143,6 @@ impl RolloutWorld {
     fn register_held_item(&mut self, item_index: usize, by_callback: bool, data: &data::RolloutData) {
         let ability = self.thrown_items[item_index].ability;
         let config = throw_config(data, ability);
-        let base_id = self.players[self.thrown_items[item_index].owner].base.id;
         let id = self.next_id();
         let item = &mut self.thrown_items[item_index];
         item.id = id;
@@ -22158,17 +22152,9 @@ impl RolloutWorld {
             id: item.id,
             kind: 0,
             layer: config.item_layer,
-            // Same rule as Fire: Tack's payload binds its Projectile id in
-            // BananaPeel's first updater pass, which a held payload has
-            // already passed through, so the row is owned the moment
-            // ManualInit registers the collider. Mjolnir and Poke ball
-            // gate that pass on the collider existing, so they take the
-            // owner from their own tick later in this same pass instead.
-            owner: if ability == ABILITY_TACK && item.launched {
-                base_id
-            } else {
-                0
-            },
+            // Tack, Mjolnir and Poke ball bind their owner in their own
+            // updater once the collider exists, as after Fire.
+            owner: 0,
             flags: E_ACTIVE | E_ENABLED,
             hierarchy: 100_000_000 + item.hierarchy_base + config.item_collider_hierarchy,
             x: item.position.x.raw(),
@@ -30547,10 +30533,12 @@ impl RolloutWorld {
     }
 
     fn tack_tick(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
-        // BananaPeel.UpdateSim runs before DetPhysics. It starts on the first
-        // updater pass after Fire, pins a settled tack before each integration,
-        // and performs the armed proximity query without allocating.
-        // A tunnel's release comes after this updater's turn.
+        // BananaPeel.UpdateSim runs before DetPhysics. It pins a settled tack
+        // before each integration and performs the armed proximity query
+        // without allocating. A tunnel's release comes after this updater's turn.
+        // The payload waits in the hand until Grenade.hasBeenThrown flips,
+        // which is when ThrowItem2 initializes its collider: the arming clock
+        // starts at the throw, not at SpawnGrenade (BananaPeel.cs:66-77).
         let entity = self.thrown_items[item_index].entity;
         if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
             return;
