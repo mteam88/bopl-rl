@@ -12938,7 +12938,7 @@ impl RolloutWorld {
                 continue;
             }
             let attack_box = self.spike_attack_box(spike, data);
-            let mut victims = [false; MAX_PLAYERS];
+            let mut victims = [None; MAX_PLAYERS];
             for cloud in &mut self.smoke_clouds {
                 if !cloud.active || !cloud.registered {
                     continue;
@@ -13000,7 +13000,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let row = self.entities[entity];
-                *victim = if row.kind == 0 {
+                let contact = if row.kind == 0 {
                     crate::physics::contact::circle_box(
                         Circle {
                             center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
@@ -13008,7 +13008,6 @@ impl RolloutWorld {
                         },
                         attack_box,
                     )
-                    .is_some()
                 } else {
                     let player_box = OrientedBox {
                         center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
@@ -13023,17 +13022,34 @@ impl RolloutWorld {
                                     .length(),
                         ),
                     };
-                    crate::physics::contact::box_box(player_box, attack_box).is_some()
+                    crate::physics::contact::box_box(player_box, attack_box)
                 };
+                *victim = contact.map(|contact| (entity, contact.point));
             }
             let hitbox_min = self.box_sweep_min(attack_box);
             for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
-                if victim {
-                    // Spike's Explosion.PlayerOwnerId is never assigned and
-                    // therefore remains zero, which is neither a live player id
-                    // nor the game's environmental sentinel.
-                    self.queue_callback_kill(player_index, false, hitbox_min, 0, CAUSE_OTHER);
+                let Some((entity, point)) = victim else {
+                    continue;
+                };
+                // A young spike's OnCollide knocks the Player-layer box away
+                // from its root and pushes itself back (SpikeAttack.cs:
+                // 133-141); rocks_contacts knocks a Rock's circle.
+                if self.players[player_index].active != ActiveAbility::Rock
+                    && spike.time < data.spike.push_time
+                    && self.player_time_scale >= Fix::from_f32(0.01)
+                {
+                    let direction = (point - self.spike_attack_root(spike_index, data)).normalized_safe();
+                    let row = &mut self.entities[entity];
+                    let velocity = Vec2::new(Fix::from_raw(row.vx), Fix::from_raw(row.vy))
+                        + direction * data.spike.knock_player * Fix::from_raw(row.inverse_mass);
+                    row.vx = velocity.x.raw();
+                    row.vy = velocity.y.raw();
+                    self.spike_attack_self_push(spike_index, point, data.spike.knock_player, data);
                 }
+                // Spike's Explosion.PlayerOwnerId is never assigned and
+                // therefore remains zero, which is neither a live player id
+                // nor the game's environmental sentinel.
+                self.queue_callback_kill(player_index, false, hitbox_min, 0, CAUSE_OTHER);
             }
         }
     }
@@ -38045,8 +38061,6 @@ impl RolloutWorld {
             if body_active || body_was_active || teleporting || in_form {
                 body.x = center.x.raw();
                 body.y = center.y.raw();
-                body.vx = 0;
-                body.vy = 0;
                 let (right, up) = if body_active || teleporting {
                     (slot.base.collider.right, slot.base.collider.up)
                 } else {
