@@ -1711,6 +1711,15 @@ pub struct BlackHoleState {
     pub duplicate_shake_offset: Vec2,
 }
 
+impl BlackHoleState {
+    /// BlackHole.OwnerId, which BlackHoleClap sets (BlackHoleClap.cs:91). A
+    /// Duplicator copy keeps the private field's ENVIRONMENTAL_PLAYER_ID
+    /// (BlackHole.cs:52, ShootDuplicator.cs:318-327), so its kills go uncredited.
+    fn killer(&self) -> u32 {
+        if self.duplicated { ENVIRONMENT } else { self.owner as u32 + 1 }
+    }
+}
+
 /// Rock_noPlayer spawned when Duplicator hits an active Rock form. It is a
 /// lethal-terrain rigid circle with the source owner's material/credit, not a
 /// player controller or an ability form.
@@ -14349,7 +14358,7 @@ impl RolloutWorld {
             };
             let hole_min = axis(hole.position) - hole.radius;
             let key = |boxed: bool, min: Fix| (boxed, hole_min.max(min), hole_min.min(min));
-            let killer = hole.owner as u32 + 1;
+            let killer = hole.killer();
             for (player_index, player) in self.players.iter().enumerate() {
                 if !self.playable_slot(player) || player.out {
                     continue;
@@ -20023,7 +20032,7 @@ impl RolloutWorld {
                             if let Some(hole_index) = self.black_holes.iter().position(|hole| {
                                 hole.active && hole.entity == Some(entity) && hole.mass >= Fix::ZERO
                             }) {
-                                let killer = self.black_holes[hole_index].owner as u32 + 1;
+                                let killer = self.black_holes[hole_index].killer();
                                 Self::black_hole_grow(
                                     &mut self.black_holes[hole_index],
                                     -Fix::ONE,
