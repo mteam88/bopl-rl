@@ -2323,6 +2323,8 @@ pub struct PlayerSlot {
     pub invisible: bool,
     pub invisible_time: Fix,
     pub was_invisible: bool,
+    /// SlimeController.wasInvisibileWhenEnteredAbility.
+    pub invisible_at_form_entry: bool,
     pub ability_time: Fix,
     /// SlimeController/Ability publishes Player.Position before the live body
     /// advances later in the same updater pass.
@@ -4213,6 +4215,7 @@ impl RolloutWorld {
                 invisible: false,
                 invisible_time: Fix::ZERO,
                 was_invisible: false,
+                invisible_at_form_entry: false,
                 ability_time: Fix::ZERO,
                 reported_position: spawn,
                 reported_tick: u32::MAX,
@@ -5943,6 +5946,13 @@ impl RolloutWorld {
             // Hole's pull, another Magnet) find the slime where it came out.
             // Its airborne SyncPhysicsTo also drops attachedGround.
             if exited {
+                // It restarts Player.timeSinceEnteredAbility too, and ends an
+                // invisibility that ran out during the form at once
+                // (SlimeController.cs:200-204).
+                self.players[index].ability_time = Fix::ZERO;
+                if self.players[index].invisible_at_form_entry && !self.players[index].invisible {
+                    self.invisibility_ended(index, data);
+                }
                 let base = &mut self.players[index].base;
                 base.sync_collider();
                 if !base.grounded {
@@ -8270,6 +8280,12 @@ impl RolloutWorld {
                     // EnterAbilityClearRope leaves the slime's PlayerBody
                     // this post-gravity history for the form's exit.
                     if !data.abilities[ability as usize].instant {
+                        // onEnterAbility restarts Player.timeSinceEnteredAbility
+                        // and notes whether the player is invisible
+                        // (SlimeController.cs:185-189), after this pass's
+                        // UpdatePlayer counted it on.
+                        slot.ability_time = Fix::ZERO;
+                        slot.invisible_at_form_entry = slot.invisible;
                         slot.rope_prev[0] = (slot.base.velocity, slot.base.external_velocity);
                         // onExitAbility always sets a fresh state
                         // (SlimeController.cs:227-250), so the ragdoll's
@@ -9804,26 +9820,7 @@ impl RolloutWorld {
                 !slot.invisible && slot.was_invisible
             };
             if expired {
-                let slot = &mut self.players[index];
-                let mut youngest = None;
-                let mut minimum = Fix::from_raw(i64::MAX);
-                for s in 0..3 {
-                    if slot.abilities[s] != ABILITY_INVISIBILITY {
-                        continue;
-                    }
-                    if slot.timers[s] < minimum {
-                        minimum = slot.timers[s];
-                        youngest = Some(s);
-                    }
-                    if slot.cooldowns[s] == Fix::from_int(10_000) {
-                        slot.cooldowns[s] = data.abilities[ABILITY_INVISIBILITY as usize]
-                            .effect_cooldown
-                            .expect("Invisibility effect cooldown");
-                    }
-                }
-                if let Some(s) = youngest {
-                    slot.timers[s] = Fix::ZERO;
-                }
+                self.invisibility_ended(index, data);
             }
             self.players[index].was_invisible = self.players[index].invisible;
         }
@@ -35946,6 +35943,17 @@ impl RolloutWorld {
             }
             self.players[index].callback_killed_tick = Some(self.tick);
         }
+        // A form's ExitAbility with isDead still calls back onExitAbility
+        // (PlayerCollision.cs:121-132, SlimeController.cs:193-219), which
+        // restarts the ability clock and ends a lapsed invisibility before the
+        // slime's own killPlayer.
+        if self.players[index].active != ActiveAbility::None || self.players[index].base.dash.active
+        {
+            self.players[index].ability_time = Fix::ZERO;
+            if self.players[index].invisible_at_form_entry && !self.players[index].invisible {
+                self.invisibility_ended(index, data::get());
+            }
+        }
         let players = self.players.len();
         if matches!(
             self.players[index].active,
@@ -36242,6 +36250,32 @@ impl RolloutWorld {
                     self.spawn_ability_pickup(drop_position, dropped_ability, direction, data::get());
                 }
             }
+        }
+    }
+
+    /// SlimeController.invisibiltyEnded (SlimeController.cs:984-1008): every
+    /// Invisibility still at its 10000 gets its cooldown back, and the one with
+    /// the lowest timer restarts it.
+    fn invisibility_ended(&mut self, index: usize, data: &data::RolloutData) {
+        let slot = &mut self.players[index];
+        let mut youngest = None;
+        let mut minimum = Fix::from_raw(i64::MAX);
+        for s in 0..3 {
+            if slot.abilities[s] != ABILITY_INVISIBILITY {
+                continue;
+            }
+            if slot.timers[s] < minimum {
+                minimum = slot.timers[s];
+                youngest = Some(s);
+            }
+            if slot.cooldowns[s] == Fix::from_int(10_000) {
+                slot.cooldowns[s] = data.abilities[ABILITY_INVISIBILITY as usize]
+                    .effect_cooldown
+                    .expect("Invisibility effect cooldown");
+            }
+        }
+        if let Some(s) = youngest {
+            slot.timers[s] = Fix::ZERO;
         }
     }
 
