@@ -37383,6 +37383,14 @@ impl RolloutWorld {
                 self.platform_dynamics[wall_index].composite_position += correction[1];
             }
         }
+        // PrepareCollisionCallBacks queues the callbacks in the same pair
+        // order, so a spike touching two walls pushes itself off the first
+        // in sweep order.
+        scratch.spike_wall_contacts = order
+            .iter()
+            .filter(|&&(_, _, kind, _)| kind == SPIKE)
+            .map(|&(_, _, _, k)| scratch.spike_wall_contacts[k])
+            .collect();
         order.clear();
         scratch.circle_wall_order = order;
 
