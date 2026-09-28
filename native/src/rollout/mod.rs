@@ -9158,6 +9158,13 @@ impl RolloutWorld {
                         let platform = &self.platforms[platform_index];
                         slot.base.position = platform.surface.position(slot.base.local, slot.base.radius);
                         slot.base.align(platform);
+                        // ControlPlatform.OnEnterAbility then moves the form's
+                        // box to that placement plus its offset
+                        // (hurtbox.UpdatePhysicsPositions), which later
+                        // updaters this pass (BlackHole) read.
+                        slot.base.sync_collider();
+                        slot.base.collider.center = slot.base.position
+                            + slot.base.up.perp_cw().complex_mul(slot.forms[s].offset);
                         slot.reported_position = slot.base.position;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
