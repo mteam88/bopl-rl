@@ -28454,9 +28454,17 @@ impl RolloutWorld {
             }
             let position = self.guided_missiles[index].position;
             let mut boundary_explosion = None;
-            if position.y < data::get().maps[self.map].lower_boundary() {
-                self.destroy_guided_missile(index, false);
-                continue;
+            let map = &data::get().maps[self.map];
+            if position.y < map.lower_boundary() {
+                // Spark's DownEffect is the Player's water splash; in space
+                // the floor exit spawns its UpEffect explosion instead.
+                if map.is_space() {
+                    boundary_explosion = Some(Vec2::new(position.x, map.lower_boundary()));
+                } else {
+                    self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                    self.destroy_guided_missile(index, false);
+                    continue;
+                }
             } else if position.y > Fix::from_f64(72.5) {
                 boundary_explosion = Some(Vec2::new(position.x, Fix::from_f64(72.5)));
             } else if position.x < Fix::from_f64(-131.25) {
