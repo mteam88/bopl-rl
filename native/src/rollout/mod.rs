@@ -2489,6 +2489,11 @@ pub struct PlayerSlot {
     pub last_action: Action,
     pub telemetry: CTelemetry,
     // Fixed entity table indices.
+    /// The form collider each equipped slot's own ability prefab registered.
+    /// Player instantiates one prefab per slot, so a loadout holding an
+    /// ability twice has two rows; the per-ability fields below alias the one
+    /// the last entry selected (`select_form`).
+    pub form_entities: [usize; 3],
     pub circle_entity: usize,
     pub rock_entity: usize,
     pub roll_entity: usize,
@@ -2578,6 +2583,50 @@ impl PlayerSlot {
             + self.gun.collider_up.perp_cw().complex_mul(offset * self.base.scale);
     }
 
+    /// The per-ability field that aliases the selected form row.
+    fn form_alias(&mut self, ability: u32) -> Option<&mut usize> {
+        Some(match ability {
+            ABILITY_DASH => &mut self.dash_entity,
+            ABILITY_BOW => &mut self.bow_entity,
+            ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_POKE_BALL
+            | ABILITY_MISSILE => &mut self.throw_entity,
+            ABILITY_MINE => &mut self.mine_entity,
+            ABILITY_PUSH => &mut self.push_entity,
+            ABILITY_FREEZE => &mut self.freeze_entity,
+            ABILITY_BLINK => &mut self.blink_entity,
+            ABILITY_GROWTH_RAY => &mut self.growth_ray_entity,
+            ABILITY_SHRINK_RAY => &mut self.shrink_ray_entity,
+            ABILITY_DUPLICATOR => &mut self.duplicator_entity,
+            ABILITY_MAGNET => &mut self.magnet_entity,
+            ABILITY_SPIKE => &mut self.spike_entity,
+            ABILITY_ENGINE => &mut self.engine_entity,
+            ABILITY_TESLA => &mut self.tesla_entity,
+            ABILITY_METEOR => &mut self.meteor_entity,
+            ABILITY_BLACK_HOLE => &mut self.black_hole_entity,
+            ABILITY_THROW => &mut self.macho_throw_entity,
+            ABILITY_DRILL => &mut self.drill_entity,
+            ABILITY_BEAM => &mut self.beam_entity,
+            ABILITY_ROLL => &mut self.roll_entity,
+            ABILITY_GUST => &mut self.gust_entity,
+            ABILITY_REVIVAL => &mut self.revival_entity,
+            ABILITY_PLATFORM => &mut self.circle_entity,
+            ABILITY_TIME_STOP => &mut self.time_stop_entity,
+            _ => return None,
+        })
+    }
+
+    /// Ability.EnterAbility runs on the prefab of the slot that was cast, so
+    /// that slot's collider becomes the form's row.
+    fn select_form(&mut self, s: usize) {
+        let row = self.form_entities[s];
+        if row == usize::MAX {
+            return;
+        }
+        if let Some(alias) = self.form_alias(self.abilities[s]) {
+            *alias = row;
+        }
+    }
+
     /// The slime object is gone: eliminated, or killed after WinGame, where
     /// Player.Kill is ignored but PlayerCollision still destroys the slime.
     fn slime_destroyed(&self) -> bool {
@@ -2586,9 +2635,12 @@ impl PlayerSlot {
 
     /// Every collider row the slime and its ability objects own. A dead
     /// slime's rows leave DetPhysics together.
-    fn owned_rows(&self) -> [usize; 32] {
+    fn owned_rows(&self) -> [usize; 35] {
         [
             self.body_entity,
+            self.form_entities[0],
+            self.form_entities[1],
+            self.form_entities[2],
             self.dash_entities[0],
             self.dash_entities[1],
             self.dash_entities[2],
@@ -3522,6 +3574,7 @@ impl RolloutWorld {
             }
         }
         self.next_spawn_hierarchy = hierarchy_cursor;
+        let mut form_entities = [[usize::MAX; 3]; MAX_PLAYERS];
         let mut circle_entity = [usize::MAX; MAX_PLAYERS];
         let mut roll_entity = [usize::MAX; MAX_PLAYERS];
         let mut rock_hierarchy = [0u32; MAX_PLAYERS];
@@ -3589,6 +3642,7 @@ impl RolloutWorld {
                     _ => continue,
                 };
                 *target = self.entities.len();
+                form_entities[i][s] = *target;
                 let id = self.next_id();
                 self.entities.push(CEntity {
                     id,
@@ -3793,6 +3847,9 @@ impl RolloutWorld {
                     }
                 };
                 *target = self.entities.len();
+                if !body {
+                    form_entities[i][s - 1] = *target;
+                }
                 let id = self.next_id();
                 let ability = if body {
                     ABILITY_NULL
@@ -4254,6 +4311,7 @@ impl RolloutWorld {
                 magnet_entity: magnet_entity[i],
                 gust_entity: gust_entity[i],
                 revival_entity: revival_entity[i],
+                form_entities: form_entities[i],
                 body_entity: body_entity[i],
                 dash_entities: dash_entity[i],
                 dash_entity: dash_entity[i]
@@ -5007,6 +5065,7 @@ impl RolloutWorld {
                 ..CEntity::default()
             });
             let slot = &mut self.players[player_index];
+            slot.form_entities[ability_slot] = entity;
             match target {
                 0 => slot.roll_entity = entity,
                 1 => slot.gust_entity = entity,
@@ -5158,6 +5217,7 @@ impl RolloutWorld {
             ..CEntity::default()
         });
         let slot = &mut self.players[player_index];
+        slot.form_entities[ability_slot] = entity;
         match target {
             0 => {
                 slot.dash_entities[ability_slot] = entity;
@@ -8226,6 +8286,7 @@ impl RolloutWorld {
                     slot.body_collider_scale = scale;
                     slot.ability_origin_scale = scale;
                     slot.slime_radius = slot.base.radius;
+                    slot.select_form(s);
                     // Ability.EnterAbility scales the enabled form collider
                     // from Player.Scale before invoking its components.
                     slot.base.scale = slot.player_scale;
@@ -8378,7 +8439,6 @@ impl RolloutWorld {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Dash;
                         self.players[index].active_slot = s;
-                        self.players[index].dash_entity = self.players[index].dash_entities[s];
                         self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
                         let masked = Action {
@@ -8433,7 +8493,6 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        slot.throw_entity = slot.throw_entities[s];
                         let grounded = slot.base.grounded;
                         slot.throw_item = ThrowItemState {
                             grounded,
@@ -8473,7 +8532,6 @@ impl RolloutWorld {
                             slot.active_slot = s;
                             slot.ability_entry_action = action;
                             slot.telemetry.ability_activations[s] += 1;
-                            slot.throw_entity = slot.throw_entities[s];
                             slot.missile = MissileFormState {
                                 collider_rotation: slot.base.rotation,
                                 ..MissileFormState::default()
@@ -8999,7 +9057,6 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.freeze_entity = slot.freeze_entities[s];
                         slot.active = ActiveAbility::Freeze;
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
@@ -18580,6 +18637,7 @@ impl RolloutWorld {
                     data.abilities[abilities[slot] as usize].updatable_count;
             }
 
+            let mut form_entities = [usize::MAX; 3];
             let mut platform_entity = usize::MAX;
             let mut roll_entity = usize::MAX;
             let mut rock_hierarchy = 0;
@@ -18626,6 +18684,7 @@ impl RolloutWorld {
                 };
                 let id = self.next_id();
                 *target = self.entities.len();
+                form_entities[slot] = *target;
                 self.entities.push(CEntity {
                     id,
                     kind: 0,
@@ -18785,6 +18844,7 @@ impl RolloutWorld {
                 };
                 let id = self.next_id();
                 *target = self.entities.len();
+                form_entities[slot] = *target;
                 self.entities.push(CEntity {
                     id,
                     kind: 1,
@@ -18938,6 +18998,7 @@ impl RolloutWorld {
             slot.portal_blue = [None; 3];
             slot.portal_orange = [None; 3];
             slot.rewind = RewindState::default();
+            slot.form_entities = form_entities;
             slot.body_entity = body_entity;
             slot.dash_entities = dash_entities;
             slot.dash_entity = dash_entities
@@ -19043,6 +19104,7 @@ impl RolloutWorld {
             let stock_indicator_hierarchy = self.players[index].stock_indicator_hierarchy;
             debug_assert_ne!(player_hierarchy, u32::MAX);
 
+            let mut form_entities = [usize::MAX; 3];
             let mut platform_entity = usize::MAX;
             let mut roll_entity = usize::MAX;
             let mut rock_hierarchy = 0;
@@ -19088,6 +19150,7 @@ impl RolloutWorld {
                     _ => continue,
                 };
                 *target = self.entities.len();
+                form_entities[slot] = *target;
                 self.entities.push(CEntity {
                     kind: 0,
                     layer: LAYER_PLAYER,
@@ -19274,6 +19337,7 @@ impl RolloutWorld {
                     _ => continue,
                 };
                 *target = self.entities.len();
+                form_entities[slot] = *target;
                 let collider = OrientedBox::from_basis(Vec2::ZERO, Vec2::RIGHT, extents);
                 self.entities.push(CEntity {
                     kind: 1,
@@ -19417,6 +19481,7 @@ impl RolloutWorld {
             slot.portal_blue = [None; 3];
             slot.portal_orange = [None; 3];
             slot.rewind = RewindState::default();
+            slot.form_entities = form_entities;
             slot.body_entity = body_entity;
             slot.dash_entities = dash_entities;
             slot.dash_entity = dash_entities
@@ -36953,6 +37018,25 @@ impl RolloutWorld {
     /// into the collider every pass (DetPhysics.cs:2498-2530), so inactive
     /// rows keep the position of their last active pass.
     fn refresh_actor_entities(&mut self) {
+        // Every equipped prefab's form box is enabled, the spare copy of an
+        // ability held twice included; only the cast slot's box is synced
+        // with the form below.
+        for index in 0..self.players.len() {
+            let slot = &mut self.players[index];
+            if slot.slime_destroyed() || slot.revival_clone_pending || slot.stock_clone_pending {
+                continue;
+            }
+            for s in 0..3 {
+                let row = slot.form_entities[s];
+                let ability = slot.abilities[s];
+                if row != usize::MAX
+                    && slot.form_alias(ability).is_some_and(|alias| *alias != row)
+                    && self.entities[row].flags & E_DESTROYED == 0
+                {
+                    self.entities[row].flags |= E_ENABLED;
+                }
+            }
+        }
         let simple_mask = ability_bit(ABILITY_DASH)
             | ability_bit(ABILITY_GUST)
             | ability_bit(ABILITY_INVISIBILITY);
@@ -37153,12 +37237,6 @@ impl RolloutWorld {
                 body.rotation = angle.raw();
             }
 
-            // Every Dash prefab's box is enabled; only the cast slot's moves.
-            for &row in &slot.dash_entities {
-                if row != usize::MAX && row != dash_e {
-                    self.entities[row].flags |= E_ENABLED;
-                }
-            }
             if dash_e != usize::MAX {
                 let dash_box = &mut self.entities[dash_e];
                 let dash_was_active = dash_box.flags & E_ACTIVE != 0;
@@ -38258,12 +38336,6 @@ impl RolloutWorld {
                 body.rotation = angle.raw();
             }
 
-            // Every Dash prefab's box is enabled; only the cast slot's moves.
-            for &row in &slot.dash_entities {
-                if row != usize::MAX && row != slot.dash_entity {
-                    self.entities[row].flags |= E_ENABLED;
-                }
-            }
             if slot.dash_entity != usize::MAX {
                 let dash_box = &mut self.entities[slot.dash_entity];
                 let dash_was_active = dash_box.flags & E_ACTIVE != 0;
