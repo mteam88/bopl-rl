@@ -12184,11 +12184,19 @@ impl RolloutWorld {
         self.plant_cast_form_move(index, published_position, jump_pressed);
     }
 
+    /// The ground PlantObjectOnPlatform and Spike cast onto. A wall a
+    /// QuantumTunnel hid is not active in the hierarchy, and the form exits
+    /// without planting (PlantObjectOnPlatform.cs:90-96, Spike.cs:87-93).
+    fn plant_ground(&self, index: usize) -> Option<usize> {
+        let ground_id = self.players[index].base.ground?;
+        self.platforms
+            .iter()
+            .position(|platform| platform.id == ground_id)
+            .filter(|&platform_index| self.platforms[platform_index].active)
+    }
+
     fn spawn_tesla_node(&mut self, index: usize, data: &data::RolloutData) -> bool {
-        let Some(ground_id) = self.players[index].base.ground else {
-            return false;
-        };
-        let Some(platform_index) = self.platforms.iter().position(|p| p.id == ground_id) else {
+        let Some(platform_index) = self.plant_ground(index) else {
             return false;
         };
         let body_position = self.players[index].base.position;
@@ -12446,10 +12454,7 @@ impl RolloutWorld {
     }
 
     fn spawn_engine(&mut self, index: usize, data: &data::RolloutData) -> bool {
-        let Some(ground_id) = self.players[index].base.ground else {
-            return false;
-        };
-        let Some(platform_index) = self.platforms.iter().position(|p| p.id == ground_id) else {
+        let Some(platform_index) = self.plant_ground(index) else {
             return false;
         };
         let body_position = self.players[index].base.position;
@@ -12772,10 +12777,7 @@ impl RolloutWorld {
     }
 
     fn spawn_spike(&mut self, index: usize, data: &data::RolloutData) -> bool {
-        let Some(ground_id) = self.players[index].base.ground else {
-            return false;
-        };
-        let Some(platform_index) = self.platforms.iter().position(|p| p.id == ground_id) else {
+        let Some(platform_index) = self.plant_ground(index) else {
             return false;
         };
         let body_position = self.players[index].base.position;
