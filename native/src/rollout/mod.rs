@@ -10584,6 +10584,16 @@ impl RolloutWorld {
         if self.players[index].base.grounded && !ground_live {
             if self.players[index].ground_destroyed.take().is_some() {
                 self.players[index].base.unground_off(None, true);
+            } else {
+                // An inactive ground, such as a tunnelled wall, is still
+                // attachedGround, so UnGround lifts the body off its surface.
+                let ground = self.players[index].base.ground;
+                let surface = self
+                    .platforms
+                    .iter()
+                    .find(|platform| Some(platform.id) == ground)
+                    .map(|platform| platform.surface.clone());
+                self.players[index].base.unground_off(surface.as_ref(), true);
             }
             self.exit_roll(index, false, data);
             return;
