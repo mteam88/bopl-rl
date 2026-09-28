@@ -23330,7 +23330,9 @@ impl RolloutWorld {
         }
         for pickup_index in 0..self.ability_pickups.len() {
             let pickup = self.ability_pickups[pickup_index];
-            if !pickup.active || self.blink_object_hidden(pickup.entity) {
+            // CollideBox tests DetPhysics.IsActive, which a pickup's still
+            // disabled hitbox fails.
+            if !pickup.active || !pickup.enabled || self.blink_object_hidden(pickup.entity) {
                 continue;
             }
             let collider = Circle {
