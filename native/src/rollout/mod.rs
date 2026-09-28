@@ -11802,10 +11802,16 @@ impl RolloutWorld {
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
         }
+        // UnGround (a grounded rope's pull, PlayerPhysics.cs:156) keeps
+        // attachedGround; ControlPlatform exits on IsGrounded alone.
         let Some(ground_id) = self.players[index].base.ground else {
             self.exit_push(index);
             return;
         };
+        if !self.players[index].base.grounded {
+            self.exit_push(index);
+            return;
+        }
         let Some(platform_index) = self
             .platforms
             .iter()
@@ -11880,6 +11886,11 @@ impl RolloutWorld {
         slot.base.up = Vec2::UP;
         slot.obs_state = STATE_IDLE;
         slot.state_ticks = 0;
+        // exitInfo.isGrounded is IsGrounded(): a form a rope ungrounded still
+        // names its attachedGround but exits airborne where it stands.
+        if !slot.base.grounded {
+            slot.base.ground = None;
+        }
         if !self.sync_exit_to_ground(index) {
             let slot = &mut self.players[index];
             slot.base.grounded = false;
