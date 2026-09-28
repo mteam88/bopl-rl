@@ -23951,7 +23951,9 @@ impl RolloutWorld {
                 inverse_inertia: data.arrow.body.inverse_inertia,
                 velocity,
                 force: Vec2::ZERO,
-                angular_velocity: source.angular_velocity,
+                // The fresh body spins at the serialized StartAngularVelocity
+                // (BoplBody.cs:233), not the source's live spin.
+                angular_velocity: data.arrow.body.angular_velocity,
                 updater_tick: u32::MAX,
                 rotation: source.rotation,
                 time_passed: source.time_passed,
