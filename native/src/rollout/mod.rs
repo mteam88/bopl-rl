@@ -19260,9 +19260,9 @@ impl RolloutWorld {
                 self.players[player_index].base.up = Vec2::UP;
                 self.players[player_index].obs_state = STATE_FALL;
                 self.players[player_index].state_ticks = 0;
-                // UnGround(nullRotation) zeroes a ThrowItem form's body
-                // rotation too (PlayerPhysics.cs:372-376); its box takes it
-                // at the next sync.
+                // UnGround(nullRotation) zeroes a ThrowItem or SparkShot
+                // form's body rotation too (PlayerPhysics.cs:372-376); its box
+                // takes it at the next sync.
                 if matches!(
                     self.players[player_index].active,
                     ActiveAbility::Grenade
@@ -19274,6 +19274,9 @@ impl RolloutWorld {
                 ) {
                     self.players[player_index].throw_item.collider_rotation = Fix::ZERO;
                     self.players[player_index].throw_item.collider_right = Vec2::RIGHT;
+                }
+                if self.players[player_index].active == ActiveAbility::Missile {
+                    self.players[player_index].missile.collider_rotation = Fix::ZERO;
                 }
             }
             self.players[player_index].base.position += shift;
@@ -27086,6 +27089,14 @@ impl RolloutWorld {
             }
             ActiveAbility::Throw => return Some(self.macho_throw_box(index, data)),
             ActiveAbility::Magnet => return Some(Self::row_box(self.entities[slot.magnet_entity])),
+            // SparkShot.OnEnterAbility syncs its hurtbox too (SparkShot.cs:89-90).
+            ActiveAbility::Missile => {
+                return Some(OrientedBox::from_basis(
+                    slot.base.collider.center,
+                    Vec2::angle(slot.missile.collider_rotation),
+                    data.missile.hurtbox_extents,
+                ));
+            }
             ActiveAbility::Freeze => data.freeze.hurtbox_extents,
             ActiveAbility::Blink => data.blink.hurtbox_extents,
             ActiveAbility::GrowthRay => data.scale_rays.growth.hurtbox_extents,
