@@ -14788,7 +14788,9 @@ impl RolloutWorld {
             // Remaining registered circle bodies, in source registry groups.
             for pickup_index in 0..self.ability_pickups.len() {
                 let pickup = self.ability_pickups[pickup_index];
-                if !pickup.active || self.blink_object_hidden(pickup.entity) {
+                // DetPhysics.IsActive: a pickup's hitbox stays disabled for its
+                // first disabledSeconds, and the hole passes it by until then.
+                if !pickup.active || !pickup.enabled || self.blink_object_hidden(pickup.entity) {
                     continue;
                 }
                 let center = pickup.position + data.pickup.offset * pickup.scale;
