@@ -21092,6 +21092,15 @@ impl RolloutWorld {
             }
         }
 
+        // OldUpdate republishes the held payload in the hand it just turned,
+        // before this pass's Fire registers its collider there
+        // (ThrowItem2.cs:282-285).
+        if self.players[index].throw_item.phase == 0
+            && let Some(item_index) = self.held_throw_item(index)
+        {
+            self.thrown_items[item_index].position = self.throw_dummy_position(index, gd);
+        }
+
         let button = 2u8 << self.players[index].active_slot;
         if !self.players[index].throw_item.has_inputted_fire && action.buttons & button == 0 {
             let state = &mut self.players[index].throw_item;
@@ -21108,12 +21117,6 @@ impl RolloutWorld {
             && self.players[index].throw_item.has_inputted_fire
         {
             self.fire_thrown_item(index, data);
-        }
-
-        if self.players[index].throw_item.phase == 0
-            && let Some(item_index) = self.held_throw_item(index)
-        {
-            self.thrown_items[item_index].position = self.throw_dummy_position(index, gd);
         }
 
         if self.players[index].base.grounded {
