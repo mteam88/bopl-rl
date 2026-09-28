@@ -30282,21 +30282,15 @@ impl RolloutWorld {
         }
         if let Some(victim) = victim {
             let killer = owner as u32 + 1;
-            let cause = if victim_is_clone {
-                CAUSE_OTHER
-            } else if victim == owner {
-                CAUSE_ACCIDENT
-            } else {
-                CAUSE_OTHER
-            };
             // BananaPeel invokes PlayerCollision.killPlayer from its
-            // updater: it creates the normal death effect, while
+            // updater with the default CauseOfDeath.Other, its own thrower
+            // included: it creates the normal death effect, while
             // DetPhysics removes all killed colliders before contacts.
             self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
             if victim_is_clone {
-                self.kill_abilityless_clone(victim, killer, cause);
+                self.kill_abilityless_clone(victim, killer, CAUSE_OTHER);
             } else {
-                self.kill(victim, killer, cause, false, false);
+                self.kill(victim, killer, CAUSE_OTHER, false, false);
             }
             self.remove_thrown_item(item_index, false);
         }
