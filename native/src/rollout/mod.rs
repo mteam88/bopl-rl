@@ -13324,25 +13324,20 @@ impl RolloutWorld {
                 self.tesla_nodes[node_index].offset_scale = self.tesla_nodes[node_index].scale;
             }
             if self.tesla_nodes[node_index].connected {
-                let child_live = self.tesla_nodes[node_index].child.is_some_and(|child| {
-                    child < self.tesla_nodes.len()
-                        && self.tesla_nodes[child].active
-                        && !self.tesla_nodes[child].macho_carried
-                });
-                let parent_live = self.tesla_nodes[node_index].parent.is_some_and(|parent| {
-                    parent < self.tesla_nodes.len()
-                        && self.tesla_nodes[parent].active
-                        && !self.tesla_nodes[parent].macho_carried
-                });
+                let child_live = self.tesla_nodes[node_index]
+                    .child
+                    .is_some_and(|child| self.tesla_node_shown(child));
+                let parent_live = self.tesla_nodes[node_index]
+                    .parent
+                    .is_some_and(|parent| self.tesla_node_shown(parent));
                 if !child_live && !parent_live {
                     self.disconnect_tesla_node(node_index, false);
                 }
             }
             if !self.tesla_nodes[node_index].connected
                 && let Some(child) = self.tesla_nodes[node_index].child
-                && child < self.tesla_nodes.len()
-                && self.tesla_nodes[child].active
-                && !self.tesla_nodes[child].macho_carried
+                && self.tesla_node_shown(child)
+                && self.tesla_node_shown(node_index)
             {
                 self.connect_tesla_node(node_index, child, data);
             }
@@ -13352,8 +13347,12 @@ impl RolloutWorld {
         }
 
         if self.player_time_scale >= Fix::from_f32(0.01) {
-            for node in &mut self.tesla_nodes {
-                if node.active && !node.macho_carried && node.orb_enter_left > 0 {
+            for node_index in 0..self.tesla_nodes.len() {
+                if !self.tesla_node_shown(node_index) {
+                    continue;
+                }
+                let node = &mut self.tesla_nodes[node_index];
+                if node.orb_enter_left > 0 {
                     node.orb_enter_left -= 1;
                     node.lethal |= node.orb_enter_left == 0;
                 }
@@ -13427,6 +13426,19 @@ impl RolloutWorld {
 
             self.update_tesla_line_geometry(node_index, data);
         }
+    }
+
+    /// SimpleSparkNode's activeInHierarchy: a node planted on a wall a
+    /// QuantumTunnel hid is hidden with it. Its own UpdateSim still runs
+    /// (IsEnabled is always true), but a partner reading it disconnects
+    /// (SimpleSparkNode.cs:62-68, 224-245).
+    fn tesla_node_shown(&self, node_index: usize) -> bool {
+        let Some(node) = self.tesla_nodes.get(node_index) else {
+            return false;
+        };
+        node.active
+            && !node.macho_carried
+            && self.platforms.get(node.platform_index).is_none_or(|platform| platform.active)
     }
 
     fn update_tesla_line_geometry(&mut self, node_index: usize, data: &data::RolloutData) {
@@ -37837,6 +37849,13 @@ impl RolloutWorld {
                     continue;
                 }
                 row.flags |= E_SPARK_NODE | E_EXPLOSIVE;
+                if node.active && !node.macho_carried {
+                    // DetPhysics.IsActive follows the wall it was planted on.
+                    match self.platforms.get(node.platform_index) {
+                        Some(platform) if !platform.active => row.flags &= !E_ACTIVE,
+                        _ => row.flags |= E_ACTIVE,
+                    }
+                }
                 row.reserved[0] = self.players[node.owner]
                     .abilities
                     .iter()
