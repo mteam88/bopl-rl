@@ -37428,7 +37428,7 @@ impl RolloutWorld {
                 // fresh ThrowItem2 is not the thrower.
                 let thrower = &self.players[item.owner];
                 row.reserved[0] = if thrower.ability_generation == item.ability_generation
-                    && held[thrower.base.id as usize].contains(&item.ability)
+                    && held[thrower.base.id as usize][item.ability_slot] == item.ability
                 {
                     item.ability
                 } else {
