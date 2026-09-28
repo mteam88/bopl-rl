@@ -15396,6 +15396,9 @@ impl RolloutWorld {
                     self.entities[entity].owner = 0;
                 }
             } else if self.hittable(index) {
+                // The victim's hurtbox was live when the hole touched it, and
+                // killPlayer's ignoreInvulnerability also takes a stock clone
+                // that ReSpawnFast is still animating in.
                 // BlackHole explicitly requests no ordinary death effect,
                 // while still executing from DetPhysics's callback queue.
                 // A form gets Ability.ExitAbility at its FixTransform, not
