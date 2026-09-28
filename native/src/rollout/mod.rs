@@ -24663,6 +24663,9 @@ impl RolloutWorld {
         } else {
             throw_config(data, source.ability).item_body
         };
+        // The fan spreads by duplicate_spacing times the source's collider
+        // Scale (ShootDuplicator.cs:237, 280).
+        let spacing = spacing * source.scale;
         for clone_index in 0..clone_count {
             let position = Self::fan_out(
                 clone_count,
