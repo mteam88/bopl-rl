@@ -26181,13 +26181,24 @@ impl RolloutWorld {
 
     /// QuantumTunnel.UpdateSim for player victims. The visual copy has no
     /// collider row, so its clock, RNG, relocation and active state suffice.
+    /// The tunnels run in hierarchy order (QuantumTunnel.cs:144), after the
+    /// older wall tunnels: each release draws from the shared RNG and picks
+    /// among the walls left active.
     fn blink_tunnels_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        for victim in 0..self.players.len() {
+        let mut order = [0usize; MAX_PLAYERS];
+        let order = &mut order[..self.players.len()];
+        for (victim, slot) in order.iter_mut().enumerate() {
+            *slot = victim;
+        }
+        order.sort_unstable_by_key(|&victim| (self.players[victim].blink_tunnel_hierarchy, victim));
+        for &victim in order.iter() {
             if !self.players[victim].blink_tunnel_active
                 || self.players[victim].blink_tunnel_born_tick == self.tick
             {
                 continue;
             }
+            let hierarchy = self.players[victim].blink_tunnel_hierarchy;
+            self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
             if self.players[victim].blink_tunnel_age > data.blink.player_duration {
                 let slot = &mut self.players[victim];
                 slot.blink_tunnel_active = false;
@@ -26200,7 +26211,6 @@ impl RolloutWorld {
             {
                 // A DuplicatePlatformEffect registered before this tunnel has
                 // already spawned its copy, which the release may land on.
-                let hierarchy = self.players[victim].blink_tunnel_hierarchy;
                 self.duplicate_platform_effects_tick(data, updater_dt, Some(hierarchy));
                 if self.players[victim].base.grounded {
                     // AttachToGround replaces a ground destroyed while the
