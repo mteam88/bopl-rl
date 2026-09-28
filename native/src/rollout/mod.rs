@@ -6371,7 +6371,7 @@ impl RolloutWorld {
             self.rope_parents_update(rope_abilities::RopeParentPass::OlderTack);
         }
         if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
-            self.scale_changers_tick(data);
+            self.scale_changers_tick(data, updater_dt);
         }
         if has(ABILITY_DUPLICATOR) {
             self.duplicate_platform_effects_tick(data, updater_dt, None);
@@ -28012,7 +28012,7 @@ impl RolloutWorld {
     /// ScaleChanger.UpdateSim in Updater hierarchy order. Two rays on one target
     /// do not commute: each add is clamped, and a resize rounds against the
     /// scale the other just wrote.
-    fn scale_changers_tick(&mut self, data: &data::RolloutData) {
+    fn scale_changers_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         order.clear();
         order.extend(0..self.scale_changers.len());
@@ -28022,6 +28022,9 @@ impl RolloutWorld {
             if !effect.active || effect.born_tick >= self.tick {
                 continue;
             }
+            // A DuplicatePlatformEffect instantiated before this changer
+            // updates before it.
+            self.duplicate_platform_effects_tick(data, updater_dt, Some(effect.hierarchy_base));
             let ray = if effect.growth {
                 &data.scale_rays.growth
             } else {
@@ -41048,7 +41051,7 @@ mod tests {
         world.begin_scale_change_entity(entity, false, 1);
         assert_eq!(world.scale_changers.len(), 2);
         world.tick += 1;
-        world.scale_changers_tick(data::get());
+        world.scale_changers_tick(data::get(), DT);
         assert_eq!(
             world.scale_changers[0].current_scale,
             world.scale_changers[1].current_scale
@@ -41573,7 +41576,7 @@ mod tests {
         world.begin_scale_change_entity(entity, true, 1);
         for _ in 0..10 {
             world.tick += 1;
-            world.scale_changers_tick(data::get());
+            world.scale_changers_tick(data::get(), DT);
         }
 
         assert!(world.teleport_marker_pool[0].scale > Fix::ONE);
