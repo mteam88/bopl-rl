@@ -2648,6 +2648,8 @@ struct PlatformScratch {
     slime_shoves: Vec<(usize, usize, bool)>,
     /// Grounded slimes a wall squished this pass, in callback order.
     squished: Vec<usize>,
+    /// Ropes below this hierarchy have run their UpdateSim this pass.
+    ropes_updated_below: u32,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
@@ -5821,8 +5823,19 @@ impl RolloutWorld {
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_ropes_update();
         }
+        // Updater interleaves the ropes with the Mjolnir hammers by hierarchy:
+        // a rope newer than the oldest live hammer waits for the hammer loop in
+        // thrown_items_integrate, so a hammer's kill detaches it first.
+        let first_hammer = self
+            .thrown_items
+            .iter()
+            .filter(|item| item.active && item.ability == ABILITY_MJOLNIR)
+            .map(|item| item.hierarchy_base)
+            .min()
+            .unwrap_or(u32::MAX);
+        self.scratch.ropes_updated_below = if has_rope { first_hammer } else { u32::MAX };
         if has_rope {
-            self.ropes_update();
+            self.ropes_update(0..first_hammer);
         }
         if has(ABILITY_BEAM) {
             self.beam_orbs_tick(data);
@@ -6049,6 +6062,10 @@ impl RolloutWorld {
         }
         if has_thrown_item {
             self.thrown_items_integrate(data, updater_dt, physics_dt);
+        }
+        // The ropes newer than every hammer.
+        if self.scratch.ropes_updated_below < u32::MAX {
+            self.ropes_update(self.scratch.ropes_updated_below..u32::MAX);
         }
         if has(ABILITY_PORTAL_GUN) {
             self.portal_shots_integrate(physics_dt);
@@ -29283,6 +29300,13 @@ impl RolloutWorld {
         );
         order.sort_unstable_by_key(|&index| self.thrown_items[index].hierarchy_base);
         for &item_index in &order {
+            let hierarchy = self.thrown_items[item_index].hierarchy_base;
+            if self.thrown_items[item_index].active
+                && self.scratch.ropes_updated_below < hierarchy
+            {
+                self.ropes_update(self.scratch.ropes_updated_below..hierarchy);
+                self.scratch.ropes_updated_below = hierarchy;
+            }
             if self.blink_object_hidden(self.thrown_items[item_index].entity) {
                 continue;
             }

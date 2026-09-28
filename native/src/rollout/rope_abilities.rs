@@ -66,6 +66,9 @@ pub(crate) struct RolloutRope {
     pub physics: Rope,
     pub owner: usize,
     pub number: u32,
+    /// Updater hierarchy of the Rope prefab, whose RopeAttachment follows it:
+    /// Mjolnir hammers interleave with its UpdateSim by this number.
+    pub hierarchy: u32,
     pub born_tick: u32,
     pub disabled_this_frame: bool,
     pub time_air_start: Fix,
@@ -165,6 +168,7 @@ fn empty_rope() -> RolloutRope {
         },
         owner: 0,
         number: 0,
+        hierarchy: 0,
         born_tick: 0,
         disabled_this_frame: false,
         time_air_start: Fix::ZERO,
@@ -265,9 +269,11 @@ impl RolloutWorld {
         for id in segment_ids.iter_mut().take(SEGMENTS - 1) {
             *id = self.next_id();
         }
+        let hierarchy = self.next_spawn_hierarchy;
         let rope = &mut self.ropes[index];
         rope.owner = owner;
         rope.number = self.next_rope_number;
+        rope.hierarchy = hierarchy;
         rope.born_tick = self.tick;
         rope.disabled_this_frame = false;
         rope.time_air_start = Fix::ZERO;
@@ -566,8 +572,6 @@ impl RolloutWorld {
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
         });
-        // The Rope and RopeHook prefabs both count (HookshotInstant.cs:128-132).
-        self.next_spawn_hierarchy += 1 + source.hook_updatable_count;
         let rope_index = self.allocate_rope(
             player,
             hook_position,
@@ -576,6 +580,8 @@ impl RolloutWorld {
             None,
             Fix::ZERO,
         );
+        // The Rope and RopeHook prefabs both count (HookshotInstant.cs:128-132).
+        self.next_spawn_hierarchy += 1 + source.hook_updatable_count;
         {
             let rope = &mut self.ropes[rope_index];
             rope.physics.time_since_hook_arrived = -Fix::ONE;
@@ -1005,12 +1011,17 @@ impl RolloutWorld {
         rope.physics.detach(top);
     }
 
-    pub(super) fn ropes_update(&mut self) {
+    /// Rope.UpdateSim and a platform RopeAttachment's UpdateSim for the ropes
+    /// whose hierarchy lies in `hierarchies`.
+    pub(super) fn ropes_update(&mut self, hierarchies: std::ops::Range<u32>) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         let mut moved_platform = false;
         let water = data::get().maps[self.map].scene_water_height();
         for index in 0..self.ropes.len() {
-            if !self.ropes[index].physics.enabled || self.ropes[index].born_tick == self.tick {
+            if !self.ropes[index].physics.enabled
+                || self.ropes[index].born_tick == self.tick
+                || !hierarchies.contains(&self.ropes[index].hierarchy)
+            {
                 continue;
             }
             if self.ropes[index].physics.time_since_hook_arrived >= Fix::ZERO {
