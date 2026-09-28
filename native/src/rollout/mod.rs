@@ -12642,10 +12642,25 @@ impl RolloutWorld {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         hierarchy_order(&mut order, &self.engines, |engine| engine.hierarchy_base);
         for &engine_index in &order {
-            let engine = &mut self.engines[engine_index];
+            let engine = &self.engines[engine_index];
             if !engine.active || engine.macho_carried || engine.born_tick == self.tick {
                 continue;
             }
+            // A running engine's BlowUpSmokeTouchingTheFire casts through
+            // DetPhysics.circleCastCircles, and every cast first runs
+            // RemoveDestroyedColliders: a composite that lost a child to
+            // DestroyFix earlier this tick is rebuilt before the thrust.
+            let turning_off = engine.phase == 2
+                && updater_dt != Fix::ZERO
+                && engine.ticks + 1 > data.engine.end_ticks;
+            if matches!(engine.phase, 1 | 2) && !turning_off {
+                for index in 0..self.platforms.len() {
+                    if self.platform_dynamics[index].composite_rebuild {
+                        self.rebuild_platform_attachment_body(index, true);
+                    }
+                }
+            }
+            let engine = &mut self.engines[engine_index];
             // RocketEngine.UpdateSim observes DPhysicsBox.Scale after the
             // ScaleChanger updater which wrote it. The collider was already
             // repositioned with the old SurfaceOffset on that write; this
