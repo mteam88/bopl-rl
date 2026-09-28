@@ -11106,7 +11106,7 @@ impl RolloutWorld {
         slot.state_ticks = LAND_TICKS + 2;
         slot.reported_position = landing;
         slot.reported_tick = self.tick;
-        self.sync_exit_to_ground(index, data);
+        self.sync_exit_to_ground(index);
     }
 
     /// MeteorSmash.ExitAbilityGrounded: the slime returns attached where the
@@ -11123,7 +11123,7 @@ impl RolloutWorld {
         slot.state_ticks = LAND_TICKS + 2;
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
-        self.sync_exit_to_ground(index, data);
+        self.sync_exit_to_ground(index);
     }
 
     fn exit_meteor_air(&mut self, index: usize, data: &data::RolloutData) {
@@ -11258,7 +11258,7 @@ impl RolloutWorld {
                 .move_only(Vec2::ZERO, terrain!(self));
         }
         let Some(ground_id) = self.players[index].base.ground else {
-            self.exit_push(index, data);
+            self.exit_push(index);
             return;
         };
         let Some(platform_index) = self
@@ -11266,7 +11266,7 @@ impl RolloutWorld {
             .iter()
             .position(|platform| platform.id == ground_id)
         else {
-            self.exit_push(index, data);
+            self.exit_push(index);
             return;
         };
 
@@ -11320,11 +11320,11 @@ impl RolloutWorld {
             slot.push.channeling = true;
         }
         if action.buttons & slot_button == 0 {
-            self.exit_push(index, data);
+            self.exit_push(index);
         }
     }
 
-    fn exit_push(&mut self, index: usize, data: &data::RolloutData) {
+    fn exit_push(&mut self, index: usize) {
         let slot = &mut self.players[index];
         // Ability.ExitAbility publishes the form collider's position through
         // Player.SetPosition before the slime is re-placed.
@@ -11335,7 +11335,7 @@ impl RolloutWorld {
         slot.base.up = Vec2::UP;
         slot.obs_state = STATE_IDLE;
         slot.state_ticks = 0;
-        if !self.sync_exit_to_ground(index, data) {
+        if !self.sync_exit_to_ground(index) {
             let slot = &mut self.players[index];
             slot.base.grounded = false;
             slot.base.ground = None;
@@ -11349,20 +11349,23 @@ impl RolloutWorld {
     /// SlimeController already ran (disabled) earlier in this updater pass, so
     /// its state switch does not run again until the next one. Returns false
     /// when the form has no live ground.
-    fn sync_exit_to_ground(&mut self, index: usize, data: &data::RolloutData) -> bool {
+    fn sync_exit_to_ground(&mut self, index: usize) -> bool {
         let slot = &mut self.players[index];
         slot.obs_state_held_this_tick = true;
+        // onExitAbility assigns Player.Scale to the slime's hurtbox, and
+        // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
+        slot.set_ordinary_body_scale(slot.player_scale);
+        let form_radius = slot.base.radius;
+        slot.restore_slime_radius();
         let Some(platform) = slot
             .base
             .ground
             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
         else {
-            slot.base.radius = data.player.radius;
             return false;
         };
-        let position = platform.surface.position(slot.base.local, slot.base.radius);
-        slot.base.radius = data.player.radius;
-        if let Ok(local) = platform.surface.local_position(position, data.player.radius) {
+        let position = platform.surface.position(slot.base.local, form_radius);
+        if let Ok(local) = platform.surface.local_position(position, slot.base.radius) {
             slot.base.local = local;
         }
         slot.base.position = position;
@@ -11780,7 +11783,7 @@ impl RolloutWorld {
         // self-imposed velocity as groundedSpeed, which is zero on the ground.
         self.players[index].base.grounded_speed = Fix::ZERO;
         if self.players[index].base.grounded {
-            self.sync_exit_to_ground(index, data::get());
+            self.sync_exit_to_ground(index);
         }
         let grounded_pose = self.players[index].base.ground.and_then(|ground| {
             self.platforms
@@ -11858,7 +11861,7 @@ impl RolloutWorld {
         // PlantObjectOnPlatform.ExitAbility hands over its surface local like
         // Spike; the slime's SyncPhysicsTo re-places it from there.
         if self.players[index].base.grounded {
-            self.sync_exit_to_ground(index, data::get());
+            self.sync_exit_to_ground(index);
         }
         let grounded_pose = self.players[index].base.ground.and_then(|ground| {
             self.platforms
@@ -13840,7 +13843,7 @@ impl RolloutWorld {
             slot.obs_state = STATE_IDLE;
             slot.state_ticks = 0;
             let position = slot.base.position;
-            self.sync_exit_to_ground(index, data::get());
+            self.sync_exit_to_ground(index);
             let slot = &mut self.players[index];
             slot.reported_position = position;
             slot.reported_tick = self.tick;
@@ -21169,7 +21172,7 @@ impl RolloutWorld {
                     slot.base.collision_rays(terrain!(self));
                 }
                 if grounded {
-                    self.sync_exit_to_ground(index, data);
+                    self.sync_exit_to_ground(index);
                 }
                 return;
             }
@@ -21237,7 +21240,7 @@ impl RolloutWorld {
                 // The landing aligned the form before ExitAbility froze it.
                 slot.throw_item.collider_rotation = slot.base.rotation;
                 slot.throw_item.collider_right = slot.base.up.perp_cw();
-                self.sync_exit_to_ground(index, data);
+                self.sync_exit_to_ground(index);
             } else {
                 slot.throw_item.collider_right = slot.base.up.perp_cw();
                 self.form_body_step(index);
@@ -21447,7 +21450,7 @@ impl RolloutWorld {
                 // Ability.UpdateSim published it, and a slime that EnterFall's
                 // raycasts land is attached where it hit, not re-synced.
                 if grounded {
-                    self.sync_exit_to_ground(index, data);
+                    self.sync_exit_to_ground(index);
                 }
                 return;
             }
@@ -21600,7 +21603,7 @@ impl RolloutWorld {
                 // The form's own body attached, so its box turns with it.
                 slot.throw_item.collider_rotation = slot.base.rotation;
                 slot.reported_position = slot.base.position;
-                self.sync_exit_to_ground(index, data);
+                self.sync_exit_to_ground(index);
             } else {
                 self.form_body_step(index);
             }
