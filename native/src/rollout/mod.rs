@@ -6416,6 +6416,9 @@ impl RolloutWorld {
         if has(ABILITY_PORTAL_GUN) && has(ABILITY_ROCK) {
             self.portal_shot_rock_contacts(data);
         }
+        if has_thrown_item && has(ABILITY_ROCK) {
+            self.thrown_item_rock_contacts(data);
+        }
         // DynamicAbilityPickup.OnCollide is a callback: a pickup a slime
         // collects this pass still resolved its Circle/Circle pairs first.
         if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
@@ -6986,6 +6989,77 @@ impl RolloutWorld {
                 row.vy = shot.body.velocity.y.raw();
                 row.rotation = shot.body.orientation.raw();
                 row.angular_velocity = shot.body.angular_velocity.raw();
+            }
+        }
+    }
+
+    /// A Rock form is a Player-layer BoplBody circle, and the item layer
+    /// collides with Player, so a thrown item and a Rock bounce off each
+    /// other like any two DetPhysics circles. The item callbacks (a grenade
+    /// or mine set off, a PokeBall finding no SlimeController) are handled
+    /// with the other player contacts; BounceBall ignores the item layer.
+    fn thrown_item_rock_contacts(&mut self, data: &data::RolloutData) {
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        for item_index in 0..self.thrown_items.len() {
+            let item = self.thrown_items[item_index];
+            if !item.active
+                || item.callback_registered_tick == self.tick
+                || !item.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                || self.blink_object_hidden(item.entity)
+            {
+                continue;
+            }
+            let radius = thrown_item_radius(data, item);
+            let item_swept = Circle { center: item.swept_position, radius };
+            for rock_index in 0..self.players.len() {
+                if self.players[rock_index].active != ActiveAbility::Rock
+                    || !self.playable(rock_index)
+                {
+                    continue;
+                }
+                let rock_swept = self.players[rock_index].rock.swept;
+                if (item_swept.center.x - rock_swept.center.x).abs()
+                    >= item_swept.radius + rock_swept.radius
+                    || (item_swept.center.y - rock_swept.center.y).abs()
+                        >= item_swept.radius + rock_swept.radius
+                {
+                    continue;
+                }
+                let item_circle = Circle { center: self.thrown_items[item_index].position, radius };
+                let rock_circle = Circle {
+                    center: self.players[rock_index].base.position,
+                    radius: self.players[rock_index].rock.collider_radius,
+                };
+                // SortAndSweep makes A the circle whose box starts first.
+                let item_first = axis(item_swept.center) - item_swept.radius
+                    < axis(rock_swept.center) - rock_swept.radius;
+                let contact = if item_first {
+                    crate::physics::contact::circle_circle(item_circle, rock_circle)
+                } else {
+                    crate::physics::contact::circle_circle(rock_circle, item_circle)
+                };
+                let Some(contact) = contact else {
+                    continue;
+                };
+                let item_position = item_circle.center;
+                let rock_position = rock_circle.center;
+                let mut item_body = self.thrown_items[item_index].body;
+                let mut rock_body = self.players[rock_index].rock.body;
+                let correction = if item_first {
+                    resolve(contact, &mut item_body, &mut rock_body, item_position, rock_position);
+                    positional_correction(contact, item_body.inverse_mass, rock_body.inverse_mass, false)
+                } else {
+                    resolve(contact, &mut rock_body, &mut item_body, rock_position, item_position);
+                    let pair =
+                        positional_correction(contact, rock_body.inverse_mass, item_body.inverse_mass, false);
+                    [pair[1], pair[0]]
+                };
+                self.thrown_items[item_index].body = item_body;
+                self.thrown_items[item_index].position += correction[0];
+                self.players[rock_index].rock.body = rock_body;
+                self.players[rock_index].base.position += correction[1];
+                self.players[rock_index].base.velocity = rock_body.velocity;
             }
         }
     }
