@@ -35858,6 +35858,10 @@ impl RolloutWorld {
                     slot.reported_position = slot.base.position;
                     slot.reported_tick = self.tick;
                     slot.exit_to_fall();
+                    // EnterFall's wall raycast runs RemoveDestroyedColliders
+                    // (PlayerPhysics.cs:511-513), so a collider a collision
+                    // callback destroyed this pass is gone before export.
+                    self.purge_destroyed_colliders();
                     continue;
                 }
                 let delta = Fix::ONE - st.scale_last_frame;
