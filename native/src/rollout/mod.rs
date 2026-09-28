@@ -36245,6 +36245,21 @@ impl RolloutWorld {
         self.scratch.squished.clear();
     }
 
+    /// SyncAllPhysicsObjectsToFixTransformPosition still syncs an inactive
+    /// rect's box to its FixTransform (DetPhysics.cs:2500-2507): a Duplicator
+    /// copy's shake moves it, and resetting the rotation drops the rounding a
+    /// resize earlier in the pass left in its box.
+    fn sync_inactive_platform(&mut self, i: usize) {
+        if self.platform_dynamics[i].attached_children == 0 {
+            let surface = &self.platforms[i].surface;
+            let (center, right) = (surface.center, surface.right);
+            let inner = &mut self.platforms[i].collider.inner;
+            inner.center = center;
+            inner.right = (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(right);
+            inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(right);
+        }
+    }
+
     fn platforms_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
         self.drop_destroyed_children();
         // ResizablePlatform.UpdateSim runs every tick while an evicted platform
@@ -36318,6 +36333,12 @@ impl RolloutWorld {
             && !disturbed
             && !self.spawned.iter().any(|spawn| spawn.active)
         {
+            // Simulate syncs every rect before it finds nothing to move.
+            for i in 0..self.platforms.len() {
+                if !self.platforms[i].active {
+                    self.sync_inactive_platform(i);
+                }
+            }
             // Walls that stand still still squish a slime walked into them.
             let mut colliders = std::mem::take(&mut self.scratch.box_callback_colliders);
             colliders.clear();
@@ -36365,18 +36386,7 @@ impl RolloutWorld {
         // have a gravityScale, under the game's -40 gravity.
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active {
-                // SyncAllPhysicsObjectsToFixTransformPosition still syncs an
-                // inactive rect's box to its FixTransform (DetPhysics.cs:2500-2507):
-                // a Duplicator copy's shake moves it, and resetting the rotation
-                // drops the rounding a resize earlier in the pass left in its box.
-                if self.platform_dynamics[i].attached_children == 0 {
-                    let surface = &self.platforms[i].surface;
-                    let (center, right) = (surface.center, surface.right);
-                    let inner = &mut self.platforms[i].collider.inner;
-                    inner.center = center;
-                    inner.right = (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(right);
-                    inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(right);
-                }
+                self.sync_inactive_platform(i);
                 continue;
             }
             let dynamics = &mut self.platform_dynamics[i];
