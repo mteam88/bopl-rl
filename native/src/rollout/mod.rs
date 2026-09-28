@@ -1407,6 +1407,9 @@ pub struct FormScale {
     pub inverse_extents: Vec2,
     pub radius: Fix,
     pub physics_scale: Fix,
+    /// FixTransform.offset, which SetScale_DPhysicsOnly multiplies by
+    /// `new / old` (FixTransform.cs:99-103).
+    pub offset: Vec2,
 }
 
 impl FormScale {
@@ -1421,11 +1424,23 @@ impl FormScale {
                 ),
                 radius,
                 physics_scale: Fix::ONE,
+                offset: Vec2::ZERO,
             };
         }
         let ratio = (Fix::ONE / self.scale) * value;
         self.inverse_extents = self.inverse_extents / ratio;
         self.scale = value;
+    }
+
+    /// `set_scale` for a box collider with an offset.
+    fn set_scale_offset(&mut self, value: Fix, extents: Vec2, radius: Fix, offset: Vec2) {
+        let fresh = self.scale == Fix::ZERO;
+        let old = if fresh { Fix::ONE } else { self.scale };
+        self.set_scale(value, extents, radius);
+        if fresh {
+            self.offset = offset;
+        }
+        self.offset = self.offset * (value / old);
     }
 
     /// PlayerPhysics.UpdateScale.
@@ -8806,12 +8821,6 @@ impl RolloutWorld {
                             .iter()
                             .position(|platform| platform.id == ground)
                             .expect("Push ground is live");
-                        // SlimeController captured PlayerInfo before entering
-                        // the ability. `reported_position` was set from that
-                        // live body at the start of this updater pass.
-                        let position = self.players[index].reported_position;
-                        let normal = self.platforms[platform_index].surface.normal(position);
-                        let rotation = normal.perp_cw().normalized_angle();
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.active = ActiveAbility::Push;
@@ -8819,10 +8828,25 @@ impl RolloutWorld {
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.push = PushState::default();
-                        slot.base.position = position;
-                        slot.base.radius = data.push.radius;
-                        slot.base.rotation = rotation;
-                        slot.base.up = normal;
+                        // Ability.EnterAbility scales the box, then
+                        // PlayerPhysics.SyncPhysicsTo(PlayerInfo) UpdateScales
+                        // the form's radius and places the form from the
+                        // slime's LocalPlatformPos at that radius, aligned to
+                        // the ground. The form's Ability.UpdateSim publishes
+                        // that collider position later in this updater pass.
+                        let scale = slot.player_scale;
+                        let form = &mut slot.forms[s];
+                        form.set_scale_offset(
+                            scale,
+                            data.push.hurtbox_extents,
+                            data.push.radius,
+                            data.push.collider_offset,
+                        );
+                        slot.base.radius = form.physics_radius();
+                        let platform = &self.platforms[platform_index];
+                        slot.base.position = platform.surface.position(slot.base.local, slot.base.radius);
+                        slot.base.align(platform);
+                        slot.reported_position = slot.base.position;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
                         self.push_tick(index, action, data);
@@ -11208,6 +11232,19 @@ impl RolloutWorld {
     }
 
     fn push_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        // Ability.UpdateSim assigns Player.Scale to the box, and
+        // PlayerPhysics.UpdateSim UpdateScales the radius, ahead of
+        // ControlPlatform in every pass, the entering one included.
+        let slot = &mut self.players[index];
+        let scale = slot.player_scale;
+        let form = &mut slot.forms[slot.active_slot];
+        form.set_scale_offset(
+            scale,
+            data.push.hurtbox_extents,
+            data.push.radius,
+            data.push.collider_offset,
+        );
+        slot.base.radius = form.physics_radius();
         self.players[index].base.external_velocity *= Fix::from_f64(0.8);
         // ControlPlatform delegates to PlayerPhysics.Move(zero) before its
         // Time Stop and grounded checks. This retains normal friction,
@@ -37812,6 +37849,7 @@ impl RolloutWorld {
             let bow_form_rotation = slot.bow.form_rotation;
             let bow_form = slot.forms[slot.active_slot];
             let dash_form = slot.forms[slot.active_slot];
+            let push_form = slot.forms[slot.active_slot];
             // Ability.ExitAbility deactivates the ability body where it
             // ended (Ability.cs:151-152) and DetPhysics still syncs that
             // frozen FixTransform every pass (DetPhysics.cs:2498-2530), so
@@ -38189,8 +38227,13 @@ impl RolloutWorld {
                     } else {
                         basis
                     };
-                    let center = root + offset_basis.complex_mul(data.push.collider_offset);
-                    let collider = OrientedBox::from_basis(
+                    let offset = if push_form.scale == Fix::ZERO {
+                        data.push.collider_offset
+                    } else {
+                        push_form.offset
+                    };
+                    let center = root + offset_basis.complex_mul(offset);
+                    let collider = push_form.hurtbox(
                         center,
                         basis,
                         data::surface_extents(data.push.hurtbox_extents),
