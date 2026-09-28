@@ -1767,7 +1767,6 @@ pub struct PlatformState {
     pub sizing_right: Vec2,
     /// Index into `RolloutWorld::platforms` for the platform being shaped.
     pub platform_index: usize,
-    pub hurtbox_disabled: bool,
 }
 
 /// One SuperStarEffect spawned by a Gold Mushroom slot. The source cannot
@@ -2521,6 +2520,10 @@ pub struct PlayerSlot {
     /// destroys and replaces it.
     pub spike_attacks: [Option<usize>; 3],
     pub platform: PlatformState,
+    /// PlatformTransform's hurtBox.enabled belongs to each equipped ability
+    /// object: OnEnterAbility enables it and CreatePlatform disables it, so a
+    /// second Platform slot keeps its own until that prefab is cast.
+    pub platform_hurtbox_disabled: [bool; 3],
     pub gust: GustState,
     pub revival: RevivalState,
     pub black_hole_cast: BlackHoleCastState,
@@ -4408,6 +4411,7 @@ impl RolloutWorld {
                 plant_cast: PlantCastState::default(),
                 spike_attacks: [None; 3],
                 platform: PlatformState::default(),
+                platform_hurtbox_disabled: [false; 3],
                 gust: GustState::default(),
                 revival: RevivalState::default(),
                 black_hole_cast: BlackHoleCastState::default(),
@@ -5137,6 +5141,7 @@ impl RolloutWorld {
                 slot.forms[2] = FormScale::default();
                 slot.drill_hitbox_entities[2] = [usize::MAX; 3];
                 slot.black_hole_castable[2] = true;
+                slot.platform_hurtbox_disabled[2] = false;
                 slot.portal_blue[2] = None;
                 slot.teleport_ignore_cooldown[2] = false;
                 slot.portal_orange[2] = None;
@@ -10291,6 +10296,7 @@ impl RolloutWorld {
                             platform_index: usize::MAX,
                             ..PlatformState::default()
                         };
+                        slot.platform_hurtbox_disabled[s] = false;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
                         // PlatformTransform.OnEnterAbility (PlatformTransform.cs:122).
@@ -19780,6 +19786,7 @@ impl RolloutWorld {
             slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
+            slot.platform_hurtbox_disabled = [false; 3];
             slot.portal_blue = [None; 3];
             slot.portal_orange = [None; 3];
             slot.rewind = RewindState::default();
@@ -20254,6 +20261,7 @@ impl RolloutWorld {
             slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
+            slot.platform_hurtbox_disabled = [false; 3];
             slot.portal_blue = [None; 3];
             slot.portal_orange = [None; 3];
             slot.rewind = RewindState::default();
@@ -29019,9 +29027,10 @@ impl RolloutWorld {
                     st.phase = PLATFORM_ROTATION;
                     st.time_passed = Fix::ZERO;
                     st.cursor = position + Vec2::UP * (pd.spawn_radius * scale);
-                    st.hurtbox_disabled = true;
                     // body.rotation = 0 on entry (PlatformTransform.cs:122).
                     st.sizing_right = Vec2::RIGHT;
+                    let s = self.players[index].active_slot;
+                    self.players[index].platform_hurtbox_disabled[s] = true;
                 }
             }
             PLATFORM_ROTATION => {
@@ -38376,6 +38385,7 @@ impl RolloutWorld {
                 if row != usize::MAX
                     && slot.form_alias(ability).is_some_and(|alias| *alias != row)
                     && self.entities[row].flags & E_DESTROYED == 0
+                    && !(ability == ABILITY_PLATFORM && slot.platform_hurtbox_disabled[s])
                 {
                     self.entities[row].flags |= E_ENABLED;
                 }
@@ -39154,7 +39164,12 @@ impl RolloutWorld {
                     circle.flags = E_ACTIVE | E_TRIGGER;
                     circle.owner = slot.base.id;
                 } else {
-                    circle.flags = if slot.platform.hurtbox_disabled {
+                    let disabled = (0..3).any(|s| {
+                        slot.form_entities[s] == circle_e
+                            && slot.abilities[s] == ABILITY_PLATFORM
+                            && slot.platform_hurtbox_disabled[s]
+                    });
+                    circle.flags = if disabled {
                         E_TRIGGER
                     } else {
                         E_ENABLED | E_TRIGGER
