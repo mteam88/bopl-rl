@@ -1796,6 +1796,8 @@ pub struct GoldMushroomState {
     pub active: bool,
     pub pending_init: bool,
     pub time: Fix,
+    /// Entity id of the slime that cast it (SuperStarEffect.slime).
+    pub slime_id: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -8807,11 +8809,13 @@ impl RolloutWorld {
                         self.next_spawn_hierarchy += data.abilities[ability as usize]
                             .effect_updatable_count
                             .expect("Gold Mushroom effect updatables");
+                        let slime_id = self.entities[self.players[index].body_entity].id;
                         let slot = &mut self.players[index];
                         slot.gold_mushroom[s] = GoldMushroomState {
                             active: true,
                             pending_init: true,
                             time: Fix::ZERO,
+                            slime_id,
                         };
                         slot.cooldowns[s] = Fix::from_int(10_000);
                         slot.timers[s] = Fix::ZERO;
@@ -11835,6 +11839,10 @@ impl RolloutWorld {
             ActiveAbility::Smoke => data.smoke.constants.jump_strength,
             _ => self.players[index].base.constants.jump_strength,
         };
+        let slime_id = self
+            .entities
+            .get(self.players[index].body_entity)
+            .map_or(0, |row| row.id);
         let slot = &mut self.players[index];
         for effect_slot in 0..slot.gold_mushroom.len() {
             let effect = &mut slot.gold_mushroom[effect_slot];
@@ -11868,6 +11876,9 @@ impl RolloutWorld {
                 // A Drill has a PlayerBody but no PlayerPhysics or BoplBody,
                 // so nothing is kicked.
                 ActiveAbility::Drill => {}
+                // The caster slime was destroyed by a stock death; its
+                // replacement is neither that slime nor an Ability form.
+                ActiveAbility::None if effect.slime_id != slime_id => {}
                 _ => {
                     if jump_pressed && !slot.base.grounded && slot.rope.is_none() && !hidden {
                         slot.base.velocity.y = jump_strength * air_jump;
