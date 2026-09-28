@@ -6200,6 +6200,13 @@ impl RolloutWorld {
                 self.kill_with(index, ENVIRONMENT, cause, false, false, false);
             }
         }
+        // SlimeController.Awake adds the RewindRecorder to the slime itself,
+        // so it updates with the player prefab, ahead of every spawned
+        // updater: a Portal or a Black Hole acting this pass sees the
+        // rewind's velocity, and the sample is taken before they act.
+        if has(ABILITY_REWIND) {
+            self.rewind_recorders_tick();
+        }
         self.platform_bounds_tick(PlatformPass::Duplicated);
         self.platform_motion_tick(data, updater_dt, PlatformPass::Duplicated);
         self.platform_body_scale_tick(PlatformPass::Duplicated);
@@ -6279,9 +6286,6 @@ impl RolloutWorld {
         }
         if has(ABILITY_THROW) {
             self.macho_boulders_tick(data);
-        }
-        if has(ABILITY_REWIND) {
-            self.rewind_recorders_tick();
         }
         // SuperStarEffect prefabs spawned during a slime update join the
         // updater list on the following tick. Once live they run after player
