@@ -714,6 +714,11 @@ pub struct SpawnedSpike {
     pub relative_center: Vec2,
     pub relative_rotation: Fix,
     pub collider_center: Vec2,
+    /// The pose SyncGameObject last copied from the collider into this
+    /// child's FixTransform (DetPhysics.cs:1653-1656, 3172-3192). A
+    /// composite's UpdatePhysicsPositions re-places the collider without it
+    /// (DetPhysics.cs:2467-2496), so updaters reading the transform keep it.
+    pub transform_center: Vec2,
     pub surface_offset: Fix,
     pub scale: Fix,
     pub time: Fix,
@@ -780,6 +785,12 @@ pub struct SpawnedEngine {
     pub relative_rotation: Fix,
     pub collider_center: Vec2,
     pub collider_rotation: Fix,
+    /// The pose SyncGameObject last copied from the collider into this
+    /// child's FixTransform (DetPhysics.cs:1653-1656, 3172-3192). A
+    /// composite's UpdatePhysicsPositions re-places the collider without it
+    /// (DetPhysics.cs:2467-2496), so updaters reading the transform keep it.
+    pub transform_center: Vec2,
+    pub transform_rotation: Fix,
     pub surface_offset: Fix,
     pub scale: Fix,
     /// RocketEngine.prevScale: component offsets adopt a DPhysics scale write
@@ -824,6 +835,12 @@ pub struct SpawnedTeslaNode {
     /// before any contact pass pushed the platform.
     pub swept_center: Vec2,
     pub collider_rotation: Fix,
+    /// The pose SyncGameObject last copied from the collider into this
+    /// child's FixTransform (DetPhysics.cs:1653-1656, 3172-3192). A
+    /// composite's UpdatePhysicsPositions re-places the collider without it
+    /// (DetPhysics.cs:2467-2496), so updaters reading the transform keep it.
+    pub transform_center: Vec2,
+    pub transform_rotation: Fix,
     pub surface_offset: Fix,
     /// Raw FixTransform scale drives authored attachment offsets.
     pub scale: Fix,
@@ -6424,6 +6441,19 @@ impl RolloutWorld {
         if has_clones {
             self.abilityless_clone_contacts();
         }
+        // DetPhysics.SyncGameObject: each child's FixTransform takes its
+        // collider's pose before the collision callbacks (DetPhysics.cs:3172-3192).
+        for spike in &mut self.spike_attacks {
+            spike.transform_center = spike.collider_center;
+        }
+        for engine in &mut self.engines {
+            engine.transform_center = engine.collider_center;
+            engine.transform_rotation = engine.collider_rotation;
+        }
+        for node in &mut self.tesla_nodes {
+            node.transform_center = node.collider_center;
+            node.transform_rotation = node.collider_rotation;
+        }
         self.run_callback_hits(data);
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_callbacks();
@@ -7231,7 +7261,7 @@ impl RolloutWorld {
                     .orientation
                     + spike.relative_rotation,
             );
-            let position = spike.collider_center
+            let position = spike.transform_center
                 - (data.spike.attack_collider_offset * spike.scale).complex_mul(right);
             if let Some(entity) = spike
                 .entity
@@ -7255,8 +7285,8 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let right = Vec2::angle(engine.collider_rotation);
-            let position = engine.collider_center
+            let right = Vec2::angle(engine.transform_rotation);
+            let position = engine.transform_center
                 - (data.engine.rocket_collider_offset * engine.scale).complex_mul(right);
             if let Some(entity) = engine.entity.filter(|_| {
                 engine.active && !engine.macho_carried && engine.body.inverse_mass > Fix::ZERO
@@ -7279,8 +7309,8 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let right = Vec2::angle(node.collider_rotation);
-            let position = node.collider_center
+            let right = Vec2::angle(node.transform_rotation);
+            let position = node.transform_center
                 - (data.tesla.node_collider_offset * node.scale).complex_mul(right);
             if let Some(entity) = node
                 .entity
@@ -7544,12 +7574,13 @@ impl RolloutWorld {
                     + spike.relative_rotation,
             );
             let offset = (data.spike.attack_collider_offset * spike.scale).complex_mul(right);
-            let root = spike.collider_center - offset;
+            let root = spike.transform_center - offset;
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
             {
                 let center = position + offset;
                 self.spike_attacks[index].collider_center = center;
+                self.spike_attacks[index].transform_center = center;
                 self.spike_attacks[index].body.velocity =
                     Self::portal_velocity(entry, exit, spike.body.velocity);
                 let row = &mut self.entities[entity];
@@ -7573,14 +7604,15 @@ impl RolloutWorld {
             if self.entities[entity].flags & E_ACTIVE == 0 {
                 continue;
             }
-            let right = Vec2::angle(engine.collider_rotation);
+            let right = Vec2::angle(engine.transform_rotation);
             let offset = (data.engine.rocket_collider_offset * engine.scale).complex_mul(right);
-            let root = engine.collider_center - offset;
+            let root = engine.transform_center - offset;
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
             {
                 let center = position + offset;
                 self.engines[index].collider_center = center;
+                self.engines[index].transform_center = center;
                 self.engines[index].body.velocity =
                     Self::portal_velocity(entry, exit, engine.body.velocity);
                 let row = &mut self.entities[entity];
@@ -7604,14 +7636,15 @@ impl RolloutWorld {
             if self.entities[entity].flags & E_ACTIVE == 0 {
                 continue;
             }
-            let right = Vec2::angle(node.collider_rotation);
+            let right = Vec2::angle(node.transform_rotation);
             let offset = (data.tesla.node_collider_offset * node.scale).complex_mul(right);
-            let root = node.collider_center - offset;
+            let root = node.transform_center - offset;
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
             {
                 let center = position + offset;
                 self.tesla_nodes[index].collider_center = center;
+                self.tesla_nodes[index].transform_center = center;
                 self.tesla_nodes[index].body.velocity =
                     Self::portal_velocity(entry, exit, node.body.velocity);
                 let row = &mut self.entities[entity];
@@ -11852,6 +11885,8 @@ impl RolloutWorld {
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
             ..CEntity::default()
         });
+        let center = parent_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let node = SpawnedTeslaNode {
             attach_order,
             active: true,
@@ -11867,10 +11902,11 @@ impl RolloutWorld {
             local,
             relative_center,
             relative_rotation,
-            collider_center: parent_position
-                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            collider_center: center,
             swept_center: Vec2::ZERO,
             collider_rotation: node_rotation,
+            transform_center: center,
+            transform_rotation: node_rotation,
             surface_offset,
             scale,
             collider_scale,
@@ -12118,6 +12154,8 @@ impl RolloutWorld {
             relative_rotation,
             collider_center,
             collider_rotation: rocket_rotation,
+            transform_center: collider_center,
+            transform_rotation: rocket_rotation,
             surface_offset,
             scale,
             offset_scale: scale,
@@ -12409,6 +12447,7 @@ impl RolloutWorld {
             relative_center,
             relative_rotation,
             collider_center,
+            transform_center: collider_center,
             surface_offset,
             scale,
             time: Fix::ZERO,
@@ -12611,7 +12650,7 @@ impl RolloutWorld {
             {
                 engine.relative_center = relative(
                     engine.local,
-                    engine.collider_rotation,
+                    engine.transform_rotation,
                     engine.surface_offset,
                     data.engine.rocket_collider_offset * engine.scale,
                 );
@@ -12621,7 +12660,7 @@ impl RolloutWorld {
             if settled(node.active, node.macho_carried, node.platform_index, node.born_tick) {
                 node.relative_center = relative(
                     node.local,
-                    node.collider_rotation,
+                    node.transform_rotation,
                     node.surface_offset,
                     data.tesla.node_collider_offset * node.scale,
                 );
@@ -12700,8 +12739,8 @@ impl RolloutWorld {
                         .surface
                         .position(engine.local, Fix::ZERO);
                     let normal = self.platforms[platform].surface.normal(surface_position);
-                    let rocket_right = Vec2::angle(engine.collider_rotation);
-                    let root = engine.collider_center
+                    let rocket_right = Vec2::angle(engine.transform_rotation);
+                    let root = engine.transform_center
                         - (data.engine.rocket_collider_offset * engine.scale)
                             .complex_mul(rocket_right);
                     // RocketEngine.BlowUpSmokeTouchingTheFire (RocketEngine.cs:70)
@@ -12975,18 +13014,18 @@ impl RolloutWorld {
         };
         let child_node = self.tesla_nodes[child];
         // SimpleSparkNode.UpdateLightningLine runs before DetPhysics, so this
-        // pose uses centers synchronized by the preceding physics pass and
-        // remains one pass behind the node rows.
-        let node_right = Vec2::angle(node.collider_rotation);
-        let child_right = Vec2::angle(child_node.collider_rotation);
+        // pose uses the FixTransforms synchronized by the preceding physics
+        // pass and remains one pass behind the node rows.
+        let node_right = Vec2::angle(node.transform_rotation);
+        let child_right = Vec2::angle(child_node.transform_rotation);
         // SyncGameObject reconstructs the root with ComplexMul(right,
         // offset), then SimpleSparkNode adds `up * _hitBoxOffsetY`. Keeping
         // that operation order matters for negative Q32 products by one raw
         // unit; `right.perp() * offset.y` is algebraically equivalent but not
         // bit-identical.
-        let node_root = node.collider_center
+        let node_root = node.transform_center
             - (data.tesla.node_collider_offset * node.scale).complex_mul(node_right);
-        let child_root = child_node.collider_center
+        let child_root = child_node.transform_center
             - (data.tesla.node_collider_offset * child_node.scale).complex_mul(child_right);
         let from = node_root + node_right.perp() * (data.tesla.hitbox_offset_y * node.offset_scale);
         let to = child_root
@@ -16815,8 +16854,8 @@ impl RolloutWorld {
             };
         let desired_right = Vec2::angle(desired_rotation);
         let desired_up = desired_right.perp();
-        let old_right = Vec2::angle(source.collider_rotation);
-        let old_root = source.collider_center
+        let old_right = Vec2::angle(source.transform_rotation);
+        let old_root = source.transform_center
             - (data.engine.rocket_collider_offset * source.scale).complex_mul(old_right);
         let probe = old_root + desired_up * Fix::from_int(1000);
         let Ok(closest) = self.platforms[platform_index].surface.closest_point(probe) else {
@@ -16850,6 +16889,8 @@ impl RolloutWorld {
         engine.collider_center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         engine.collider_rotation = desired_rotation;
+        engine.transform_center = engine.collider_center;
+        engine.transform_rotation = desired_rotation;
         engine.offset_scale = engine.scale;
         engine.time = Fix::ZERO;
         engine.phase = 0;
@@ -16909,6 +16950,8 @@ impl RolloutWorld {
         node.collider_center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         node.collider_rotation = desired_rotation;
+        node.transform_center = node.collider_center;
+        node.transform_rotation = desired_rotation;
         node.offset_scale = node.scale;
         node.body = child_body;
         node.connected = false;
@@ -16947,7 +16990,7 @@ impl RolloutWorld {
         let entity = source.entity.expect("active Spike has a collider row");
         let old_rotation = Fix::from_raw(self.entities[entity].rotation);
         let old_right = Vec2::angle(old_rotation);
-        let old_root = source.collider_center
+        let old_root = source.transform_center
             - (data.spike.attack_collider_offset * source.scale).complex_mul(old_right);
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
@@ -16986,6 +17029,7 @@ impl RolloutWorld {
         spike.relative_rotation = desired_rotation - parent_rotation;
         spike.collider_center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        spike.transform_center = spike.collider_center;
         spike.surface_offset = surface_offset;
         spike.body = child_body;
         self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_COMPOSITE;
@@ -23218,6 +23262,31 @@ impl RolloutWorld {
             .unwrap_or(Vec2::ZERO)
     }
 
+    /// DetPhysics.SynCompositeToFixTransAndRelativeValues for the children of
+    /// the composite rooted on `platform`, whose transform is at `position`
+    /// (DetPhysics.cs:2467-2496). Only the child colliders move.
+    fn sync_composite_children(&mut self, platform: usize, position: Vec2) {
+        let right = self.platforms[platform].surface.right;
+        let orientation = self.platform_dynamics[platform].body.orientation;
+        for spike in &mut self.spike_attacks {
+            if spike.active && !spike.macho_carried && spike.platform_index == platform {
+                spike.collider_center = position + spike.relative_center.complex_mul(right);
+            }
+        }
+        for engine in &mut self.engines {
+            if engine.active && !engine.macho_carried && engine.platform_index == platform {
+                engine.collider_rotation = orientation + engine.relative_rotation;
+                engine.collider_center = position + engine.relative_center.complex_mul(right);
+            }
+        }
+        for node in &mut self.tesla_nodes {
+            if node.active && !node.macho_carried && node.platform_index == platform {
+                node.collider_rotation = orientation + node.relative_rotation;
+                node.collider_center = position + node.relative_center.complex_mul(right);
+            }
+        }
+    }
+
     fn magnet_update_held_item(&mut self, index: usize, data: &data::RolloutData) {
         let held = self.players[index].magnet.held;
         let valid = match held {
@@ -23429,10 +23498,14 @@ impl RolloutWorld {
                 let platform = self.macho_boulders[i].platform_index;
                 let velocity = self.platform_dynamics[platform].body.velocity;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
-                // DetPhysics.MoveObjectOutOfWalls: the first overlapping
+                // DetPhysics.MoveObjectOutOfWalls starts with
+                // UpdatePhysicsPositions, which re-places the composite's
+                // children on the moved transform (DetPhysics.cs:2533-2535,
+                // DPhysicsRoundedRect.cs:387-401). Then the first overlapping
                 // rounded rect in collider order pushes the boulder fully out.
-                // Only the transform moves; the collider stays where
-                // UpdatePhysicsPositions put it until the next Simulate.
+                // Only the transform moves; the colliders stay where
+                // UpdatePhysicsPositions put them until the next Simulate.
+                self.sync_composite_children(platform, position);
                 let mut shape = self.platforms[platform].collider;
                 shape.inner.center = position;
                 let collider_position = position;
@@ -23449,10 +23522,6 @@ impl RolloutWorld {
                 // registration order, a Tesla node, is tested as (circle,
                 // boulder), and the circle's own correction, away from the
                 // boulder, is what moves the boulder (DetPhysics.cs:2631-2644).
-                // MoveObjectOutOfWalls starts with UpdatePhysicsPositions, which
-                // re-places the nodes planted on the boulder itself on its moved
-                // transform (DetPhysics.cs:2533-2535, DPhysicsRoundedRect.cs:387-401).
-                let right = self.platforms[platform].surface.right;
                 let node_push = || {
                     self.tesla_nodes
                         .iter()
@@ -23462,13 +23531,8 @@ impl RolloutWorld {
                             if entity.flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
                                 return None;
                             }
-                            let center = if node.platform_index == platform {
-                                position + node.relative_center.complex_mul(right)
-                            } else {
-                                node.collider_center
-                            };
                             let circle = Circle {
-                                center,
+                                center: node.collider_center,
                                 radius: data.tesla.node_radius * node.collider_scale,
                             };
                             crate::physics::contact::circle_rounded(circle, shape)
@@ -24694,6 +24758,7 @@ impl RolloutWorld {
             relative_center,
             relative_rotation: rotation - parent_rotation,
             collider_center,
+            transform_center: collider_center,
             surface_offset,
             scale: source.scale,
             time: Fix::ZERO,
@@ -24787,6 +24852,8 @@ impl RolloutWorld {
             relative_rotation: rotation - parent_rotation,
             collider_center,
             collider_rotation: rotation,
+            transform_center: collider_center,
+            transform_rotation: rotation,
             surface_offset,
             scale: source.scale,
             offset_scale: source.scale,
@@ -24858,6 +24925,8 @@ impl RolloutWorld {
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
             ..CEntity::default()
         });
+        let center = parent_position
+            + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let clone = SpawnedTeslaNode {
             attach_order,
             active: true,
@@ -24873,10 +24942,11 @@ impl RolloutWorld {
             local,
             relative_center,
             relative_rotation: rotation - parent_rotation,
-            collider_center: parent_position
-                + relative_center.complex_mul(self.platforms[platform_index].surface.right),
+            collider_center: center,
             swept_center: Vec2::ZERO,
             collider_rotation: rotation,
+            transform_center: center,
+            transform_rotation: rotation,
             surface_offset,
             scale: source.scale,
             collider_scale: source.collider_scale,
@@ -25847,8 +25917,10 @@ impl RolloutWorld {
                 + (data.spike.attack_collider_offset * scale).complex_mul(relative_right);
             self.spike_attacks[index].scale = scale;
             self.spike_attacks[index].relative_center = relative_center;
-            self.spike_attacks[index].collider_center = parent_position
-                + relative_center.complex_mul(self.platforms[platform].surface.right);
+            let center =
+                parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
+            self.spike_attacks[index].collider_center = center;
+            self.spike_attacks[index].transform_center = center;
             let extents = data::surface_extents(data.spike.attack_extents * scale);
             self.entities[entity].right_x = (right * extents.x).x.raw();
             self.entities[entity].right_y = (right * extents.x).y.raw();
@@ -25868,7 +25940,7 @@ impl RolloutWorld {
             let platform = engine.platform_index;
             let parent_position = self.platforms[platform].surface.center;
             let parent_rotation = self.platform_dynamics[platform].body.orientation;
-            let right = Vec2::angle(engine.collider_rotation);
+            let right = Vec2::angle(engine.transform_rotation);
             let root = self.platforms[platform]
                 .surface
                 .position(engine.local, Fix::ZERO)
@@ -25879,8 +25951,10 @@ impl RolloutWorld {
                 + (data.engine.rocket_collider_offset * scale).complex_mul(relative_right);
             self.engines[index].scale = scale;
             self.engines[index].relative_center = relative_center;
-            self.engines[index].collider_center = parent_position
-                + relative_center.complex_mul(self.platforms[platform].surface.right);
+            let center =
+                parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
+            self.engines[index].collider_center = center;
+            self.engines[index].transform_center = center;
             let extents = data::surface_extents(data.engine.rocket_extents * scale);
             self.entities[entity].right_x = (right * extents.x).x.raw();
             self.entities[entity].right_y = (right * extents.x).y.raw();
@@ -25902,7 +25976,7 @@ impl RolloutWorld {
             let platform = node.platform_index;
             let parent_position = self.platforms[platform].surface.center;
             let parent_rotation = self.platform_dynamics[platform].body.orientation;
-            let right = Vec2::angle(node.collider_rotation);
+            let right = Vec2::angle(node.transform_rotation);
             let root = self.platforms[platform]
                 .surface
                 .position(node.local, Fix::ZERO)
@@ -25915,8 +25989,10 @@ impl RolloutWorld {
             self.tesla_nodes[index].collider_scale =
                 scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
             self.tesla_nodes[index].relative_center = relative_center;
-            self.tesla_nodes[index].collider_center = parent_position
-                + relative_center.complex_mul(self.platforms[platform].surface.right);
+            let center =
+                parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
+            self.tesla_nodes[index].collider_center = center;
+            self.tesla_nodes[index].transform_center = center;
             self.entities[entity].radius =
                 (data.tesla.node_radius * self.tesla_nodes[index].collider_scale).raw();
             self.entities[entity].x = self.tesla_nodes[index].collider_center.x.raw();
