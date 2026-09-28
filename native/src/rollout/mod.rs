@@ -32970,14 +32970,14 @@ impl RolloutWorld {
     /// instantiated mid-game register after the players. A Duplicator copy
     /// keeps its source's definition, and runs ahead of the ropes when it was
     /// instantiated before all of them (a hole only adds force, in any order).
+    /// A rope let go during this pass still holds its place in the Updater
+    /// list, so the copy keeps the same pass on both walks.
     fn platform_pass(&self, i: usize) -> PlatformPass {
         if self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some() {
             let id = self.entities[self.platform_entities[i]].id;
-            if self
-                .ropes
-                .iter()
-                .all(|rope| !rope.physics.enabled || id < rope.segment_ids[0])
-            {
+            if self.ropes.iter().all(|rope| {
+                !(rope.physics.enabled || rope.disabled_this_frame) || id < rope.segment_ids[0]
+            }) {
                 PlatformPass::Duplicated
             } else {
                 PlatformPass::Spawned
