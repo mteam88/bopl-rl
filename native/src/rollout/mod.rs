@@ -24664,7 +24664,8 @@ impl RolloutWorld {
 
         // ShootDuplicator overwrites an initial below-water hit with the
         // casting gun's own Player body, then duplicates it upward. This is
-        // independent of whether the triple ray found another collider.
+        // independent of whether the triple ray found another collider. The
+        // plane is SceneBounds.WaterHeight, -50 on a space level.
         if !already_hit_water && origin.y <= data.maps[self.map].scene_water_height() {
             let position = self.players[caster].base.position;
             self.duplicate_player_target(caster, position, Vec2::UP, data);
