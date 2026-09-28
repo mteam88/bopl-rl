@@ -6704,6 +6704,15 @@ impl RolloutWorld {
         // StickyRoundedRectangle riders from their surface local after
         // physics; their Player-layer box keeps the position DetPhysics
         // synced above until the next Simulate.
+        for slot in &mut self.players {
+            // The CastSpell circle likewise keeps the pose Simulate synced
+            // from its FixTransform before the late ground follow.
+            if slot.active == ActiveAbility::TimeStop {
+                slot.cast_spell.collider_position = slot.base.position;
+                slot.cast_spell.collider_right = slot.base.up.perp_cw();
+                slot.cast_spell.collider_rotation = slot.base.rotation;
+            }
+        }
         for index in 0..self.players.len() {
             let slot = &self.players[index];
             // A Blink tunnel deactivates its victim, so its LateUpdateSim
@@ -39439,19 +39448,11 @@ impl RolloutWorld {
                     circle.owner = slot.base.id;
                 }
                 if casting_time_stop || was_active {
-                    let (position, rotation, basis) = if casting_time_stop {
-                        (
-                            slot.base.position,
-                            slot.base.rotation,
-                            slot.base.up.perp_cw(),
-                        )
-                    } else {
-                        (
-                            slot.cast_spell.collider_position,
-                            slot.cast_spell.collider_rotation,
-                            slot.cast_spell.collider_right,
-                        )
-                    };
+                    let (position, rotation, basis) = (
+                        slot.cast_spell.collider_position,
+                        slot.cast_spell.collider_rotation,
+                        slot.cast_spell.collider_right,
+                    );
                     // The ability body's FixTransform keeps the exact Slerp
                     // basis copied from PlayerPhysics. Its published angle is
                     // derived from that vector and rebuilding the basis from
