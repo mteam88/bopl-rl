@@ -20496,9 +20496,7 @@ impl RolloutWorld {
                 .zip(&self.platform_dynamics)
                 .enumerate()
             {
-                if crate::physics::contact::circle_rounded(query, platform.collider)
-                    .is_some_and(|contact| contact.penetration > Fix::ZERO)
-                    && dynamics.body.inverse_mass >= Fix::ZERO
+                if dynamics.body.inverse_mass >= Fix::ZERO
                     && retained.contains(&self.platform_entities[platform_index])
                     && Some(platform.id) != wave.ignored_platform
                 {
@@ -20514,19 +20512,8 @@ impl RolloutWorld {
                 if !item.active || item.entity.is_none_or(|entity| !retained.contains(&entity)) {
                     continue;
                 }
-                let radius = thrown_item_radius(data, *item);
-                if crate::physics::contact::circle_circle(
-                    query,
-                    Circle {
-                        center: item.position,
-                        radius,
-                    },
-                )
-                .is_some()
-                {
-                    wave.item_indices[wave.item_count] = item_index;
-                    wave.item_count += 1;
-                }
+                wave.item_indices[wave.item_count] = item_index;
+                wave.item_count += 1;
             }
             for (arrow_index, arrow) in self.arrows.iter().enumerate() {
                 if !arrow.active
@@ -20537,18 +20524,8 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                if crate::physics::contact::circle_circle(
-                    query,
-                    Circle {
-                        center: arrow.position,
-                        radius: data.arrow.radius * arrow.scale,
-                    },
-                )
-                .is_some()
-                {
-                    wave.arrow_indices[wave.arrow_count] = arrow_index;
-                    wave.arrow_count += 1;
-                }
+                wave.arrow_indices[wave.arrow_count] = arrow_index;
+                wave.arrow_count += 1;
             }
             for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
                 if !missile.active
@@ -20559,15 +20536,8 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let collider = OrientedBox::from_basis(
-                    missile.position,
-                    Vec2::angle(missile.body.orientation),
-                    data.missile.spark_extents * missile.scale,
-                );
-                if crate::physics::contact::circle_box(query, collider).is_some() {
-                    wave.missile_indices[wave.missile_count] = missile_index;
-                    wave.missile_count += 1;
-                }
+                wave.missile_indices[wave.missile_count] = missile_index;
+                wave.missile_count += 1;
             }
             // Layer 10 (`spell`) is in AirWave_Shockwave's serialized mask.
             // PortalShot is the only live rigid spell collider in the source
@@ -20579,18 +20549,8 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                if crate::physics::contact::circle_circle(
-                    query,
-                    Circle {
-                        center: shot.position,
-                        radius: data.portal_gun.shot_radius,
-                    },
-                )
-                .is_some()
-                {
-                    wave.portal_shot_indices[wave.portal_shot_count] = shot_index;
-                    wave.portal_shot_count += 1;
-                }
+                wave.portal_shot_indices[wave.portal_shot_count] = shot_index;
+                wave.portal_shot_count += 1;
             }
             for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
                 if !cloud.active
@@ -20611,35 +20571,14 @@ impl RolloutWorld {
                 if !hole.active || hole.entity.is_none_or(|entity| !retained.contains(&entity)) {
                     continue;
                 }
-                if crate::physics::contact::circle_circle(
-                    query,
-                    Circle {
-                        center: hole.position,
-                        radius: hole.radius,
-                    },
-                )
-                .is_some()
-                {
-                    wave.black_hole_indices[wave.black_hole_count] = hole_index;
-                    wave.black_hole_count += 1;
-                }
+                wave.black_hole_indices[wave.black_hole_count] = hole_index;
+                wave.black_hole_count += 1;
             }
             // Non-attachable LethalTerrain bodies are activation-only hits:
             // Shockwave applies the BoplBody fallback force immediately and
             // does not add them to its persistent HashSet.
             for rock in &mut self.duplicated_rocks {
                 if !rock.active || rock.entity.is_none_or(|entity| !retained.contains(&entity)) {
-                    continue;
-                }
-                if crate::physics::contact::circle_circle(
-                    query,
-                    Circle {
-                        center: rock.position,
-                        radius: data.rock.radius * rock.scale,
-                    },
-                )
-                .is_none()
-                {
                     continue;
                 }
                 let delta = rock.position - wave.position;
@@ -20677,36 +20616,6 @@ impl RolloutWorld {
                     continue;
                 }
                 if !retained.contains(&entity) {
-                    continue;
-                }
-                let row = self.entities[entity];
-                let overlaps = if row.kind == 0 {
-                    crate::physics::contact::circle_circle(
-                        query,
-                        Circle {
-                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                            radius: Fix::from_raw(row.radius),
-                        },
-                    )
-                    .is_some()
-                } else {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    crate::physics::contact::circle_box(
-                        query,
-                        OrientedBox {
-                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                            right,
-                            up,
-                            inverse_extents: Vec2::new(
-                                Fix::ONE / right.length(),
-                                Fix::ONE / up.length(),
-                            ),
-                        },
-                    )
-                    .is_some()
-                };
-                if !overlaps {
                     continue;
                 }
 
