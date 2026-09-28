@@ -13145,6 +13145,9 @@ impl RolloutWorld {
             .expect("authored SpikeAttack curve")
             .time;
         for index in 0..self.spike_attacks.len() {
+            if self.platform_hidden(self.spike_attacks[index].platform_index) {
+                continue;
+            }
             let attack = &mut self.spike_attacks[index];
             attack.pushed_this_frame = false;
             if !attack.active || attack.macho_carried || attack.born_tick >= self.tick {
@@ -13262,7 +13265,11 @@ impl RolloutWorld {
         hierarchy_order(&mut order, &self.engines, |engine| engine.hierarchy_base);
         for &engine_index in &order {
             let engine = &self.engines[engine_index];
-            if !engine.active || engine.macho_carried || engine.born_tick == self.tick {
+            if !engine.active
+                || engine.macho_carried
+                || engine.born_tick == self.tick
+                || self.platform_hidden(engine.platform_index)
+            {
                 continue;
             }
             // A running engine's BlowUpSmokeTouchingTheFire casts through
@@ -13482,6 +13489,9 @@ impl RolloutWorld {
                     self.disconnect_tesla_node(node_index, false);
                 }
             }
+            // SimpleSparkNode.IsEnabled is always true, so a node on a hidden
+            // wall keeps checking its partners but cannot connect
+            // (SimpleSparkNode.cs:62-69, 219-245).
             if !self.tesla_nodes[node_index].connected
                 && let Some(child) = self.tesla_nodes[node_index].child
                 && self.tesla_node_shown(child)
@@ -13851,13 +13861,19 @@ impl RolloutWorld {
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
         let mut victims: [Option<(u8, Fix, Fix)>; MAX_PLAYERS] = [None; MAX_PLAYERS];
-        for node in self
+        let live_nodes = self.tesla_nodes.len();
+        for (node_index, node) in self
             .tesla_nodes
             .iter()
             .chain(&self.retired_tesla_contacts)
             .copied()
+            .enumerate()
         {
-            if !node.active || node.macho_carried || !node.lethal {
+            if !node.active
+                || node.macho_carried
+                || !node.lethal
+                || (node_index < live_nodes && self.platform_hidden(node.platform_index))
+            {
                 continue;
             }
             let node_circle = Circle {
@@ -27233,6 +27249,16 @@ impl RolloutWorld {
             })
     }
 
+    /// Spike attacks, rocket engines and spark nodes are Unity children of
+    /// the platform they were planted on (Spike.cs:122, PlaceRocketEngine.cs:45,
+    /// PlaceSparkNode.cs:40). A QuantumTunnel or TeleportedObjectEffect that
+    /// deactivates the wall takes them out of the hierarchy with it: their rows
+    /// publish inactive, DetPhysics skips their colliders, and the updaters that
+    /// use the default IsEnabled stop until the wall returns.
+    fn platform_hidden(&self, platform_index: usize) -> bool {
+        platform_index < self.platforms.len() && !self.platforms[platform_index].active
+    }
+
     /// A clone in its own QuantumTunnel or an object tunnel is an inactive
     /// GameObject, which DetPhysics skips (QuantumTunnel.cs:136).
     fn abilityless_clone_hidden(&self, clone: &AbilitylessClone) -> bool {
@@ -38188,7 +38214,11 @@ impl RolloutWorld {
                         data.tesla.node_layer
                     },
                     owner: node.owner as u32 + 1,
-                    flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+                    flags: if self.platform_hidden(node.platform_index) {
+                        E_ENABLED | E_COMPOSITE
+                    } else {
+                        E_ACTIVE | E_ENABLED | E_COMPOSITE
+                    },
                     hierarchy: self.entities[entity].hierarchy,
                     x: node.collider_center.x.raw(),
                     y: node.collider_center.y.raw(),
@@ -38265,7 +38295,11 @@ impl RolloutWorld {
                 kind: 1,
                 layer: data.engine.rocket_layer,
                 owner: 0,
-                flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+                flags: if self.platform_hidden(engine.platform_index) {
+                    E_ENABLED | E_COMPOSITE
+                } else {
+                    E_ACTIVE | E_ENABLED | E_COMPOSITE
+                },
                 hierarchy: self.entities[entity].hierarchy,
                 x: center.x.raw(),
                 y: center.y.raw(),
@@ -38304,7 +38338,11 @@ impl RolloutWorld {
                 kind: 1,
                 layer: data.spike.attack_layer,
                 owner: 0,
-                flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
+                flags: if self.platform_hidden(spike.platform_index) {
+                    E_ENABLED | E_COMPOSITE
+                } else {
+                    E_ACTIVE | E_ENABLED | E_COMPOSITE
+                },
                 hierarchy: self.entities[entity].hierarchy,
                 x: center.x.raw(),
                 y: center.y.raw(),
