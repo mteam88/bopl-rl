@@ -1910,6 +1910,17 @@ impl RolloutWorld {
                 Some(RopeParent::Shot(shot, born)) if shots[shot].born_tick == born => {
                     Some(shots[shot].position)
                 }
+                // An item a DetPhysics callback destroyed after this pass's
+                // UpdateSim (DPhysicsCircle.OnCollide) still holds the end
+                // where it died; the attachment's UpdateSim saw it alive.
+                Some(RopeParent::Item(item, id))
+                    if items[item].id == id
+                        && items[item]
+                            .entity
+                            .is_some_and(|entity| self.entities[entity].flags & E_DESTROYED != 0) =>
+                {
+                    Some(items[item].position)
+                }
                 parent => parent.and_then(|parent| parent_position(players, items, shots, parent)),
             };
             if let Some(position) = position {
