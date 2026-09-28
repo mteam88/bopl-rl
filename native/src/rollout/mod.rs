@@ -5928,6 +5928,13 @@ impl RolloutWorld {
                 (in_ability || slot.base.dash.active, in_ability)
             };
             self.player_tick(index, action, movement_input, jump_pressed, data);
+            // The slime's movement raycasts (PlayerPhysics.Move through
+            // StickyRoundedRectangle.maxMovementAllowed) drop the colliders
+            // DestroyFix marked, such as the node a placement just evicted
+            // (DetPhysics.cs:1724-1727).
+            if self.players[index].base.alive {
+                self.drop_destroyed_children();
+            }
             let exited = {
                 let slot = &self.players[index];
                 in_form
@@ -12257,6 +12264,17 @@ impl RolloutWorld {
             self.platform_dynamics[platform_index].composite_rebuild = true;
         }
         self.platforms_changed();
+    }
+
+    /// DetPhysics.RemoveDestroyedColliders, which Simulate and every cast
+    /// query run first (DetPhysics.cs:2442-2468): DestroyCircle/DestroyBox
+    /// rebuild each composite that lost a child (DetPhysics.cs:1588-1611).
+    fn drop_destroyed_children(&mut self) {
+        for index in 0..self.platforms.len() {
+            if self.platform_dynamics[index].composite_rebuild {
+                self.rebuild_platform_attachment_body(index, true);
+            }
+        }
     }
 
     /// `synced`: DetPhysics.Destroy* ran SynCompositeToFixTransAndRelativeValues
@@ -35289,11 +35307,7 @@ impl RolloutWorld {
     }
 
     fn platforms_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
-        for index in 0..self.platforms.len() {
-            if self.platform_dynamics[index].composite_rebuild {
-                self.rebuild_platform_attachment_body(index, true);
-            }
-        }
+        self.drop_destroyed_children();
         // ResizablePlatform.UpdateSim runs every tick while an evicted platform
         // remains a normal collidable body. It evaluates before incrementing
         // time and destroys at the final key without applying another resize.
