@@ -850,6 +850,13 @@ pub struct SpawnedTeslaNode {
     pub placed_up: Option<Vec2>,
     /// Raw FixTransform scale drives authored attachment offsets.
     pub scale: Fix,
+    /// FixTransform.offset, the collider's authored offset. SetScale_DPhysicsOnly
+    /// compounds each rescale as `offset *= new / old`.
+    pub collider_offset: Vec2,
+    /// The circle's radius. DPhysicsCircle.Scale compounds each rescale as
+    /// `radius *= One / old * new`, so it drifts from the prefab radius
+    /// times the scale.
+    pub radius: Fix,
     /// DPhysicsCircle clamps that raw scale to its prefab limits.
     pub collider_scale: Fix,
     /// SimpleSparkNode.prevScale, separate from the live circle scale for the
@@ -6387,7 +6394,7 @@ impl RolloutWorld {
             self.drill_contacts();
         }
         if has(ABILITY_TESLA) {
-            self.tesla_wall_contacts(data);
+            self.tesla_wall_contacts();
         }
         if has(ABILITY_ROCK) {
             self.rock_wall_manifolds();
@@ -7342,7 +7349,7 @@ impl RolloutWorld {
             }
             let right = Vec2::angle(node.transform_rotation);
             let position = node.transform_center
-                - (data.tesla.node_collider_offset * node.scale).complex_mul(right);
+                - node.collider_offset.complex_mul(right);
             if let Some(entity) = node
                 .entity
                 .filter(|_| node.active && node.body.inverse_mass > Fix::ZERO)
@@ -7668,7 +7675,7 @@ impl RolloutWorld {
                 continue;
             }
             let right = Vec2::angle(node.transform_rotation);
-            let offset = (data.tesla.node_collider_offset * node.scale).complex_mul(right);
+            let offset = node.collider_offset.complex_mul(right);
             let root = node.transform_center - offset;
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
@@ -11881,6 +11888,7 @@ impl RolloutWorld {
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + (data.tesla.node_collider_offset * scale).complex_mul(relative_right);
         let relative_rotation = node_rotation - parent_rotation;
+        let collider_offset = data.tesla.node_collider_offset * scale;
 
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
@@ -11921,6 +11929,8 @@ impl RolloutWorld {
             surface_offset,
             placed_up: Some(normal),
             scale,
+            radius: data.tesla.node_radius * collider_scale,
+            collider_offset,
             collider_scale,
             offset_scale: scale,
             body: data.tesla.node_body,
@@ -12703,7 +12713,7 @@ impl RolloutWorld {
                     node.local,
                     up(node.transform_rotation, node.placed_up, node.born_tick),
                     node.surface_offset,
-                    data.tesla.node_collider_offset * node.scale,
+                    node.collider_offset,
                 );
             }
         }
@@ -13055,9 +13065,9 @@ impl RolloutWorld {
         // unit; `right.perp() * offset.y` is algebraically equivalent but not
         // bit-identical.
         let node_root = node.transform_center
-            - (data.tesla.node_collider_offset * node.scale).complex_mul(node_right);
+            - node.collider_offset.complex_mul(node_right);
         let child_root = child_node.transform_center
-            - (data.tesla.node_collider_offset * child_node.scale).complex_mul(child_right);
+            - child_node.collider_offset.complex_mul(child_right);
         let from = node_root + node_right.perp() * (data.tesla.hitbox_offset_y * node.offset_scale);
         let to = child_root
             + child_right.perp() * (data.tesla.hitbox_offset_y * child_node.offset_scale);
@@ -13319,7 +13329,7 @@ impl RolloutWorld {
             }
             let node_circle = Circle {
                 center: node.collider_center,
-                radius: data.tesla.node_radius * node.collider_scale,
+                radius: node.radius,
             };
             // SortAndSweep pairs the node by its bounding box from before this
             // pass's contacts pushed its platform; the manifold tests where
@@ -16991,7 +17001,7 @@ impl RolloutWorld {
         let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let relative_right = desired_right.complex_mul(inverse_basis);
         let relative_center = (root - parent_position).complex_mul(inverse_basis)
-            + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);
+            + source.collider_offset.complex_mul(relative_right);
         let mut child_body = source.body;
         child_body.orientation = desired_rotation;
         let attach_order = self.attach_child_body(platform_index, child_body);
@@ -23711,7 +23721,7 @@ impl RolloutWorld {
                             }
                             let circle = Circle {
                                 center: node.collider_center,
-                                radius: data.tesla.node_radius * node.collider_scale,
+                                radius: node.radius,
                             };
                             crate::physics::contact::circle_rounded(circle, shape)
                                 .map(|contact| (entity.id, contact))
@@ -25128,6 +25138,8 @@ impl RolloutWorld {
             surface_offset,
             scale: source.scale,
             collider_scale: source.collider_scale,
+            radius: data.tesla.node_radius * source.collider_scale,
+            collider_offset: data.tesla.node_collider_offset * source.scale,
             offset_scale: source.scale,
             body: data.tesla.node_body,
             // Instantiate copies the GameObject's layer: a copy of a lit node
@@ -26152,18 +26164,21 @@ impl RolloutWorld {
                 + right.perp() * node.surface_offset;
             let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
             let relative_right = right.complex_mul(inverse_basis);
+            let old = self.tesla_nodes[index].collider_scale;
+            let new = scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
+            let collider_offset = node.collider_offset * (new / old);
+            self.tesla_nodes[index].collider_offset = collider_offset;
             let relative_center = (root - parent_position).complex_mul(inverse_basis)
-                + (data.tesla.node_collider_offset * scale).complex_mul(relative_right);
+                + collider_offset.complex_mul(relative_right);
             self.tesla_nodes[index].scale = scale;
-            self.tesla_nodes[index].collider_scale =
-                scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
+            self.tesla_nodes[index].collider_scale = new;
+            self.tesla_nodes[index].radius *= (Fix::ONE / old) * new;
             self.tesla_nodes[index].relative_center = relative_center;
             let center =
                 parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
             self.tesla_nodes[index].collider_center = center;
             self.tesla_nodes[index].transform_center = center;
-            self.entities[entity].radius =
-                (data.tesla.node_radius * self.tesla_nodes[index].collider_scale).raw();
+            self.entities[entity].radius = self.tesla_nodes[index].radius.raw();
             self.entities[entity].x = self.tesla_nodes[index].collider_center.x.raw();
             self.entities[entity].y = self.tesla_nodes[index].collider_center.y.raw();
             return true;
@@ -32075,7 +32090,7 @@ impl RolloutWorld {
         // batch, so their impulses interleave with the items' in sweep order.
         let node_min = |node_index: usize| {
             let node = &self.tesla_nodes[node_index];
-            axis(node.collider_center) - data.tesla.node_radius * node.collider_scale
+            axis(node.collider_center) - node.radius
         };
         // Rock forms' wall pairs are in the batch too (rock_wall_manifolds).
         let rock_min = |rock_index: usize| {
@@ -32261,7 +32276,7 @@ impl RolloutWorld {
                 let node = &nodes[index - NODE];
                 Circle {
                     center: node.collider_center,
-                    radius: data.tesla.node_radius * node.collider_scale,
+                    radius: node.radius,
                 }
             } else if index >= SHOT {
                 Circle {
@@ -34891,7 +34906,7 @@ impl RolloutWorld {
     /// Circle/RoundedRect contact with another wall moves the whole composite.
     /// Only the manifolds are built here: thrown_item_platform_contacts
     /// resolves them in sweep order with the items' walls.
-    fn tesla_wall_contacts(&mut self, data: &data::RolloutData) {
+    fn tesla_wall_contacts(&mut self) {
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.tesla_wall_contacts.clear();
         for (node_index, node) in self.tesla_nodes.iter().enumerate() {
@@ -34900,7 +34915,7 @@ impl RolloutWorld {
             }
             let circle = Circle {
                 center: node.collider_center,
-                radius: data.tesla.node_radius * node.collider_scale,
+                radius: node.radius,
             };
             for (wall_index, platform) in self.platforms.iter().enumerate() {
                 if wall_index == node.platform_index
@@ -37430,7 +37445,7 @@ impl RolloutWorld {
                     hierarchy: self.entities[entity].hierarchy,
                     x: node.collider_center.x.raw(),
                     y: node.collider_center.y.raw(),
-                    radius: (data.tesla.node_radius * node.collider_scale).raw(),
+                    radius: node.radius.raw(),
                     rotation: node.collider_rotation.raw(),
                     inverse_mass: node.body.inverse_mass.raw(),
                     ..CEntity::default()
@@ -40497,6 +40512,7 @@ mod tests {
             collider_center: position,
             swept_center: position,
             collider_scale: Fix::ONE,
+            radius: data::get().tesla.node_radius,
             ..SpawnedTeslaNode::default()
         });
 
