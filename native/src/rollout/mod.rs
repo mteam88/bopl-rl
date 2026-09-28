@@ -921,6 +921,12 @@ pub struct ThrowItemState {
     /// Hurtbox centre ThrowItem2.OnEnterAbility synced, which BlackHole
     /// reads until the next DetPhysics pass.
     pub entry_center: Vec2,
+    /// Mine's PlayerPhysics.gravity_modifier: zero for a form entered on the
+    /// ground until an airborne Fire (ThrowItem.cs:124-131, 225-228).
+    pub gravity_modifier: Fix,
+    /// ThrowItem.firedFromTheGround, which stops AirealMovement
+    /// (ThrowItem.cs:110, 221-228, 399).
+    pub fired_from_ground: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -8913,6 +8919,7 @@ impl RolloutWorld {
                             direction: Vec2::UP,
                             collider_rotation: slot.base.rotation,
                             collider_right: slot.base.up.perp_cw(),
+                            gravity_modifier: if grounded { Fix::ZERO } else { Fix::ONE },
                             ..ThrowItemState::default()
                         };
                         slot.base.position = form_position;
@@ -20958,18 +20965,20 @@ impl RolloutWorld {
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 data.mine.constants.gravity_accel,
-                Fix::ONE,
+                slot.throw_item.gravity_modifier,
                 data.mine.constants.gravity_max_fall_speed,
                 space,
             )
             .expect("valid Mine gravity constants");
-            crate::player_physics::air_movement(
-                &mut slot.base.velocity,
-                aim.x,
-                data.mine.constants.air_accel,
-                data.mine.constants.max_speed,
-            )
-            .expect("valid Mine air constants");
+            if !slot.throw_item.fired_from_ground {
+                crate::player_physics::air_movement(
+                    &mut slot.base.velocity,
+                    aim.x,
+                    data.mine.constants.air_accel,
+                    data.mine.constants.max_speed,
+                )
+                .expect("valid Mine air constants");
+            }
             slot.base.collision_rays(Terrain {
                 platforms: &this.platforms,
                 bounds: &this.bounds,
@@ -21114,8 +21123,11 @@ impl RolloutWorld {
         slot.throw_item.item = Some(item_index);
         slot.throw_item.phase = 2;
         slot.throw_item.ticks = 0;
+        slot.throw_item.fired_from_ground = grounded;
         if grounded {
             slot.base.velocity = Vec2::ZERO;
+        } else {
+            slot.throw_item.gravity_modifier = Fix::ONE;
         }
     }
 
