@@ -22161,6 +22161,13 @@ impl RolloutWorld {
         let impulse_force = direction * (slot.player_scale * force) * Fix::from_int(60);
         if let Some(item_index) = held {
             let item = &mut self.thrown_items[item_index];
+            // ManualInit registers the collider where the payload sits in
+            // the hand; the throw position only reaches DetPhysics at the
+            // next Simulate, so a cast later this pass finds it there.
+            let collider_center = match item.entity {
+                Some(entity) => (self.entities[entity].x, self.entities[entity].y),
+                None => (item.position.x.raw(), item.position.y.raw()),
+            };
             if item.entity.is_none() {
                 item.pending_shake = position - item.position;
             }
@@ -22187,6 +22194,8 @@ impl RolloutWorld {
                 owner: 0,
                 flags: E_ACTIVE | E_ENABLED,
                 hierarchy: 100_000_000 + item.hierarchy_base + gd.item_collider_hierarchy,
+                x: collider_center.0,
+                y: collider_center.1,
                 radius: (gd.item_radius * item.scale).raw(),
                 inverse_mass: item.body.inverse_mass.raw(),
                 ..CEntity::default()
