@@ -1435,6 +1435,9 @@ pub struct BowState {
 pub struct RockState {
     pub body: Body,
     pub collider_radius: Fix,
+    /// The circle DetPhysics' broadphase swept this pass, before any
+    /// correction moved it.
+    pub swept: Circle,
     pub time: Fix,
     pub exit_time: Fix,
     pub scale_sum: Fix,
@@ -30593,6 +30596,16 @@ impl RolloutWorld {
                 {
                     continue;
                 }
+                // The broadphase pairs the Rock by its bounding box before
+                // its wall corrections; the manifold tests the corrected
+                // circle.
+                let swept = player.rock.swept;
+                let reach = swept.radius + circle.radius;
+                if (swept.center.x - circle.center.x).abs() >= reach
+                    || (swept.center.y - circle.center.y).abs() >= reach
+                {
+                    continue;
+                }
                 if let Some(contact) = crate::physics::contact::circle_circle(
                     Circle {
                         center: player.base.position,
@@ -34290,6 +34303,9 @@ impl RolloutWorld {
                         .push((rock_index, wall_index, contact));
                 }
             }
+        }
+        for (slot, &circle) in self.players.iter_mut().zip(&swept) {
+            slot.rock.swept = circle;
         }
         // Resolved in SortAndSweep order, as thrown_item_platform_contacts:
         // by the later bounding box's rank on the sweep axis, then the
