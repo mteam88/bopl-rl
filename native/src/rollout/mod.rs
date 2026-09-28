@@ -6085,6 +6085,12 @@ impl RolloutWorld {
             self.duplicated_rocks_integrate(physics_dt, data);
         }
         self.claim_queued_spawns(u32::MAX);
+        // killPlayer from an updater (Mjolnir.TryHitPlayers) destroys the
+        // slime before Simulate, so its box meets no other slime this pass.
+        let players = &self.players;
+        self.scratch
+            .slime_shoves
+            .retain(|&(pushed, other, _)| players[pushed].base.alive && players[other].base.alive);
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
         for slot in &self.players {
