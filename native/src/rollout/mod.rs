@@ -2471,6 +2471,9 @@ pub struct PlayerSlot {
     /// Marker owned by each equipped Teleport instance. The first cast fills
     /// it; the second consumes it and queues the two-way area swap.
     pub teleport_markers: [Option<usize>; 3],
+    /// InstantAbility.ignoreNextCooldown of each slot's Teleport prefab: set
+    /// when the cast leaves a marker, cleared by the cast that uses it.
+    pub teleport_ignore_cooldown: [bool; 3],
     /// PortalGun references belong to each equipped ability prefab. Closing
     /// and replacing a pair does not require searching the global pool.
     pub portal_blue: [Option<usize>; 3],
@@ -4298,6 +4301,7 @@ impl RolloutWorld {
                 revival_effect_ticks: 0,
                 revival_particle_ticks: 0,
                 teleport_markers: [None; 3],
+                teleport_ignore_cooldown: [false; 3],
                 portal_blue: [None; 3],
                 portal_orange: [None; 3],
                 teleport_pending_marker: None,
@@ -5005,6 +5009,7 @@ impl RolloutWorld {
                 slot.drill_hitbox_entities[2] = [usize::MAX; 3];
                 slot.black_hole_castable[2] = true;
                 slot.portal_blue[2] = None;
+                slot.teleport_ignore_cooldown[2] = false;
                 slot.portal_orange[2] = None;
                 for spawn in &mut self.spawned {
                     if spawn.buffer == Some((player_index, 2)) {
@@ -8293,25 +8298,6 @@ impl RolloutWorld {
                 {
                     slot.timers[s] += DT;
                 }
-                if slot.abilities[s] == ABILITY_REWIND
-                    && !slot.rewind.rewinding
-                    && slot.rewind.finish_next_tick
-                    && action.buttons & (2 << s) as u8 == 0
-                {
-                    slot.timers[s] = slot.cooldowns[s];
-                    slot.rewind.finish_next_tick = false;
-                }
-                if slot.abilities[s] == ABILITY_TELEPORT
-                    && slot.teleport_markers[s]
-                        .is_some_and(|marker| self.teleport_marker_pool[marker].active)
-                    && action.buttons & (2 << s) as u8 == 0
-                {
-                    // SlimeController resets an IgnoreNextCooldown slot on
-                    // every released frame. Holding the second press skips
-                    // this reset, allowing the just-incremented timer to pass
-                    // the strict readiness comparison.
-                    slot.timers[s] = slot.cooldowns[s];
-                }
             }
         }
         // The rope abilities' UpdateCooldowns sits in the same !isInAbility
@@ -8333,8 +8319,25 @@ impl RolloutWorld {
             self.players[index].slime_updated = true;
             self.players[index].slime_input = movement_input;
             for s in 0..3 {
-                let slot = &self.players[index];
+                let slot = &mut self.players[index];
                 let button_down = action.buttons & (2 << s) as u8 != 0;
+                // SlimeController resets an IgnoreNextCooldown slot on every
+                // released frame, in the same walk that enters an ability and
+                // returns (SlimeController.cs:818-830), so a cast skips the
+                // later slots' reset. Holding the second press skips it too,
+                // allowing the just-incremented timer to pass the strict
+                // readiness comparison.
+                let ignore_cooldown = match slot.abilities[s] {
+                    ABILITY_REWIND => !slot.rewind.rewinding && slot.rewind.finish_next_tick,
+                    ABILITY_TELEPORT => slot.teleport_ignore_cooldown[s],
+                    _ => false,
+                };
+                if ignore_cooldown && !button_down {
+                    slot.timers[s] = slot.cooldowns[s];
+                    if slot.abilities[s] == ABILITY_REWIND {
+                        slot.rewind.finish_next_tick = false;
+                    }
+                }
                 // SlimeController.isAbilityReady uses a strict comparison.
                 if !button_down || slot.timers[s] <= slot.cooldowns[s] {
                     continue;
@@ -8503,6 +8506,7 @@ impl RolloutWorld {
                             slot.teleport_pending_marker = Some(marker);
                             slot.teleport_pending_position = slot.base.position;
                             slot.teleport_markers[s] = None;
+                            slot.teleport_ignore_cooldown[s] = false;
                         } else {
                             let hierarchy_base = self.next_spawn_hierarchy;
                             self.next_spawn_hierarchy += data.teleport.marker_updatable_count;
@@ -8523,6 +8527,7 @@ impl RolloutWorld {
                                 magnet_hold_ticks: -1,
                             });
                             self.players[index].teleport_markers[s] = Some(marker_index);
+                            self.players[index].teleport_ignore_cooldown[s] = true;
                         }
                         self.players[index].base.instant_cast_this_pass = true;
                         break;
@@ -36546,6 +36551,7 @@ impl RolloutWorld {
         // instance. The independent indicator survives, but a replacement
         // slime receives a fresh ability with no route back to that marker.
         slot.teleport_markers = [None; 3];
+        slot.teleport_ignore_cooldown = [false; 3];
         slot.portal_blue = [None; 3];
         slot.portal_orange = [None; 3];
         slot.spike_attacks = [None; 3];
