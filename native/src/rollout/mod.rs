@@ -28168,7 +28168,7 @@ impl RolloutWorld {
                 self.duplicate_platform_effects[effect_index].active = false;
                 continue;
             }
-            let loss = Fix::from_f64(0.2);
+            let loss = data.duplicator.platform_scale_loss_speed;
             let effect_scale = snapshot
                 .effect_scale
                 .min(snapshot.effect_scale * (Fix::ONE - loss) + loss);
@@ -40812,7 +40812,8 @@ mod tests {
         world.tick += 1;
         world.duplicate_platform_effects_tick(data::get(), DT, None);
 
-        let expected = Fix::from_int(2) * (Fix::ONE - Fix::from_f64(0.2)) + Fix::from_f64(0.2);
+        let loss = data::get().duplicator.platform_scale_loss_speed;
+        let expected = Fix::from_int(2) * (Fix::ONE - loss) + loss;
         assert_eq!(world.platform_dynamics[source].scale, expected);
         let effect = world
             .duplicate_platform_effects

@@ -1383,6 +1383,7 @@ def main():
         "platform_shake_duration": fix(duplicator, "PlatformShakeDuration"),
         "platform_shake": fix(duplicator, "platformShake"),
         "platform_overlap_force": fix(platform_effect, "platformOverlapForce"),
+        "platform_scale_loss_speed": fix(platform_effect, "scaleLossSpeed"),
         "platform_effect_updatable_count": updater_count(platform_effect_prefab),
     }
 

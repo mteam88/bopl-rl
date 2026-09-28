@@ -831,6 +831,7 @@ struct RawDuplicator {
     platform_shake_duration: i64,
     platform_shake: i64,
     platform_overlap_force: i64,
+    platform_scale_loss_speed: i64,
     platform_effect_updatable_count: u32,
 }
 #[derive(Deserialize)]
@@ -1999,6 +2000,8 @@ pub struct DuplicatorData {
     pub platform_shake_duration: Fix,
     pub platform_shake: Fix,
     pub platform_overlap_force: Fix,
+    /// DuplicatePlatformEffect.scaleLossSpeed as the prefab serializes it.
+    pub platform_scale_loss_speed: Fix,
     pub platform_effect_updatable_count: u32,
 }
 pub struct MagnetData {
@@ -3354,6 +3357,9 @@ pub fn get() -> &'static RolloutData {
                 platform_shake: Fix::from_raw(raw.prefabs.duplicator.platform_shake),
                 platform_overlap_force: Fix::from_raw(
                     raw.prefabs.duplicator.platform_overlap_force,
+                ),
+                platform_scale_loss_speed: Fix::from_raw(
+                    raw.prefabs.duplicator.platform_scale_loss_speed,
                 ),
                 platform_effect_updatable_count: raw
                     .prefabs
