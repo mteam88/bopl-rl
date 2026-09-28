@@ -21661,7 +21661,10 @@ impl RolloutWorld {
         }
 
         if self.players[index].throw_item.phase == 2 {
-            let exit_ticks = if self.players[index].throw_item.grounded {
+            // Fire picks gExit or aExit by whether the form is grounded
+            // then, whatever it entered on (ThrowItem.cs:205-212); a teleport
+            // can unground a form that entered on the ground.
+            let exit_ticks = if self.players[index].throw_item.fired_from_ground {
                 data.mine.ground_exit_ticks
             } else {
                 data.mine.air_exit_ticks
@@ -21746,7 +21749,6 @@ impl RolloutWorld {
                     // (Direction.DOWN, the gExit animation) and keeps the
                     // form; PlayerBody then moves it (ThrowItem.cs:404-411).
                     slot.throw_item.direction = -slot.base.up;
-                    slot.throw_item.grounded = true;
                     self.fire_mine(index, data);
                     let slot = &mut self.players[index];
                     slot.base.position += slot.base.external_velocity * DT;
