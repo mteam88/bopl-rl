@@ -1514,6 +1514,8 @@ pub struct GunState {
     pub forced_exit_tick: u32,
     /// That retained FixTransform: its right vector and rotation.
     pub forced_exit_basis: (Vec2, Fix),
+    /// The form entity the bypass left behind.
+    pub forced_exit_entity: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -26275,6 +26277,7 @@ impl RolloutWorld {
         ) {
             slot.gun.forced_exit_tick = self.tick;
             slot.gun.forced_exit_basis = (slot.base.up.perp_cw(), slot.base.rotation);
+            slot.gun.forced_exit_entity = Self::hurtbox_entity(slot);
         }
         if matches!(
             slot.active,
@@ -36620,11 +36623,15 @@ impl RolloutWorld {
                 } else {
                     E_ENABLED | E_TRIGGER
                 };
-                if freezing {
+                // A form the ray forces out on the pass it was entered never
+                // published active, but EnterAbility gave it its owner and the
+                // bypass's ExitAbility still leaves it synced where it stood.
+                let forced_exit =
+                    slot.gun.forced_exit_tick == self.tick && slot.gun.forced_exit_entity == freeze_e;
+                if freezing || forced_exit {
                     freeze_box.owner = slot.base.id;
                 }
-                if (alive && freezing) || was_active {
-                    let forced_exit = slot.gun.forced_exit_tick == self.tick;
+                if (alive && freezing) || was_active || forced_exit {
                     // GunTransform only writes `body.up` from the aim while the
                     // shot is pending (GunTransform.cs:184-192) and once more
                     // inside Fire (GunTransform.cs:120-121); afterwards the form
