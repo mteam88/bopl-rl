@@ -2765,6 +2765,20 @@ impl PlayerSlot {
         if self.active == ActiveAbility::None { 0 } else { 1 + self.active_slot }
     }
 
+    /// `potentialCollider.Scale = Player.Scale` on a form's box, from
+    /// Ability.EnterAbility and every Ability.UpdateSim (Ability.cs:105, 135).
+    fn scale_form(&mut self, extents: Vec2, radius: Fix, offset: Vec2) {
+        let scale = self.player_scale;
+        self.forms[self.active_slot].set_scale_offset(scale, extents, radius, offset);
+    }
+
+    /// FixTransform.offset of a gun form's box: as its last Scale set left it,
+    /// or the authored offset at the current scale on a form never scaled.
+    fn gun_offset(&self, offset: Vec2) -> Vec2 {
+        let form = &self.forms[self.active_slot];
+        if form.scale == Fix::ZERO { offset * self.base.scale } else { form.offset }
+    }
+
     /// GunTransform.OnEnterAbility syncs the hurtbox after SyncPhysicsTo has
     /// zeroed an airborne rotation or aligned a grounded one to the surface
     /// normal at the re-snapped position (alignRotation).
@@ -2777,7 +2791,7 @@ impl PlayerSlot {
             self.base.up
         };
         self.gun.hurtbox_center = self.base.position
-            + self.gun.collider_up.perp_cw().complex_mul(offset * self.base.scale);
+            + self.gun.collider_up.perp_cw().complex_mul(self.gun_offset(offset));
     }
 
     /// The per-ability field that aliases the selected form row.
@@ -9677,6 +9691,12 @@ impl RolloutWorld {
                             slot.base.ground = None;
                         }
                         self.players[index]
+                            .scale_form(
+                                data.blink.hurtbox_extents,
+                                data.blink.radius,
+                                data.blink.collider_offset,
+                            );
+                        self.players[index]
                             .sync_gun_hurtbox(data.blink.collider_offset, &self.platforms);
                         self.blink_tick(index, action, data);
                         return;
@@ -9728,6 +9748,11 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
+                        self.players[index].scale_form(
+                            ray.hurtbox_extents,
+                            ray.radius,
+                            ray.collider_offset,
+                        );
                         self.players[index]
                             .sync_gun_hurtbox(ray.collider_offset, &self.platforms);
                         self.scale_ray_tick(index, action, data);
@@ -9782,6 +9807,12 @@ impl RolloutWorld {
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
+                        self.players[index]
+                            .scale_form(
+                                data.duplicator.hurtbox_extents,
+                                data.duplicator.radius,
+                                data.duplicator.collider_offset,
+                            );
                         self.players[index]
                             .sync_gun_hurtbox(data.duplicator.collider_offset, &self.platforms);
                         self.duplicator_tick(index, action, data);
@@ -22559,6 +22590,8 @@ impl RolloutWorld {
             }
         }
 
+        // Ability follows the shoot component in the prefab.
+        self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
         // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
         // and before PlayerBody integrates this pass.
         if self.ability_boundary_kill(index, true) {
@@ -22709,6 +22742,8 @@ impl RolloutWorld {
             self.fire_scale_ray(index, growth, data);
         }
 
+        // Ability follows the shoot component in the prefab.
+        self.players[index].scale_form(ray.hurtbox_extents, ray.radius, ray.collider_offset);
         // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
         // and before PlayerBody integrates this pass.
         if self.ability_boundary_kill(index, true) {
@@ -22855,6 +22890,8 @@ impl RolloutWorld {
             self.fire_duplicator(index, data);
         }
 
+        // Ability follows the shoot component in the prefab.
+        self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
         // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
         // and before PlayerBody integrates this pass.
         if self.ability_boundary_kill(index, true) {
@@ -27074,7 +27111,7 @@ impl RolloutWorld {
         };
         // DPhysicsBox rebuilds its axes from the aligned scalar rotation.
         let basis = Vec2::angle(slot.gun.collider_up.perp_cw().normalized_angle());
-        Some(OrientedBox::from_basis(
+        Some(slot.forms[slot.active_slot].hurtbox(
             slot.gun.hurtbox_center,
             basis,
             data::surface_extents(extents) * slot.base.scale,
@@ -39139,9 +39176,9 @@ impl RolloutWorld {
                     } else {
                         basis
                     };
-                    let center =
-                        root + offset_basis.complex_mul(data.blink.collider_offset * scale);
-                    let collider = OrientedBox::from_basis(
+                    let offset = slot.gun_offset(data.blink.collider_offset);
+                    let center = root + offset_basis.complex_mul(offset);
+                    let collider = slot.forms[slot.active_slot].hurtbox(
                         center,
                         basis,
                         data::surface_extents(data.blink.hurtbox_extents) * scale,
@@ -39192,8 +39229,9 @@ impl RolloutWorld {
                     } else {
                         basis
                     };
-                    let center = root + offset_basis.complex_mul(ray.collider_offset * scale);
-                    let collider = OrientedBox::from_basis(
+                    let offset = slot.gun_offset(ray.collider_offset);
+                    let center = root + offset_basis.complex_mul(offset);
+                    let collider = slot.forms[slot.active_slot].hurtbox(
                         center,
                         basis,
                         data::surface_extents(ray.hurtbox_extents) * scale,
@@ -39238,9 +39276,9 @@ impl RolloutWorld {
                     } else {
                         basis
                     };
-                    let center =
-                        root + offset_basis.complex_mul(data.duplicator.collider_offset * scale);
-                    let collider = OrientedBox::from_basis(
+                    let offset = slot.gun_offset(data.duplicator.collider_offset);
+                    let center = root + offset_basis.complex_mul(offset);
+                    let collider = slot.forms[slot.active_slot].hurtbox(
                         center,
                         basis,
                         data::surface_extents(data.duplicator.hurtbox_extents) * scale,
