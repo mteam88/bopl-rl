@@ -36720,13 +36720,16 @@ impl RolloutWorld {
                 // Item carries no IPlayerIdHolder, so the row publishes owner
                 // 0 and `SourceAbility` can only reach the ability through
                 // `Grenade.thrower` -- which resolves through `AbilityId`, and
-                // so through the thrower's live slime.
-                row.reserved[0] =
-                    if held[self.players[item.owner].base.id as usize].contains(&item.ability) {
-                        item.ability
-                    } else {
-                        ABILITY_NULL
-                    };
+                // so through the thrower's live slime. A replacement slime's
+                // fresh ThrowItem2 is not the thrower.
+                let thrower = &self.players[item.owner];
+                row.reserved[0] = if thrower.ability_generation == item.ability_generation
+                    && held[thrower.base.id as usize].contains(&item.ability)
+                {
+                    item.ability
+                } else {
+                    ABILITY_NULL
+                };
             }
             // Grenade.Init runs on the updater pass after instantiation. Both
             // ordinary and smoke payloads carry Grenade, but its timer remains
