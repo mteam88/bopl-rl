@@ -13644,7 +13644,15 @@ impl RolloutWorld {
     }
 
     fn spike_attack_box(&self, spike: SpawnedSpike, data: &data::RolloutData) -> OrientedBox {
-        let parent = &self.platform_dynamics[spike.platform_index];
+        Self::spike_attack_box_in(&self.platform_dynamics, spike, data)
+    }
+
+    fn spike_attack_box_in(
+        platform_dynamics: &[PlatformDynamics],
+        spike: SpawnedSpike,
+        data: &data::RolloutData,
+    ) -> OrientedBox {
+        let parent = &platform_dynamics[spike.platform_index];
         let basis = Vec2::angle(parent.body.orientation + spike.relative_rotation);
         let scaled_extents = data.spike.attack_extents * spike.scale;
         let extents = data::surface_extents(scaled_extents);
@@ -33226,9 +33234,12 @@ impl RolloutWorld {
         }
         // The Circle/Box group follows, built from the corrected circles:
         // items and Portal shots against the RocketEngine boxes of platform
-        // composites. ResolveCollision swaps the engine for its combined body
-        // and position; PositionalCorrection takes the engine's own inverse
-        // mass and moves its collider and CompositeBody.position.
+        // composites, and items against Spike attack boxes. ResolveCollision
+        // swaps the child for its combined body and position;
+        // PositionalCorrection takes the child's own inverse mass and moves
+        // its collider and CompositeBody.position. Box references from SPIKE
+        // up are spikes; the item callbacks ignore their LethalTerrain layer.
+        const SPIKE: usize = 1 << 16;
         let mut engine_contacts = [(usize::MAX, usize::MAX, Contact::default()); 64];
         let mut engine_contact_count = 0;
         for &index in self.scratch.item_order.iter() {
@@ -33266,6 +33277,25 @@ impl RolloutWorld {
                     engine_contact_count += 1;
                 }
             }
+            if index >= SHOT {
+                continue;
+            }
+            for (spike_index, spike) in self.spike_attacks.iter().copied().enumerate() {
+                if !spike.active
+                    || spike.macho_carried
+                    || spike.platform_index >= self.platforms.len()
+                    || spike.body.inverse_mass <= Fix::ZERO
+                    || spike.entity.is_none_or(|entity| self.entities[entity].flags & 3 != 3)
+                    || engine_contact_count == engine_contacts.len()
+                {
+                    continue;
+                }
+                let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike, data);
+                if let Some(contact) = crate::physics::contact::circle_box(circle, attack_box) {
+                    engine_contacts[engine_contact_count] = (index, SPIKE + spike_index, contact);
+                    engine_contact_count += 1;
+                }
+            }
         }
         let engine_contacts = &mut engine_contacts[..engine_contact_count];
         let circle_min = |index: usize| {
@@ -33277,6 +33307,11 @@ impl RolloutWorld {
             }
         };
         let engine_min = |engine_index: usize| {
+            if engine_index >= SPIKE {
+                let spike = self.spike_attacks[engine_index - SPIKE];
+                let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike, data);
+                return axis(attack_box.center) - axis(attack_box.right).abs() - axis(attack_box.up).abs();
+            }
             let engine = self.engines[engine_index];
             let basis = Vec2::angle(engine.collider_rotation);
             let surface = data::surface_extents(data.engine.rocket_extents * engine.scale);
@@ -33289,8 +33324,13 @@ impl RolloutWorld {
             (a.max(b), a.min(b))
         });
         for &(index, engine_index, contact) in engine_contacts.iter() {
-            let engine = self.engines[engine_index];
-            let platform = engine.platform_index;
+            let (platform, child_inverse_mass) = if engine_index >= SPIKE {
+                let spike = self.spike_attacks[engine_index - SPIKE];
+                (spike.platform_index, spike.body.inverse_mass)
+            } else {
+                let engine = self.engines[engine_index];
+                (engine.platform_index, engine.body.inverse_mass)
+            };
             let (mut circle_body, circle_position) = if index >= SHOT {
                 let shot = self.portal_shots[index - SHOT];
                 (shot.body, shot.position)
@@ -33308,7 +33348,7 @@ impl RolloutWorld {
             let correction = positional_correction(
                 contact,
                 circle_body.inverse_mass,
-                engine.body.inverse_mass,
+                child_inverse_mass,
                 false,
             );
             if index >= SHOT {
@@ -33331,7 +33371,11 @@ impl RolloutWorld {
             }
             self.platform_dynamics[platform].body = platform_body;
             self.platform_dynamics[platform].composite_position += correction[1];
-            self.engines[engine_index].collider_center += correction[1];
+            if engine_index >= SPIKE {
+                self.spike_attacks[engine_index - SPIKE].collider_center += correction[1];
+            } else {
+                self.engines[engine_index].collider_center += correction[1];
+            }
         }
         for item in &self.thrown_items {
             let Some(entity) = item.entity.filter(|_| item.active) else {
