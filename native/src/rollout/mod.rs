@@ -27441,7 +27441,11 @@ impl RolloutWorld {
                 .last()
                 .expect("ScaleChanger curve has keys")
                 .time;
-            if effect.time > duration {
+            // A dead player's slime and ability colliders are destroyed, and
+            // the changer destroys itself on seeing its victim gone.
+            if effect.time > duration
+                || (effect.target_kind == 0 && !self.players[effect.victim].base.alive)
+            {
                 self.scale_changers[index].active = false;
                 continue;
             }
