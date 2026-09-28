@@ -25954,6 +25954,13 @@ impl RolloutWorld {
         // QuantumTunnel.Init reassigns the victim's rotation, which rebuilds
         // its basis from the angle and drops the exact aimed vector.
         slot.base.up = Vec2::angle(slot.base.rotation).perp();
+        // SetActive(false) freezes the form's box at the transform its
+        // PlayerBody already moved this pass (QuantumTunnel.cs:132-136).
+        if slot.active == ActiveAbility::BlackHole {
+            slot.black_hole_cast.collider_position = slot.base.position;
+            slot.black_hole_cast.collider_up = slot.base.up;
+            slot.black_hole_cast.collider_rotation = slot.base.rotation;
+        }
         slot.blink_tunnel_active = true;
         slot.blink_tunnel_born_tick = self.tick;
         slot.blink_tunnel_age = Fix::ZERO;
