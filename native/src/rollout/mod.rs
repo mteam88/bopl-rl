@@ -35455,6 +35455,8 @@ impl RolloutWorld {
         // CollisionInformation stores the shape as it was during narrow phase;
         // PlayerCollision's later squish callback tests that copy, before the
         // RR positional corrections below move either platform.
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let scratch = &mut self.scratch;
         scratch.callback_colliders.clear();
         scratch.callback_tick = Some(self.tick);
@@ -35519,6 +35521,12 @@ impl RolloutWorld {
         // DetPhysics' Box/RoundedRect group follows RoundedRect/RoundedRect.
         // SpikeAttack boxes are composite children, so impulses and
         // positional correction move their attached platform body.
+        // DetPhysics builds every Box/RoundedRect manifold before it resolves
+        // any, then resolves them in SortAndSweep pair order: by the later
+        // bounding-box minimum on the sweep axis, then the earlier one. Two
+        // children of one composite touching walls in the same pass meet the
+        // combined body in that order.
+        scratch.circle_wall_order.clear();
         scratch.spike_wall_contacts.clear();
         for (spike_index, spike) in self.spike_attacks.iter().enumerate() {
             if !spike.active || spike.macho_carried || spike.platform_index >= self.platforms.len()
@@ -35551,52 +35559,20 @@ impl RolloutWorld {
                 if let Some(contact) =
                     crate::physics::contact::rounded_rounded(attack_rr, platform.collider)
                 {
+                    let box_min = axis(attack_box.center)
+                        - axis(attack_box.right).abs()
+                        - axis(attack_box.up).abs();
+                    let wall_min = axis(scratch.bounds[wall_index][0]);
+                    let k = scratch.spike_wall_contacts.len();
+                    scratch
+                        .circle_wall_order
+                        .push((box_min.max(wall_min), box_min.min(wall_min), false, k));
                     scratch
                         .spike_wall_contacts
                         .push((spike_index, wall_index, contact));
                 }
             }
         }
-        for &(spike_index, wall_index, contact) in &scratch.spike_wall_contacts {
-            let parent_index = self.spike_attacks[spike_index].platform_index;
-            let spike_body_position = self.platform_dynamics[parent_index].composite_position;
-            let wall_center = if self.platform_dynamics[wall_index].attached_children == 0 {
-                self.platforms[wall_index].surface.center
-            } else {
-                self.platform_dynamics[wall_index].composite_position
-            };
-            let wall_child_inverse_mass = self.platform_dynamics[wall_index].root_body.inverse_mass;
-            let (spike_body, wall_body) = if parent_index < wall_index {
-                let (left, right) = self.platform_dynamics.split_at_mut(wall_index);
-                (&mut left[parent_index].body, &mut right[0].body)
-            } else {
-                let (left, right) = self.platform_dynamics.split_at_mut(parent_index);
-                (&mut right[0].body, &mut left[wall_index].body)
-            };
-            resolve(
-                contact,
-                spike_body,
-                wall_body,
-                spike_body_position,
-                wall_center,
-            );
-            let correction = positional_correction(
-                contact,
-                data.spike.attack_body.inverse_mass,
-                wall_child_inverse_mass,
-                false,
-            );
-            // Box correction moves the box and its CompositeBody.position,
-            // but does not directly move the rounded-rect child collider.
-            self.platform_dynamics[parent_index].composite_position += correction[0];
-            self.spike_attacks[spike_index].collider_center += correction[0];
-            self.platforms[wall_index].surface.center += correction[1];
-            self.platforms[wall_index].collider.inner.center += correction[1];
-            if self.platform_dynamics[wall_index].attached_children != 0 {
-                self.platform_dynamics[wall_index].composite_position += correction[1];
-            }
-        }
-
         // RocketEngine uses the same Box/RoundedRect physical group as a
         // SpikeAttack child, but has no collision callback of its own.
         scratch.engine_wall_contacts.clear();
@@ -35627,13 +35603,65 @@ impl RolloutWorld {
                 if let Some(contact) =
                     crate::physics::contact::rounded_rounded(box_rr, platform.collider)
                 {
+                    let box_min = axis(box_rr.inner.center)
+                        - axis(box_rr.inner.right).abs()
+                        - axis(box_rr.inner.up).abs();
+                    let wall_min = axis(scratch.bounds[wall_index][0]);
+                    let k = scratch.engine_wall_contacts.len();
+                    scratch
+                        .circle_wall_order
+                        .push((box_min.max(wall_min), box_min.min(wall_min), true, k));
                     scratch
                         .engine_wall_contacts
                         .push((engine_index, wall_index, contact));
                 }
             }
         }
-        for &(engine_index, wall_index, contact) in &scratch.engine_wall_contacts {
+        let mut order = std::mem::take(&mut scratch.circle_wall_order);
+        order.sort_by_key(|&(high, low, _, _)| (high, low));
+        for &(_, _, engine, k) in &order {
+            if !engine {
+                let (spike_index, wall_index, contact) = scratch.spike_wall_contacts[k];
+                let parent_index = self.spike_attacks[spike_index].platform_index;
+                let spike_body_position = self.platform_dynamics[parent_index].composite_position;
+                let wall_center = if self.platform_dynamics[wall_index].attached_children == 0 {
+                    self.platforms[wall_index].surface.center
+                } else {
+                    self.platform_dynamics[wall_index].composite_position
+                };
+                let wall_child_inverse_mass = self.platform_dynamics[wall_index].root_body.inverse_mass;
+                let (spike_body, wall_body) = if parent_index < wall_index {
+                    let (left, right) = self.platform_dynamics.split_at_mut(wall_index);
+                    (&mut left[parent_index].body, &mut right[0].body)
+                } else {
+                    let (left, right) = self.platform_dynamics.split_at_mut(parent_index);
+                    (&mut right[0].body, &mut left[wall_index].body)
+                };
+                resolve(
+                    contact,
+                    spike_body,
+                    wall_body,
+                    spike_body_position,
+                    wall_center,
+                );
+                let correction = positional_correction(
+                    contact,
+                    data.spike.attack_body.inverse_mass,
+                    wall_child_inverse_mass,
+                    false,
+                );
+                // Box correction moves the box and its CompositeBody.position,
+                // but does not directly move the rounded-rect child collider.
+                self.platform_dynamics[parent_index].composite_position += correction[0];
+                self.spike_attacks[spike_index].collider_center += correction[0];
+                self.platforms[wall_index].surface.center += correction[1];
+                self.platforms[wall_index].collider.inner.center += correction[1];
+                if self.platform_dynamics[wall_index].attached_children != 0 {
+                    self.platform_dynamics[wall_index].composite_position += correction[1];
+                }
+                continue;
+            }
+            let (engine_index, wall_index, contact) = scratch.engine_wall_contacts[k];
             let engine = self.engines[engine_index];
             let parent_index = engine.platform_index;
             let engine_body_position = self.platform_dynamics[parent_index].composite_position;
@@ -35671,6 +35699,8 @@ impl RolloutWorld {
                 self.platform_dynamics[wall_index].composite_position += correction[1];
             }
         }
+        order.clear();
+        scratch.circle_wall_order = order;
 
         if self.player_time_scale >= Fix::from_f32(0.01) {
             for contact_index in 0..self.scratch.spike_wall_contacts.len() {
