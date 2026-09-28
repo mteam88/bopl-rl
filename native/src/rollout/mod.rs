@@ -14450,7 +14450,7 @@ impl RolloutWorld {
             slot.reported_tick = self.tick;
             return;
         } else {
-            slot.base.radius = data::get().player.radius;
+            slot.restore_slime_radius();
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.base.grounded = false;
@@ -14458,6 +14458,8 @@ impl RolloutWorld {
             slot.base.grounded_speed = Fix::ZERO;
             slot.exit_to_fall();
             slot.base.collision_rays(terrain!(self));
+            // SlimeController.ExitAbility assigns Player.Scale to the hurtbox.
+            slot.set_ordinary_body_scale(slot.player_scale);
         }
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
