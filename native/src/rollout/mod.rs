@@ -21060,6 +21060,11 @@ impl RolloutWorld {
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
             let slot = &mut self.players[index];
+            // Move aligned the transform to the surface where the body stands;
+            // DetPhysics publishes that rotation.
+            if slot.base.grounded {
+                slot.missile.collider_rotation = slot.base.rotation;
+            }
             // SparkShot calls PlayerPhysics.Move(zero) above, then the later
             // PlayerBody component still integrates and damps external
             // velocity even while attached.
