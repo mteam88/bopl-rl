@@ -8002,7 +8002,10 @@ impl RolloutWorld {
                 | ActiveAbility::Throw
         );
         // MagnetGun's own check misses a ground destroyed earlier in this
-        // pass, which its later Move(zero) finds (MagnetGun.cs:1212, 1249).
+        // pass, which its later Move(zero) finds (MagnetGun.cs:1212, 1249);
+        // ControlPlatform and MeteorSmash's anticipation have only that Move
+        // (ControlPlatform.cs:137, MeteorSmash.cs:254), and Roll's check asks
+        // null or inactive before its own Move (Roll.cs:245-266, 406).
         // ThrowItem2 and MachoThrow2 keep a grounded body's record for their
         // own Move, which lifts off a ground not yet drained.
         let lost = if matches!(
@@ -8012,6 +8015,9 @@ impl RolloutWorld {
                 | ActiveAbility::Bow
                 | ActiveAbility::Missile
                 | ActiveAbility::Magnet
+                | ActiveAbility::Push
+                | ActiveAbility::Meteor
+                | ActiveAbility::Roll
         ) || finds_it_later && self.players[index].base.grounded
         {
             None
@@ -10006,12 +10012,19 @@ impl RolloutWorld {
             self.players[index].roll.jump_button_has_been_up = true;
         }
 
+        // OldUpdate's check asks null or !activeInHierarchy (Roll.cs:406): a
+        // ground an updater destroyed earlier in this pass is neither until
+        // the drain, and Roll's Move finds it instead. A null one is
+        // UnGround()ed, with nothing to lift off, before the exit.
         let ground_live = self.players[index].base.ground.is_some_and(|id| {
             self.platforms
                 .iter()
                 .any(|platform| platform.active && platform.id == id)
-        });
+        }) || self.players[index].dead_ground(self.tick).is_some();
         if self.players[index].base.grounded && !ground_live {
+            if self.players[index].ground_destroyed.take().is_some() {
+                self.players[index].base.unground_off(None, true);
+            }
             self.exit_roll(index, false, data);
             return;
         }
@@ -10155,12 +10168,16 @@ impl RolloutWorld {
             // charging. That decays the inherited grounded speed, advances
             // the retained surface local (including platform force), and
             // performs the ordinary platform-drop check.
-            self.players[index]
-                .base
-                .move_only(Vec2::ZERO, terrain!(self));
+            if !self.players[index].move_off_destroyed(self.tick) {
+                self.players[index]
+                    .base
+                    .move_only(Vec2::ZERO, terrain!(self));
+            }
             return;
         }
-        if speed == Fix::ZERO {
+        // On a destroyed ground Roll.Move's DropPlatformTest does nothing and
+        // it returns, still grounded (Roll.cs:263-266, PlayerPhysics.cs:287).
+        if speed == Fix::ZERO || self.players[index].dead_ground(self.tick).is_some() {
             return;
         }
         let hurtbox_radius = data.roll.radius * self.players[index].player_scale;
@@ -10421,7 +10438,9 @@ impl RolloutWorld {
                 self.players[index].meteor.ticks += 1;
                 // Anticipation is PlayerPhysics.Move(zero): the synced
                 // grounded speed keeps sliding under Meteor's friction.
-                if self.players[index].base.grounded {
+                if self.players[index].base.grounded
+                    && !self.players[index].move_off_destroyed(self.tick)
+                {
                     self.players[index].base.move_only(Vec2::ZERO, terrain!(self));
                 }
                 // The animator's Jump callback runs after Ability.UpdateSim.
@@ -11004,9 +11023,14 @@ impl RolloutWorld {
         // ControlPlatform delegates to PlayerPhysics.Move(zero) before its
         // Time Stop and grounded checks. This retains normal friction,
         // surface-local motion (including external force), and drop checks.
-        self.players[index]
-            .base
-            .move_only(Vec2::ZERO, terrain!(self));
+        // Its UnGround off a destroyed ground leaves the form airborne, and
+        // the dead ground no longer resolves, so it takes the `!IsGrounded`
+        // exit below (ControlPlatform.cs:142-146).
+        if !self.players[index].move_off_destroyed(self.tick) {
+            self.players[index]
+                .base
+                .move_only(Vec2::ZERO, terrain!(self));
+        }
         let Some(ground_id) = self.players[index].base.ground else {
             self.exit_push(index, data);
             return;
