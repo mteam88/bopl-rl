@@ -31635,7 +31635,7 @@ impl RolloutWorld {
         // the pair's later bounding box on the sweep axis, then the earlier
         // one's. A wall two items touch sees the first item's impulse and
         // correction before the second's.
-        let node_contacts = std::mem::take(&mut self.scratch.tesla_wall_contacts);
+        let mut node_contacts = std::mem::take(&mut self.scratch.tesla_wall_contacts);
         let mut order = std::mem::take(&mut self.scratch.circle_wall_order);
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
@@ -31695,6 +31695,9 @@ impl RolloutWorld {
         if !order.is_empty() {
             self.platforms_changed();
         }
+        // The manifolds belong to this pass. A game without Tesla never
+        // rebuilds them, and must not resolve a previous episode's.
+        node_contacts.clear();
         self.scratch.tesla_wall_contacts = node_contacts;
         self.scratch.circle_wall_order = order;
 
