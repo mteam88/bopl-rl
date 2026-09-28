@@ -1826,6 +1826,12 @@ impl RolloutWorld {
                     slot.state_ticks = 0;
                 }
             }
+            // Push.prefab's PlayerBody is authored with simulated off, so its
+            // late update (stretch check, end force) never runs; the form's
+            // PlayerPhysics above still pins a grounded end.
+            if self.players[player].active == ActiveAbility::Push {
+                continue;
+            }
             if overstretched(&self.ropes[rope_index]) {
                 self.attach_player_rope(player, None, top);
             }
