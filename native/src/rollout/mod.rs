@@ -37119,7 +37119,8 @@ impl RolloutWorld {
                 }
                 slot.respawn_spawn_ticks = data.player.fast_spawn_anim_ticks;
                 slot.base.position = data.maps[self.map].respawn_points[slot.respawn_selected];
-                // DetPhysics syncs the moved hurtbox at the end of the pass.
+                // ReSpawn simulates the body again (SlimeController.cs:591),
+                // so the hurtbox is exported at the chosen point this pass.
                 slot.base.sync_collider();
                 // The chooser is ordered before its replacement slime. Its
                 // ReSpawnFast call moves the body, then that slime's OldUpdate
