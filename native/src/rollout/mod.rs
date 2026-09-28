@@ -11453,6 +11453,14 @@ impl RolloutWorld {
         self.form_body_move(index, jump_pressed);
         // DetPhysics syncs the box to the body Move aligned to the surface.
         let slot = &mut self.players[index];
+        // Ability.EnterAbility and UpdateSim set `potentialCollider.Scale =
+        // player.Scale` (Ability.cs:103-106, 133), so the box keeps the
+        // inverse extents Box.SetExtents stored, which is what
+        // CollisionTest(Circle, Box) builds its normal from (PhysTools.cs:
+        // 767-820).
+        let scale = slot.player_scale;
+        let data = data::get();
+        slot.forms[slot.active_slot].set_scale(scale, data.spike.hurtbox_extents, data.player.radius);
         slot.spike_cast.collider_position = slot.base.position;
         slot.spike_cast.collider_up = slot.base.up;
         slot.spike_cast.collider_rotation = slot.base.rotation;
@@ -37638,8 +37646,11 @@ impl RolloutWorld {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
                     let center = position + center_basis.complex_mul(data.spike.collider_offset);
-                    let collider =
-                        OrientedBox::from_basis(center, collider_basis, data.spike.hurtbox_extents);
+                    let collider = slot.forms[slot.active_slot].hurtbox(
+                        center,
+                        collider_basis,
+                        data.spike.hurtbox_extents,
+                    );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
                     box_row.right_x = collider.right.x.raw();
