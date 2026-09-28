@@ -3,6 +3,16 @@
 use super::*;
 use crate::physics::rope::{Rope, RopeConfig};
 
+/// Where a RopeAttachment on an object updates relative to its parent.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RopeParentPass {
+    /// The parent is a Portal Gun shot fired after the hook.
+    NewerShot,
+    /// The parent is a tack thrown before the hook.
+    OlderTack,
+    Other,
+}
+
 const ROPE_POOL: usize = 128;
 const MAX_SEGMENTS: usize = 40;
 const MAX_CONTACTS: usize = 32;
@@ -1323,9 +1333,10 @@ impl RolloutWorld {
     /// Updater place: after a Portal Gun shot fired before the hook, which
     /// is already gone when the attachment looks if it landed this pass, and
     /// before one fired after it, whose first UpdateSim then resets the
-    /// velocity the pull added (PortalShot.cs:60-64). `newer_shots` picks the
-    /// attachments holding a shot fired after their hook.
-    pub(super) fn rope_parents_update(&mut self, newer_shots: bool) {
+    /// velocity the pull added (PortalShot.cs:60-64). A tack thrown before
+    /// the hook pins itself in its own BananaPeel.UpdateSim first, so the pull
+    /// on it waits for the tacks. `pass` picks the attachments of one place.
+    pub(super) fn rope_parents_update(&mut self, pass: RopeParentPass) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         for index in 0..self.ropes.len() {
             if !self.ropes[index].physics.enabled || self.ropes[index].born_tick == self.tick {
@@ -1334,9 +1345,20 @@ impl RolloutWorld {
             let Some(parent) = self.ropes[index].parent else {
                 continue;
             };
-            let newer_shot = matches!(parent, RopeParent::Shot(shot, _)
-                if self.portal_shots[shot].hierarchy_base > self.ropes[index].hierarchy);
-            if newer_shot != newer_shots {
+            let hierarchy = self.ropes[index].hierarchy;
+            let parent_pass = match parent {
+                RopeParent::Shot(shot, _) if self.portal_shots[shot].hierarchy_base > hierarchy => {
+                    RopeParentPass::NewerShot
+                }
+                RopeParent::Item(item, _)
+                    if self.thrown_items[item].ability == ABILITY_TACK
+                        && self.thrown_items[item].hierarchy_base < hierarchy =>
+                {
+                    RopeParentPass::OlderTack
+                }
+                _ => RopeParentPass::Other,
+            };
+            if parent_pass != pass {
                 continue;
             }
             let Some(position) =
