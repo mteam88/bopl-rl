@@ -11002,6 +11002,16 @@ impl RolloutWorld {
         {
             return (beam.hitbox.owner_id as u32, true, CAUSE_BEAMED);
         }
+        // SimpleSparkNode and StretchableLightning never assign their
+        // Explosion.PlayerOwnerId, so PlayerCollision credits its zero default.
+        if self
+            .tesla_nodes
+            .iter()
+            .chain(&self.retired_tesla_contacts)
+            .any(|node| node.entity == Some(entity) || node.line_entity == Some(entity))
+        {
+            return (0, true, CAUSE_OTHER);
+        }
         let row = self.entities[entity];
         if matches!(row.layer, 16 | 18) {
             (row.owner, true, CAUSE_OTHER)
