@@ -718,6 +718,9 @@ pub struct SpawnedSpike {
     pub scale: Fix,
     pub time: Fix,
     pub body: Body,
+    /// SpikeAttack.pushedThisFrame: only the first knock of a pass also
+    /// pushes the spike's own platform. UpdateSim clears it.
+    pub pushed_this_frame: bool,
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
@@ -2631,6 +2634,7 @@ struct PlatformScratch {
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
     engine_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
+    rock_spike_hits: Vec<(usize, usize, Vec2)>,
     tesla_wall_contacts: Vec<(usize, usize, Contact)>,
     item_order: Vec<usize>,
     item_window: Vec<usize>,
@@ -12175,6 +12179,7 @@ impl RolloutWorld {
             scale,
             time: Fix::ZERO,
             body: data.spike.attack_body,
+            pushed_this_frame: false,
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
@@ -12305,6 +12310,7 @@ impl RolloutWorld {
             .time;
         for index in 0..self.spike_attacks.len() {
             let attack = &mut self.spike_attacks[index];
+            attack.pushed_this_frame = false;
             if !attack.active || attack.macho_carried || attack.born_tick >= self.tick {
                 continue;
             }
@@ -12767,6 +12773,38 @@ impl RolloutWorld {
             up: (Vec2::UP * extents.y).complex_mul(basis),
             inverse_extents: Vec2::new(Fix::ONE / scaled_extents.x, Fix::ONE / scaled_extents.y),
         }
+    }
+
+    /// The SpikeAttack FixTransform: SyncGameObject places it at the box
+    /// collider's own corrected centre less its scaled offset.
+    fn spike_attack_root(&self, spike_index: usize, data: &data::RolloutData) -> Vec2 {
+        let spike = self.spike_attacks[spike_index];
+        let spike_right = Vec2::angle(
+            self.platform_dynamics[spike.platform_index].body.orientation
+                + spike.relative_rotation,
+        );
+        spike.collider_center
+            - (data.spike.attack_collider_offset * spike.scale).complex_mul(spike_right)
+    }
+
+    /// SpikeAttack.OnCollide's push back on its own platform, once per pass.
+    fn spike_attack_self_push(
+        &mut self,
+        spike_index: usize,
+        point: Vec2,
+        strength: Fix,
+        data: &data::RolloutData,
+    ) {
+        if self.spike_attacks[spike_index].pushed_this_frame {
+            return;
+        }
+        let direction = (point - self.spike_attack_root(spike_index, data)).normalized_safe();
+        let parent_index = self.spike_attacks[spike_index].platform_index;
+        self.platform_dynamics[parent_index].body.apply_impulse(
+            -direction * strength * data.spike.self_push_multiplier,
+            direction,
+        );
+        self.spike_attacks[spike_index].pushed_this_frame = true;
     }
 
     fn spike_contacts(&mut self, data: &data::RolloutData) {
@@ -24274,6 +24312,7 @@ impl RolloutWorld {
             scale: source.scale,
             time: Fix::ZERO,
             body: data.spike.attack_body,
+            pushed_this_frame: false,
             duplicated: true,
             duplicate_lifespan: 1800,
             duplicate_shake_offset: Vec2::ZERO,
@@ -33976,6 +34015,7 @@ impl RolloutWorld {
         // combined body at CompositeBody.position; PositionalCorrection the
         // box's own inverse mass, moving the box and CompositeBody.position.
         // BounceBall adds no bounce for the LethalTerrain layer.
+        let mut rock_spike_hits = std::mem::take(&mut self.scratch.rock_spike_hits);
         for rock_index in 0..self.players.len() {
             if self.players[rock_index].active != ActiveAbility::Rock || !self.playable(rock_index)
             {
@@ -34025,8 +34065,29 @@ impl RolloutWorld {
                 self.players[rock_index].base.velocity = rock_velocity;
                 self.platform_dynamics[platform].composite_position += correction[1];
                 self.spike_attacks[spike_index].collider_center += correction[1];
+                rock_spike_hits.push((rock_index, spike_index, contact.point));
             }
         }
+        // SpikeAttack.OnCollide runs after every group has resolved: while
+        // young, it knocks the Rock's circle away from the spike's
+        // FixTransform, which the physics sync already left at the corrected
+        // pose.
+        if self.player_time_scale >= Fix::from_f32(0.01) {
+            for &(rock_index, spike_index, point) in &rock_spike_hits {
+                if self.spike_attacks[spike_index].time >= data.spike.push_time {
+                    continue;
+                }
+                let direction =
+                    (point - self.spike_attack_root(spike_index, data)).normalized_safe();
+                let rock = &mut self.players[rock_index];
+                let arm = (point - rock.base.position).normalized_safe();
+                rock.rock.body.apply_impulse(direction * data.spike.knock_player, arm);
+                rock.base.velocity = rock.rock.body.velocity;
+                self.spike_attack_self_push(spike_index, point, data.spike.knock_player, data);
+            }
+        }
+        rock_spike_hits.clear();
+        self.scratch.rock_spike_hits = rock_spike_hits;
 
         // Every live Player-layer slime/form callback sees Rock's Ability and
         // credits its owner. BounceBall independently queues its bounce force.
@@ -34860,34 +34921,20 @@ impl RolloutWorld {
         }
 
         if self.player_time_scale >= Fix::from_f32(0.01) {
-            let mut pushed_spike = usize::MAX;
-            for &(spike_index, wall_index, contact) in &scratch.spike_wall_contacts {
+            for contact_index in 0..self.scratch.spike_wall_contacts.len() {
+                let (spike_index, wall_index, contact) =
+                    self.scratch.spike_wall_contacts[contact_index];
                 if self.spike_attacks[spike_index].time >= data.spike.push_time {
                     continue;
                 }
-                let parent_index = self.spike_attacks[spike_index].platform_index;
-                let spike_rotation = self.platform_dynamics[parent_index].body.orientation
-                    + self.spike_attacks[spike_index].relative_rotation;
-                let spike_right = Vec2::angle(spike_rotation);
-                // SyncGameObject places the FixTransform at the box collider's
-                // own corrected centre less its scaled offset.
-                let spike_root = self.spike_attacks[spike_index].collider_center
-                    - (data.spike.attack_collider_offset * self.spike_attacks[spike_index].scale)
-                        .complex_mul(spike_right);
+                let spike_root = self.spike_attack_root(spike_index, data);
                 let direction = (contact.point - spike_root).normalized_safe();
                 let wall_arm =
                     (contact.point - self.platforms[wall_index].surface.center).normalized_safe();
                 self.platform_dynamics[wall_index]
                     .body
                     .apply_impulse(direction * data.spike.knock_wall, wall_arm);
-                if pushed_spike != spike_index {
-                    let self_arm = (contact.point - spike_root).normalized_safe();
-                    self.platform_dynamics[parent_index].body.apply_impulse(
-                        -direction * data.spike.knock_wall * data.spike.self_push_multiplier,
-                        self_arm,
-                    );
-                    pushed_spike = spike_index;
-                }
+                self.spike_attack_self_push(spike_index, contact.point, data.spike.knock_wall, data);
             }
         }
 
