@@ -7908,6 +7908,13 @@ impl RolloutWorld {
             if slot.base.grounded {
                 slot.rewind.attached_ground = slot.base.ground;
             }
+            // The slime's DestroyIfOutsideSceneBounds still runs before
+            // PlayerBody, so a rewind path through the water drowns it.
+            if slot.base.outside_bounds() {
+                slot.base.alive = false;
+                slot.base.out_of_bounds = true;
+                return;
+            }
             self.form_body_move(index, jump_pressed);
             return;
         }
