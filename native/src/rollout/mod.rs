@@ -6618,7 +6618,7 @@ impl RolloutWorld {
         }
         // The global circle/circle pass: items, Portal shots, and Tesla
         // nodes of different platforms.
-        if has_thrown_item || has(ABILITY_TESLA) {
+        if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_PORTAL_GUN) {
             self.thrown_item_pair_contacts(data);
         }
         if has(ABILITY_PORTAL_GUN) {
