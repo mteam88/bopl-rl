@@ -6201,8 +6201,21 @@ impl RolloutWorld {
             .min()
             .unwrap_or(u32::MAX);
         self.scratch.ropes_updated_below = if has_rope { first_hammer } else { u32::MAX };
+        // A TeleportIndicator firing this pass detaches the teleported
+        // players' ropes at its own turn, so a rope newer than it already
+        // sees the rope released and its RopeAttachment stops pulling.
+        let first_teleport = self
+            .players
+            .iter()
+            .filter_map(|slot| slot.teleport_pending_marker)
+            .map(|marker| self.teleport_marker_pool[marker])
+            .filter(|marker| marker.active)
+            .map(|marker| marker.hierarchy_base)
+            .min()
+            .unwrap_or(u32::MAX);
+        let ropes_before_clones = first_clone.min(first_hammer);
         if has_rope {
-            self.ropes_update(0..first_clone.min(first_hammer));
+            self.ropes_update(0..ropes_before_clones.min(first_teleport));
         }
         if has(ABILITY_BEAM) {
             self.beam_orbs_tick(data);
@@ -6277,6 +6290,9 @@ impl RolloutWorld {
         if has(ABILITY_TELEPORT) {
             self.teleport_effects_tick(data, updater_dt);
             self.teleport_pending_tick(data);
+        }
+        if has_rope && first_teleport < ropes_before_clones {
+            self.ropes_update(first_teleport..ropes_before_clones);
         }
         if has(ABILITY_BLINK) {
             self.blink_tunnels_tick(data, updater_dt);
