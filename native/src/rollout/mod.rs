@@ -6225,7 +6225,7 @@ impl RolloutWorld {
         for a in 0..self.players.len() {
             for b in a + 1..self.players.len() {
                 let (pa, pb) = (a, b);
-                if !self.playable(pa) || !self.playable(pb) {
+                if !self.shoves(pa) || !self.shoves(pb) {
                     continue;
                 }
                 if !Self::slime_collider_enabled(&self.players[pa])
@@ -6233,11 +6233,19 @@ impl RolloutWorld {
                 {
                     continue;
                 }
+                // OnCollide breaks an exact overlap by which collider is
+                // earlier in the hierarchy, not by player index.
+                let hierarchy = |i: usize| {
+                    self.entities
+                        .get(Self::hurtbox_entity(&self.players[i]))
+                        .map(|row| row.hierarchy)
+                };
+                let pa_first = hierarchy(pa) < hierarchy(pb);
                 if self.players[pa].active == ActiveAbility::None {
-                    self.scratch.slime_shoves.push((pa, pb, true));
+                    self.scratch.slime_shoves.push((pa, pb, pa_first));
                 }
                 if self.players[pb].active == ActiveAbility::None {
-                    self.scratch.slime_shoves.push((pb, pa, false));
+                    self.scratch.slime_shoves.push((pb, pa, !pa_first));
                 }
             }
         }
@@ -8035,6 +8043,21 @@ impl RolloutWorld {
             && slot.revival_effect_ticks == 0
             && !slot.teleport_effect_active
             && !slot.blink_tunnel_active
+    }
+
+    /// BeforeSpawnInit enables the hurtbox for the spawn animation while the
+    /// body is not simulated, so a spawning slime already shoves and is
+    /// shoved by overlapping slimes.
+    fn shoves(&self, index: usize) -> bool {
+        let slot = &self.players[index];
+        self.playable(index)
+            || (slot.base.alive
+                && slot.unspawned == 0
+                && slot.respawn_ticks == 0
+                && slot.respawn_spawn_ticks > 0
+                && !slot.revival_clone_pending
+                && !slot.stock_clone_pending
+                && slot.revival_effect_ticks == 0)
     }
 
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
@@ -36763,6 +36786,7 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity = Vec2::ZERO;
             slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
             slot.base.grounded = false;
             slot.base.ground = None;
             slot.base.grounded_speed = Fix::ZERO;
@@ -36944,10 +36968,11 @@ impl RolloutWorld {
             slot.respawn_spawn_ticks -= 1;
             if slot.respawn_spawn_ticks == 0 {
                 // SlimeController.Spawn pops the clone upward at 1/4 jump
-                // strength, then reenables simulation and input.
+                // strength, then reenables simulation and input. It keeps the
+                // external velocity overlap shoves gave the body during the
+                // animation.
                 slot.base.velocity =
                     Vec2::UP * data.player.constants.jump_strength * Fix::from_f32(0.25);
-                slot.base.external_velocity = Vec2::ZERO;
                 slot.base.grounded = false;
                 slot.base.ground = None;
                 slot.base.grounded_speed = Fix::ZERO;
