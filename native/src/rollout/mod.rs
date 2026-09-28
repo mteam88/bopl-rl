@@ -23275,7 +23275,21 @@ impl RolloutWorld {
                         duration: data.magnet.fire_ragdoll_duration,
                     };
                     slot.obs_state = STATE_RAGDOLL;
-                    slot.base.collision_rays(terrain!(self));
+                    // Shoot then casts the landing rays over a 0.0001 s step
+                    // (MagnetGun.cs:474). attachToGround puts the slime
+                    // straight into State.land, ending the ragdoll. A slime
+                    // updating after its holder lands in its own ragdoll pass;
+                    // one updating before it has already run its animator.
+                    let attached =
+                        slot.base.collision_rays_over(terrain!(self), Fix::from_f64(0.0001));
+                    if attached && i < index {
+                        slot.ragdoll.active = false;
+                        if slot.base.attach_upside_down == Some(true) {
+                            slot.facing_right = !slot.facing_right;
+                        }
+                        slot.obs_state = STATE_LAND;
+                        slot.state_ticks = LAND_TICKS + 1;
+                    }
                 }
                 if speed.y > Fix::ZERO
                     && let Some(rope_index) = rope

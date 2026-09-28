@@ -628,29 +628,36 @@ impl Player {
         self.attach_upside_down = Some(self.up.y < Fix::ZERO);
     }
     pub(crate) fn collision_rays(&mut self, terrain: Terrain) {
+        self.collision_rays_over(terrain, DT);
+    }
+    /// VelocityBasedRaycasts with the caller's time step, which scales the
+    /// rays' length. Returns whether a ray hit and attached the body.
+    pub(crate) fn collision_rays_over(&mut self, terrain: Terrain, dt: Fix) -> bool {
         let velocity = self.velocity + self.external_velocity;
         // One broad phase over the box covering all three rays, then only
         // the candidates are raycast per ray. When the mask is empty the rays are still issued
         // so `collision_cast` keeps its exact control flow, but cost nothing.
-        let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, DT);
+        let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, dt);
         // No platform near any of the rays: every query would return None and
         // `collision_cast` would only have spent a square root and divisions
         // building rays that hit nothing.
         if candidates == 0 {
-            return;
+            return false;
         }
         if let Some((index, position)) = crate::player_physics::collision_cast(
             self.position,
             velocity,
             self.radius,
-            DT,
+            dt,
             &mut |origin, direction, distance| {
                 closest_among(terrain, candidates, origin, direction, distance, None)
                     .map(|(index, _, point)| (index, point))
             },
         ) {
             self.attach(&terrain.platforms[index], position);
+            return true;
         }
+        false
     }
 
     fn jump(&mut self, platforms: &[Platform]) {
