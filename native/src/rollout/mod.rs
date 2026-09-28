@@ -13600,27 +13600,11 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // SpikeAttack's Explosion has igniteFlammables, but its
+            // LethalTerrain layer never pairs with Smoke, so the attack does
+            // not light a cloud.
             let attack_box = self.spike_attack_box(spike, data);
             let mut victims = [None; MAX_PLAYERS];
-            for cloud in &mut self.smoke_clouds {
-                if !cloud.active || !cloud.registered {
-                    continue;
-                }
-                let entity = cloud.entity.expect("registered smoke cloud");
-                if self.entities[entity].flags & E_ENABLED != 0
-                    && crate::physics::contact::circle_box(
-                        Circle {
-                            center: cloud.position,
-                            radius: Fix::from_raw(self.entities[entity].radius),
-                        },
-                        attack_box,
-                    )
-                    .is_some()
-                {
-                    cloud.ignition_time = Fix::ZERO;
-                    self.entities[entity].flags = E_ACTIVE;
-                }
-            }
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 if !self.playable(player_index) {
                     continue;
