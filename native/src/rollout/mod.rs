@@ -2781,6 +2781,25 @@ impl PlayerSlot {
         self.physics_scale = hurtbox_scale(self.player_scale);
     }
 
+    /// SlimeController resets a released IgnoreNextCooldown slot to its
+    /// cooldown at the head of that slot's cast check, so a cast in an earlier
+    /// slot returns before the later slots are reset (SlimeController.cs:
+    /// 818-831). Holding the second press skips it too, allowing the
+    /// just-incremented timer to pass the strict readiness comparison.
+    fn reset_ignored_cooldown(&mut self, s: usize, button_down: bool) {
+        let ignore_cooldown = match self.abilities[s] {
+            ABILITY_REWIND => !self.rewind.rewinding && self.rewind.finish_next_tick,
+            ABILITY_TELEPORT => self.teleport_ignore_cooldown[s],
+            _ => false,
+        };
+        if ignore_cooldown && !button_down {
+            self.timers[s] = self.cooldowns[s];
+            if self.abilities[s] == ABILITY_REWIND {
+                self.rewind.finish_next_tick = false;
+            }
+        }
+    }
+
     fn set_ordinary_body_scale(&mut self, scale: Fix) {
         let scale = hurtbox_scale(scale);
         // SlimeController assigns hurtBox.Scale every pass even when the
@@ -5081,6 +5100,7 @@ impl RolloutWorld {
                 slot.portal_blue[2] = None;
                 slot.teleport_ignore_cooldown[2] = false;
                 slot.portal_orange[2] = None;
+                slot.teleport_markers[2] = None;
                 for spawn in &mut self.spawned {
                     if spawn.buffer == Some((player_index, 2)) {
                         spawn.buffer = None;
@@ -8363,6 +8383,11 @@ impl RolloutWorld {
                 *timer += DT;
             }
             slot.slime_updated = true;
+            // suppressInput only blocks the casts; each slot's
+            // IgnoreNextCooldown reset still runs (SlimeController.cs:818-824).
+            for s in 0..3 {
+                slot.reset_ignored_cooldown(s, action.buttons & (2 << s) as u8 != 0);
+            }
             slot.base.move_only(Vec2::ZERO, terrain!(self));
             // A landing inside Move retargets attachedGround, which the
             // arrival's UnGround lifts off (RewindRecorder.cs:358).
@@ -8503,25 +8528,9 @@ impl RolloutWorld {
             self.players[index].slime_updated = true;
             self.players[index].slime_input = movement_input;
             for s in 0..3 {
-                let slot = &mut self.players[index];
                 let button_down = action.buttons & (2 << s) as u8 != 0;
-                // SlimeController resets an IgnoreNextCooldown slot on every
-                // released frame, in the same walk that enters an ability and
-                // returns (SlimeController.cs:818-830), so a cast skips the
-                // later slots' reset. Holding the second press skips it too,
-                // allowing the just-incremented timer to pass the strict
-                // readiness comparison.
-                let ignore_cooldown = match slot.abilities[s] {
-                    ABILITY_REWIND => !slot.rewind.rewinding && slot.rewind.finish_next_tick,
-                    ABILITY_TELEPORT => slot.teleport_ignore_cooldown[s],
-                    _ => false,
-                };
-                if ignore_cooldown && !button_down {
-                    slot.timers[s] = slot.cooldowns[s];
-                    if slot.abilities[s] == ABILITY_REWIND {
-                        slot.rewind.finish_next_tick = false;
-                    }
-                }
+                self.players[index].reset_ignored_cooldown(s, button_down);
+                let slot = &self.players[index];
                 // SlimeController.isAbilityReady uses a strict comparison.
                 if !button_down || slot.timers[s] <= slot.cooldowns[s] {
                     continue;
