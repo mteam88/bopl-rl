@@ -11162,7 +11162,7 @@ impl RolloutWorld {
                 }
                 1 => {
                     let target = hit.index;
-                    if !self.playable(target) {
+                    if !self.hittable(target) {
                         continue;
                     }
                     self.players[index].base.position = near;
@@ -13704,7 +13704,7 @@ impl RolloutWorld {
             let attack_box = self.spike_attack_box(spike, data);
             let mut victims = [None; MAX_PLAYERS];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if !self.playable(player_index) {
+                if !self.hittable(player_index) {
                     continue;
                 }
                 let slot = &self.players[player_index];
@@ -15350,7 +15350,7 @@ impl RolloutWorld {
                     self.entities[entity].flags = E_DESTROYED | E_TRIGGER;
                     self.entities[entity].owner = 0;
                 }
-            } else if self.playable(index) {
+            } else if self.hittable(index) {
                 // BlackHole explicitly requests no ordinary death effect,
                 // while still executing from DetPhysics's callback queue.
                 // A form gets Ability.ExitAbility at its FixTransform, not
@@ -15681,7 +15681,7 @@ impl RolloutWorld {
                     ),
                 };
                 for victim in 0..self.players.len() {
-                    if victim == attacker || !self.playable(victim) {
+                    if victim == attacker || !self.hittable(victim) {
                         continue;
                     }
                     let other = &self.players[victim];
@@ -15777,7 +15777,7 @@ impl RolloutWorld {
         }
         order[..count].sort_by_key(|&victim| keys[victim]);
         for &victim in &order[..count] {
-            if victims[victim] && self.playable(victim) {
+            if victims[victim] && self.hittable(victim) {
                 self.kill(victim, killers[victim], CAUSE_OTHER, true, true);
             }
         }
@@ -17003,7 +17003,7 @@ impl RolloutWorld {
             };
             let swept = swept.bounds(Fix::ZERO);
             for victim in 0..self.players.len() {
-                if victims[victim] || !self.playable(victim) {
+                if victims[victim] || !self.hittable(victim) {
                     continue;
                 }
                 // PlayerCollision.IgnoreBeamId only suppresses the owning
@@ -17131,7 +17131,7 @@ impl RolloutWorld {
             }
         }
         for victim in 0..self.players.len() {
-            if victims[victim] && self.playable(victim) {
+            if victims[victim] && self.hittable(victim) {
                 self.kill(victim, killers[victim], CAUSE_BEAMED, true, true);
             }
         }
@@ -30938,7 +30938,7 @@ impl RolloutWorld {
         // slime objects before the subsequently spawned empty clones.
         for player_index in 0..self.players.len() {
             if player_index == owner
-                || !self.playable(player_index)
+                || !self.hittable(player_index)
                 || self.players[player_index].active != ActiveAbility::None
                 || self.players[player_index].poke_invulnerable
                 || item.killed_players & (1 << player_index) != 0
@@ -32007,7 +32007,7 @@ impl RolloutWorld {
             // rotation and scale match every active form. Rock was consumed
             // above because its BoplBody changes Arrow.OnCollide semantics.
             for (j, player) in self.players.iter().enumerate() {
-                if !self.playable(j)
+                if !self.hittable(j)
                     || player.active == ActiveAbility::Rock
                     || (player.base.id == arrow.owner && !arrow.can_hurt_owner)
                 {
@@ -32535,7 +32535,7 @@ impl RolloutWorld {
         missile_box: OrientedBox,
     ) -> usize {
         self.players.iter().enumerate().filter(|&(index, player)| {
-            if !self.playable(index) || missile.magnet_holder == Some(index) {
+            if !self.hittable(index) || missile.magnet_holder == Some(index) {
                 return false;
             }
             let entity = match player.active {
@@ -33603,7 +33603,7 @@ impl RolloutWorld {
                 radius: item_radius,
             };
             for player_index in 0..self.players.len() {
-                if !self.playable(player_index) || !self.player_swept_pairs(player_index, swept) {
+                if !self.hittable(player_index) || !self.player_swept_pairs(player_index, swept) {
                     continue;
                 }
                 let player = &self.players[player_index];
@@ -33714,7 +33714,7 @@ impl RolloutWorld {
             );
             let mut victims = [false; MAX_PLAYERS];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if !self.playable(player_index) {
+                if !self.hittable(player_index) {
                     continue;
                 }
                 let player = &self.players[player_index];
@@ -33767,7 +33767,7 @@ impl RolloutWorld {
             );
             let mut victims = [false; MAX_PLAYERS];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if !self.playable(player_index) {
+                if !self.hittable(player_index) {
                     continue;
                 }
                 let player = &self.players[player_index];
@@ -33927,7 +33927,7 @@ impl RolloutWorld {
             };
             let mut victims = [false; MAX_PLAYERS];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if player_index == orb.owner || !self.playable(player_index) {
+                if player_index == orb.owner || !self.hittable(player_index) {
                     continue;
                 }
                 let player = &self.players[player_index];
@@ -34090,7 +34090,7 @@ impl RolloutWorld {
                 inverse_extents: Vec2::new(Fix::ONE / smear.right.x, Fix::ONE / smear.up.y),
             };
             for player_index in 0..self.players.len() {
-                if player_index == smear.owner || !self.playable(player_index) {
+                if player_index == smear.owner || !self.hittable(player_index) {
                     continue;
                 }
                 let row = self.entities[Self::hurtbox_entity(&self.players[player_index])];
@@ -35896,7 +35896,7 @@ impl RolloutWorld {
             };
             for victim in 0..self.players.len() {
                 if victim == rock_index
-                    || !self.playable(victim)
+                    || !self.hittable(victim)
                     || self.players[victim].active == ActiveAbility::Rock
                 {
                     continue;
@@ -35947,7 +35947,7 @@ impl RolloutWorld {
         }
         for victim_offset in 0..victim_count {
             let victim = victims[victim_offset];
-            if self.playable(victim) {
+            if self.hittable(victim) {
                 self.kill(victim, killers[victim_offset], CAUSE_OTHER, true, true);
             }
         }
