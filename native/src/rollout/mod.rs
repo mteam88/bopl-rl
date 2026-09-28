@@ -2391,6 +2391,9 @@ pub struct PlayerSlot {
     /// Each MagnetGun's `extraOffset`, set from the object it picks up and
     /// never cleared: it outlasts the hold and the use, into the next cast.
     pub magnet_extra_offsets: [Vec2; 3],
+    /// Each MachoThrow2's `boulderType`: the ground it was last entered on,
+    /// kept through an airborne entry. Its boulders are ice when that was.
+    pub macho_boulder_ice: [bool; 3],
     pub magnet_prev_scales: [Fix; 3],
     /// PlayerPhysics.gravity_modifier on each slot's GunTransform, MagnetGun or
     /// BowTransform form. Entering airborne sets 0.03 and firing sets 1, but entering
@@ -4280,6 +4283,7 @@ impl RolloutWorld {
                 magnet: MagnetState::default(),
                 magnet_firepoint_offsets: [data.magnet.firepoint_offset; 3],
                 magnet_extra_offsets: [Vec2::ZERO; 3],
+                macho_boulder_ice: [false; 3],
                 magnet_prev_scales: [Fix::ONE; 3],
                 form_gravity: [Fix::ONE; 3],
                 ragdoll: RagdollState::default(),
@@ -9750,6 +9754,7 @@ impl RolloutWorld {
                         if let Some(platform) = ground
                             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
                         {
+                            self.players[index].macho_boulder_ice[s] = platform.ice;
                             let aim = action.direction();
                             let dot = platform.surface.normal(form_position).perp_cw().dot(aim);
                             if dot > Fix::ZERO {
@@ -17367,12 +17372,8 @@ impl RolloutWorld {
             bounds_radius: radius,
         };
         let platform_index = self.platforms.len();
-        self.platforms.push(make_platform(
-            self.next_platform_id,
-            &surface,
-            extents,
-            false,
-        ));
+        let ice = self.players[owner].macho_boulder_ice[self.players[owner].active_slot];
+        self.platforms.push(make_platform(self.next_platform_id, &surface, extents, ice));
         self.next_platform_id += 1;
         self.platform_dynamics.push(PlatformDynamics {
             body: data.macho_throw.boulder_body,
