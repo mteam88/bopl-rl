@@ -1761,8 +1761,9 @@ pub struct MachoThrowState {
     pub current_dummy_pos: Vec2,
     pub held_boulder: Option<usize>,
     /// LateUpdateSim's UpdateHeldBoulder pose, taken after DetPhysics pushed
-    /// the body. It moves only the boulder's body, so it is unobserved unless
-    /// Fire launches from it before the next UpdateSim rewrites the pose.
+    /// the body. It moves only the boulder's FixTransform, so the collider
+    /// keeps the physics pose unless Fire launches from it before the next
+    /// UpdateSim rewrites the pose.
     pub late_pose: Option<(Vec2, Fix)>,
     /// RocketEngine selected by pickUpNearbyAttachables. The source keeps the
     /// same inactive object until SpawnBoulder reparents and reinitializes it.
@@ -16259,7 +16260,16 @@ impl RolloutWorld {
             self.players[index].macho_throw.late_pose = None;
             self.place_macho_boulder(platform_index, position, rotation);
         } else {
+            // `hitbox.position` and `hitbox.rotation` are FixTransform
+            // properties (DPhysicsRoundedRect.cs:138-160), so the next pass's
+            // StickyRoundedRectangle.LocalPlayerPosFromPos reads this pose
+            // for a slime landing before MachoThrow2 updates again.
             self.players[index].macho_throw.late_pose = Some((position, rotation));
+            let surface = &mut self.platforms[platform_index].surface;
+            surface.center = position;
+            surface.right = Vec2::angle(rotation);
+            surface.up = surface.right.perp();
+            self.platform_dynamics[platform_index].transform_rotation = Some(rotation);
         }
         self.platform_dynamics[platform_index].body.velocity = Vec2::ZERO;
         self.platform_dynamics[platform_index].body.angular_velocity = Fix::ZERO;
@@ -37454,10 +37464,11 @@ impl RolloutWorld {
         self.platform_rows_epoch = self.platform_epoch;
         for (i, platform) in self.platforms.iter().enumerate() {
             let e = &mut self.entities[self.platform_entities[i]];
-            let s = &platform.surface;
             let dynamics = &self.platform_dynamics[i];
-            e.x = s.center.x.raw();
-            e.y = s.center.y.raw();
+            // RlObservation publishes the DetPhysics box centre, not the
+            // FixTransform a held Boulder's LateUpdateSim moves on its own.
+            e.x = platform.collider.inner.center.x.raw();
+            e.y = platform.collider.inner.center.y.raw();
             let observed_body = if dynamics.attached_children == 0 {
                 &dynamics.body
             } else {
