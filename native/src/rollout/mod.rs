@@ -7064,7 +7064,10 @@ impl RolloutWorld {
                 radius: data.portal_gun.shot_radius,
             };
             if let Some((wall_index, contact)) = (0..self.platforms.len())
-                .filter(|&wall_index| self.scratch.swept_pairs(self.tick, wall_index, circle))
+                .filter(|&wall_index| {
+                    self.platforms[wall_index].active
+                        && self.scratch.swept_pairs(self.tick, wall_index, circle)
+                })
                 .find_map(|wall_index| {
                     crate::physics::contact::circle_rounded(circle, self.circle_collider(wall_index))
                         .map(|contact| (wall_index, contact))
