@@ -2196,6 +2196,25 @@ impl DestroyedGround {
     }
 }
 
+/// UnGround(false) from anywhere but the rider's own lost-ground check. The
+/// record is spent: attachedGround is null afterwards, so no later check this
+/// pass lifts the body again.
+fn force_unground(
+    body: &mut Player,
+    lost: &mut Option<DestroyedGround>,
+    platforms: &[Platform],
+    tick: u32,
+) {
+    let lost = lost.take();
+    body.force_unground(platforms, lost.as_ref().and_then(|lost| lost.attached(tick)));
+}
+
+impl AbilitylessClone {
+    fn force_unground(&mut self, platforms: &[Platform], tick: u32) {
+        force_unground(&mut self.base, &mut self.ground_destroyed, platforms, tick);
+    }
+}
+
 /// One player's match state beyond the movement body.
 #[derive(Clone)]
 pub struct PlayerSlot {
@@ -2513,6 +2532,9 @@ pub struct PlayerSlot {
 }
 
 impl PlayerSlot {
+    fn force_unground(&mut self, platforms: &[Platform], tick: u32) {
+        force_unground(&mut self.base, &mut self.ground_destroyed, platforms, tick);
+    }
     /// Which PlayerBody carries the rope: the slime's, or the active form's.
     fn rope_body(&self) -> usize {
         if self.active == ActiveAbility::None { 0 } else { 1 + self.active_slot }
@@ -7629,9 +7651,7 @@ impl RolloutWorld {
                 let inward_speed = (-vin.dot(endpoint.normal)).max(Fix::from_int(2));
                 let sideways = vin.dot(endpoint.tangent);
                 let exit = self.portals[linked];
-                self.players[player_index]
-                    .base
-                    .force_unground(&self.platforms);
+                self.players[player_index].force_unground(&self.platforms, self.tick);
                 let slot = &mut self.players[player_index];
                 slot.base.position = exit.position + exit.normal * data.portal_gun.exit_offset;
                 slot.base.velocity = exit.normal * inward_speed - exit.tangent * sideways;
@@ -7673,12 +7693,13 @@ impl RolloutWorld {
                     continue;
                 };
                 self.portals[linked].player_inside[player_id] = true;
+                // UnGround leaves the velocity the portal redirects untouched.
+                self.abilityless_clones[clone_index].force_unground(&self.platforms, self.tick);
                 let clone = &mut self.abilityless_clones[clone_index].base;
                 let vin = clone.velocity + clone.external_velocity;
                 let inward_speed = (-vin.dot(endpoint.normal)).max(Fix::from_int(2));
                 let sideways = vin.dot(endpoint.tangent);
                 let exit = self.portals[linked];
-                clone.force_unground(&self.platforms);
                 clone.position = exit.position + exit.normal * data.portal_gun.exit_offset;
                 clone.velocity = exit.normal * inward_speed - exit.tangent * sideways;
                 clone.external_velocity = Vec2::ZERO;
@@ -8281,7 +8302,7 @@ impl RolloutWorld {
                         slot.telemetry.ability_activations[s] += 1;
                         if started {
                             slot.rewind.attached_ground = attached_ground;
-                            slot.base.force_unground(&self.platforms);
+                            slot.force_unground(&self.platforms, self.tick);
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                             // EnterAbility returns from OldUpdate, but this
@@ -9983,7 +10004,7 @@ impl RolloutWorld {
                 if slot.roll.jump_button_has_been_up && jump_down {
                     let right = slot.base.up.perp_cw();
                     let velocity = right * slot.roll.grounded_speed * Fix::from_f32(0.75);
-                    slot.base.force_unground(&self.platforms);
+                    slot.force_unground(&self.platforms, self.tick);
                     slot.base.rotation = Fix::ZERO;
                     slot.base.up = Vec2::UP;
                     slot.base.velocity = velocity;
@@ -18294,9 +18315,7 @@ impl RolloutWorld {
                 let rope_top = self.players[player_index].rope_top;
                 self.attach_player_rope(player_index, None, rope_top);
                 self.players[player_index].base.velocity = Vec2::ZERO;
-                self.players[player_index]
-                    .base
-                    .force_unground(&self.platforms);
+                self.players[player_index].force_unground(&self.platforms, self.tick);
                 self.players[player_index].base.rotation = Fix::ZERO;
                 self.players[player_index].base.up = Vec2::UP;
                 self.players[player_index].obs_state = STATE_FALL;
@@ -18320,7 +18339,7 @@ impl RolloutWorld {
         {
             let clone = &mut self.abilityless_clones[clone_index];
             clone.base.velocity = Vec2::ZERO;
-            clone.base.force_unground(&self.platforms);
+            clone.force_unground(&self.platforms, self.tick);
             clone.base.rotation = Fix::ZERO;
             clone.base.up = Vec2::UP;
             clone.base.position += shift;
@@ -20897,7 +20916,7 @@ impl RolloutWorld {
         if unground {
             self.players[index].base.rotation = Fix::ZERO;
             self.players[index].base.up = Vec2::UP;
-            self.players[index].base.force_unground(&self.platforms);
+            self.players[index].force_unground(&self.platforms, self.tick);
         }
         self.players[index].reported_position = self.players[index].base.position;
         true
@@ -21406,7 +21425,7 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
-            self.players[index].base.force_unground(&self.platforms);
+            self.players[index].force_unground(&self.platforms, self.tick);
         }
 
         if !self.players[index].base.grounded {
@@ -21424,7 +21443,7 @@ impl RolloutWorld {
             .expect("valid freeze-ray gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, terrain!(self));
+                bow_exit(slot, terrain!(self), self.tick);
                 return;
             }
         }
@@ -21499,7 +21518,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.freeze.knockback);
-            slot.base.force_unground(&self.platforms);
+            slot.force_unground(&self.platforms, self.tick);
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
         } else {
@@ -21558,7 +21577,7 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
-            self.players[index].base.force_unground(&self.platforms);
+            self.players[index].force_unground(&self.platforms, self.tick);
         }
 
         if !self.players[index].base.grounded {
@@ -21576,7 +21595,7 @@ impl RolloutWorld {
             .expect("valid Blink gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, terrain!(self));
+                bow_exit(slot, terrain!(self), self.tick);
                 return;
             }
         }
@@ -21651,7 +21670,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.blink.knockback);
-            slot.base.force_unground(&self.platforms);
+            slot.force_unground(&self.platforms, self.tick);
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
         } else {
@@ -21708,7 +21727,7 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
-            self.players[index].base.force_unground(&self.platforms);
+            self.players[index].force_unground(&self.platforms, self.tick);
         }
 
         if !self.players[index].base.grounded {
@@ -21726,7 +21745,7 @@ impl RolloutWorld {
             .expect("valid scale-ray gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, terrain!(self));
+                bow_exit(slot, terrain!(self), self.tick);
                 return;
             }
         }
@@ -21802,7 +21821,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * ray.knockback);
-            slot.base.force_unground(&self.platforms);
+            slot.force_unground(&self.platforms, self.tick);
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
         } else {
@@ -21854,7 +21873,7 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
-            self.players[index].base.force_unground(&self.platforms);
+            self.players[index].force_unground(&self.platforms, self.tick);
         }
 
         if !self.players[index].base.grounded {
@@ -22028,7 +22047,7 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
-            self.players[index].base.force_unground(&self.platforms);
+            self.players[index].force_unground(&self.platforms, self.tick);
         }
 
         if !self.players[index].base.grounded {
@@ -23573,7 +23592,7 @@ impl RolloutWorld {
         slot.base.rotation = facing.normalized_angle();
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.magnet.knockback);
-            slot.base.force_unground(&self.platforms);
+            slot.force_unground(&self.platforms, self.tick);
         } else {
             slot.base.velocity = -(aim * data.magnet.knockback);
         }
@@ -23606,7 +23625,7 @@ impl RolloutWorld {
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         if !landed {
-            slot.base.force_unground(terrain.platforms);
+            slot.force_unground(terrain.platforms, self.tick);
         }
         slot.active = ActiveAbility::None;
         slot.exit_to_fall();
@@ -23658,7 +23677,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * gun.knockback);
-            slot.base.force_unground(&self.platforms);
+            slot.force_unground(&self.platforms, self.tick);
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
         } else {
@@ -26683,7 +26702,7 @@ impl RolloutWorld {
         slot.frozen_solid_count = slot.frozen_solid_count.saturating_add(1);
         slot.ragdoll = RagdollState::default();
         slot.base.velocity = Vec2::ZERO;
-        slot.base.force_unground(&self.platforms);
+        slot.force_unground(&self.platforms, self.tick);
         // FrozenSolid.Begin applies ragdoll first, then UnGround invokes
         // SlimeController.OnNoLongerGrounded and overwrites the state with
         // Fall. Until FrozenSolid's first pass (it updates after the slimes,
@@ -27541,7 +27560,7 @@ impl RolloutWorld {
         slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
-        slot.base.force_unground(terrain.platforms);
+        slot.force_unground(terrain.platforms, self.tick);
         slot.active = ActiveAbility::None;
         slot.exit_to_fall();
         slot.reported_position = slot.base.position;
@@ -27559,7 +27578,7 @@ impl RolloutWorld {
         slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
-        slot.base.force_unground(terrain.platforms);
+        slot.force_unground(terrain.platforms, self.tick);
         slot.active = ActiveAbility::None;
         slot.exit_to_fall();
         slot.reported_position = slot.base.position;
@@ -27582,7 +27601,7 @@ impl RolloutWorld {
         let b = &mut self.players[index].bow;
         if b.has_fired {
             if b.fire_ticks_left == 0 {
-                bow_exit(&mut self.players[index], terrain!(self));
+                bow_exit(&mut self.players[index], terrain!(self), self.tick);
                 return;
             }
             b.fire_ticks_left -= 1;
@@ -27612,7 +27631,7 @@ impl RolloutWorld {
                 slot.base.out_of_bounds = true;
                 slot.base.rotation = Fix::ZERO;
                 slot.base.up = Vec2::UP;
-                slot.base.force_unground(&self.platforms);
+                slot.force_unground(&self.platforms, self.tick);
                 slot.reported_position = slot.base.position;
                 return;
             }
@@ -27760,7 +27779,7 @@ impl RolloutWorld {
             slot.bow.form_rotation = slot.bow.aim.perp_cw().normalized_angle();
         }
         if exit {
-            bow_exit(slot, terrain);
+            bow_exit(slot, terrain, this.tick);
             // The first pass after a tunnel: Ability.UpdateSim's publish wins
             // the tie against ExitAbility's (Player.cs:311-322).
             if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == tick) {
@@ -27809,6 +27828,7 @@ impl RolloutWorld {
         );
         self.players[index].telemetry.arrows_fired += 1;
         let this = &mut *self;
+        let tick = this.tick;
         let slot = &mut this.players[index];
         let platforms: &[Platform] = &this.platforms;
         slot.bow.has_fired = true;
@@ -27825,7 +27845,7 @@ impl RolloutWorld {
                     .map_or(slot.base.up, |platform| platform.surface.normal(slot.base.position)),
             };
             slot.base.velocity = -(normal * bow.knockback);
-            slot.base.force_unground(platforms);
+            slot.force_unground(platforms, tick);
             slot.bow.fire_ticks_left = bow.fire_ground_ticks;
         } else {
             slot.base.velocity = -(aim * bow.knockback);
@@ -29348,7 +29368,7 @@ impl RolloutWorld {
             slot.captured_by_ball = Some(item_index);
             slot.poke_invulnerable = true;
             slot.invisible = true;
-            slot.base.force_unground(&self.platforms);
+            slot.force_unground(&self.platforms, self.tick);
             slot.base.position = capture_position;
             slot.base.velocity = Vec2::ZERO;
             if sync_collider {
@@ -29393,7 +29413,7 @@ impl RolloutWorld {
         let clone = &mut self.abilityless_clones[clone_index];
         clone.captured_by_ball = Some(item_index);
         clone.poke_invulnerable = true;
-        clone.base.force_unground(&self.platforms);
+        clone.force_unground(&self.platforms, self.tick);
         clone.base.position = capture_position;
         clone.base.velocity = Vec2::ZERO;
         clone.base.sync_collider();
@@ -35637,7 +35657,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
-            slot.base.force_unground(&self.platforms);
+            slot.force_unground(&self.platforms, self.tick);
         }
         if form_exit
             && matches!(self.players[index].active, ActiveAbility::Gust | ActiveAbility::Revival)
@@ -38806,7 +38826,7 @@ fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radi
 
 /// Leaves the bow ability: a landing exit (BowTransform.cs:225-239) or the
 /// fire animation's end (BowTransform.cs:116-130).
-fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
+fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain, tick: u32) {
     let platforms = terrain.platforms;
     // BowTransform and GunTransform exit facing their aim's side
     // (`isFacingRight = inputVector.x >= 0`).
@@ -38846,7 +38866,7 @@ fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain) {
         // airborne Bow with no retained ground leaves unrotated too.
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
-        slot.base.force_unground(platforms);
+        slot.force_unground(platforms, tick);
         slot.reported_position = slot.base.position; // Ability.cs:151
         slot.base.ground = None;
         slot.restore_slime_radius();

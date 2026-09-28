@@ -301,7 +301,8 @@ fn pin_grounded_rope_end(
         && platform.surface.normal(body.position).dot(body.external_velocity)
             > Fix::from_int(30)
     {
-        body.force_unground(platforms);
+        // Gated on a live ground: nothing destroyed to fall back on.
+        body.force_unground(platforms, None);
         body.rotation = Fix::ZERO;
         body.up = Vec2::UP;
         ungrounded = true;
@@ -1023,7 +1024,7 @@ impl RolloutWorld {
         if self.players[player].base.grounded {
             // UnGround raises OnNoLongerGrounded: State.fall.
             let slot = &mut self.players[player];
-            slot.base.force_unground(&self.platforms);
+            slot.force_unground(&self.platforms, self.tick);
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.base.velocity += Vec2::UP * WEB_GROUNDED_POP;

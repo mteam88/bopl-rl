@@ -985,12 +985,17 @@ impl Player {
     /// Detach from the ground without the jump impulse (PlayerPhysics.UnGround).
     /// PlayerPhysics.UnGround lifts the body off attachedGround, which still
     /// names a platform that went inactive; only a destroyed one is null.
-    pub(crate) fn force_unground(&mut self, platforms: &[Platform]) {
-        // A removed ground is a destroyed attachedGround, already null: no lift.
+    /// PlayerPhysics.UnGround(nullRotation: false): lifts off attachedGround,
+    /// which is the live platform or, when `dead` names it, a removed one an
+    /// updater destroyed earlier in this pass and the drain has not yet nulled
+    /// (PlayerPhysics.cs:366-370).
+    pub(crate) fn force_unground(&mut self, platforms: &[Platform], dead: Option<&Surface>) {
         let surface = platforms
             .iter()
             .find(|p| Some(p.id) == self.ground)
-            .map(|platform| platform.surface.clone());
+            .map(|platform| &platform.surface)
+            .or(dead)
+            .cloned();
         let mut motion = self.ground_state();
         motion.unground(surface.as_ref(), false);
         self.apply_ground_state(motion);
