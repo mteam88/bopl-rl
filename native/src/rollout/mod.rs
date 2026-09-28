@@ -27846,6 +27846,13 @@ impl RolloutWorld {
                 slot.timers[s] = Fix::from_f64(0.01);
             }
         }
+        // The slime's DestroyIfOutsideSceneBounds does not look at its state,
+        // so a ragdoll that falls past the bounds dies ahead of PlayerBody.
+        if slot.base.outside_bounds() {
+            slot.base.alive = false;
+            slot.base.out_of_bounds = true;
+            return true;
+        }
         // PlayerBody.UpdateSim runs its rope branch whatever the slime's state
         // (PlayerBody.cs:162-239), so a ragdolled or frozen slime still swings
         // on its web.
