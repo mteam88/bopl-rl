@@ -37883,9 +37883,12 @@ impl RolloutWorld {
                 // `Grenade.thrower` -- which resolves through `AbilityId`, and
                 // so through the thrower's live slime. A replacement slime's
                 // fresh ThrowItem2 is not the thrower, and neither is a copy
-                // of the ability picked up into another slot.
+                // of the ability picked up into another slot. A Duplicator
+                // copy's Grenade is re-initialized with no thrower
+                // (ShootDuplicator.cs:290-296).
                 let thrower = &self.players[item.owner];
-                row.reserved[0] = if thrower.ability_generation == item.ability_generation
+                row.reserved[0] = if !item.duplicated
+                    && thrower.ability_generation == item.ability_generation
                     && held[thrower.base.id as usize][item.ability_slot] == item.ability
                 {
                     item.ability
