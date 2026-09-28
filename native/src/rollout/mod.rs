@@ -2358,6 +2358,10 @@ pub struct PlayerSlot {
     /// SlimeController.UpdateSim got past OldUpdate this pass, so the caller
     /// runs its invisibility comparison.
     pub slime_updated: bool,
+    /// A Duplicator clone's SlimeController.Spawn clears Player.InSparkShot,
+    /// InMachoThrow and InPlatformTransform while the original stays in its
+    /// form; only the next form entry sets them again.
+    pub form_flags_cleared: bool,
     pub ability_time: Fix,
     /// SlimeController/Ability publishes Player.Position before the live body
     /// advances later in the same updater pass.
@@ -4257,6 +4261,7 @@ impl RolloutWorld {
                 invisible_at_form_entry: false,
                 ability_entered: false,
                 slime_updated: false,
+                form_flags_cleared: false,
                 ability_time: Fix::ZERO,
                 reported_position: spawn,
                 reported_tick: u32::MAX,
@@ -8703,6 +8708,7 @@ impl RolloutWorld {
                             let slot = &mut self.players[index];
                             slot.timers[s] = Fix::ZERO;
                             slot.active = ActiveAbility::Missile;
+                            slot.form_flags_cleared = false;
                             slot.active_slot = s;
                             slot.ability_entry_action = action;
                             slot.telemetry.ability_activations[s] += 1;
@@ -9755,6 +9761,7 @@ impl RolloutWorld {
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.active = ActiveAbility::Throw;
+                        slot.form_flags_cleared = false;
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -9939,6 +9946,7 @@ impl RolloutWorld {
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
+                        self.players[index].form_flags_cleared = false;
                         self.players[index].active_slot = s;
                         self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
@@ -24937,6 +24945,7 @@ impl RolloutWorld {
         } else {
             self.abilityless_clones.push(clone);
         }
+        self.players[victim].form_flags_cleared = true;
     }
 
     fn duplicate_lethal_rock(
@@ -39387,14 +39396,13 @@ impl RolloutWorld {
             if time_stop_protected[i] {
                 player_flags |= 8;
             }
-            if slot.active == ActiveAbility::Missile {
-                player_flags |= 16;
-            }
-            if slot.active == ActiveAbility::Platform {
-                player_flags |= 32;
-            }
-            if slot.active == ActiveAbility::Throw {
-                player_flags |= 64;
+            if !slot.form_flags_cleared {
+                match slot.active {
+                    ActiveAbility::Missile => player_flags |= 16,
+                    ActiveAbility::Platform => player_flags |= 32,
+                    ActiveAbility::Throw => player_flags |= 64,
+                    _ => {}
+                }
             }
             // Player.Position is only changed by a live SlimeController's
             // SetPosition call. Once the controller is destroyed, the Player
