@@ -24595,6 +24595,10 @@ impl RolloutWorld {
             collider_scale: source.collider_scale,
             offset_scale: source.scale,
             body: data.tesla.node_body,
+            // Instantiate copies the GameObject's layer: a copy of a lit node
+            // is LethalTerrain until its own first UpdateSim finds it
+            // unconnected (SimpleSparkNode.cs:256-260).
+            lethal: source.lethal,
             duplicated: true,
             duplicate_lifespan: 1800,
             duplicate_shake_offset: Vec2::ZERO,
