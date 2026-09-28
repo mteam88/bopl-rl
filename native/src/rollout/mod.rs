@@ -13768,7 +13768,10 @@ impl RolloutWorld {
         // PlayerCollision sees the persistent LethalTerrain Explosion first.
         for spike_index in 0..self.spike_attacks.len() {
             let spike = self.spike_attacks[spike_index];
-            if !spike.active || spike.macho_carried || spike.platform_index >= self.platforms.len()
+            if !spike.active
+                || spike.macho_carried
+                || spike.platform_index >= self.platforms.len()
+                || self.attached_hidden(spike.platform_index, spike.entity)
             {
                 continue;
             }
@@ -36790,7 +36793,13 @@ impl RolloutWorld {
         scratch.circle_wall_order.clear();
         scratch.spike_wall_contacts.clear();
         for (spike_index, spike) in self.spike_attacks.iter().enumerate() {
-            if !spike.active || spike.macho_carried || spike.platform_index >= self.platforms.len()
+            if !spike.active
+                || spike.macho_carried
+                || spike.platform_index >= self.platforms.len()
+                // Out of the hierarchy with its wall or on its own
+                // (`attached_hidden`, which `scratch` keeps out of reach).
+                || !self.platforms[spike.platform_index].active
+                || spike.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0)
             {
                 continue;
             }
@@ -36844,6 +36853,8 @@ impl RolloutWorld {
             if !engine.active
                 || engine.macho_carried
                 || engine.platform_index >= self.platforms.len()
+                || !self.platforms[engine.platform_index].active
+                || engine.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0)
             {
                 continue;
             }
