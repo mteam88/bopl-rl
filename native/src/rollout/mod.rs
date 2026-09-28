@@ -6419,6 +6419,9 @@ impl RolloutWorld {
         if has(ABILITY_MJOLNIR) {
             self.mjolnir_wall_pushes(data);
         }
+        if has(ABILITY_TACK) {
+            self.tack_wall_settles();
+        }
         if has_thrown_item {
             self.thrown_items_contacts(data);
         }
@@ -32061,28 +32064,6 @@ impl RolloutWorld {
                 row.rotation = body.orientation.raw();
                 row.angular_velocity = body.angular_velocity.raw();
             }
-
-            if item.ability == ABILITY_TACK
-                && !item.settled
-                && item.launched
-                && item.age > Fix::from_f32(0.1)
-                // BananaPeel.OnCollide runs from DetPhysics' callback queue,
-                // after every platform manifold has resolved this pass.
-                && body.velocity.y <= Fix::from_f32(0.5)
-                && contacts[..contact_count]
-                    .iter()
-                    .any(|(_, contact)| contact.normal.y < Fix::from_f32(-0.5))
-            {
-                let thrown = &mut self.thrown_items[item_index];
-                thrown.settled = true;
-                thrown.settle_position = center;
-                thrown.body.velocity = Vec2::ZERO;
-                thrown.body.angular_velocity = Fix::ZERO;
-                let row = &mut self.entities[entity];
-                row.vx = 0;
-                row.vy = 0;
-                row.angular_velocity = 0;
-            }
         }
         self.scratch.item_platform_contacts = all_contacts;
     }
@@ -32110,6 +32091,40 @@ impl RolloutWorld {
             if item.phase == 0 {
                 self.thrown_items[item_index].phase = 1;
             }
+        }
+        self.scratch.item_platform_contacts = contacts;
+    }
+
+    /// BananaPeel.OnCollide on its wall manifolds. It runs from DetPhysics'
+    /// callback queue, after every contact group resolved, so the settle
+    /// point includes the Circle/Circle and Circle/Box corrections and the
+    /// velocity test sees the velocity those groups left.
+    fn tack_wall_settles(&mut self) {
+        let contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
+        for &(item_index, _, contact) in &contacts {
+            let item = self.thrown_items[item_index];
+            if item.ability != ABILITY_TACK
+                || !item.active
+                || item.callback_registered_tick == self.tick
+                || self.blink_object_hidden(item.entity)
+                || item.settled
+                || !item.launched
+                || item.age <= Fix::from_f32(0.1)
+                || contact.normal.y >= Fix::from_f32(-0.5)
+                || item.body.velocity.y > Fix::from_f32(0.5)
+            {
+                continue;
+            }
+            let Some(entity) = item.entity else { continue };
+            let thrown = &mut self.thrown_items[item_index];
+            thrown.settled = true;
+            thrown.settle_position = thrown.position;
+            thrown.body.velocity = Vec2::ZERO;
+            thrown.body.angular_velocity = Fix::ZERO;
+            let row = &mut self.entities[entity];
+            row.vx = 0;
+            row.vy = 0;
+            row.angular_velocity = 0;
         }
         self.scratch.item_platform_contacts = contacts;
     }
