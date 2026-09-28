@@ -6440,6 +6440,12 @@ impl RolloutWorld {
         if has_thrown_item || has(ABILITY_TESLA) {
             self.thrown_item_pair_contacts(data);
         }
+        if has(ABILITY_PORTAL_GUN) {
+            let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
+            self.land_portal_shots_on_walls(&shot_contacts, data);
+            shot_contacts.clear();
+            self.scratch.portal_shot_wall_contacts = shot_contacts;
+        }
         if has(ABILITY_SPIKE) {
             self.spike_wall_callbacks(data);
         }
@@ -32122,7 +32128,7 @@ impl RolloutWorld {
         // correction before the second's.
         let mut node_contacts = std::mem::take(&mut self.scratch.tesla_wall_contacts);
         let rock_contacts = std::mem::take(&mut self.scratch.rock_wall_contacts);
-        let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
+        let shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
         let arrow_contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
         let mut order = std::mem::take(&mut self.scratch.circle_wall_order);
         let sweep_x = self.sweep_x();
@@ -32235,8 +32241,8 @@ impl RolloutWorld {
         rock_contacts.clear();
         self.scratch.rock_wall_contacts = rock_contacts;
         self.scratch.circle_wall_order = order;
-        self.land_portal_shots_on_walls(&shot_contacts, data);
-        shot_contacts.clear();
+        // PortalShot.OnCollide lands the shot from the callback queue, after
+        // the Circle/Circle and Circle/Box groups have resolved it too.
         self.scratch.portal_shot_wall_contacts = shot_contacts;
         // Arrow.OnCollide reads them in arrows_contacts.
         self.scratch.arrow_platform_contacts = arrow_contacts;
