@@ -9837,7 +9837,7 @@ impl RolloutWorld {
                         // (Gust.prefab, 6). The slime's component, at the same
                         // 4, is skipped instead - onEnterAbility deactivated
                         // it (SlimeController.cs:190).
-                        if self.quick_spell_bounds_kill(index, data) {
+                        if self.form_bounds_kill(index, data) {
                             return;
                         }
                         self.quick_spell_tick(index, jump_pressed, data);
@@ -9873,7 +9873,7 @@ impl RolloutWorld {
                         // Revival.prefab places its boundary component at the
                         // same hierarchyNumber 4 as Gust's, ahead of its own
                         // QuickSpell (6), so the entry pass tests it here too.
-                        if self.quick_spell_bounds_kill(index, data) {
+                        if self.form_bounds_kill(index, data) {
                             return;
                         }
                         self.quick_spell_tick(index, jump_pressed, data);
@@ -10331,14 +10331,14 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Gust {
-            if self.quick_spell_bounds_kill(index, data) {
+            if self.form_bounds_kill(index, data) {
                 return;
             }
             self.quick_spell_tick(index, jump_pressed, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Revival {
-            if self.quick_spell_bounds_kill(index, data) {
+            if self.form_bounds_kill(index, data) {
                 return;
             }
             self.quick_spell_tick(index, jump_pressed, data);
@@ -11786,21 +11786,23 @@ impl RolloutWorld {
         }
     }
 
-    /// DestroyIfOutsideSceneBounds as the QuickSpell prefabs carry it. It is
-    /// hierarchyNumber 4 on both Gust.prefab and Revival.prefab, ahead of
-    /// their QuickSpell (6) and of the PlayerBody that would advance the
-    /// transform, so it always reads the position the pass started with -
-    /// including the entry pass, where OnEnterAbility has already placed the
-    /// body.
+    /// DestroyIfOutsideSceneBounds as the QuickSpell and planting prefabs
+    /// carry it. It is hierarchyNumber 4 on Gust.prefab and Revival.prefab,
+    /// ahead of their QuickSpell (6), and on Spike.prefab, Engine.prefab and
+    /// Tesla coil.prefab, after the SpriteAnimator (2) whose callbacks plant
+    /// or exit and ahead of Spike or PlantObjectOnPlatform (6). Each precedes
+    /// the PlayerBody that would advance the transform, so it always reads
+    /// the position the pass started with - including the entry pass, where
+    /// OnEnterAbility has already placed the body.
     ///
     /// `selfDestruct` finds both an IPlayerIdHolder and an IAbilityComponent on
-    /// an ability body, so it leaves through `QuickSpell.ExitAbility` with a
+    /// an ability body, so it leaves through the form's `ExitAbility` with a
     /// default AbilityExitInfo whose causeOfDeath is Other, rather than through
     /// the ordinary slime's `killPlayer` with Accident
     /// (DestroyIfOutsideSceneBounds.cs:135-141, SlimeController.cs:219).
     ///
     /// Returns true when the form died and the caller must not run it.
-    fn quick_spell_bounds_kill(&mut self, index: usize, data: &data::RolloutData) -> bool {
+    fn form_bounds_kill(&mut self, index: usize, data: &data::RolloutData) -> bool {
         if !self.players[index].base.alive || !self.players[index].base.outside_bounds() {
             return false;
         }
@@ -11997,6 +11999,9 @@ impl RolloutWorld {
             self.exit_spike_cast(index);
             return;
         }
+        if self.form_bounds_kill(index, data) {
+            return;
+        }
         if self.players[index].base.grounded {
             self.players[index]
                 .base
@@ -12081,6 +12086,9 @@ impl RolloutWorld {
             && self.players[index].plant_cast.ticks > data.engine.recover_ticks
         {
             self.exit_engine_cast(index);
+            return;
+        }
+        if self.form_bounds_kill(index, data) {
             return;
         }
         if self.players[index].base.grounded {
@@ -12174,6 +12182,9 @@ impl RolloutWorld {
             && self.players[index].plant_cast.ticks > data.tesla.recover_ticks
         {
             self.exit_engine_cast(index);
+            return;
+        }
+        if self.form_bounds_kill(index, data) {
             return;
         }
         if self.players[index].base.grounded {
