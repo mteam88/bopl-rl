@@ -2577,6 +2577,10 @@ pub struct PlayerSlot {
     /// duration boundary are simulation-visible.
     pub teleport_effect_active: bool,
     pub teleport_effect_time: Fix,
+    /// The effect's Updater hierarchy, and the pass its UpdateSim reenabled
+    /// the player: updatables below it already saw the player inactive.
+    pub teleport_effect_hierarchy: u32,
+    pub teleport_effect_released_tick: Option<u32>,
     /// QuantumTunnel disables a Blink victim immediately, relocates it near
     /// the end of the visual lifetime, then reenables it on a later pass.
     pub blink_tunnel_active: bool,
@@ -4431,6 +4435,8 @@ impl RolloutWorld {
                 teleport_pending_position: Vec2::ZERO,
                 teleport_effect_active: false,
                 teleport_effect_time: Fix::ZERO,
+                teleport_effect_hierarchy: 0,
+                teleport_effect_released_tick: None,
                 blink_tunnel_active: false,
                 blink_tunnel_born_tick: 0,
                 blink_tunnel_hierarchy: 0,
@@ -18991,6 +18997,7 @@ impl RolloutWorld {
             if self.players[index].teleport_effect_time > data.teleport.effect_duration {
                 self.players[index].teleport_effect_active = false;
                 self.players[index].teleport_effect_time = Fix::ZERO;
+                self.players[index].teleport_effect_released_tick = Some(self.tick);
             }
             // TeleportedObjectEffect still shakes its visual copy on the
             // destruction pass. RandomInsideUnitCircle performs two
@@ -19176,6 +19183,7 @@ impl RolloutWorld {
             self.players[player_index].base.sync_collider();
             self.players[player_index].teleport_effect_active = true;
             self.players[player_index].teleport_effect_time = Fix::ZERO;
+            self.players[player_index].teleport_effect_hierarchy = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.teleport.effect_updatable_count;
             self.entities[entity].x += shift.x.raw();
             self.entities[entity].y += shift.y.raw();
@@ -30517,7 +30525,11 @@ impl RolloutWorld {
         // synced collider rows lag a form change on its own pass and sit at a
         // form's collider offset, so the player's state decides instead.
         let slot = &self.players[owner];
-        let present = self.slime_present(owner);
+        // A TeleportedObjectEffect newer than the hammer reenables the player
+        // after the hammer's UpdateSim on its release pass.
+        let released_later = slot.teleport_effect_released_tick == Some(self.tick)
+            && slot.teleport_effect_hierarchy > hierarchy;
+        let present = self.slime_present(owner) && !released_later;
         if slot.active == ActiveAbility::None && present {
             return Some(self.mjolnir_view(owner, hierarchy));
         }
