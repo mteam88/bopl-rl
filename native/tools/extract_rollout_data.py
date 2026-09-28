@@ -643,9 +643,9 @@ def main():
         },
         "death_effect_updatable_count": updater_count(death_effect),
         "effect_updatable_count": updater_count(revival_effect),
-        # ReviveParticle registers itself in Awake and InitRevive in addition
-        # to its SpriteAnimator, consuming three updater hierarchy entries.
-        "particle_updatable_count": updater_count(particle) + 1,
+        # ReviveParticle registers itself again in InitRevive, after
+        # EndRegisterPrefab, so that second entry does not advance prefabsAdded.
+        "particle_updatable_count": updater_count(particle),
         "effect_wisp_ticks": sum(abs(t) for t in animations(guid_of(effect_config["animData"]))["wisp"]),
         "particle_speed": fix(particle_config, "speed"),
     }
