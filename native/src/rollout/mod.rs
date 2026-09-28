@@ -2321,11 +2321,11 @@ pub struct PlayerSlot {
     /// never cleared: it outlasts the hold and the use, into the next cast.
     pub magnet_extra_offsets: [Vec2; 3],
     pub magnet_prev_scales: [Fix; 3],
-    /// PlayerPhysics.gravity_modifier on each slot's GunTransform or MagnetGun
-    /// form. Entering airborne sets 0.03 and firing sets 1, but entering
+    /// PlayerPhysics.gravity_modifier on each slot's GunTransform, MagnetGun or
+    /// BowTransform form. Entering airborne sets 0.03 and firing sets 1, but entering
     /// grounded leaves it alone, so a form whose ground vanishes inside Move
     /// falls with whatever its last use left.
-    pub gun_gravity: [Fix; 3],
+    pub form_gravity: [Fix; 3],
     pub ragdoll: RagdollState,
     /// Live FrozenSolid instances pinning this slime. Ground contact does not
     /// end the refreshed ragdoll while any of them remains active.
@@ -4139,7 +4139,7 @@ impl RolloutWorld {
                 magnet_firepoint_offsets: [data.magnet.firepoint_offset; 3],
                 magnet_extra_offsets: [Vec2::ZERO; 3],
                 magnet_prev_scales: [Fix::ONE; 3],
-                gun_gravity: [Fix::ONE; 3],
+                form_gravity: [Fix::ONE; 3],
                 ragdoll: RagdollState::default(),
                 frozen_solid_count: 0,
                 frozen_unpinned: (u32::MAX, 0, Vec2::ZERO),
@@ -4929,7 +4929,7 @@ impl RolloutWorld {
         debug_assert_ne!(hierarchy_base, u32::MAX);
         self.players[player_index].ability_instantiated[ability_slot] = true;
         self.players[player_index].pending_ability_hierarchy[ability_slot] = u32::MAX;
-        self.players[player_index].gun_gravity[ability_slot] = Fix::ONE;
+        self.players[player_index].form_gravity[ability_slot] = Fix::ONE;
 
         if ability == ABILITY_MAGNET {
             self.players[player_index].magnet_firepoint_offsets[ability_slot] =
@@ -8982,7 +8982,7 @@ impl RolloutWorld {
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
                             slot.base.radius = data.freeze.radius;
-                            slot.gun_gravity[s] = Fix::from_f32(0.03);
+                            slot.form_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
@@ -9030,7 +9030,7 @@ impl RolloutWorld {
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
                             slot.base.radius = data.blink.radius;
-                            slot.gun_gravity[s] = Fix::from_f32(0.03);
+                            slot.form_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
@@ -9082,7 +9082,7 @@ impl RolloutWorld {
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
                             slot.base.radius = ray.radius;
-                            slot.gun_gravity[s] = Fix::from_f32(0.03);
+                            slot.form_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
@@ -9136,7 +9136,7 @@ impl RolloutWorld {
                             slot.reported_tick = self.tick;
                         } else {
                             slot.base.radius = data.duplicator.radius;
-                            slot.gun_gravity[s] = Fix::from_f32(0.03);
+                            slot.form_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
@@ -9198,7 +9198,7 @@ impl RolloutWorld {
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
-                            slot.gun_gravity[s] = Fix::from_f32(0.03);
+                            slot.form_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
@@ -9260,6 +9260,7 @@ impl RolloutWorld {
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
+                            slot.form_gravity[s] = Fix::from_f32(0.03); // BowTransform.cs:95
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             // The Bow's own PlayerPhysics starts with no
@@ -18854,7 +18855,7 @@ impl RolloutWorld {
             slot.magnet_firepoint_offsets = [data.magnet.firepoint_offset; 3];
             slot.magnet_extra_offsets = [Vec2::ZERO; 3];
             slot.magnet_prev_scales = [Fix::ONE; 3];
-            slot.gun_gravity = [Fix::ONE; 3];
+            slot.form_gravity = [Fix::ONE; 3];
             slot.blink_tunnel_active = false;
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
@@ -19333,7 +19334,7 @@ impl RolloutWorld {
             slot.magnet_firepoint_offsets = [data.magnet.firepoint_offset; 3];
             slot.magnet_extra_offsets = [Vec2::ZERO; 3];
             slot.magnet_prev_scales = [Fix::ONE; 3];
-            slot.gun_gravity = [Fix::ONE; 3];
+            slot.form_gravity = [Fix::ONE; 3];
             slot.blink_tunnel_active = false;
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
@@ -21424,13 +21425,13 @@ impl RolloutWorld {
                     .is_none());
         if invalid_ground {
             let slot = self.players[index].active_slot;
-            self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
+            self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
             self.players[index].force_unground(&self.platforms, self.tick);
         }
 
         if !self.players[index].base.grounded {
             let gravity_modifier =
-                self.players[index].gun_gravity[self.players[index].active_slot];
+                self.players[index].form_gravity[self.players[index].active_slot];
             let slot = &mut self.players[index];
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -21497,7 +21498,7 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
-            slot.gun_gravity[slot.active_slot] = Fix::ONE;
+            slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = data.freeze.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
             // it again for the shot and knockback.
@@ -21576,13 +21577,13 @@ impl RolloutWorld {
                     .is_none());
         if invalid_ground {
             let slot = self.players[index].active_slot;
-            self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
+            self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
             self.players[index].force_unground(&self.platforms, self.tick);
         }
 
         if !self.players[index].base.grounded {
             let gravity_modifier =
-                self.players[index].gun_gravity[self.players[index].active_slot];
+                self.players[index].form_gravity[self.players[index].active_slot];
             let slot = &mut self.players[index];
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -21649,7 +21650,7 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
-            slot.gun_gravity[slot.active_slot] = Fix::ONE;
+            slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = data.blink.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
             // it again for the shot and knockback.
@@ -21726,13 +21727,13 @@ impl RolloutWorld {
                     .is_none());
         if invalid_ground {
             let slot = self.players[index].active_slot;
-            self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
+            self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
             self.players[index].force_unground(&self.platforms, self.tick);
         }
 
         if !self.players[index].base.grounded {
             let gravity_modifier =
-                self.players[index].gun_gravity[self.players[index].active_slot];
+                self.players[index].form_gravity[self.players[index].active_slot];
             let slot = &mut self.players[index];
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -21804,7 +21805,7 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
-            slot.gun_gravity[slot.active_slot] = Fix::ONE;
+            slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = ray.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
             // it again for the shot and knockback.
@@ -21872,13 +21873,13 @@ impl RolloutWorld {
                     .is_none());
         if invalid_ground {
             let slot = self.players[index].active_slot;
-            self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
+            self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
             self.players[index].force_unground(&self.platforms, self.tick);
         }
 
         if !self.players[index].base.grounded {
             let gravity_modifier =
-                self.players[index].gun_gravity[self.players[index].active_slot];
+                self.players[index].form_gravity[self.players[index].active_slot];
             let slot = &mut self.players[index];
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -22046,13 +22047,13 @@ impl RolloutWorld {
                     .is_none());
         if invalid_ground {
             let slot = self.players[index].active_slot;
-            self.players[index].gun_gravity[slot] = Fix::from_f32(0.03);
+            self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
             self.players[index].force_unground(&self.platforms, self.tick);
         }
 
         if !self.players[index].base.grounded {
             let gravity_modifier =
-                self.players[index].gun_gravity[self.players[index].active_slot];
+                self.players[index].form_gravity[self.players[index].active_slot];
             let slot = &mut self.players[index];
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -23583,7 +23584,7 @@ impl RolloutWorld {
         let grounded = self.players[index].base.grounded;
         let slot = &mut self.players[index];
         slot.magnet.has_fired = true;
-        slot.gun_gravity[slot.active_slot] = Fix::ONE;
+        slot.form_gravity[slot.active_slot] = Fix::ONE;
         slot.magnet.phase = 5;
         slot.magnet.animation = 3;
         slot.magnet.animation_ticks = 0;
@@ -23660,7 +23661,7 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             slot.gun.has_fired = true;
-            slot.gun_gravity[slot.active_slot] = Fix::ONE;
+            slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = gun.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
             // it again for the shot and knockback.
@@ -27692,18 +27693,36 @@ impl RolloutWorld {
             bounds: &this.bounds,
         };
         let platforms: &[Platform] = terrain.platforms;
-        // BowTransform.UpdateSim ungrounds a Bow whose ground went inactive and
-        // lets it fall in the same pass; UnGround still lifts it off that
-        // surface (BowTransform.cs:214-218, PlayerPhysics.cs:366-370).
-        if let Some(lost) = std::mem::take(&mut slot.ground_destroyed)
-            && slot.base.grounded
-        {
-            slot.base.unground_off(lost.attached(tick), false);
-        }
+        // BowTransform.UpdateSim ungrounds a Bow whose ground is null or went
+        // inactive, sets gravity_modifier 0.03 and lets it fall in the same
+        // pass; UnGround still lifts it off an inactive surface
+        // (BowTransform.cs:214-218, PlayerPhysics.cs:366-370). It does not ask
+        // IsDestroyed, so a resting Bow whose ground an updater destroyed
+        // earlier in this pass stays grounded until Move(zero) finds it
+        // destroyed and UnGround()s it, lifting and nulling the rotation
+        // (PlayerPhysics.cs:262-266). That returns before any gravity, and the
+        // fall that follows keeps the modifier the form's last use left.
+        let mut moved_off = false;
+        let lost = std::mem::take(&mut slot.ground_destroyed);
         if slot.base.grounded {
-            slot.base.unground_inactive(platforms);
+            let dead = lost.as_ref().and_then(|lost| lost.attached(tick));
+            let resting = slot.base.velocity.length_squared() <= Fix::from_f32(1e-6);
+            if dead.is_some() && resting && !slot.bow.has_fired {
+                slot.base.unground_off(dead, true);
+                moved_off = true;
+            } else if lost.is_some() {
+                slot.base.unground_off(dead, false);
+            } else {
+                slot.base.unground_inactive(platforms);
+            }
+            if !slot.base.grounded && !moved_off {
+                slot.form_gravity[slot.active_slot] = Fix::from_f32(0.03);
+            }
         }
-        if slot.base.grounded {
+        if moved_off {
+            // PlayerBody integrates the resting body after BowTransform.
+            integrate = true;
+        } else if slot.base.grounded {
             if slot.bow.has_fired {
                 // Landed after firing: exit with the landing (justlanded).
                 exit = true;
@@ -27712,14 +27731,15 @@ impl RolloutWorld {
                 slot.base.step(Action::default(), terrain);
             }
         } else if !slot.bow.has_fired {
-            // Airborne aiming: near-frozen fall (gravity_modifier 0.03), the
-            // landing raycast on the unclamped velocity (BowTransform.cs:222),
-            // then Vec2.Normalized(v) * maxSlowMoSpeed (BowTransform.cs:249).
+            // Airborne aiming: near-frozen fall (gravity_modifier 0.03 unless
+            // the Bow left its ground inside Move), the landing raycast on the
+            // unclamped velocity (BowTransform.cs:222), then
+            // Vec2.Normalized(v) * maxSlowMoSpeed (BowTransform.cs:249).
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
                 bow.constants.gravity_accel,
-                Fix::from_f32(0.03),
+                slot.form_gravity[slot.active_slot],
                 bow.constants.gravity_max_fall_speed,
                 space,
             )
@@ -27832,6 +27852,7 @@ impl RolloutWorld {
         let slot = &mut this.players[index];
         let platforms: &[Platform] = &this.platforms;
         slot.bow.has_fired = true;
+        slot.form_gravity[slot.active_slot] = Fix::ONE; // BowTransform.cs:159
         if grounded {
             // selfImposedVelocity = -groundNormal * KnockBack, then UnGround:
             // the shooter slams onto the platform and exits on landing.
