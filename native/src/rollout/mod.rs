@@ -19082,6 +19082,8 @@ impl RolloutWorld {
                     *cooldown = data.abilities[ability as usize].cooldown;
                 }
             }
+            // The new SlimeController has not seen the player invisible yet.
+            slot.was_invisible = false;
             slot.ability_instantiated = [true; 3];
             slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
             slot.forms = [FormScale::default(); 3];
@@ -19550,6 +19552,8 @@ impl RolloutWorld {
                     *cooldown = data.abilities[ability as usize].cooldown;
                 }
             }
+            // The new SlimeController has not seen the player invisible yet.
+            slot.was_invisible = false;
             slot.ability_instantiated = [true; 3];
             slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
             slot.forms = [FormScale::default(); 3];
