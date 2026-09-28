@@ -28162,47 +28162,44 @@ impl RolloutWorld {
             let effect_scale = snapshot
                 .effect_scale
                 .min(snapshot.effect_scale * (Fix::ONE - loss) + loss);
-            let source_scale = self.platform_dynamics[snapshot.source].scale;
-            let effect_ratio = (Fix::ONE / source_scale) * effect_scale;
-            let surface = &self.platforms[snapshot.source].surface;
-            let extents = surface.extents * effect_ratio;
-            let radius = surface.radius * effect_ratio;
-            let vertical = snapshot.original_up.dot(snapshot.direction);
-            let horizontal = snapshot.original_right.dot(snapshot.direction);
+            // ScaleEffect sets the platform to the effect's scale, measures the
+            // copy's spawn position off the resized collider and sets the old
+            // scale back, each through the Scale setter (DuplicatePlatformEffect.cs:97-140).
+            let source = snapshot.source;
+            let source_scale = self.platform_dynamics[source].scale;
+            self.set_platform_scale(source, effect_scale, false);
+            let collider = self.platforms[source].collider;
+            let extents = Vec2::new(
+                Fix::ONE / collider.inner.inverse_extents.x,
+                Fix::ONE / collider.inner.inverse_extents.y,
+            );
+            let (mut right, mut up) = (snapshot.original_right, snapshot.original_up);
+            let tiny = Fix::ONE / Fix::from_int(20);
+            if extents.x < tiny && extents.y < tiny {
+                (right, up) = (Vec2::new(Fix::ONE, Fix::ZERO), Vec2::new(Fix::ZERO, Fix::ONE));
+            }
+            let scale = self.platform_dynamics[source].scale;
+            let vertical = up.dot(snapshot.direction);
+            let horizontal = right.dot(snapshot.direction);
             let spawn_position = if vertical.abs() > horizontal.abs() {
                 snapshot.original_center
-                    + snapshot.original_up
-                        * Fix::from_int(vertical.sign())
+                    + Fix::from_int(vertical.sign())
                         * Fix::from_int(2)
-                        * (radius + extents.y + effect_scale)
+                        * up
+                        * (collider.radius + extents.y + scale)
             } else {
                 snapshot.original_center
-                    + snapshot.original_right
-                        * Fix::from_int(horizontal.sign())
+                    + Fix::from_int(horizontal.sign())
                         * Fix::from_int(2)
-                        * (radius + extents.x + effect_scale)
+                        * right
+                        * (collider.radius + extents.x + scale)
             };
+            self.set_platform_scale(source, source_scale, false);
             self.duplicate_platform_effects[effect_index].effect_scale = effect_scale;
             self.duplicate_platform_effects[effect_index].spawn_position = spawn_position;
 
-            let next_scale = source_scale.min(source_scale * (Fix::ONE - loss) + loss);
-            if next_scale != source_scale {
-                let ratio = (Fix::ONE / source_scale) * next_scale;
-                let dynamics = &mut self.platform_dynamics[snapshot.source];
-                dynamics.scale = next_scale;
-                dynamics.surface_shape_dirty = true;
-                dynamics.transform_rotation = Some(dynamics.body.orientation);
-                let platform = &mut self.platforms[snapshot.source];
-                platform.collider.radius *= ratio;
-                platform.collider.inner.right *= ratio;
-                platform.collider.inner.up *= ratio;
-                platform.collider.inner.inverse_extents =
-                    platform.collider.inner.inverse_extents / ratio;
-                platform.surface.radius *= ratio;
-                platform.surface.bounds_radius *= ratio;
-                platform.surface.extents *= ratio;
-                self.platforms_changed();
-            }
+            let scale = self.platform_dynamics[source].scale;
+            self.set_platform_scale(source, scale.min(scale * (Fix::ONE - loss) + loss), false);
             let source_center = self.platforms[snapshot.source].surface.center;
             let mut query = self.platforms[snapshot.source].collider;
             query.inner.center = spawn_position;
