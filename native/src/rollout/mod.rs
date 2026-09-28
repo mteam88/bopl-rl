@@ -17581,7 +17581,12 @@ impl RolloutWorld {
             // DestroyFix removes it before this pass's contacts and export.
             if self.platforms[boulder.platform_index].surface.center.y < lower_boundary {
                 self.remove_platform(boulder.platform_index, true);
-                self.next_spawn_hierarchy += data.macho_throw.boulder_down_effect_updatable_count;
+                // In space the floor exit instantiates UpEffect, which
+                // Boulder.prefab leaves empty; only the water exit splashes.
+                if !data.maps[self.map].is_space() {
+                    self.next_spawn_hierarchy +=
+                        data.macho_throw.boulder_down_effect_updatable_count;
+                }
             }
         }
     }
