@@ -1337,6 +1337,8 @@ pub struct PlatformDynamics {
     /// The deactivation pass still receives the rider's scheduled LateUpdate,
     /// but DetPhysics freezes the inactive platform body immediately.
     pub blink_deactivated_tick: Option<u32>,
+    /// The pass the tunnel restored the wall (QuantumTunnel.cs:163-166).
+    pub blink_reactivated_tick: Option<u32>,
     /// `(orientation, Vec2::angle(orientation))` from the last integration:
     /// a platform that translates without rotating (sudden death, a spring
     /// settling) keeps its basis instead of consulting the sine table twice.
@@ -3907,6 +3909,7 @@ impl RolloutWorld {
                 blink_tunnel_hierarchy: 0,
                 blink_tunnel_stepped_tick: None,
                 blink_deactivated_tick: None,
+                blink_reactivated_tick: None,
                 basis: None,
             });
             self.platforms_changed();
@@ -16859,6 +16862,7 @@ impl RolloutWorld {
             blink_tunnel_hierarchy: 0,
             blink_tunnel_stepped_tick: None,
             blink_deactivated_tick: None,
+            blink_reactivated_tick: None,
             basis: None,
         });
         self.platform_defs.push(usize::MAX);
@@ -26149,6 +26153,7 @@ impl RolloutWorld {
                 let state = &mut self.platform_dynamics[platform_index];
                 state.blink_tunnel_active = false;
                 state.blink_deactivated_tick = None;
+                state.blink_reactivated_tick = Some(self.tick);
                 self.platforms_changed();
             }
             self.platform_dynamics[platform_index].blink_tunnel_age += updater_dt;
@@ -27185,6 +27190,7 @@ impl RolloutWorld {
         dynamics.blink_tunnel_active = false;
         dynamics.blink_tunnel_initialized = false;
         dynamics.blink_deactivated_tick = None;
+        dynamics.blink_reactivated_tick = None;
 
         let source_row = self.entities[self.platform_entities[source]];
         let entity = self.entities.len();
@@ -27917,6 +27923,7 @@ impl RolloutWorld {
             blink_tunnel_hierarchy: 0,
             blink_tunnel_stepped_tick: None,
             blink_deactivated_tick: None,
+            blink_reactivated_tick: None,
             basis: None,
         });
         self.next_platform_id += 1;
@@ -33402,23 +33409,25 @@ impl RolloutWorld {
             let stopped =
                 self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner];
             // A wall QuantumTunnel registered after this clone hides its wall
-            // (QuantumTunnel.cs:136) only after the clone's updaters, while the
-            // Blink tunnel step or a later BlackHole has already hidden it here.
+            // (QuantumTunnel.cs:136) or restores it (QuantumTunnel.cs:163-166)
+            // only after the clone's updaters, while the Blink tunnel step or a
+            // later BlackHole has already toggled it here.
             let hierarchy = self.abilityless_clones[clone_index].hierarchy_base;
-            let hidden_later = |index: usize| {
+            let toggled_later = |index: usize| {
                 let state = &self.platform_dynamics[index];
-                state.blink_deactivated_tick == Some(self.tick)
+                (state.blink_deactivated_tick == Some(self.tick)
+                    || state.blink_reactivated_tick == Some(self.tick))
                     && state.blink_tunnel_hierarchy > hierarchy
             };
-            let unhidden: Vec<Platform>;
-            let platforms: &[Platform] = if (0..self.platforms.len()).any(hidden_later) {
-                unhidden = (self.platforms.iter().enumerate())
+            let untoggled: Vec<Platform>;
+            let platforms: &[Platform] = if (0..self.platforms.len()).any(toggled_later) {
+                untoggled = (self.platforms.iter().enumerate())
                     .map(|(index, platform)| Platform {
-                        active: platform.active || hidden_later(index),
+                        active: platform.active != toggled_later(index),
                         ..platform.clone()
                     })
                     .collect();
-                &unhidden
+                &untoggled
             } else {
                 &self.platforms
             };
