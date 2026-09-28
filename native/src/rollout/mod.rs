@@ -5863,6 +5863,7 @@ impl RolloutWorld {
         self.platform_bounds_tick(PlatformPass::Duplicated);
         self.platform_motion_tick(data, updater_dt, PlatformPass::Duplicated);
         self.platform_body_scale_tick(PlatformPass::Duplicated);
+        self.platform_orbits_tick(data, updater_dt, PlatformPass::Duplicated);
         if has(ABILITY_MAGNET) {
             self.magnet_parries_tick(data);
         }
@@ -5939,6 +5940,7 @@ impl RolloutWorld {
         // Beam or Meteor landing on it shakes it on the same pass.
         self.platform_motion_tick(data, updater_dt, PlatformPass::Spawned);
         self.platform_body_scale_tick(PlatformPass::Spawned);
+        self.platform_orbits_tick(data, updater_dt, PlatformPass::Spawned);
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT);
         }
@@ -27349,6 +27351,11 @@ impl RolloutWorld {
         self.platform_dynamics.push(dynamics);
         self.platform_defs.push(definition);
         self.platform_entities.push(entity);
+        // The copy's AntiLockPlatform orbits too, from its first waypoint
+        // (AntiLockPlatform.cs:17-23).
+        if definition != usize::MAX && data.maps[self.map].platforms[definition].orbit.is_some() {
+            self.orbits.push((self.platforms.len() - 1, 0));
+        }
         self.platforms_changed();
         // The duplicate is instantiated during the updater pass and joins the
         // same pass's DetPhysics simulation. Later collision rays therefore
@@ -33325,6 +33332,51 @@ impl RolloutWorld {
         }
     }
 
+    /// AntiLockPlatform runs after AnimateVelocity: add the ordinary force
+    /// and re-home at the pre-integration position, preserving the existing
+    /// one-tick-lagged home behavior.
+    fn platform_orbits_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        pass: PlatformPass,
+    ) {
+        if self.sudden_death || updater_dt == Fix::ZERO {
+            return;
+        }
+        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+        let map = &data.maps[self.map];
+        for k in 0..self.orbits.len() {
+            let (platform_index, target) = self.orbits[k];
+            if !self.platforms[platform_index].active
+                || self.platform_pass(platform_index) != pass
+                || self.platform_dynamics[platform_index].init_tick.is_some_and(|t| t > self.tick)
+            {
+                continue;
+            }
+            let def = &map.platforms[self.platform_defs[platform_index]];
+            let Some(o) = def.orbit.as_ref() else {
+                continue;
+            };
+            if sim_time < o.delay || o.path.is_empty() {
+                continue;
+            }
+            let position = self.platforms[platform_index].surface.center;
+            let direction = (o.path[target] - position).normalized_safe();
+            let dynamics = &mut self.platform_dynamics[platform_index];
+            dynamics.body.force += direction * o.force;
+            dynamics.home_position = position;
+            // AntiLockPlatform computes this tick's force first, then
+            // advances the target from the same pre-physics position.
+            let current = o.path[target];
+            let previous = o.path[(target + o.path.len() - 1) % o.path.len()];
+            let passed = (current - previous).dot(position - current);
+            if passed > Fix::ZERO {
+                self.orbits[k].1 = (target + 1) % o.path.len();
+            }
+        }
+    }
+
     fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         self.platform_bounds_tick(PlatformPass::Authored);
         self.platform_motion_tick(data, updater_dt, PlatformPass::Authored);
@@ -33361,40 +33413,7 @@ impl RolloutWorld {
             }
         }
         self.platform_body_scale_tick(PlatformPass::Authored);
-
-        // AntiLockPlatform runs after AnimateVelocity: add the ordinary force
-        // and re-home at the pre-integration position, preserving the existing
-        // one-tick-lagged home behavior.
-        if !self.sudden_death && updater_dt > Fix::ZERO {
-            let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-            let map = &data.maps[self.map];
-            for orbit in &mut self.orbits {
-                let platform_index = orbit.0;
-                if !self.platforms[platform_index].active {
-                    continue;
-                }
-                let def = &map.platforms[self.platform_defs[platform_index]];
-                let Some(o) = def.orbit.as_ref() else {
-                    continue;
-                };
-                if sim_time < o.delay || o.path.is_empty() {
-                    continue;
-                }
-                let position = self.platforms[platform_index].surface.center;
-                let direction = (o.path[orbit.1] - position).normalized_safe();
-                let dynamics = &mut self.platform_dynamics[platform_index];
-                dynamics.body.force += direction * o.force;
-                dynamics.home_position = position;
-                // AntiLockPlatform computes this tick's force first, then
-                // advances the target from the same pre-physics position.
-                let current = o.path[orbit.1];
-                let previous = o.path[(orbit.1 + o.path.len() - 1) % o.path.len()];
-                let passed = (current - previous).dot(position - current);
-                if passed > Fix::ZERO {
-                    orbit.1 = (orbit.1 + 1) % o.path.len();
-                }
-            }
-        }
+        self.platform_orbits_tick(data, updater_dt, PlatformPass::Authored);
 
         // VectorFieldPlatform runs after the platform's ordinary spring,
         // ShakablePlatform and collider updater. Maps without one keep this
