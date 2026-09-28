@@ -347,10 +347,19 @@ const STATE_LAND: u32 = 4;
 const STATE_TURN: u32 = 6;
 const STATE_STOP: u32 = 7;
 const STATE_NOTHING: u32 = 8;
+const STATE_BITING: u32 = 9;
 const STATE_RAGDOLL: u32 = 10;
 // SlimeController animation lengths driving the state machine (rollout.json
 // player anims: land 6x6, stop 1x6, runTurnAround 4x3 ticks).
 const LAND_TICKS: u32 = 36;
+// SlimeController animData bite 3x3, chew 3+2x4 and swallow 4x3 ticks.
+const BITE_TICKS: u32 = 9;
+const CHEW_TICKS: u32 = 11;
+const SWALLOW_TICKS: u32 = 12;
+/// Player.prefab SlimeController.scaleDiffBeforeNomNom (0.68) and
+/// scaleIncreaseOnNom (0.01).
+const SCALE_DIFF_BEFORE_NOM_NOM: Fix = Fix::from_raw(2_920_577_792);
+const SCALE_INCREASE_ON_NOM: Fix = Fix::from_raw(42_949_672);
 const STOP_TICKS: u32 = 6;
 const TURN_TICKS: u32 = 12;
 
@@ -364,6 +373,7 @@ const LAYER_WATER: u32 = 4;
 const CAUSE_OTHER: u32 = 0;
 const CAUSE_SQUISHED: u32 = 1;
 const CAUSE_ACCIDENT: u32 = 2;
+const CAUSE_EATEN: u32 = 3;
 const CAUSE_BEAMED: u32 = 4;
 const CAUSE_NOT_DEAD_YET: u32 = 5;
 /// Player.cs Constants.ENVIRONMENTAL_PLAYER_ID.
@@ -1635,6 +1645,29 @@ pub struct RagdollState {
     pub duration: Fix,
 }
 
+/// SlimeController.Bite, Chew, Swallow and FinishEating: the SpriteAnimator
+/// plays each animation and calls the next step on the pass after its last
+/// frame.
+#[derive(Clone, Copy, Default)]
+pub struct EatingState {
+    pub phase: EatingPhase,
+    /// SpriteAnimator passes until the current animation's callback.
+    pub frames: u32,
+    pub victim: usize,
+    /// The victim's deaths at the bite: Chew only kills the body it bit, not
+    /// a stock clone that replaced it.
+    pub victim_deaths: u32,
+    pub swallowing: bool,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum EatingPhase {
+    #[default]
+    Bite,
+    Chew,
+    Swallow,
+}
+
 /// FrozenSolid has no physics collider or observation row. It is still an
 /// Updater member: Begin acts immediately, registration is deferred, and each
 /// later update pins and re-ragdolls its victim until the ice shatters.
@@ -2401,6 +2434,7 @@ pub struct PlayerSlot {
     /// falls with whatever its last use left.
     pub form_gravity: [Fix; 3],
     pub ragdoll: RagdollState,
+    pub eating: EatingState,
     /// Live FrozenSolid instances pinning this slime. Ground contact does not
     /// end the refreshed ragdoll while any of them remains active.
     pub frozen_solid_count: u16,
@@ -4294,6 +4328,7 @@ impl RolloutWorld {
                 magnet_prev_scales: [Fix::ONE; 3],
                 form_gravity: [Fix::ONE; 3],
                 ragdoll: RagdollState::default(),
+                eating: EatingState::default(),
                 frozen_solid_count: 0,
                 frozen_unpinned: (u32::MAX, 0, Vec2::ZERO),
                 freeze_form_exit_tick: u32::MAX,
@@ -5418,6 +5453,7 @@ impl RolloutWorld {
             || slot.revival_clone_pending
             || slot.revival_effect_ticks > 0
             || slot.obs_state == STATE_RAGDOLL
+            || slot.obs_state == STATE_BITING
             || slot.active != ActiveAbility::None
             || slot.base.dash.active
             // A Teleport or Blink tunnel that disabled the slime before its
@@ -6572,6 +6608,7 @@ impl RolloutWorld {
             {
                 continue;
             }
+            self.try_bite(pushed, other);
             let other_position = self.players[other].base.position;
             self.players[pushed].base.push_from(other_position, lower_id);
         }
@@ -8067,6 +8104,90 @@ impl RolloutWorld {
                 && slot.revival_effect_ticks == 0)
     }
 
+    /// SlimeController.OnCollide bites before it shoves: a grounded slime at
+    /// least scaleDiffBeforeNomNom bigger than an enemy slime whose box it
+    /// touches starts eating it, unless that slime is invulnerable.
+    fn try_bite(&mut self, eater: usize, victim: usize) {
+        let (slot, prey) = (&self.players[eater], &self.players[victim]);
+        if !self.playable(eater)
+            || prey.active != ActiveAbility::None
+            || slot.obs_state == STATE_BITING
+            || !slot.base.grounded
+            || (self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[eater])
+            || slot.base.scale - prey.base.scale < SCALE_DIFF_BEFORE_NOM_NOM
+            || slot.team == prey.team
+            || prey.poke_invulnerable
+            || crate::physics::contact::box_box(slot.base.collider, prey.base.collider).is_none()
+        {
+            return;
+        }
+        let victim_deaths = prey.deaths;
+        let slot = &mut self.players[eater];
+        slot.obs_state = STATE_BITING;
+        slot.eating = EatingState {
+            phase: EatingPhase::Bite,
+            frames: BITE_TICKS + 1,
+            victim,
+            victim_deaths,
+            swallowing: slot.eating.swallowing,
+        };
+    }
+
+    /// The rest of a biting slime's pass. OldUpdate returns before input,
+    /// casting and the state switch, and UpdateSim grows a swallowing slime,
+    /// writes Player.Scale to the hurtbox and skips PlayerPhysics.Move
+    /// (SlimeController.cs:787, 1060-1080). PlayerBody still integrates, then
+    /// the slime's SpriteAnimator, a child after SlimeController, steps the
+    /// eating animations.
+    fn biting_tick(&mut self, index: usize, action: Action) {
+        let stopped =
+            self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index];
+        let slot = &mut self.players[index];
+        slot.base.previous_jump = action.buttons & 1 != 0;
+        if slot.eating.swallowing && !stopped {
+            slot.player_scale = (slot.player_scale + SCALE_INCREASE_ON_NOM)
+                .clamp(Fix::from_f64(0.3), Fix::from_int(3));
+        }
+        let scale = slot.player_scale;
+        slot.set_ordinary_body_scale(scale);
+        if slot.base.outside_bounds() {
+            slot.base.alive = false;
+            slot.base.out_of_bounds = true;
+            return;
+        }
+        slot.base.integrate();
+        if stopped {
+            return;
+        }
+        slot.eating.frames -= 1;
+        if slot.eating.frames > 0 {
+            return;
+        }
+        match slot.eating.phase {
+            EatingPhase::Bite => {
+                // Chew kills the bitten body through its active
+                // PlayerCollision, without a death effect.
+                slot.eating.phase = EatingPhase::Chew;
+                slot.eating.frames = CHEW_TICKS + 1;
+                let (victim, deaths, killer) =
+                    (slot.eating.victim, slot.eating.victim_deaths, slot.base.id);
+                if self.players[victim].deaths == deaths && self.playable(victim) {
+                    self.kill(victim, killer, CAUSE_EATEN, false, false);
+                }
+            }
+            EatingPhase::Chew => {
+                slot.eating.phase = EatingPhase::Swallow;
+                slot.eating.frames = SWALLOW_TICKS + 1;
+                slot.eating.swallowing = true;
+            }
+            EatingPhase::Swallow => {
+                slot.eating.swallowing = false;
+                slot.obs_state = STATE_IDLE;
+                slot.state_ticks = 0;
+            }
+        }
+    }
+
     /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
     fn apply_platform_drop(&mut self, index: usize, data: &data::RolloutData) {
         // DropPlatformTest reads the attachedGround an airborne slime keeps,
@@ -8371,6 +8492,11 @@ impl RolloutWorld {
                     slot.timers[s] = Fix::from_f64(0.01);
                 }
             }
+        }
+        if !in_ability && self.players[index].obs_state == STATE_BITING {
+            self.players[index].slime_updated = true;
+            self.biting_tick(index, action);
+            return;
         }
         // Ability entry (held button, ready, castable, not already in one).
         if !in_ability {
