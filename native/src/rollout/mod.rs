@@ -5916,7 +5916,25 @@ impl RolloutWorld {
             }
         }
         let mut jump_pressed_by_player = [false; MAX_PLAYERS];
-        for (index, packet) in actions.iter().enumerate().take(self.players.len()) {
+        // The Updater walks objects in hierarchy order, so each player runs
+        // at the turn of whichever object holds it this pass: the slime, or
+        // the ability form it is in. A stock respawn in kill order or a form
+        // picked up later puts that ahead of or behind player index order.
+        let player_count = actions.len().min(self.players.len());
+        let mut player_order = [0usize; MAX_PLAYERS];
+        for (index, value) in player_order[..player_count].iter_mut().enumerate() {
+            *value = index;
+        }
+        player_order[..player_count].sort_by_key(|&index| {
+            let slot = &self.players[index];
+            let entity = match Self::hurtbox_entity(slot) {
+                usize::MAX => slot.body_entity,
+                entity => entity,
+            };
+            (self.entities[entity].hierarchy, index)
+        });
+        for &index in &player_order[..player_count] {
+            let packet = &actions[index];
             // An ordinary slime's drop test closes its grounded Move instead
             // (`player_tick`).
             if self.playable(index) && self.players[index].active != ActiveAbility::None {
