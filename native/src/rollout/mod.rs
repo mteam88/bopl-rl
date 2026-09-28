@@ -2601,7 +2601,10 @@ pub struct PlayerSlot {
     pub stock_indicator_hierarchy: [u32; 3],
     pub revival_target_marker: Option<usize>,
     pub revival_effect_ticks: u32,
-    pub revival_particle_ticks: u32,
+    /// ReviveEffect's position, where its particle starts.
+    pub revival_effect_position: Vec2,
+    /// ReviveParticle's distanceToTravel and distanceTravelled after Shoot.
+    pub revival_particle: Option<(Fix, Fix)>,
     /// Marker owned by each equipped Teleport instance. The first cast fills
     /// it; the second consumes it and queues the two-way area swap.
     pub teleport_markers: [Option<usize>; 3],
@@ -4484,7 +4487,8 @@ impl RolloutWorld {
                 stock_indicator_hierarchy: [u32::MAX; 3],
                 revival_target_marker: None,
                 revival_effect_ticks: 0,
-                revival_particle_ticks: 0,
+                revival_effect_position: Vec2::ZERO,
+                revival_particle: None,
                 teleport_markers: [None; 3],
                 teleport_ignore_cooldown: [false; 3],
                 portal_blue: [None; 3],
@@ -20519,22 +20523,53 @@ impl RolloutWorld {
             {
                 continue;
             }
-            self.players[index].revival_effect_ticks -= 1;
-            if self.players[index].revival_effect_ticks
-                == self.players[index].revival_particle_ticks
-            {
-                self.next_spawn_hierarchy += data.revival.particle_updatable_count;
+            let marker_index =
+                self.players[index].revival_target_marker.expect("live Revival effect marker");
+            let target = self.revival_marker_pool[marker_index].position;
+            let Some((distance, mut travelled)) = self.players[index].revival_particle else {
+                let slot = &mut self.players[index];
+                slot.revival_effect_ticks -= 1;
+                if slot.revival_effect_ticks == 0 {
+                    // Shoot measures the particle's distance to the marker
+                    // where it stands now (ReviveParticle.cs:67).
+                    let distance = (target - slot.revival_effect_position).length();
+                    slot.revival_particle = Some((distance, Fix::ZERO));
+                    slot.revival_effect_ticks = 1;
+                    self.next_spawn_hierarchy += data.revival.particle_updatable_count;
+                }
+                continue;
+            };
+            // ReviveParticle registers in Awake and again in InitRevive, so it
+            // updates twice a pass, on its player's FixedDeltaTime.
+            let dt = if self.time_stop_protected[index] {
+                DT
+            } else {
+                DT * self.player_time_scale
+            };
+            let step = (data.revival.particle_speed * dt).abs();
+            let mut arrived = false;
+            for _ in 0..2 {
+                if travelled > distance {
+                    break;
+                }
+                travelled += step;
+                if travelled >= distance {
+                    arrived = true;
+                    break;
+                }
             }
-            if self.players[index].revival_effect_ticks != 0 {
+            if !arrived {
+                self.players[index].revival_particle = Some((distance, travelled));
                 continue;
             }
-            let marker_index = self.players[index]
-                .revival_target_marker
-                .take()
-                .expect("live Revival effect marker");
+            self.players[index].revival_target_marker = None;
             self.end_revival_marker(marker_index);
             let slot = &mut self.players[index];
-            slot.revival_particle_ticks = 0;
+            slot.revival_effect_ticks = 0;
+            slot.revival_particle = None;
+            // SlimeController.ReSpawn places the clone where the marker is.
+            slot.base.position = target;
+            slot.base.sync_collider();
             slot.respawn_spawn_ticks = data.player.spawn_anim_ticks + 1;
             slot.obs_state = STATE_FALL;
         }
@@ -37442,11 +37477,6 @@ impl RolloutWorld {
                     row.flags = E_REMOVED;
                 }
             }
-            let target = self.revival_marker_pool[marker_index].position;
-            let distance = (target - drop_position).length();
-            let particle_step = data::get().revival.particle_speed * DT * Fix::from_int(2);
-            let particle_ticks =
-                ((distance.raw() + particle_step.raw() - 1) / particle_step.raw()) as u32;
             slot.base.alive = true;
             slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity = Vec2::ZERO;
@@ -37457,8 +37487,9 @@ impl RolloutWorld {
             slot.revival_markers = [None; 3];
             slot.revival_clone_pending = true;
             slot.revival_target_marker = Some(marker_index);
-            slot.revival_effect_ticks = data::get().revival.effect_wisp_ticks + 1 + particle_ticks;
-            slot.revival_particle_ticks = particle_ticks;
+            slot.revival_effect_ticks = data::get().revival.effect_wisp_ticks + 1;
+            slot.revival_effect_position = drop_position;
+            slot.revival_particle = None;
             slot.respawn_ticks = 0;
             slot.respawn_spawn_ticks = 0;
             slot.obs_state = STATE_NOTHING;
