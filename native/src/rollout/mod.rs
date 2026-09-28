@@ -17980,10 +17980,13 @@ impl RolloutWorld {
         }
     }
 
+    /// FlammableSmoke.UpdateSim in hierarchy order. A lit cloud instantiates its
+    /// Explosion in its own update (FlammableSmoke.cs:66-76), so detonations and
+    /// the bounds splashes claim spawn hierarchy in the clouds' order.
     fn smoke_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        let mut detonations = [usize::MAX; 64];
-        let mut detonation_count = 0;
-        for cloud_index in 0..self.smoke_clouds.len() {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.smoke_clouds, |cloud| cloud.hierarchy_base);
+        for &cloud_index in &order {
             if self.blink_object_hidden(self.smoke_clouds[cloud_index].entity) {
                 continue;
             }
@@ -18016,17 +18019,12 @@ impl RolloutWorld {
             }
             if cloud.ignition_time >= Fix::ZERO {
                 cloud.ignition_time += updater_dt;
-                if cloud.ignition_time > cloud.ignition_delay
-                    && detonation_count < detonations.len()
-                {
-                    detonations[detonation_count] = cloud_index;
-                    detonation_count += 1;
+                if cloud.ignition_time > cloud.ignition_delay {
+                    self.detonate_smoke_cloud(cloud_index, data);
                 }
             }
         }
-        for &cloud_index in &detonations[..detonation_count] {
-            self.detonate_smoke_cloud(cloud_index, data);
-        }
+        self.scratch.item_order = order;
 
         for explosion in &mut self.smoke_explosions {
             if !explosion.active || !explosion.registered {
