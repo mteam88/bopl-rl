@@ -1221,15 +1221,16 @@ impl RewindState {
 }
 
 /// A platform spawned by the Platform ability (ResizablePlatform prefab).
-/// Each player keeps at most one (PlatformTransform's one-slot srrBuffer);
-/// a re-cast removes the previous platform.
+/// Each PlatformTransform instance keeps at most one (its one-slot
+/// srrBuffer); a re-cast from that instance removes the previous platform.
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedPlatform {
     pub active: bool,
     /// ResizablePlatform.RemovePlatform keeps the body live while shrinking.
     pub being_removed: bool,
-    /// Owning player index (not id).
-    pub owner: usize,
+    /// The PlatformTransform holding it in its srrBuffer, as (player index,
+    /// ability slot); None once that ability instance is destroyed.
+    pub buffer: Option<(usize, usize)>,
     /// Index into `RolloutWorld::platforms` (kept in sync on removal).
     pub platform_index: usize,
     pub removal_time: Fix,
@@ -4941,6 +4942,11 @@ impl RolloutWorld {
                 slot.black_hole_castable[2] = true;
                 slot.portal_blue[2] = None;
                 slot.portal_orange[2] = None;
+                for spawn in &mut self.spawned {
+                    if spawn.buffer == Some((player_index, 2)) {
+                        spawn.buffer = None;
+                    }
+                }
                 slot.pending_ability_hierarchy[2] = self.next_spawn_hierarchy;
                 self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
             }
@@ -28309,7 +28315,8 @@ impl RolloutWorld {
     /// Spawn a ResizablePlatform for `owner` (starting removal of the previous one)
     /// and return its index in `platforms`.
     fn spawn_ability_platform(&mut self, owner: usize, position: Vec2, scale: Fix) -> usize {
-        self.begin_removing_spawned_platform_of(owner);
+        let buffer = (owner, self.players[owner].active_slot);
+        self.begin_removing_spawned_platform_of(buffer);
         let pd = &data::get().platform;
         let entity = self.entities.len();
         let id = self.next_id();
@@ -28420,7 +28427,7 @@ impl RolloutWorld {
         self.spawned.push(SpawnedPlatform {
             active: true,
             being_removed: false,
-            owner,
+            buffer: Some(buffer),
             platform_index,
             removal_time: Fix::ZERO,
             removal_extents: Vec2::ZERO,
@@ -28430,11 +28437,11 @@ impl RolloutWorld {
         platform_index
     }
 
-    fn begin_removing_spawned_platform_of(&mut self, owner: usize) {
+    fn begin_removing_spawned_platform_of(&mut self, buffer: (usize, usize)) {
         if let Some(i) = self
             .spawned
             .iter()
-            .rposition(|s| s.active && !s.being_removed && s.owner == owner)
+            .rposition(|s| s.active && !s.being_removed && s.buffer == Some(buffer))
         {
             let platform_index = self.spawned[i].platform_index;
             let surface = &self.platforms[platform_index].surface;
@@ -35894,6 +35901,13 @@ impl RolloutWorld {
         slot.portal_blue = [None; 3];
         slot.portal_orange = [None; 3];
         slot.spike_attacks = [None; 3];
+        // So does PlatformTransform's srrBuffer: the platform stays, but a
+        // replacement slime's fresh ability starts with an empty buffer.
+        for spawn in &mut self.spawned {
+            if spawn.buffer.is_some_and(|(owner, _)| owner == index) {
+                spawn.buffer = None;
+            }
+        }
         if !already_won && killer >= 1 && killer <= players as u32 {
             self.players[killer as usize - 1].kills += 1;
         }
