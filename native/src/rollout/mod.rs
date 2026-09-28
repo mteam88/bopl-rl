@@ -25977,13 +25977,20 @@ impl RolloutWorld {
         clone.blink_tunnel_age = Fix::ZERO;
         clone.blink_tunnel_released = false;
         clone.blink_reactivated_tick = None;
-        // The hidden slime's transform is its body's, ahead of the collider
-        // row synced before this pass's move.
-        let position = clone.base.position;
+        // The hidden slime's transform is its body's, position and rotation,
+        // ahead of the collider row synced before this pass's move.
+        let mut body = clone.base.clone();
+        body.sync_collider();
         if let Some(entity) = clone.entity {
-            self.entities[entity].flags &= !E_ACTIVE;
-            self.entities[entity].x = position.x.raw();
-            self.entities[entity].y = position.y.raw();
+            let row = &mut self.entities[entity];
+            row.flags &= !E_ACTIVE;
+            row.x = body.position.x.raw();
+            row.y = body.position.y.raw();
+            row.right_x = (body.collider.right * body.scale).x.raw();
+            row.right_y = (body.collider.right * body.scale).y.raw();
+            row.up_x = (body.collider.up * body.scale).x.raw();
+            row.up_y = (body.collider.up * body.scale).y.raw();
+            row.rotation = body.rotation.raw();
         }
     }
 
