@@ -13151,7 +13151,10 @@ impl RolloutWorld {
             .expect("authored SpikeAttack curve")
             .time;
         for index in 0..self.spike_attacks.len() {
-            if self.platform_hidden(self.spike_attacks[index].platform_index) {
+            if self.attached_hidden(
+                self.spike_attacks[index].platform_index,
+                self.spike_attacks[index].entity,
+            ) {
                 continue;
             }
             let attack = &mut self.spike_attacks[index];
@@ -13274,7 +13277,7 @@ impl RolloutWorld {
             if !engine.active
                 || engine.macho_carried
                 || engine.born_tick == self.tick
-                || self.platform_hidden(engine.platform_index)
+                || self.attached_hidden(engine.platform_index, engine.entity)
             {
                 continue;
             }
@@ -13593,16 +13596,14 @@ impl RolloutWorld {
     }
 
     /// SimpleSparkNode's activeInHierarchy: a node planted on a wall a
-    /// QuantumTunnel hid is hidden with it. Its own UpdateSim still runs
-    /// (IsEnabled is always true), but a partner reading it disconnects
-    /// (SimpleSparkNode.cs:62-68, 224-245).
+    /// QuantumTunnel hid is hidden with it, as is a node Blink hit directly.
+    /// Its own UpdateSim still runs (IsEnabled is always true), but a partner
+    /// reading it disconnects (SimpleSparkNode.cs:62-68, 224-245).
     fn tesla_node_shown(&self, node_index: usize) -> bool {
         let Some(node) = self.tesla_nodes.get(node_index) else {
             return false;
         };
-        node.active
-            && !node.macho_carried
-            && self.platforms.get(node.platform_index).is_none_or(|platform| platform.active)
+        node.active && !node.macho_carried && !self.attached_hidden(node.platform_index, node.entity)
     }
 
     fn update_tesla_line_geometry(&mut self, node_index: usize, data: &data::RolloutData) {
@@ -13878,7 +13879,8 @@ impl RolloutWorld {
             if !node.active
                 || node.macho_carried
                 || !node.lethal
-                || (node_index < live_nodes && self.platform_hidden(node.platform_index))
+                || (node_index < live_nodes
+                    && self.attached_hidden(node.platform_index, node.entity))
             {
                 continue;
             }
@@ -27267,6 +27269,13 @@ impl RolloutWorld {
         platform_index < self.platforms.len() && !self.platforms[platform_index].active
     }
 
+    /// Such a child is also a Blink target in its own right: ShootQuantum
+    /// tunnels the GameObject of the collider it hit, so a spike, engine or
+    /// spark node hit directly goes inactive the same way.
+    fn attached_hidden(&self, platform_index: usize, entity: Option<usize>) -> bool {
+        self.platform_hidden(platform_index) || self.blink_object_hidden(entity)
+    }
+
     /// A clone in its own QuantumTunnel or an object tunnel is an inactive
     /// GameObject, which DetPhysics skips (QuantumTunnel.cs:136).
     fn abilityless_clone_hidden(&self, clone: &AbilitylessClone) -> bool {
@@ -38230,7 +38239,7 @@ impl RolloutWorld {
                         data.tesla.node_layer
                     },
                     owner: node.owner as u32 + 1,
-                    flags: if self.platform_hidden(node.platform_index) {
+                    flags: if self.attached_hidden(node.platform_index, node.entity) {
                         E_ENABLED | E_COMPOSITE
                     } else {
                         E_ACTIVE | E_ENABLED | E_COMPOSITE
@@ -38311,7 +38320,7 @@ impl RolloutWorld {
                 kind: 1,
                 layer: data.engine.rocket_layer,
                 owner: 0,
-                flags: if self.platform_hidden(engine.platform_index) {
+                flags: if self.attached_hidden(engine.platform_index, engine.entity) {
                     E_ENABLED | E_COMPOSITE
                 } else {
                     E_ACTIVE | E_ENABLED | E_COMPOSITE
@@ -38354,7 +38363,7 @@ impl RolloutWorld {
                 kind: 1,
                 layer: data.spike.attack_layer,
                 owner: 0,
-                flags: if self.platform_hidden(spike.platform_index) {
+                flags: if self.attached_hidden(spike.platform_index, spike.entity) {
                     E_ENABLED | E_COMPOSITE
                 } else {
                     E_ACTIVE | E_ENABLED | E_COMPOSITE
