@@ -11702,7 +11702,11 @@ impl RolloutWorld {
                 continue;
             }
             effect.time += DT;
-            if jump_pressed && !slot.base.grounded {
+            // The kick goes to the slime or to its active form; a Teleport or
+            // a Blink tunnel deactivates whichever holds the player, so there
+            // is nothing to kick (SuperStarEffect.UpdateSim).
+            let hidden = slot.teleport_effect_active || slot.blink_tunnel_active;
+            if jump_pressed && !slot.base.grounded && !hidden {
                 slot.base.velocity.y = slot.base.constants.jump_strength * air_jump;
             }
             if effect.time >= duration {
