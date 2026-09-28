@@ -6307,9 +6307,19 @@ impl RolloutWorld {
             .map(|marker| marker.hierarchy_base)
             .min()
             .unwrap_or(u32::MAX);
+        // A rope cast after a runtime-spawned platform updates behind that
+        // platform's AnimateVelocity, so its pull lands on the spring's
+        // angular velocity.
+        let first_platform = self
+            .spawned
+            .iter()
+            .filter(|spawned| spawned.active)
+            .map(|spawned| spawned.hierarchy_base)
+            .min()
+            .unwrap_or(u32::MAX);
         let ropes_before_clones = first_clone.min(first_hammer);
         if has_rope {
-            self.ropes_update(0..ropes_before_clones.min(first_teleport));
+            self.ropes_update(0..ropes_before_clones.min(first_teleport).min(first_platform));
         }
         if has(ABILITY_BEAM) {
             self.beam_orbs_tick(data);
@@ -6369,6 +6379,9 @@ impl RolloutWorld {
         self.platform_body_scale_tick(PlatformPass::Spawned);
         self.platform_orbits_tick(data, updater_dt, PlatformPass::Spawned);
         self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Spawned);
+        if has_rope && first_platform < ropes_before_clones.min(first_teleport) {
+            self.ropes_update(first_platform..ropes_before_clones.min(first_teleport));
+        }
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT);
         }
