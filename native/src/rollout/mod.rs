@@ -6380,9 +6380,6 @@ impl RolloutWorld {
         if has(ABILITY_DRILL) {
             self.drill_contacts();
         }
-        if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
-            self.ability_pickups_contacts(data);
-        }
         if has(ABILITY_TESLA) {
             self.tesla_wall_contacts(data);
         }
@@ -6403,6 +6400,11 @@ impl RolloutWorld {
         }
         if has(ABILITY_PORTAL_GUN) && has(ABILITY_ROCK) {
             self.portal_shot_rock_contacts(data);
+        }
+        // DynamicAbilityPickup.OnCollide is a callback: a pickup a slime
+        // collects this pass still resolved its Circle/Circle pairs first.
+        if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
+            self.ability_pickups_contacts(data);
         }
         // That was the last correction that moves a wall. The squish callback
         // queued in the Box/RR group runs only after every group's corrections
@@ -34963,7 +34965,29 @@ impl RolloutWorld {
         // Neither form owns a PlayerCollision component, so it is nonlethal.
         // SortAndSweep makes A the rock whose box starts first on the sweep
         // axis, which fixes the normal's sign for both bounces.
-        let mut pairs = [(0usize, 0usize); MAX_PLAYERS * MAX_PLAYERS];
+        //
+        // A DynamicAbilityPickup is a weapon-layer circle with a BoplBody, and
+        // weapon collides with Player, so a Rock and a pickup meet in the same
+        // group. Neither callback reacts: the Rock is no SlimeController and
+        // BounceBall ignores the weapon layer. Participants from PICKUP up
+        // are pickups.
+        const PICKUP: usize = 1 << 16;
+        let pickup_circle = |index: usize| {
+            let pickup = &self.ability_pickups[index];
+            Circle {
+                center: pickup.position + data.pickup.offset * pickup.scale,
+                radius: data.pickup.radius * pickup.scale,
+            }
+        };
+        let participant_min = |index: usize| {
+            if index >= PICKUP {
+                let circle = pickup_circle(index - PICKUP);
+                axis(circle.center) - circle.radius
+            } else {
+                rock_min(index)
+            }
+        };
+        let mut pairs = [(0usize, 0usize); 64];
         let mut pair_count = 0;
         for a in 0..self.players.len() {
             if self.players[a].active != ActiveAbility::Rock || !self.playable(a) {
@@ -34973,16 +34997,81 @@ impl RolloutWorld {
                 if self.players[b].active != ActiveAbility::Rock
                     || !self.playable(b)
                     || !swept[a].bounds_overlap(swept[b])
+                    || pair_count == pairs.len()
                 {
                     continue;
                 }
                 pairs[pair_count] = if rock_min(b) < rock_min(a) { (b, a) } else { (a, b) };
                 pair_count += 1;
             }
+            for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
+                if !pickup.active
+                    || !pickup.enabled
+                    || self.blink_object_hidden(pickup.entity)
+                    || !swept[a].bounds_overlap(pickup_circle(pickup_index))
+                    || pair_count == pairs.len()
+                {
+                    continue;
+                }
+                let b = PICKUP + pickup_index;
+                pairs[pair_count] =
+                    if participant_min(b) < rock_min(a) { (b, a) } else { (a, b) };
+                pair_count += 1;
+            }
         }
         let pairs = &mut pairs[..pair_count];
-        pairs.sort_by_key(|&(a, b)| (rock_min(b), rock_min(a)));
+        pairs.sort_by_key(|&(a, b)| (participant_min(b), participant_min(a)));
         for &(a, b) in pairs.iter() {
+            if a >= PICKUP || b >= PICKUP {
+                let pickup_first = a >= PICKUP;
+                let (rock_index, pickup_index) =
+                    if pickup_first { (b, a - PICKUP) } else { (a, b - PICKUP) };
+                let rock_circle = Circle {
+                    center: self.players[rock_index].base.position,
+                    radius: self.players[rock_index].rock.collider_radius,
+                };
+                let pickup = self.ability_pickups[pickup_index];
+                let pickup_center = pickup.position + data.pickup.offset * pickup.scale;
+                let pickup_circle = Circle {
+                    center: pickup_center,
+                    radius: data.pickup.radius * pickup.scale,
+                };
+                let (ca, cb) = if pickup_first {
+                    (pickup_circle, rock_circle)
+                } else {
+                    (rock_circle, pickup_circle)
+                };
+                let Some(contact) = crate::physics::contact::circle_circle(ca, cb) else {
+                    continue;
+                };
+                let rock = &mut self.players[rock_index];
+                let state = &mut self.ability_pickups[pickup_index];
+                let (body_a, body_b) = if pickup_first {
+                    (&mut state.body, &mut rock.rock.body)
+                } else {
+                    (&mut rock.rock.body, &mut state.body)
+                };
+                resolve(contact, body_a, body_b, ca.center, cb.center);
+                let correction =
+                    positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
+                let (rock_shift, pickup_shift) = if pickup_first {
+                    (correction[1], correction[0])
+                } else {
+                    (correction[0], correction[1])
+                };
+                rock.base.position += rock_shift;
+                rock.base.velocity = rock.rock.body.velocity;
+                state.position += pickup_shift;
+                if let Some(entity) = state.entity {
+                    let center = state.position + data.pickup.offset * state.scale;
+                    let row = &mut self.entities[entity];
+                    row.x = center.x.raw();
+                    row.y = center.y.raw();
+                    row.vx = state.body.velocity.x.raw();
+                    row.vy = state.body.velocity.y.raw();
+                }
+                continue;
+            }
             let ca = Circle {
                 center: self.players[a].base.position,
                 radius: self.players[a].rock.collider_radius,
