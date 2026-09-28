@@ -5549,7 +5549,7 @@ impl RolloutWorld {
         for platform_index in (0..self.platforms.len()).rev() {
             let entity = self.platform_entities[platform_index];
             if self.entities[entity].flags & E_DESTROYED != 0 {
-                self.remove_platform(platform_index);
+                self.remove_platform(platform_index, false);
             }
         }
         if has(ABILITY_BOW) {
@@ -16526,7 +16526,7 @@ impl RolloutWorld {
         self.set_platform_scale(platform_index, next);
         let dynamics = &self.platform_dynamics[platform_index];
         if dynamics.scale <= dynamics.min_scale {
-            self.remove_platform(platform_index);
+            self.remove_platform(platform_index, true);
             return true;
         }
         false
@@ -17462,7 +17462,7 @@ impl RolloutWorld {
             // DestroyIfTooFarX=false and DoNotDestroyUp=true. The updater's
             // DestroyFix removes it before this pass's contacts and export.
             if self.platforms[boulder.platform_index].surface.center.y < lower_boundary {
-                self.remove_platform(boulder.platform_index);
+                self.remove_platform(boulder.platform_index, true);
                 self.next_spawn_hierarchy += data.macho_throw.boulder_down_effect_updatable_count;
             }
         }
@@ -25085,7 +25085,7 @@ impl RolloutWorld {
             let lifespan = self.platform_dynamics[platform_index].duplicate_lifespan;
             if lifespan < 0 {
                 let id = self.platforms[platform_index].id;
-                self.remove_platform(platform_index);
+                self.remove_platform(platform_index, false);
                 for slot in &mut self.players {
                     if slot.ground_destroyed.is_some() && slot.base.ground == Some(id) {
                         slot.ground_destroyed_tick = Some(self.tick);
@@ -28309,7 +28309,7 @@ impl RolloutWorld {
     /// Remove a platform from the world (RemovePlatform / scene-bounds
     /// destruction). Riders retain Unity's destroyed ground reference until
     /// their own next updater pass.
-    fn remove_platform(&mut self, index: usize) {
+    fn remove_platform(&mut self, index: usize, deferred: bool) {
         let id = self.platforms[index].id;
         for slot in &mut self.players {
             // Every lost-ground check is gated on isGrounded; an airborne
@@ -28358,8 +28358,22 @@ impl RolloutWorld {
             {
                 // Spark nodes are Unity children of their planted platform.
                 // Destroying the parent invokes each node's OnDestroyUpdatable,
-                // including the partner/lightning disconnect cascade.
-                self.remove_tesla_node(node_index, false);
+                // including the partner/lightning disconnect cascade. A
+                // DestroyFix from an UpdateSim (`deferred`) runs it at the end
+                // of the pass (Updater.cs:329-337), so the lightning line is
+                // still exported as destroyed. Until then CanConnect, which
+                // only asks activeInHierarchy, lets a surviving parent's
+                // UpdateSim redraw its line to the node (SimpleSparkNode.cs:
+                // 62-69, 224-262).
+                if deferred
+                    && let Some(parent) = self.tesla_nodes[node_index].parent
+                    && parent < self.tesla_nodes.len()
+                    && self.tesla_nodes[parent].connected
+                    && self.tesla_nodes[parent].platform_index != index
+                {
+                    self.update_tesla_line_geometry(parent, data::get());
+                }
+                self.remove_tesla_node(node_index, deferred);
             }
         }
         for node in &mut self.tesla_nodes {
@@ -29107,7 +29121,7 @@ impl RolloutWorld {
     fn purge_destroyed_colliders(&mut self) {
         for platform_index in (0..self.platforms.len()).rev() {
             if self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED != 0 {
-                self.remove_platform(platform_index);
+                self.remove_platform(platform_index, false);
             }
         }
         for row in &mut self.entities {
@@ -35111,7 +35125,7 @@ impl RolloutWorld {
         }
         removal_destroys.sort_unstable_by(|a, b| b.cmp(a));
         for index in removal_destroys {
-            self.remove_platform(index);
+            self.remove_platform(index, true);
         }
         // Resizes and removals rebuild the raycast bounds themselves; the
         // integration and corrections below move the bodies after that.
@@ -39366,7 +39380,7 @@ mod tests {
         world.reset(&test_config()).unwrap();
         world.begin_duplicate_platform(1, Vec2::ZERO, Vec2::RIGHT, 0, data::get());
 
-        world.remove_platform(0);
+        world.remove_platform(0, false);
 
         let effect = world
             .duplicate_platform_effects
@@ -39397,7 +39411,7 @@ mod tests {
             ..SpawnedTeslaNode::default()
         });
 
-        world.remove_platform(0);
+        world.remove_platform(0, false);
 
         assert!(!world.tesla_nodes[0].active);
         assert!(!world.tesla_nodes[1].connected);
@@ -41052,7 +41066,7 @@ mod tests {
             player.local = Fix::ZERO;
         }
 
-        world.remove_platform(platform_index);
+        world.remove_platform(platform_index, false);
         assert!(world.players[0].base.grounded);
         assert_eq!(world.players[0].base.ground, Some(platform_id));
         assert!(world.players[0].ground_destroyed.is_some());
