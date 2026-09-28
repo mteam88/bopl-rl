@@ -8571,6 +8571,16 @@ impl RolloutWorld {
             for timer in &mut slot.timers {
                 *timer += DT;
             }
+            // The same loop runs the rope abilities' UpdateCooldowns, which
+            // see the rope BeginRewind let go (SlimeController.cs:737-752).
+            self.web_cooldowns_tick(index, action);
+            self.grapple_cooldowns_tick(index);
+            let slot = &mut self.players[index];
+            for s in 0..3 {
+                if slot.cooldowns[s] == Fix::ZERO {
+                    slot.timers[s] = Fix::from_f64(0.01);
+                }
+            }
             slot.slime_updated = true;
             // suppressInput only blocks the casts; each slot's
             // IgnoreNextCooldown reset still runs (SlimeController.cs:818-824).
