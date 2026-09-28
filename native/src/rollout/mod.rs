@@ -10516,7 +10516,9 @@ impl RolloutWorld {
         let grounded_speed = (self.players[index].base.velocity
             + self.players[index].base.external_velocity)
             .length();
-        let mut exit_position = self.players[index].base.position;
+        // Ability.ExitAbility publishes the form's own collider position.
+        let form_position = self.players[index].base.position;
+        let mut exit_position = form_position;
         if grounded
             && let Some(platform) =
                 ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
@@ -10569,7 +10571,7 @@ impl RolloutWorld {
             slot.exit_to_fall();
             slot.base.collision_rays(terrain!(self));
         }
-        slot.reported_position = exit_position;
+        slot.reported_position = form_position;
         slot.reported_tick = self.tick;
     }
 
