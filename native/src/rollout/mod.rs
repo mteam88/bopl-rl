@@ -6206,6 +6206,13 @@ impl RolloutWorld {
                     collider.collider_rotation = rotation;
                     collider.collider_basis = basis;
                 }
+            } else if !frozen
+                && self.players[index].base.alive
+                && (self.players[index].respawn_ticks > 0 || self.players[index].respawn_spawn_ticks > 0)
+            {
+                // The stock clone's hurtbox stays registered while it waits and
+                // spawns, so SyncAll moves it to the point ReSpawnFast chose.
+                self.players[index].base.sync_collider();
             }
             if !frozen {
                 let input = action.input_direction(self.players[index].keyboard);
