@@ -13939,7 +13939,9 @@ impl RolloutWorld {
         slot.revival.ticks += 1;
         if slot.revival.phase == 0 && slot.revival.ticks > data.revival.cast_ticks {
             let ability_slot = slot.active_slot;
-            let spawn = clamp_revival_position(slot.base.position + data.revival.shockwave_offset);
+            let spawn = clamp_revival_position(
+                slot.base.position + data.revival.shockwave_offset * slot.base.scale,
+            );
             if let Some(old) = slot.revival_markers[ability_slot].take() {
                 self.end_revival_marker(old);
             }
