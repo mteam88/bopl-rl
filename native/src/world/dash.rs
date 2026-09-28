@@ -119,8 +119,10 @@ impl Player {
                     self.dash.local = self.local;
                 } else {
                     let mut position = self.position + self.dash.input * Fix::from_int(13);
-                    let water = Fix::from_f32(-11.3);
-                    if !self.space && position.y < water {
+                    // SceneBounds.WaterHeight, -50 on a space level.
+                    let water =
+                        if self.space { Fix::from_int(-50) } else { Fix::from_f32(-11.3) };
+                    if position.y < water {
                         let distance = (water - self.position.y) / self.dash.input.y;
                         position.y = water;
                         position.x = self.position.x + self.dash.input.x * distance;
