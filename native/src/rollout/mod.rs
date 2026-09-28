@@ -32784,7 +32784,17 @@ impl RolloutWorld {
             let scale = speed_scale * Fix::from_int(2 << steps);
             let speed = curve.evaluate(elapsed - delay);
             let drop = -speed * scale * updater_dt;
-            self.platform_dynamics[i].home_position.y += drop;
+            let dynamics = &mut self.platform_dynamics[i];
+            dynamics.home_position.y += drop;
+            // A body without a home spring falls instead (AnimateVelocity.cs:137-141):
+            // SetGravityScale writes the rounded rect's own body and a
+            // composite's combined body.
+            let composite = dynamics.attached_children != 0;
+            let own = if composite { dynamics.root_body } else { dynamics.body };
+            if dynamics.speed <= Fix::ZERO && own.gravity_scale == Fix::ZERO {
+                dynamics.body.gravity_scale = Fix::ONE;
+                dynamics.root_body.gravity_scale = Fix::ONE;
+            }
         }
 
         // AnimateVelocity.UpdateSim. Keep the apparently cancelling inverse
@@ -34505,8 +34515,8 @@ impl RolloutWorld {
         }
 
         // DetPhysics integrates every rounded body before it constructs any
-        // contacts. All rollout platforms have gravityScale=0, but pass the
-        // game's -40 gravity for completeness.
+        // contacts. Only dropped boulders and springless sudden-death bodies
+        // have a gravityScale, under the game's -40 gravity.
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active {
                 // SyncAllPhysicsObjectsToFixTransformPosition still syncs an
