@@ -1876,6 +1876,10 @@ pub struct DrillState {
     pub hitbox_position: Vec2,
     pub hitbox_up: Vec2,
     pub hitbox_rotation: Fix,
+    /// The hurtbox Drill.OnEnterAbility synced (UpdatePhysicsPositions), which
+    /// the entry pass sees before the row is published.
+    pub entry_box: OrientedBox,
+    pub entry_tick: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -9812,6 +9816,7 @@ impl RolloutWorld {
                             // SpriteAnimator follows Ability and consumes the
                             // first enter frame during this same updater pass.
                             ticks: 1,
+                            entry_tick: Some(self.tick),
                             ..DrillState::default()
                         };
                         slot.base.position = position
@@ -9823,6 +9828,13 @@ impl RolloutWorld {
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
+                        slot.drill.entry_box = OrientedBox::from_basis(
+                            slot.base.position
+                                + (data.drill.collider_offset * scale)
+                                    .complex_mul(slot.base.up.perp_cw()),
+                            right,
+                            data::surface_extents(data.drill.hurtbox_extents) * scale,
+                        );
                         self.drill_tick(index, action, data, false);
                         return;
                     }
@@ -23099,10 +23111,23 @@ impl RolloutWorld {
                 // An ability form is hit through its own collider, and the
                 // distance is measured to that collider's transform.
                 let entity = Self::hurtbox_entity(player);
-                if !self.collides(entity) {
+                if entity == usize::MAX {
                     continue;
                 }
                 let row = self.entities[entity];
+                if player.active == ActiveAbility::Drill && row.flags & E_ACTIVE == 0 {
+                    // Entered this pass: the box OnEnterAbility synced.
+                    let form = player.drill.entry_box;
+                    consider(
+                        MagnetHeld::Player(player_index),
+                        form.center,
+                        crate::physics::contact::circle_box(pickup_circle, form).is_some(),
+                    );
+                    continue;
+                }
+                if !self.collides(entity) {
+                    continue;
+                }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
                 let overlaps = if row.kind == 0 {
                     let circle = Circle { center, radius: Fix::from_raw(row.radius) };
@@ -23445,11 +23470,17 @@ impl RolloutWorld {
                     self.deactivate_drill_hitboxes(i);
                     let (velocity, external) =
                         (self.players[i].base.velocity, self.players[i].base.external_velocity);
+                    let body = self.players[i].base.position;
                     self.exit_form_for_freeze_at(i, position, velocity, external, data);
                     let slot = &mut self.players[i];
                     slot.facing_right = (velocity + external).x >= Fix::ZERO;
                     slot.base.velocity = Vec2::ZERO;
                     slot.form_exit = Some((self.tick, position));
+                    // Ability.ExitAbility publishes the drill body's position.
+                    // A slime updating after its holder publishes its own.
+                    if i < index {
+                        slot.reported_position = body;
+                    }
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active == ActiveAbility::Magnet {
                     // The held form's own MagnetGun.ExitAbility ungrounds it
@@ -38809,10 +38840,14 @@ impl RolloutWorld {
                 } else {
                     E_ENABLED | E_TRIGGER
                 };
-                if drilling {
+                // A form left in the pass it was entered never published
+                // active, but EnterAbility gave it its owner and DetPhysics
+                // syncs its frozen transform.
+                let entered_now = slot.drill.entry_tick == Some(self.tick);
+                if drilling || entered_now {
                     box_row.owner = slot.base.id;
                 }
-                if drilling || was_active {
+                if drilling || was_active || entered_now {
                     let (position, up, rotation) = if drilling {
                         (slot.base.position, slot.base.up, slot.base.rotation)
                     } else {
