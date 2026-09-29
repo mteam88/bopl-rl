@@ -22256,6 +22256,19 @@ impl RolloutWorld {
                 center: wave.position,
                 radius: config.radius * wave.scale,
             };
+            // DPhysicsCircle joins DetPhysics in its own Init, so a cloud
+            // spawned after the wave in the same pass is not there yet when
+            // the wave's Init casts.
+            let wave_born = wave.born_tick;
+            let wave_hierarchy = wave.hierarchy_base;
+            let unregistered = |entity: usize| {
+                self.smoke_clouds.iter().any(|cloud| {
+                    cloud.active
+                        && cloud.entity == Some(entity)
+                        && cloud.born_tick == wave_born
+                        && cloud.hierarchy_base > wave_hierarchy
+                })
+            };
             // DetPhysics.CircleCastAll fills Shockwave's 50-entry buffer in
             // circle -> box -> rounded-rectangle registration order. Hits
             // that Shockwave later ignores still consume a slot.
@@ -22270,6 +22283,7 @@ impl RolloutWorld {
                             || row.id <= previous_id
                             || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
                             || config.mask & (1 << row.layer) == 0
+                            || (row.layer == data.smoke.cloud_layer && unregistered(entity))
                         {
                             continue;
                         }
