@@ -16155,7 +16155,8 @@ impl RolloutWorld {
                     data,
                 );
                 self.remove_spike(spike_index);
-                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                // As an engine: the box stays in its CompositeBody for the pass.
+                self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
             }
             for engine_index in 0..self.engines.len() {
                 let engine = self.engines[engine_index];
@@ -40185,13 +40186,17 @@ impl RolloutWorld {
         let data = data::get();
         for spike_index in 0..self.spike_attacks.len() {
             let spike = self.spike_attacks[spike_index];
-            if !spike.active || spike.macho_carried || spike.platform_index >= self.platforms.len()
-            {
+            if spike.macho_carried || spike.platform_index >= self.platforms.len() {
                 continue;
             }
             let Some(entity) = spike.entity else {
                 continue;
             };
+            // A box a Black Hole ate this pass still follows its composite.
+            let eaten = self.entities[entity].flags == E_DESTROYED | E_COMPOSITE;
+            if !spike.active && !eaten {
+                continue;
+            }
             let parent = &self.platform_dynamics[spike.platform_index].body;
             let rotation = parent.orientation + spike.relative_rotation;
             let basis = Vec2::angle(rotation);
@@ -40205,7 +40210,11 @@ impl RolloutWorld {
                 kind: 1,
                 layer: data.spike.attack_layer,
                 owner: 0,
-                flags: self.attached_flags(spike.platform_index, spike.entity),
+                flags: if eaten {
+                    E_DESTROYED | E_COMPOSITE
+                } else {
+                    self.attached_flags(spike.platform_index, spike.entity)
+                },
                 hierarchy: self.entities[entity].hierarchy,
                 x: center.x.raw(),
                 y: center.y.raw(),
