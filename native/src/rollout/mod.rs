@@ -22415,6 +22415,17 @@ impl RolloutWorld {
                             killer = beam.hitbox.owner_id as u32;
                             can_hurt_owner = true;
                             cause = CAUSE_BEAMED;
+                        } else if self
+                            .tesla_nodes
+                            .iter()
+                            .chain(&self.retired_tesla_contacts)
+                            .any(|node| node.entity == Some(entity) || node.line_entity == Some(entity))
+                        {
+                            // SimpleSparkNode and StretchableLightning never
+                            // assign Explosion.PlayerOwnerId, so performDash's
+                            // KillPlayerOnCollision credits its zero default.
+                            killer = 0;
+                            can_hurt_owner = true;
                         }
                         if killer == caster_id && !can_hurt_owner {
                             continue;
