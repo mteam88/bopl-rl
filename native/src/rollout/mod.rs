@@ -9348,6 +9348,12 @@ impl RolloutWorld {
                             let slot = &mut self.players[index];
                             slot.rewind.attached_ground = attached_ground;
                             slot.force_unground(&self.platforms, self.tick);
+                            // UnGround raises OnNoLongerGrounded, which sets
+                            // State.fall (PlayerPhysics.cs:377-380,
+                            // SlimeController.cs:956), so a landing in the
+                            // Move below starts the land animation afresh.
+                            slot.obs_state = STATE_FALL;
+                            slot.state_ticks = 0;
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                             // EnterAbility returns from OldUpdate, but this
@@ -12569,6 +12575,11 @@ impl RolloutWorld {
                 // UnGround (another Rewind's) lifts off it again.
                 slot.base.grounded = false;
                 slot.base.grounded_speed = Fix::ZERO;
+                // Its OnNoLongerGrounded sets State.fall (SlimeController.cs:956).
+                if slot.obs_state != STATE_RAGDOLL && slot.obs_state != STATE_BITING {
+                    slot.obs_state = STATE_FALL;
+                    slot.state_ticks = 0;
+                }
                 // FinishRewind overwrites the cooldowns outright and adds
                 // nothing (RewindRecorder.cs:325-333). SlimeController already
                 // advanced them earlier in this same pass: on Player.prefab
