@@ -12810,11 +12810,12 @@ impl RolloutWorld {
                 // UnGround (another Rewind's) lifts off it again.
                 slot.base.grounded = false;
                 slot.base.grounded_speed = Fix::ZERO;
-                // Its OnNoLongerGrounded sets State.fall (SlimeController.cs:956).
-                if slot.obs_state != STATE_RAGDOLL && slot.obs_state != STATE_BITING {
-                    slot.obs_state = STATE_FALL;
-                    slot.state_ticks = 0;
-                }
+                // Its OnNoLongerGrounded sets State.fall (SlimeController.cs:956)
+                // over any ragdoll taken during the playback.
+                slot.obs_state = STATE_FALL;
+                slot.state_ticks = 0;
+                slot.ragdoll.active = false;
+                slot.ragdoll_grounded_fall = false;
                 // FinishRewind overwrites the cooldowns outright and adds
                 // nothing (RewindRecorder.cs:325-333). SlimeController already
                 // advanced them earlier in this same pass: on Player.prefab
