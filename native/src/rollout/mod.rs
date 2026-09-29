@@ -1803,7 +1803,8 @@ pub struct FrozenSolidState {
 }
 
 /// A ScaleChanger prefab has no collider row. It joins Updater on the pass
-/// after the ray hit and mutates Player.Scale after all player components.
+/// after the ray hit and mutates Player.Scale after the player components
+/// older than it.
 #[derive(Clone, Copy, Default)]
 pub struct ScaleChangerState {
     pub active: bool,
@@ -1821,6 +1822,8 @@ pub struct ScaleChangerState {
     pub time: Fix,
     pub growth: bool,
     pub hierarchy_base: u32,
+    /// The pass a player changer already ran ahead of a newer player turn.
+    pub early_tick: Option<u32>,
 }
 
 /// DuplicatePlatformEffect keeps the source platform live for its authored
@@ -6309,6 +6312,8 @@ impl RolloutWorld {
         // Player.Position, a tack's proximity test sees it before it moves,
         // and a portal tests the slime where the last pass
         // left it, so the slime's own update skips gravity after the jump.
+        // A ScaleChanger spawned before a form instantiated at its first cast
+        // changes Player.Scale before that form reads it.
         let mut spawned_from = 0;
         let mut recorded = 0;
         self.scratch.ropes_ran_below = 0;
@@ -6355,6 +6360,9 @@ impl RolloutWorld {
                     }
                     self.ropes_update(ropes.clone());
                     self.scratch.ropes_ran_below = ropes.end;
+                }
+                if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
+                    self.player_scale_changers_update(data, spawned);
                 }
                 spawned_from = player_hierarchy[index];
             }
@@ -10271,6 +10279,16 @@ impl RolloutWorld {
                         // the form moves.
                         if self.ability_boundary_kill(index, false) {
                             return;
+                        }
+                        // The form's Ability.UpdateSim runs at the form's own
+                        // turn this pass, after any ScaleChanger spawned
+                        // between the slime and a form instantiated at its
+                        // first cast.
+                        let slime = self.entities[self.players[index].body_entity].hierarchy;
+                        let form = self.players[index].time_stop_entity;
+                        if form != usize::MAX && slime < self.entities[form].hierarchy {
+                            let form = self.entities[form].hierarchy;
+                            self.player_scale_changers_update(data, slime..form);
                         }
                         self.time_stop_cast_tick(index, action, jump_pressed, data);
                         return;
@@ -28210,6 +28228,7 @@ impl RolloutWorld {
             time: Fix::ZERO,
             growth,
             hierarchy_base,
+            early_tick: None,
         };
         if let Some(free) = self.scale_changers.iter().position(|state| !state.active) {
             self.scale_changers[free] = effect;
@@ -28276,6 +28295,7 @@ impl RolloutWorld {
             time: Fix::ZERO,
             growth,
             hierarchy_base,
+            early_tick: None,
         };
         // Retain one inactive record per generic entity so a later ray starts
         // from that object's live FixTransform scale. Active same-entity
@@ -29628,6 +29648,70 @@ impl RolloutWorld {
     /// scale the other just wrote.
     /// `deferred_spikes`: the spike pass left the spikes from this hierarchy
     /// on, which update in turn among the changers.
+    /// The player ScaleChangers in `hierarchy` that are due this pass: a
+    /// changer older than a player's turn object (a form instantiated at its
+    /// first cast, or a stock-respawned slime) changes Player.Scale before
+    /// that object's components read it.
+    fn player_scale_changers_update(
+        &mut self,
+        data: &data::RolloutData,
+        hierarchy: std::ops::Range<u32>,
+    ) {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        order.clear();
+        order.extend((0..self.scale_changers.len()).filter(|&index| {
+            let effect = &self.scale_changers[index];
+            effect.active
+                && effect.target_kind == 0
+                && effect.born_tick < self.tick
+                && effect.early_tick != Some(self.tick)
+                && hierarchy.contains(&(100_000_000 + effect.hierarchy_base))
+        }));
+        order.sort_unstable_by_key(|&index| (self.scale_changers[index].hierarchy_base, index));
+        for &index in &order {
+            self.scale_changers[index].early_tick = Some(self.tick);
+            self.player_scale_changer_step(index, data);
+        }
+        self.scratch.item_order = order;
+    }
+
+    /// One player ScaleChanger's UpdateSim.
+    fn player_scale_changer_step(&mut self, index: usize, data: &data::RolloutData) {
+        let effect = self.scale_changers[index];
+        let ray = if effect.growth {
+            &data.scale_rays.growth
+        } else {
+            &data.scale_rays.shrink
+        };
+        let duration = ray
+            .scale_curve
+            .keys
+            .last()
+            .expect("ScaleChanger curve has keys")
+            .time;
+        // A dead player's slime and ability colliders are destroyed, and
+        // the changer destroys itself on seeing its victim gone.
+        let victim_gone = if effect.entity_id != 0 {
+            !self.abilityless_clones.iter().any(|clone| {
+                clone.active && clone.entity.is_some_and(|e| self.entities[e].id == effect.entity_id)
+            })
+        } else {
+            !self.players[effect.victim].base.alive
+        };
+        if effect.time > duration || victim_gone {
+            self.scale_changers[index].active = false;
+            return;
+        }
+        if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[effect.victim] {
+            return;
+        }
+        let delta = ray.scale_curve.evaluate(effect.time) * ray.player_multiplier;
+        let slot = &mut self.players[effect.victim];
+        self.scratch.player_scale_changes.push((effect.victim, effect.hierarchy_base, slot.player_scale));
+        slot.player_scale = (slot.player_scale + delta).clamp(Fix::from_f64(0.3), Fix::from_int(3));
+        self.scale_changers[index].time += DT;
+    }
+
     fn scale_changers_tick(
         &mut self,
         data: &data::RolloutData,
@@ -29645,7 +29729,8 @@ impl RolloutWorld {
                 self.spike_attacks_between(data, updater_dt, from, effect.hierarchy_base);
                 spikes_from = Some(effect.hierarchy_base);
             }
-            if !effect.active || effect.born_tick >= self.tick {
+            if !effect.active || effect.born_tick >= self.tick || effect.early_tick == Some(self.tick)
+            {
                 continue;
             }
             // A DuplicatePlatformEffect instantiated before this changer
@@ -29662,38 +29747,12 @@ impl RolloutWorld {
                 .last()
                 .expect("ScaleChanger curve has keys")
                 .time;
-            // A dead player's slime and ability colliders are destroyed, and
-            // the changer destroys itself on seeing its victim gone.
-            let victim_gone = || {
-                if effect.entity_id != 0 {
-                    !self.abilityless_clones.iter().any(|clone| {
-                        clone.active
-                            && clone.entity.is_some_and(|e| self.entities[e].id == effect.entity_id)
-                    })
-                } else {
-                    !self.players[effect.victim].base.alive
-                }
-            };
-            if effect.time > duration || (effect.target_kind == 0 && victim_gone()) {
-                self.scale_changers[index].active = false;
+            if effect.target_kind == 0 {
+                self.player_scale_changer_step(index, data);
                 continue;
             }
-            if effect.target_kind == 0 {
-                if self.player_time_scale < Fix::from_f32(0.01)
-                    && !self.time_stop_protected[effect.victim]
-                {
-                    continue;
-                }
-                let delta = ray.scale_curve.evaluate(effect.time) * ray.player_multiplier;
-                let slot = &mut self.players[effect.victim];
-                self.scratch.player_scale_changes.push((
-                    effect.victim,
-                    effect.hierarchy_base,
-                    slot.player_scale,
-                ));
-                slot.player_scale =
-                    (slot.player_scale + delta).clamp(Fix::from_f64(0.3), Fix::from_int(3));
-                self.scale_changers[index].time += DT;
+            if effect.time > duration {
+                self.scale_changers[index].active = false;
                 continue;
             }
             if effect.target_kind == 5 {
