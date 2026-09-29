@@ -24290,12 +24290,6 @@ impl RolloutWorld {
             self.fire_scale_ray(index, growth, data);
         }
 
-        // Ability follows the shoot component in the prefab.
-        self.players[index].on_scale_changed();
-        self.players[index].scale_form(ray.hurtbox_extents, ray.radius, ray.collider_offset);
-        // PlayerPhysics follows Ability and UpdateScales the radius to the box.
-        let slot = &mut self.players[index];
-        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -24334,8 +24328,15 @@ impl RolloutWorld {
         if self.ability_boundary_kill(index, true) {
             return;
         }
-        // Ability.UpdateSim follows GunTransform: it publishes the pose after
-        // this pass's grounded Move and landing snap, before PlayerBody moves.
+        // Ability.UpdateSim follows GunTransform: it rescales the form and
+        // publishes the pose after this pass's grounded Move and landing snap,
+        // before PlayerBody moves. A form that landed and exited keeps the
+        // previous pass's scale.
+        self.players[index].on_scale_changed();
+        self.players[index].scale_form(ray.hurtbox_extents, ray.radius, ray.collider_offset);
+        // PlayerPhysics follows Ability and UpdateScales the radius to the box.
+        let slot = &mut self.players[index];
+        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         self.publish_ability_position(index);
 
         let slot = &mut self.players[index];
