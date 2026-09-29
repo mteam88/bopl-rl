@@ -36863,7 +36863,9 @@ impl RolloutWorld {
 
             let mut victims = [false; MAX_PLAYERS];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
-                if !self.playable(player_index) {
+                // A slime in its spawn animation already has its hurtbox on,
+                // as for the grenade's and the missile's Explosion.
+                if !self.hittable(player_index) {
                     continue;
                 }
                 let player = &self.players[player_index];
