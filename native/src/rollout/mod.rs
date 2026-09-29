@@ -2126,6 +2126,8 @@ pub struct PortalShotState {
     pub fire_velocity: Vec2,
     pub fire_applied: bool,
     pub time_alive: Fix,
+    /// The `orphan_portal_guns` entry of a gun a pickup replaced in flight.
+    pub orphan: Option<usize>,
 }
 
 /// Allocation-retaining equivalent of one `QuantumTunnel` prefab for a
@@ -3183,6 +3185,10 @@ pub struct RolloutWorld {
     pub blink_object_tunnels: Vec<BlinkObjectTunnel>,
     pub teleport_object_effects: Vec<TeleportObjectEffect>,
     pub portals: Vec<PortalEndpoint>,
+    /// `[bluePortal, orangePortal]` of each PortalGun a pickup replaced while
+    /// its shots were in flight. AddAdditionalAbility only drops the
+    /// reference, so the gun lives on and those shots still land through it.
+    pub orphan_portal_guns: Vec<[Option<usize>; 2]>,
     pub beam_orbs: Vec<BeamOrbState>,
     pub beam_pool: Vec<BeamPoolSlot>,
     /// Fixed-capacity DetPhysics RopeBody pool and its ability-owned
@@ -3368,6 +3374,7 @@ impl RolloutWorld {
             blink_object_tunnels: Vec::with_capacity(32),
             teleport_object_effects: Vec::with_capacity(64),
             portals: Vec::with_capacity(32),
+            orphan_portal_guns: Vec::new(),
             portal_body_inside: Vec::with_capacity(192),
             portal_body_ids: Vec::with_capacity(192),
             duplicate_platform_effects: Vec::with_capacity(32),
@@ -3481,6 +3488,7 @@ impl RolloutWorld {
         self.teleport_object_effects
             .clone_from(&src.teleport_object_effects);
         self.portals.clone_from(&src.portals);
+        self.orphan_portal_guns.clone_from(&src.orphan_portal_guns);
         self.portal_body_inside.clone_from(&src.portal_body_inside);
         self.portal_body_ids.clone_from(&src.portal_body_ids);
         self.duplicate_platform_effects
@@ -3585,6 +3593,7 @@ impl RolloutWorld {
             blink_object_tunnels: _,
             teleport_object_effects: _,
             portals: _,
+            orphan_portal_guns: _,
             portal_body_inside: _,
             portal_body_ids: _,
             duplicate_platform_effects: _,
@@ -3724,6 +3733,7 @@ impl RolloutWorld {
         self.blink_object_tunnels.clear();
         self.teleport_object_effects.clear();
         self.portals.clear();
+        self.orphan_portal_guns.clear();
         self.portal_body_inside.clear();
         self.portal_body_ids.clear();
         self.duplicate_platform_effects.clear();
@@ -5219,6 +5229,9 @@ impl RolloutWorld {
         for &(_, _, pickup_index, player_index) in &hits {
             let ability = self.ability_pickups[pickup_index].ability;
             self.active_subsystems |= ability_bit(ability);
+            if self.players[player_index].abilities[2] == ABILITY_PORTAL_GUN {
+                self.orphan_portal_gun(player_index);
+            }
             // AddAdditionalAbility replaces the third reference, changes the
             // future-clone loadout, and makes the slot ready.
             let slot = &mut self.players[player_index];
@@ -7427,7 +7440,8 @@ impl RolloutWorld {
         data: &data::RolloutData,
     ) {
         let shot = self.portal_shots[shot_index];
-        let gun_alive = shot.owner < self.players.len()
+        let gun_alive = shot.orphan.is_some()
+            || shot.owner < self.players.len()
             && self.players[shot.owner].base.alive
             && self.players[shot.owner].ability_generation == shot.ability_generation
             && self.players[shot.owner].abilities[shot.ability_slot] == ABILITY_PORTAL_GUN;
@@ -7453,18 +7467,19 @@ impl RolloutWorld {
     ) {
         let owner = shot.owner;
         let ability_slot = shot.ability_slot;
-        if shot.blue {
-            for old in [
+        let [mut blue, mut orange] = match shot.orphan {
+            Some(gun) => self.orphan_portal_guns[gun],
+            None => [
                 self.players[owner].portal_blue[ability_slot],
                 self.players[owner].portal_orange[ability_slot],
-            ]
-            .into_iter()
-            .flatten()
-            {
+            ],
+        };
+        if shot.blue {
+            for old in [blue, orange].into_iter().flatten() {
                 self.close_portal(old);
             }
-            self.players[owner].portal_orange[ability_slot] = None;
-        } else if let Some(old) = self.players[owner].portal_orange[ability_slot] {
+            orange = None;
+        } else if let Some(old) = orange {
             self.close_portal(old);
         }
 
@@ -7517,6 +7532,16 @@ impl RolloutWorld {
                     }
                 }
             }
+            for portal in self.orphan_portal_guns.iter_mut().flatten() {
+                if *portal == Some(endpoint_index) {
+                    *portal = None;
+                }
+            }
+            for portal in [&mut blue, &mut orange] {
+                if *portal == Some(endpoint_index) {
+                    *portal = None;
+                }
+            }
             let bit = !(1u64 << endpoint_index);
             for occupancy in &mut self.portal_body_inside {
                 *occupancy &= bit;
@@ -7525,17 +7550,48 @@ impl RolloutWorld {
         }
         self.next_spawn_hierarchy += data.portal_gun.portal_updatable_count;
         if shot.blue {
-            self.players[owner].portal_blue[ability_slot] = Some(endpoint_index);
+            blue = Some(endpoint_index);
         } else {
-            self.players[owner].portal_orange[ability_slot] = Some(endpoint_index);
-            if let Some(blue_index) = self.players[owner].portal_blue[ability_slot]
-                .filter(|&index| self.portals[index].active)
-            {
+            orange = Some(endpoint_index);
+        }
+        match shot.orphan {
+            Some(gun) => self.orphan_portal_guns[gun] = [blue, orange],
+            None => {
+                self.players[owner].portal_blue[ability_slot] = blue;
+                self.players[owner].portal_orange[ability_slot] = orange;
+            }
+        }
+        if !shot.blue {
+            if let Some(blue_index) = blue.filter(|&index| self.portals[index].active) {
                 self.portals[blue_index].linked = Some(endpoint_index);
                 self.portals[endpoint_index].linked = Some(blue_index);
                 self.mark_portal_occupants(blue_index, data);
                 self.mark_portal_occupants(endpoint_index, data);
             }
+        }
+    }
+
+    /// AddAdditionalAbility replaces a PortalGun without destroying it. Its
+    /// shots in flight keep their `gun` and land through its own pair
+    /// (PortalShot.Land tests only `gun.IsDestroyed`).
+    fn orphan_portal_gun(&mut self, owner: usize) {
+        let generation = self.players[owner].ability_generation;
+        let gun = self.orphan_portal_guns.len();
+        let mut in_flight = false;
+        for shot in &mut self.portal_shots {
+            if shot.active
+                && shot.orphan.is_none()
+                && shot.owner == owner
+                && shot.ability_slot == 2
+                && shot.ability_generation == generation
+            {
+                shot.orphan = Some(gun);
+                in_flight = true;
+            }
+        }
+        if in_flight {
+            let slot = &self.players[owner];
+            self.orphan_portal_guns.push([slot.portal_blue[2], slot.portal_orange[2]]);
         }
     }
 
