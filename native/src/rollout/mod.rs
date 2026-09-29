@@ -23715,12 +23715,6 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         slot.base.radius = slot.forms[slot.active_slot].physics_radius();
 
-        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
-        // and before PlayerBody integrates this pass.
-        if self.ability_boundary_kill(index, true) {
-            return;
-        }
-
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -23753,6 +23747,11 @@ impl RolloutWorld {
                 bow_exit(slot, terrain!(self), self.tick);
                 return;
             }
+        }
+        // DestroyIfOutsideSceneBounds follows GunTransform, so a recoil that
+        // lands below the bound exits the form before the bound can kill it.
+        if self.ability_boundary_kill(index, true) {
+            return;
         }
         // Ability.UpdateSim follows GunTransform: it publishes the pose after
         // this pass's grounded Move and landing snap, before PlayerBody moves.
@@ -23872,12 +23871,6 @@ impl RolloutWorld {
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
         slot.base.radius = slot.forms[slot.active_slot].physics_radius();
-        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
-        // and before PlayerBody integrates this pass.
-        if self.ability_boundary_kill(index, true) {
-            return;
-        }
-
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -23910,6 +23903,11 @@ impl RolloutWorld {
                 bow_exit(slot, terrain!(self), self.tick);
                 return;
             }
+        }
+        // DestroyIfOutsideSceneBounds follows GunTransform, so a recoil that
+        // lands below the bound exits the form before the bound can kill it.
+        if self.ability_boundary_kill(index, true) {
+            return;
         }
         // Ability.UpdateSim follows GunTransform: it publishes the pose after
         // this pass's grounded Move and landing snap, before PlayerBody moves.
@@ -24027,12 +24025,6 @@ impl RolloutWorld {
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
         slot.base.radius = slot.forms[slot.active_slot].physics_radius();
-        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
-        // and before PlayerBody integrates this pass.
-        if self.ability_boundary_kill(index, true) {
-            return;
-        }
-
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -24065,6 +24057,11 @@ impl RolloutWorld {
                 bow_exit(slot, terrain!(self), self.tick);
                 return;
             }
+        }
+        // DestroyIfOutsideSceneBounds follows GunTransform, so a recoil that
+        // lands below the bound exits the form before the bound can kill it.
+        if self.ability_boundary_kill(index, true) {
+            return;
         }
         // Ability.UpdateSim follows GunTransform: it publishes the pose after
         // this pass's grounded Move and landing snap, before PlayerBody moves.
@@ -24179,12 +24176,6 @@ impl RolloutWorld {
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
         slot.base.radius = slot.forms[slot.active_slot].physics_radius();
-        // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
-        // and before PlayerBody integrates this pass.
-        if self.ability_boundary_kill(index, true) {
-            return;
-        }
-
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -24217,6 +24208,11 @@ impl RolloutWorld {
                 self.exit_duplicator_landing(index);
                 return;
             }
+        }
+        // DestroyIfOutsideSceneBounds follows GunTransform, so a recoil that
+        // lands below the bound exits the form before the bound can kill it.
+        if self.ability_boundary_kill(index, true) {
+            return;
         }
         // Ability.UpdateSim follows GunTransform: it publishes the pose after
         // this pass's grounded Move and landing snap, before PlayerBody moves.
