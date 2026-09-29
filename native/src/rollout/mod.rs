@@ -3107,6 +3107,8 @@ struct PlatformScratch {
     item_window: Vec<usize>,
     item_contacts: Vec<(usize, usize, Contact)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
+    /// Smoke grenades an active grapple hook touched this pass.
+    hook_smoke_hits: Vec<usize>,
     /// Sweep keys of the wall manifolds resolved as one batch: the
     /// Circle/RoundedRect group's, or the Box/RoundedRect group's.
     circle_wall_order: Vec<(SweepRank, SweepRank, u8, usize)>,
@@ -3415,6 +3417,7 @@ impl RolloutWorld {
                 item_window: Vec::with_capacity(192),
                 item_contacts: Vec::with_capacity(256),
                 item_platform_contacts: Vec::with_capacity(256),
+                hook_smoke_hits: Vec::with_capacity(4),
                 circle_wall_order: Vec::with_capacity(256),
                 pickup_order: Vec::with_capacity(16),
                 pickup_window: Vec::with_capacity(16),
@@ -34613,6 +34616,22 @@ impl RolloutWorld {
                 smoke_callback_count += 1;
             }
         }
+        // The hook is on the Rope layer, not a Projectile, so a Smoke it
+        // touches goes off whatever the hook attaches to.
+        let hook_smoke_hits = std::mem::take(&mut self.scratch.hook_smoke_hits);
+        for &item_index in &hook_smoke_hits {
+            let item = self.thrown_items[item_index];
+            if item.active
+                && item.ability == ABILITY_SMOKE
+                && item.detonates_on_owner
+                && smoke_callback_count < smoke_callbacks.len()
+            {
+                smoke_callbacks[smoke_callback_count] = item_index;
+                smoke_callback_count += 1;
+            }
+        }
+        self.scratch.hook_smoke_hits = hook_smoke_hits;
+        self.scratch.hook_smoke_hits.clear();
         for &(a_index, b_index, _) in contacts.iter() {
             // A portal shot's Projectile does not ignite explosives.
             if (SHOT..NODE).contains(&a_index) || (SHOT..NODE).contains(&b_index) {

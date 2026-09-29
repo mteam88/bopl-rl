@@ -1582,6 +1582,7 @@ impl RolloutWorld {
 
     pub(super) fn grapple_hook_contacts(&mut self) {
         let source = &data::get().ropes;
+        self.scratch.hook_smoke_hits.clear();
         for rope_index in 0..self.ropes.len() {
             if !self.ropes[rope_index].physics.enabled || !self.ropes[rope_index].hook_active {
                 continue;
@@ -1591,6 +1592,22 @@ impl RolloutWorld {
                 center: position,
                 radius: source.hook_radius,
             };
+            // SmokeGrenadeExplode2 takes the hook's contact on its own
+            // callback, whichever body the hook's callback picks.
+            for (index, item) in self.thrown_items.iter().enumerate() {
+                if item.active
+                    && item.entity.is_some()
+                    && item.ability == ABILITY_SMOKE
+                    && crate::physics::contact::circle_circle(
+                        circle,
+                        Circle { center: item.position, radius: item.collider_radius },
+                    )
+                    .is_some()
+                    && !self.scratch.hook_smoke_hits.contains(&index)
+                {
+                    self.scratch.hook_smoke_hits.push(index);
+                }
+            }
             let mut attached = None;
             for platform in 0..self.platforms.len() {
                 if self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
