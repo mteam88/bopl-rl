@@ -5138,6 +5138,10 @@ impl RolloutWorld {
         );
         order.sort_unstable_by_key(|&index| (self.ability_pickups[index].hierarchy_base, index));
         for &index in &order {
+            // An older wall QuantumTunnel has already hidden or restored its
+            // wall for this pickup's ground raycast.
+            let before = self.ability_pickups[index].hierarchy_base;
+            self.blink_platform_tunnels_tick(data, updater_dt, Some(before));
             self.ability_pickup_tick(index, data, updater_dt, wobble);
         }
         self.scratch.pickup_order = order;
