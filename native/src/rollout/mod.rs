@@ -5019,6 +5019,11 @@ impl RolloutWorld {
                 continue;
             }
             let platform = &self.platforms[platform_index];
+            // DetPhysics.IsActive skips a rounded rect whose GameObject is
+            // inactive, such as a wall a QuantumTunnel hid (DetPhysics.cs:1658,1748).
+            if !platform.active {
+                continue;
+            }
             if let Some(hit) = platform.collider.raycast(center, -Vec2::UP)
                 && platform_height.is_none_or(|nearest| hit.near < nearest)
             {
