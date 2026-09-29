@@ -40899,7 +40899,10 @@ impl RolloutWorld {
                 } else {
                     E_ENABLED
                 };
-                if rocking || was_active {
+                // A Blink tunnel or teleport disables the Rock's GameObject
+                // before DetPhysics syncs, so the row keeps its last pose.
+                if slot.blink_tunnel_active || slot.teleport_effect_active {
+                } else if rocking || was_active {
                     circle.owner = slot.base.id;
                     circle.x = slot.base.position.x.raw();
                     circle.y = slot.base.position.y.raw();
