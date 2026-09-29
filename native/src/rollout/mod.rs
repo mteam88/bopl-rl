@@ -37493,10 +37493,11 @@ impl RolloutWorld {
                     | ActiveAbility::ShrinkRay
                     | ActiveAbility::Duplicator
                     | ActiveAbility::Magnet
+                    | ActiveAbility::TimeStop
             )
         {
             // PlayerCollision.killPlayer calls the form's ExitAbility
-            // (BowTransform, GunTransform, MagnetGun) with isDead=true. Each
+            // (BowTransform, GunTransform, MagnetGun, CastSpell) with isDead=true. Each
             // resets rotation, then PlayerPhysics.UnGround moves the form one
             // 0.05-unit surface-normal step before Ability copies that
             // position back to the slime and stock logic reads it.
@@ -37582,7 +37583,13 @@ impl RolloutWorld {
         // SlimeController.DropAbilities reads the slime body. A death inside
         // an ability first moves that body to the ability object's position
         // (PlayerCollision.cs:124-131, SlimeController.cs:215-219).
-        let drop_position = slot.base.position - drop_inset;
+        let mut drop_position = slot.base.position - drop_inset;
+        if form_exit && slot.active == ActiveAbility::TimeStop {
+            // CastSpell.ExitAbility hands the slime its body position plus
+            // ExitAbilityOffset, while Ability.ExitAbility publishes the
+            // form's own position.
+            drop_position += data::get().time_stop.exit_offset * slot.player_scale;
+        }
         if slot.active != ActiveAbility::None {
             slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
