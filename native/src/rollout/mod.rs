@@ -7651,12 +7651,15 @@ impl RolloutWorld {
                 continue;
             }
             let cloud = &mut self.smoke_clouds[index];
-            // Ignite disables the circle, and DetPhysics integrates only
-            // active colliders (FlammableSmoke.cs:88).
-            if !cloud.active || !cloud.registered || cloud.ignition_time >= Fix::ZERO {
+            if !cloud.active || !cloud.registered {
                 continue;
             }
-            cloud.position += cloud.body.integrate(physics_dt, Fix::ZERO);
+            // Ignite disables the circle, and DetPhysics integrates only
+            // active colliders (FlammableSmoke.cs:88). The row still shows
+            // the body's velocity, which a Shockwave keeps pushing.
+            if cloud.ignition_time < Fix::ZERO {
+                cloud.position += cloud.body.integrate(physics_dt, Fix::ZERO);
+            }
             if let Some(entity) = cloud.entity {
                 let row = &mut self.entities[entity];
                 row.x = cloud.position.x.raw();
