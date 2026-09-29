@@ -6429,7 +6429,7 @@ impl RolloutWorld {
                     self.scratch.tacks_ran_below = spawned.end;
                 }
                 if has(ABILITY_PORTAL_GUN) {
-                    self.portals_update(data, updater_dt, spawned.clone());
+                    self.portals_update(data, updater_dt, spawned.clone(), None);
                 }
                 // So does a hook's Rope, whose RopeAttachment pulls the
                 // platform it hangs from before a Drill reads its velocity.
@@ -6835,8 +6835,9 @@ impl RolloutWorld {
         // portals_tick, but authored map spawners can create pickups without
         // any player owning Portal Gun. Keep that walk map/pickup-gated rather
         // than ability-gated so the pickup enables, rerolls, and moves.
+        let mut tacks_from = spawned_from;
         if has(ABILITY_PORTAL_GUN) || !self.ability_pickups.is_empty() {
-            self.portals_tick(data, updater_dt, spawned_from, deferred_to);
+            tacks_from = self.portals_tick(data, updater_dt, spawned_from, deferred_to);
         } else if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
             // Portal endpoints interleave pickup updaters by hierarchy when
             // present. Without Portal Gun, the same global updater tail must
@@ -6954,7 +6955,7 @@ impl RolloutWorld {
             self.thrown_item_scale_mass_tick();
         }
         if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
-            self.poke_balls_and_tacks_tick(data, updater_dt, balls_from..u32::MAX, spawned_from..u32::MAX);
+            self.poke_balls_and_tacks_tick(data, updater_dt, balls_from..u32::MAX, tacks_from..u32::MAX);
         }
         if has_rope && (has(ABILITY_TACK) || has(ABILITY_POKE_BALL)) {
             self.rope_parents_update(rope_abilities::RopeParentPass::OlderTackOrBall);
@@ -8798,19 +8799,30 @@ impl RolloutWorld {
 
     /// The endpoints from `from` up, which no slime came after, then the
     /// pickups newer than all of them and older than `pickups_to`.
-    fn portals_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, from: u32, pickups_to: u32) {
-        self.portals_update(data, updater_dt, from..u32::MAX);
+    /// Returns where the remaining Tacks start: those older than an endpoint
+    /// have already run.
+    fn portals_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        from: u32,
+        pickups_to: u32,
+    ) -> u32 {
+        let tacks_from = self.portals_update(data, updater_dt, from..u32::MAX, Some(from));
         self.ability_pickups_tick_before(pickups_to, data, updater_dt);
+        tacks_from.unwrap_or(from)
     }
 
     /// Portal.UpdateSim for the endpoints whose updater hierarchy falls in
-    /// `hierarchy`, each after the pickups older than it.
+    /// `hierarchy`, each after the pickups older than it and, from
+    /// `tacks_from`, the Tacks older than it.
     fn portals_update(
         &mut self,
         data: &data::RolloutData,
         updater_dt: Fix,
         hierarchy: std::ops::Range<u32>,
-    ) {
+        mut tacks_from: Option<u32>,
+    ) -> Option<u32> {
         if self.portal_body_inside.len() < self.entities.len() {
             self.portal_body_inside.resize(self.entities.len(), 0);
             self.portal_body_ids.resize(self.entities.len(), 0);
@@ -8827,6 +8839,16 @@ impl RolloutWorld {
                 break;
             };
             self.portals[endpoint_index].updated_tick = Some(self.tick);
+            // An older Tack's BananaPeel.UpdateSim can impale a slime, whose
+            // DropAbilities pickup this endpoint then teleports.
+            let endpoint_hierarchy = 100_000_000 + self.portals[endpoint_index].hierarchy_base;
+            if let Some(from) = tacks_from.filter(|&from| from < endpoint_hierarchy) {
+                self.poke_balls_and_tacks_tick(data, updater_dt, 0..0, from..endpoint_hierarchy);
+                tacks_from = Some(endpoint_hierarchy);
+                // Those Tacks have pinned, so a newer Shockwave's impulse
+                // lands on them directly (Shockwave.cs:213).
+                self.scratch.tacks_ran_below = self.scratch.tacks_ran_below.max(endpoint_hierarchy);
+            }
             self.ability_pickups_tick_before(
                 self.portals[endpoint_index].hierarchy_base,
                 data,
@@ -8938,6 +8960,7 @@ impl RolloutWorld {
             }
             self.portal_objects_tick(endpoint_index, data);
         }
+        tacks_from
     }
 
     /// Non-instant abilities disable the original slime box, but
@@ -16138,6 +16161,7 @@ impl RolloutWorld {
                     data,
                     dt,
                     0..100_000_000 + self.black_holes[hole_index].hierarchy_base,
+                    None,
                 );
             }
             // Likewise an older TeleportIndicator has already moved and
