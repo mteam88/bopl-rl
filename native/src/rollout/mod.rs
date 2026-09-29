@@ -9813,6 +9813,10 @@ impl RolloutWorld {
                             slot.base.velocity = Vec2::ZERO;
                         } else {
                             slot.base.velocity *= Fix::from_f32(0.1);
+                            // The form's own PlayerPhysics starts with no
+                            // attached ground (PlayerPhysics.cs:549), so a
+                            // Teleport's UnGround has nothing to push off from.
+                            slot.base.ground = None;
                         }
                         self.throw_item_tick(index, action, data);
                         return;
