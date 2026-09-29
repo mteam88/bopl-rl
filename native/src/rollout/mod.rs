@@ -32442,9 +32442,12 @@ impl RolloutWorld {
                 continue;
             }
             // A Blink tunnel re-enables its victim from its own later updater
-            // (QuantumTunnel.cs:163-166): on the release pass the arrow's
-            // updaters already passed it by, and only DetPhysics moves it.
-            if !self.blink_object_released(self.arrows[i].entity) {
+            // (QuantumTunnel.cs:163-166), as a TeleportedObjectEffect does: on
+            // the release pass the arrow's updaters already passed it by, and
+            // only DetPhysics moves it.
+            if !self.blink_object_released(self.arrows[i].entity)
+                && !self.teleport_revealed_this_pass(self.arrows[i].entity)
+            {
                 // DestroyIfOutsideSceneBounds (Arrow prefab hierarchy 1) runs
                 // before Arrow.UpdateSim (hierarchy 2) and DetPhysics. Its
                 // NeverDestroyAbove flag leaves top exits alive.
