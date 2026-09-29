@@ -9230,11 +9230,14 @@ impl RolloutWorld {
                     slot.ability_origin_state = slot.obs_state;
                     slot.ability_origin_ground = frozen.ground.filter(|_| frozen.grounded);
                     // SlimeController still writes Player.Scale to its hurtbox
-                    // after OldUpdate on the pass it enters an ability.
+                    // after OldUpdate on the pass it enters an ability. An
+                    // instant cast carries on to the pass's own write.
                     let scale = hurtbox_scale(slot.player_scale);
-                    let ratio = (Fix::ONE / slot.body_collider_scale) * scale;
-                    slot.body_inverse_extents = slot.body_inverse_extents / ratio;
-                    slot.body_collider_scale = scale;
+                    if !data.abilities[ability as usize].instant {
+                        let ratio = (Fix::ONE / slot.body_collider_scale) * scale;
+                        slot.body_inverse_extents = slot.body_inverse_extents / ratio;
+                        slot.body_collider_scale = scale;
+                    }
                     slot.ability_origin_scale = scale;
                     slot.slime_radius = slot.base.radius;
                     slot.select_form(s);
@@ -9377,6 +9380,10 @@ impl RolloutWorld {
                             slot.state_ticks = 0;
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
+                            // The slime stays active and writes Player.Scale
+                            // to its hurtbox (SlimeController.cs:1078).
+                            let scale = slot.player_scale;
+                            slot.set_ordinary_body_scale(scale);
                             // EnterAbility returns from OldUpdate, but this
                             // already-running SlimeController pass still uses
                             // the input vector captured before Rewind set
