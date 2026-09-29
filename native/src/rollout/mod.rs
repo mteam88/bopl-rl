@@ -208,6 +208,25 @@ pub struct CEntity {
     /// Q32.32 nominal timer ticks consumed per simulation tick.
     pub clock_rate: i64,
 }
+
+/// A collider's place in DetPhysics' sort-and-sweep: its bounding-box minimum
+/// on the sweep axis, then its shape (circle, box, rounded rect), then its
+/// index in that shape's PhysicsBodyList (AABBXComparer.cs:6-19). The list
+/// appends and closes gaps in order (PhysicsBodyList.cs:39-67), so the index is
+/// registration order among the live colliders, which one kind's rows keep.
+type SweepRank = (Fix, u32, usize);
+
+fn sweep_rank(entities: &[CEntity], min: Fix, entity: Option<usize>) -> SweepRank {
+    let entity = entity.unwrap_or(usize::MAX);
+    (min, entities.get(entity).map_or(u32::MAX, |row| row.kind), entity)
+}
+
+/// SortAndSweep reaches a pair at its later collider and walks the earlier ones
+/// in sort order, so pairs come out by the later rank, then the earlier
+/// (DetPhysics.cs:2169-2231).
+fn sweep_pair(a: SweepRank, b: SweepRank) -> (SweepRank, SweepRank) {
+    if a > b { (a, b) } else { (b, a) }
+}
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct CSlime {
@@ -2917,7 +2936,7 @@ fn hierarchy_order<T>(order: &mut Vec<usize>, pool: &[T], hierarchy: impl Fn(&T)
 /// Where DetPhysics queues a collision callback: by pair category (0
 /// Circle/Circle, 1 Circle/Box, 2 Box/Box), then in SortAndSweep pair order,
 /// by the later and then the earlier bounding-box minimum on the sweep axis.
-type CallbackKey = (u8, Fix, Fix);
+type CallbackKey = (u8, SweepRank, SweepRank);
 
 /// A hitbox's collision callback, run at its place in DetPhysics' queue.
 #[derive(Clone, Copy)]
@@ -2961,7 +2980,7 @@ struct PlatformScratch {
     item_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Sweep keys of the wall manifolds resolved as one batch: the
     /// Circle/RoundedRect group's, or the Box/RoundedRect group's.
-    circle_wall_order: Vec<(Fix, Fix, u8, usize)>,
+    circle_wall_order: Vec<(SweepRank, SweepRank, u8, usize)>,
     pickup_order: Vec<usize>,
     pickup_window: Vec<usize>,
     pickup_contacts: Vec<(usize, usize, Contact)>,
@@ -4975,10 +4994,9 @@ impl RolloutWorld {
                         .then_some(index)
                 }),
         );
-        order.sort_unstable_by(|&a, &b| {
-            let a_min = axis(center(self.ability_pickups[a])) - radius(self.ability_pickups[a]);
-            let b_min = axis(center(self.ability_pickups[b])) - radius(self.ability_pickups[b]);
-            a_min.cmp(&b_min).then(a.cmp(&b))
+        order.sort_unstable_by_key(|&index| {
+            let pickup = self.ability_pickups[index];
+            sweep_rank(&self.entities, axis(center(pickup)) - radius(pickup), pickup.entity)
         });
         let mut window = std::mem::take(&mut self.scratch.pickup_window);
         let mut contacts = std::mem::take(&mut self.scratch.pickup_contacts);
@@ -5075,37 +5093,17 @@ impl RolloutWorld {
         // the third slot twice, so the later callback wins.
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let mut order = std::mem::take(&mut self.scratch.pickup_order);
-        order.clear();
-        order.extend(
-            self.ability_pickups
-                .iter()
-                .enumerate()
-                .filter_map(|(index, pickup)| (pickup.active && pickup.enabled).then_some(index)),
-        );
-        order.sort_unstable_by(|&a, &b| {
-            let a_min =
-                axis(self.ability_pickups[a].position + data.pickup.offset) - data.pickup.radius;
-            let b_min =
-                axis(self.ability_pickups[b].position + data.pickup.offset) - data.pickup.radius;
-            a_min.cmp(&b_min).then(a.cmp(&b))
-        });
-        let mut player_order = [0usize; MAX_PLAYERS];
-        for (index, value) in player_order[..self.players.len()].iter_mut().enumerate() {
-            *value = index;
-        }
-        player_order[..self.players.len()].sort_unstable_by(|&a, &b| {
-            let bound_min = |player_index: usize| {
-                let row = self.entities[self.players[player_index].body_entity];
-                let center = if sweep_x { row.x } else { row.y };
-                let right = if sweep_x { row.right_x } else { row.right_y };
-                let up = if sweep_x { row.up_x } else { row.up_y };
-                center - right.abs() - up.abs()
-            };
-            bound_min(a).cmp(&bound_min(b)).then(a.cmp(&b))
-        });
-        for &pickup_index in &order {
-            let pickup = self.ability_pickups[pickup_index];
+        let body_rank = |player_index: usize| {
+            let entity = self.players[player_index].body_entity;
+            let row = self.entities[entity];
+            let center = if sweep_x { row.x } else { row.y };
+            let right = if sweep_x { row.right_x } else { row.right_y };
+            let up = if sweep_x { row.up_x } else { row.up_y };
+            let min = Fix::from_raw(center - right.abs() - up.abs());
+            sweep_rank(&self.entities, min, Some(entity))
+        };
+        let mut hits = Vec::new();
+        for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
             if !pickup.active || !pickup.enabled {
                 continue;
             }
@@ -5113,9 +5111,9 @@ impl RolloutWorld {
                 center: pickup.position + data.pickup.offset * pickup.scale,
                 radius: data.pickup.radius * pickup.scale,
             };
-            let mut collectors = [usize::MAX; MAX_PLAYERS];
-            let mut collector_count = 0usize;
-            for &player_index in &player_order[..self.players.len()] {
+            let pickup_rank =
+                sweep_rank(&self.entities, axis(circle.center) - circle.radius, pickup.entity);
+            for player_index in 0..self.players.len() {
                 let slot = &self.players[player_index];
                 if !self.playable(player_index)
                     || slot.active != ActiveAbility::None
@@ -5133,55 +5131,56 @@ impl RolloutWorld {
                     inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
                 };
                 if crate::physics::contact::circle_box(circle, body).is_some() {
-                    collectors[collector_count] = player_index;
-                    collector_count += 1;
+                    let (later, earlier) = sweep_pair(pickup_rank, body_rank(player_index));
+                    hits.push((later, earlier, pickup_index, player_index));
                 }
-            }
-            if collector_count == 0 {
-                continue;
-            }
-
-            // PrepareCollisionCallBacks queues every overlapping Circle/Box
-            // callback before any of them run. DestroyFix in the first pickup
-            // callback therefore does not prevent the same pickup from being
-            // granted to another overlapping slime later in that queue.
-            let ability = pickup.ability;
-            self.active_subsystems |= ability_bit(ability);
-            for &player_index in &collectors[..collector_count] {
-                // AddAdditionalAbility replaces the third reference, changes
-                // the future-clone loadout, and makes the slot ready.
-                let slot = &mut self.players[player_index];
-                slot.abilities[2] = ability;
-                slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
-                slot.timers[2] = Fix::from_int(100_000);
-                slot.ability_instantiated[2] = false;
-                slot.form_entities[2] = usize::MAX;
-                slot.rope_prev[3] = (Vec2::ZERO, Vec2::ZERO);
-                slot.forms[2] = FormScale::default();
-                slot.drill_hitbox_entities[2] = [usize::MAX; 3];
-                slot.black_hole_castable[2] = true;
-                slot.platform_hurtbox_disabled[2] = false;
-                slot.portal_blue[2] = None;
-                slot.teleport_ignore_cooldown[2] = false;
-                slot.portal_orange[2] = None;
-                slot.teleport_markers[2] = None;
-                for spawn in &mut self.spawned {
-                    if spawn.buffer == Some((player_index, 2)) {
-                        spawn.buffer = None;
-                    }
-                }
-                slot.pending_ability_hierarchy[2] = self.next_spawn_hierarchy;
-                self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
-            }
-
-            let state = &mut self.ability_pickups[pickup_index];
-            state.active = false;
-            if let Some(entity) = state.entity {
-                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
         }
-        order.clear();
-        self.scratch.pickup_order = order;
+        if hits.is_empty() {
+            return;
+        }
+        hits.sort_unstable_by_key(|&(later, earlier, ..)| (later, earlier));
+
+        // PrepareCollisionCallBacks queues every overlapping Circle/Box
+        // callback before any of them run. DestroyFix in the first pickup
+        // callback therefore does not prevent the same pickup from being
+        // granted to another overlapping slime later in that queue.
+        for &(_, _, pickup_index, player_index) in &hits {
+            let ability = self.ability_pickups[pickup_index].ability;
+            self.active_subsystems |= ability_bit(ability);
+            // AddAdditionalAbility replaces the third reference, changes the
+            // future-clone loadout, and makes the slot ready.
+            let slot = &mut self.players[player_index];
+            slot.abilities[2] = ability;
+            slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
+            slot.timers[2] = Fix::from_int(100_000);
+            slot.ability_instantiated[2] = false;
+            slot.form_entities[2] = usize::MAX;
+            slot.rope_prev[3] = (Vec2::ZERO, Vec2::ZERO);
+            slot.forms[2] = FormScale::default();
+            slot.drill_hitbox_entities[2] = [usize::MAX; 3];
+            slot.black_hole_castable[2] = true;
+            slot.platform_hurtbox_disabled[2] = false;
+            slot.portal_blue[2] = None;
+            slot.teleport_ignore_cooldown[2] = false;
+            slot.portal_orange[2] = None;
+            slot.teleport_markers[2] = None;
+            for spawn in &mut self.spawned {
+                if spawn.buffer == Some((player_index, 2)) {
+                    spawn.buffer = None;
+                }
+            }
+            slot.pending_ability_hierarchy[2] = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+
+            let state = &mut self.ability_pickups[pickup_index];
+            if state.active {
+                state.active = false;
+                if let Some(entity) = state.entity {
+                    self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                }
+            }
+        }
     }
 
     /// Register the Awake work of an inactive ability prefab created by a
@@ -13963,7 +13962,8 @@ impl RolloutWorld {
                 // Spike's Explosion.PlayerOwnerId is never assigned and
                 // therefore remains zero, which is neither a live player id
                 // nor the game's environmental sentinel.
-                self.queue_callback_kill(player_index, false, hitbox_min, 0, CAUSE_OTHER);
+                let hitbox_rank = sweep_rank(&self.entities, hitbox_min, spike.entity);
+                self.queue_callback_kill(player_index, false, hitbox_rank, 0, CAUSE_OTHER);
             }
         }
     }
@@ -13974,7 +13974,7 @@ impl RolloutWorld {
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
-        let mut victims: [Option<(u8, Fix, Fix)>; MAX_PLAYERS] = [None; MAX_PLAYERS];
+        let mut victims: [Option<CallbackKey>; MAX_PLAYERS] = [None; MAX_PLAYERS];
         let live_nodes = self.tesla_nodes.len();
         for (node_index, node) in self
             .tesla_nodes
@@ -14137,14 +14137,19 @@ impl RolloutWorld {
                         }),
                     )
                 };
-                let pair = |pass: u8, other_min: Fix| {
-                    (pass, player_min.max(other_min), player_min.min(other_min))
+                let player = sweep_rank(&self.entities, player_min, Some(entity));
+                // The lightning line has no entity row; among equal minima it
+                // is placed after the rows.
+                let pair = |pass: u8, other_min: Fix, other: Option<usize>| {
+                    let (later, earlier) =
+                        sweep_pair(player, sweep_rank(&self.entities, other_min, other));
+                    (pass, later, earlier)
                 };
-                let node_key = node_hit
-                    .then(|| pair(node_pass, axis(swept_node.center) - swept_node.radius));
+                let node_min = axis(swept_node.center) - swept_node.radius;
+                let node_key = node_hit.then(|| pair(node_pass, node_min, node.entity));
                 let line_key = line
                     .filter(|_| line_hit)
-                    .map(|line| pair(node_pass + 1, box_min(line)));
+                    .map(|line| pair(node_pass + 1, box_min(line), None));
                 if let Some(key) = [*victim, node_key, line_key].into_iter().flatten().min() {
                     *victim = Some(key);
                 }
@@ -15396,7 +15401,7 @@ impl RolloutWorld {
         // pass must die in that order.
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let mut victims: Vec<((bool, Fix, Fix), bool, usize, u32)> = Vec::new();
+        let mut victims: Vec<((bool, SweepRank, SweepRank), bool, usize, u32)> = Vec::new();
         for hole_index in 0..self.black_holes.len() {
             let hole = self.black_holes[hole_index];
             if !hole.active || hole.mass < Fix::ZERO || self.blink_object_hidden(hole.entity) {
@@ -15406,8 +15411,11 @@ impl RolloutWorld {
                 center: hole.position,
                 radius: hole.radius,
             };
-            let hole_min = axis(hole.position) - hole.radius;
-            let key = |boxed: bool, min: Fix| (boxed, hole_min.max(min), hole_min.min(min));
+            let hole_rank = sweep_rank(&self.entities, axis(hole.position) - hole.radius, hole.entity);
+            let key = |boxed: bool, min: Fix, entity: Option<usize>| {
+                let (later, earlier) = sweep_pair(hole_rank, sweep_rank(&self.entities, min, entity));
+                (boxed, later, earlier)
+            };
             let killer = hole.killer();
             for (player_index, player) in self.players.iter().enumerate() {
                 if !self.playable_slot(player) || player.out {
@@ -15487,7 +15495,7 @@ impl RolloutWorld {
                             - axis(Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)))
                                 .abs()
                     };
-                    victims.push((key(row.kind != 0, min), false, player_index, killer));
+                    victims.push((key(row.kind != 0, min, Some(entity)), false, player_index, killer));
                     Self::black_hole_grow(
                         &mut self.black_holes[hole_index],
                         -Fix::ONE,
@@ -15504,7 +15512,7 @@ impl RolloutWorld {
                 let body = clone.base.collider;
                 if crate::physics::contact::circle_box(circle, body).is_some() {
                     let min = axis(body.center) - axis(body.right).abs() - axis(body.up).abs();
-                    victims.push((key(true, min), true, clone_index, killer));
+                    victims.push((key(true, min, clone.entity), true, clone_index, killer));
                     Self::black_hole_grow(
                         &mut self.black_holes[hole_index],
                         -Fix::ONE,
@@ -15821,8 +15829,8 @@ impl RolloutWorld {
         let mut victims = [false; MAX_PLAYERS];
         let mut killers = [0u32; MAX_PLAYERS];
         // The kills land in the callbacks' SortAndSweep pair order: by the
-        // later bounding box's minimum on the sweep axis, then the earlier's.
-        let mut keys = [(Fix::ZERO, Fix::ZERO); MAX_PLAYERS];
+        // later collider's sweep rank, then the earlier's.
+        let mut keys = [((Fix::ZERO, 0, 0), (Fix::ZERO, 0, 0)); MAX_PLAYERS];
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
@@ -15909,8 +15917,10 @@ impl RolloutWorld {
                             - Fix::from_raw(if sweep_x { row.right_x } else { row.right_y }).abs()
                             - Fix::from_raw(if sweep_x { row.up_x } else { row.up_y }).abs()
                     };
-                    let hitbox_min = box_min(hitbox);
-                    let key = (row_min.max(hitbox_min), row_min.min(hitbox_min));
+                    let key = sweep_pair(
+                        sweep_rank(&self.entities, row_min, Some(entity)),
+                        sweep_rank(&self.entities, box_min(hitbox), Some(hitbox_entity)),
+                    );
                     if victims[victim] && keys[victim] <= key {
                         continue;
                     }
@@ -31657,7 +31667,7 @@ impl RolloutWorld {
         let radius = data.arrow.radius;
         // Circle/Box player hits, killed in SortAndSweep callback order:
         // (sweep key, arrow owner, victim).
-        let mut player_hits: Vec<((Fix, Fix), u32, usize)> = Vec::new();
+        let mut player_hits: Vec<((SweepRank, SweepRank), u32, usize)> = Vec::new();
         for i in 0..self.arrows.len() {
             if !self.arrows[i].active
                 || !self.arrows[i].registered
@@ -32239,7 +32249,10 @@ impl RolloutWorld {
                 };
                 if hit {
                     let arrow_min = axis(circle.center) - circle.radius;
-                    let key = (arrow_min.max(row_min), arrow_min.min(row_min));
+                    let key = sweep_pair(
+                        sweep_rank(&self.entities, arrow_min, arrow.entity),
+                        sweep_rank(&self.entities, row_min, Some(entity)),
+                    );
                     player_hits.push((key, arrow.owner, j));
                 }
             }
@@ -32291,10 +32304,9 @@ impl RolloutWorld {
                 order.push(index);
             }
         }
-        order.sort_unstable_by(|&a, &b| {
-            let a_min = axis(shape(a).center) - axis(half(shape(a)));
-            let b_min = axis(shape(b).center) - axis(half(shape(b)));
-            a_min.cmp(&b_min).then(a.cmp(&b))
+        order.sort_unstable_by_key(|&index| {
+            let min = axis(shape(index).center) - axis(half(shape(index)));
+            sweep_rank(&self.entities, min, missiles[index].entity)
         });
         let mut window = std::mem::take(&mut self.scratch.item_window);
         window.clear();
@@ -32822,9 +32834,17 @@ impl RolloutWorld {
                 - axis(swept.inner.up).abs()
                 - swept.radius
         };
+        let wall_rank = |platform_index: usize| {
+            let entity = Some(self.platform_entities[platform_index]);
+            sweep_rank(&self.entities, platform_min(platform_index), entity)
+        };
+        let item_pair = |item_index: usize, platform_index: usize| {
+            let entity = self.thrown_items[item_index].entity;
+            let item = sweep_rank(&self.entities, item_min(item_index), entity);
+            sweep_pair(item, wall_rank(platform_index))
+        };
         all_contacts.sort_by_key(|&(item_index, platform_index, _)| {
-            let (a, b) = (item_min(item_index), platform_min(platform_index));
-            (a.max(b), a.min(b))
+            item_pair(item_index, platform_index)
         });
         // Tesla nodes' wall pairs are in the same Circle/RoundedRectangle
         // batch, so their impulses interleave with the items' in sweep order.
@@ -32849,26 +32869,33 @@ impl RolloutWorld {
         let arrow_min = |arrow_index: usize| {
             axis(self.arrows[arrow_index].position) - data.arrow.radius * self.arrows[arrow_index].scale
         };
+        let pair = |min: Fix, entity: Option<usize>, wall_index: usize| {
+            sweep_pair(sweep_rank(&self.entities, min, entity), wall_rank(wall_index))
+        };
         order.clear();
         order.extend(all_contacts.iter().enumerate().map(|(k, &(item_index, platform_index, _))| {
-            let (a, b) = (item_min(item_index), platform_min(platform_index));
-            (a.max(b), a.min(b), ITEM, k)
+            let (later, earlier) = item_pair(item_index, platform_index);
+            (later, earlier, ITEM, k)
         }));
         order.extend(node_contacts.iter().enumerate().map(|(k, &(node_index, wall_index, _))| {
-            let (a, b) = (node_min(node_index), platform_min(wall_index));
-            (a.max(b), a.min(b), NODE, k)
+            let entity = self.tesla_nodes[node_index].entity;
+            let (later, earlier) = pair(node_min(node_index), entity, wall_index);
+            (later, earlier, NODE, k)
         }));
         order.extend(rock_contacts.iter().enumerate().map(|(k, &(rock_index, wall_index, _))| {
-            let (a, b) = (rock_min(rock_index), platform_min(wall_index));
-            (a.max(b), a.min(b), ROCK, k)
+            let entity = Some(self.players[rock_index].rock_entity);
+            let (later, earlier) = pair(rock_min(rock_index), entity, wall_index);
+            (later, earlier, ROCK, k)
         }));
         order.extend(shot_contacts.iter().enumerate().map(|(k, &(shot_index, wall_index, _))| {
-            let (a, b) = (shot_min(shot_index), platform_min(wall_index));
-            (a.max(b), a.min(b), SHOT, k)
+            let entity = self.portal_shots[shot_index].entity;
+            let (later, earlier) = pair(shot_min(shot_index), entity, wall_index);
+            (later, earlier, SHOT, k)
         }));
         order.extend(arrow_contacts.iter().enumerate().map(|(k, &(arrow_index, wall_index, _))| {
-            let (a, b) = (arrow_min(arrow_index), platform_min(wall_index));
-            (a.max(b), a.min(b), ARROW, k)
+            let entity = self.arrows[arrow_index].entity;
+            let (later, earlier) = pair(arrow_min(arrow_index), entity, wall_index);
+            (later, earlier, ARROW, k)
         }));
         order.sort_by_key(|&(high, low, _, _)| (high, low));
         for &(_, _, kind, k) in &order {
@@ -33107,8 +33134,6 @@ impl RolloutWorld {
             };
             Circle { center, radius: circle(index).radius }
         };
-        // AABBXComparer/AABBYComparer break a tie on the minimum by the
-        // circle's registry index, which is its row order.
         let row = |index: usize| {
             if index >= NODE {
                 nodes[index - NODE].entity
@@ -33119,10 +33144,9 @@ impl RolloutWorld {
             }
         };
         let order = &mut self.scratch.item_order;
-        order.sort_unstable_by(|&a, &b| {
-            let a_min = axis(swept(a).center) - swept(a).radius;
-            let b_min = axis(swept(b).center) - swept(b).radius;
-            a_min.cmp(&b_min).then(row(a).cmp(&row(b)))
+        let entities = &self.entities;
+        order.sort_unstable_by_key(|&index| {
+            sweep_rank(entities, axis(swept(index).center) - swept(index).radius, row(index))
         });
 
         let window = &mut self.scratch.item_window;
@@ -33429,8 +33453,20 @@ impl RolloutWorld {
                 - axis((Vec2::UP * surface.y).complex_mul(basis)).abs()
         };
         engine_contacts.sort_by_key(|&(index, engine_index, _)| {
-            let (a, b) = (circle_min(index), engine_min(engine_index));
-            (a.max(b), a.min(b))
+            let circle = if index >= SHOT {
+                self.portal_shots[index - SHOT].entity
+            } else {
+                self.thrown_items[index].entity
+            };
+            let child = if engine_index >= SPIKE {
+                self.spike_attacks[engine_index - SPIKE].entity
+            } else {
+                self.engines[engine_index].entity
+            };
+            sweep_pair(
+                sweep_rank(&self.entities, circle_min(index), circle),
+                sweep_rank(&self.entities, engine_min(engine_index), child),
+            )
         });
         for &(index, engine_index, contact) in engine_contacts.iter() {
             let (platform, child_inverse_mass) = if engine_index >= SPIKE {
@@ -33932,7 +33968,8 @@ impl RolloutWorld {
                     } else {
                         CAUSE_OTHER
                     };
-                    self.queue_callback_kill(player_index, false, hitbox_min, killer, cause);
+                    let hitbox_rank = sweep_rank(&self.entities, hitbox_min, explosion.entity);
+                    self.queue_callback_kill(player_index, false, hitbox_rank, killer, cause);
                 }
             }
         }
@@ -33989,10 +34026,11 @@ impl RolloutWorld {
                     } else {
                         CAUSE_OTHER
                     };
-                    self.queue_callback_kill(player_index, false, hitbox_min, killer, cause);
+                    let hitbox_rank = sweep_rank(&self.entities, hitbox_min, explosion.entity);
+                    self.queue_callback_kill(player_index, false, hitbox_rank, killer, cause);
                 }
             }
-            self.queue_blast_hit_missiles(hitbox, data);
+            self.queue_blast_hit_missiles(hitbox, explosion.entity, data);
         }
     }
 
@@ -34009,8 +34047,13 @@ impl RolloutWorld {
 
     /// Queues Missile.OnCollide for the missiles touching this blast. The
     /// pairs are Box/Box.
-    fn queue_blast_hit_missiles(&mut self, hitbox: OrientedBox, data: &data::RolloutData) {
-        let hitbox_min = self.box_sweep_min(hitbox);
+    fn queue_blast_hit_missiles(
+        &mut self,
+        hitbox: OrientedBox,
+        entity: Option<usize>,
+        data: &data::RolloutData,
+    ) {
+        let hitbox_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), entity);
         for index in 0..self.guided_missiles.len() {
             let missile = self.guided_missiles[index];
             if !missile.active || !missile.blast_hit {
@@ -34024,8 +34067,10 @@ impl RolloutWorld {
             if crate::physics::contact::box_box(missile_box, hitbox).is_none() {
                 continue;
             }
-            let missile_min = self.box_sweep_min(missile_box);
-            let key = (2, hitbox_min.max(missile_min), hitbox_min.min(missile_min));
+            let missile_rank =
+                sweep_rank(&self.entities, self.box_sweep_min(missile_box), missile.entity);
+            let (later, earlier) = sweep_pair(hitbox_rank, missile_rank);
+            let key = (2, later, earlier);
             self.scratch.callback_hits.push((key, CallbackHit::MissileBlast { missile: index }));
         }
     }
@@ -34045,13 +34090,16 @@ impl RolloutWorld {
         &mut self,
         player_index: usize,
         hitbox_is_circle: bool,
-        hitbox_min: Fix,
+        hitbox: SweepRank,
         killer: u32,
         cause: u32,
     ) {
         let player_min = self.player_sweep_min(player_index, self.sweep_x());
+        let entity = Some(Self::hurtbox_entity(&self.players[player_index]));
+        let player = sweep_rank(&self.entities, player_min, entity);
         let category = 2 - hitbox_is_circle as u8 - self.player_is_circle(player_index) as u8;
-        let key = (category, hitbox_min.max(player_min), hitbox_min.min(player_min));
+        let (later, earlier) = sweep_pair(hitbox, player);
+        let key = (category, later, earlier);
         let hit = CallbackHit::Kill { player: player_index, killer, cause };
         self.scratch.callback_hits.push((key, hit));
     }
@@ -34138,7 +34186,8 @@ impl RolloutWorld {
                 - hitbox.radius;
             for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
                 if victim {
-                    self.queue_callback_kill(player_index, true, hitbox_min, killer, CAUSE_OTHER);
+                    let hitbox_rank = sweep_rank(&self.entities, hitbox_min, orb.entity);
+                    self.queue_callback_kill(player_index, true, hitbox_rank, killer, CAUSE_OTHER);
                 }
             }
         }
@@ -34299,7 +34348,8 @@ impl RolloutWorld {
                 if hit {
                     let hitbox_min = self.box_sweep_min(hitbox);
                     let killer = smear.owner as u32 + 1;
-                    self.queue_callback_kill(player_index, false, hitbox_min, killer, CAUSE_OTHER);
+                    let hitbox_rank = sweep_rank(&self.entities, hitbox_min, smear.entity);
+                    self.queue_callback_kill(player_index, false, hitbox_rank, killer, CAUSE_OTHER);
                 }
             }
         }
@@ -34438,7 +34488,8 @@ impl RolloutWorld {
                     } else {
                         CAUSE_OTHER
                     };
-                    self.queue_callback_kill(player_index, false, hitbox_min, killer, cause);
+                    let hitbox_rank = sweep_rank(&self.entities, hitbox_min, explosion.entity);
+                    self.queue_callback_kill(player_index, false, hitbox_rank, killer, cause);
                 }
             }
         }
@@ -35549,7 +35600,11 @@ impl RolloutWorld {
                     axis(center) - axis(right).abs() - axis(up).abs()
                 };
                 let category = 2 - (row.kind == 0) as u8;
-                let key = (category, row_min.max(clone_min), row_min.min(clone_min));
+                let (later, earlier) = sweep_pair(
+                    sweep_rank(&self.entities, row_min, Some(entity)),
+                    sweep_rank(&self.entities, clone_min, clone_entity),
+                );
+                let key = (category, later, earlier);
                 let hit = CallbackHit::CloneKill { clone: clone_index, killer: row.owner };
                 self.scratch.callback_hits.push((key, hit));
             }
@@ -35869,6 +35924,14 @@ impl RolloutWorld {
                 rock_min(index)
             }
         };
+        let rank = |index: usize| {
+            let entity = if index >= PICKUP {
+                self.ability_pickups[index - PICKUP].entity
+            } else {
+                Some(self.players[index].rock_entity)
+            };
+            sweep_rank(&self.entities, participant_min(index), entity)
+        };
         let mut pairs = [(0usize, 0usize); 64];
         let mut pair_count = 0;
         for a in 0..self.players.len() {
@@ -35883,7 +35946,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                pairs[pair_count] = if rock_min(b) < rock_min(a) { (b, a) } else { (a, b) };
+                pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
                 pair_count += 1;
             }
             for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
@@ -35896,13 +35959,12 @@ impl RolloutWorld {
                     continue;
                 }
                 let b = PICKUP + pickup_index;
-                pairs[pair_count] =
-                    if participant_min(b) < rock_min(a) { (b, a) } else { (a, b) };
+                pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
                 pair_count += 1;
             }
         }
         let pairs = &mut pairs[..pair_count];
-        pairs.sort_by_key(|&(a, b)| (participant_min(b), participant_min(a)));
+        pairs.sort_by_key(|&(a, b)| (rank(b), rank(a)));
         for &(a, b) in pairs.iter() {
             if a >= PICKUP || b >= PICKUP {
                 let pickup_first = a >= PICKUP;
@@ -36420,16 +36482,19 @@ impl RolloutWorld {
             let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
             let min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
             squished.sort_by_key(|&(clone, index)| {
-                let base = if clone {
-                    &self.abilityless_clones[index].base
+                let (base, entity) = if clone {
+                    let clone = &self.abilityless_clones[index];
+                    (&clone.base, clone.entity)
                 } else {
-                    &self.players[index].base
+                    (&self.players[index].base, Some(self.players[index].body_entity))
                 };
-                let a = min(base.collider);
+                let body = sweep_rank(&self.entities, min(base.collider), entity);
                 self.squishing_walls(colliders, clone, index)
-                    .map(|collider| {
-                        let b = min(collider.inner) - collider.radius;
-                        (a.max(b), a.min(b))
+                    .map(|wall| {
+                        let collider = colliders[wall];
+                        let wall_min = min(collider.inner) - collider.radius;
+                        let wall = Some(self.platform_entities[wall]);
+                        sweep_pair(body, sweep_rank(&self.entities, wall_min, wall))
                     })
                     .min()
             });
@@ -36444,7 +36509,7 @@ impl RolloutWorld {
         colliders: &'a [RoundedRect],
         clone: bool,
         index: usize,
-    ) -> impl Iterator<Item = &'a RoundedRect> + 'a {
+    ) -> impl Iterator<Item = usize> + 'a {
         let (base, locked) = if clone {
             (&self.abilityless_clones[index].base, None)
         } else {
@@ -36456,7 +36521,7 @@ impl RolloutWorld {
                 && Some(self.platforms[i].id) != base.ground
                 && locked != Some(i)
                 && collider.overlaps(base.position))
-            .then_some(collider)
+            .then_some(i)
         })
     }
 
@@ -36858,10 +36923,13 @@ impl RolloutWorld {
                         - axis(attack_box.right).abs()
                         - axis(attack_box.up).abs();
                     let wall_min = axis(scratch.bounds[wall_index][0]);
+                    let wall = Some(self.platform_entities[wall_index]);
+                    let (later, earlier) = sweep_pair(
+                        sweep_rank(&self.entities, box_min, spike.entity),
+                        sweep_rank(&self.entities, wall_min, wall),
+                    );
                     let k = scratch.spike_wall_contacts.len();
-                    scratch
-                        .circle_wall_order
-                        .push((box_min.max(wall_min), box_min.min(wall_min), SPIKE, k));
+                    scratch.circle_wall_order.push((later, earlier, SPIKE, k));
                     scratch
                         .spike_wall_contacts
                         .push((spike_index, wall_index, contact));
@@ -36907,10 +36975,13 @@ impl RolloutWorld {
                         - axis(box_rr.inner.right).abs()
                         - axis(box_rr.inner.up).abs();
                     let wall_min = axis(scratch.bounds[wall_index][0]);
+                    let wall = Some(self.platform_entities[wall_index]);
+                    let (later, earlier) = sweep_pair(
+                        sweep_rank(&self.entities, box_min, engine.entity),
+                        sweep_rank(&self.entities, wall_min, wall),
+                    );
                     let k = scratch.engine_wall_contacts.len();
-                    scratch
-                        .circle_wall_order
-                        .push((box_min.max(wall_min), box_min.min(wall_min), ENGINE, k));
+                    scratch.circle_wall_order.push((later, earlier, ENGINE, k));
                     scratch
                         .engine_wall_contacts
                         .push((engine_index, wall_index, contact));
