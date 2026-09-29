@@ -2108,6 +2108,8 @@ pub struct RevivalMarker {
     pub scale: Fix,
     pub magnet_holder: Option<usize>,
     pub magnet_hold_ticks: i8,
+    /// BoplBody.prevScale: `scale` as the body's UpdateSim last saw it.
+    pub body_prev_scale: Fix,
 }
 
 /// The portal indicator retained by one Teleport ability instance between
@@ -6554,6 +6556,7 @@ impl RolloutWorld {
             self.shockwaves_update(true, data, DT);
         }
         if has(ABILITY_REVIVAL) {
+            self.revival_marker_bodies_tick();
             self.revival_effects_tick(data);
         }
         if has(ABILITY_TELEPORT) {
@@ -7306,6 +7309,28 @@ impl RolloutWorld {
                 }
             }
             marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
+        }
+    }
+
+    /// BoplBody.UpdateSim on a Revival marker: once a ray has rescaled the
+    /// transform, the mass and inertia follow by prevScale / Scale
+    /// (BoplBody.cs:332-344).
+    fn revival_marker_bodies_tick(&mut self) {
+        for marker in &mut self.revival_marker_pool {
+            if !marker.active
+                || !marker.registered
+                || marker.body_prev_scale == Fix::ZERO
+                || marker.body_prev_scale == marker.scale
+            {
+                continue;
+            }
+            let ratio = marker.body_prev_scale / marker.scale;
+            marker.body.inverse_mass = marker.body.inverse_mass * ratio;
+            marker.body.inverse_inertia = marker.body.inverse_inertia * ratio;
+            marker.body_prev_scale = marker.scale;
+            if let Some(entity) = marker.entity {
+                self.entities[entity].inverse_mass = marker.body.inverse_mass.raw();
+            }
         }
     }
 
@@ -14897,6 +14922,7 @@ impl RolloutWorld {
                 scale: Fix::ONE,
                 magnet_holder: None,
                 magnet_hold_ticks: -1,
+                body_prev_scale: Fix::ONE,
             });
             self.players[index].revival_markers[ability_slot] = Some(marker_index);
             self.players[index].revival.phase = 1;
@@ -29121,11 +29147,12 @@ impl RolloutWorld {
                         row.inverse_mass = (Fix::from_raw(row.inverse_mass) / ratio).raw();
                     }
                 }
-                let scaled_inverse_mass = Fix::from_raw(self.entities[effect.victim].inverse_mass);
                 for marker in &mut self.revival_marker_pool {
                     if marker.active && marker.entity == Some(effect.victim) {
-                        marker.body.inverse_mass = scaled_inverse_mass;
+                        // The collider resizes now; the mass waits for the
+                        // older BoplBody's next UpdateSim.
                         marker.scale = scale;
+                        self.entities[effect.victim].inverse_mass = marker.body.inverse_mass.raw();
                     }
                 }
                 for marker in &mut self.teleport_marker_pool {
