@@ -8322,9 +8322,10 @@ impl RolloutWorld {
             );
             let position = spike.transform_center
                 - (data.spike.attack_collider_offset * spike.scale).complex_mul(right);
+            let combined = self.platform_dynamics[spike.platform_index].body;
             if let Some(entity) = spike
                 .entity
-                .filter(|_| spike.active && spike.body.inverse_mass > Fix::ZERO)
+                .filter(|_| spike.active && combined.inverse_mass > Fix::ZERO)
                 && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, position, data)
             {
@@ -8347,8 +8348,9 @@ impl RolloutWorld {
             let right = Vec2::angle(engine.transform_rotation);
             let position = engine.transform_center
                 - (data.engine.rocket_collider_offset * engine.scale).complex_mul(right);
+            let combined = self.platform_dynamics[engine.platform_index].body;
             if let Some(entity) = engine.entity.filter(|_| {
-                engine.active && !engine.macho_carried && engine.body.inverse_mass > Fix::ZERO
+                engine.active && !engine.macho_carried && combined.inverse_mass > Fix::ZERO
             }) && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, position, data)
             {
@@ -8371,9 +8373,10 @@ impl RolloutWorld {
             let right = Vec2::angle(node.transform_rotation);
             let position = node.transform_center
                 - node.collider_offset.complex_mul(right);
+            let combined = self.platform_dynamics[node.platform_index].body;
             if let Some(entity) = node
                 .entity
-                .filter(|_| node.active && node.body.inverse_mass > Fix::ZERO)
+                .filter(|_| node.active && combined.inverse_mass > Fix::ZERO)
                 && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, position, data)
             {
@@ -8616,9 +8619,12 @@ impl RolloutWorld {
             if spike.macho_carried || spike.platform_index >= self.platform_dynamics.len() {
                 continue;
             }
+            // A composite member's BoplBody reads and writes the CompositeBody's
+            // combined body: the platform's (DPhysicsBox.cs:103-120).
+            let combined = self.platform_dynamics[spike.platform_index].body;
             let Some(entity) = spike
                 .entity
-                .filter(|_| spike.active && spike.body.inverse_mass > Fix::ZERO)
+                .filter(|_| spike.active && combined.inverse_mass > Fix::ZERO)
             else {
                 continue;
             };
@@ -8639,13 +8645,11 @@ impl RolloutWorld {
                 let center = position + offset;
                 self.spike_attacks[index].collider_center = center;
                 self.spike_attacks[index].transform_center = center;
-                self.spike_attacks[index].body.velocity =
-                    Self::portal_velocity(entry, exit, spike.body.velocity);
+                self.platform_dynamics[spike.platform_index].body.velocity =
+                    Self::portal_velocity(entry, exit, combined.velocity);
                 let row = &mut self.entities[entity];
                 row.x = center.x.raw();
                 row.y = center.y.raw();
-                row.vx = self.spike_attacks[index].body.velocity.x.raw();
-                row.vy = self.spike_attacks[index].body.velocity.y.raw();
             }
         }
         for index in 0..self.engines.len() {
@@ -8653,9 +8657,10 @@ impl RolloutWorld {
             if engine.platform_index >= self.platform_dynamics.len() {
                 continue;
             }
+            let combined = self.platform_dynamics[engine.platform_index].body;
             let Some(entity) = engine
                 .entity
-                .filter(|_| engine.active && engine.body.inverse_mass > Fix::ZERO)
+                .filter(|_| engine.active && combined.inverse_mass > Fix::ZERO)
             else {
                 continue;
             };
@@ -8671,13 +8676,11 @@ impl RolloutWorld {
                 let center = position + offset;
                 self.engines[index].collider_center = center;
                 self.engines[index].transform_center = center;
-                self.engines[index].body.velocity =
-                    Self::portal_velocity(entry, exit, engine.body.velocity);
+                self.platform_dynamics[engine.platform_index].body.velocity =
+                    Self::portal_velocity(entry, exit, combined.velocity);
                 let row = &mut self.entities[entity];
                 row.x = center.x.raw();
                 row.y = center.y.raw();
-                row.vx = self.engines[index].body.velocity.x.raw();
-                row.vy = self.engines[index].body.velocity.y.raw();
             }
         }
         for index in 0..self.tesla_nodes.len() {
@@ -8685,9 +8688,10 @@ impl RolloutWorld {
             if node.macho_carried || node.platform_index >= self.platform_dynamics.len() {
                 continue;
             }
+            let combined = self.platform_dynamics[node.platform_index].body;
             let Some(entity) = node
                 .entity
-                .filter(|_| node.active && node.body.inverse_mass > Fix::ZERO)
+                .filter(|_| node.active && combined.inverse_mass > Fix::ZERO)
             else {
                 continue;
             };
@@ -8703,13 +8707,11 @@ impl RolloutWorld {
                 let center = position + offset;
                 self.tesla_nodes[index].collider_center = center;
                 self.tesla_nodes[index].transform_center = center;
-                self.tesla_nodes[index].body.velocity =
-                    Self::portal_velocity(entry, exit, node.body.velocity);
+                self.platform_dynamics[node.platform_index].body.velocity =
+                    Self::portal_velocity(entry, exit, combined.velocity);
                 let row = &mut self.entities[entity];
                 row.x = center.x.raw();
                 row.y = center.y.raw();
-                row.vx = self.tesla_nodes[index].body.velocity.x.raw();
-                row.vy = self.tesla_nodes[index].body.velocity.y.raw();
             }
         }
         let mut platforms_changed = false;
