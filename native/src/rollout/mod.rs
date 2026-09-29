@@ -11980,7 +11980,11 @@ impl RolloutWorld {
             }
             if effect.time >= duration {
                 effect.active = false;
-                slot.cooldowns[effect_slot] = restored_cooldown;
+                // OnStarEnded goes through the SuperStar on the caster slime,
+                // destroyed with it, so a replacement keeps its own cooldown.
+                if effect.slime_id == slime_id {
+                    slot.cooldowns[effect_slot] = restored_cooldown;
+                }
             }
         }
     }
