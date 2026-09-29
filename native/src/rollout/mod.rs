@@ -24425,8 +24425,10 @@ impl RolloutWorld {
                 .apply_impulse((-magnet.wall_pull_strength * multiplier) * direction, arm);
             changed = true;
         }
+        // DetPhysics.CollideBox finds a slime in its spawn animation, whose
+        // hurtbox is enabled, and its PlayerBody keeps the externalVelocity.
         for player_index in 0..self.players.len() {
-            if !self.playable(player_index) {
+            if !self.hittable(player_index) {
                 continue;
             }
             let target = &self.players[player_index];
