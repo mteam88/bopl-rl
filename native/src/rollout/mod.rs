@@ -16481,6 +16481,7 @@ impl RolloutWorld {
         // mass, then DestroyFix the whole object. Shape rows are the collision
         // snapshot, so this also preserves scale and offsets without another
         // source-specific approximation.
+        let sweep_x = self.sweep_x();
         for hole_index in 0..self.black_holes.len() {
             let hole = self.black_holes[hole_index];
             if !hole.active || hole.mass < Fix::ZERO || self.blink_object_hidden(hole.entity) {
@@ -16526,6 +16527,23 @@ impl RolloutWorld {
                     || !self.circle_overlaps_entity(query, entity)
                 {
                     continue;
+                }
+                // SmokeGrenadeExplode2.OnCollide takes the hole like any other
+                // non-projectile contact. A Circle/Circle pair calls back its
+                // earlier-sorted collider first (DetPhysics.cs:2186,3070), so a
+                // Smoke that sorts before the hole detonates before the hole's
+                // DestroyFix marks it destroyed.
+                if item.ability == ABILITY_SMOKE && item.detonates_on_owner {
+                    let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+                    let row = &self.entities[entity];
+                    let item_min = axis(Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)))
+                        - Fix::from_raw(row.radius);
+                    let hole_rank =
+                        sweep_rank(&self.entities, axis(hole.position) - hole.radius, hole.entity);
+                    let item_rank = sweep_rank(&self.entities, item_min, Some(entity));
+                    if sweep_pair(hole_rank, item_rank).1 == item_rank {
+                        self.detonate_smoke(item_index, true, data);
+                    }
                 }
                 Self::black_hole_grow(
                     &mut self.black_holes[hole_index],
