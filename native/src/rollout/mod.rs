@@ -3182,6 +3182,9 @@ struct PlatformScratch {
     /// Ropes below this hierarchy ran ahead of a later-instantiated player
     /// object this pass.
     ropes_ran_below: u32,
+    /// The oldest hammer's hierarchy: ropes from here up update in the hammer
+    /// loop, and their attachments pull after them.
+    ropes_deferred_from: u32,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
@@ -3475,6 +3478,7 @@ impl RolloutWorld {
                 ray_hits: Vec::with_capacity(192),
                 duplicate_shake_order: Vec::with_capacity(64),
                 duplicate_shake_offsets: Vec::with_capacity(64),
+                ropes_deferred_from: u32::MAX,
                 ..PlatformScratch::default()
             },
             platform_dynamics: Vec::with_capacity(64),
@@ -6595,6 +6599,7 @@ impl RolloutWorld {
             .min()
             .unwrap_or(u32::MAX);
         self.scratch.ropes_updated_below = if has_rope { first_hammer } else { u32::MAX };
+        self.scratch.ropes_deferred_from = self.scratch.ropes_updated_below;
         // A TeleportIndicator firing this pass detaches the teleported
         // players' ropes at its own turn, so a rope newer than it already
         // sees the rope released and its RopeAttachment stops pulling.
@@ -6885,10 +6890,6 @@ impl RolloutWorld {
         }
         if has_thrown_item {
             self.thrown_items_integrate(data, updater_dt, physics_dt);
-        }
-        // The ropes newer than every hammer.
-        if self.scratch.ropes_updated_below < u32::MAX {
-            self.ropes_update(self.scratch.ropes_updated_below..u32::MAX);
         }
         if has(ABILITY_PORTAL_GUN) {
             self.portal_shots_integrate(physics_dt);
@@ -32620,6 +32621,17 @@ impl RolloutWorld {
             self.thrown_item_update(item_index, data, updater_dt);
         }
         self.scratch.item_order = order;
+        // The ropes newer than every hammer, then the RopeAttachments of every
+        // rope the hammers held back: a hook that landed last pass pulls once
+        // its Rope.UpdateSim has counted the time since it arrived, still
+        // ahead of DetPhysics.
+        if self.scratch.ropes_updated_below < u32::MAX {
+            self.ropes_update(self.scratch.ropes_updated_below..u32::MAX);
+            self.scratch.ropes_updated_below = u32::MAX;
+        }
+        if self.scratch.ropes_deferred_from < u32::MAX {
+            self.rope_parents_update(rope_abilities::RopeParentPass::AfterHammers);
+        }
 
         // DetPhysics then integrates each body on its own.
         for item_index in 0..self.thrown_items.len() {

@@ -10,6 +10,8 @@ pub(super) enum RopeParentPass {
     NewerShot,
     /// The parent is a tack thrown before the hook.
     OlderTack,
+    /// The rope updates in the hammer loop, so its attachment pulls after it.
+    AfterHammers,
     Other,
 }
 
@@ -1425,6 +1427,7 @@ impl RolloutWorld {
                 {
                     RopeParentPass::OlderTack
                 }
+                _ if hierarchy >= self.scratch.ropes_deferred_from => RopeParentPass::AfterHammers,
                 _ => RopeParentPass::Other,
             };
             if parent_pass != pass {
