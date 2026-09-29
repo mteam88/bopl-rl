@@ -741,6 +741,11 @@ pub struct SpawnedSpike {
     pub platform_index: usize,
     pub local: Fix,
     pub relative_center: Vec2,
+    /// A cast spike's offset as SpikeAttack.Initialize left it. On the cast
+    /// pass its hitbox still carries the placement normal, so a
+    /// RepositionOnParent then lands here again, even after a composite
+    /// rebuild refit the offset in between.
+    pub placed_relative_center: Option<Vec2>,
     pub relative_rotation: Fix,
     pub collider_center: Vec2,
     /// The pose SyncGameObject last copied from the collider into this
@@ -13299,6 +13304,7 @@ impl RolloutWorld {
             platform_index,
             local,
             relative_center,
+            placed_relative_center: Some(relative_center),
             relative_rotation,
             collider_center,
             transform_center: collider_center,
@@ -13501,9 +13507,18 @@ impl RolloutWorld {
             settled(active, carried, on, born) || (fresh && active && !carried && on == platform)
         };
         for index in 0..self.spike_attacks.len() {
-            let spike = &self.spike_attacks[index];
+            let spike = &mut self.spike_attacks[index];
             if settled(spike.active, spike.macho_carried, spike.platform_index, spike.born_tick) {
                 self.place_spike_attack(index, data);
+            } else if spike.active
+                && !spike.macho_carried
+                && spike.platform_index == platform
+                && let Some(placed) = spike.placed_relative_center
+            {
+                // Cast this pass: a composite rebuild after the cast (a
+                // raycast's RemoveDestroyedColliders) refit the offset, and
+                // RepositionOnParent puts back the placement's.
+                spike.relative_center = placed;
             }
         }
         let parent_position = self.platforms[platform].surface.center;
@@ -17968,6 +17983,7 @@ impl RolloutWorld {
         spike.platform_index = platform_index;
         spike.local = local;
         spike.relative_center = relative_center;
+        spike.placed_relative_center = None;
         spike.relative_rotation = desired_rotation - parent_rotation;
         spike.collider_center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
@@ -25849,6 +25865,7 @@ impl RolloutWorld {
             platform_index,
             local,
             relative_center,
+            placed_relative_center: None,
             relative_rotation: rotation - parent_rotation,
             collider_center,
             transform_center: collider_center,
