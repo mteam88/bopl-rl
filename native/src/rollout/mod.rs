@@ -32129,7 +32129,7 @@ impl RolloutWorld {
                     && self.abilityless_clones[victim].active
                     && self.abilityless_clones[victim].base.alive
             } else {
-                victim < self.players.len() && self.playable(victim)
+                victim < self.players.len() && self.hittable(victim)
             };
             if !valid {
                 if victim_is_clone {
@@ -35168,9 +35168,10 @@ impl RolloutWorld {
                 let owner = item.owner;
                 let mut victim = None;
                 let mut victim_is_clone = false;
+                // A slime in its spawn animation already has its hurtbox.
                 for player_index in 0..self.players.len() {
                     if player_index == owner
-                        || !self.playable(player_index)
+                        || !self.hittable(player_index)
                         || self.players[player_index].active != ActiveAbility::None
                         || self.players[player_index].base.dash.active
                     {
