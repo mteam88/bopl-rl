@@ -2767,7 +2767,9 @@ pub struct PlayerSlot {
     /// ReSpawnFast's accelerated spawn animation after a choice is confirmed.
     pub respawn_spawn_ticks: u32,
     pub respawn_selected: usize,
-    pub stock_indicator_entities: [usize; 3],
+    /// The chooser's three RevivePositionIndicators: the Revival marker
+    /// prefab, live bodies in `revival_marker_pool`.
+    pub stock_indicator_markers: [Option<usize>; 3],
     /// Player.InputProfile's frame-edge state is updated even without a live
     /// controllable slime and is what the stock chooser reads.
     pub input_jump_was_down: bool,
@@ -4674,7 +4676,7 @@ impl RolloutWorld {
                 respawn_ticks: 0,
                 respawn_spawn_ticks: 0,
                 respawn_selected: 1,
-                stock_indicator_entities: [usize::MAX; 3],
+                stock_indicator_markers: [None; 3],
                 input_jump_was_down: false,
                 last_movement_input: Vec2::ZERO,
                 slime_input: Vec2::ZERO,
@@ -15776,7 +15778,6 @@ impl RolloutWorld {
                     self.duplicated_rocks[rock_index].body.force += force;
                 }
             }
-
             // Revival and Teleport markers are spell-layer circles, which
             // BlackHole.UpdateSim skips (BlackHole.cs:379-382).
 
@@ -21125,11 +21126,29 @@ impl RolloutWorld {
                 new_circle_count += 1;
             }
 
-            let mut indicator_entities = [usize::MAX; 3];
-            for (indicator, target) in indicator_entities.iter_mut().enumerate() {
+            // The indicators are Revival marker bodies.
+            self.active_subsystems |= ability_bit(ABILITY_REVIVAL);
+            let mut indicator_markers = [None; 3];
+            for (indicator, target) in indicator_markers.iter_mut().enumerate() {
                 let hierarchy_base = stock_indicator_hierarchy[indicator];
-                *target = self.entities.len();
+                let entity = self.entities.len();
                 let indicator_position = data.maps[self.map].respawn_points[indicator];
+                *target = Some(self.revival_marker_pool.len());
+                self.revival_marker_pool.push(RevivalMarker {
+                    active: true,
+                    registered: true,
+                    born_tick: self.tick,
+                    owner: index,
+                    ability_slot: 0,
+                    entity: Some(entity),
+                    hierarchy_base,
+                    position: indicator_position,
+                    body: data.revival.marker_body,
+                    scale: Fix::ONE,
+                    magnet_holder: None,
+                    magnet_hold_ticks: -1,
+                    body_prev_scale: Fix::ONE,
+                });
                 self.entities.push(CEntity {
                     kind: 0,
                     layer: data.revival.marker_layer,
@@ -21144,7 +21163,7 @@ impl RolloutWorld {
                     inverse_mass: data.revival.marker_body.inverse_mass.raw(),
                     ..CEntity::default()
                 });
-                new_circle_entities[new_circle_count] = *target;
+                new_circle_entities[new_circle_count] = entity;
                 new_circle_count += 1;
             }
 
@@ -21502,7 +21521,7 @@ impl RolloutWorld {
             slot.macho_throw_entity = macho_throw_entity;
             slot.drill_entity = drill_entity;
             slot.beam_entity = beam_entity;
-            slot.stock_indicator_entities = indicator_entities;
+            slot.stock_indicator_markers = indicator_markers;
             slot.stock_clone_pending = false;
             slot.clone_player_hierarchy = u32::MAX;
             slot.clone_ability_hierarchy = [u32::MAX; 3];
@@ -39364,14 +39383,19 @@ impl RolloutWorld {
             slot.respawn_ticks -= 1;
             if slot.respawn_ticks == 0 || jump_pressed {
                 slot.respawn_ticks = 0;
-                for entity in &mut slot.stock_indicator_entities {
-                    if *entity != usize::MAX {
-                        self.entities[*entity].flags = E_REMOVED;
-                        *entity = usize::MAX;
+                // Finish revives at the chosen indicator's live position,
+                // then Ends every indicator not already destroyed.
+                let markers = std::mem::take(&mut slot.stock_indicator_markers);
+                let selected = markers[slot.respawn_selected].expect("stock indicator");
+                let position = self.revival_marker_pool[selected].position;
+                for marker in markers.into_iter().flatten() {
+                    if self.revival_marker_pool[marker].active {
+                        self.end_revival_marker(marker);
                     }
                 }
+                let slot = &mut self.players[index];
                 slot.respawn_spawn_ticks = data.player.fast_spawn_anim_ticks;
-                slot.base.position = data.maps[self.map].respawn_points[slot.respawn_selected];
+                slot.base.position = position;
                 // ReSpawn simulates the body again (SlimeController.cs:591),
                 // so the hurtbox is exported at the chosen point this pass.
                 slot.base.sync_collider();
