@@ -39171,7 +39171,13 @@ impl RolloutWorld {
 
     fn rocks_late_tick(&mut self, data: &data::RolloutData) {
         for index in 0..self.players.len() {
-            if self.players[index].active != ActiveAbility::Rock || !self.players[index].base.alive
+            // A Blink tunnel or teleport disables the form's GameObject, so
+            // BounceBall.LateUpdateSim and its clocks skip those passes.
+            let slot = &self.players[index];
+            if slot.active != ActiveAbility::Rock
+                || !slot.base.alive
+                || slot.blink_tunnel_active
+                || slot.teleport_effect_active
             {
                 continue;
             }
