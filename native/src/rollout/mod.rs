@@ -6723,7 +6723,7 @@ impl RolloutWorld {
             self.rope_parents_update(rope_abilities::RopeParentPass::NewerShot);
         }
         if has(ABILITY_PORTAL_GUN) {
-            self.portal_shots_tick(data, updater_dt);
+            self.portal_shots_tick(data, updater_dt, spawned_from);
         }
         if has_rope {
             self.rope_parents_update(rope_abilities::RopeParentPass::Other);
@@ -7488,8 +7488,14 @@ impl RolloutWorld {
         }
     }
 
-    fn portal_shots_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    fn portal_shots_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, spawned_from: u32) {
         for shot_index in 0..self.portal_shots.len() {
+            // An older TeleportIndicator moves and disables the shots it
+            // catches before their turn (TeleportIndicator.cs:165-166).
+            if self.portal_shots[shot_index].active {
+                let hierarchy = self.portal_shots[shot_index].hierarchy_base;
+                self.teleport_pending_tick(data, updater_dt, spawned_from, hierarchy);
+            }
             if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
                 continue;
             }
@@ -43940,7 +43946,7 @@ mod tests {
         world.portal_shots[0].body.velocity = Vec2::UP;
         world.tick += 1;
 
-        world.portal_shots_tick(data::get(), DT);
+        world.portal_shots_tick(data::get(), DT, 0);
 
         assert_eq!(world.portal_shots[0].body.velocity, expected);
         assert!(world.portal_shots[0].fire_applied);
@@ -43954,7 +43960,7 @@ mod tests {
         world.tick += 1;
         let dt = DT * Fix::from_f32(0.5);
 
-        world.portal_shots_tick(data::get(), dt);
+        world.portal_shots_tick(data::get(), dt, 0);
 
         assert_eq!(world.portal_shots[0].time_alive, dt);
         world.portals.push(PortalEndpoint {
