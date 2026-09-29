@@ -36199,7 +36199,9 @@ impl RolloutWorld {
                         | ActiveAbility::Smoke
                         | ActiveAbility::Tack
                         | ActiveAbility::Mjolnir
-                        | ActiveAbility::PokeBall => OrientedBox::from_basis(
+                        // The form's box collider grows and shrinks with
+                        // the thrower, as the Smoke form does here.
+                        | ActiveAbility::PokeBall => player.forms[player.active_slot].hurtbox(
                             player.base.position,
                             Vec2::angle(player.base.rotation),
                             throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
