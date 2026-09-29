@@ -16643,8 +16643,10 @@ impl RolloutWorld {
             },
             radius: Fix::ZERO,
         };
+        // DetPhysics.CollideBox skips colliders whose GameObject is inactive.
         let current_platform = self.platforms.iter().position(|platform| {
-            crate::physics::contact::rounded_rounded(query, platform.collider).is_some()
+            platform.active
+                && crate::physics::contact::rounded_rounded(query, platform.collider).is_some()
         });
         self.players[index].drill.current_platform = current_platform;
         let drilling = self.players[index].drill.phase == 1;
