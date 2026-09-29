@@ -2621,10 +2621,10 @@ pub struct PlayerSlot {
     /// Live FrozenSolid instances pinning this slime. Ground contact does not
     /// end the refreshed ragdoll while any of them remains active.
     pub frozen_solid_count: u16,
-    /// (pass, FrozenSolid hierarchy, body position before that FrozenSolid
-    /// pinned it). An earlier-spawned Mjolnir updates before the ice and so
-    /// strikes the body where the ragdoll moved it.
-    pub frozen_unpinned: (u32, u32, Vec2),
+    /// (pass, holder hierarchy, body position before that FrozenSolid or
+    /// Poke Ball pinned it). An earlier-spawned Mjolnir updates before the
+    /// holder, so it strikes and homes on the body where it was.
+    pub pinned_from: (u32, u32, Vec2),
     /// A lower-hierarchy transformed form was cancelled by Freeze after this
     /// pass's Player.UpdatePlayer publication. Keep that earlier publication
     /// while the restored SlimeController finishes its same-pass movement.
@@ -4626,7 +4626,7 @@ impl RolloutWorld {
                 ragdoll: RagdollState::default(),
                 eating: EatingState::default(),
                 frozen_solid_count: 0,
-                frozen_unpinned: (u32::MAX, 0, Vec2::ZERO),
+                pinned_from: (u32::MAX, 0, Vec2::ZERO),
                 freeze_form_exit_tick: u32::MAX,
                 ragdoll_grounded_fall: false,
                 obs_state_held_this_tick: false,
@@ -29444,7 +29444,7 @@ impl RolloutWorld {
     /// The slime body a Mjolnir with `hierarchy` sees in its update.
     fn mjolnir_view(&self, index: usize, hierarchy: u32) -> Vec2 {
         let slot = &self.players[index];
-        match slot.frozen_unpinned {
+        match slot.pinned_from {
             (tick, ice, position) if tick == self.tick && ice > hierarchy => position,
             _ => slot.base.position,
         }
@@ -29491,7 +29491,7 @@ impl RolloutWorld {
                 slot.timers.fill(Fix::ZERO);
                 continue;
             }
-            slot.frozen_unpinned = (self.tick, effect.hierarchy_base, slot.base.position);
+            slot.pinned_from = (self.tick, effect.hierarchy_base, slot.base.position);
             slot.base.position = effect.freeze_position;
             slot.base.velocity = Vec2::ZERO;
             slot.obs_state = STATE_RAGDOLL;
@@ -32324,7 +32324,12 @@ impl RolloutWorld {
                 clone.base.sync_collider();
                 clone.obs_state = STATE_RAGDOLL;
             } else {
+                let tick = self.tick;
+                let hierarchy = self.thrown_items[item_index].hierarchy_base;
                 let slot = &mut self.players[victim];
+                if slot.pinned_from.0 != tick {
+                    slot.pinned_from = (tick, hierarchy, slot.base.position);
+                }
                 slot.base.position = position;
                 slot.base.velocity = Vec2::ZERO;
                 slot.base.sync_collider();
