@@ -4952,10 +4952,14 @@ impl RolloutWorld {
         &mut self,
         index: usize,
         data: &data::RolloutData,
-        _updater_dt: Fix,
+        updater_dt: Fix,
         wobble: Fix,
     ) {
         let pickup = &data.pickup;
+        // A wall QuantumTunnel registered before this pickup has already
+        // hidden or restored its wall when the pickup raycasts for ground.
+        let hierarchy = self.ability_pickups[index].hierarchy_base;
+        self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
         if self.blink_object_hidden(self.ability_pickups[index].entity) {
             return;
         }
@@ -5026,7 +5030,11 @@ impl RolloutWorld {
         while candidates != 0 {
             let platform_index = candidates.trailing_zeros() as usize;
             candidates &= candidates - 1;
-            if self.platform_removed_before(platform_index, hierarchy, data) {
+            // RaycastToClosestRoundedRect skips inactive walls, such as one a
+            // QuantumTunnel hid earlier this pass.
+            if !self.platforms[platform_index].active
+                || self.platform_removed_before(platform_index, hierarchy, data)
+            {
                 continue;
             }
             let platform = &self.platforms[platform_index];
