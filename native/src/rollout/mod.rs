@@ -886,6 +886,9 @@ pub struct SpawnedTeslaNode {
     pub transform_center: Vec2,
     pub transform_rotation: Fix,
     pub surface_offset: Fix,
+    /// SimpleSparkNode._hitBoxOffsetY, compounded on each rescale like
+    /// `surface_offset`, so it drifts from the prefab offset times the scale.
+    pub hitbox_offset: Fix,
     /// FixTransform.up as PlaceSparkNode set it, until the first physics
     /// sync replaces it with the body rotation's.
     pub placed_up: Option<Vec2>,
@@ -13528,6 +13531,7 @@ impl RolloutWorld {
             transform_center: center,
             transform_rotation: node_rotation,
             surface_offset,
+            hitbox_offset: data.tesla.hitbox_offset_y * scale,
             placed_up: Some(normal),
             scale,
             radius: data.tesla.node_radius * collider_scale,
@@ -14593,6 +14597,7 @@ impl RolloutWorld {
                 let ratio =
                     self.tesla_nodes[node_index].scale / self.tesla_nodes[node_index].offset_scale;
                 self.tesla_nodes[node_index].surface_offset *= ratio;
+                self.tesla_nodes[node_index].hitbox_offset *= ratio;
                 self.tesla_nodes[node_index].offset_scale = self.tesla_nodes[node_index].scale;
             }
             if self.tesla_nodes[node_index].connected {
@@ -14737,9 +14742,8 @@ impl RolloutWorld {
             - node.collider_offset.complex_mul(node_right);
         let child_root = child_node.transform_center
             - child_node.collider_offset.complex_mul(child_right);
-        let from = node_root + node_right.perp() * (data.tesla.hitbox_offset_y * node.offset_scale);
-        let to = child_root
-            + child_right.perp() * (data.tesla.hitbox_offset_y * child_node.offset_scale);
+        let from = node_root + node_right.perp() * node.hitbox_offset;
+        let to = child_root + child_right.perp() * child_node.hitbox_offset;
         let delta = to - from;
         let distance = delta.length();
         let direction = if distance != Fix::ZERO {
@@ -18769,6 +18773,7 @@ impl RolloutWorld {
         node.collider_rotation = desired_rotation;
         node.transform_center = node.collider_center;
         node.transform_rotation = desired_rotation;
+        node.hitbox_offset = data.tesla.hitbox_offset_y * node.scale;
         node.offset_scale = node.scale;
         node.body = child_body;
         node.connected = false;
@@ -27194,6 +27199,7 @@ impl RolloutWorld {
             transform_center: center,
             transform_rotation: rotation,
             surface_offset,
+            hitbox_offset: data.tesla.hitbox_offset_y * source.scale,
             scale: source.scale,
             collider_scale: source.collider_scale,
             radius: data.tesla.node_radius * source.collider_scale,
