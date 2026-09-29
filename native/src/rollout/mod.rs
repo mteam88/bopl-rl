@@ -18773,6 +18773,15 @@ impl RolloutWorld {
             // DestroyIfTooFarX=false and DoNotDestroyUp=true. The updater's
             // DestroyFix removes it before this pass's contacts and export.
             if self.platforms[boulder.platform_index].surface.center.y < lower_boundary {
+                // This runs as one pass, but the boulder's bounds check sits at
+                // its own hierarchy, after older RopeAttachments on it.
+                let entity = self.platform_entities[boulder.platform_index];
+                let hierarchy = self.entities[entity].hierarchy - 100_000_000;
+                for rope in &mut self.ropes {
+                    if rope.platform == Some(boulder.platform_index) {
+                        rope.platform_destroyed_at = (self.tick, hierarchy);
+                    }
+                }
                 self.remove_platform(boulder.platform_index, true);
                 // In space the floor exit instantiates UpEffect, which
                 // Boulder.prefab leaves empty; only the water exit splashes.

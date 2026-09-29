@@ -99,6 +99,9 @@ pub(crate) struct RolloutRope {
     /// The platform was removed; the attachment lets go in its next UpdateSim
     /// and holds the end at `platform_anchor` until then.
     pub platform_gone: bool,
+    /// The pass and updater hierarchy of an UpdateSim that DestroyFix'd the
+    /// platform; an older RopeAttachment still saw it alive that pass.
+    pub platform_destroyed_at: (u32, u32),
     /// Where the hook met a platform this pass. RopeHook.OnCollide takes the
     /// surface coordinate after DetPhysics synced the platform the contact
     /// passes pushed.
@@ -407,6 +410,7 @@ fn empty_rope() -> RolloutRope {
         platform_top: true,
         platform_attach_tick: 0,
         platform_gone: false,
+        platform_destroyed_at: (0, 0),
         hook_hit: None,
         black_hole: None,
         black_hole_reel_frames: 0,
@@ -1251,6 +1255,17 @@ impl RolloutWorld {
             }
             // RopeAttachment on an object runs in rope_parents_update.
             if self.ropes[index].parent.is_some() {
+                continue;
+            }
+            if self.ropes[index].platform_gone
+                && self.ropes[index].platform_destroyed_at.0 == self.tick
+                && hierarchy < self.ropes[index].platform_destroyed_at.1
+            {
+                // The platform is destroyed later in this pass, so this
+                // attachment held the end on it, where it last stood.
+                let rope = &mut self.ropes[index];
+                let endpoint = if rope.platform_top { 0 } else { rope.physics.count - 1 };
+                rope.physics.segment[endpoint] = rope.platform_anchor;
                 continue;
             }
             if std::mem::take(&mut self.ropes[index].platform_gone) {
