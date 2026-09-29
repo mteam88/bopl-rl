@@ -9813,28 +9813,27 @@ impl RolloutWorld {
                             ..GunState::default()
                         };
                         slot.base.rotation = Fix::ZERO;
+                        // Ability.EnterAbility scales the box, then SyncPhysicsTo's
+                        // UpdateScale the radius it places the body with.
+                        slot.scale_form(
+                            data.freeze.hurtbox_extents,
+                            data.freeze.radius,
+                            data.freeze.collider_offset,
+                        );
+                        slot.base.radius = slot.forms[s].physics_radius();
                         if grounded {
                             if let Some(platform) = slot.base.platform(&self.platforms) {
-                                slot.base.position = platform
-                                    .surface
-                                    .position(slot.base.local, data.freeze.radius);
+                                slot.base.position =
+                                    platform.surface.position(slot.base.local, slot.base.radius);
                             }
-                            slot.base.radius = data.freeze.radius;
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
-                            slot.base.radius = data.freeze.radius;
                             slot.form_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
-                        self.players[index]
-                            .scale_form(
-                                data.freeze.hurtbox_extents,
-                                data.freeze.radius,
-                                data.freeze.collider_offset,
-                            );
                         self.players[index]
                             .sync_gun_hurtbox(data.freeze.collider_offset, &self.platforms);
                         self.freeze_tick(index, action, data);
@@ -9867,28 +9866,27 @@ impl RolloutWorld {
                             ..GunState::default()
                         };
                         slot.base.rotation = Fix::ZERO;
+                        // Ability.EnterAbility scales the box, then SyncPhysicsTo's
+                        // UpdateScale the radius it places the body with.
+                        slot.scale_form(
+                            data.blink.hurtbox_extents,
+                            data.blink.radius,
+                            data.blink.collider_offset,
+                        );
+                        slot.base.radius = slot.forms[s].physics_radius();
                         if grounded {
                             if let Some(platform) = slot.base.platform(&self.platforms) {
-                                slot.base.position = platform
-                                    .surface
-                                    .position(slot.base.local, data.blink.radius);
+                                slot.base.position =
+                                    platform.surface.position(slot.base.local, slot.base.radius);
                             }
-                            slot.base.radius = data.blink.radius;
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
-                            slot.base.radius = data.blink.radius;
                             slot.form_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
-                        self.players[index]
-                            .scale_form(
-                                data.blink.hurtbox_extents,
-                                data.blink.radius,
-                                data.blink.collider_offset,
-                            );
                         self.players[index]
                             .sync_gun_hurtbox(data.blink.collider_offset, &self.platforms);
                         self.blink_tick(index, action, data);
@@ -9926,26 +9924,23 @@ impl RolloutWorld {
                             ..GunState::default()
                         };
                         slot.base.rotation = Fix::ZERO;
+                        // Ability.EnterAbility scales the box, then SyncPhysicsTo's
+                        // UpdateScale the radius it places the body with.
+                        slot.scale_form(ray.hurtbox_extents, ray.radius, ray.collider_offset);
+                        slot.base.radius = slot.forms[s].physics_radius();
                         if grounded {
                             if let Some(platform) = slot.base.platform(&self.platforms) {
                                 slot.base.position =
-                                    platform.surface.position(slot.base.local, ray.radius);
+                                    platform.surface.position(slot.base.local, slot.base.radius);
                             }
-                            slot.base.radius = ray.radius;
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                         } else {
-                            slot.base.radius = ray.radius;
                             slot.form_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
-                        self.players[index].scale_form(
-                            ray.hurtbox_extents,
-                            ray.radius,
-                            ray.collider_offset,
-                        );
                         self.players[index]
                             .sync_gun_hurtbox(ray.collider_offset, &self.platforms);
                         self.scale_ray_tick(index, action, data);
@@ -9978,13 +9973,19 @@ impl RolloutWorld {
                             ..GunState::default()
                         };
                         slot.base.rotation = Fix::ZERO;
+                        // Ability.EnterAbility scales the box, then SyncPhysicsTo's
+                        // UpdateScale the radius it places the body with.
+                        slot.scale_form(
+                            data.duplicator.hurtbox_extents,
+                            data.duplicator.radius,
+                            data.duplicator.collider_offset,
+                        );
+                        slot.base.radius = slot.forms[s].physics_radius();
                         if grounded {
                             if let Some(platform) = slot.base.platform(&self.platforms) {
-                                slot.base.position = platform
-                                    .surface
-                                    .position(slot.base.local, data.duplicator.radius);
+                                slot.base.position =
+                                    platform.surface.position(slot.base.local, slot.base.radius);
                             }
-                            slot.base.radius = data.duplicator.radius;
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                             // Duplicator's authored PlayerPhysics radius
@@ -9994,18 +9995,11 @@ impl RolloutWorld {
                             slot.reported_position = slot.base.position;
                             slot.reported_tick = self.tick;
                         } else {
-                            slot.base.radius = data.duplicator.radius;
                             slot.form_gravity[s] = Fix::from_f32(0.03);
                             slot.base.velocity *= Fix::from_f32(0.1);
                             slot.base.external_velocity *= Fix::from_f32(0.1);
                             slot.base.ground = None;
                         }
-                        self.players[index]
-                            .scale_form(
-                                data.duplicator.hurtbox_extents,
-                                data.duplicator.radius,
-                                data.duplicator.collider_offset,
-                            );
                         self.players[index]
                             .sync_gun_hurtbox(data.duplicator.collider_offset, &self.platforms);
                         self.duplicator_tick(index, action, data);
@@ -22839,6 +22833,9 @@ impl RolloutWorld {
 
         // Ability follows the shoot component in the prefab.
         self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
+        // PlayerPhysics follows Ability and UpdateScales the radius to the box.
+        let slot = &mut self.players[index];
+        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
 
         // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
         // and before PlayerBody integrates this pass.
@@ -22994,6 +22991,9 @@ impl RolloutWorld {
 
         // Ability follows the shoot component in the prefab.
         self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
+        // PlayerPhysics follows Ability and UpdateScales the radius to the box.
+        let slot = &mut self.players[index];
+        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
         // and before PlayerBody integrates this pass.
         if self.ability_boundary_kill(index, true) {
@@ -23146,6 +23146,9 @@ impl RolloutWorld {
 
         // Ability follows the shoot component in the prefab.
         self.players[index].scale_form(ray.hurtbox_extents, ray.radius, ray.collider_offset);
+        // PlayerPhysics follows Ability and UpdateScales the radius to the box.
+        let slot = &mut self.players[index];
+        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
         // and before PlayerBody integrates this pass.
         if self.ability_boundary_kill(index, true) {
@@ -23294,6 +23297,9 @@ impl RolloutWorld {
 
         // Ability follows the shoot component in the prefab.
         self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
+        // PlayerPhysics follows Ability and UpdateScales the radius to the box.
+        let slot = &mut self.players[index];
+        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
         // and before PlayerBody integrates this pass.
         if self.ability_boundary_kill(index, true) {
