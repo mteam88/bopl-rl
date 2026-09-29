@@ -12141,6 +12141,8 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         slot.meteor.phase = 3;
         slot.meteor.dash_updates = 0;
+        // The smash exits through ExitAbilityGrounded, isFacingRight true.
+        slot.facing_right = true;
         slot.active = ActiveAbility::None;
         slot.base.position = landing;
         slot.base.constants = data.player.constants.clone();
