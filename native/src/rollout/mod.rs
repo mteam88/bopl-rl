@@ -13605,6 +13605,34 @@ impl RolloutWorld {
         self.tesla_nodes[node_index].connected = false;
         self.tesla_nodes[node_index].lethal = false;
         self.tesla_nodes[node_index].enter_ticks = 0;
+        self.destroy_tesla_line(node_index, deferred);
+        if let Some(child) = child
+            && child < self.tesla_nodes.len()
+        {
+            self.deactivate_tesla_child(child, deferred);
+        }
+    }
+
+    /// Deactivate's half for its child: the child's own line goes too.
+    fn deactivate_tesla_child(&mut self, child: usize, deferred: bool) {
+        self.tesla_nodes[child].connected = false;
+        self.tesla_nodes[child].lethal = false;
+        self.tesla_nodes[child].enter_ticks = 0;
+        self.destroy_tesla_line(child, deferred);
+    }
+
+    /// A node's UpdateSim calls Deactivate on a hidden parent whether or not
+    /// that parent is connected.
+    fn deactivate_tesla_parent(&mut self, parent: usize, node_index: usize) {
+        if self.tesla_nodes[parent].connected {
+            self.disconnect_tesla_node(parent, false);
+        } else {
+            self.tesla_nodes[parent].lethal = false;
+            self.deactivate_tesla_child(node_index, false);
+        }
+    }
+
+    fn destroy_tesla_line(&mut self, node_index: usize, deferred: bool) {
         if let Some(entity) = self.tesla_nodes[node_index].line_entity.take() {
             let node = self.tesla_nodes[node_index];
             self.entities[entity].x = node.line_center.x.raw();
@@ -13626,13 +13654,6 @@ impl RolloutWorld {
         }
         self.tesla_nodes[node_index].line_active = false;
         self.tesla_nodes[node_index].line_collider_enabled = false;
-        if let Some(child) = child
-            && child < self.tesla_nodes.len()
-        {
-            self.tesla_nodes[child].connected = false;
-            self.tesla_nodes[child].lethal = false;
-            self.tesla_nodes[child].enter_ticks = 0;
-        }
     }
 
     /// `deferred`: the node was Updater.DestroyFix'd mid-pass, so its
@@ -14606,16 +14627,19 @@ impl RolloutWorld {
                 self.tesla_nodes[node_index].hitbox_offset *= ratio;
                 self.tesla_nodes[node_index].offset_scale = self.tesla_nodes[node_index].scale;
             }
-            if self.tesla_nodes[node_index].connected {
-                let child_live = self.tesla_nodes[node_index]
-                    .child
-                    .is_some_and(|child| self.tesla_node_shown(child));
-                let parent_live = self.tesla_nodes[node_index]
-                    .parent
-                    .is_some_and(|parent| self.tesla_node_shown(parent));
-                if !child_live && !parent_live {
-                    self.disconnect_tesla_node(node_index, false);
-                }
+            // A hidden child deactivates this node's connection, a hidden
+            // parent the parent's, whose line it is (SimpleSparkNode.cs:233-240).
+            if self.tesla_nodes[node_index].connected
+                && let Some(child) = self.tesla_nodes[node_index].child
+                && !self.tesla_node_shown(child)
+            {
+                self.disconnect_tesla_node(node_index, false);
+            }
+            if self.tesla_nodes[node_index].connected
+                && let Some(parent) = self.tesla_nodes[node_index].parent
+                && !self.tesla_node_shown(parent)
+            {
+                self.deactivate_tesla_parent(parent, node_index);
             }
             // SimpleSparkNode.IsEnabled is always true, so a node on a hidden
             // wall keeps checking its partners but cannot connect
