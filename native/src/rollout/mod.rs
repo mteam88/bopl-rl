@@ -3249,6 +3249,9 @@ struct PlatformScratch {
     /// The oldest hammer's hierarchy: ropes from here up update in the hammer
     /// loop, and their attachments pull after them.
     ropes_deferred_from: u32,
+    /// Tacks below this hierarchy ran their UpdateSim ahead of a
+    /// later-instantiated player object this pass.
+    tacks_ran_below: u32,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
@@ -6338,6 +6341,7 @@ impl RolloutWorld {
         let mut spawned_from = 0;
         let mut recorded = 0;
         self.scratch.ropes_ran_below = 0;
+        self.scratch.tacks_ran_below = 0;
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
             // SlimeController.Awake adds the RewindRecorder to the slime itself
             // (RewindRecorder.cs:93), so each slime already updated took its
@@ -6367,6 +6371,7 @@ impl RolloutWorld {
                 }
                 if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
                     self.poke_balls_and_tacks_tick(data, updater_dt, spawned.clone(), spawned.clone());
+                    self.scratch.tacks_ran_below = spawned.end;
                 }
                 if has(ABILITY_PORTAL_GUN) {
                     self.portals_update(data, updater_dt, spawned.clone());
@@ -22349,6 +22354,7 @@ impl RolloutWorld {
                 .apply_impulse(impulse, arm);
             applied = true;
         }
+        let tacks_ran_below = self.scratch.tacks_ran_below;
         for target in 0..wave.item_count {
             let item_index = wave.item_indices[target];
             let Some(item) = self.thrown_items.get_mut(item_index) else {
@@ -22357,9 +22363,14 @@ impl RolloutWorld {
             if !item.active || item.entity.is_none() {
                 continue;
             }
+            // A tack that ran ahead of a stock-respawned slime already pinned
+            // itself this pass, so the wave's impulse lands on it directly.
+            let defer = defer_mjolnir
+                && !(item.ability == ABILITY_TACK
+                    && 100_000_000 + item.hierarchy_base < tacks_ran_below);
             // The regular pass reads the FixTransform after BananaPeel.UpdateSim
             // pinned a settled tack back to its settle point.
-            let position = if defer_mjolnir && item.ability == ABILITY_TACK && item.settled {
+            let position = if defer && item.ability == ABILITY_TACK && item.settled {
                 item.settle_position
             } else {
                 item.position
@@ -22373,7 +22384,7 @@ impl RolloutWorld {
                 * Fix::from_int(60);
             // BananaPeel.UpdateSim likewise precedes the wave, and a settled
             // tack's pin there must not erase the regular-pass impulse.
-            if defer_mjolnir && matches!(item.ability, ABILITY_MJOLNIR | ABILITY_TACK) {
+            if defer && matches!(item.ability, ABILITY_MJOLNIR | ABILITY_TACK) {
                 item.pending_gust_impulse += impulse;
             } else {
                 item.body.apply_impulse(impulse, Vec2::ZERO);
