@@ -9059,6 +9059,11 @@ impl RolloutWorld {
             // AttachToGround position, before Move slides along the surface.
             if !slot.base.grounded && !ragdoll_ended {
                 slot.base.gravity_step(terrain!(self));
+            } else if !ragdoll_ended {
+                // skipNextUpdate is spent on the next pass even on the
+                // ground (PlayerPhysics.cs:118-121), so a Magnet hold does
+                // not cost a later jump its first gravity.
+                slot.base.skip_next_gravity = false;
             }
             // Everything above is PlayerPhysics.UpdateSim; everything below is
             // SlimeController.UpdateSim, which runs OldUpdate in full before
