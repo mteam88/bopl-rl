@@ -6607,8 +6607,9 @@ impl RolloutWorld {
         if has(ABILITY_TIME_STOP) {
             self.time_stop_effects_tick(data);
         }
+        let mut deferred_spikes = None;
         if has(ABILITY_SPIKE) {
-            self.spike_attacks_tick(data, updater_dt);
+            deferred_spikes = self.spike_attacks_tick(data, updater_dt);
         }
         if has(ABILITY_ENGINE) {
             self.engines_tick(data, updater_dt);
@@ -6632,7 +6633,7 @@ impl RolloutWorld {
             self.rope_parents_update(rope_abilities::RopeParentPass::OlderTack);
         }
         if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
-            self.scale_changers_tick(data, updater_dt);
+            self.scale_changers_tick(data, updater_dt, deferred_spikes);
         }
         if has(ABILITY_DUPLICATOR) {
             self.duplicate_platform_effects_tick(data, updater_dt, None);
@@ -14041,7 +14042,48 @@ impl RolloutWorld {
         }
     }
 
-    fn spike_attacks_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// Steps the spikes instantiated before the oldest ScaleChanger due this
+    /// pass and returns that changer's hierarchy: the younger spikes update
+    /// after it, so its ResizePlatform lands first, and the changer pass
+    /// steps them.
+    fn spike_attacks_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) -> Option<u32> {
+        let tick = self.tick;
+        let deferred = self
+            .scale_changers
+            .iter()
+            .filter(|effect| effect.active && effect.born_tick < tick)
+            .map(|effect| effect.hierarchy_base)
+            .min();
+        for index in 0..self.spike_attacks.len() {
+            if deferred.is_none_or(|from| self.spike_attacks[index].hierarchy_base < from) {
+                self.spike_attack_step(data, updater_dt, index);
+            }
+        }
+        deferred
+    }
+
+    /// Steps the spikes with hierarchy in `from..to`.
+    fn spike_attacks_between(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        from: u32,
+        to: u32,
+    ) {
+        for index in 0..self.spike_attacks.len() {
+            if (from..to).contains(&self.spike_attacks[index].hierarchy_base) {
+                self.spike_attack_step(data, updater_dt, index);
+            }
+        }
+    }
+
+    fn spike_attack_step(&mut self, data: &data::RolloutData, updater_dt: Fix, index: usize) {
+        if self.attached_hidden(
+            self.spike_attacks[index].platform_index,
+            self.spike_attacks[index].entity,
+        ) {
+            return;
+        }
         let curve_end = data
             .spike
             .down_thrust
@@ -14049,26 +14091,18 @@ impl RolloutWorld {
             .last()
             .expect("authored SpikeAttack curve")
             .time;
-        for index in 0..self.spike_attacks.len() {
-            if self.attached_hidden(
-                self.spike_attacks[index].platform_index,
-                self.spike_attacks[index].entity,
-            ) {
-                continue;
-            }
-            let attack = &mut self.spike_attacks[index];
-            attack.pushed_this_frame = false;
-            if !attack.active || attack.macho_carried || attack.born_tick >= self.tick {
-                continue;
-            }
-            attack.time += updater_dt;
-            if attack.time > curve_end || attack.platform_index >= self.platforms.len() {
-                continue;
-            }
-            attack.surface_offset =
-                data.spike.down_thrust.evaluate(attack.time) + data.spike.surface_offset;
-            self.place_spike_attack(index, data);
+        let attack = &mut self.spike_attacks[index];
+        attack.pushed_this_frame = false;
+        if !attack.active || attack.macho_carried || attack.born_tick >= self.tick {
+            return;
         }
+        attack.time += updater_dt;
+        if attack.time > curve_end || attack.platform_index >= self.platforms.len() {
+            return;
+        }
+        attack.surface_offset =
+            data.spike.down_thrust.evaluate(attack.time) + data.spike.surface_offset;
+        self.place_spike_attack(index, data);
     }
 
     /// SpikeAttack.UpdatePosition, and RepositionOnParent with the offset it
@@ -29191,13 +29225,25 @@ impl RolloutWorld {
     /// ScaleChanger.UpdateSim in Updater hierarchy order. Two rays on one target
     /// do not commute: each add is clamped, and a resize rounds against the
     /// scale the other just wrote.
-    fn scale_changers_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// `deferred_spikes`: the spike pass left the spikes from this hierarchy
+    /// on, which update in turn among the changers.
+    fn scale_changers_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        deferred_spikes: Option<u32>,
+    ) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         order.clear();
         order.extend(0..self.scale_changers.len());
         order.sort_unstable_by_key(|&index| (self.scale_changers[index].hierarchy_base, index));
+        let mut spikes_from = deferred_spikes;
         for &index in &order {
             let effect = self.scale_changers[index];
+            if let Some(from) = spikes_from.filter(|&from| from < effect.hierarchy_base) {
+                self.spike_attacks_between(data, updater_dt, from, effect.hierarchy_base);
+                spikes_from = Some(effect.hierarchy_base);
+            }
             if !effect.active || effect.born_tick >= self.tick {
                 continue;
             }
@@ -29485,6 +29531,9 @@ impl RolloutWorld {
             missile.scale = (missile.scale + ray.scale_curve.evaluate(time) * multiplier)
                 .clamp(Fix::from_f32(0.1), Fix::from_int(5));
             self.scale_changers[index].time = time;
+        }
+        if let Some(from) = spikes_from {
+            self.spike_attacks_between(data, updater_dt, from, u32::MAX);
         }
         self.scratch.item_order = order;
     }
@@ -42747,7 +42796,7 @@ mod tests {
         world.begin_scale_change_entity(entity, false, 1);
         assert_eq!(world.scale_changers.len(), 2);
         world.tick += 1;
-        world.scale_changers_tick(data::get(), DT);
+        world.scale_changers_tick(data::get(), DT, None);
         assert_eq!(
             world.scale_changers[0].current_scale,
             world.scale_changers[1].current_scale
@@ -43272,7 +43321,7 @@ mod tests {
         world.begin_scale_change_entity(entity, true, 1);
         for _ in 0..10 {
             world.tick += 1;
-            world.scale_changers_tick(data::get(), DT);
+            world.scale_changers_tick(data::get(), DT, None);
         }
 
         assert!(world.teleport_marker_pool[0].scale > Fix::ONE);
