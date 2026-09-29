@@ -6569,7 +6569,7 @@ impl RolloutWorld {
         }
         if has(ABILITY_TELEPORT) {
             self.teleport_effects_tick(data, updater_dt);
-            self.teleport_pending_tick(data, updater_dt);
+            self.teleport_pending_tick(data, updater_dt, spawned_from);
         }
         if has_rope && first_teleport < ropes_before_clones {
             self.ropes_update(first_teleport..ropes_before_clones);
@@ -20304,7 +20304,14 @@ impl RolloutWorld {
         self.begin_teleport_object_effect(entity, data);
     }
 
-    fn teleport_pending_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// `poke_balls_ran_below`: the player loop already ran the Poke Balls
+    /// under this hierarchy, ahead of a younger slime.
+    fn teleport_pending_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        poke_balls_ran_below: u32,
+    ) {
         self.scratch.smoke_updated_early.clear();
         for owner in 0..self.players.len() {
             let Some(marker_index) = self.players[owner].teleport_pending_marker.take() else {
@@ -20371,7 +20378,12 @@ impl RolloutWorld {
                 {
                     match self.thrown_items[item_index].ability {
                         ABILITY_TACK => self.tack_tick(item_index, data, updater_dt),
-                        ABILITY_POKE_BALL => self.poke_ball_tick(item_index, data, updater_dt),
+                        ABILITY_POKE_BALL
+                            if 100_000_000 + self.thrown_items[item_index].hierarchy_base
+                                >= poke_balls_ran_below =>
+                        {
+                            self.poke_ball_tick(item_index, data, updater_dt)
+                        }
                         ABILITY_MJOLNIR => self.mjolnir_tick(item_index, data, updater_dt),
                         _ => {}
                     }
