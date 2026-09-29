@@ -25404,7 +25404,19 @@ impl RolloutWorld {
             .position(|slot| self.playable_slot(slot) && slot.body_entity == hit.entity)
         {
             let position = self.players[victim].base.position;
-            self.duplicate_player_clone(victim, position, direction, data);
+            self.duplicate_player_clone(victim, position, direction, None, data);
+            return;
+        }
+        // A clone's SlimeController spawns another abilityless clone for its
+        // player from the clone's own body.
+        if let Some(clone_index) = self
+            .abilityless_clones
+            .iter()
+            .position(|clone| clone.active && clone.entity == Some(hit.entity))
+        {
+            let clone = &self.abilityless_clones[clone_index];
+            let (owner, position) = (clone.owner, clone.base.position);
+            self.duplicate_player_clone(owner, position, direction, Some(clone_index), data);
             return;
         }
         if let Some(platform_index) = self
@@ -25869,7 +25881,7 @@ impl RolloutWorld {
             return;
         }
         let position = self.players[victim].base.position;
-        self.duplicate_player_clone(victim, position, direction, data);
+        self.duplicate_player_clone(victim, position, direction, None, data);
     }
 
     fn duplicate_player_clone(
@@ -25877,6 +25889,7 @@ impl RolloutWorld {
         victim: usize,
         position: Vec2,
         direction: Vec2,
+        hit_clone: Option<usize>,
         data: &data::RolloutData,
     ) {
         // SpawnAbilityLessClone rejects the seventeenth clone for an owner.
@@ -25892,7 +25905,10 @@ impl RolloutWorld {
         let source = self.players[victim].base.clone();
         // SlimeController.CurrentNormal reads the slime's own body, which a
         // form leaves grounded where it was entered.
-        let (slime_ground, slime_position) = if self.players[victim].active == ActiveAbility::None {
+        let (slime_ground, slime_position) = if let Some(clone) = hit_clone {
+            let body = &self.abilityless_clones[clone].base;
+            (body.ground.filter(|_| body.grounded), body.position)
+        } else if self.players[victim].active == ActiveAbility::None {
             (source.ground.filter(|_| source.grounded), source.position)
         } else {
             (self.players[victim].ability_origin_ground, self.players[victim].ability_origin)
