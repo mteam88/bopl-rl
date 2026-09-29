@@ -40704,6 +40704,12 @@ impl RolloutWorld {
         let any_platform = held.iter().any(|slots| slots.contains(&ABILITY_PLATFORM));
         let drill_hitbox_layer = data::get().drill.hitbox_layer;
         for row in out.iter_mut() {
+            // `Collider` reads the owner off the same FixTransform
+            // (sim/Gameplay/RlObservation.cs:110), so a row whose GameObject
+            // DestroyFix took this pass publishes no owner either.
+            if row.flags & E_DESTROYED != 0 && row.flags & E_ACTIVE == 0 {
+                row.owner = 0;
+            }
             if row.reserved[0] == ABILITY_NULL {
                 continue;
             }
