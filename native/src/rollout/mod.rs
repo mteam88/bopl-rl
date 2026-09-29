@@ -7596,7 +7596,13 @@ impl RolloutWorld {
     }
 
     fn smoke_clouds_integrate(&mut self, physics_dt: Fix) {
-        for cloud in &mut self.smoke_clouds {
+        for index in 0..self.smoke_clouds.len() {
+            // A cloud a Blink tunnel or Teleport effect deactivated this pass
+            // is skipped by DetPhysics like any inactive GameObject.
+            if self.blink_object_hidden(self.smoke_clouds[index].entity) {
+                continue;
+            }
+            let cloud = &mut self.smoke_clouds[index];
             // Ignite disables the circle, and DetPhysics integrates only
             // active colliders (FlammableSmoke.cs:88).
             if !cloud.active || !cloud.registered || cloud.ignition_time >= Fix::ZERO {
