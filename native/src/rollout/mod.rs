@@ -10903,7 +10903,7 @@ impl RolloutWorld {
                         slot.drill.hitbox_up = slot.base.up;
                         slot.drill.hitbox_rotation = slot.base.rotation;
                         place_drill_hitbox_rows(&mut self.entities, &self.players[index], data);
-                        self.drill_tick(index, action, data, false);
+                        self.drill_tick(index, action, jump_pressed, data, false);
                         return;
                     }
                     ABILITY_BEAM => {
@@ -11218,7 +11218,7 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Drill {
-            self.drill_tick(index, action, data, true);
+            self.drill_tick(index, action, jump_pressed, data, true);
             return;
         }
         if self.players[index].active == ActiveAbility::Beam {
@@ -16609,6 +16609,7 @@ impl RolloutWorld {
         &mut self,
         index: usize,
         action: Action,
+        jump_pressed: bool,
         data: &data::RolloutData,
         advance_animation: bool,
     ) {
@@ -16645,7 +16646,7 @@ impl RolloutWorld {
             .rope
             .is_some_and(|rope| rope < self.ropes.len() && self.ropes[rope].physics.enabled);
         if rope_enabled {
-            self.rope_body_move(index, action.buttons & 1 != 0);
+            self.rope_body_move(index, jump_pressed);
         } else {
             let body = &mut self.players[index].base;
             body.position += (body.velocity + body.external_velocity) * DT;
