@@ -21767,9 +21767,11 @@ impl RolloutWorld {
                 rock.body.force += delta * force * Fix::from_int(9000);
             }
             // Player-layer colliders are processed during activation and are
-            // deliberately excluded from the persistent target set.
+            // deliberately excluded from the persistent target set. A slime in
+            // its spawn animation has its hurtbox enabled, and AddForce feeds
+            // the disabled PlayerPhysics' externalVelocity all the same.
             for player_index in 0..self.players.len() {
-                if player_index == wave.owner || !self.playable(player_index) {
+                if player_index == wave.owner || !self.hittable(player_index) {
                     continue;
                 }
                 if matches!(
