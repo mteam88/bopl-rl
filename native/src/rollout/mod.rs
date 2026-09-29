@@ -39325,6 +39325,15 @@ impl RolloutWorld {
                     && held[thrower.base.id as usize][item.ability_slot] == item.ability
                 {
                     item.ability
+                } else if row.flags & E_PROJECTILE != 0
+                    && held
+                        .get(row.owner as usize)
+                        .is_some_and(|slots| slots.contains(&ABILITY_BOW))
+                {
+                    // With no thrower to credit, SourceAbility's last loop
+                    // credits any Projectile to a live slime of the row's
+                    // owner that holds a Bow (RlObservation.cs:201-217).
+                    ABILITY_BOW
                 } else {
                     ABILITY_NULL
                 };
