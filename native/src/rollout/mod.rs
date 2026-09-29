@@ -14399,6 +14399,12 @@ impl RolloutWorld {
         let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
+        // CastSpike instantiates the SpikeAttack at the ray hit and Initialize
+        // places only its collider, so its FixTransform stays there until
+        // DetPhysics syncs it (SpikeAttack.cs:94-106).
+        let transform_center = surface_position
+            + (data.spike.attack_collider_offset * scale)
+                .complex_mul(Vec2::angle(parent_rotation + relative_rotation));
         let collider_extents = data::surface_extents(data.spike.attack_extents * scale);
         let entity_index = self.entities.len();
         let id = self.next_id();
@@ -14433,7 +14439,7 @@ impl RolloutWorld {
             placed_relative_center: Some(relative_center),
             relative_rotation,
             collider_center,
-            transform_center: collider_center,
+            transform_center,
             surface_offset,
             scale,
             time: Fix::ZERO,
