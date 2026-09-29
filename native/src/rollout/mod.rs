@@ -37787,6 +37787,13 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // MachoThrow2 instantiates a boulder in its own UpdateSim, so the
+            // boulder's BoplBody joins the updater next pass (Updater.cs:258-282).
+            if self.macho_boulders.iter().any(|b| {
+                b.active && b.platform_index == i && b.born_tick == self.tick
+            }) {
+                continue;
+            }
             let dynamics = &mut self.platform_dynamics[i];
             let previous = dynamics.body_scale;
             let scale = dynamics.scale;
