@@ -34915,6 +34915,138 @@ impl RolloutWorld {
         }
     }
 
+    /// The Guided Missile's box against the Spike, rocket engine and Tesla node
+    /// children of attached platforms: the item layer collides with
+    /// LethalTerrain and NonLethalTerrain. ResolveCollision uses the
+    /// CompositeBody; PositionalCorrection takes the child's own inverse mass
+    /// and moves the child and CompositeBody.position. Returns how many
+    /// children touch, each calling Missile.OnCollide, and the spikes that come
+    /// first in their pair, whose own OnCollide runs before the missile's.
+    fn guided_missile_child_contacts(
+        &mut self,
+        missile_index: usize,
+        data: &data::RolloutData,
+    ) -> (usize, [Option<(usize, Vec2)>; 4]) {
+        #[derive(Clone, Copy)]
+        enum Child {
+            Spike(usize),
+            Engine(usize),
+            Node(usize),
+        }
+        let missile = self.guided_missiles[missile_index];
+        let missile_box = OrientedBox::from_basis(
+            missile.position,
+            Vec2::angle(missile.body.orientation),
+            data.missile.spark_extents * missile.scale,
+        );
+        let missile_min = self.box_sweep_min(missile_box);
+        let live = |entity: Option<usize>| {
+            entity.is_some_and(|entity| self.entities[entity].flags & 3 == 3)
+        };
+        let mut contacts = [(Child::Spike(0), Contact::default(), false); 8];
+        let mut count = 0;
+        for (index, spike) in self.spike_attacks.iter().enumerate() {
+            if count == contacts.len() || !spike.active || spike.macho_carried || !live(spike.entity) {
+                continue;
+            }
+            let child = Self::spike_attack_box_in(&self.platform_dynamics, *spike, data);
+            let child_first = self.box_sweep_min(child) < missile_min;
+            let contact = if child_first {
+                crate::physics::contact::box_box(child, missile_box)
+            } else {
+                crate::physics::contact::box_box(missile_box, child)
+            };
+            if let Some(contact) = contact {
+                contacts[count] = (Child::Spike(index), contact, child_first);
+                count += 1;
+            }
+        }
+        for (index, engine) in self.engines.iter().enumerate() {
+            if count == contacts.len() || !engine.active || engine.macho_carried || !live(engine.entity) {
+                continue;
+            }
+            let basis = Vec2::angle(engine.collider_rotation);
+            let extents = data.engine.rocket_extents * engine.scale;
+            let surface = data::surface_extents(extents);
+            let child = OrientedBox {
+                center: engine.collider_center,
+                right: basis * surface.x,
+                up: (Vec2::UP * surface.y).complex_mul(basis),
+                inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+            };
+            let child_first = self.box_sweep_min(child) < missile_min;
+            let contact = if child_first {
+                crate::physics::contact::box_box(child, missile_box)
+            } else {
+                crate::physics::contact::box_box(missile_box, child)
+            };
+            if let Some(contact) = contact {
+                contacts[count] = (Child::Engine(index), contact, child_first);
+                count += 1;
+            }
+        }
+        for (index, node) in self.tesla_nodes.iter().enumerate() {
+            if count == contacts.len() || !node.active || node.macho_carried || !live(node.entity) {
+                continue;
+            }
+            // Circle/Box pairs list the circle first.
+            let circle = Circle {
+                center: node.collider_center,
+                radius: Fix::from_raw(self.entities[node.entity.unwrap()].radius),
+            };
+            if let Some(contact) = crate::physics::contact::circle_box(circle, missile_box) {
+                contacts[count] = (Child::Node(index), contact, true);
+                count += 1;
+            }
+        }
+        let mut spikes_first = [None; 4];
+        if count == 0 {
+            return (0, spikes_first);
+        }
+        let mut body = missile.body;
+        let mut center = missile.position;
+        let mut spike_count = 0;
+        for &(child, contact, child_first) in &contacts[..count] {
+            let (platform_index, child_inverse_mass) = match child {
+                Child::Spike(i) => (self.spike_attacks[i].platform_index, self.spike_attacks[i].body.inverse_mass),
+                Child::Engine(i) => (self.engines[i].platform_index, self.engines[i].body.inverse_mass),
+                Child::Node(i) => (self.tesla_nodes[i].platform_index, self.tesla_nodes[i].body.inverse_mass),
+            };
+            let platform_center = self.platform_dynamics[platform_index].composite_position;
+            let mut platform_body = self.platform_dynamics[platform_index].body;
+            let (platform_delta, missile_delta) = if child_first {
+                resolve(contact, &mut platform_body, &mut body, platform_center, center);
+                let correction =
+                    positional_correction(contact, child_inverse_mass, body.inverse_mass, false);
+                (correction[0], correction[1])
+            } else {
+                resolve(contact, &mut body, &mut platform_body, center, platform_center);
+                let correction =
+                    positional_correction(contact, body.inverse_mass, child_inverse_mass, false);
+                (correction[1], correction[0])
+            };
+            self.platform_dynamics[platform_index].body = platform_body;
+            self.platform_dynamics[platform_index].composite_position += platform_delta;
+            match child {
+                Child::Spike(i) => {
+                    self.spike_attacks[i].collider_center += platform_delta;
+                    if child_first && spike_count < spikes_first.len() {
+                        spikes_first[spike_count] = Some((i, contact.point));
+                        spike_count += 1;
+                    }
+                }
+                Child::Engine(i) => self.engines[i].collider_center += platform_delta,
+                Child::Node(i) => self.tesla_nodes[i].collider_center += platform_delta,
+            }
+            center += missile_delta;
+        }
+        self.platforms_changed();
+        let live = &mut self.guided_missiles[missile_index];
+        live.position = center;
+        live.body = body;
+        (count, spikes_first)
+    }
+
     fn guided_missile_contacts(&mut self, data: &data::RolloutData) {
         self.guided_missile_pair_contacts(data);
         for missile_index in 0..self.guided_missiles.len() {
@@ -34924,6 +35056,8 @@ impl RolloutWorld {
             {
                 continue;
             }
+            let (child_contacts, spikes_first) =
+                self.guided_missile_child_contacts(missile_index, data);
             let missile = self.guided_missiles[missile_index];
             let missile_box = OrientedBox::from_basis(
                 missile.position,
@@ -34931,10 +35065,25 @@ impl RolloutWorld {
                 data.missile.spark_extents * missile.scale,
             );
             // guided_missile_wall_contacts resolved the Box/RoundedRect group.
-            let contact_count = missile.wall_contacts as usize;
+            let contact_count = missile.wall_contacts as usize + child_contacts;
             if contact_count > 0 {
-                let body = missile.body;
+                let mut body = missile.body;
                 let center = missile.position;
+                // A young spike ahead of the missile in its pair knocks it
+                // away before Missile.OnCollide destroys it; one behind it
+                // finds the missile destroyed and returns.
+                for (spike_index, point) in spikes_first.into_iter().flatten() {
+                    if self.spike_attacks[spike_index].time >= data.spike.push_time
+                        || self.player_time_scale < Fix::from_f32(0.01)
+                    {
+                        continue;
+                    }
+                    let direction =
+                        (point - self.spike_attack_root(spike_index, data)).normalized_safe();
+                    let arm = (point - center).normalized_safe();
+                    body.apply_impulse(direction * data.spike.knock_player, arm);
+                    self.spike_attack_self_push(spike_index, point, data.spike.knock_player, data);
+                }
                 if missile.magnet_hold_ticks >= 0 {
                     // Missile.OnCollide suppresses its callback while held,
                     // after DetPhysics has resolved the residual slop contact.
