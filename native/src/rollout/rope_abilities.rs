@@ -8,8 +8,8 @@ use crate::physics::rope::{Rope, RopeConfig};
 pub(super) enum RopeParentPass {
     /// The parent is a Portal Gun shot fired after the hook.
     NewerShot,
-    /// The parent is a tack thrown before the hook.
-    OlderTack,
+    /// The parent is a tack or Poke Ball thrown before the hook.
+    OlderTackOrBall,
     /// The rope updates in the hammer loop, so its attachment pulls after it.
     AfterHammers,
     Other,
@@ -1420,7 +1420,9 @@ impl RolloutWorld {
     /// before one fired after it, whose first UpdateSim then resets the
     /// velocity the pull added (PortalShot.cs:60-64). A tack thrown before
     /// the hook pins itself in its own BananaPeel.UpdateSim first, so the pull
-    /// on it waits for the tacks. `pass` picks the attachments of one place.
+    /// on it waits for the tacks; a Poke Ball thrown before it may release
+    /// its catch and go first, and the attachment then lets go on that pass.
+    /// `pass` picks the attachments of one place.
     pub(super) fn rope_parents_update(&mut self, pass: RopeParentPass) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         for index in 0..self.ropes.len() {
@@ -1436,10 +1438,10 @@ impl RolloutWorld {
                     RopeParentPass::NewerShot
                 }
                 RopeParent::Item(item, _)
-                    if self.thrown_items[item].ability == ABILITY_TACK
+                    if matches!(self.thrown_items[item].ability, ABILITY_TACK | ABILITY_POKE_BALL)
                         && self.thrown_items[item].hierarchy_base < hierarchy =>
                 {
-                    RopeParentPass::OlderTack
+                    RopeParentPass::OlderTackOrBall
                 }
                 _ if hierarchy >= self.scratch.ropes_deferred_from => RopeParentPass::AfterHammers,
                 _ => RopeParentPass::Other,

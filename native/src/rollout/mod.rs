@@ -6864,8 +6864,8 @@ impl RolloutWorld {
         if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
             self.poke_balls_and_tacks_tick(data, updater_dt, balls_from..u32::MAX, spawned_from..u32::MAX);
         }
-        if has_rope && has(ABILITY_TACK) {
-            self.rope_parents_update(rope_abilities::RopeParentPass::OlderTack);
+        if has_rope && (has(ABILITY_TACK) || has(ABILITY_POKE_BALL)) {
+            self.rope_parents_update(rope_abilities::RopeParentPass::OlderTackOrBall);
         }
         if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
             self.scale_changers_tick(data, updater_dt, deferred_spikes, deferred_updaters);
