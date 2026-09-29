@@ -261,8 +261,10 @@ def extract_map(metadata):
                 "grow_scale": fix(grow, "scaleUp") if grow is not None else ONE,
                 "layer": node.get("layer"),
                 "hierarchy": rr["hierarchyNumber"],
+                # What DuplicateObject instantiates: GrowOnStart.Init destroys
+                # itself before any Duplicator can copy the platform.
                 "updatable_count": sum(
-                    "hierarchyNumber" in c.get("properties", {})
+                    "hierarchyNumber" in c.get("properties", {}) and c["type"] != "GrowOnStart"
                     for descendant in walk([node])
                     for c in descendant.get("components", [])
                 ),
@@ -272,6 +274,7 @@ def extract_map(metadata):
                         for descendant in walk([node])
                         for c in descendant.get("components", [])
                         if "hierarchyNumber" in c.get("properties", {})
+                        and c["type"] != "GrowOnStart"
                     )
                 ].index("DPhysicsRoundedRect"),
                 "animate_velocity": {
