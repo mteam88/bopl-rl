@@ -32759,24 +32759,14 @@ impl RolloutWorld {
             // (Arrow.cs:124-128); the next pass removes it. That callback
             // precedes all player shape groups: an arrow overlapping terrain
             // and a player in the same pass never reaches PlayerCollision.
-            if let Some(&(_, p, _)) =
-                self.scratch.arrow_platform_contacts.iter().find(|&&(a, ..)| a == i)
-            {
-                self.platform_dynamics[p].stuck_arrows += 1;
-                self.destroy_arrow(i);
-                if let Some(entity) = arrow.entity {
-                    let e = &mut self.entities[entity];
-                    e.flags = destroyed_flags(e.flags);
-                    e.owner = 0;
-                    e.x = arrow.position.x.raw();
-                    e.y = arrow.position.y.raw();
-                    e.vx = arrow.velocity.x.raw();
-                    e.vy = arrow.velocity.y.raw();
-                    e.rotation = arrow.rotation.raw();
-                    e.angular_velocity = arrow.angular_velocity.raw();
-                }
-                continue;
-            }
+            // A spike, engine or spark node on the wall is a Circle/Box or
+            // Circle/Circle pair, resolved too before the callbacks.
+            let platform_hit = self
+                .scratch
+                .arrow_platform_contacts
+                .iter()
+                .find(|&&(a, ..)| a == i)
+                .map(|&(_, p, _)| p);
 
             // Circle/Circle: released item bodies are resolved before either
             // callback runs. Arrow.OnCollide is queued first for this pair;
@@ -32815,7 +32805,7 @@ impl RolloutWorld {
                     item_contact_count += 1;
                 }
             }
-            if item_contact_count > 0 {
+            if platform_hit.is_none() && item_contact_count > 0 {
                 let mut arrow_body = arrow.body(&data.arrow.body);
                 let mut arrow_center = arrow.position;
                 for &(item_index, contact, arrow_first) in &item_contacts[..item_contact_count] {
@@ -32917,7 +32907,7 @@ impl RolloutWorld {
                     rock_contact_count += 1;
                 }
             }
-            if rock_contact_count > 0 {
+            if platform_hit.is_none() && rock_contact_count > 0 {
                 let mut arrow_body = arrow.body(&data.arrow.body);
                 let mut arrow_center = arrow.position;
                 for &(player_index, contact) in &rock_contacts[..rock_contact_count] {
@@ -32978,7 +32968,7 @@ impl RolloutWorld {
                     portal_contact_count += 1;
                 }
             }
-            if portal_contact_count > 0 {
+            if platform_hit.is_none() && portal_contact_count > 0 {
                 let mut arrow_body = arrow.body(&data.arrow.body);
                 let mut arrow_center = arrow.position;
                 for &(shot_index, contact) in &portal_contacts[..portal_contact_count] {
@@ -33041,7 +33031,7 @@ impl RolloutWorld {
                     missile_contact_count += 1;
                 }
             }
-            if missile_contact_count > 0 {
+            if platform_hit.is_none() && missile_contact_count > 0 {
                 let mut arrow_body = arrow.body(&data.arrow.body);
                 let mut arrow_center = arrow.position;
                 for &(missile_index, contact) in &missile_contacts[..missile_contact_count] {
@@ -33137,7 +33127,35 @@ impl RolloutWorld {
                             .map(|spike| spike.collider_center)
                     })
                     .unwrap_or(Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)));
-                let contact = if row.kind == 0 {
+                let engine_box = self
+                    .engines
+                    .iter()
+                    .find(|engine| {
+                        engine.active && !engine.macho_carried && engine.entity == Some(entity)
+                    })
+                    .map(|engine| {
+                        let basis = Vec2::angle(engine.collider_rotation);
+                        let extents = data.engine.rocket_extents * engine.scale;
+                        let surface = data::surface_extents(extents);
+                        OrientedBox {
+                            center: engine.collider_center,
+                            right: basis * surface.x,
+                            up: (Vec2::UP * surface.y).complex_mul(basis),
+                            inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+                        }
+                    });
+                // The live boxes: the rows still hold last pass's rotation.
+                let child_box = engine_box.or_else(|| {
+                    self.spike_attacks
+                        .iter()
+                        .find(|spike| {
+                            spike.active && !spike.macho_carried && spike.entity == Some(entity)
+                        })
+                        .map(|&spike| Self::spike_attack_box_in(&self.platform_dynamics, spike, data))
+                });
+                let contact = if let Some(child_box) = child_box {
+                    crate::physics::contact::circle_box(circle, child_box).map(|contact| (contact, false))
+                } else if row.kind == 0 {
                     // Circle/Circle pairs list the lower sweep minimum first.
                     let target = Circle {
                         center,
@@ -33190,17 +33208,27 @@ impl RolloutWorld {
                         .tesla_nodes
                         .iter()
                         .position(|node| node.active && node.entity == Some(entity));
-                    let child = self
-                        .spike_attacks
-                        .iter()
-                        .find(|spike| {
-                            spike.active && !spike.macho_carried && spike.entity == Some(entity)
+                    let engine_index = self.engines.iter().position(|engine| {
+                        engine.active && !engine.macho_carried && engine.entity == Some(entity)
+                    });
+                    let spike_index = self.spike_attacks.iter().position(|spike| {
+                        spike.active && !spike.macho_carried && spike.entity == Some(entity)
+                    });
+                    let child = spike_index
+                        .map(|index| {
+                            let spike = &self.spike_attacks[index];
+                            (spike.platform_index, spike.body.inverse_mass)
                         })
-                        .map(|spike| (spike.platform_index, data.spike.attack_body.inverse_mass))
                         .or_else(|| {
                             node_index.map(|index| {
                                 let node = &self.tesla_nodes[index];
                                 (node.platform_index, node.body.inverse_mass)
+                            })
+                        })
+                        .or_else(|| {
+                            engine_index.map(|index| {
+                                let engine = &self.engines[index];
+                                (engine.platform_index, engine.body.inverse_mass)
                             })
                         });
                     let Some((platform_index, child_inverse_mass)) = child else {
@@ -33247,10 +33275,24 @@ impl RolloutWorld {
                     if let Some(index) = node_index {
                         self.tesla_nodes[index].collider_center += platform_delta;
                     }
+                    if let Some(index) = engine_index {
+                        self.engines[index].collider_center += platform_delta;
+                    }
+                    if let Some(index) = spike_index {
+                        self.spike_attacks[index].collider_center += platform_delta;
+                    }
                     arrow_center += arrow_delta;
                 }
                 self.platforms_changed();
+                if let Some(p) = platform_hit {
+                    self.platform_dynamics[p].stuck_arrows += 1;
+                }
                 self.destroy_arrow_contact(i, arrow_center, arrow_body);
+                continue;
+            }
+            if let Some(p) = platform_hit {
+                self.platform_dynamics[p].stuck_arrows += 1;
+                self.destroy_arrow_contact(i, arrow.position, arrow.body(&data.arrow.body));
                 continue;
             }
 
