@@ -6472,6 +6472,11 @@ impl RolloutWorld {
             // movement slice's copy must not go stale while an ability runs.
             self.players[index].base.previous_jump = self.players[index].input_jump_was_down;
             self.players[index].input_jump_was_down = jump_down;
+            // An older updater's stock kill (a Tack's slip) destroyed the
+            // slime before its turn, so none of its updatables run.
+            if stock_clone_spawned {
+                continue;
+            }
             let (in_form, in_ability) = {
                 let slot = &self.players[index];
                 let in_ability = slot.active != ActiveAbility::None;
@@ -42464,7 +42469,12 @@ impl RolloutWorld {
                 slot.tie_position.filter(|(set, _)| set.checked_add(1) == Some(tick))
             {
                 position
-            } else if !slot.base.alive || slot.reported_tick.checked_add(1) == Some(tick) {
+            } else if !slot.base.alive
+                || slot.reported_tick.checked_add(1) == Some(tick)
+                // A stock death before the slime's own turn (an older
+                // updater's kill) leaves the last published position.
+                || slot.stock_death.is_some_and(|(set, _)| set.checked_add(1) == Some(tick))
+            {
                 slot.reported_position
             } else {
                 slot.base.position
