@@ -17362,7 +17362,8 @@ impl RolloutWorld {
     /// Beam.OnLeftFirstFrame: SetFacingDirection, then UpdateSim(Fix.Zero)
     /// while `onFirstFrame` still holds. Zero time leaves the clock and the
     /// ground position alone, but the aim still turns, the ground is shaken
-    /// again, a released button stops, and an idle ground speed pays friction.
+    /// again, a released button stops, and the ground speed pays friction or
+    /// meets the exit clip's stick.
     fn beam_zero_time_pass(
         &mut self,
         index: usize,
@@ -17407,15 +17408,25 @@ impl RolloutWorld {
         if base.grounded
             && let Some(platform) = self.platforms.iter().find(|p| Some(p.id) == base.ground)
         {
-            // PlayerPhysics.Move with dt 0: the no-input friction branch, and
+            // PlayerPhysics.Move with dt 0: friction or incrementTowards, and
             // alignRotation to wherever the platform has turned since.
             let normal = platform.surface.normal(base.position);
-            if base.ground_input_sign(input, normal) == Fix::ZERO {
+            let sign = base.ground_input_sign(input, normal);
+            if sign == Fix::ZERO {
                 base.grounded_speed *= if platform.ice {
                     base.constants.ice_friction
                 } else {
                     base.constants.friction
                 };
+            } else {
+                // A stick against the ground speed still zeroes it inside
+                // incrementTowards (PlayerPhysics.cs:260, 350-353).
+                base.grounded_speed = crate::player_controller::increment(
+                    base.grounded_speed,
+                    sign * base.constants.max_speed,
+                    base.constants.accel,
+                    Fix::ZERO,
+                );
             }
             if platform.active {
                 base.align_to(normal);
