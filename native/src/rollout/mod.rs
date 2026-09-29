@@ -14586,6 +14586,7 @@ impl RolloutWorld {
                 || self.tesla_nodes[node_index].macho_carried
                 || self.tesla_nodes[node_index].spawn_tick >= self.tick
             {
+                self.tesla_orb_step(node_index);
                 continue;
             }
             if self.tesla_nodes[node_index].scale != self.tesla_nodes[node_index].offset_scale {
@@ -14618,21 +14619,7 @@ impl RolloutWorld {
             if !self.tesla_nodes[node_index].connected {
                 self.tesla_nodes[node_index].lethal = false;
             }
-        }
-
-        if self.player_time_scale >= Fix::from_f32(0.01) {
-            for node_index in 0..self.tesla_nodes.len() {
-                // The orb's SpriteAnimator uses the default IsEnabled, so it
-                // pauses while the node is out of the hierarchy.
-                if !self.tesla_node_shown(node_index) {
-                    continue;
-                }
-                let node = &mut self.tesla_nodes[node_index];
-                if node.orb_enter_left > 0 {
-                    node.orb_enter_left -= 1;
-                    node.lethal |= node.orb_enter_left == 0;
-                }
-            }
+            self.tesla_orb_step(node_index);
         }
 
         self.scratch.item_order = order;
@@ -14708,6 +14695,21 @@ impl RolloutWorld {
     /// QuantumTunnel hid is hidden with it, as is a node Blink hit directly.
     /// Its own UpdateSim still runs (IsEnabled is always true), but a partner
     /// reading it disconnects (SimpleSparkNode.cs:62-68, 224-245).
+    /// The node's orb SpriteAnimator, a child updatable right after its
+    /// SimpleSparkNode: a younger node connecting to it restarts its EnterOrb
+    /// only after this one has run.
+    fn tesla_orb_step(&mut self, node_index: usize) {
+        // Default IsEnabled: it pauses while the node is out of the hierarchy.
+        if self.player_time_scale < Fix::from_f32(0.01) || !self.tesla_node_shown(node_index) {
+            return;
+        }
+        let node = &mut self.tesla_nodes[node_index];
+        if node.orb_enter_left > 0 {
+            node.orb_enter_left -= 1;
+            node.lethal |= node.orb_enter_left == 0;
+        }
+    }
+
     fn tesla_node_shown(&self, node_index: usize) -> bool {
         let Some(node) = self.tesla_nodes.get(node_index) else {
             return false;
