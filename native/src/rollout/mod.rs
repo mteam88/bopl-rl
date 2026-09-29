@@ -9546,6 +9546,11 @@ impl RolloutWorld {
                             slot.base.grounded = false;
                             slot.base.ground = None;
                             slot.base.grounded_speed = Fix::ZERO;
+                        } else if let Some(platform) = slot.base.platform(&self.platforms) {
+                            // PlayerPhysics.SyncPhysicsTo seats a grounded form
+                            // at the slime's surface local, not at a position a
+                            // player push moved off it.
+                            slot.base.position = platform.surface.position(slot.base.local, slot.base.radius);
                         }
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
