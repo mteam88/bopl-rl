@@ -31756,14 +31756,15 @@ impl RolloutWorld {
             slot.base.rotation = eject_direction.normalized_angle();
             slot.base.up = eject_direction.perp();
         }
-        slot.base.grounded = false;
-        slot.base.ground = None;
+        // ReleaseVictim never ungrounds: a victim that landed during the
+        // capture stays attached, and its LateUpdateSim puts it back on the
+        // platform.
         slot.base.sync_collider();
         slot.obs_state = STATE_RAGDOLL;
         slot.ragdoll = RagdollState {
             active: true,
             skip_physics: true,
-            hold_on_ground: false,
+            hold_on_ground: slot.base.grounded,
             time: Fix::ZERO,
             duration: Fix::from_f32(0.45),
         };
