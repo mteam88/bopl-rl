@@ -39487,6 +39487,13 @@ impl RolloutWorld {
                 slot.base.grounded = false;
                 slot.base.ground = None;
                 slot.base.grounded_speed = Fix::ZERO;
+                // Its UnGround raises OnNoLongerGrounded, which sets State.fall
+                // over a Poke Ball hold's ragdoll (SlimeController.cs:956-958).
+                if slot.obs_state != STATE_FALL {
+                    slot.obs_state = STATE_FALL;
+                    slot.state_ticks = 0;
+                    slot.ragdoll = RagdollState::default();
+                }
             }
         }
     }
