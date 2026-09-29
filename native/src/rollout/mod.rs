@@ -33354,7 +33354,7 @@ impl RolloutWorld {
         self.entities.iter().enumerate().any(|(entity, row)| {
             if Some(entity) == missile.entity
                 || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
-                || !matches!(row.layer, 18 | 19 | 22 | 26)
+                || !matches!(row.layer, 18 | 26)
                 || self.blasting_missile_explosion(entity) != blasting
             {
                 return false;
@@ -33613,11 +33613,12 @@ impl RolloutWorld {
                 continue;
             }
 
-            // Item-layer boxes also collide with Explosion, EffectorZone,
-            // Smoke and orb layers. Their colliders are triggers, so the body
-            // does not resolve; Missile.OnCollide simply creates its own
-            // explosion. RigidBodyAffector and Rope are deliberately absent:
-            // those are Missile's two explicit callback exclusions.
+            // Item-layer boxes also collide with the Explosion and orb
+            // layers; the layer matrix ignores EffectorZone and Smoke. Those
+            // colliders are triggers, so the body does not resolve;
+            // Missile.OnCollide simply creates its own explosion.
+            // RigidBodyAffector and Rope are deliberately absent: those are
+            // Missile's two explicit callback exclusions.
             if missile.magnet_hold_ticks < 0
                 && self.guided_missile_hits_trigger(missile, missile_box, false)
             {
