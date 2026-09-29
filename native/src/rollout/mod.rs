@@ -2210,6 +2210,8 @@ pub struct PortalEndpoint {
     pub tangent: Vec2,
     pub time_alive: Fix,
     pub player_inside: [bool; 8],
+    /// The pass whose UpdateSim already ran, ahead of a newer Black Hole.
+    pub updated_tick: Option<u32>,
 }
 
 /// A Shockwave (AirWave_Shockwave for Gust, meteorShockwave for Meteor) has no
@@ -8421,19 +8423,18 @@ impl RolloutWorld {
             self.portal_body_inside.resize(self.entities.len(), 0);
             self.portal_body_ids.resize(self.entities.len(), 0);
         }
-        let mut processed = [false; 64];
         for _ in 0..self.portals.len() {
             let Some(endpoint_index) = (0..self.portals.len())
                 .filter(|&index| {
                     self.portals[index].active
-                        && !processed[index]
+                        && self.portals[index].updated_tick != Some(self.tick)
                         && hierarchy.contains(&(100_000_000 + self.portals[index].hierarchy_base))
                 })
                 .min_by_key(|&index| self.portals[index].hierarchy_base)
             else {
                 break;
             };
-            processed[endpoint_index] = true;
+            self.portals[endpoint_index].updated_tick = Some(self.tick);
             self.ability_pickups_tick_before(
                 self.portals[endpoint_index].hierarchy_base,
                 data,
@@ -15490,6 +15491,15 @@ impl RolloutWorld {
                 dt,
                 Some(self.black_holes[hole_index].hierarchy_base),
             );
+            // An older Portal has already passed the slimes in its mouth
+            // through before this hole pulls them.
+            if !self.portals.is_empty() {
+                self.portals_update(
+                    data,
+                    dt,
+                    0..100_000_000 + self.black_holes[hole_index].hierarchy_base,
+                );
+            }
             if !stopped {
                 self.black_holes[hole_index].time_since_growth += dt;
             }
