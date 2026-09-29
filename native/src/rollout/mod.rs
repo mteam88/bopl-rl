@@ -33245,8 +33245,13 @@ impl RolloutWorld {
         // two-updatable splash. Past the space floor or the sides the
         // grenade's UpEffect/XEffect is XGunExplosion, its own unowned
         // detonation; Smoke's is a two-updatable animation. The other
-        // thrown items have no effect.
+        // thrown items have no effect. An item instantiated this pass is
+        // registered for the next one (Updater.RegisterUpdatable), so its
+        // DestroyIfOutsideSceneBounds first runs after the older updatables.
         let item = self.thrown_items[item_index];
+        if item.born_tick >= self.tick {
+            return;
+        }
         let map = &data::get().maps[self.map];
         let side = Fix::from_f64(131.25);
         let below = item.position.y < map.lower_boundary();
