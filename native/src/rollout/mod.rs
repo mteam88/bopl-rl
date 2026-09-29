@@ -6581,8 +6581,21 @@ impl RolloutWorld {
             }
             // SlimeController is absent after destruction and disabled during
             // TeleportedObjectEffect, so neither state may publish a new
-            // Player.Position through Player.SetPosition.
-            if self.players[index].base.alive && !stock_clone_spawned {
+            // Player.Position through Player.SetPosition. A shown gun form's
+            // Ability.UpdateSim follows its GunTransform, which may hide the
+            // form first (a self-Blink), so the gun ticks publish themselves.
+            let slot = &self.players[index];
+            let shown_gun_form = matches!(
+                slot.active,
+                ActiveAbility::Freeze
+                    | ActiveAbility::Blink
+                    | ActiveAbility::GrowthRay
+                    | ActiveAbility::ShrinkRay
+                    | ActiveAbility::Duplicator
+            ) && !slot.teleport_effect_active
+                && !slot.blink_tunnel_active
+                && slot.freeze_form_exit_tick != self.tick;
+            if slot.base.alive && !stock_clone_spawned && !shown_gun_form {
                 self.publish_ability_position(index);
             }
             let action = packet.aim_action();
@@ -24571,6 +24584,12 @@ impl RolloutWorld {
         if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
             self.fire_blink(index, data);
             if self.players[index].active != ActiveAbility::Blink {
+                return;
+            }
+            // A self-Blink hides the form: GunTransform returns, and its
+            // Ability, PlayerPhysics and PlayerBody skip this pass.
+            if self.players[index].blink_tunnel_active {
+                self.publish_ability_position(index);
                 return;
             }
         }
@@ -43883,6 +43902,7 @@ fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain, tick: u32) {
         slot.restore_slime_radius();
         slot.base.collision_rays(terrain);
     }
+    slot.reported_tick = tick;
     slot.set_ordinary_body_scale(slot.player_scale);
     // SlimeController.onExitAbility syncs the hurtbox, so later updaters
     // this pass (BlackHole's pull) see the exit position.
