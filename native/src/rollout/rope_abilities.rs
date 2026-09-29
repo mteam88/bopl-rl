@@ -912,6 +912,7 @@ impl RolloutWorld {
                 || self.ropes[index].born_tick == self.tick
                 || self.ropes[index].hook_entity.is_none()
                 || !hierarchies.contains(&self.ropes[index].hierarchy)
+                || self.ropes[index].hierarchy < self.scratch.ropes_ran_below
             {
                 continue;
             }
@@ -1246,6 +1247,7 @@ impl RolloutWorld {
             if !self.ropes[index].physics.enabled
                 || self.ropes[index].born_tick == self.tick
                 || !hierarchies.contains(&self.ropes[index].hierarchy)
+                || self.ropes[index].hierarchy < self.scratch.ropes_ran_below
             {
                 continue;
             }

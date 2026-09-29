@@ -3171,6 +3171,9 @@ struct PlatformScratch {
     squished: Vec<(bool, usize)>,
     /// Ropes below this hierarchy have run their UpdateSim this pass.
     ropes_updated_below: u32,
+    /// Ropes below this hierarchy ran ahead of a later-instantiated player
+    /// object this pass.
+    ropes_ran_below: u32,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
@@ -6231,6 +6234,7 @@ impl RolloutWorld {
         // left it, so the slime's own update skips gravity after the jump.
         let mut spawned_from = 0;
         let mut recorded = 0;
+        self.scratch.ropes_ran_below = 0;
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
             // SlimeController.Awake adds the RewindRecorder to the slime itself
             // (RewindRecorder.cs:93), so each slime already updated took its
@@ -6262,7 +6266,18 @@ impl RolloutWorld {
                     self.poke_balls_and_tacks_tick(data, updater_dt, spawned.clone());
                 }
                 if has(ABILITY_PORTAL_GUN) {
-                    self.portals_update(data, updater_dt, spawned);
+                    self.portals_update(data, updater_dt, spawned.clone());
+                }
+                // So does a hook's Rope, whose RopeAttachment pulls the
+                // platform it hangs from before a Drill reads its velocity.
+                if has_rope {
+                    let ropes = spawned.start.saturating_sub(100_000_000)
+                        ..spawned.end.saturating_sub(100_000_000);
+                    if has(ABILITY_GRAPPLING_HOOK) {
+                        self.grapple_ropes_update(ropes.clone());
+                    }
+                    self.ropes_update(ropes.clone());
+                    self.scratch.ropes_ran_below = ropes.end;
                 }
                 spawned_from = player_hierarchy[index];
             }
