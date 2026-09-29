@@ -9648,6 +9648,12 @@ impl RolloutWorld {
                             slot.base.ground = None;
                         }
                         self.players[index]
+                            .scale_form(
+                                data.freeze.hurtbox_extents,
+                                data.freeze.radius,
+                                data.freeze.collider_offset,
+                            );
+                        self.players[index]
                             .sync_gun_hurtbox(data.freeze.collider_offset, &self.platforms);
                         self.freeze_tick(index, action, data);
                         return;
@@ -22505,6 +22511,9 @@ impl RolloutWorld {
                 return;
             }
         }
+
+        // Ability follows the shoot component in the prefab.
+        self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
 
         // GunTransform's DestroyIfOutsideSceneBounds runs after the fire test
         // and before PlayerBody integrates this pass.
@@ -39194,8 +39203,9 @@ impl RolloutWorld {
                     } else {
                         basis
                     };
-                    let center = root + offset_basis.complex_mul(data.freeze.collider_offset);
-                    let collider = OrientedBox::from_basis(
+                    let offset = slot.gun_offset(data.freeze.collider_offset);
+                    let center = root + offset_basis.complex_mul(offset);
+                    let collider = slot.forms[slot.active_slot].hurtbox(
                         center,
                         basis,
                         data::surface_extents(data.freeze.hurtbox_extents),
