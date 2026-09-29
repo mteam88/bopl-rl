@@ -1398,6 +1398,10 @@ pub struct PlatformDynamics {
     /// This pass's AnimateVelocity step: its tick, the impulse it added, the
     /// impulse it would have added floating, and the position it read.
     pub spring_step: Option<(u32, Vec2, Vec2, Vec2)>,
+    /// The rect body's inverse mass before this pass's BoplBody rescale, and
+    /// the tick: a Black Hole registered before a Duplicator copy pulls it
+    /// first, with that mass (BlackHole.cs:434, BoplBody.cs:332-343).
+    pub unscaled_inverse_mass: Option<(u32, Fix)>,
     pub home_position: Vec2,
     pub home_rotation: Fix,
     pub speed: Fix,
@@ -4282,6 +4286,7 @@ impl RolloutWorld {
                 init_tick: None,
                 float_next_frame: false,
                 spring_step: None,
+                unscaled_inverse_mass: None,
                 home_rotation: p.body.orientation,
                 speed: p.speed,
                 mu: p.mu,
@@ -15279,13 +15284,24 @@ impl RolloutWorld {
             let mut changed = false;
             for platform_index in 0..self.platforms.len() {
                 // The rounded rect's own PhysicsBody: its mass, and its force
-                // joins a composite's only at the physics step.
+                // joins a composite's only at the physics step. A Duplicator
+                // copy's updaters ran ahead of the holes, but one registered
+                // after this hole takes its BoplBody rescale after the pull.
                 let dynamics = &self.platform_dynamics[platform_index];
                 let composite = dynamics.attached_children != 0;
-                let inverse_mass = if composite {
-                    dynamics.root_body.inverse_mass
-                } else {
-                    dynamics.body.inverse_mass
+                let newer = self.entities[self.platform_entities[platform_index]].hierarchy
+                    > 100_000_000 + self.black_holes[hole_index].hierarchy_base;
+                let inverse_mass = match dynamics.unscaled_inverse_mass {
+                    Some((tick, inverse_mass))
+                        if tick == self.tick
+                            && !composite
+                            && newer
+                            && self.platform_pass(platform_index) == PlatformPass::Duplicated =>
+                    {
+                        inverse_mass
+                    }
+                    _ if composite => dynamics.root_body.inverse_mass,
+                    _ => dynamics.body.inverse_mass,
                 };
                 if inverse_mass == Fix::ZERO || !self.platforms[platform_index].active {
                     continue;
@@ -18279,6 +18295,7 @@ impl RolloutWorld {
             init_tick: None,
             float_next_frame: false,
             spring_step: None,
+            unscaled_inverse_mass: None,
             home_position: position,
             home_rotation: Fix::ZERO,
             speed: Fix::ZERO,
@@ -29903,6 +29920,7 @@ impl RolloutWorld {
             init_tick: Some(self.tick + 1),
             float_next_frame: false,
             spring_step: None,
+            unscaled_inverse_mass: None,
             home_rotation: Fix::ZERO,
             speed: pd.spawn_speed,
             mu: pd.spawn_mu,
@@ -35506,6 +35524,7 @@ impl RolloutWorld {
             let scale = dynamics.scale;
             if !dynamics.body_resizable && previous != scale {
                 let ratio = previous / scale;
+                dynamics.unscaled_inverse_mass = Some((self.tick, dynamics.body.inverse_mass));
                 dynamics.body.inverse_mass *= ratio;
                 dynamics.body.inverse_inertia *= ratio;
                 // DPhysicsRoundedRect.inverseMass writes the combined body of
