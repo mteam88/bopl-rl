@@ -8436,10 +8436,12 @@ impl RolloutWorld {
     /// side still receives its one-sided overlap push.
     /// The Throw form's hurtbox as DetPhysics last synced it.
     fn macho_throw_box(&self, index: usize, data: &data::RolloutData) -> OrientedBox {
-        let throw = &self.players[index].macho_throw;
-        let offset = throw.collider_right.complex_mul(data.macho_throw.collider_offset);
-        OrientedBox::from_basis(
-            throw.collider_position + offset,
+        let slot = &self.players[index];
+        let throw = &slot.macho_throw;
+        let form = &slot.forms[slot.active_slot];
+        let offset = if form.scale == Fix::ZERO { data.macho_throw.collider_offset } else { form.offset };
+        form.hurtbox(
+            throw.collider_position + throw.collider_right.complex_mul(offset),
             throw.collider_basis,
             data::surface_extents(data.macho_throw.hurtbox_extents),
         )
@@ -10548,13 +10550,19 @@ impl RolloutWorld {
                         // along the surface when grounded, a residue its PlayerBody
                         // integrates before the collider sync.
                         let self_imposed = self.entry_self_imposed(index);
+                        // Ability.EnterAbility scales the box, then
+                        // SyncPhysicsTo's UpdateScale the radius it places the
+                        // form with.
+                        self.players[index].active_slot = s;
+                        self.scale_macho_throw_form(index, data);
+                        let form_radius = {
+                            let slot = &mut self.players[index];
+                            slot.forms[s].physics_radius()
+                        };
                         let form_position = ground
                             .and_then(|id| self.platforms.iter().find(|p| p.id == id))
                             .map_or(self.players[index].base.position, |platform| {
-                                platform.surface.position(
-                                    self.players[index].base.local,
-                                    data.macho_throw.physics_radius,
-                                )
+                                platform.surface.position(self.players[index].base.local, form_radius)
                             });
                         let mut facing_right = self.players[index].facing_right;
                         if let Some(platform) = ground
@@ -10601,7 +10609,7 @@ impl RolloutWorld {
                         };
                         slot.base.position = form_position;
                         slot.base.velocity = self_imposed;
-                        slot.base.radius = data.macho_throw.physics_radius;
+                        slot.base.radius = form_radius;
                         slot.base.constants = data.macho_throw.constants.clone();
                         self.macho_throw_tick(index, action, false, false, data);
                         return;
@@ -18770,7 +18778,10 @@ impl RolloutWorld {
                     // the form's own perimeter coordinate and radius.
                     let base = &self.players[index].base;
                     let position = platform.surface.position(base.local, base.radius);
-                    let local = platform.surface.local_position(position, data.player.radius).ok();
+                    let local = platform
+                        .surface
+                        .local_position(position, self.players[index].exit_slime_radius())
+                        .ok();
                     let up = platform.surface.normal(position);
                     (position, local, up, up.perp_cw().normalized_angle())
                 })
@@ -18784,7 +18795,10 @@ impl RolloutWorld {
         slot.reported_tick = self.tick;
         slot.active = ActiveAbility::None;
         slot.facing_right = slot.macho_throw.facing_right;
-        slot.base.radius = data.player.radius;
+        // onExitAbility assigns Player.Scale to the slime's hurtbox, and
+        // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
+        slot.set_ordinary_body_scale(slot.player_scale);
+        slot.restore_slime_radius();
         if let Some((position, Some(local), up, rotation)) = ordinary_ground {
             // PlayerPhysics.SyncPhysicsTo converts the form's world pose
             // back into the ordinary slime's smaller-radius perimeter
@@ -18817,6 +18831,22 @@ impl RolloutWorld {
             // EnterFall's velocity raycasts may land the slime at once.
             slot.base.collision_rays(terrain!(self));
         }
+    }
+
+    /// Ability.EnterAbility and each Ability.UpdateSim assign Player.Scale to
+    /// the Throw form's box, which scales its FixTransform offset; MachoThrow2
+    /// reads that FixTransform Scale for the held position, the boulders and
+    /// the throw.
+    fn scale_macho_throw_form(&mut self, index: usize, data: &data::RolloutData) {
+        let slot = &mut self.players[index];
+        let form = &mut slot.forms[slot.active_slot];
+        form.set_scale_offset(
+            slot.player_scale,
+            data::surface_extents(data.macho_throw.hurtbox_extents),
+            data.macho_throw.physics_radius,
+            data.macho_throw.collider_offset,
+        );
+        slot.base.scale = form.scale;
     }
 
     fn macho_throw_tick(
@@ -18890,8 +18920,12 @@ impl RolloutWorld {
                 }
             }
         }
+        self.scale_macho_throw_form(index, data);
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
+        // PlayerPhysics.UpdateScale.
+        let slot = &mut self.players[index];
+        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         self.players[index].base.gravity_step(terrain!(self));
         // DestroyIfOutsideSceneBounds (5) runs before PlayerBody, and
         // MachoThrow2.ExitAbility drops the held boulder.
@@ -40626,9 +40660,14 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Vec2::RIGHT, Fix::ZERO, Vec2::RIGHT)
                     };
-                    let center =
-                        position + center_basis.complex_mul(data.macho_throw.collider_offset);
-                    let collider = OrientedBox::from_basis(
+                    let form = slot.forms[slot.entity_slot(macho_throw_e)];
+                    let offset = if form.scale == Fix::ZERO {
+                        data.macho_throw.collider_offset
+                    } else {
+                        form.offset
+                    };
+                    let center = position + center_basis.complex_mul(offset);
+                    let collider = form.hurtbox(
                         center,
                         collider_basis,
                         data::surface_extents(data.macho_throw.hurtbox_extents),
