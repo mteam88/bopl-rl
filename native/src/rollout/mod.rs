@@ -19463,9 +19463,12 @@ impl RolloutWorld {
         // registries in that order and stops at the fixed 100-entry buffer.
         for kind in [0u32, 1, 2] {
             for (entity, row) in self.entities.iter().copied().enumerate() {
+                // CircleCastAll removes destroyed colliders first, so a slime
+                // killed earlier in this pass is gone (DetPhysics.cs:1952).
                 if row.kind != kind
                     || mask & (1u32 << row.layer) == 0
                     || self.left_form_row(entity)
+                    || row.flags & (E_REMOVED | E_DESTROYED) != 0
                 {
                     continue;
                 }
@@ -19479,9 +19482,6 @@ impl RolloutWorld {
                             return count;
                         }
                     }
-                    continue;
-                }
-                if row.flags & (E_REMOVED | E_DESTROYED) != 0 {
                     continue;
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
