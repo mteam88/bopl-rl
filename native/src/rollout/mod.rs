@@ -2724,6 +2724,9 @@ pub struct PlayerSlot {
     /// the player: updatables below it already saw the player inactive.
     pub teleport_effect_hierarchy: u32,
     pub teleport_effect_released_tick: Option<u32>,
+    /// A TeleportIndicator older than a Black Hole fires at the hole's turn,
+    /// ahead of teleport_effects_tick; its new effect first updates next pass.
+    pub teleport_effect_born_tick: u32,
     /// QuantumTunnel disables a Blink victim immediately, relocates it near
     /// the end of the visual lifetime, then reenables it on a later pass.
     pub blink_tunnel_active: bool,
@@ -4651,6 +4654,7 @@ impl RolloutWorld {
                 teleport_effect_time: Fix::ZERO,
                 teleport_effect_hierarchy: 0,
                 teleport_effect_released_tick: None,
+                teleport_effect_born_tick: 0,
                 blink_tunnel_active: false,
                 blink_tunnel_born_tick: 0,
                 blink_tunnel_hierarchy: 0,
@@ -6591,7 +6595,7 @@ impl RolloutWorld {
                 u32::MAX
             };
             self.teleport_effects_tick(data, updater_dt, 0..first_tunnel);
-            self.teleport_pending_tick(data, updater_dt, spawned_from);
+            self.teleport_pending_tick(data, updater_dt, spawned_from, u32::MAX);
         }
         if has_rope && first_teleport < ropes_before_clones {
             self.ropes_update(first_teleport..ropes_before_clones);
@@ -15500,6 +15504,15 @@ impl RolloutWorld {
                     0..100_000_000 + self.black_holes[hole_index].hierarchy_base,
                 );
             }
+            // Likewise an older TeleportIndicator has already moved and
+            // disabled its slimes (TeleportIndicator.cs:165-166), so this hole
+            // no longer finds them (BlackHole.cs:388, DetPhysics.cs:1658-1664).
+            self.teleport_pending_tick(
+                data,
+                dt,
+                hierarchy.start,
+                self.black_holes[hole_index].hierarchy_base,
+            );
             if !stopped {
                 self.black_holes[hole_index].time_since_growth += dt;
             }
@@ -15545,6 +15558,7 @@ impl RolloutWorld {
                     || player.out
                     || player.respawn_ticks > 0
                     || player.blink_tunnel_active
+                    || player.teleport_effect_active
                 {
                     continue;
                 }
@@ -20123,6 +20137,7 @@ impl RolloutWorld {
         for index in 0..self.players.len() {
             if !self.players[index].teleport_effect_active
                 || !hierarchies.contains(&self.players[index].teleport_effect_hierarchy)
+                || self.players[index].teleport_effect_born_tick == self.tick
             {
                 continue;
             }
@@ -20321,6 +20336,7 @@ impl RolloutWorld {
             self.players[player_index].teleport_effect_active = true;
             self.players[player_index].teleport_effect_time = Fix::ZERO;
             self.players[player_index].teleport_effect_hierarchy = self.next_spawn_hierarchy;
+            self.players[player_index].teleport_effect_born_tick = self.tick;
             self.next_spawn_hierarchy += data.teleport.effect_updatable_count;
             self.entities[entity].x += shift.x.raw();
             self.entities[entity].y += shift.y.raw();
@@ -20451,6 +20467,7 @@ impl RolloutWorld {
         self.begin_teleport_object_effect(entity, data);
     }
 
+    /// Fires the pending TeleportIndicators registered below `older_than`.
     /// `poke_balls_ran_below`: the player loop already ran the Poke Balls
     /// under this hierarchy, ahead of a younger slime.
     fn teleport_pending_tick(
@@ -20458,12 +20475,16 @@ impl RolloutWorld {
         data: &data::RolloutData,
         updater_dt: Fix,
         poke_balls_ran_below: u32,
+        older_than: u32,
     ) {
-        self.scratch.smoke_updated_early.clear();
         for owner in 0..self.players.len() {
-            let Some(marker_index) = self.players[owner].teleport_pending_marker.take() else {
+            let Some(marker_index) = self.players[owner].teleport_pending_marker else {
                 continue;
             };
+            if self.teleport_marker_pool[marker_index].hierarchy_base >= older_than {
+                continue;
+            }
+            self.players[owner].teleport_pending_marker = None;
             let marker = self.teleport_marker_pool[marker_index];
             if !marker.active {
                 continue;
