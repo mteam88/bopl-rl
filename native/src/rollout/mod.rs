@@ -9729,7 +9729,7 @@ impl RolloutWorld {
                         if self.ability_boundary_kill(index, false) {
                             return;
                         }
-                        self.time_stop_cast_tick(index, action, data);
+                        self.time_stop_cast_tick(index, action, jump_pressed, data);
                         return;
                     }
                     ABILITY_SPIKE => {
@@ -10744,7 +10744,7 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::TimeStop {
-            self.time_stop_cast_tick(index, action, data);
+            self.time_stop_cast_tick(index, action, jump_pressed, data);
             return;
         }
         if self.players[index].active == ActiveAbility::Spike {
@@ -12416,7 +12416,13 @@ impl RolloutWorld {
         slot.reported_tick = self.tick;
     }
 
-    fn time_stop_cast_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+    fn time_stop_cast_tick(
+        &mut self,
+        index: usize,
+        action: Action,
+        jump_pressed: bool,
+        data: &data::RolloutData,
+    ) {
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
@@ -12505,9 +12511,16 @@ impl RolloutWorld {
         }
         self.players[index].reported_position = published_position;
         self.players[index].reported_tick = self.tick;
-        // PlayerBody follows CastSpell in the prefab. The form has no gravity
-        // (ApplyGravity off), so an airborne caster moves only by the
-        // push-out velocity, which PlayerBody then damps.
+        // PlayerBody follows CastSpell in the prefab. It carries the rope
+        // Ability.EnterAbility handed it, grounded or not, so a jump pressed
+        // while hanging lets go with the rope end's velocity
+        // (PlayerBody.cs:162-247).
+        if self.players[index].rope.is_some() {
+            self.form_body_move(index, jump_pressed);
+            return;
+        }
+        // The form has no gravity (ApplyGravity off), so an airborne caster
+        // moves only by the push-out velocity, which PlayerBody then damps.
         let slot = &mut self.players[index];
         if !slot.base.grounded {
             slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
@@ -42686,7 +42699,7 @@ mod tests {
         world.players[0].cast_spell.phase = 0;
         world.players[0].cast_spell.time = DT;
 
-        world.time_stop_cast_tick(0, Action::default(), data::get());
+        world.time_stop_cast_tick(0, Action::default(), false, data::get());
 
         assert!(world.players[0].active == ActiveAbility::None);
     }
@@ -42896,7 +42909,7 @@ mod tests {
         world.players[1].cast_spell.phase = 2;
         world.players[1].cast_spell.ticks = data::get().time_stop.cast_spell_ticks;
 
-        world.time_stop_cast_tick(1, Action::default(), data::get());
+        world.time_stop_cast_tick(1, Action::default(), false, data::get());
 
         assert_eq!(world.time_stop_effects.len(), 3);
         assert!(world.time_stop_effects[1].active);
