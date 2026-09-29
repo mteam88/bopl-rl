@@ -2744,6 +2744,9 @@ pub struct PlayerSlot {
     /// (pass, TeleportIndicator hierarchy, position before it moved the
     /// player): an older Mjolnir still finds the slime there, active.
     pub teleported_from: (u32, u32, Vec2),
+    /// The pass a Poke Ball's OnCollide caught the slime, after DetPhysics
+    /// had found its contacts from the box left where it was.
+    pub caught_after_contacts: u32,
     pub teleport_effect_released_tick: Option<u32>,
     /// A TeleportIndicator older than a Black Hole fires at the hole's turn,
     /// ahead of teleport_effects_tick; its new effect first updates next pass.
@@ -4685,6 +4688,7 @@ impl RolloutWorld {
                 teleport_effect_time: Fix::ZERO,
                 teleport_effect_hierarchy: 0,
                 teleported_from: (u32::MAX, 0, Vec2::ZERO),
+                caught_after_contacts: u32::MAX,
                 teleport_effect_released_tick: None,
                 teleport_effect_born_tick: 0,
                 blink_tunnel_active: false,
@@ -7144,6 +7148,30 @@ impl RolloutWorld {
                 };
                 if crate::physics::contact::circle_box(circle, self.players[pushed].base.collider)
                     .is_none()
+                {
+                    continue;
+                }
+            }
+            // A slime a Poke Ball caught in this contact pass met the other
+            // slime, if at all, with the box DetPhysics had synced before.
+            if self.players[pushed].caught_after_contacts == self.tick {
+                let slot = &self.players[other];
+                let other_box = match slot.active {
+                    ActiveAbility::None => Some(slot.base.collider),
+                    ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall => Some(OrientedBox::from_basis(
+                        slot.base.position,
+                        Vec2::angle(slot.base.rotation),
+                        throw_config(data, active_throw_ability(slot.active)).hurtbox_extents,
+                    )),
+                    _ => None,
+                };
+                if let Some(other_box) = other_box
+                    && crate::physics::contact::box_box(self.players[pushed].base.collider, other_box)
+                        .is_none()
                 {
                     continue;
                 }
@@ -32146,6 +32174,8 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             if sync_collider {
                 slot.base.sync_collider();
+            } else {
+                slot.caught_after_contacts = self.tick;
             }
             slot.late_obs_position = capture_position;
             slot.late_obs_state = STATE_FALL;
