@@ -30177,6 +30177,12 @@ impl RolloutWorld {
         order.sort_unstable_by_key(|&index| (self.scale_changers[index].hierarchy_base, index));
         let mut spikes_from = deferred_spikes;
         let mut updaters_from = deferred_updaters;
+        // Every Tack has taken its turn by now, so a wave stepped among the
+        // changers pushes a tack directly instead of leaving the impulse for
+        // a turn that already passed.
+        if updaters_from.is_some() {
+            self.scratch.tacks_ran_below = u32::MAX;
+        }
         for &index in &order {
             let effect = self.scale_changers[index];
             if let Some(from) = spikes_from.filter(|&from| from < effect.hierarchy_base) {
