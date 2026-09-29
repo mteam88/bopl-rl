@@ -3194,6 +3194,8 @@ enum CallbackHit {
     /// GrenadeExplode or SmokeGrenadeExplode2.OnCollide with a Tesla line or
     /// Meteor smear, once per pair.
     ItemDetonate { item: usize, count: usize },
+    /// A young SpikeAttack.OnCollide with a Player-layer box.
+    SpikeKnock { spike: usize, player: usize, entity: usize, point: Vec2 },
 }
 
 /// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
@@ -15361,24 +15363,30 @@ impl RolloutWorld {
                 };
                 // A young spike's OnCollide knocks the Player-layer box away
                 // from its root and pushes itself back (SpikeAttack.cs:
-                // 133-141); rocks_contacts knocks a Rock's circle.
-                if self.players[player_index].active != ActiveAbility::Rock
-                    && spike.time < data.spike.push_time
-                    && self.player_time_scale >= Fix::from_f32(0.01)
-                {
-                    let direction = (point - self.spike_attack_root(spike_index, data)).normalized_safe();
-                    let row = &mut self.entities[entity];
-                    let velocity = Vec2::new(Fix::from_raw(row.vx), Fix::from_raw(row.vy))
-                        + direction * data.spike.knock_player * Fix::from_raw(row.inverse_mass);
-                    row.vx = velocity.x.raw();
-                    row.vy = velocity.y.raw();
-                    self.spike_attack_self_push(spike_index, point, data.spike.knock_player, data);
-                }
+                // 133-141); rocks_contacts knocks a Rock's circle. It returns
+                // on a destroyed collider, so when the victim's box comes first
+                // in the pair, its PlayerCollision kill leaves no knock.
                 // Spike's Explosion.PlayerOwnerId is never assigned and
                 // therefore remains zero, which is neither a live player id
                 // nor the game's environmental sentinel.
                 let hitbox_rank = sweep_rank(&self.entities, hitbox_min, spike.entity);
+                let knock = (self.players[player_index].active != ActiveAbility::Rock
+                    && spike.time < data.spike.push_time
+                    && self.player_time_scale >= Fix::from_f32(0.01))
+                .then_some(CallbackHit::SpikeKnock {
+                    spike: spike_index,
+                    player: player_index,
+                    entity,
+                    point,
+                });
+                let spike_first = hitbox_rank < self.player_sweep_rank(player_index);
+                if let Some(knock) = knock.filter(|_| spike_first) {
+                    self.queue_callback_hit(player_index, false, hitbox_rank, knock);
+                }
                 self.queue_callback_kill(player_index, false, hitbox_rank, 0, CAUSE_OTHER);
+                if let Some(knock) = knock.filter(|_| !spike_first) {
+                    self.queue_callback_hit(player_index, false, hitbox_rank, knock);
+                }
             }
         }
     }
@@ -36580,14 +36588,29 @@ impl RolloutWorld {
         killer: u32,
         cause: u32,
     ) {
+        let hit = CallbackHit::Kill { player: player_index, killer, cause };
+        self.queue_callback_hit(player_index, hitbox_is_circle, hitbox, hit);
+    }
+
+    fn player_sweep_rank(&self, player_index: usize) -> SweepRank {
         let player_min = self.player_sweep_min(player_index, self.sweep_x());
         let entity = Some(Self::hurtbox_entity(&self.players[player_index]));
-        let player = sweep_rank(&self.entities, player_min, entity);
+        sweep_rank(&self.entities, player_min, entity)
+    }
+
+    /// Queues `hit` in ToMakeCallBacks order for the pair of a player's box and
+    /// `hitbox`; the hits of one pair keep the order they were queued in.
+    fn queue_callback_hit(
+        &mut self,
+        player_index: usize,
+        hitbox_is_circle: bool,
+        hitbox: SweepRank,
+        hit: CallbackHit,
+    ) {
+        let player = self.player_sweep_rank(player_index);
         let category = 2 - hitbox_is_circle as u8 - self.player_is_circle(player_index) as u8;
         let (later, earlier) = sweep_pair(hitbox, player);
-        let key = (category, later, earlier);
-        let hit = CallbackHit::Kill { player: player_index, killer, cause };
-        self.scratch.callback_hits.push((key, hit));
+        self.scratch.callback_hits.push(((category, later, earlier), hit));
     }
 
     /// DetPhysics runs every OnCollide after all contact groups resolved, in
@@ -36619,6 +36642,18 @@ impl RolloutWorld {
                 }
                 CallbackHit::CloneKill { clone, killer } => {
                     self.kill_abilityless_clone(clone, killer, CAUSE_OTHER);
+                }
+                CallbackHit::SpikeKnock { spike, player, entity, point } => {
+                    if !self.hittable(player) {
+                        continue;
+                    }
+                    let direction = (point - self.spike_attack_root(spike, data)).normalized_safe();
+                    let row = &mut self.entities[entity];
+                    let velocity = Vec2::new(Fix::from_raw(row.vx), Fix::from_raw(row.vy))
+                        + direction * data.spike.knock_player * Fix::from_raw(row.inverse_mass);
+                    row.vx = velocity.x.raw();
+                    row.vy = velocity.y.raw();
+                    self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
                 }
                 CallbackHit::ItemDetonate { item, count } => {
                     let state = self.thrown_items[item];
