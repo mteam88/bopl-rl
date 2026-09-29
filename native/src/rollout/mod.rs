@@ -20095,8 +20095,10 @@ impl RolloutWorld {
                 self.entities[entity].flags = E_REMOVED;
             }
         }
+        // A new cloud may already hold the pooled slot of one evicted last
+        // pass; its row is still the evicted cloud's until it registers.
         for cloud in &self.smoke_clouds {
-            if !cloud.active
+            if !cloud.registered
                 && let Some(entity) = cloud.entity
                 && self.entities[entity].flags & E_DESTROYED != 0
             {
@@ -33869,7 +33871,16 @@ impl RolloutWorld {
                     })
                     .min_by_key(|(_, cloud)| cloud.hierarchy_base)
             {
+                // effectBuffer's DestroyFix of the oldest cloud, from a
+                // collision callback, leaves its row observed as destroyed
+                // for this pass, like the grenade's own.
+                let flags = self.smoke_clouds[oldest].entity.map(|entity| self.entities[entity].flags);
                 self.remove_smoke_cloud(oldest);
+                if by_callback
+                    && let (Some(entity), Some(flags)) = (self.smoke_clouds[oldest].entity, flags)
+                {
+                    self.entities[entity].flags = destroyed_flags(flags);
+                }
             }
 
             let hierarchy_base = self.next_spawn_hierarchy;
