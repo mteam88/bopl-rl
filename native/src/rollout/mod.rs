@@ -6166,7 +6166,8 @@ impl RolloutWorld {
         // sits ahead of it in the Updater: a hole's pull lands before that
         // slime's PlayerBody damps and integrates the external velocity, and
         // a ball's hold moves it before its SlimeController publishes
-        // Player.Position.
+        // Player.Position, and a portal tests the slime where the last pass
+        // left it, so the slime's own update skips gravity after the jump.
         let mut spawned_from = 0;
         let mut recorded = 0;
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
@@ -6197,7 +6198,10 @@ impl RolloutWorld {
                     self.black_holes_update(data, updater_dt, spawned.clone());
                 }
                 if has(ABILITY_POKE_BALL) {
-                    self.poke_balls_update(data, updater_dt, spawned);
+                    self.poke_balls_update(data, updater_dt, spawned.clone());
+                }
+                if has(ABILITY_PORTAL_GUN) {
+                    self.portals_update(data, updater_dt, spawned);
                 }
                 spawned_from = player_hierarchy[index];
             }
@@ -6527,7 +6531,7 @@ impl RolloutWorld {
         // any player owning Portal Gun. Keep that walk map/pickup-gated rather
         // than ability-gated so the pickup enables, rerolls, and moves.
         if has(ABILITY_PORTAL_GUN) || !self.ability_pickups.is_empty() {
-            self.portals_tick(data, updater_dt);
+            self.portals_tick(data, updater_dt, spawned_from);
         } else if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
             // Portal endpoints interleave pickup updaters by hierarchy when
             // present. Without Portal Gun, the same global updater tail must
@@ -8398,7 +8402,21 @@ impl RolloutWorld {
         }
     }
 
-    fn portals_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// The endpoints from `from` up, which no slime came after, then the
+    /// pickups newer than all of them.
+    fn portals_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, from: u32) {
+        self.portals_update(data, updater_dt, from..u32::MAX);
+        self.ability_pickups_tick_remaining(data, updater_dt);
+    }
+
+    /// Portal.UpdateSim for the endpoints whose updater hierarchy falls in
+    /// `hierarchy`, each after the pickups older than it.
+    fn portals_update(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        hierarchy: std::ops::Range<u32>,
+    ) {
         if self.portal_body_inside.len() < self.entities.len() {
             self.portal_body_inside.resize(self.entities.len(), 0);
             self.portal_body_ids.resize(self.entities.len(), 0);
@@ -8406,7 +8424,11 @@ impl RolloutWorld {
         let mut processed = [false; 64];
         for _ in 0..self.portals.len() {
             let Some(endpoint_index) = (0..self.portals.len())
-                .filter(|&index| self.portals[index].active && !processed[index])
+                .filter(|&index| {
+                    self.portals[index].active
+                        && !processed[index]
+                        && hierarchy.contains(&(100_000_000 + self.portals[index].hierarchy_base))
+                })
                 .min_by_key(|&index| self.portals[index].hierarchy_base)
             else {
                 break;
@@ -8523,7 +8545,6 @@ impl RolloutWorld {
             }
             self.portal_objects_tick(endpoint_index, data);
         }
-        self.ability_pickups_tick_remaining(data, updater_dt);
     }
 
     /// Non-instant abilities disable the original slime box, but
@@ -43147,7 +43168,7 @@ mod tests {
             hierarchy_base: 1,
             ..PortalEndpoint::default()
         });
-        world.portals_tick(data::get(), dt);
+        world.portals_tick(data::get(), dt, 0);
         assert_eq!(world.portals[0].time_alive, dt);
     }
 
