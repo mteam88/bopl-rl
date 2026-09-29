@@ -3268,6 +3268,7 @@ enum PendingObject {
     DuplicatedPickup,
     AbilitylessClone,
     BlackHole,
+    ClappedBlackHole,
     PickedAbility,
     Mine,
     GuidedMissile,
@@ -6300,13 +6301,6 @@ impl RolloutWorld {
             } else {
                 slot.invisible_time = Fix::ZERO;
                 slot.ability_time = Fix::ZERO;
-            }
-        }
-        // A clapped hole's Init registers its circle at the start of the next
-        // pass, ahead of every player's updaters.
-        for index in 0..self.players.len() {
-            if let Some((position, hierarchy)) = self.players[index].pending_black_hole.take() {
-                self.spawn_black_hole(index, position, hierarchy, data);
             }
         }
         let mut jump_pressed_by_player = [false; MAX_PLAYERS];
@@ -19940,6 +19934,13 @@ impl RolloutWorld {
         for (index, hole) in self.pending_black_holes.iter().enumerate() {
             pending.push((hole.hierarchy_base, PendingObject::BlackHole, index));
         }
+        // A clapped hole's Init registers its circle with the other objects
+        // queued in the prior pass, ahead of every player's updaters.
+        for (index, player) in self.players.iter().enumerate() {
+            if let Some((_, hierarchy)) = player.pending_black_hole {
+                pending.push((hierarchy, PendingObject::ClappedBlackHole, index));
+            }
+        }
         if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
             for (index, player) in self.players.iter().enumerate() {
                 for slot in 0..3 {
@@ -20012,6 +20013,11 @@ impl RolloutWorld {
                 PendingObject::DuplicatedPickup => self.register_duplicated_pickup(index, data),
                 PendingObject::AbilitylessClone => self.register_abilityless_clone(index),
                 PendingObject::BlackHole => self.register_black_hole(index, data),
+                PendingObject::ClappedBlackHole => {
+                    if let Some((position, hierarchy)) = self.players[index].pending_black_hole.take() {
+                        self.spawn_black_hole(index, position, hierarchy, data);
+                    }
+                }
                 PendingObject::PickedAbility => {
                     self.ensure_equipped_ability_registered(index / 3, index % 3, data)
                 }
