@@ -15939,7 +15939,10 @@ impl RolloutWorld {
                 self.portal_shots[shot_index].active = false;
                 self.portal_shots[shot_index].registered = false;
                 self.portal_shots[shot_index].remove_next_tick = true;
-                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                // The destroyed object no longer answers IPlayerIdHolder.
+                let row = &mut self.entities[entity];
+                row.flags = destroyed_flags(row.flags);
+                row.owner = 0;
             }
 
             for rock_index in 0..self.duplicated_rocks.len() {
