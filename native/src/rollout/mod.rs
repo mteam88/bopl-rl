@@ -5069,6 +5069,9 @@ impl RolloutWorld {
         // hidden or restored its wall when the pickup raycasts for ground.
         let hierarchy = self.ability_pickups[index].hierarchy_base;
         self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
+        // A DuplicatePlatformEffect registered before this pickup has already
+        // spawned its copy, which the ground raycast may meet.
+        self.duplicate_platform_effects_tick(data, updater_dt, Some(hierarchy));
         if self.blink_object_hidden(self.ability_pickups[index].entity) {
             return;
         }
