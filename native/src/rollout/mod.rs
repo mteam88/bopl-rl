@@ -6163,6 +6163,14 @@ impl RolloutWorld {
         let mut spawned_from = 0;
         let mut recorded = 0;
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
+            // SlimeController.Awake adds the RewindRecorder to the slime itself
+            // (RewindRecorder.cs:93), so each slime already updated took its
+            // sample before anything later acts: spawned updaters, and another
+            // player's Magnet pull, which that recorder sees only next pass.
+            if has(ABILITY_REWIND) {
+                self.rewind_recorders_tick(&player_order[recorded..turn]);
+                recorded = turn;
+            }
             if has(ABILITY_BLINK) {
                 // A wall QuantumTunnel registered before the object holding
                 // this player has already restored or hidden its wall when
@@ -6178,12 +6186,6 @@ impl RolloutWorld {
             }
             if spawned_from < player_hierarchy[index] {
                 let spawned = spawned_from..player_hierarchy[index];
-                // Each slime's RewindRecorder ran with its own prefab, so the
-                // slimes already updated took their sample before these act.
-                if has(ABILITY_REWIND) && (has(ABILITY_BLACK_HOLE) || has(ABILITY_POKE_BALL)) {
-                    self.rewind_recorders_tick(&player_order[recorded..turn]);
-                    recorded = turn;
-                }
                 if has(ABILITY_BLACK_HOLE) {
                     self.black_holes_update(data, updater_dt, spawned.clone());
                 }
