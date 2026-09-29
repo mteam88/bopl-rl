@@ -38626,8 +38626,9 @@ impl RolloutWorld {
 
         // Every live Player-layer slime/form callback sees Rock's Ability and
         // credits its owner. BounceBall independently queues its bounce force.
-        let mut victims = [usize::MAX; MAX_PLAYERS];
-        let mut killers = [0u32; MAX_PLAYERS];
+        let mut victims = [usize::MAX; MAX_PLAYERS * MAX_PLAYERS];
+        let mut killers = [0u32; MAX_PLAYERS * MAX_PLAYERS];
+        let mut rock_ranks = [(Fix::ZERO, 0u32, 0usize); MAX_PLAYERS * MAX_PLAYERS];
         let mut victim_count = 0usize;
         let mut clone_victims = [usize::MAX; MAX_PLAYERS * 16];
         let mut clone_killers = [0u32; MAX_PLAYERS * 16];
@@ -38660,11 +38661,14 @@ impl RolloutWorld {
                         self.players[rock_index].rock.body.force +=
                             contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
                     }
-                    if !victims[..victim_count].contains(&victim) {
-                        victims[victim_count] = victim;
-                        killers[victim_count] = self.players[rock_index].base.id;
-                        victim_count += 1;
-                    }
+                    victims[victim_count] = victim;
+                    killers[victim_count] = self.players[rock_index].base.id;
+                    rock_ranks[victim_count] = sweep_rank(
+                        &self.entities,
+                        rock_min(rock_index),
+                        Some(self.players[rock_index].rock_entity),
+                    );
+                    victim_count += 1;
                 }
             }
             for clone_index in 0..self.abilityless_clones.len() {
@@ -38692,11 +38696,16 @@ impl RolloutWorld {
                 }
             }
         }
+        // The victim's PlayerCollision callback kills it, in DetPhysics'
+        // callback order with every other hitbox kill of this pass.
         for victim_offset in 0..victim_count {
-            let victim = victims[victim_offset];
-            if self.hittable(victim) {
-                self.kill(victim, killers[victim_offset], CAUSE_OTHER, true, true);
-            }
+            self.queue_callback_kill(
+                victims[victim_offset],
+                true,
+                rock_ranks[victim_offset],
+                killers[victim_offset],
+                CAUSE_OTHER,
+            );
         }
         for clone_offset in 0..clone_victim_count {
             let clone = clone_victims[clone_offset];
