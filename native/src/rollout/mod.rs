@@ -10387,6 +10387,11 @@ impl RolloutWorld {
                         );
                         // The entry pass's Ability.UpdateSim.
                         self.scale_spike_form(index, data);
+                        // The form's DestroyIfOutsideSceneBounds takes its
+                        // turn on the entry pass, ahead of the Move below.
+                        if self.form_bounds_kill(index, data) {
+                            return;
+                        }
                         let slot = &mut self.players[index];
                         // Spike follows Ability in the prefab updater list:
                         // its grounded Move(zero) already runs on the entry
@@ -10420,6 +10425,11 @@ impl RolloutWorld {
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
                         self.plant_form_radius(index);
+                        // The form's DestroyIfOutsideSceneBounds takes its
+                        // turn on the entry pass, ahead of the Move below.
+                        if self.form_bounds_kill(index, data) {
+                            return;
+                        }
                         let slot = &mut self.players[index];
                         // PlantObjectOnPlatform follows Ability in the prefab
                         // updater list: its grounded Move(zero) and
@@ -10452,6 +10462,9 @@ impl RolloutWorld {
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
                         self.plant_form_radius(index);
+                        if self.form_bounds_kill(index, data) {
+                            return;
+                        }
                         let slot = &mut self.players[index];
                         // As for Engine: the entry pass already moves.
                         if slot.base.grounded {
