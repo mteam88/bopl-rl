@@ -28355,7 +28355,7 @@ impl RolloutWorld {
 
     /// The hurtbox DetPhysics holds for a slime whose row is stale. onExitAbility
     /// (SlimeController.cs:251) and the OnEnterAbility of GunTransform
-    /// (GunTransform.cs:67-68), MachoThrow and MagnetGun (MagnetGun.cs:295) sync it
+    /// (GunTransform.cs:67-68), MachoThrow, Drill and MagnetGun (MagnetGun.cs:295) sync it
     /// mid-pass, while the row keeps its flags, and all but Magnet's its pose, until
     /// the next refresh. Other forms' boxes move only in DetPhysics' own sync.
     fn synced_hurtbox(&self, index: usize, data: &data::RolloutData) -> Option<OrientedBox> {
@@ -28369,6 +28369,10 @@ impl RolloutWorld {
             }
             ActiveAbility::Throw => return Some(self.macho_throw_box(index, data)),
             ActiveAbility::Magnet => return Some(Self::row_box(self.entities[slot.magnet_entity])),
+            // Drill.OnEnterAbility syncs its hurtbox at the entry pose (Drill.cs:176).
+            ActiveAbility::Drill if slot.drill.entry_tick == Some(self.tick) => {
+                return Some(slot.drill.entry_box);
+            }
             // SparkShot.OnEnterAbility syncs its hurtbox too (SparkShot.cs:89-90).
             ActiveAbility::Missile => {
                 return Some(slot.forms[slot.active_slot].hurtbox(
