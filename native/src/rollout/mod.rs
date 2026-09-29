@@ -2768,6 +2768,9 @@ pub struct PlayerSlot {
     pub clone_ability_hierarchy: [u32; 3],
     pub stock_indicator_hierarchy: [u32; 3],
     pub revival_target_marker: Option<usize>,
+    /// Where SpawnClone put the pending Revival clone: the marker's
+    /// GetPos() in the killing pass (PlayerCollision.cs:150).
+    pub revival_clone_position: Vec2,
     pub revival_effect_ticks: u32,
     /// ReviveEffect's position, where its particle starts.
     pub revival_effect_position: Vec2,
@@ -4758,6 +4761,7 @@ impl RolloutWorld {
                 clone_ability_hierarchy: [u32::MAX; 3],
                 stock_indicator_hierarchy: [u32::MAX; 3],
                 revival_target_marker: None,
+                revival_clone_position: Vec2::ZERO,
                 revival_effect_ticks: 0,
                 revival_effect_position: Vec2::ZERO,
                 revival_particle: None,
@@ -21316,10 +21320,7 @@ impl RolloutWorld {
                     self.entities[entity].flags = E_REMOVED;
                 }
             }
-            let marker_index = self.players[index]
-                .revival_target_marker
-                .expect("pending Revival clone marker");
-            let position = self.revival_marker_pool[marker_index].position;
+            let position = self.players[index].revival_clone_position;
             let abilities = self.players[index].abilities;
 
             let player_hierarchy = self.players[index].clone_player_hierarchy;
@@ -40374,6 +40375,7 @@ impl RolloutWorld {
             slot.revival_markers = [None; 3];
             slot.revival_clone_pending = true;
             slot.revival_target_marker = Some(marker_index);
+            slot.revival_clone_position = self.revival_marker_pool[marker_index].position;
             slot.revival_effect_ticks = data::get().revival.effect_wisp_ticks + 1;
             slot.revival_effect_position = drop_position;
             slot.revival_particle = None;
