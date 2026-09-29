@@ -32253,7 +32253,11 @@ impl RolloutWorld {
         // -9.82 field default never applies).
         let gravity = Fix::from_f64(-40.0) * data.arrow.body.gravity_scale;
         for i in 0..self.arrows.len() {
-            if self.blink_object_hidden(self.arrows[i].entity) {
+            // A Teleport marker newer than the arrow hides it after the
+            // arrow's own updaters ran; DetPhysics then skips it.
+            let hidden = self.blink_object_hidden(self.arrows[i].entity);
+            if hidden && !self.teleport_hid_after(self.arrows[i].entity, self.arrows[i].hierarchy_base)
+            {
                 continue;
             }
             if !self.arrows[i].active || !self.arrows[i].registered {
@@ -32319,6 +32323,9 @@ impl RolloutWorld {
                     arrow.rotation = up.perp_cw().normalized_angle();
                     arrow.updater_tick = self.tick;
                 }
+            }
+            if hidden {
+                continue;
             }
             let arrow = &mut self.arrows[i];
             // DetPhysics.IntegrateBody (DetPhysics.cs:1643) is
