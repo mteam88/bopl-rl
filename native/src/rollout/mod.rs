@@ -7431,7 +7431,9 @@ impl RolloutWorld {
 
     fn smoke_clouds_integrate(&mut self, physics_dt: Fix) {
         for cloud in &mut self.smoke_clouds {
-            if !cloud.active || !cloud.registered {
+            // Ignite disables the circle, and DetPhysics integrates only
+            // active colliders (FlammableSmoke.cs:88).
+            if !cloud.active || !cloud.registered || cloud.ignition_time >= Fix::ZERO {
                 continue;
             }
             cloud.position += cloud.body.integrate(physics_dt, Fix::ZERO);
