@@ -1666,6 +1666,9 @@ pub struct PushState {
     /// FixTransform.right used by DPhysicsBox's centre sync. Its exact vector
     /// can differ slightly from rebuilding the scalar rotation through LUTs.
     pub collider_up: Vec2,
+    /// QuickSpell.OnEnterAbility syncs the hurtbox at the entry pose.
+    pub entry_tick: Option<u32>,
+    pub entry_box: OrientedBox,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -9819,6 +9822,12 @@ impl RolloutWorld {
                         slot.base.sync_collider();
                         slot.base.collider.center = slot.base.position
                             + slot.base.up.perp_cw().complex_mul(slot.forms[s].offset);
+                        slot.push.entry_tick = Some(self.tick);
+                        slot.push.entry_box = slot.forms[s].hurtbox(
+                            slot.base.collider.center,
+                            Vec2::angle(slot.base.rotation),
+                            data::surface_extents(data.push.hurtbox_extents),
+                        );
                         slot.reported_position = slot.base.position;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
@@ -28386,7 +28395,8 @@ impl RolloutWorld {
             && self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
     }
 
-    /// A form row whose GameObject ExitAbility deactivated earlier this pass;
+    /// A form row whose GameObject ExitAbility deactivated earlier this pass,
+    /// or the slime row onEnterAbility deactivated (SlimeController.cs:190);
     /// its row is only marked inactive at the next refresh.
     fn left_form_row(&self, entity: usize) -> bool {
         self.players.iter().any(|slot| {
@@ -28398,7 +28408,7 @@ impl RolloutWorld {
 
     /// The hurtbox DetPhysics holds for a slime whose row is stale. onExitAbility
     /// (SlimeController.cs:251) and the OnEnterAbility of GunTransform
-    /// (GunTransform.cs:67-68), MachoThrow, Drill, Spike and MagnetGun (MagnetGun.cs:295) sync it
+    /// (GunTransform.cs:67-68), MachoThrow, Drill, Spike, QuickSpell and MagnetGun (MagnetGun.cs:295) sync it
     /// mid-pass, while the row keeps its flags, and all but Magnet's its pose, until
     /// the next refresh. Other forms' boxes move only in DetPhysics' own sync.
     fn synced_hurtbox(&self, index: usize, data: &data::RolloutData) -> Option<OrientedBox> {
@@ -28418,6 +28428,10 @@ impl RolloutWorld {
             }
             ActiveAbility::Spike if slot.spike_cast.entry_tick == Some(self.tick) => {
                 return Some(slot.spike_cast.entry_box);
+            }
+            // QuickSpell.OnEnterAbility too (QuickSpell.cs:79-80).
+            ActiveAbility::Push if slot.push.entry_tick == Some(self.tick) => {
+                return Some(slot.push.entry_box);
             }
             // SparkShot.OnEnterAbility syncs its hurtbox too (SparkShot.cs:89-90).
             ActiveAbility::Missile => {
