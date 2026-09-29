@@ -34482,16 +34482,22 @@ impl RolloutWorld {
                         .then_some(index)
                 }),
         );
-        order.extend(self.tesla_nodes.iter().enumerate().filter_map(|(index, node)| {
-            (node.active
+        // A node whose platform went inactive earlier in this pass is skipped
+        // by DetPhysics, though its row still shows the last publish.
+        for index in 0..self.tesla_nodes.len() {
+            let node = self.tesla_nodes[index];
+            if node.active
                 && !node.macho_carried
                 && node.platform_index < self.platforms.len()
                 && node.body.inverse_mass >= Fix::ZERO
+                && !self.attached_hidden(node.platform_index, node.entity)
                 && node.entity.is_some_and(|entity| {
                     self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
-                }))
-            .then_some(NODE + index)
-        }));
+                })
+            {
+                self.scratch.item_order.push(NODE + index);
+            }
+        }
         for index in 0..self.portal_shots.len() {
             let shot = self.portal_shots[index];
             if shot.active && shot.registered && !self.blink_object_hidden(shot.entity) {
