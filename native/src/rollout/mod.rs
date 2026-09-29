@@ -5291,26 +5291,7 @@ impl RolloutWorld {
             window.push(current);
         }
         for &(a_index, b_index, contact) in contacts.iter() {
-            let a = self.ability_pickups[a_index];
-            let b = self.ability_pickups[b_index];
-            let mut body_a = a.body;
-            let mut body_b = b.body;
-            resolve(contact, &mut body_a, &mut body_b, center(a), center(b));
-            let correction =
-                positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
-            if a_index < b_index {
-                let (left, right) = self.ability_pickups.split_at_mut(b_index);
-                left[a_index].body = body_a;
-                left[a_index].position += correction[0];
-                right[0].body = body_b;
-                right[0].position += correction[1];
-            } else {
-                let (left, right) = self.ability_pickups.split_at_mut(a_index);
-                right[0].body = body_a;
-                right[0].position += correction[0];
-                left[b_index].body = body_b;
-                left[b_index].position += correction[1];
-            }
+            self.resolve_pickup_pair(a_index, b_index, contact, data);
         }
         for pickup in &self.ability_pickups {
             let Some(entity) = pickup.entity.filter(|_| pickup.active) else {
@@ -5329,6 +5310,36 @@ impl RolloutWorld {
         self.scratch.pickup_order = order;
         self.scratch.pickup_window = window;
         self.scratch.pickup_contacts = contacts;
+    }
+
+    fn resolve_pickup_pair(
+        &mut self,
+        a_index: usize,
+        b_index: usize,
+        contact: Contact,
+        data: &data::RolloutData,
+    ) {
+        let center = |pickup: AbilityPickup| pickup.position + data.pickup.offset * pickup.scale;
+        let a = self.ability_pickups[a_index];
+        let b = self.ability_pickups[b_index];
+        let mut body_a = a.body;
+        let mut body_b = b.body;
+        resolve(contact, &mut body_a, &mut body_b, center(a), center(b));
+        let correction =
+            positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
+        if a_index < b_index {
+            let (left, right) = self.ability_pickups.split_at_mut(b_index);
+            left[a_index].body = body_a;
+            left[a_index].position += correction[0];
+            right[0].body = body_b;
+            right[0].position += correction[1];
+        } else {
+            let (left, right) = self.ability_pickups.split_at_mut(a_index);
+            right[0].body = body_a;
+            right[0].position += correction[0];
+            left[b_index].body = body_b;
+            left[b_index].position += correction[1];
+        }
     }
 
     /// DynamicAbilityPickup.OnCollide only accepts the FixTransform carrying
@@ -6937,7 +6948,11 @@ impl RolloutWorld {
         for node in self.tesla_nodes.iter_mut().chain(&mut self.retired_tesla_contacts) {
             node.swept_center = node.collider_center;
         }
-        self.ability_pickup_pair_contacts(data);
+        // With a Rock in play, its Circle/Circle stage also resolves the
+        // pickup pairs.
+        if !has(ABILITY_ROCK) {
+            self.ability_pickup_pair_contacts(data);
+        }
         if has_rope {
             self.ropes_physics(physics_dt);
         }
@@ -37813,6 +37828,25 @@ impl RolloutWorld {
                 pair_count += 1;
             }
         }
+        let usable = |pickup: &AbilityPickup| {
+            pickup.active && pickup.enabled && !self.blink_object_hidden(pickup.entity)
+        };
+        for (first, pickup) in self.ability_pickups.iter().enumerate() {
+            if !usable(pickup) {
+                continue;
+            }
+            for second in first + 1..self.ability_pickups.len() {
+                if !usable(&self.ability_pickups[second])
+                    || !pickup_circle(first).bounds_overlap(pickup_circle(second))
+                    || pair_count == pairs.len()
+                {
+                    continue;
+                }
+                let (a, b) = (PICKUP + first, PICKUP + second);
+                pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
+                pair_count += 1;
+            }
+        }
         let pairs = &mut pairs[..pair_count];
         pairs.sort_by_key(|&(a, b)| (rank(b), rank(a)));
         // CollisionTest builds every Circle/Circle manifold before the first
@@ -37832,6 +37866,23 @@ impl RolloutWorld {
             *contact = crate::physics::contact::circle_circle(circle(a), circle(b));
         }
         for (&(a, b), contact) in pairs.iter().zip(contacts) {
+            if a >= PICKUP && b >= PICKUP {
+                if let Some(contact) = contact {
+                    self.resolve_pickup_pair(a - PICKUP, b - PICKUP, contact, data);
+                    for index in [a - PICKUP, b - PICKUP] {
+                        let pickup = self.ability_pickups[index];
+                        if let Some(entity) = pickup.entity {
+                            let center = pickup.position + data.pickup.offset * pickup.scale;
+                            let row = &mut self.entities[entity];
+                            row.x = center.x.raw();
+                            row.y = center.y.raw();
+                            row.vx = pickup.body.velocity.x.raw();
+                            row.vy = pickup.body.velocity.y.raw();
+                        }
+                    }
+                }
+                continue;
+            }
             if a >= PICKUP || b >= PICKUP {
                 let pickup_first = a >= PICKUP;
                 let (rock_index, pickup_index) =
