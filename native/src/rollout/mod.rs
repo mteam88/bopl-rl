@@ -8908,7 +8908,11 @@ impl RolloutWorld {
             self.respawn_tick(index, movement_input, jump_pressed, data);
             return;
         }
-        if self.players[index].active == ActiveAbility::None {
+        // RewindRecorder disables PlayerPhysics, whose UpdateSim is the one
+        // that picks up the new scale (PlayerPhysics.cs:106-123).
+        if self.players[index].active == ActiveAbility::None
+            && !self.players[index].rewind.rewinding
+        {
             let slot = &mut self.players[index];
             if slot.base.scale != slot.physics_scale {
                 slot.base.radius *= slot.base.scale / slot.physics_scale;
@@ -8949,6 +8953,10 @@ impl RolloutWorld {
             for s in 0..3 {
                 slot.reset_ignored_cooldown(s, action.buttons & (2 << s) as u8 != 0);
             }
+            // SlimeController still writes Player.Scale to its hurtbox before
+            // Move (SlimeController.cs:1078), so a Growth or Shrink Ray lands.
+            let scale = slot.player_scale;
+            slot.set_ordinary_body_scale(scale);
             slot.base.move_only(Vec2::ZERO, terrain!(self));
             // A landing inside Move retargets attachedGround, which the
             // arrival's UnGround lifts off (RewindRecorder.cs:358).
@@ -9345,7 +9353,11 @@ impl RolloutWorld {
                             // EnterAbility returns from OldUpdate, but this
                             // already-running SlimeController pass still uses
                             // the input vector captured before Rewind set
-                            // suppressInput.
+                            // suppressInput. The slime stays out of form, so
+                            // its hurtbox carries the scale written on entry
+                            // (SlimeController.cs:1078).
+                            slot.base.collider_inverse_extents = slot.body_inverse_extents;
+                            slot.base.scale = slot.body_collider_scale;
                             slot.base.move_only(movement_input, terrain!(self));
                             if slot.base.grounded {
                                 slot.rewind.attached_ground = slot.base.ground;
