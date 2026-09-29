@@ -3073,6 +3073,9 @@ enum CallbackHit {
     MissileBlast { missile: usize },
     /// An abilityless clone's PlayerCollision.OnCollide with a lethal hitbox.
     CloneKill { clone: usize, killer: u32 },
+    /// GrenadeExplode or SmokeGrenadeExplode2.OnCollide with a Tesla line or
+    /// Meteor smear, once per pair.
+    ItemDetonate { item: usize, count: usize },
 }
 
 /// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
@@ -34742,6 +34745,7 @@ impl RolloutWorld {
             // DetPhysics dispatches every queued callback, so a grenade spawns
             // one Explosion for each explosion or player pair that sets it off.
             let mut detonations = 0;
+            let (mut line_hits, mut line_key) = (0, None);
             if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE) {
                 let grenade_explosion_hits = self
                     .grenade_explosions
@@ -34782,6 +34786,7 @@ impl RolloutWorld {
                 detonations = grenade_explosion_hits
                     + missile_explosion_hits
                     + self.smoke_explosion_hits(circle, data);
+                (line_hits, line_key) = self.explosion_layer_item_hits(circle, item.entity);
                 if detonations > 0 && item.ability == ABILITY_SMOKE && item.detonates_on_owner {
                     self.detonate_smoke(item_index, true, data);
                     continue;
@@ -34954,6 +34959,14 @@ impl RolloutWorld {
                     crate::physics::contact::circle_box(circle, hurtbox).is_some()
                 };
                 detonations += hit as usize;
+            }
+            if detonations == 0
+                && let Some(key) = line_key
+            {
+                let hit = CallbackHit::ItemDetonate { item: item_index, count: line_hits };
+                self.scratch.callback_hits.push((key, hit));
+            } else {
+                detonations += line_hits;
             }
             // SmokeGrenadeExplode2.OnCollide ignores every contact, not only
             // the owner's, until hurtOwnerDelay has run out.
@@ -35192,6 +35205,28 @@ impl RolloutWorld {
                 CallbackHit::CloneKill { clone, killer } => {
                     self.kill_abilityless_clone(clone, killer, CAUSE_OTHER);
                 }
+                CallbackHit::ItemDetonate { item, count } => {
+                    let state = self.thrown_items[item];
+                    if !state.active {
+                        continue;
+                    }
+                    if state.ability == ABILITY_SMOKE {
+                        if state.detonates_on_owner {
+                            self.detonate_smoke(item, true, data);
+                        }
+                    } else {
+                        self.detonate_grenade(item, true, data);
+                        for _ in 1..count {
+                            self.spawn_grenade_explosion(
+                                state.position,
+                                state.owner,
+                                true,
+                                state.scale,
+                                data,
+                            );
+                        }
+                    }
+                }
             }
         }
         hits.clear();
@@ -35310,6 +35345,77 @@ impl RolloutWorld {
                     .is_some()
             })
             .count()
+    }
+
+    /// The other Explosion-layer colliders an item callback treats as an
+    /// explosion: Tesla's lightning line and the Meteor smear, whose hitbox
+    /// lives as long as the smear (GrenadeExplode.cs:78-81).
+    /// Returns the pair count and the first pair's callback key: these are
+    /// Circle/Box pairs, called back among the kills in sweep order.
+    fn explosion_layer_item_hits(
+        &self,
+        circle: Circle,
+        entity: Option<usize>,
+    ) -> (usize, Option<CallbackKey>) {
+        let live_nodes = self.tesla_nodes.len();
+        let mut boxes = [(OrientedBox::default(), None); 16];
+        let mut count = 0;
+        for (node_index, node) in
+            self.tesla_nodes.iter().chain(&self.retired_tesla_contacts).enumerate()
+        {
+            if !node.active
+                || node.macho_carried
+                || !node.lethal
+                || !node.line_active
+                || !node.line_collider_enabled
+                || (node_index < live_nodes
+                    && self.attached_hidden(node.platform_index, node.entity))
+            {
+                continue;
+            }
+            let line = OrientedBox {
+                center: node.line_center,
+                right: node.line_right,
+                up: node.line_up,
+                inverse_extents: node.line_inverse_extents,
+            };
+            if crate::physics::contact::circle_box(circle, line).is_some() && count < boxes.len() {
+                // The line has no row, as in tesla_contacts.
+                boxes[count] = (line, None);
+                count += 1;
+            }
+        }
+        for smear in &self.meteor_smears {
+            if !smear.active {
+                continue;
+            }
+            let hitbox = OrientedBox {
+                center: smear.center,
+                right: smear.right,
+                up: smear.up,
+                inverse_extents: Vec2::new(Fix::ONE / smear.right.x, Fix::ONE / smear.up.y),
+            };
+            if crate::physics::contact::circle_box(circle, hitbox).is_some() && count < boxes.len()
+            {
+                boxes[count] = (hitbox, smear.entity);
+                count += 1;
+            }
+        }
+        let circle_min = if self.sweep_x() {
+            circle.center.x - circle.radius
+        } else {
+            circle.center.y - circle.radius
+        };
+        let item_rank = sweep_rank(&self.entities, circle_min, entity);
+        let key = boxes[..count]
+            .iter()
+            .map(|&(hitbox, hitbox_entity)| {
+                let rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), hitbox_entity);
+                let (later, earlier) = sweep_pair(item_rank, rank);
+                (1, later, earlier)
+            })
+            .min();
+        (count, key)
     }
 
     fn player_swept_pairs(&self, player_index: usize, circle: Circle) -> bool {
