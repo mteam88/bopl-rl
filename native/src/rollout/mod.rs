@@ -2770,8 +2770,9 @@ impl PlayerSlot {
 
     /// `potentialCollider.Scale = Player.Scale` on a form's box, from
     /// Ability.EnterAbility and every Ability.UpdateSim (Ability.cs:105, 135).
+    /// These prefabs' boxes clamp it to MinScale 0.3 and MaxScale 3.
     fn scale_form(&mut self, extents: Vec2, radius: Fix, offset: Vec2) {
-        let scale = self.player_scale;
+        let scale = hurtbox_scale(self.player_scale);
         self.forms[self.active_slot].set_scale_offset(scale, extents, radius, offset);
     }
 
@@ -10066,7 +10067,7 @@ impl RolloutWorld {
                         // Ability.EnterAbility scales the box, then SyncPhysicsTo
                         // UpdateScales the radius the form is placed at.
                         let slot = &mut self.players[index];
-                        let scale = slot.player_scale;
+                        let scale = hurtbox_scale(slot.player_scale);
                         let form = &mut slot.forms[s];
                         form.set_scale_offset(
                             scale,
