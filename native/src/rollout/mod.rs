@@ -9767,6 +9767,11 @@ impl RolloutWorld {
                     }
                     ABILITY_METEOR => {
                         let grounded = self.players[index].base.grounded;
+                        // Ability.EnterAbility scales the box, then
+                        // SyncPhysicsTo's UpdateScale the radius it places the
+                        // form with.
+                        self.players[index].active_slot = s;
+                        self.scale_meteor_form(index, data);
                         let form_position = if grounded {
                             let base = &self.players[index].base;
                             base.ground
@@ -9774,9 +9779,7 @@ impl RolloutWorld {
                                     self.platforms.iter().find(|platform| platform.id == ground)
                                 })
                                 .map_or(base.position, |platform| {
-                                    platform
-                                        .surface
-                                        .position(base.local, data.meteor.physics_radius)
+                                    platform.surface.position(base.local, base.radius)
                                 })
                         } else {
                             self.players[index].base.position
@@ -9788,7 +9791,6 @@ impl RolloutWorld {
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.base.position = form_position;
-                        slot.base.radius = data.meteor.physics_radius;
                         slot.base.constants = data.meteor.constants.clone();
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
@@ -11514,7 +11516,24 @@ impl RolloutWorld {
         }
     }
 
+    /// Ability.EnterAbility and each Ability.UpdateSim assign Player.Scale to
+    /// the Meteor form's box, which scales its FixTransform offset, and the
+    /// PlayerPhysics right after it UpdateScales the radius MeteorSmash lands
+    /// and raycasts with.
+    fn scale_meteor_form(&mut self, index: usize, data: &data::RolloutData) {
+        let slot = &mut self.players[index];
+        let form = &mut slot.forms[slot.active_slot];
+        form.set_scale_offset(
+            slot.player_scale,
+            data::surface_extents(data.meteor.hurtbox_extents),
+            data.meteor.physics_radius,
+            data.meteor.collider_offset,
+        );
+        slot.base.radius = form.physics_radius();
+    }
+
     fn meteor_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        self.scale_meteor_form(index, data);
         let button = 2u8 << self.players[index].active_slot;
         let phase = self.players[index].meteor.phase;
         self.players[index].meteor.time += DT;
@@ -11646,7 +11665,7 @@ impl RolloutWorld {
     fn meteor_dash(&mut self, index: usize, data: &data::RolloutData) {
         let start = self.players[index].base.position;
         let scene_water = data.maps[self.map].scene_water_height();
-        let ray_start = start - Vec2::UP * data.meteor.physics_radius;
+        let ray_start = start - Vec2::UP * self.players[index].base.radius;
         let direction = -Vec2::UP;
         let distance_limit = Fix::from_int(1_000_000);
         self.scratch.ray_hits.clear();
@@ -11950,9 +11969,10 @@ impl RolloutWorld {
             .surface
             .closest_point(near)
             .unwrap_or(near);
+        let radius = self.players[index].base.radius;
         let local = self.platforms[platform_index]
             .surface
-            .local_position(closest, data.meteor.physics_radius)
+            .local_position(closest, radius)
             .unwrap_or(Fix::ZERO);
         let charge = (self.players[index].meteor.time / data.meteor.max_hold_time).min(Fix::ONE);
         let force_scale = (charge + Fix::ONE) * Fix::from_f32(0.5);
@@ -11983,18 +12003,15 @@ impl RolloutWorld {
         // PositionFromLocalPlayerPos, then AttachToGround's own
         // LocalPlayerPosFromPos -> PositionFromLocalPlayerPos round trip.
         let surface = &self.platforms[platform_index].surface;
-        let landing = surface.position(local, data.meteor.physics_radius);
-        let local = surface
-            .local_position(landing, data.meteor.physics_radius)
-            .unwrap_or(local);
-        let landing = surface.position(local, data.meteor.physics_radius);
+        let landing = surface.position(local, radius);
+        let local = surface.local_position(landing, radius).unwrap_or(local);
+        let landing = surface.position(local, radius);
         let platform_id = self.platforms[platform_index].id;
         let slot = &mut self.players[index];
         slot.meteor.phase = 3;
         slot.meteor.dash_updates = 0;
         slot.active = ActiveAbility::None;
         slot.base.position = landing;
-        slot.base.radius = data.meteor.physics_radius;
         slot.base.constants = data.player.constants.clone();
         slot.base.external_velocity = Vec2::ZERO;
         slot.base.grounded = true;
@@ -12029,7 +12046,10 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         slot.facing_right = true;
         slot.active = ActiveAbility::None;
-        slot.base.radius = data.player.radius;
+        // onExitAbility assigns Player.Scale to the slime's hurtbox, and
+        // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
+        slot.set_ordinary_body_scale(slot.player_scale);
+        slot.restore_slime_radius();
         slot.base.constants = data.player.constants.clone();
         slot.base.velocity = Vec2::ZERO;
         slot.base.external_velocity = Vec2::ZERO;
@@ -40065,8 +40085,14 @@ impl RolloutWorld {
                     // DPhysicsBox: position + ComplexMul(fixTrans.right, offset),
                     // with right kept exactly as the surface normal turned.
                     let right = slot.meteor.collider_up.perp_cw();
-                    let center = root + right.complex_mul(data.meteor.collider_offset);
-                    let collider = OrientedBox::from_basis(
+                    let form = slot.forms[slot.entity_slot(meteor_e)];
+                    let offset = if form.scale == Fix::ZERO {
+                        data.meteor.collider_offset
+                    } else {
+                        form.offset
+                    };
+                    let center = root + right.complex_mul(offset);
+                    let collider = form.hurtbox(
                         center,
                         basis,
                         data::surface_extents(data.meteor.hurtbox_extents),
