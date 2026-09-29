@@ -18523,7 +18523,8 @@ impl RolloutWorld {
         let engine = &mut self.engines[engine_index];
         engine.attach_order = attach_order;
         engine.macho_carried = false;
-        engine.born_tick = self.tick;
+        // SetActive(true) re-enables updatables already registered, and they
+        // come after MachoThrow2: the start animation runs from this pass.
         engine.platform_index = platform_index;
         engine.local = local;
         engine.relative_center = relative_center;
