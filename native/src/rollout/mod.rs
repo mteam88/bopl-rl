@@ -6636,7 +6636,10 @@ impl RolloutWorld {
                     CAUSE_OTHER
                 };
                 // The boundary component already ran the form's ExitAbility.
-                self.kill_with(index, ENVIRONMENT, cause, false, false, false);
+                // The slime's boundary kill ignores invulnerability; a form's
+                // ExitAbility kills through the slime's killPlayer, which does not.
+                let ignore_invulnerability = cause == CAUSE_ACCIDENT;
+                self.kill_with(index, ENVIRONMENT, cause, false, false, false, ignore_invulnerability);
             }
         }
         // SlimeController.Awake adds the RewindRecorder to the slime itself,
@@ -16889,7 +16892,7 @@ impl RolloutWorld {
                 // while still executing from DetPhysics's callback queue.
                 // A form gets Ability.ExitAbility at its FixTransform, not
                 // the form's own exit (BlackHole.cs:486-495).
-                self.kill_with(index, killer, CAUSE_OTHER, true, false, false);
+                self.kill_with(index, killer, CAUSE_OTHER, true, false, false, true);
             }
         }
     }
@@ -39516,11 +39519,17 @@ impl RolloutWorld {
         if by_callback && self.players[index].active == ActiveAbility::Rock {
             return false;
         }
-        self.kill_with(index, killer, cause, by_callback, spawn_effect, true)
+        // Scene-boundary deaths pass ignoreInvulnerability=true; ordinary
+        // collision callbacks do not.
+        let ignore_invulnerability = killer == ENVIRONMENT && cause == CAUSE_ACCIDENT;
+        self.kill_with(index, killer, cause, by_callback, spawn_effect, true, ignore_invulnerability)
     }
 
     /// `form_exit` is false when the caller hands the form's Ability an exit
     /// directly (BlackHole.OnCollide), skipping the form's own ExitAbility.
+    /// `ignore_invulnerability` is killPlayer's own flag: a Poke Ball
+    /// victim still dies to the scene bounds and to a Black Hole
+    /// (DestroyIfOutsideSceneBounds.cs:148, BlackHole.cs:499).
     fn kill_with(
         &mut self,
         index: usize,
@@ -39529,6 +39538,7 @@ impl RolloutWorld {
         by_callback: bool,
         spawn_effect: bool,
         form_exit: bool,
+        ignore_invulnerability: bool,
     ) -> bool {
         // PlayerCollision.killPlayer detaches the slime's rope as its very
         // first action, ahead of the invulnerability early-return, so even a
@@ -39553,11 +39563,7 @@ impl RolloutWorld {
         // objects around that call (DropAbilities returns once the game ended).
         let already_won = self.players[index].won;
         // Poke Ball sets PlayerCollision's mask 16 while a victim is inside.
-        // Scene-boundary deaths explicitly pass ignoreInvulnerability=true;
-        // ordinary collision callbacks do not.
-        if self.players[index].poke_invulnerable
-            && !(killer == ENVIRONMENT && cause == CAUSE_ACCIDENT)
-        {
+        if self.players[index].poke_invulnerable && !ignore_invulnerability {
             return false;
         }
         if by_callback {
