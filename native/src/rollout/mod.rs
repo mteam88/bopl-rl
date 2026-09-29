@@ -3078,6 +3078,10 @@ struct PlatformScratch {
     /// This pass's Player.Scale changes by a ScaleChanger, in hierarchy order:
     /// (player, changer hierarchy, scale before).
     player_scale_changes: Vec<(usize, u32, Fix)>,
+    /// This pass's platforms before a spawned ScaleChanger or
+    /// DuplicatePlatformEffect resized them: (platform, updater hierarchy,
+    /// shape before).
+    platform_resizes: Vec<(usize, u32, Platform)>,
     /// Grounded slimes a wall squished this pass, in callback order:
     /// (abilityless clone, player or clone index).
     squished: Vec<(bool, usize)>,
@@ -6362,6 +6366,8 @@ impl RolloutWorld {
         if has(ABILITY_REWIND) {
             self.rewind_recorders_tick();
         }
+        self.scratch.player_scale_changes.clear();
+        self.scratch.platform_resizes.clear();
         self.platform_bounds_tick(PlatformPass::Duplicated);
         self.platform_motion_tick(data, updater_dt, PlatformPass::Duplicated);
         self.platform_sticky_tick(updater_dt, PlatformPass::Duplicated);
@@ -28616,7 +28622,6 @@ impl RolloutWorld {
     /// do not commute: each add is clamped, and a resize rounds against the
     /// scale the other just wrote.
     fn scale_changers_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        self.scratch.player_scale_changes.clear();
         let mut order = std::mem::take(&mut self.scratch.item_order);
         order.clear();
         order.extend(0..self.scale_changers.len());
@@ -28879,6 +28884,11 @@ impl RolloutWorld {
                     ray.multiplier
                 };
                 let value = dynamics.scale + ray.scale_curve.evaluate(time) * multiplier;
+                self.scratch.platform_resizes.push((
+                    effect.victim,
+                    effect.hierarchy_base,
+                    self.platforms[effect.victim].clone(),
+                ));
                 self.set_platform_scale(effect.victim, value, true);
                 self.scale_changers[index].time = time;
                 continue;
@@ -29021,6 +29031,11 @@ impl RolloutWorld {
             // updates after that platform's StickyRR.UpdateBounds.
             let source = snapshot.source;
             let source_scale = self.platform_dynamics[source].scale;
+            self.scratch.platform_resizes.push((
+                source,
+                snapshot.hierarchy_base,
+                self.platforms[source].clone(),
+            ));
             self.set_platform_scale(source, effect_scale, true);
             let collider = self.platforms[source].collider;
             let extents = Vec2::new(
@@ -36016,12 +36031,20 @@ impl RolloutWorld {
                     || state.blink_reactivated_tick == Some(self.tick))
                     && state.blink_tunnel_hierarchy > hierarchy
             };
+            // A resizer after the clone has not resized its platform yet.
+            let resized_later = |index: usize| {
+                (self.scratch.platform_resizes.iter())
+                    .find(|&&(platform, changer, _)| platform == index && changer > hierarchy)
+                    .map(|(_, _, before)| before)
+            };
             let untoggled: Vec<Platform>;
-            let platforms: &[Platform] = if (0..self.platforms.len()).any(toggled_later) {
+            let platforms: &[Platform] = if (0..self.platforms.len())
+                .any(|index| toggled_later(index) || resized_later(index).is_some())
+            {
                 untoggled = (self.platforms.iter().enumerate())
                     .map(|(index, platform)| Platform {
                         active: platform.active != toggled_later(index),
-                        ..platform.clone()
+                        ..resized_later(index).unwrap_or(platform).clone()
                     })
                     .collect();
                 &untoggled
