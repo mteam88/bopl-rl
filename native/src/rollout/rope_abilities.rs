@@ -1715,7 +1715,9 @@ impl RolloutWorld {
                     };
                     crate::physics::contact::circle_circle(circle, rock).is_some()
                 } else {
-                    crate::physics::contact::circle_box(circle, slot.base.collider).is_some()
+                    // A form's own Player-layer collider carries its
+                    // PlayerBody, so the hook meets the form's box.
+                    self.player_hit_by_circle(player, circle)
                 };
                 if hit {
                     victim = Some(player);
