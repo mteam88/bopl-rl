@@ -6832,21 +6832,6 @@ impl RolloutWorld {
             {
                 continue;
             }
-            if let Some(platform_index) = ground_index
-                && !self.platforms[platform_index].active
-            {
-                // QuantumTunnel disables a wall after its updater phase, but
-                // the rider's already scheduled LateUpdate still follows the
-                // transform written by the final ShakablePlatform sample.
-                if self.platform_dynamics[platform_index].blink_deactivated_tick == Some(self.tick)
-                {
-                    let platform = &self.platforms[platform_index];
-                    let base = &mut self.players[index].base;
-                    base.position = platform.surface.position(base.local, base.radius);
-                    base.align(platform);
-                }
-                continue;
-            }
             // SyncRotationToPlatform is off on the gun, Bow, Dash, Magnet
             // and quick-spell prefabs: a grounded form keeps its own angle.
             let keeps_rotation = matches!(
@@ -6863,6 +6848,23 @@ impl RolloutWorld {
                     | ActiveAbility::TimeStop
                     | ActiveAbility::Revival
             );
+            if let Some(platform_index) = ground_index
+                && !self.platforms[platform_index].active
+            {
+                // QuantumTunnel disables a wall after its updater phase, but
+                // the rider's already scheduled LateUpdate still follows the
+                // transform written by the final ShakablePlatform sample.
+                if self.platform_dynamics[platform_index].blink_deactivated_tick == Some(self.tick)
+                {
+                    let platform = &self.platforms[platform_index];
+                    let base = &mut self.players[index].base;
+                    base.position = platform.surface.position(base.local, base.radius);
+                    if !keeps_rotation {
+                        base.align(platform);
+                    }
+                }
+                continue;
+            }
             let platforms = &self.platforms;
             let base = &mut self.players[index].base;
             if keeps_rotation {
