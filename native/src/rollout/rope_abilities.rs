@@ -1655,6 +1655,12 @@ impl RolloutWorld {
                     .local_position(position, Fix::ZERO)
                     .expect("grapple hook centre overlaps platform");
                 let anchor = self.platforms[platform].surface.position(local, Fix::ZERO);
+                // AttachToPlatform pulls a "boulder"-tagged platform with
+                // boulderPullStr (RopeAttachment.cs:185-192).
+                let boulder = self
+                    .macho_boulders
+                    .iter()
+                    .any(|boulder| boulder.active && boulder.platform_index == platform);
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.mass_start = Fix::ONE;
                 rope.physics.force_start = Vec2::ZERO;
@@ -1663,7 +1669,8 @@ impl RolloutWorld {
                 rope.platform_local = local;
                 rope.platform_anchor = anchor;
                 rope.hook_hit = Some(position);
-                rope.platform_pull = source.platform_pull;
+                rope.platform_pull =
+                    if boulder { source.boulder_pull } else { source.platform_pull };
                 rope.reel_in = true;
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
