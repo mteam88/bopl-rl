@@ -22381,9 +22381,11 @@ impl RolloutWorld {
             // Player-layer colliders are processed during activation and are
             // deliberately excluded from the persistent target set. A slime in
             // its spawn animation has its hurtbox enabled, and AddForce feeds
-            // the disabled PlayerPhysics' externalVelocity all the same.
+            // the disabled PlayerPhysics' externalVelocity all the same. The
+            // caster is not exempt: a Meteor or Gust form is unpushable, but
+            // a slime that already left the form by activation is pushed.
             for player_index in 0..self.players.len() {
-                if player_index == wave.owner || !self.hittable(player_index) {
+                if !self.hittable(player_index) {
                     continue;
                 }
                 if matches!(
