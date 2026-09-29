@@ -11933,7 +11933,12 @@ impl RolloutWorld {
                     }
                     self.players[index].base.position = near;
                     let caster_id = self.players[index].base.id;
-                    self.kill(target, caster_id, CAUSE_OTHER, true, true);
+                    // Dash runs in MeteorSmash.UpdateSim and calls the hit's
+                    // OnCollide itself, so DetPhysics drops the victim before
+                    // this pass's contacts. A Rock's callback is BounceBall.
+                    if self.players[target].active != ActiveAbility::Rock {
+                        self.kill(target, caster_id, CAUSE_OTHER, false, true);
+                    }
                     // A Rock (no PlayerCollision) or an invulnerable target
                     // survives, and the reciprocal PlayerCollision callback
                     // can still kill the Meteor against a lethal form.
@@ -11943,7 +11948,7 @@ impl RolloutWorld {
                                 && self.players[target].roll.lethal))
                     {
                         let killer = self.players[target].base.id;
-                        self.kill(index, killer, CAUSE_OTHER, true, true);
+                        self.kill(index, killer, CAUSE_OTHER, false, true);
                     }
                     if !self.playable(index) || self.players[index].active != ActiveAbility::Meteor
                     {
