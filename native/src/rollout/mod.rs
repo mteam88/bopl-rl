@@ -6358,6 +6358,7 @@ impl RolloutWorld {
         }
         self.platform_bounds_tick(PlatformPass::Duplicated);
         self.platform_motion_tick(data, updater_dt, PlatformPass::Duplicated);
+        self.platform_sticky_tick(updater_dt, PlatformPass::Duplicated);
         self.platform_body_scale_tick(PlatformPass::Duplicated);
         self.platform_orbits_tick(data, updater_dt, PlatformPass::Duplicated);
         self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Duplicated);
@@ -6468,6 +6469,7 @@ impl RolloutWorld {
         // spawned platform's ShakablePlatform also runs after them, so a
         // Beam or Meteor landing on it shakes it on the same pass.
         self.platform_motion_tick(data, updater_dt, PlatformPass::Spawned);
+        self.platform_sticky_tick(updater_dt, PlatformPass::Spawned);
         self.platform_body_scale_tick(PlatformPass::Spawned);
         self.platform_orbits_tick(data, updater_dt, PlatformPass::Spawned);
         self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Spawned);
@@ -35742,8 +35744,21 @@ impl RolloutWorld {
         // BoplBody is the last updater on every platform (StickyRR,
         // AnimateVelocity, ShakablePlatform, ..., BoplBody), so the spring
         // above still pushed with the mass from before this pass's rescale.
+        self.platform_sticky_tick(updater_dt, PlatformPass::Authored);
+        self.platform_body_scale_tick(PlatformPass::Authored);
+        self.platform_orbits_tick(data, updater_dt, PlatformPass::Authored);
+        self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Authored);
+    }
+
+    /// StickyRoundedRectangle.UpdateSim for one pass's platforms. A copy's or
+    /// a spawned platform's runs with its prefab, after the players, so a
+    /// slime landing this pass still sees it before the ease back.
+    fn platform_sticky_tick(&mut self, updater_dt: Fix, pass: PlatformPass) {
         for i in 0..self.platforms.len() {
-            if !self.platforms[i].active {
+            if !self.platforms[i].active
+                || self.platform_pass(i) != pass
+                || self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick)
+            {
                 continue;
             }
             if self.platform_dynamics[i].drop_players_frames >= 0 {
@@ -35770,9 +35785,6 @@ impl RolloutWorld {
                 self.platforms[i].surface.bounds_radius = self.platforms[i].collider.radius;
             }
         }
-        self.platform_body_scale_tick(PlatformPass::Authored);
-        self.platform_orbits_tick(data, updater_dt, PlatformPass::Authored);
-        self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Authored);
     }
 
     fn platform_vector_fields_tick(
