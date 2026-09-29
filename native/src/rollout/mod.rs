@@ -8240,10 +8240,12 @@ impl RolloutWorld {
                 );
             }
         }
+        // Portal.IsPortalable (Portal.cs:155) never asks whether the
+        // collider is enabled, so a pickup still in its disabled spell counts.
         for pickup in &self.ability_pickups {
             if let Some(entity) = pickup
                 .entity
-                .filter(|_| pickup.active && pickup.enabled && pickup.body.inverse_mass > Fix::ZERO)
+                .filter(|_| pickup.active && pickup.body.inverse_mass > Fix::ZERO)
                 && self.entities[entity].flags & E_ACTIVE != 0
                 && Self::portal_inside(endpoint, pickup.position, data)
             {
@@ -8525,9 +8527,12 @@ impl RolloutWorld {
         }
         for index in 0..self.ability_pickups.len() {
             let pickup = self.ability_pickups[index];
-            let Some(entity) = pickup.entity.filter(|_| {
-                pickup.active && pickup.enabled && pickup.body.inverse_mass > Fix::ZERO
-            }) else {
+            // Portal.IsPortalable (Portal.cs:155) ignores the disabled
+            // hitbox of a freshly dropped pickup.
+            let Some(entity) = pickup
+                .entity
+                .filter(|_| pickup.active && pickup.body.inverse_mass > Fix::ZERO)
+            else {
                 continue;
             };
             if self.entities[entity].flags & E_ACTIVE == 0 {
