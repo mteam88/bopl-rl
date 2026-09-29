@@ -31792,8 +31792,10 @@ impl RolloutWorld {
         slot.poke_invulnerable = false;
         slot.invisible = false;
         slot.base.position = item.position + Vec2::UP * Fix::from_f32(0.4);
+        // PokeBall.cs:228 passes x / 3 to ApplyRagDoll, which divides it by
+        // 3/2 again (SlimeController.cs:1027); each division rounds.
         slot.base.velocity = Vec2::new(
-            item.body.velocity.x / Fix::from_f32(4.5),
+            item.body.velocity.x / Fix::from_int(3) / (Fix::from_int(3) / Fix::from_int(2)),
             data.poke_ball.pop_up_speed,
         );
         let eject_direction = Vec2::new(
@@ -31840,8 +31842,10 @@ impl RolloutWorld {
         clone.captured_by_ball = remaining_captor;
         clone.poke_invulnerable = false;
         clone.base.position = item.position + Vec2::UP * Fix::from_f32(0.4);
+        // PokeBall.cs:228 passes x / 3 to ApplyRagDoll, which divides it by
+        // 3/2 again (SlimeController.cs:1027); each division rounds.
         clone.base.velocity = Vec2::new(
-            item.body.velocity.x / Fix::from_f32(4.5),
+            item.body.velocity.x / Fix::from_int(3) / (Fix::from_int(3) / Fix::from_int(2)),
             data.poke_ball.pop_up_speed,
         );
         let eject_direction = Vec2::new(
