@@ -2593,6 +2593,11 @@ pub struct PlayerSlot {
     /// The original SlimeController stays at the ability entry point while
     /// the active ability's separate body moves.
     pub ability_origin: Vec2,
+    /// The pass `ability_origin` was taken on.
+    pub ability_origin_tick: u32,
+    /// The pass and the body position before this player's updaters ran on
+    /// it: an Updater object older than the form still sees it there.
+    pub pass_start: (u32, Vec2),
     pub ability_origin_velocity: Vec2,
     /// The external part of `ability_origin_velocity`.
     pub ability_origin_external: Vec2,
@@ -4696,6 +4701,8 @@ impl RolloutWorld {
                 active: ActiveAbility::None,
                 active_slot: 0,
                 ability_origin: spawn,
+                ability_origin_tick: u32::MAX,
+                pass_start: (u32::MAX, Vec2::ZERO),
                 ability_origin_velocity: Vec2::ZERO,
                 ability_origin_external: Vec2::ZERO,
                 ability_origin_rotation: Fix::ZERO,
@@ -9277,6 +9284,7 @@ impl RolloutWorld {
         // gravity step below) and Move's raycasts both fire attachToGround,
         // and `update_obs_state` consumes whichever one landed the body.
         self.players[index].base.begin_pass();
+        self.players[index].pass_start = (self.tick, self.players[index].base.position);
         self.players[index].rewind.in_form_at_pass =
             self.players[index].active != ActiveAbility::None;
         // An airborne body keeps its stale attachedGround; only a grounded
@@ -9615,6 +9623,7 @@ impl RolloutWorld {
                         slot.ragdoll_grounded_fall = false;
                     }
                     slot.ability_origin = frozen.position;
+                    slot.ability_origin_tick = self.tick;
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
                     slot.ability_origin_external = frozen.external_velocity;
                     slot.ability_origin_rotation = frozen.rotation;
@@ -32989,6 +32998,19 @@ impl RolloutWorld {
                 return Some(clone.pass_start.1);
             }
             return Some(clone.base.position);
+        }
+        // A form instantiated after the hammer has not run its updaters yet
+        // this pass: its FixTransform is where the last pass left it, or
+        // where the slime entered it in the air. A grounded entry's
+        // SyncPhysicsTo seats it before the hammer.
+        let form = slot.form_entities[slot.active_slot];
+        if slot.active != ActiveAbility::None
+            && slot.pass_start.0 == self.tick
+            && !(slot.ability_origin_tick == self.tick && slot.ability_origin_ground.is_some())
+            && form < self.entities.len()
+            && self.entities[form].hierarchy > 100_000_000 + hierarchy
+        {
+            return present.then_some(slot.pass_start.1);
         }
         present.then_some(if teleported_later { before } else { slot.base.position })
     }
