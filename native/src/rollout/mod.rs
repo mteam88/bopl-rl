@@ -30759,10 +30759,14 @@ impl RolloutWorld {
             // (BoplBody.cs:220-235), not the source's scaled live ones, and
             // the private prevScale is one (BoplBody.cs:40), so the copy's
             // first BoplBody pass rescales them by 1 / Scale (cs:332-343).
+            // It also starts at BoplBody's serialized StartVelocity and
+            // StartAngularVelocity (BoplBody.cs:221-229).
             let def = &data.maps[self.map].platforms[definition];
             for body in [&mut dynamics.body, &mut dynamics.root_body] {
                 body.inverse_mass = def.authored_inverse_mass;
                 body.inverse_inertia = def.authored_inverse_inertia;
+                body.velocity = def.body.velocity;
+                body.angular_velocity = def.body.angular_velocity;
             }
             dynamics.body_scale = Fix::ONE;
         }
