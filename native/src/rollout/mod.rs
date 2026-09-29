@@ -8438,12 +8438,11 @@ impl RolloutWorld {
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, missile.position, data)
             {
+                // Portal.TeleportBody leaves the rotation, so Missile.UpdateSim
+                // later this pass still thrusts along the old up.
                 let velocity = Self::portal_velocity(entry, exit, missile.body.velocity);
                 self.guided_missiles[index].position = position;
                 self.guided_missiles[index].body.velocity = velocity;
-                if velocity != Vec2::ZERO {
-                    self.guided_missiles[index].up = velocity.normalized_safe();
-                }
             }
         }
         for index in 0..self.revival_marker_pool.len() {
