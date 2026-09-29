@@ -6558,7 +6558,7 @@ impl RolloutWorld {
         }
         if has(ABILITY_TELEPORT) {
             self.teleport_effects_tick(data, updater_dt);
-            self.teleport_pending_tick(data);
+            self.teleport_pending_tick(data, updater_dt);
         }
         if has_rope && first_teleport < ropes_before_clones {
             self.ropes_update(first_teleport..ropes_before_clones);
@@ -20242,7 +20242,7 @@ impl RolloutWorld {
         self.begin_teleport_object_effect(entity, data);
     }
 
-    fn teleport_pending_tick(&mut self, data: &data::RolloutData) {
+    fn teleport_pending_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for owner in 0..self.players.len() {
             let Some(marker_index) = self.players[owner].teleport_pending_marker.take() else {
                 continue;
@@ -20273,6 +20273,38 @@ impl RolloutWorld {
                 data.teleport.teleportable_mask,
                 &mut marker_hits,
             );
+            // TeleportIndicator.UpdateSim teleports at the marker's place in
+            // the hierarchy: an older item has already had its updaters this
+            // pass (a settled Tack's pin, Mjolnir's recall), and the teleport
+            // then hides it.
+            for (hit, &entity) in
+                player_hits[..player_count].iter().chain(&marker_hits[..marker_count]).enumerate()
+            {
+                if hit >= player_count && player_hits[..player_count].contains(&entity) {
+                    continue;
+                }
+                if let Some(item_index) = self.thrown_items.iter().position(|item| {
+                    item.active
+                        && item.entity == Some(entity)
+                        && item.hierarchy_base < marker.hierarchy_base
+                }) && self.entities[entity].flags & E_ACTIVE != 0
+                    && !self.teleport_skips_entity(entity)
+                    && !self.blink_object_hidden(Some(entity))
+                {
+                    match self.thrown_items[item_index].ability {
+                        ABILITY_TACK => self.tack_tick(item_index, data, updater_dt),
+                        ABILITY_POKE_BALL => self.poke_ball_tick(item_index, data, updater_dt),
+                        ABILITY_MJOLNIR => self.mjolnir_tick(item_index, data, updater_dt),
+                        _ => {}
+                    }
+                    let item = &mut self.thrown_items[item_index];
+                    if item.active && item.pending_gust_impulse != Vec2::ZERO {
+                        item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
+                        item.pending_gust_impulse = Vec2::ZERO;
+                    }
+                    self.thrown_item_update(item_index, data, updater_dt);
+                }
+            }
             for &entity in &player_hits[..player_count] {
                 self.teleport_entity(entity, diff, data);
             }
