@@ -52,12 +52,19 @@
  *                        TSV (tick, player, x, y in world units) for the
  *                        single game being replayed; used by the recorded-JSON
  *                        self check
+ *   REPLAY_AB_CACHE      directory: keep a per-tick hash of every compared
+ *                        reference field, keyed by the reference library's
+ *                        identity and the game. A game whose hashes are cached
+ *                        steps only the candidate; any mismatch reruns it live
+ *                        for the report. Bit-exact runs only (TOL=0, no
+ *                        VISIBLE/IGNORE/ALL/FULL/DUMP/TRACE).
  *
  * Exit status: 0 when every game agrees, 1 when any diverges, 2 on usage or
  * I/O failure.
  *
  *   cc -O3 -std=c11 -I. -o replay_ab eval/rust_ab/replay_ab.c sim/abi/bopl_rl.c -ldl -lm
  */
+#define _DEFAULT_SOURCE /* realpath, st_mtim */
 #include "bopl_rl.h"
 #include <dirent.h>
 #include <inttypes.h>
@@ -65,6 +72,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define MAX_PLAYERS 6
 
@@ -453,6 +461,103 @@ static void dump_tables(const BoplRlState *a, const BoplRlState *b, unsigned tic
 
 static long dump_tick = -1;
 
+/* ---- Reference hash cache (REPLAY_AB_CACHE) ---- */
+
+/* One hash per tick over exactly the fields compare_state compares, with the
+ * same inactive-row ENABLED exclusion, so equal hashes mean a bit-exact match. */
+static uint64_t mix(uint64_t h, uint64_t v) { h ^= v; h *= 0x9E3779B97F4A7C15ull; return h ^ (h >> 29); }
+
+static uint64_t mix_words(uint64_t h, const void *data, size_t bytes) {
+    const unsigned char *p = data;
+    for (; bytes >= 8; p += 8, bytes -= 8) { uint64_t v; memcpy(&v, p, 8); h = mix(h, v); }
+    if (bytes) { uint64_t v = 0; memcpy(&v, p, bytes); h = mix(h, v); }
+    return h;
+}
+
+static uint64_t state_hash(const BoplRlState *s) {
+    const BoplRlHeader *hd = &s->header;
+    uint64_t h = 0x243F6A8885A308D3ull;
+    h = mix(h, hd->player_count); h = mix(h, hd->entity_count); h = mix(h, hd->slime_count);
+    h = mix(h, hd->flags); h = mix(h, hd->episode_ticks); h = mix(h, hd->sudden_death);
+    h = mix(h, hd->warmup_ticks); h = mix(h, (uint64_t)hd->simulation_time);
+    h = mix(h, (uint64_t)hd->player_time_scale); h = mix(h, (uint64_t)hd->simulation_time_since_level_loaded);
+    for (uint32_t i = 0; i < hd->player_count; i++) {
+        h = mix_words(h, &s->players[i], sizeof s->players[i]);
+        h = mix_words(h, &s->telemetry[i], sizeof s->telemetry[i]);
+    }
+    h = mix_words(h, s->slimes, (size_t)hd->slime_count * sizeof *s->slimes);
+    for (uint32_t i = 0; i < hd->entity_count; i++) {
+        BoplRlEntity e = s->entities[i];
+        if (!strict && !(e.flags & BOPL_ENTITY_ACTIVE)) e.flags &= ~(uint32_t)BOPL_ENTITY_ENABLED;
+        h = mix_words(h, &e, sizeof e);
+    }
+    return h;
+}
+
+/* The reference's hash at every tick it produced a state (0 = after reset),
+ * and the episode tick it ended on (0 = ran out of input). */
+typedef struct { uint64_t *hash; unsigned count, capacity, end; int complete; } Hashes;
+
+static void hashes_push(Hashes *h, uint64_t value) {
+    if (h->count == h->capacity) {
+        h->capacity = h->capacity ? h->capacity * 2 : 16384;
+        h->hash = realloc(h->hash, h->capacity * sizeof *h->hash);
+    }
+    h->hash[h->count++] = value;
+}
+
+static const char *cache_root = NULL;
+static char cache_dir[4096];
+
+static uint64_t mix_text(uint64_t h, const char *text) { return mix_words(h, text, strlen(text)); }
+
+static int cache_setup(const char *reference) {
+    struct stat st;
+    char real[4096];
+    if (!realpath(reference, real) || stat(real, &st)) return 1;
+    uint64_t key = mix_text(0x13198A2E03707344ull, real);
+    key = mix(key, (uint64_t)st.st_size); key = mix(key, (uint64_t)st.st_ino);
+    key = mix(key, (uint64_t)st.st_mtim.tv_sec); key = mix(key, (uint64_t)st.st_mtim.tv_nsec);
+    snprintf(cache_dir, sizeof cache_dir, "%s/%016" PRIx64, cache_root, key);
+    mkdir(cache_root, 0755);
+    mkdir(cache_dir, 0755);
+    return 0;
+}
+
+static void cache_file(const char *path, uint32_t warmup, uint32_t limit, unsigned max_ticks,
+                       char *out, size_t capacity) {
+    char real[4096];
+    uint64_t key = mix_text(0xA4093822299F31D0ull, realpath(path, real) ? real : path);
+    key = mix(key, warmup); key = mix(key, limit); key = mix(key, max_ticks); key = mix(key, (uint64_t)strict);
+    snprintf(out, capacity, "%s/%016" PRIx64 ".h64", cache_dir, key);
+}
+
+static int cache_load(const char *file, Hashes *h) {
+    FILE *f = fopen(file, "rb");
+    if (!f) return 1;
+    uint32_t head[2];
+    int ok = fread(head, sizeof head, 1, f) == 1 && head[0] > 0;
+    if (ok) {
+        h->hash = malloc(head[0] * sizeof *h->hash);
+        h->count = h->capacity = head[0];
+        h->end = head[1];
+        ok = fread(h->hash, sizeof *h->hash, head[0], f) == head[0];
+    }
+    fclose(f);
+    return !ok;
+}
+
+static void cache_save(const char *file, const Hashes *h) {
+    char temporary[4400];
+    snprintf(temporary, sizeof temporary, "%s.%d", file, (int)getpid());
+    FILE *f = fopen(temporary, "wb");
+    if (!f) return;
+    uint32_t head[2] = {h->count, h->end};
+    int ok = fwrite(head, sizeof head, 1, f) == 1 && fwrite(h->hash, sizeof *h->hash, h->count, f) == h->count;
+    ok = !fclose(f) && ok;
+    if (ok) rename(temporary, file); else unlink(temporary);
+}
+
 /* ---- Per-game replay ---- */
 
 typedef struct {
@@ -471,7 +576,7 @@ static void loadout_text(const BoplRlConfig *config, char *out, size_t capacity)
 
 static int replay_game(BoplRl *reference, BoplRl *candidate, const char *path,
                        uint32_t warmup, uint32_t limit, int64_t tolerance,
-                       unsigned max_ticks, int full, FILE *trace, GameResult *result) {
+                       unsigned max_ticks, int full, FILE *trace, Hashes *record, GameResult *result) {
     Replay replay;
     memset(result, 0, sizeof *result);
     if (replay_decode(path, warmup, limit, &replay)) { result->failed = 1; return 1; }
@@ -498,25 +603,33 @@ static int replay_game(BoplRl *reference, BoplRl *candidate, const char *path,
     if (dump_tick == 0) dump_tables(state[0], state[1], 0);
     compare_state(state[0], state[1], 0, tolerance, &result->compare);
     result->compare.compared_ticks = 1;
+    if (record) hashes_push(record, state_hash(state[0]));
 
     unsigned total = replay.tick_count - warmup;
     if (max_ticks && total > max_ticks) total = max_ticks;
     int ended[2] = {0, 0};
-    for (unsigned tick = 1; tick <= total; tick++) {
+    unsigned tick;
+    for (tick = 1; tick <= total; tick++) {
         const BoplRlAction *actions = &replay.actions[(size_t)(warmup + tick - 1) * replay.config.players];
         for (int backend = 0; backend < 2; backend++) {
             if (ended[backend]) continue;
             int status = bopl_rl_step(world[backend], actions, replay.config.players, 1);
-            if (status == BOPL_RL_ENDED) { ended[backend] = 1; continue; }
+            if (status == BOPL_RL_ENDED) {
+                ended[backend] = 1;
+                if (backend == 0 && record) record->end = tick;
+                continue;
+            }
             if (status != BOPL_RL_OK) {
                 fprintf(stderr, "%s: backend %d step %u failed: %s\n", path, backend, tick,
                         bopl_rl_error(world[backend]));
                 replay_free(&replay); result->failed = 1; return 1;
             }
             const BoplRlState *now = bopl_rl_state(world[backend]);
+            if (backend == 0 && record) hashes_push(record, state_hash(now));
             if (now->header.flags & BOPL_RL_TERMINAL) {
                 ended[backend] = 1;
                 if (backend == 0) result->reference_end = tick; else result->candidate_end = tick;
+                if (backend == 0 && record) record->end = tick;
             }
         }
         state[0] = bopl_rl_state(reference);
@@ -533,8 +646,55 @@ static int replay_game(BoplRl *reference, BoplRl *candidate, const char *path,
         if (diverged && !full) break;
         if (ended[0] && ended[1]) break;
     }
+    /* A game that diverged still records the rest of the reference, so the
+     * next candidate can check every tick against the cache. */
+    for (tick++; record && !ended[0] && tick <= total; tick++) {
+        const BoplRlAction *actions = &replay.actions[(size_t)(warmup + tick - 1) * replay.config.players];
+        int status = bopl_rl_step(reference, actions, replay.config.players, 1);
+        if (status == BOPL_RL_ENDED) { ended[0] = 1; record->end = tick; break; }
+        if (status != BOPL_RL_OK) { replay_free(&replay); return 0; }
+        const BoplRlState *now = bopl_rl_state(reference);
+        hashes_push(record, state_hash(now));
+        if (now->header.flags & BOPL_RL_TERMINAL) { ended[0] = 1; record->end = tick; }
+    }
+    if (record) record->complete = 1;
     replay_free(&replay);
     return 0;
+}
+
+/* The candidate alone against a cached reference. Returns 0 when every tick
+ * matches, so the game is clean; anything else is rerun live for the report. */
+static int cached_game(BoplRl *candidate, const char *path, uint32_t warmup, uint32_t limit,
+                       unsigned max_ticks, const Hashes *reference, GameResult *result) {
+    Replay replay;
+    memset(result, 0, sizeof *result);
+    if (replay_decode(path, warmup, limit, &replay)) return 1;
+    result->map = replay.config.map;
+    result->seed = replay.config.seed;
+    result->players = replay.config.players;
+    loadout_text(&replay.config, result->loadout, sizeof result->loadout);
+    int bad = replay.tick_count <= warmup || bopl_rl_reset(candidate, &replay.config) != BOPL_RL_OK
+              || state_hash(bopl_rl_state(candidate)) != reference->hash[0];
+    result->compare.compared_ticks = 1;
+    unsigned total = bad ? 0 : replay.tick_count - warmup;
+    if (max_ticks && total > max_ticks) total = max_ticks;
+    int ended = 0;
+    for (unsigned tick = 1; tick <= total; tick++) {
+        if (!ended) {
+            const BoplRlAction *actions = &replay.actions[(size_t)(warmup + tick - 1) * replay.config.players];
+            int status = bopl_rl_step(candidate, actions, replay.config.players, 1);
+            if (status == BOPL_RL_ENDED) ended = 1;
+            else if (status != BOPL_RL_OK) { bad = 1; break; }
+            else if (bopl_rl_state(candidate)->header.flags & BOPL_RL_TERMINAL) ended = 1;
+        }
+        result->episode_ticks = tick;
+        result->compare.compared_ticks++;
+        unsigned at = tick < reference->count ? tick : reference->count - 1;
+        if (state_hash(bopl_rl_state(candidate)) != reference->hash[at]) { bad = 1; break; }
+        if (ended && reference->end && tick >= reference->end) break;
+    }
+    replay_free(&replay);
+    return bad;
 }
 
 /* ---- Directory walking ---- */
@@ -643,9 +803,15 @@ int main(int argc, char **argv) {
     if (!set.count) { fprintf(stderr, "no .rep archives found\n"); return 2; }
     if (max_games && set.count > max_games) set.count = max_games;
 
+    cache_root = getenv("REPLAY_AB_CACHE");
+    if (cache_root && (!*cache_root || tolerance || visible_only || ignore_list || report_all || full
+                       || trace_path || dump_tick >= 0 || cache_setup(argv[1])))
+        cache_root = NULL;
+
+    /* The reference opens on first use: a fully cached run never needs it. */
     char error[512] = {0};
-    BoplRl *world[2];
-    for (int backend = 0; backend < 2; backend++) {
+    BoplRl *world[2] = {NULL, NULL};
+    for (int backend = cache_root ? 1 : 0; backend < 2; backend++) {
         world[backend] = bopl_rl_open(argv[backend + 1], "/tmp/gate_bootstrap.rep",
                                       "/tmp/replay_ab.log", 180000, error, sizeof error);
         if (!world[backend]) { fprintf(stderr, "open %s failed: %s\n", argv[backend + 1], error); return 2; }
@@ -664,8 +830,27 @@ int main(int argc, char **argv) {
 
     for (size_t i = 0; i < set.count; i++) {
         GameResult result;
-        if (replay_game(world[0], world[1], set.paths[i], warmup, limit, tolerance, max_ticks,
-                        full, trace, &result)) { failed++; continue; }
+        char file[4300];
+        Hashes cached = {0}, record = {0};
+        int hit = 0;
+        if (cache_root) {
+            cache_file(set.paths[i], warmup, limit, max_ticks, file, sizeof file);
+            hit = !cache_load(file, &cached) && !cached_game(world[1], set.paths[i], warmup, limit, max_ticks,
+                                                            &cached, &result);
+            free(cached.hash);
+            if (!world[0] && !hit) {
+                world[0] = bopl_rl_open(argv[1], "/tmp/gate_bootstrap.rep", "/tmp/replay_ab.log", 180000,
+                                        error, sizeof error);
+                if (!world[0]) { fprintf(stderr, "open %s failed: %s\n", argv[1], error); return 2; }
+            }
+        }
+        if (!hit) {
+            int bad = replay_game(world[0], world[1], set.paths[i], warmup, limit, tolerance, max_ticks,
+                                  full, trace, cache_root ? &record : NULL, &result);
+            if (cache_root && record.complete) cache_save(file, &record);
+            free(record.hash);
+            if (bad) { failed++; continue; }
+        }
         games++;
         ticks_total += result.compare.compared_ticks;
         if (result.compare.max_gap > worst_gap) {
@@ -728,7 +913,7 @@ int main(int argc, char **argv) {
         fflush(stdout);
     }
     if (trace) fclose(trace);
-    for (int backend = 0; backend < 2; backend++) bopl_rl_close(world[backend]);
+    for (int backend = 0; backend < 2; backend++) if (world[backend]) bopl_rl_close(world[backend]);
 
     printf("\n=== replay_ab summary ===\n");
     printf("reference %s\ncandidate %s\n", argv[1], argv[2]);
