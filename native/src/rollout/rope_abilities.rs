@@ -535,6 +535,20 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
 }
 
 impl RolloutWorld {
+    /// RopeAttachment.AttachToPlatform pulls a "boulder"-tagged platform with
+    /// boulderPullStr (RopeAttachment.cs:185-192).
+    fn rope_platform_pull(&self, platform: usize) -> Fix {
+        if self
+            .macho_boulders
+            .iter()
+            .any(|boulder| boulder.active && boulder.platform_index == platform)
+        {
+            BOULDER_PULL
+        } else {
+            PLATFORM_PULL
+        }
+    }
+
     fn allocate_rope(
         &mut self,
         owner: usize,
@@ -555,6 +569,8 @@ impl RolloutWorld {
             *id = self.next_id();
         }
         let hierarchy = self.next_spawn_hierarchy;
+        let platform_pull =
+            platform.map_or(PLATFORM_PULL, |platform| self.rope_platform_pull(platform));
         let rope = &mut self.ropes[index];
         rope.owner = owner;
         rope.number = self.next_rope_number;
@@ -574,7 +590,7 @@ impl RolloutWorld {
         });
         rope.platform_gone = false;
         rope.hook_hit = None;
-        rope.platform_pull = PLATFORM_PULL;
+        rope.platform_pull = platform_pull;
         rope.platform_top = true;
         rope.platform_attach_tick = self.tick;
         rope.black_hole = None;
@@ -1673,12 +1689,7 @@ impl RolloutWorld {
                     .local_position(position, Fix::ZERO)
                     .expect("grapple hook centre overlaps platform");
                 let anchor = self.platforms[platform].surface.position(local, Fix::ZERO);
-                // AttachToPlatform pulls a "boulder"-tagged platform with
-                // boulderPullStr (RopeAttachment.cs:185-192).
-                let boulder = self
-                    .macho_boulders
-                    .iter()
-                    .any(|boulder| boulder.active && boulder.platform_index == platform);
+                let platform_pull = self.rope_platform_pull(platform);
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.mass_start = Fix::ONE;
                 rope.physics.force_start = Vec2::ZERO;
@@ -1687,8 +1698,7 @@ impl RolloutWorld {
                 rope.platform_local = local;
                 rope.platform_anchor = anchor;
                 rope.hook_hit = Some(position);
-                rope.platform_pull =
-                    if boulder { source.boulder_pull } else { source.platform_pull };
+                rope.platform_pull = platform_pull;
                 rope.reel_in = true;
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
