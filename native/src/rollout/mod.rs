@@ -5522,6 +5522,8 @@ impl RolloutWorld {
             slot.timers[2] = Fix::from_int(100_000);
             slot.ability_instantiated[2] = false;
             slot.form_entities[2] = usize::MAX;
+            // The new Beam component has no orbEffect yet (Beam.cs:261).
+            slot.beam_orb_slots[2] = None;
             slot.rope_prev[3] = (Vec2::ZERO, Vec2::ZERO);
             slot.forms[2] = FormScale::default();
             slot.drill_hitbox_entities[2] = [usize::MAX; 3];
@@ -21383,6 +21385,7 @@ impl RolloutWorld {
             // The new SlimeController has not seen the player invisible yet.
             slot.was_invisible = false;
             slot.ability_instantiated = [true; 3];
+            slot.beam_orb_slots = [None; 3];
             slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
             slot.forms = [FormScale::default(); 3];
             slot.pending_ability_hierarchy = [u32::MAX; 3];
@@ -21896,6 +21899,7 @@ impl RolloutWorld {
             // The new SlimeController has not seen the player invisible yet.
             slot.was_invisible = false;
             slot.ability_instantiated = [true; 3];
+            slot.beam_orb_slots = [None; 3];
             slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
             slot.forms = [FormScale::default(); 3];
             slot.pending_ability_hierarchy = [u32::MAX; 3];
