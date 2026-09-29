@@ -916,6 +916,8 @@ pub struct SpawnedTeslaNode {
     /// animator still runs it out and its callback makes the node lethal
     /// until the next UpdateSim finds it unconnected.
     pub orb_enter_left: u32,
+    /// The pass whose SimpleSparkNode.UpdateSim this node last ran.
+    pub updated_tick: Option<u32>,
     pub line_hierarchy_base: u32,
     pub line_born_tick: u32,
     pub line_entity: Option<usize>,
@@ -14607,57 +14609,7 @@ impl RolloutWorld {
             }
         });
 
-        // SimpleSparkNode.UpdateSim in hierarchy order (SimpleSparkNode.cs:224-245):
-        // a node reads its partners' state, and connecting instantiates the
-        // lightning, claiming spawn hierarchy.
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        hierarchy_order(&mut order, &self.tesla_nodes, |node| node.hierarchy_base);
-        for &node_index in &order {
-            if !self.tesla_nodes[node_index].active
-                || self.tesla_nodes[node_index].macho_carried
-                || self.tesla_nodes[node_index].spawn_tick >= self.tick
-            {
-                self.tesla_orb_step(node_index);
-                continue;
-            }
-            if self.tesla_nodes[node_index].scale != self.tesla_nodes[node_index].offset_scale {
-                let ratio =
-                    self.tesla_nodes[node_index].scale / self.tesla_nodes[node_index].offset_scale;
-                self.tesla_nodes[node_index].surface_offset *= ratio;
-                self.tesla_nodes[node_index].hitbox_offset *= ratio;
-                self.tesla_nodes[node_index].offset_scale = self.tesla_nodes[node_index].scale;
-            }
-            // A hidden child deactivates this node's connection, a hidden
-            // parent the parent's, whose line it is (SimpleSparkNode.cs:233-240).
-            if self.tesla_nodes[node_index].connected
-                && let Some(child) = self.tesla_nodes[node_index].child
-                && !self.tesla_node_shown(child)
-            {
-                self.disconnect_tesla_node(node_index, false);
-            }
-            if self.tesla_nodes[node_index].connected
-                && let Some(parent) = self.tesla_nodes[node_index].parent
-                && !self.tesla_node_shown(parent)
-            {
-                self.deactivate_tesla_parent(parent, node_index);
-            }
-            // SimpleSparkNode.IsEnabled is always true, so a node on a hidden
-            // wall keeps checking its partners but cannot connect
-            // (SimpleSparkNode.cs:62-69, 219-245).
-            if !self.tesla_nodes[node_index].connected
-                && let Some(child) = self.tesla_nodes[node_index].child
-                && self.tesla_node_shown(child)
-                && self.tesla_node_shown(node_index)
-            {
-                self.connect_tesla_node(node_index, child, data);
-            }
-            if !self.tesla_nodes[node_index].connected {
-                self.tesla_nodes[node_index].lethal = false;
-            }
-            self.tesla_orb_step(node_index);
-        }
-
-        self.scratch.item_order = order;
+        self.tesla_nodes_update(data, updater_dt, u32::MAX);
 
         for node_index in 0..self.tesla_nodes.len() {
             if !self.tesla_nodes[node_index].active
@@ -14726,10 +14678,68 @@ impl RolloutWorld {
         }
     }
 
-    /// SimpleSparkNode's activeInHierarchy: a node planted on a wall a
-    /// QuantumTunnel hid is hidden with it, as is a node Blink hit directly.
-    /// Its own UpdateSim still runs (IsEnabled is always true), but a partner
-    /// reading it disconnects (SimpleSparkNode.cs:62-68, 224-245).
+    /// SimpleSparkNode.UpdateSim in hierarchy order (SimpleSparkNode.cs:224-245)
+    /// for the nodes below `before`, once per pass: a node reads its partners'
+    /// state, and connecting instantiates the lightning, claiming spawn
+    /// hierarchy. A wall QuantumTunnel older than the node has already hidden
+    /// or restored its wall; a younger one has not.
+    fn tesla_nodes_update(&mut self, data: &data::RolloutData, updater_dt: Fix, before: u32) {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.tesla_nodes, |node| node.hierarchy_base);
+        for &node_index in &order {
+            let node = &mut self.tesla_nodes[node_index];
+            if node.hierarchy_base >= before || node.updated_tick == Some(self.tick) {
+                continue;
+            }
+            node.updated_tick = Some(self.tick);
+            let before = node.hierarchy_base;
+            self.blink_platform_tunnels_tick(data, updater_dt, Some(before));
+            if !self.tesla_nodes[node_index].active
+                || self.tesla_nodes[node_index].macho_carried
+                || self.tesla_nodes[node_index].spawn_tick >= self.tick
+            {
+                self.tesla_orb_step(node_index);
+                continue;
+            }
+            if self.tesla_nodes[node_index].scale != self.tesla_nodes[node_index].offset_scale {
+                let ratio =
+                    self.tesla_nodes[node_index].scale / self.tesla_nodes[node_index].offset_scale;
+                self.tesla_nodes[node_index].surface_offset *= ratio;
+                self.tesla_nodes[node_index].hitbox_offset *= ratio;
+                self.tesla_nodes[node_index].offset_scale = self.tesla_nodes[node_index].scale;
+            }
+            // A hidden child deactivates this node's connection, a hidden
+            // parent the parent's, whose line it is (SimpleSparkNode.cs:233-240).
+            if self.tesla_nodes[node_index].connected
+                && let Some(child) = self.tesla_nodes[node_index].child
+                && !self.tesla_node_shown(child)
+            {
+                self.disconnect_tesla_node(node_index, false);
+            }
+            if self.tesla_nodes[node_index].connected
+                && let Some(parent) = self.tesla_nodes[node_index].parent
+                && !self.tesla_node_shown(parent)
+            {
+                self.deactivate_tesla_parent(parent, node_index);
+            }
+            // SimpleSparkNode.IsEnabled is always true, so a node on a hidden
+            // wall keeps checking its partners but cannot connect
+            // (SimpleSparkNode.cs:62-69, 219-245).
+            if !self.tesla_nodes[node_index].connected
+                && let Some(child) = self.tesla_nodes[node_index].child
+                && self.tesla_node_shown(child)
+                && self.tesla_node_shown(node_index)
+            {
+                self.connect_tesla_node(node_index, child, data);
+            }
+            if !self.tesla_nodes[node_index].connected {
+                self.tesla_nodes[node_index].lethal = false;
+            }
+            self.tesla_orb_step(node_index);
+        }
+        self.scratch.item_order = order;
+    }
+
     /// The node's orb SpriteAnimator, a child updatable right after its
     /// SimpleSparkNode: a younger node connecting to it restarts its EnterOrb
     /// only after this one has run.
@@ -14745,6 +14755,10 @@ impl RolloutWorld {
         }
     }
 
+    /// SimpleSparkNode's activeInHierarchy: a node planted on a wall a
+    /// QuantumTunnel hid is hidden with it, as is a node Blink hit directly.
+    /// Its own UpdateSim still runs (IsEnabled is always true), but a partner
+    /// reading it disconnects (SimpleSparkNode.cs:62-68, 224-245).
     fn tesla_node_shown(&self, node_index: usize) -> bool {
         let Some(node) = self.tesla_nodes.get(node_index) else {
             return false;
@@ -28999,6 +29013,10 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // A spark node older than the tunnel reads its partners first.
+            let hierarchy = state.blink_tunnel_hierarchy;
+            self.tesla_nodes_update(data, updater_dt, hierarchy);
+            let state = &mut self.platform_dynamics[platform_index];
             state.blink_tunnel_stepped_tick = Some(self.tick);
             if !state.blink_tunnel_initialized {
                 let delay = state.blink_tunnel_delay + updater_dt;
