@@ -11101,6 +11101,14 @@ impl RolloutWorld {
                     slot.base.velocity = Vec2::UP
                         * data.meteor.speed_curve.evaluate(slot.meteor.time)
                         * data.meteor.jump_speed;
+                }
+                // Meteor's PlayerBody is its own updater after MeteorSmash
+                // and holds the rope Ability.EnterAbility handed it, so it
+                // steps on every anticipation pass, the jump included.
+                if self.players[index].rope.is_some() {
+                    self.form_body_step(index);
+                } else if self.players[index].meteor.phase == 1 {
+                    let slot = &mut self.players[index];
                     slot.base.position += slot.base.velocity * DT;
                 }
             }
@@ -11114,8 +11122,13 @@ impl RolloutWorld {
                     self.exit_meteor_grounded(index, data);
                     return;
                 }
+                if self.players[index].rope.is_some() {
+                    self.form_body_step(index);
+                } else {
+                    let slot = &mut self.players[index];
+                    slot.base.position += slot.base.velocity * DT;
+                }
                 let slot = &mut self.players[index];
-                slot.base.position += slot.base.velocity * DT;
                 slot.meteor.ticks += 1;
                 if slot.meteor.ticks > data.meteor.air_ticks {
                     slot.meteor.phase = 2;
