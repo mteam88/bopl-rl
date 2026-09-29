@@ -13104,7 +13104,6 @@ impl RolloutWorld {
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
-            slot.scale_time_stop_circle(data);
             slot.cast_spell.collider_position = published_position;
             slot.cast_spell.collider_right = slot.base.up.perp_cw();
             slot.cast_spell.collider_rotation = slot.base.rotation;
@@ -13188,6 +13187,10 @@ impl RolloutWorld {
                 }
             }
         }
+        // Ability.UpdateSim follows CastSpell in the prefab: CastSpell casts
+        // and exits with the circle at the scale of the previous pass, and a
+        // form it exits never gets this pass's scale.
+        self.players[index].scale_time_stop_circle(data);
         self.players[index].reported_position = published_position;
         self.players[index].reported_tick = self.tick;
         // PlayerBody follows CastSpell in the prefab. It carries the rope
