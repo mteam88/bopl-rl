@@ -2575,6 +2575,8 @@ pub struct PlayerSlot {
     /// kept through an airborne entry. Its boulders are ice when that was.
     pub macho_boulder_ice: [bool; 3],
     /// Each slot's Ability.prevScale: the Player.Scale its last UpdateSim saw.
+    /// Every form keeps one; a gun telescopes its FirepointOffset and a
+    /// ThrowItem2 rescales its payload by the change.
     pub gun_prev_scales: [Fix; 3],
     /// PlayerPhysics.gravity_modifier on each slot's GunTransform, MagnetGun or
     /// BowTransform form. Entering airborne sets 0.03 and firing sets 1, but entering
@@ -2854,13 +2856,19 @@ impl PlayerSlot {
     /// Ability.UpdateSim's OnScaleChanged: a GunTransform or MagnetGun
     /// multiplies its FirepointOffset by the change in Player.Scale since the
     /// slot's last UpdateSim.
-    fn on_scale_changed(&mut self) {
+    /// Returns the multiplier every other OnScaleChanged gets, when it fired.
+    /// Ability.UpdateSim only runs while the form does, so `prevScale` keeps
+    /// the scale its last run saw across exits and re-entries.
+    fn on_scale_changed(&mut self) -> Option<Fix> {
         let s = self.active_slot;
         let previous = self.gun_prev_scales[s];
-        if self.player_scale != previous {
-            self.gun_firepoint_offsets[s] *= self.player_scale / previous;
-            self.gun_prev_scales[s] = self.player_scale;
+        if self.player_scale == previous {
+            return None;
         }
+        let multiplier = self.player_scale / previous;
+        self.gun_firepoint_offsets[s] *= multiplier;
+        self.gun_prev_scales[s] = self.player_scale;
+        Some(multiplier)
     }
 
     fn scale_form(&mut self, extents: Vec2, radius: Fix, offset: Vec2) {
@@ -22788,6 +22796,22 @@ impl RolloutWorld {
             // DPhysicsCircle uses manuallyCallInit. Keep only the payload
             // state until release calls `Fire`.
             self.spawn_held_item(index, data);
+        }
+        // Ability.UpdateSim's OnScaleChanged runs after that spawn callback: a
+        // Player.Scale change since this slot's form last ran reaches
+        // ThrowItem2.OnScaleChanged, which rescales the payload it still
+        // references, thrown or not, until ExitAbility (Ability.cs:126-133,
+        // ThrowItem2.cs:89-95).
+        if let Some(multiplier) = self.players[index].on_scale_changed()
+            && let Some(item_index) = self.held_throw_item(index)
+        {
+            let item = &mut self.thrown_items[item_index];
+            let old = item.scale;
+            item.scale *= multiplier;
+            item.collider_radius *= (Fix::ONE / old) * item.scale;
+            if let Some(entity) = item.entity {
+                self.entities[entity].radius = item.collider_radius.raw();
+            }
         }
         // Every ThrowItem2 prefab - Mjolnir, Poke ball, Banana peel, Smoke,
         // Grenade_0 - orders DestroyIfOutsideSceneBounds 5, ThrowItem2 6,
