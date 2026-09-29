@@ -12274,8 +12274,9 @@ impl RolloutWorld {
                     slot.base.position +=
                         platform.surface.normal(slot.base.position) * Fix::from_f32(0.05);
                 }
+                // ReleaseControl's UnGround keeps attachedGround, so the next
+                // UnGround (another Rewind's) lifts off it again.
                 slot.base.grounded = false;
-                slot.base.ground = None;
                 slot.base.grounded_speed = Fix::ZERO;
                 // FinishRewind overwrites the cooldowns outright and adds
                 // nothing (RewindRecorder.cs:325-333). SlimeController already
