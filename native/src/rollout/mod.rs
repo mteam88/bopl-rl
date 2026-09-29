@@ -38571,6 +38571,13 @@ impl RolloutWorld {
         if !slot.base.alive {
             return;
         }
+        // OldUpdate returns early while the replacement waits, but its
+        // UpdateSim still compares isInvisible with its last look
+        // (SlimeController.cs:1073-1077), so an Invisibility that runs out
+        // meanwhile restarts that slot's timer.
+        if !slot.stock_clone_pending && !slot.revival_clone_pending {
+            slot.slime_updated = true;
+        }
 
         if slot.unspawned > 0 {
             // GameSessionHandler.SpawnPlayers instantiates the slime at its
