@@ -651,6 +651,8 @@ pub struct GuidedMissile {
     /// Touched a missile explosion on its blasting pass. Missile.OnCollide
     /// then runs among that explosion's kills, in sweep order.
     pub blast_hit: bool,
+    /// Walls whose Box/RoundedRect manifold resolved this pass.
+    pub wall_contacts: u8,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -6840,6 +6842,9 @@ impl RolloutWorld {
         // DetPhysics corrects every Circle/RR pair before any Circle/Circle
         // one, so an item's wall correction moves it before an arrow's
         // manifold with it is built.
+        if has(ABILITY_MISSILE) {
+            self.guided_missile_wall_contacts(data);
+        }
         if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_ROCK) || has(ABILITY_PORTAL_GUN) || has(ABILITY_BOW) {
             for item in &mut self.thrown_items {
                 item.swept_position = item.position;
@@ -33424,9 +33429,13 @@ impl RolloutWorld {
         })
     }
 
-    fn guided_missile_contacts(&mut self, data: &data::RolloutData) {
-        self.guided_missile_pair_contacts(data);
+    /// The Missile's Box/RoundedRect manifolds. DetPhysics resolves that
+    /// whole group before the Circle/RoundedRect one, so an item resting on a
+    /// wall the Missile struck meets the wall where the Missile pushed it
+    /// (DetPhysics.cs:2973-3014). guided_missile_contacts runs the callbacks.
+    fn guided_missile_wall_contacts(&mut self, data: &data::RolloutData) {
         for missile_index in 0..self.guided_missiles.len() {
+            self.guided_missiles[missile_index].wall_contacts = 0;
             if !self.guided_missiles[missile_index].active
                 || !self.guided_missiles[missile_index].registered
                 || self.blink_object_hidden(self.guided_missiles[missile_index].entity)
@@ -33474,8 +33483,41 @@ impl RolloutWorld {
                     );
                     center += correction[0];
                     self.shift_platform_collider(platform_index, correction[1]);
+                    // The Circle/RoundedRectangle manifolds are built after
+                    // this group's corrections.
+                    if let Some(collider) = self.scratch.circle_colliders.get_mut(platform_index) {
+                        collider.inner.center += correction[1];
+                    }
                 }
                 self.platforms_changed();
+                let live = &mut self.guided_missiles[missile_index];
+                live.position = center;
+                live.body = body;
+                live.wall_contacts = contact_count as u8;
+            }
+        }
+    }
+
+    fn guided_missile_contacts(&mut self, data: &data::RolloutData) {
+        self.guided_missile_pair_contacts(data);
+        for missile_index in 0..self.guided_missiles.len() {
+            if !self.guided_missiles[missile_index].active
+                || !self.guided_missiles[missile_index].registered
+                || self.blink_object_hidden(self.guided_missiles[missile_index].entity)
+            {
+                continue;
+            }
+            let missile = self.guided_missiles[missile_index];
+            let missile_box = OrientedBox::from_basis(
+                missile.position,
+                Vec2::angle(missile.body.orientation),
+                data.missile.spark_extents * missile.scale,
+            );
+            // guided_missile_wall_contacts resolved the Box/RoundedRect group.
+            let contact_count = missile.wall_contacts as usize;
+            if contact_count > 0 {
+                let body = missile.body;
+                let center = missile.position;
                 if missile.magnet_hold_ticks >= 0 {
                     // Missile.OnCollide suppresses its callback while held,
                     // after DetPhysics has resolved the residual slop contact.
