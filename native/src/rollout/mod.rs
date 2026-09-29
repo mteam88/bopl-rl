@@ -9944,6 +9944,11 @@ impl RolloutWorld {
                             collider_rotation: slot.base.rotation,
                             ..PlantCastState::default()
                         };
+                        // Ability.EnterAbility, then the entry pass's UpdateSim.
+                        self.scale_plant_form(index, data);
+                        self.scale_plant_form(index, data);
+                        self.plant_form_radius(index);
+                        let slot = &mut self.players[index];
                         // PlantObjectOnPlatform follows Ability in the prefab
                         // updater list: its grounded Move(zero) and
                         // PlayerBody's step already run on the entry pass.
@@ -9972,6 +9977,10 @@ impl RolloutWorld {
                             collider_rotation: slot.base.rotation,
                             ..PlantCastState::default()
                         };
+                        self.scale_plant_form(index, data);
+                        self.scale_plant_form(index, data);
+                        self.plant_form_radius(index);
+                        let slot = &mut self.players[index];
                         // As for Engine: the entry pass already moves.
                         if slot.base.grounded {
                             slot.base.move_only(Vec2::ZERO, terrain!(self));
@@ -12850,6 +12859,7 @@ impl RolloutWorld {
     }
 
     fn engine_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
+        self.scale_plant_form(index, data);
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
@@ -12877,6 +12887,7 @@ impl RolloutWorld {
             self.exit_engine_cast(index);
             return;
         }
+        self.plant_form_radius(index);
         if self.form_bounds_kill(index, data) {
             return;
         }
@@ -12886,6 +12897,32 @@ impl RolloutWorld {
                 .move_only(Vec2::ZERO, terrain!(self));
         }
         self.plant_cast_form_move(index, published_position, jump_pressed);
+    }
+
+    /// Ability.EnterAbility and each Ability.UpdateSim assign Player.Scale to
+    /// a PlantObjectOnPlatform form's box, which scales its FixTransform
+    /// offset with it. Ability is the prefab's first updatable, ahead of the
+    /// SpriteAnimator whose callbacks plant and exit.
+    fn scale_plant_form(&mut self, index: usize, data: &data::RolloutData) {
+        let slot = &mut self.players[index];
+        let (extents, offset) = if slot.active == ActiveAbility::Engine {
+            (data.engine.hurtbox_extents, data.engine.collider_offset)
+        } else {
+            (data.tesla.hurtbox_extents, data.tesla.collider_offset)
+        };
+        let scale = slot.player_scale;
+        slot.forms[slot.active_slot].set_scale_offset(
+            scale,
+            data::surface_extents(extents),
+            data.player.radius,
+            offset,
+        );
+    }
+
+    /// PlayerPhysics.UpdateScale on a PlantObjectOnPlatform form.
+    fn plant_form_radius(&mut self, index: usize) {
+        let slot = &mut self.players[index];
+        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
     }
 
     /// PlayerBody's step in a PlantObjectOnPlatform form, entry pass included;
@@ -12941,11 +12978,15 @@ impl RolloutWorld {
             slot.obs_state_held_this_tick = true;
         } else {
             slot.base.up = Vec2::UP;
+            // SyncPhysicsTo's UpdateScale brings the kept slime radius up to
+            // Player.Scale.
+            slot.restore_slime_radius();
             slot.exit_to_fall();
         }
     }
 
     fn tesla_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
+        self.scale_plant_form(index, data);
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
@@ -12973,6 +13014,7 @@ impl RolloutWorld {
             self.exit_engine_cast(index);
             return;
         }
+        self.plant_form_radius(index);
         if self.form_bounds_kill(index, data) {
             return;
         }
@@ -40397,8 +40439,14 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
-                    let center = position + center_basis.complex_mul(data.engine.collider_offset);
-                    let collider = OrientedBox::from_basis(
+                    let form = slot.forms[slot.entity_slot(engine_e)];
+                    let offset = if form.scale == Fix::ZERO {
+                        data.engine.collider_offset
+                    } else {
+                        form.offset
+                    };
+                    let center = position + center_basis.complex_mul(offset);
+                    let collider = form.hurtbox(
                         center,
                         collider_basis,
                         data::surface_extents(data.engine.hurtbox_extents),
@@ -40434,8 +40482,14 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
-                    let center = position + center_basis.complex_mul(data.tesla.collider_offset);
-                    let collider = OrientedBox::from_basis(
+                    let form = slot.forms[slot.entity_slot(tesla_e)];
+                    let offset = if form.scale == Fix::ZERO {
+                        data.tesla.collider_offset
+                    } else {
+                        form.offset
+                    };
+                    let center = position + center_basis.complex_mul(offset);
+                    let collider = form.hurtbox(
                         center,
                         collider_basis,
                         data::surface_extents(data.tesla.hurtbox_extents),
