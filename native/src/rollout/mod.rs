@@ -33045,7 +33045,22 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                // A composite child's collider moved with its platform's
+                // integration this pass; its row still holds the last one.
+                let center = self
+                    .tesla_nodes
+                    .iter()
+                    .find(|node| node.active && !node.macho_carried && node.entity == Some(entity))
+                    .map(|node| node.collider_center)
+                    .or_else(|| {
+                        self.spike_attacks
+                            .iter()
+                            .find(|spike| {
+                                spike.active && !spike.macho_carried && spike.entity == Some(entity)
+                            })
+                            .map(|spike| spike.collider_center)
+                    })
+                    .unwrap_or(Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)));
                 let contact = if row.kind == 0 {
                     // Circle/Circle pairs list the lower sweep minimum first.
                     let target = Circle {
