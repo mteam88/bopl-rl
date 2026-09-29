@@ -15852,8 +15852,10 @@ impl RolloutWorld {
                     // Updater.DestroyFix is deferred until DetPhysics's next
                     // remove-destroyed pass, so this callback frame still
                     // exports the wall with its destroyed bit.
+                    let children = self.platform_dynamics[platform_index].attached_children;
+                    let composite = if children != 0 { E_COMPOSITE } else { 0 };
                     let row = &mut self.entities[platform_entity];
-                    row.flags = destroyed_flags(row.flags);
+                    row.flags = destroyed_flags(row.flags) | composite;
                 }
                 platform_index += 1;
             }
@@ -28449,6 +28451,18 @@ impl RolloutWorld {
         self.platform_hidden(platform_index) || self.blink_object_hidden(entity)
     }
 
+    /// A platform child's row. DestroyFix on the platform destroys its children
+    /// with it, and they stay in its CompositeBody until DetPhysics drops them.
+    fn attached_flags(&self, platform_index: usize, entity: Option<usize>) -> u32 {
+        if self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED != 0 {
+            E_DESTROYED | E_COMPOSITE
+        } else if self.attached_hidden(platform_index, entity) {
+            E_ENABLED | E_COMPOSITE
+        } else {
+            E_ACTIVE | E_ENABLED | E_COMPOSITE
+        }
+    }
+
     /// A clone in its own QuantumTunnel or an object tunnel is an inactive
     /// GameObject, which DetPhysics skips (QuantumTunnel.cs:136).
     fn abilityless_clone_hidden(&self, clone: &AbilitylessClone) -> bool {
@@ -39963,6 +39977,7 @@ impl RolloutWorld {
                 continue;
             }
             if let Some(entity) = node.entity {
+                let flags = self.attached_flags(node.platform_index, node.entity);
                 self.entities[entity] = CEntity {
                     id: self.entities[entity].id,
                     kind: 0,
@@ -39971,12 +39986,8 @@ impl RolloutWorld {
                     } else {
                         data.tesla.node_layer
                     },
-                    owner: node.owner as u32 + 1,
-                    flags: if self.attached_hidden(node.platform_index, node.entity) {
-                        E_ENABLED | E_COMPOSITE
-                    } else {
-                        E_ACTIVE | E_ENABLED | E_COMPOSITE
-                    },
+                    owner: if flags & E_DESTROYED != 0 { 0 } else { node.owner as u32 + 1 },
+                    flags,
                     hierarchy: self.entities[entity].hierarchy,
                     x: node.collider_center.x.raw(),
                     y: node.collider_center.y.raw(),
@@ -40057,10 +40068,8 @@ impl RolloutWorld {
                 owner: 0,
                 flags: if eaten {
                     E_DESTROYED | E_COMPOSITE
-                } else if self.attached_hidden(engine.platform_index, engine.entity) {
-                    E_ENABLED | E_COMPOSITE
                 } else {
-                    E_ACTIVE | E_ENABLED | E_COMPOSITE
+                    self.attached_flags(engine.platform_index, engine.entity)
                 },
                 hierarchy: self.entities[entity].hierarchy,
                 x: center.x.raw(),
@@ -40100,11 +40109,7 @@ impl RolloutWorld {
                 kind: 1,
                 layer: data.spike.attack_layer,
                 owner: 0,
-                flags: if self.attached_hidden(spike.platform_index, spike.entity) {
-                    E_ENABLED | E_COMPOSITE
-                } else {
-                    E_ACTIVE | E_ENABLED | E_COMPOSITE
-                },
+                flags: self.attached_flags(spike.platform_index, spike.entity),
                 hierarchy: self.entities[entity].hierarchy,
                 x: center.x.raw(),
                 y: center.y.raw(),
