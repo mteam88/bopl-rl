@@ -19901,6 +19901,17 @@ impl RolloutWorld {
         }
     }
 
+    /// Whether the boulder on `platform` sinks below the water this pass at a
+    /// hierarchy older than `hierarchy`, as macho_boulders_tick decides.
+    fn boulder_drowns_before(&self, platform: usize, hierarchy: u32) -> bool {
+        let lower_boundary = data::get().maps[self.map].lower_boundary();
+        let entity = self.platform_entities[platform];
+        self.macho_boulders.iter().any(|boulder| {
+            boulder.active && boulder.platform_index == platform && boulder.born_tick != self.tick
+        }) && self.entities[entity].hierarchy - 100_000_000 < hierarchy
+            && self.platforms[platform].surface.center.y < lower_boundary
+    }
+
     fn macho_boulders_tick(&mut self, data: &data::RolloutData) {
         let lower_boundary = data.maps[self.map].lower_boundary();
         for boulder_index in 0..self.macho_boulders.len() {
