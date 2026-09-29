@@ -31693,6 +31693,11 @@ impl RolloutWorld {
         }));
         order.sort_unstable_by_key(|&index| (self.thrown_items[index].hierarchy_base, index));
         for &item_index in &order {
+            // The TeleportedObjectEffect that reactivates an item is newer, so
+            // the item's own UpdateSim was skipped this pass.
+            if self.teleport_revealed_this_pass(self.thrown_items[item_index].entity) {
+                continue;
+            }
             if self.thrown_items[item_index].ability == ABILITY_POKE_BALL {
                 self.poke_ball_tick(item_index, data, updater_dt);
             } else {
