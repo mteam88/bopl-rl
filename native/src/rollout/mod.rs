@@ -20798,6 +20798,7 @@ impl RolloutWorld {
             // PlayerPhysics has the slime's constants, not those of the form
             // the dead slime was in (PlayerCollision.cs:249).
             slot.base.constants = data.player.constants.clone();
+            slot.base.skip_next_gravity = false;
             slot.physics_scale = Fix::ONE;
             slot.body_collider_scale = Fix::ONE;
             slot.body_inverse_extents = Vec2::new(
@@ -21277,8 +21278,10 @@ impl RolloutWorld {
             slot.forms = [FormScale::default(); 3];
             slot.pending_ability_hierarchy = [u32::MAX; 3];
             slot.base.radius = data.player.radius;
-            // The empty player prefab's PlayerPhysics (PlayerCollision.cs:249).
+            // The empty player prefab's PlayerPhysics (PlayerCollision.cs:249),
+            // with no pending skipNextUpdate (PlayerPhysics.cs:118-121).
             slot.base.constants = data.player.constants.clone();
+            slot.base.skip_next_gravity = false;
             slot.physics_scale = Fix::ONE;
             slot.body_collider_scale = Fix::ONE;
             slot.body_inverse_extents = Vec2::new(
