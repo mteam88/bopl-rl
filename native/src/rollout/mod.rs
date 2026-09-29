@@ -32313,7 +32313,10 @@ impl RolloutWorld {
         data: &data::RolloutData,
         updater_dt: Fix,
     ) {
-        if self.blink_object_hidden(self.thrown_items[item_index].entity) {
+        // A tunnel's release comes after this updater's turn: a grenade's
+        // fuse stays paused through the pass that reveals it.
+        let entity = self.thrown_items[item_index].entity;
+        if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
             return;
         }
         if !self.thrown_items[item_index].active {
