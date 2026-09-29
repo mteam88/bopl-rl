@@ -2151,6 +2151,10 @@ pub struct PortalShotState {
     pub time_alive: Fix,
     /// The `orphan_portal_guns` entry of a gun a pickup replaced in flight.
     pub orphan: Option<usize>,
+    /// The collider's scale, which a ray's ScaleChanger sets.
+    pub scale: Fix,
+    /// BoplBody.prevScale: the body follows a rescale on its next update.
+    pub body_prev_scale: Fix,
 }
 
 /// Allocation-retaining equivalent of one `QuantumTunnel` prefab for a
@@ -7159,6 +7163,8 @@ impl RolloutWorld {
             body,
             fire_velocity: body.velocity,
             fire_applied: false,
+            scale: Fix::ONE,
+            body_prev_scale: Fix::ONE,
             ..PortalShotState::default()
         };
         let shot_index = self
@@ -7211,6 +7217,19 @@ impl RolloutWorld {
             }
             if !self.portal_shots[shot_index].active {
                 continue;
+            }
+            // BoplBody.UpdateSim (BoplBody.cs:332-344): the shot's body is
+            // older than any ray's ScaleChanger on it, so its mass follows
+            // the collider's rescale one pass late.
+            let shot = &mut self.portal_shots[shot_index];
+            if shot.body_prev_scale != Fix::ZERO && shot.body_prev_scale != shot.scale {
+                let ratio = shot.body_prev_scale / shot.scale;
+                shot.body.inverse_mass = shot.body.inverse_mass * ratio;
+                shot.body.inverse_inertia = shot.body.inverse_inertia * ratio;
+                shot.body_prev_scale = shot.scale;
+                if let Some(entity) = shot.entity {
+                    self.entities[entity].inverse_mass = shot.body.inverse_mass.raw();
+                }
             }
             // Updater snapshots the updatable list for the pass. ManualInit
             // registers DetPhysics immediately, so a cast-pass shot moves but
@@ -29158,6 +29177,12 @@ impl RolloutWorld {
                 for marker in &mut self.teleport_marker_pool {
                     if marker.active && marker.entity == Some(effect.victim) {
                         marker.scale = scale;
+                    }
+                }
+                for shot in &mut self.portal_shots {
+                    if shot.active && shot.entity == Some(effect.victim) {
+                        shot.scale = scale;
+                        self.entities[effect.victim].inverse_mass = shot.body.inverse_mass.raw();
                     }
                 }
                 for rock in &mut self.duplicated_rocks {
