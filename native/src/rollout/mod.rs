@@ -2489,6 +2489,10 @@ pub struct PlayerSlot {
     /// The slime object died while ability-less clones kept Player.IsAlive
     /// true (Player.Kill with playersAndClonesStillAlive > 1).
     pub slime_gone: bool,
+    /// The slime is a stock clone of an ability-less clone: SpawnClone copied
+    /// its empty ability list (PlayerCollision.cs:255), so every slot is
+    /// empty rather than a NullAbility.
+    pub abilityless: bool,
     /// Ability catalog ids per slot, and which slots this backend simulates.
     pub abilities: [u32; 3],
     /// Incremented whenever a stock/revival clone instantiates fresh ability prefabs.
@@ -4546,6 +4550,7 @@ impl RolloutWorld {
                 won: false,
                 out: false,
                 slime_gone: false,
+                abilityless: false,
                 abilities,
                 ability_generation: 0,
                 ability_instantiated: [true; 3],
@@ -5351,6 +5356,20 @@ impl RolloutWorld {
         // granted to another overlapping slime later in that queue.
         for &(_, _, pickup_index, player_index) in &hits {
             let ability = self.ability_pickups[pickup_index].ability;
+            // AddAdditionalAbility has no slot to fill on an empty ability
+            // list (SlimeController.cs:332-345), but OnCollide has already
+            // instantiated the ability prefab, and the pickup is used up.
+            if self.players[player_index].abilityless {
+                self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+                let state = &mut self.ability_pickups[pickup_index];
+                if state.active {
+                    state.active = false;
+                    if let Some(entity) = state.entity {
+                        self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                    }
+                }
+                continue;
+            }
             self.active_subsystems |= ability_bit(ability);
             if self.players[player_index].abilities[2] == ABILITY_PORTAL_GUN {
                 self.orphan_portal_gun(player_index);
@@ -9163,7 +9182,7 @@ impl RolloutWorld {
                 self.players[index].reset_ignored_cooldown(s, button_down);
                 let slot = &self.players[index];
                 // SlimeController.isAbilityReady uses a strict comparison.
-                if !button_down || slot.timers[s] <= slot.cooldowns[s] {
+                if !button_down || slot.abilityless || slot.timers[s] <= slot.cooldowns[s] {
                     continue;
                 }
                 let ability = slot.abilities[s];
@@ -37225,10 +37244,24 @@ impl RolloutWorld {
             self.entities[entity].flags = E_REMOVED;
         }
         self.players[owner].deaths += 1;
-        // The last body standing takes the player out with it.
-        if self.players[owner].slime_gone
-            && !self.abilityless_clones.iter().any(|clone| clone.active && clone.owner == owner)
+        // The last body standing takes the player out with it, unless it can
+        // spend a stock: killPlayer's stock branch then respawns an
+        // ability-less clone of it.
+        let last_body = self.players[owner].slime_gone
+            && !self.abilityless_clones.iter().any(|clone| clone.active && clone.owner == owner);
+        if last_body
+            && !self.players[owner].won
+            && self.players[owner].stocks > 0
+            && !self.sudden_death
+            && self.game_in_progress
         {
+            let slot = &mut self.players[owner];
+            slot.slime_gone = false;
+            slot.abilityless = true;
+            slot.abilities = [ABILITY_NULL; 3];
+            slot.base.position = self.abilityless_clones[clone_index].base.position;
+            self.begin_stock_respawn(owner);
+        } else if last_body {
             let slot = &mut self.players[owner];
             slot.out = true;
             slot.death_tick = self.tick;
@@ -39175,20 +39208,6 @@ impl RolloutWorld {
             if spawn_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
-            let abilities = slot.abilities;
-            let clone_player_hierarchy = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += 8;
-            let mut clone_ability_hierarchy = [0u32; 3];
-            for (ability_slot, hierarchy) in clone_ability_hierarchy.iter_mut().enumerate() {
-                *hierarchy = self.next_spawn_hierarchy;
-                self.next_spawn_hierarchy +=
-                    data::get().abilities[abilities[ability_slot] as usize].updatable_count;
-            }
-            let mut stock_indicator_hierarchy = [0u32; 3];
-            for hierarchy in &mut stock_indicator_hierarchy {
-                *hierarchy = self.next_spawn_hierarchy;
-                self.next_spawn_hierarchy += data::get().revival.marker_updatable_count;
-            }
             for entity in slot.owned_rows() {
                 if entity != usize::MAX {
                     let row = &mut self.entities[entity];
@@ -39200,19 +39219,9 @@ impl RolloutWorld {
                     row.owner = 0;
                 }
             }
-            slot.stocks -= 1;
-            slot.stock_clone_pending = true;
-            slot.clone_player_hierarchy = clone_player_hierarchy;
-            slot.clone_ability_hierarchy = clone_ability_hierarchy;
-            slot.stock_indicator_hierarchy = stock_indicator_hierarchy;
-            slot.respawn_ticks = 360;
-            slot.respawn_spawn_ticks = 0;
-            slot.respawn_selected = 1;
-            slot.base.alive = true;
             // The stock branch of killPlayer starts with UnGround, which
             // steps the body off even a stale attachedGround.
             slot.force_unground(&self.platforms, self.tick);
-            slot.stock_death = Some((self.tick, slot.base.position));
             // Player.Position keeps the destroyed slime's last SetPosition
             // until the clone's first OldUpdate on the next pass: this pass's
             // publish if it already ran, else the last pass's.
@@ -39223,17 +39232,7 @@ impl RolloutWorld {
                 slot.reported_position = slot.base.position;
             }
             slot.reported_tick = self.tick;
-            slot.base.position = data::get().maps[self.map].respawn_points[1];
-            slot.base.velocity = Vec2::ZERO;
-            slot.base.external_velocity = Vec2::ZERO;
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
-            slot.base.grounded = false;
-            slot.base.ground = None;
-            slot.base.grounded_speed = Fix::ZERO;
-            slot.obs_state = STATE_NOTHING;
-            slot.cause_of_death = CAUSE_NOT_DEAD_YET;
-            slot.timers.fill(Fix::from_f32(-1.5));
+            self.begin_stock_respawn(index);
         } else {
             if !already_won && clones_alive {
                 slot.slime_gone = true;
@@ -39272,7 +39271,8 @@ impl RolloutWorld {
             // and collection phases remain observable. Once the match has
             // ended it returns before drawing anything. killPlayer only drops
             // for the player's last body.
-            if self.game_in_progress && !clones_alive {
+            // DropAbilities returns before its draw on an empty ability list.
+            if self.game_in_progress && !clones_alive && !slot.abilityless {
                 let dropped_ability = slot.abilities[2];
                 let horizontal = self.rng.fix_range(Fix::from_f32(-0.3), Fix::from_f32(0.3));
                 let direction = (Vec2::UP + Vec2::new(horizontal, Fix::ZERO)).normalized_safe();
@@ -39282,6 +39282,51 @@ impl RolloutWorld {
                 self.spawn_ability_pickup(drop_position, dropped_ability, direction, data::get());
             }
         }
+    }
+
+    /// killPlayer's stock branch (PlayerCollision.cs:166-189) past its
+    /// UnGround: SpawnClone claims the hidden clone's block (the empty player
+    /// prefab and a copy of each of the dying slime's abilities), then
+    /// BeginChoice the chooser's three indicators.
+    fn begin_stock_respawn(&mut self, index: usize) {
+        let data = data::get();
+        let slot = &mut self.players[index];
+        let clone_player_hierarchy = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += 8;
+        let mut clone_ability_hierarchy = [0u32; 3];
+        for (ability_slot, hierarchy) in clone_ability_hierarchy.iter_mut().enumerate() {
+            *hierarchy = self.next_spawn_hierarchy;
+            if !slot.abilityless {
+                self.next_spawn_hierarchy +=
+                    data.abilities[slot.abilities[ability_slot] as usize].updatable_count;
+            }
+        }
+        let mut stock_indicator_hierarchy = [0u32; 3];
+        for hierarchy in &mut stock_indicator_hierarchy {
+            *hierarchy = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += data.revival.marker_updatable_count;
+        }
+        slot.stocks -= 1;
+        slot.stock_clone_pending = true;
+        slot.clone_player_hierarchy = clone_player_hierarchy;
+        slot.clone_ability_hierarchy = clone_ability_hierarchy;
+        slot.stock_indicator_hierarchy = stock_indicator_hierarchy;
+        slot.respawn_ticks = 360;
+        slot.respawn_spawn_ticks = 0;
+        slot.respawn_selected = 1;
+        slot.base.alive = true;
+        slot.stock_death = Some((self.tick, slot.base.position));
+        slot.base.position = data.maps[self.map].respawn_points[1];
+        slot.base.velocity = Vec2::ZERO;
+        slot.base.external_velocity = Vec2::ZERO;
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        slot.base.grounded = false;
+        slot.base.ground = None;
+        slot.base.grounded_speed = Fix::ZERO;
+        slot.obs_state = STATE_NOTHING;
+        slot.cause_of_death = CAUSE_NOT_DEAD_YET;
+        slot.timers.fill(Fix::from_f32(-1.5));
     }
 
     /// Forms end in many places, each through Ability.ExitAbility, which calls
@@ -41926,6 +41971,9 @@ impl RolloutWorld {
             if !in_ability && !respawning {
                 flags |= S_SIMULATED;
             }
+            if slot.abilityless {
+                flags |= S_ABILITYLESS;
+            }
             let mut ability_flags = [0u32; 3];
             for (s, flags) in ability_flags.iter_mut().enumerate() {
                 if slot.abilities[s] == 0 {
@@ -41999,16 +42047,18 @@ impl RolloutWorld {
                 },
                 abilities: slot.abilities,
                 ability_flags,
-                cooldowns: [
-                    slot.cooldowns[0].raw(),
-                    slot.cooldowns[1].raw(),
-                    slot.cooldowns[2].raw(),
-                ],
-                timers: [
-                    slot.timers[0].raw(),
-                    slot.timers[1].raw(),
-                    slot.timers[2].raw(),
-                ],
+                // An empty ability list publishes no cooldowns, and OldUpdate
+                // never advances the timers from Init's -1.5.
+                cooldowns: if slot.abilityless {
+                    [0; 3]
+                } else {
+                    slot.cooldowns.map(Fix::raw)
+                },
+                timers: if slot.abilityless {
+                    [Fix::from_f32(-1.5).raw(); 3]
+                } else {
+                    slot.timers.map(Fix::raw)
+                },
             });
         }
         for &index in &clone_order[next_clone..clone_count] {
