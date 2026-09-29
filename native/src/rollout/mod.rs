@@ -22325,10 +22325,17 @@ impl RolloutWorld {
         }
     }
 
-    fn shockwaves_update(&mut self, meteor: bool, data: &data::RolloutData, updater_dt: Fix) {
+    /// Steps the waves with hierarchy in `hierarchy`.
+    fn shockwaves_update(
+        &mut self,
+        meteor: bool,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        hierarchy: std::ops::Range<u32>,
+    ) {
         for wave_index in 0..self.shockwaves(meteor).len() {
             let wave = self.shockwaves(meteor)[wave_index];
-            if wave.active && wave.registered {
+            if wave.active && wave.registered && hierarchy.contains(&wave.hierarchy_base) {
                 // Shockwave uses Updater's raw simDeltaTime for its curve
                 // clock; it never opts into GameTime.FixedDeltaTime.
                 self.shockwave_apply(meteor, wave_index, updater_dt, true, data);
