@@ -9271,9 +9271,15 @@ impl RolloutWorld {
                             self.players[index]
                                 .base
                                 .move_only(Vec2::ZERO, terrain!(self));
+                            // Ability.EnterAbility handed that PlayerBody the
+                            // slime's rope.
+                            let held = self.form_rope_release(index);
                             let slot = &mut self.players[index];
                             slot.base.position += slot.base.external_velocity * DT;
-                            slot.base.external_velocity *= Fix::from_f64(0.95);
+                            if held {
+                                self.rope_body_hold(index);
+                            }
+                            self.players[index].base.external_velocity *= Fix::from_f64(0.95);
                         } else {
                             // The form's own PlayerPhysics is later than the
                             // entering SlimeController. It applies a second
@@ -9299,9 +9305,13 @@ impl RolloutWorld {
                                 self.players[index]
                                     .base
                                     .move_only(Vec2::ZERO, terrain!(self));
+                                let held = self.form_rope_release(index);
                                 let slot = &mut self.players[index];
                                 slot.base.position += slot.base.external_velocity * DT;
-                                slot.base.external_velocity *= Fix::from_f64(0.95);
+                                if held {
+                                    self.rope_body_hold(index);
+                                }
+                                self.players[index].base.external_velocity *= Fix::from_f64(0.95);
                             } else {
                                 // SparkShot performs its own landing query
                                 // before calling PlayerPhysics.Move. Only a
@@ -9330,13 +9340,18 @@ impl RolloutWorld {
                                 )
                                 .expect("valid Missile air constants");
                                 slot.base.collision_rays(terrain!(self));
+                                let held = self.form_rope_release(index);
+                                let slot = &mut self.players[index];
                                 if slot.base.grounded {
                                     slot.missile.collider_rotation = slot.base.rotation;
                                 } else {
                                     slot.base.position +=
                                         (slot.base.velocity + slot.base.external_velocity) * DT;
                                 }
-                                slot.base.external_velocity *= Fix::from_f64(0.95);
+                                if held {
+                                    self.rope_body_hold(index);
+                                }
+                                self.players[index].base.external_velocity *= Fix::from_f64(0.95);
                             }
                         }
                         // SparkShot.OnEnterAbility explicitly syncs its
@@ -21351,6 +21366,15 @@ impl RolloutWorld {
         self.form_body_move(index, jump_pressed);
     }
 
+    /// The rope branch of a form's PlayerBody.UpdateSim for forms that
+    /// integrate the body inline: the jump release ahead of the move.
+    /// Whether a live rope is still held for `rope_body_hold` after it.
+    fn form_rope_release(&mut self, index: usize) -> bool {
+        let slot = &self.players[index];
+        let jump_pressed = slot.last_action.buttons & 1 != 0 && !slot.base.previous_jump;
+        self.rope_body_release(index, jump_pressed)
+    }
+
     /// base.step with the dash shove check from World::step.
     /// PlayerBody.UpdateSim on an ability form; every prefab but Rock has one,
     /// and Ability.EnterAbility hands it the slime's rope. A rope constrains
@@ -21918,9 +21942,13 @@ impl RolloutWorld {
 
         if moved_off {
             // Move returned at its UnGround; PlayerBody integrates the body.
+            let held = self.form_rope_release(index);
             let slot = &mut self.players[index];
             slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
+            if held {
+                self.rope_body_hold(index);
+            }
+            self.players[index].base.external_velocity *= Fix::from_f64(0.95);
         } else if self.players[index].base.grounded {
             self.players[index]
                 .base
@@ -21933,9 +21961,14 @@ impl RolloutWorld {
             }
             // SparkShot calls PlayerPhysics.Move(zero) above, then the later
             // PlayerBody component still integrates and damps external
-            // velocity even while attached.
+            // velocity even while attached, and holds the slime's rope.
+            let held = self.form_rope_release(index);
+            let slot = &mut self.players[index];
             slot.base.position += slot.base.external_velocity * DT;
-            slot.base.external_velocity *= Fix::from_f64(0.95);
+            if held {
+                self.rope_body_hold(index);
+            }
+            self.players[index].base.external_velocity *= Fix::from_f64(0.95);
         } else {
             self.players[index].base.collision_rays(terrain!(self));
             if self.players[index].base.grounded {
@@ -21958,6 +21991,8 @@ impl RolloutWorld {
             )
             .expect("valid Missile air constants");
             slot.base.collision_rays(terrain!(self));
+            let held = self.form_rope_release(index);
+            let slot = &mut self.players[index];
             // A landing in Move's own query attaches the form and aligns its
             // FixTransform, which DetPhysics publishes before LateUpdateSim.
             if slot.base.grounded {
@@ -21965,7 +22000,10 @@ impl RolloutWorld {
             } else {
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             }
-            slot.base.external_velocity *= Fix::from_f64(0.95);
+            if held {
+                self.rope_body_hold(index);
+            }
+            self.players[index].base.external_velocity *= Fix::from_f64(0.95);
         }
     }
 

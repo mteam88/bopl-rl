@@ -1102,16 +1102,29 @@ impl RolloutWorld {
     /// prefabs such as Dash own a PlayerBody too, so this phase remains live
     /// after the ordinary SlimeController GameObject has been disabled.
     pub(super) fn rope_body_move(&mut self, player: usize, jump_pressed: bool) {
-        let Some(rope_index) = self.players[player].rope else {
+        if self.players[player].rope.is_none() {
             return;
+        }
+        let held = self.rope_body_release(player, jump_pressed);
+        let body = &mut self.players[player].base;
+        body.position += (body.velocity + body.external_velocity) * DT;
+        if held {
+            self.rope_body_hold(player);
+        }
+        self.players[player].base.external_velocity *= Fix::from_f64(0.95);
+    }
+
+    /// The head of PlayerBody.UpdateSim on a roped body: drop a disabled
+    /// rope, and let the owner's airborne jump press release it with the
+    /// endpoint's velocity. Whether the body still holds a live rope.
+    pub(super) fn rope_body_release(&mut self, player: usize, jump_pressed: bool) -> bool {
+        let Some(rope_index) = self.players[player].rope else {
+            return false;
         };
         if !self.ropes[rope_index].physics.enabled {
             // PlayerBody drops the disabled rope and steps like an unroped body.
             self.players[player].rope = None;
-            let body = &mut self.players[player].base;
-            body.position += (body.velocity + body.external_velocity) * DT;
-            body.external_velocity *= Fix::from_f64(0.95);
-            return;
+            return false;
         }
         let top = self.players[player].rope_top;
         if jump_pressed
@@ -1129,25 +1142,29 @@ impl RolloutWorld {
                 (rope.segment[endpoint] - rope.previous[endpoint]) / DT;
             self.attach_player_rope(player, None, top);
         }
-        let velocity =
-            self.players[player].base.velocity + self.players[player].base.external_velocity;
-        self.players[player].base.position += velocity * DT;
-        if self.players[player].rope == Some(rope_index) {
-            let tuning = self.rope_body_tuning(player);
-            let body = &mut self.players[player].base;
-            if hold_rope_end(body, &mut self.ropes[rope_index], top, tuning) {
-                self.attach_player_rope(player, None, top);
-            }
-            if self.players[player].active != ActiveAbility::Dash {
-                // The Dash prefab owns a distinct PlayerBody whose private
-                // previous-velocity fields start at zero. Preserve the
-                // inactive ordinary slime's fields for the exit handoff.
-                let slot = &mut self.players[player];
-                slot.rope_prev[slot.rope_body()] =
-                    (slot.base.velocity, slot.base.external_velocity);
-            }
+        self.players[player].rope == Some(rope_index)
+    }
+
+    /// The rope branch of PlayerBody.UpdateSim after the body has moved by
+    /// its velocity: pin or pull the endpoint and note the velocities the
+    /// late pass diffs against.
+    pub(super) fn rope_body_hold(&mut self, player: usize) {
+        let Some(rope_index) = self.players[player].rope else {
+            return;
+        };
+        let top = self.players[player].rope_top;
+        let tuning = self.rope_body_tuning(player);
+        let body = &mut self.players[player].base;
+        if hold_rope_end(body, &mut self.ropes[rope_index], top, tuning) {
+            self.attach_player_rope(player, None, top);
         }
-        self.players[player].base.external_velocity *= Fix::from_f64(0.95);
+        if self.players[player].active != ActiveAbility::Dash {
+            // The Dash prefab owns a distinct PlayerBody whose private
+            // previous-velocity fields start at zero. Preserve the
+            // inactive ordinary slime's fields for the exit handoff.
+            let slot = &mut self.players[player];
+            slot.rope_prev[slot.rope_body()] = (slot.base.velocity, slot.base.external_velocity);
+        }
     }
 
     /// Dash.ExitAbility transfers the still-attached RopeBody back to the
