@@ -227,6 +227,10 @@ fn sweep_rank(entities: &[CEntity], min: Fix, entity: Option<usize>) -> SweepRan
 fn sweep_pair(a: SweepRank, b: SweepRank) -> (SweepRank, SweepRank) {
     if a > b { (a, b) } else { (b, a) }
 }
+
+fn earliest_key(first: &mut Option<CallbackKey>, key: CallbackKey) {
+    *first = Some(first.map_or(key, |first| first.min(key)));
+}
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct CSlime {
@@ -36395,6 +36399,20 @@ impl RolloutWorld {
                     continue;
                 }
             }
+            // DetPhysics calls GrenadeExplode.OnCollide and
+            // SmokeGrenadeExplode2.OnCollide back after every contact group,
+            // in sweep order among the other callbacks. GrenadeExplode.Detonate
+            // has no guard against a second call, so a grenade spawns one
+            // Explosion for each pair that sets it off; the item queues once,
+            // at its first pair, with the pair count.
+            let circle_min = if self.sweep_x() {
+                circle.center.x - circle.radius
+            } else {
+                circle.center.y - circle.radius
+            };
+            let item_rank = sweep_rank(&self.entities, circle_min, item.entity);
+            let mut first_key: Option<CallbackKey> = None;
+            let mut detonations = 0;
             if item.ability == ABILITY_SMOKE
                 && item.detonates_on_owner
                 && let Some((water_position, water_extents, _)) = data.maps[self.map].water
@@ -36405,59 +36423,49 @@ impl RolloutWorld {
                     data::surface_extents(water_extents),
                 );
                 if crate::physics::contact::circle_box(circle, water).is_some() {
-                    self.detonate_smoke(item_index, true, data);
-                    continue;
+                    let rank = sweep_rank(&self.entities, self.box_sweep_min(water), None);
+                    let (later, earlier) = sweep_pair(item_rank, rank);
+                    detonations += 1;
+                    earliest_key(&mut first_key, (1, later, earlier));
                 }
             }
-            // GrenadeExplode.Detonate has no guard against a second call, and
-            // DetPhysics dispatches every queued callback, so a grenade spawns
-            // one Explosion for each explosion or player pair that sets it off.
-            let mut detonations = 0;
-            let (mut line_hits, mut line_key) = (0, None);
             if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE) {
-                let grenade_explosion_hits = self
-                    .grenade_explosions
-                    .iter()
-                    .filter(|explosion| {
-                        explosion.active
-                            && explosion.registered
-                            && explosion.age == 1
-                            && crate::physics::contact::circle_box(
-                                circle,
-                                OrientedBox::from_basis(
-                                    explosion.position,
-                                    Vec2::RIGHT,
-                                    data.grenade.explosion_extents * explosion.scale,
-                                ),
-                            )
-                            .is_some()
-                    })
-                    .count();
-                let missile_explosion_hits = self
-                    .missile_explosions
-                    .iter()
-                    .filter(|explosion| {
-                        explosion.active
-                            && explosion.registered
-                            && explosion.age == 1
-                            && crate::physics::contact::circle_box(
-                                circle,
-                                OrientedBox::from_basis(
-                                    explosion.position,
-                                    Vec2::RIGHT,
-                                    data.missile.explosion_extents * explosion.scale,
-                                ),
-                            )
-                            .is_some()
-                    })
-                    .count();
-                detonations = grenade_explosion_hits
-                    + missile_explosion_hits
-                    + self.smoke_explosion_hits(circle, data);
-                (line_hits, line_key) = self.explosion_layer_item_hits(circle, item.entity);
-                if detonations > 0 && item.ability == ABILITY_SMOKE && item.detonates_on_owner {
-                    self.detonate_smoke(item_index, true, data);
-                    continue;
+                let mut boxes = [(OrientedBox::default(), None); 16];
+                let mut count = 0;
+                let grenade_boxes = self.grenade_explosions.iter().map(|explosion| {
+                    (explosion.active && explosion.registered && explosion.age == 1, explosion.entity,
+                        OrientedBox::from_basis(explosion.position, Vec2::RIGHT,
+                            data.grenade.explosion_extents * explosion.scale))
+                });
+                let missile_boxes = self.missile_explosions.iter().map(|explosion| {
+                    (explosion.active && explosion.registered && explosion.age == 1, explosion.entity,
+                        OrientedBox::from_basis(explosion.position, Vec2::RIGHT,
+                            data.missile.explosion_extents * explosion.scale))
+                });
+                let smoke_boxes = self.smoke_explosions.iter().map(|explosion| {
+                    (explosion.active && explosion.registered && explosion.age == 1, explosion.entity,
+                        OrientedBox::from_basis(
+                            explosion.position + data.smoke.explosion_collider_offset * explosion.scale,
+                            Vec2::RIGHT, data.smoke.explosion_extents * explosion.scale))
+                });
+                for (live, entity, hitbox) in grenade_boxes.chain(missile_boxes).chain(smoke_boxes) {
+                    if live && crate::physics::contact::circle_box(circle, hitbox).is_some() {
+                        if count < boxes.len() {
+                            boxes[count] = (hitbox, entity);
+                        }
+                        count += 1;
+                    }
+                }
+                for &(hitbox, entity) in &boxes[..count.min(boxes.len())] {
+                    let rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), entity);
+                    let (later, earlier) = sweep_pair(item_rank, rank);
+                    earliest_key(&mut first_key, (1, later, earlier));
+                }
+                detonations += count;
+                let (line_hits, line_key) = self.explosion_layer_item_hits(circle, item.entity);
+                detonations += line_hits;
+                if let Some(key) = line_key {
+                    earliest_key(&mut first_key, key);
                 }
             }
             if item.ability == ABILITY_MINE && matches!(self.thrown_items[item_index].phase, 1 | 2)
@@ -36594,67 +36602,55 @@ impl RolloutWorld {
                 } else if player.active == ActiveAbility::Platform {
                     false
                 } else {
-                    let hurtbox = match player.active {
-                        ActiveAbility::Bow => {
-                            let up = if player.bow.aim == Vec2::ZERO {
-                                Vec2::UP
-                            } else {
-                                player.bow.aim
-                            };
-                            player.forms[player.active_slot].hurtbox(
+                    'hit: {
+                        let hurtbox = match player.active {
+                            ActiveAbility::Bow => {
+                                let up = if player.bow.aim == Vec2::ZERO {
+                                    Vec2::UP
+                                } else {
+                                    player.bow.aim
+                                };
+                                player.forms[player.active_slot].hurtbox(
+                                    player.base.position,
+                                    up.perp_cw(),
+                                    data.bow.hurtbox_extents,
+                                )
+                            }
+                            ActiveAbility::Grenade
+                            | ActiveAbility::Smoke
+                            | ActiveAbility::Tack
+                            | ActiveAbility::Mjolnir
+                            // The form's box collider grows and shrinks with
+                            // the thrower, as the Smoke form does here.
+                            | ActiveAbility::PokeBall => player.forms[player.active_slot].hurtbox(
                                 player.base.position,
-                                up.perp_cw(),
-                                data.bow.hurtbox_extents,
-                            )
-                        }
-                        ActiveAbility::Grenade
-                        | ActiveAbility::Smoke
-                        | ActiveAbility::Tack
-                        | ActiveAbility::Mjolnir
-                        // The form's box collider grows and shrinks with
-                        // the thrower, as the Smoke form does here.
-                        | ActiveAbility::PokeBall => player.forms[player.active_slot].hurtbox(
-                            player.base.position,
-                            Vec2::angle(player.base.rotation),
-                            throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
-                        ),
-                        // Any other form is hit through the shape its prefab
-                        // registered, such as Growth Ray's box.
-                        _ => {
-                            let h = self.player_hit_by_circle(player_index, circle);
-                            detonations += h as usize;
-                            continue;
-                        }
-                    };
-                    crate::physics::contact::circle_box(circle, hurtbox).is_some()
+                                Vec2::angle(player.base.rotation),
+                                throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
+                            ),
+                            // Any other form is hit through the shape its prefab
+                            // registered, such as Growth Ray's box.
+                            _ => break 'hit self.player_hit_by_circle(player_index, circle),
+                        };
+                        crate::physics::contact::circle_box(circle, hurtbox).is_some()
+                    }
                 };
-                detonations += hit as usize;
-            }
-            if detonations == 0
-                && let Some(key) = line_key
-            {
-                let hit = CallbackHit::ItemDetonate { item: item_index, count: line_hits };
-                self.scratch.callback_hits.push((key, hit));
-            } else {
-                detonations += line_hits;
+                if hit {
+                    let player_min = self.player_sweep_min(player_index, self.sweep_x());
+                    let entity = Some(Self::hurtbox_entity(&self.players[player_index]));
+                    let rank = sweep_rank(&self.entities, player_min, entity);
+                    let category = 1 - self.player_is_circle(player_index) as u8;
+                    let (later, earlier) = sweep_pair(item_rank, rank);
+                    earliest_key(&mut first_key, (category, later, earlier));
+                    detonations += 1;
+                }
             }
             // SmokeGrenadeExplode2.OnCollide ignores every contact, not only
             // the owner's, until hurtOwnerDelay has run out.
-            if detonations > 0 {
-                if item.ability != ABILITY_SMOKE {
-                    self.detonate_grenade(item_index, true, data);
-                    for _ in 1..detonations {
-                        self.spawn_grenade_explosion(
-                            item.position,
-                            item.owner,
-                            true,
-                            item.scale,
-                            data,
-                        );
-                    }
-                } else if item.detonates_on_owner {
-                    self.detonate_smoke(item_index, true, data);
-                }
+            if let Some(key) = first_key
+                && (item.ability != ABILITY_SMOKE || item.detonates_on_owner)
+            {
+                let hit = CallbackHit::ItemDetonate { item: item_index, count: detonations };
+                self.scratch.callback_hits.push((key, hit));
             }
         }
     }
