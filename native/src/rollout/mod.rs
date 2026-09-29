@@ -6017,14 +6017,20 @@ impl RolloutWorld {
         for (index, value) in player_order[..player_count].iter_mut().enumerate() {
             *value = index;
         }
-        player_order[..player_count].sort_by_key(|&index| {
+        let mut player_hierarchy = [0u32; MAX_PLAYERS];
+        for (index, value) in player_hierarchy[..player_count].iter_mut().enumerate() {
             let slot = &self.players[index];
             let entity = match Self::hurtbox_entity(slot) {
                 usize::MAX => slot.body_entity,
                 entity => entity,
             };
-            (self.entities[entity].hierarchy, index)
-        });
+            *value = self.entities[entity].hierarchy;
+        }
+        player_order[..player_count].sort_by_key(|&index| (player_hierarchy[index], index));
+        // A Black Hole spawned before a stock-respawned slime sits ahead of
+        // it in the Updater: its pull lands before that slime's PlayerBody
+        // damps and integrates the external velocity this pass.
+        let mut black_holes_from = 0;
         for &index in &player_order[..player_count] {
             if has(ABILITY_BLINK) {
                 // A wall QuantumTunnel registered before the object holding
@@ -6038,6 +6044,10 @@ impl RolloutWorld {
                 };
                 let hierarchy = self.entities[entity].hierarchy.saturating_sub(100_000_000);
                 self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
+            }
+            if has(ABILITY_BLACK_HOLE) && black_holes_from < player_hierarchy[index] {
+                self.black_holes_update(data, updater_dt, black_holes_from..player_hierarchy[index]);
+                black_holes_from = player_hierarchy[index];
             }
             let packet = &actions[index];
             // An ordinary slime's drop test closes its grounded Move instead
@@ -6346,7 +6356,7 @@ impl RolloutWorld {
         // player prefab. A hole fired by BlackHoleClap therefore receives its
         // time-zero UpdateSim later in this same updater pass.
         if has(ABILITY_BLACK_HOLE) {
-            self.black_holes_tick(data, updater_dt);
+            self.black_holes_tick(data, updater_dt, black_holes_from);
         }
         if has_rope {
             self.rope_parents_update(rope_abilities::RopeParentPass::NewerShot);
@@ -14815,7 +14825,7 @@ impl RolloutWorld {
         Some(vector * magnitude / cube)
     }
 
-    fn black_holes_tick(&mut self, data: &data::RolloutData, dt: Fix) {
+    fn black_holes_tick(&mut self, data: &data::RolloutData, dt: Fix, from: u32) {
         // DestroyFix casualties remain visible for their callback frame and
         // leave DetPhysics at the start of the following simulation pass.
         for entity in self
@@ -14864,9 +14874,21 @@ impl RolloutWorld {
                 self.entities[entity].flags = E_REMOVED;
             }
         }
+        self.black_holes_update(data, dt, from..u32::MAX);
+    }
+
+    /// BlackHole.UpdateSim for the holes whose updater hierarchy falls in
+    /// `hierarchy`.
+    fn black_holes_update(
+        &mut self,
+        data: &data::RolloutData,
+        dt: Fix,
+        hierarchy: std::ops::Range<u32>,
+    ) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         for hole_index in 0..self.black_holes.len() {
             if !self.black_holes[hole_index].active
+                || !hierarchy.contains(&(100_000_000 + self.black_holes[hole_index].hierarchy_base))
                 || self.blink_object_hidden(self.black_holes[hole_index].entity)
             {
                 continue;
