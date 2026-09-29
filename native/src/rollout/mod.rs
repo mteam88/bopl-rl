@@ -1741,7 +1741,16 @@ pub struct EatingState {
     /// The victim's deaths at the bite: Chew only kills the body it bit, not
     /// a stock clone that replaced it.
     pub victim_deaths: u32,
+    /// The hurtbox row of a bitten abilityless clone of `victim`.
+    pub victim_clone: Option<usize>,
     pub swallowing: bool,
+}
+
+/// A Player-layer body a SlimeController.OnCollide may bite.
+#[derive(Clone, Copy)]
+enum Prey {
+    Player(usize),
+    Clone(usize),
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -1954,6 +1963,7 @@ pub struct AbilitylessClone {
     /// PlayerPhysics.prevScal: the radius follows the hurtbox's
     /// `player.Scale` one pass later, as a slime's does.
     pub physics_scale: Fix,
+    pub eating: EatingState,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -6909,7 +6919,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            self.try_bite(pushed, other);
+            self.try_bite(pushed, Prey::Player(other), data);
             // An earlier callback's stock death leaves the other slime's
             // destroyed body where it died, and OnCollide still reads it.
             let other_position = match self.players[other].stock_death {
@@ -8481,32 +8491,112 @@ impl RolloutWorld {
     }
 
     /// SlimeController.OnCollide bites before it shoves: a grounded slime at
-    /// least scaleDiffBeforeNomNom bigger than an enemy slime whose box it
-    /// touches starts eating it, unless that slime is invulnerable.
-    fn try_bite(&mut self, eater: usize, victim: usize) {
-        let (slot, prey) = (&self.players[eater], &self.players[victim]);
+    /// least scaleDiffBeforeNomNom bigger than an enemy body whose box it
+    /// touches starts eating it, unless that body is invulnerable.
+    fn try_bite(&mut self, eater: usize, prey: Prey, data: &data::RolloutData) {
+        let slot = &self.players[eater];
         if !self.playable(eater)
-            || prey.active != ActiveAbility::None
             || slot.obs_state == STATE_BITING
             || !slot.base.grounded
             || (self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[eater])
-            || slot.base.scale - prey.base.scale < SCALE_DIFF_BEFORE_NOM_NOM
-            || slot.team == prey.team
-            || prey.poke_invulnerable
-            || crate::physics::contact::box_box(slot.base.collider, prey.base.collider).is_none()
         {
             return;
         }
-        let victim_deaths = prey.deaths;
-        let slot = &mut self.players[eater];
-        slot.obs_state = STATE_BITING;
-        slot.eating = EatingState {
+        if let Some(eating) = self.bite(slot.base.scale, slot.team, slot.base.collider, prey, data) {
+            let slot = &mut self.players[eater];
+            slot.obs_state = STATE_BITING;
+            slot.eating = EatingState { swallowing: slot.eating.swallowing, ..eating };
+        }
+    }
+
+    /// `try_bite` for an abilityless clone's own SlimeController.
+    fn try_clone_bite(&mut self, eater: usize, prey: Prey, data: &data::RolloutData) {
+        let clone = &self.abilityless_clones[eater];
+        let owner = clone.owner;
+        if !clone.base.alive
+            || clone.obs_state == STATE_BITING
+            || !clone.base.grounded
+            || (self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner])
+        {
+            return;
+        }
+        let team = self.players[owner].team;
+        if let Some(eating) = self.bite(clone.base.scale, team, clone.base.collider, prey, data) {
+            let clone = &mut self.abilityless_clones[eater];
+            clone.obs_state = STATE_BITING;
+            clone.eating = EatingState { swallowing: clone.eating.swallowing, ..eating };
+        }
+    }
+
+    /// OnCollide's bite test on the touched collider's own FixTransform
+    /// scale, then Bite, which resolves a form's collider to its slime and
+    /// refuses a body whose active PlayerCollision is invulnerable
+    /// (SlimeController.cs:1142-1170, 1211-1219).
+    fn bite(
+        &self,
+        scale: Fix,
+        team: u32,
+        collider: OrientedBox,
+        prey: Prey,
+        data: &data::RolloutData,
+    ) -> Option<EatingState> {
+        let (prey_scale, prey_box, prey_team, invulnerable, eating) = match prey {
+            Prey::Player(victim) => {
+                let slot = &self.players[victim];
+                let (prey_scale, prey_box) = if slot.active == ActiveAbility::None {
+                    (slot.base.scale, slot.base.collider)
+                } else {
+                    // Ability.UpdateSim gives the form's collider Player.Scale.
+                    let form = self.synced_hurtbox(victim, data).unwrap_or(slot.base.collider);
+                    (slot.player_scale, form)
+                };
+                let eating = EatingState {
+                    victim,
+                    victim_deaths: slot.deaths,
+                    ..EatingState::default()
+                };
+                (prey_scale, prey_box, slot.team, slot.poke_invulnerable, eating)
+            }
+            Prey::Clone(clone) => {
+                let clone = &self.abilityless_clones[clone];
+                let eating = EatingState {
+                    victim: clone.owner,
+                    victim_clone: clone.entity,
+                    ..EatingState::default()
+                };
+                let team = self.players[clone.owner].team;
+                (clone.base.scale, clone.base.collider, team, clone.poke_invulnerable, eating)
+            }
+        };
+        if scale - prey_scale < SCALE_DIFF_BEFORE_NOM_NOM
+            || team == prey_team
+            || invulnerable
+            || crate::physics::contact::box_box(collider, prey_box).is_none()
+        {
+            return None;
+        }
+        Some(EatingState {
             phase: EatingPhase::Bite,
             frames: BITE_TICKS + 1,
-            victim,
-            victim_deaths,
-            swallowing: slot.eating.swallowing,
-        };
+            ..eating
+        })
+    }
+
+    /// Chew kills the bitten body through its active PlayerCollision, without
+    /// a death effect.
+    fn chew(&mut self, killer: u32, eating: EatingState) {
+        if let Some(entity) = eating.victim_clone {
+            if let Some(clone) = (self.abilityless_clones.iter())
+                .position(|clone| clone.active && clone.entity == Some(entity))
+                && !self.abilityless_clones[clone].poke_invulnerable
+            {
+                self.kill_abilityless_clone(clone, killer, CAUSE_EATEN);
+            }
+        } else if self.players[eating.victim].deaths == eating.victim_deaths
+            && self.playable(eating.victim)
+        {
+            self.kill(eating.victim, killer, CAUSE_EATEN, false, false);
+        }
     }
 
     /// The rest of a biting slime's pass. OldUpdate returns before input,
@@ -8541,15 +8631,10 @@ impl RolloutWorld {
         }
         match slot.eating.phase {
             EatingPhase::Bite => {
-                // Chew kills the bitten body through its active
-                // PlayerCollision, without a death effect.
                 slot.eating.phase = EatingPhase::Chew;
                 slot.eating.frames = CHEW_TICKS + 1;
-                let (victim, deaths, killer) =
-                    (slot.eating.victim, slot.eating.victim_deaths, slot.base.id);
-                if self.players[victim].deaths == deaths && self.playable(victim) {
-                    self.kill(victim, killer, CAUSE_EATEN, false, false);
-                }
+                let (killer, eating) = (slot.base.id, slot.eating);
+                self.chew(killer, eating);
             }
             EatingPhase::Chew => {
                 slot.eating.phase = EatingPhase::Swallow;
@@ -26034,6 +26119,7 @@ impl RolloutWorld {
             ground_destroyed: None,
             grip: rope_abilities::RopeGrip::default(),
             physics_scale: Fix::ONE,
+            eating: EatingState::default(),
         };
         if let Some(free) = self
             .abilityless_clones
@@ -36080,6 +36166,8 @@ impl RolloutWorld {
             }
             if stopped {
                 self.abilityless_clones[clone_index].base.external_velocity *= Fix::from_f64(0.95);
+            } else if self.abilityless_clones[clone_index].obs_state == STATE_BITING {
+                self.clone_biting_tick(clone_index);
             } else {
                 // A clone has no abilities, so of the owner's buttons only jump
                 // reaches it; the ability buttons would otherwise start a Dash.
@@ -36152,10 +36240,53 @@ impl RolloutWorld {
         }
     }
 
+    /// `biting_tick` for a clone: a swallowing clone grows its Player, the body
+    /// integrates without PlayerPhysics.Move, and the SpriteAnimator steps the
+    /// eating animations.
+    fn clone_biting_tick(&mut self, clone_index: usize) {
+        let clone = &mut self.abilityless_clones[clone_index];
+        let owner = clone.owner;
+        if clone.eating.swallowing {
+            let slot = &mut self.players[owner];
+            slot.player_scale = (slot.player_scale + SCALE_INCREASE_ON_NOM)
+                .clamp(Fix::from_f64(0.3), Fix::from_int(3));
+        }
+        if clone.base.outside_bounds() {
+            clone.base.alive = false;
+            clone.base.out_of_bounds = true;
+            return;
+        }
+        clone.base.integrate();
+        clone.eating.frames -= 1;
+        if clone.eating.frames > 0 {
+            return;
+        }
+        match clone.eating.phase {
+            EatingPhase::Bite => {
+                clone.eating.phase = EatingPhase::Chew;
+                clone.eating.frames = CHEW_TICKS + 1;
+                let (killer, eating) = (clone.base.id, clone.eating);
+                self.chew(killer, eating);
+            }
+            EatingPhase::Chew => {
+                clone.eating.phase = EatingPhase::Swallow;
+                clone.eating.frames = SWALLOW_TICKS + 1;
+                clone.eating.swallowing = true;
+            }
+            EatingPhase::Swallow => {
+                clone.eating.swallowing = false;
+                clone.obs_state = STATE_IDLE;
+                clone.state_ticks = 0;
+            }
+        }
+    }
+
     /// Ability-less clones meet every other Player-layer body through the same
-    /// SlimeController.OnCollide shove (SlimeController.cs:1221-1242). Clones
-    /// are spawned after every player, so a clone loses a zero-distance tie.
+    /// SlimeController.OnCollide bite and shove (SlimeController.cs:1211-1242).
+    /// Clones are spawned after every player, so a clone loses a zero-distance
+    /// tie.
     fn abilityless_clone_shoves(&mut self) {
+        let data = data::get();
         for clone_index in 0..self.abilityless_clones.len() {
             let clone = &self.abilityless_clones[clone_index];
             if !clone.active
@@ -36172,8 +36303,10 @@ impl RolloutWorld {
                     continue;
                 }
                 let position = self.players[player].base.position;
+                self.try_clone_bite(clone_index, Prey::Player(player), data);
                 self.abilityless_clones[clone_index].base.push_from(position, false);
                 if self.players[player].active == ActiveAbility::None {
+                    self.try_bite(player, Prey::Clone(clone_index), data);
                     self.players[player].base.push_from(clone_position, true);
                 }
             }
@@ -36190,6 +36323,7 @@ impl RolloutWorld {
                 }
                 let lower = hierarchy_base < other_clone.hierarchy_base;
                 let position = other_clone.base.position;
+                self.try_clone_bite(clone_index, Prey::Clone(other), data);
                 self.abilityless_clones[clone_index].base.push_from(position, lower);
             }
         }
