@@ -2741,6 +2741,9 @@ pub struct PlayerSlot {
     /// The effect's Updater hierarchy, and the pass its UpdateSim reenabled
     /// the player: updatables below it already saw the player inactive.
     pub teleport_effect_hierarchy: u32,
+    /// (pass, TeleportIndicator hierarchy, position before it moved the
+    /// player): an older Mjolnir still finds the slime there, active.
+    pub teleported_from: (u32, u32, Vec2),
     pub teleport_effect_released_tick: Option<u32>,
     /// A TeleportIndicator older than a Black Hole fires at the hole's turn,
     /// ahead of teleport_effects_tick; its new effect first updates next pass.
@@ -4681,6 +4684,7 @@ impl RolloutWorld {
                 teleport_effect_active: false,
                 teleport_effect_time: Fix::ZERO,
                 teleport_effect_hierarchy: 0,
+                teleported_from: (u32::MAX, 0, Vec2::ZERO),
                 teleport_effect_released_tick: None,
                 teleport_effect_born_tick: 0,
                 blink_tunnel_active: false,
@@ -20466,7 +20470,13 @@ impl RolloutWorld {
         false
     }
 
-    fn teleport_entity(&mut self, entity: usize, shift: Vec2, data: &data::RolloutData) {
+    fn teleport_entity(
+        &mut self,
+        entity: usize,
+        shift: Vec2,
+        marker_hierarchy: u32,
+        data: &data::RolloutData,
+    ) {
         if entity >= self.entities.len() || self.teleport_skips_entity(entity) {
             return;
         }
@@ -20512,6 +20522,8 @@ impl RolloutWorld {
                     self.players[player_index].missile.collider_rotation = Fix::ZERO;
                 }
             }
+            self.players[player_index].teleported_from =
+                (self.tick, marker_hierarchy, self.players[player_index].base.position);
             self.players[player_index].base.position += shift;
             self.players[player_index].base.sync_collider();
             // A planting form hidden mid-cast keeps its FixTransform, which
@@ -20758,11 +20770,11 @@ impl RolloutWorld {
                 }
             }
             for &entity in &player_hits[..player_count] {
-                self.teleport_entity(entity, diff, data);
+                self.teleport_entity(entity, diff, marker.hierarchy_base, data);
             }
             for &entity in &marker_hits[..marker_count] {
                 if !player_hits[..player_count].contains(&entity) {
-                    self.teleport_entity(entity, -diff, data);
+                    self.teleport_entity(entity, -diff, marker.hierarchy_base, data);
                 }
             }
             let marker = &mut self.teleport_marker_pool[marker_index];
@@ -32213,8 +32225,15 @@ impl RolloutWorld {
         // after the hammer's UpdateSim on its release pass.
         let released_later = slot.teleport_effect_released_tick == Some(self.tick)
             && slot.teleport_effect_hierarchy > hierarchy;
-        let present = self.slime_present(owner) && !released_later;
+        // A TeleportIndicator newer than the hammer moves and hides the
+        // player after the hammer's UpdateSim.
+        let (teleport_tick, marker, before) = slot.teleported_from;
+        let teleported_later = teleport_tick == self.tick && marker > hierarchy;
+        let present = (self.slime_present(owner) || teleported_later) && !released_later;
         if slot.active == ActiveAbility::None && present {
+            if teleported_later {
+                return Some(before);
+            }
             return Some(self.mjolnir_view(owner, hierarchy));
         }
         if let Some(clone) = self
@@ -32224,7 +32243,7 @@ impl RolloutWorld {
         {
             return Some(clone.base.position);
         }
-        present.then_some(slot.base.position)
+        present.then_some(if teleported_later { before } else { slot.base.position })
     }
 
     /// PokeBall.UpdateSim and BananaPeel.UpdateSim in Updater hierarchy order: the
