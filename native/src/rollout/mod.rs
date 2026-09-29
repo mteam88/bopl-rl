@@ -6748,6 +6748,9 @@ impl RolloutWorld {
         if has(ABILITY_REVIVAL) {
             self.revival_markers_integrate(physics_dt, data.maps[self.map].is_space());
         }
+        if has(ABILITY_TELEPORT) {
+            self.teleport_markers_integrate(physics_dt);
+        }
         if has(ABILITY_ROCK) {
             self.rocks_integrate(physics_dt);
         }
@@ -7298,6 +7301,9 @@ impl RolloutWorld {
             }
             marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
         }
+    }
+
+    fn teleport_markers_integrate(&mut self, physics_dt: Fix) {
         for marker in &mut self.teleport_marker_pool {
             if !marker.active || !marker.registered {
                 continue;
