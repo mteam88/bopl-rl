@@ -2776,11 +2776,17 @@ impl PlayerSlot {
         self.forms[self.active_slot].set_scale_offset(scale, extents, radius, offset);
     }
 
-    /// FixTransform.offset of a gun form's box: as its last Scale set left it,
-    /// or the authored offset at the current scale on a form never scaled.
-    fn gun_offset(&self, offset: Vec2) -> Vec2 {
-        let form = &self.forms[self.active_slot];
+    /// FixTransform.offset of slot `s`'s gun form box: as its last Scale set
+    /// left it, or the authored offset at the current scale on a form never scaled.
+    fn gun_offset(&self, s: usize, offset: Vec2) -> Vec2 {
+        let form = &self.forms[s];
         if form.scale == Fix::ZERO { offset * self.base.scale } else { form.offset }
+    }
+
+    /// The slot whose ability prefab registered `entity`. A forced exit leaves
+    /// that form's box behind after `active_slot` has moved on.
+    fn entity_slot(&self, entity: usize) -> usize {
+        self.form_entities.iter().position(|&e| e == entity).unwrap_or(self.active_slot)
     }
 
     /// GunTransform.OnEnterAbility syncs the hurtbox after SyncPhysicsTo has
@@ -2795,7 +2801,7 @@ impl PlayerSlot {
             self.base.up
         };
         self.gun.hurtbox_center = self.base.position
-            + self.gun.collider_up.perp_cw().complex_mul(self.gun_offset(offset));
+            + self.gun.collider_up.perp_cw().complex_mul(self.gun_offset(self.active_slot, offset));
     }
 
     /// The per-ability field that aliases the selected form row.
@@ -38971,7 +38977,7 @@ impl RolloutWorld {
                             data.missile.hurtbox_extents,
                         )
                     } else {
-                        slot.forms[slot.active_slot].hurtbox(
+                        slot.forms[slot.entity_slot(throw_e)].hurtbox(
                             center,
                             Vec2::angle(rotation),
                             throw_config.hurtbox_extents,
@@ -39203,9 +39209,10 @@ impl RolloutWorld {
                     } else {
                         basis
                     };
-                    let offset = slot.gun_offset(data.freeze.collider_offset);
+                    let s = slot.entity_slot(freeze_e);
+                    let offset = slot.gun_offset(s, data.freeze.collider_offset);
                     let center = root + offset_basis.complex_mul(offset);
-                    let collider = slot.forms[slot.active_slot].hurtbox(
+                    let collider = slot.forms[s].hurtbox(
                         center,
                         basis,
                         data::surface_extents(data.freeze.hurtbox_extents),
@@ -39250,9 +39257,10 @@ impl RolloutWorld {
                     } else {
                         basis
                     };
-                    let offset = slot.gun_offset(data.blink.collider_offset);
+                    let s = slot.entity_slot(blink_e);
+                    let offset = slot.gun_offset(s, data.blink.collider_offset);
                     let center = root + offset_basis.complex_mul(offset);
-                    let collider = slot.forms[slot.active_slot].hurtbox(
+                    let collider = slot.forms[s].hurtbox(
                         center,
                         basis,
                         data::surface_extents(data.blink.hurtbox_extents) * scale,
@@ -39303,9 +39311,10 @@ impl RolloutWorld {
                     } else {
                         basis
                     };
-                    let offset = slot.gun_offset(ray.collider_offset);
+                    let s = slot.entity_slot(ray_e);
+                    let offset = slot.gun_offset(s, ray.collider_offset);
                     let center = root + offset_basis.complex_mul(offset);
-                    let collider = slot.forms[slot.active_slot].hurtbox(
+                    let collider = slot.forms[s].hurtbox(
                         center,
                         basis,
                         data::surface_extents(ray.hurtbox_extents) * scale,
@@ -39350,9 +39359,10 @@ impl RolloutWorld {
                     } else {
                         basis
                     };
-                    let offset = slot.gun_offset(data.duplicator.collider_offset);
+                    let s = slot.entity_slot(duplicator_e);
+                    let offset = slot.gun_offset(s, data.duplicator.collider_offset);
                     let center = root + offset_basis.complex_mul(offset);
-                    let collider = slot.forms[slot.active_slot].hurtbox(
+                    let collider = slot.forms[s].hurtbox(
                         center,
                         basis,
                         data::surface_extents(data.duplicator.hurtbox_extents) * scale,
