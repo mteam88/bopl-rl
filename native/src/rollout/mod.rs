@@ -28915,6 +28915,9 @@ impl RolloutWorld {
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
         slot.base.radius = data.player.radius;
+        // The slime's own PlayerPhysics never took the form's movement
+        // constants (MachoThrow2 has its own).
+        slot.base.constants = data.player.constants.clone();
         slot.base.position = position;
         slot.base.velocity = velocity;
         slot.base.external_velocity = external_velocity;
