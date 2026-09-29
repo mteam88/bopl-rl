@@ -787,6 +787,11 @@ pub struct SpikeCastState {
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
+    pub entry_tick: Option<u32>,
+    /// Where OnEnterAbility's hitBox.UpdatePhysicsPositions put the box: at
+    /// the pose PlayerPhysics.SyncPhysicsTo gave the body, before the body
+    /// goes back to the slime's position (Spike.cs:79-82).
+    pub entry_box: OrientedBox,
 }
 
 /// PlantObjectOnPlatform animation state shared by Engine and Tesla coil.
@@ -10144,6 +10149,25 @@ impl RolloutWorld {
                         self.scale_spike_form(index, data);
                         let slot = &mut self.players[index];
                         slot.base.radius = slot.forms[s].physics_radius();
+                        let mut synced = slot.base.clone();
+                        match synced.platform(&self.platforms).filter(|_| synced.grounded) {
+                            Some(platform) => {
+                                synced.position =
+                                    platform.surface.position(synced.local, synced.radius);
+                                synced.align(platform);
+                            }
+                            None => {
+                                synced.up = Vec2::UP;
+                                synced.rotation = Fix::ZERO;
+                            }
+                        }
+                        let form = slot.forms[s];
+                        slot.spike_cast.entry_tick = Some(self.tick);
+                        slot.spike_cast.entry_box = form.hurtbox(
+                            synced.position + synced.up.perp_cw().complex_mul(form.offset),
+                            Vec2::angle(synced.rotation),
+                            data.spike.hurtbox_extents,
+                        );
                         // The entry pass's Ability.UpdateSim.
                         self.scale_spike_form(index, data);
                         let slot = &mut self.players[index];
@@ -28358,7 +28382,7 @@ impl RolloutWorld {
 
     /// The hurtbox DetPhysics holds for a slime whose row is stale. onExitAbility
     /// (SlimeController.cs:251) and the OnEnterAbility of GunTransform
-    /// (GunTransform.cs:67-68), MachoThrow, Drill and MagnetGun (MagnetGun.cs:295) sync it
+    /// (GunTransform.cs:67-68), MachoThrow, Drill, Spike and MagnetGun (MagnetGun.cs:295) sync it
     /// mid-pass, while the row keeps its flags, and all but Magnet's its pose, until
     /// the next refresh. Other forms' boxes move only in DetPhysics' own sync.
     fn synced_hurtbox(&self, index: usize, data: &data::RolloutData) -> Option<OrientedBox> {
@@ -28375,6 +28399,9 @@ impl RolloutWorld {
             // Drill.OnEnterAbility syncs its hurtbox at the entry pose (Drill.cs:176).
             ActiveAbility::Drill if slot.drill.entry_tick == Some(self.tick) => {
                 return Some(slot.drill.entry_box);
+            }
+            ActiveAbility::Spike if slot.spike_cast.entry_tick == Some(self.tick) => {
+                return Some(slot.spike_cast.entry_box);
             }
             // SparkShot.OnEnterAbility syncs its hurtbox too (SparkShot.cs:89-90).
             ActiveAbility::Missile => {
