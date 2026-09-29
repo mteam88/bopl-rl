@@ -6724,17 +6724,25 @@ impl RolloutWorld {
         if has_rope {
             self.rope_parents_update(rope_abilities::RopeParentPass::Other);
         }
+        // Pickups and shockwaves newer than a live ScaleChanger see what it
+        // rescaled; scale_changers_tick steps them in turn.
+        let deferred_updaters = if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
+            self.first_live_scale_changer()
+        } else {
+            None
+        };
+        let deferred_to = deferred_updaters.unwrap_or(u32::MAX);
         // DynamicAbilityPickup shares the updater-order walk implemented by
         // portals_tick, but authored map spawners can create pickups without
         // any player owning Portal Gun. Keep that walk map/pickup-gated rather
         // than ability-gated so the pickup enables, rerolls, and moves.
         if has(ABILITY_PORTAL_GUN) || !self.ability_pickups.is_empty() {
-            self.portals_tick(data, updater_dt, spawned_from);
+            self.portals_tick(data, updater_dt, spawned_from, deferred_to);
         } else if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
             // Portal endpoints interleave pickup updaters by hierarchy when
             // present. Without Portal Gun, the same global updater tail must
             // still advance DynamicAbilityPickup.
-            self.ability_pickups_tick_remaining(data, updater_dt);
+            self.ability_pickups_tick_before(deferred_to, data, updater_dt);
         }
         if has(ABILITY_THROW) {
             self.macho_boulders_tick(data);
@@ -6787,10 +6795,10 @@ impl RolloutWorld {
             }
         }
         if has(ABILITY_GUST) {
-            self.shockwaves_update(false, data, DT);
+            self.shockwaves_update(false, data, DT, 0..deferred_to);
         }
         if has(ABILITY_METEOR) {
-            self.shockwaves_update(true, data, DT);
+            self.shockwaves_update(true, data, DT, 0..deferred_to);
         }
         if has(ABILITY_REVIVAL) {
             self.revival_marker_bodies_tick();
@@ -6853,7 +6861,7 @@ impl RolloutWorld {
             self.rope_parents_update(rope_abilities::RopeParentPass::OlderTack);
         }
         if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
-            self.scale_changers_tick(data, updater_dt, deferred_spikes);
+            self.scale_changers_tick(data, updater_dt, deferred_spikes, deferred_updaters);
         }
         if has(ABILITY_DUPLICATOR) {
             self.duplicate_platform_effects_tick(data, updater_dt, None);
@@ -8666,10 +8674,10 @@ impl RolloutWorld {
     }
 
     /// The endpoints from `from` up, which no slime came after, then the
-    /// pickups newer than all of them.
-    fn portals_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, from: u32) {
+    /// pickups newer than all of them and older than `pickups_to`.
+    fn portals_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, from: u32, pickups_to: u32) {
         self.portals_update(data, updater_dt, from..u32::MAX);
-        self.ability_pickups_tick_remaining(data, updater_dt);
+        self.ability_pickups_tick_before(pickups_to, data, updater_dt);
     }
 
     /// Portal.UpdateSim for the endpoints whose updater hierarchy falls in
@@ -14472,14 +14480,19 @@ impl RolloutWorld {
     /// pass and returns that changer's hierarchy: the younger spikes update
     /// after it, so its ResizePlatform lands first, and the changer pass
     /// steps them.
-    fn spike_attacks_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) -> Option<u32> {
-        let tick = self.tick;
-        let deferred = self
-            .scale_changers
+    /// The hierarchy of the oldest ScaleChanger that updates this pass.
+    fn first_live_scale_changer(&self) -> Option<u32> {
+        self.scale_changers
             .iter()
-            .filter(|effect| effect.active && effect.born_tick < tick)
+            .filter(|effect| {
+                effect.active && effect.born_tick < self.tick && effect.early_tick != Some(self.tick)
+            })
             .map(|effect| effect.hierarchy_base)
-            .min();
+            .min()
+    }
+
+    fn spike_attacks_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) -> Option<u32> {
+        let deferred = self.first_live_scale_changer();
         for index in 0..self.spike_attacks.len() {
             if deferred.is_none_or(|from| self.spike_attacks[index].hierarchy_base < from) {
                 self.spike_attack_step(data, updater_dt, index);
@@ -18145,7 +18158,10 @@ impl RolloutWorld {
             if orb.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0) {
                 continue;
             }
-            if self.players[orb.owner].active != ActiveAbility::Beam {
+            // Only the active Beam instance's UpdateSim holds its own orb
+            // (Beam.cs:719-724); one a slime's other Beam slot left is not held.
+            let owner = &self.players[orb.owner];
+            if owner.active != ActiveAbility::Beam || owner.beam.orb != Some(orb_index) {
                 // Beam.OnEnterAbility holds the orb through
                 // DisableIfNotHeld_deter.HoldThisFrame on the very pass it
                 // creates or revives it (Beam.cs:261-274), so that pass's
@@ -29835,11 +29851,6 @@ impl RolloutWorld {
         self.scratch.item_order = order;
     }
 
-    /// ScaleChanger.UpdateSim in Updater hierarchy order. Two rays on one target
-    /// do not commute: each add is clamped, and a resize rounds against the
-    /// scale the other just wrote.
-    /// `deferred_spikes`: the spike pass left the spikes from this hierarchy
-    /// on, which update in turn among the changers.
     /// The player ScaleChangers in `hierarchy` that are due this pass: a
     /// changer older than a player's turn object (a form instantiated at its
     /// first cast, or a stock-respawned slime) changes Player.Scale before
@@ -29904,22 +29915,36 @@ impl RolloutWorld {
         self.scale_changers[index].time += DT;
     }
 
+    /// ScaleChanger.UpdateSim in Updater hierarchy order. Two rays on one target
+    /// do not commute: each add is clamped, and a resize rounds against the
+    /// scale the other just wrote.
+    /// `deferred_spikes`: the spike pass left the spikes from this hierarchy
+    /// on, which update in turn among the changers. `deferred_updaters` does
+    /// the same for the pickups and shockwaves.
     fn scale_changers_tick(
         &mut self,
         data: &data::RolloutData,
         updater_dt: Fix,
         deferred_spikes: Option<u32>,
+        deferred_updaters: Option<u32>,
     ) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         order.clear();
         order.extend(0..self.scale_changers.len());
         order.sort_unstable_by_key(|&index| (self.scale_changers[index].hierarchy_base, index));
         let mut spikes_from = deferred_spikes;
+        let mut updaters_from = deferred_updaters;
         for &index in &order {
             let effect = self.scale_changers[index];
             if let Some(from) = spikes_from.filter(|&from| from < effect.hierarchy_base) {
                 self.spike_attacks_between(data, updater_dt, from, effect.hierarchy_base);
                 spikes_from = Some(effect.hierarchy_base);
+            }
+            if let Some(from) = updaters_from.filter(|&from| from < effect.hierarchy_base) {
+                self.ability_pickups_tick_before(effect.hierarchy_base, data, updater_dt);
+                self.shockwaves_update(false, data, DT, from..effect.hierarchy_base);
+                self.shockwaves_update(true, data, DT, from..effect.hierarchy_base);
+                updaters_from = Some(effect.hierarchy_base);
             }
             if !effect.active || effect.born_tick >= self.tick || effect.early_tick == Some(self.tick)
             {
@@ -30199,6 +30224,11 @@ impl RolloutWorld {
         }
         if let Some(from) = spikes_from {
             self.spike_attacks_between(data, updater_dt, from, u32::MAX);
+        }
+        if let Some(from) = updaters_from {
+            self.ability_pickups_tick_remaining(data, updater_dt);
+            self.shockwaves_update(false, data, DT, from..u32::MAX);
+            self.shockwaves_update(true, data, DT, from..u32::MAX);
         }
         self.scratch.item_order = order;
     }
@@ -43669,7 +43699,7 @@ mod tests {
         world.begin_scale_change_entity(entity, false, 1);
         assert_eq!(world.scale_changers.len(), 2);
         world.tick += 1;
-        world.scale_changers_tick(data::get(), DT, None);
+        world.scale_changers_tick(data::get(), DT, None, None);
         assert_eq!(
             world.scale_changers[0].current_scale,
             world.scale_changers[1].current_scale
@@ -43985,7 +44015,7 @@ mod tests {
             hierarchy_base: 1,
             ..PortalEndpoint::default()
         });
-        world.portals_tick(data::get(), dt, 0);
+        world.portals_tick(data::get(), dt, 0, u32::MAX);
         assert_eq!(world.portals[0].time_alive, dt);
     }
 
@@ -44194,7 +44224,7 @@ mod tests {
         world.begin_scale_change_entity(entity, true, 1);
         for _ in 0..10 {
             world.tick += 1;
-            world.scale_changers_tick(data::get(), DT, None);
+            world.scale_changers_tick(data::get(), DT, None, None);
         }
 
         assert!(world.teleport_marker_pool[0].scale > Fix::ONE);
