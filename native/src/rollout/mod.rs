@@ -37592,7 +37592,11 @@ impl RolloutWorld {
     /// Rounded-platform rigid-body stage. The order matches DetPhysics after
     fn rocks_integrate(&mut self, physics_dt: Fix) {
         for slot in &mut self.players {
-            if slot.active != ActiveAbility::Rock || !slot.base.alive {
+            if slot.active != ActiveAbility::Rock
+                || !slot.base.alive
+                || slot.blink_tunnel_active
+                || slot.teleport_effect_active
+            {
                 continue;
             }
             let shift = slot.rock.body.integrate(physics_dt, Fix::from_int(-40));
@@ -37679,7 +37683,13 @@ impl RolloutWorld {
         // integration, before any contact pass pushes a body out.
         let mut swept = [Circle::default(); MAX_PLAYERS];
         for (rock_index, slot) in self.players.iter().enumerate() {
-            if slot.active != ActiveAbility::Rock || !self.playable_slot(slot) {
+            // A Blink tunnel or teleport disables the form's GameObject,
+            // taking its body out of DetPhysics.
+            if slot.active != ActiveAbility::Rock
+                || !self.playable_slot(slot)
+                || slot.blink_tunnel_active
+                || slot.teleport_effect_active
+            {
                 continue;
             }
             let circle = Circle {
