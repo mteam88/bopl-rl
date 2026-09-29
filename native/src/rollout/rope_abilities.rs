@@ -143,6 +143,9 @@ pub enum RopeParent {
     Shot(usize, u32),
     /// A SpikeAttack by slot and birth tick: its box is on LethalTerrain.
     Spike(usize, u32),
+    /// A placed Tesla spark node by slot and birth tick: its circle is on
+    /// NonLethalTerrain.
+    Node(usize, u32),
 }
 
 /// The SpikeAttack FixTransform's pose: SyncGameObject's copy of the box
@@ -159,7 +162,7 @@ fn parent_position(
     players: &[PlayerSlot],
     items: &[ThrownItem],
     shots: &[PortalShotState],
-    (spikes, dynamics): (&[SpawnedSpike], &[PlatformDynamics]),
+    (spikes, nodes, dynamics): (&[SpawnedSpike], &[SpawnedTeslaNode], &[PlatformDynamics]),
     parent: RopeParent,
     offset: Vec2,
 ) -> Option<Vec2> {
@@ -180,6 +183,17 @@ fn parent_position(
             // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
             let (root, right) = spike_transform(spike, dynamics);
             Some(root + right.perp() * offset.y * spike.scale + right * offset.x * spike.scale)
+        }
+        RopeParent::Node(index, born) => {
+            let node = &nodes[index];
+            if !node.active || node.born_tick != born {
+                return None;
+            }
+            // SyncGameObject places the FixTransform its collider offset
+            // back from the collider (DetPhysics.cs:1652-1656).
+            let right = Vec2::angle(node.transform_rotation);
+            let root = node.transform_center - node.collider_offset.complex_mul(right);
+            Some(root + right.perp() * offset.y * node.scale + right * offset.x * node.scale)
         }
     }
 }
@@ -1437,7 +1451,7 @@ impl RolloutWorld {
                 &self.players,
                 &self.thrown_items,
                 &self.portal_shots,
-                (&self.spike_attacks, &self.platform_dynamics),
+                (&self.spike_attacks, &self.tesla_nodes, &self.platform_dynamics),
                 parent,
                 self.ropes[index].parent_offset,
             ) else {
@@ -1456,6 +1470,7 @@ impl RolloutWorld {
                 // own centre (DPhysicsBox.cs:436-451).
                 let centre = match parent {
                     RopeParent::Spike(spike, _) => self.spike_attacks[spike].collider_center,
+                    RopeParent::Node(node, _) => self.tesla_nodes[node].collider_center,
                     _ => position,
                 };
                 let arm = (self.ropes[index].platform_anchor - centre).normalized_safe();
@@ -1465,6 +1480,9 @@ impl RolloutWorld {
                     RopeParent::Shot(shot, _) => &mut self.portal_shots[shot].body,
                     RopeParent::Spike(spike, _) => {
                         &mut self.platform_dynamics[self.spike_attacks[spike].platform_index].body
+                    }
+                    RopeParent::Node(node, _) => {
+                        &mut self.platform_dynamics[self.tesla_nodes[node].platform_index].body
                     }
                 };
                 body.apply_impulse(force, arm);
@@ -1817,12 +1835,45 @@ impl RolloutWorld {
                     break;
                 }
             }
+            if victim.is_none() && parent.is_none() {
+                // A placed spark node's circle sits on NonLethalTerrain, which
+                // the hook takes only when its centre is inside it.
+                for index in 0..self.tesla_nodes.len() {
+                    let node = self.tesla_nodes[index];
+                    if !node.active
+                        || node.macho_carried
+                        || !node
+                            .entity
+                            .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                    {
+                        continue;
+                    }
+                    let body = Circle { center: node.collider_center, radius: node.radius };
+                    if crate::physics::contact::circle_circle(circle, body).is_none()
+                        || (position - node.collider_center).length_squared()
+                            > node.radius * node.radius
+                    {
+                        continue;
+                    }
+                    // The contact pass runs before SyncGameObject copies the
+                    // collider's pose into the node's FixTransform here, and
+                    // RopeHook reads the transform after it.
+                    let root = node.collider_center
+                        - node.collider_offset.complex_mul(Vec2::angle(node.collider_rotation));
+                    offset = (position - root)
+                        .complex_mul(Vec2::angle(-node.collider_rotation))
+                        / node.scale;
+                    parent = Some(RopeParent::Node(index, node.born_tick));
+                    break;
+                }
+            }
             if let Some(parent) = parent {
                 let scale = match parent {
                     RopeParent::Rock(player) => self.players[player].rock.scale,
                     RopeParent::Item(item, _) => self.thrown_items[item].scale,
                     RopeParent::Shot(..) => Fix::ONE,
                     RopeParent::Spike(spike, _) => self.spike_attacks[spike].scale,
+                    RopeParent::Node(node, _) => self.tesla_nodes[node].scale,
                 };
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.mass_start = Fix::ONE;
@@ -1999,7 +2050,7 @@ impl RolloutWorld {
         }
         self.clone_ropes_late();
         let (players, items, shots) = (&self.players, &self.thrown_items, &self.portal_shots);
-        let spikes = (&self.spike_attacks[..], &self.platform_dynamics[..]);
+        let spikes = (&self.spike_attacks[..], &self.tesla_nodes[..], &self.platform_dynamics[..]);
         for rope in &mut self.ropes {
             // DetPhysics.VeryLateRopeUpdate clears this for all 128 pool
             // entries, including bodies disabled during the current pass.
