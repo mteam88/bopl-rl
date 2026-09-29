@@ -19903,8 +19903,10 @@ impl RolloutWorld {
         if wave.collision_mask & (1 << LAYER_PLAYER) == 0 {
             return;
         }
+        // A slime in its spawn animation has its hurtbox enabled, and AddForce
+        // feeds the disabled PlayerPhysics' externalVelocity all the same.
         for player_index in 0..self.players.len() {
-            if !self.playable(player_index) {
+            if !self.hittable(player_index) {
                 continue;
             }
             if matches!(
