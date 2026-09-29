@@ -85,6 +85,11 @@ pub(crate) struct RolloutRope {
     pub time_air_end: Fix,
     pub platform: Option<usize>,
     pub platform_local: Fix,
+    /// RopeAttachment.unscaledParentOffset: where on a non-platform parent
+    /// the end sits, in the parent's unrotated, unscaled frame. RopeHook
+    /// passes the collider centre, so it is zero except on LethalTerrain,
+    /// which keeps the hook's own position.
+    pub parent_offset: Vec2,
     /// RopeAttachment's own fixTrans.position: placed on attach and by each
     /// RepositionOnParent, or on an object parent's position, and read by
     /// the next pull before it moves again.
@@ -134,6 +139,17 @@ pub enum RopeParent {
     Item(usize, u32),
     /// A Portal Gun shot by slot and birth tick.
     Shot(usize, u32),
+    /// A SpikeAttack by slot and birth tick: its box is on LethalTerrain.
+    Spike(usize, u32),
+}
+
+/// The SpikeAttack FixTransform's pose: SyncGameObject's copy of the box
+/// less the box's scaled offset, and its right vector.
+fn spike_transform(spike: &SpawnedSpike, dynamics: &[PlatformDynamics]) -> (Vec2, Vec2) {
+    let right = Vec2::angle(dynamics[spike.platform_index].body.orientation + spike.relative_rotation);
+    let root = spike.transform_center
+        - (data::get().spike.attack_collider_offset * spike.scale).complex_mul(right);
+    (root, right)
 }
 
 /// Where a live parent's collider centre is, or None once it is gone.
@@ -141,7 +157,9 @@ fn parent_position(
     players: &[PlayerSlot],
     items: &[ThrownItem],
     shots: &[PortalShotState],
+    (spikes, dynamics): (&[SpawnedSpike], &[PlatformDynamics]),
     parent: RopeParent,
+    offset: Vec2,
 ) -> Option<Vec2> {
     match parent {
         RopeParent::Rock(player) => (players[player].active == ActiveAbility::Rock
@@ -152,6 +170,15 @@ fn parent_position(
         }
         RopeParent::Shot(shot, born) => (shots[shot].active && shots[shot].born_tick == born)
             .then_some(shots[shot].position),
+        RopeParent::Spike(index, born) => {
+            let spike = &spikes[index];
+            if !spike.active || spike.born_tick != born {
+                return None;
+            }
+            // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
+            let (root, right) = spike_transform(spike, dynamics);
+            Some(root + right.perp() * offset.y * spike.scale + right * offset.x * spike.scale)
+        }
     }
 }
 
@@ -405,6 +432,7 @@ fn empty_rope() -> RolloutRope {
         time_air_end: Fix::ZERO,
         platform: None,
         platform_local: Fix::ZERO,
+        parent_offset: Vec2::ZERO,
         platform_anchor: Vec2::ZERO,
         platform_pull: PLATFORM_PULL,
         platform_top: true,
@@ -1399,9 +1427,14 @@ impl RolloutWorld {
             if parent_pass != pass {
                 continue;
             }
-            let Some(position) =
-                parent_position(&self.players, &self.thrown_items, &self.portal_shots, parent)
-            else {
+            let Some(position) = parent_position(
+                &self.players,
+                &self.thrown_items,
+                &self.portal_shots,
+                (&self.spike_attacks, &self.platform_dynamics),
+                parent,
+                self.ropes[index].parent_offset,
+            ) else {
                 self.deattach_rope(index, true);
                 self.ropes[index].parent = None;
                 continue;
@@ -1412,11 +1445,21 @@ impl RolloutWorld {
                 // only a hook landing on its cast tick leaves off the parent's
                 // centre (DPhysicsCircle.cs:377-393).
                 let force = (physics.segment[0] - physics.segment[1]) * ATTACHMENT_PULL;
-                let arm = (self.ropes[index].platform_anchor - position).normalized_safe();
+                // A SpikeAttack's box is a composite child: DPhysicsBox hands
+                // the pull to its platform's combined body, about the box's
+                // own centre (DPhysicsBox.cs:436-451).
+                let centre = match parent {
+                    RopeParent::Spike(spike, _) => self.spike_attacks[spike].collider_center,
+                    _ => position,
+                };
+                let arm = (self.ropes[index].platform_anchor - centre).normalized_safe();
                 let body = match parent {
                     RopeParent::Rock(player) => &mut self.players[player].rock.body,
                     RopeParent::Item(item, _) => &mut self.thrown_items[item].body,
                     RopeParent::Shot(shot, _) => &mut self.portal_shots[shot].body,
+                    RopeParent::Spike(spike, _) => {
+                        &mut self.platform_dynamics[self.spike_attacks[spike].platform_index].body
+                    }
                 };
                 body.apply_impulse(force, arm);
             }
@@ -1718,11 +1761,43 @@ impl RolloutWorld {
                     .then_some(RopeParent::Shot(index, shot.born_tick))
                 });
             }
+            let mut offset = Vec2::ZERO;
+            if victim.is_none() && parent.is_none() {
+                // A SpikeAttack box sits on LethalTerrain, which the hook
+                // takes only when its centre is inside the collider. The end
+                // then keeps the hook's place on the spike (RopeHook.cs:91-98,
+                // 158-171).
+                let spike_data = data::get();
+                for index in 0..self.spike_attacks.len() {
+                    let spike = self.spike_attacks[index];
+                    if !spike.active
+                        || spike.macho_carried
+                        || !spike
+                            .entity
+                            .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                    {
+                        continue;
+                    }
+                    let collider = self.spike_attack_box(spike, spike_data);
+                    if crate::physics::contact::circle_box(circle, collider).is_none()
+                        || !collider.overlaps(position)
+                    {
+                        continue;
+                    }
+                    let (root, _) = spike_transform(&spike, &self.platform_dynamics);
+                    let rotation = self.platform_dynamics[spike.platform_index].body.orientation
+                        + spike.relative_rotation;
+                    offset = (position - root).complex_mul(Vec2::angle(-rotation)) / spike.scale;
+                    parent = Some(RopeParent::Spike(index, spike.born_tick));
+                    break;
+                }
+            }
             if let Some(parent) = parent {
                 let scale = match parent {
                     RopeParent::Rock(player) => self.players[player].rock.scale,
                     RopeParent::Item(item, _) => self.thrown_items[item].scale,
                     RopeParent::Shot(..) => Fix::ONE,
+                    RopeParent::Spike(spike, _) => self.spike_attacks[spike].scale,
                 };
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.mass_start = Fix::ONE;
@@ -1735,6 +1810,7 @@ impl RolloutWorld {
                 // transform stays on the hook until a pass re-places it.
                 rope.platform_anchor = rope.hook_position;
                 rope.parent = Some(parent);
+                rope.parent_offset = offset;
                 rope.reel_in = true;
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
@@ -1898,6 +1974,7 @@ impl RolloutWorld {
         }
         self.clone_ropes_late();
         let (players, items, shots) = (&self.players, &self.thrown_items, &self.portal_shots);
+        let spikes = (&self.spike_attacks[..], &self.platform_dynamics[..]);
         for rope in &mut self.ropes {
             // DetPhysics.VeryLateRopeUpdate clears this for all 128 pool
             // entries, including bodies disabled during the current pass.
@@ -1959,7 +2036,9 @@ impl RolloutWorld {
                 {
                     Some(items[item].position)
                 }
-                parent => parent.and_then(|parent| parent_position(players, items, shots, parent)),
+                parent => parent.and_then(|parent| {
+                    parent_position(players, items, shots, spikes, parent, rope.parent_offset)
+                }),
             };
             if let Some(position) = position {
                 rope.platform_anchor = position;
