@@ -37805,7 +37805,23 @@ impl RolloutWorld {
         }
         let pairs = &mut pairs[..pair_count];
         pairs.sort_by_key(|&(a, b)| (rank(b), rank(a)));
-        for &(a, b) in pairs.iter() {
+        // CollisionTest builds every Circle/Circle manifold before the first
+        // ResolveCollision, so a later pair keeps its pre-correction contact.
+        let circle = |index: usize| {
+            if index >= PICKUP {
+                pickup_circle(index - PICKUP)
+            } else {
+                Circle {
+                    center: self.players[index].base.position,
+                    radius: self.players[index].rock.collider_radius,
+                }
+            }
+        };
+        let mut contacts = [None; 64];
+        for (contact, &(a, b)) in contacts.iter_mut().zip(pairs.iter()) {
+            *contact = crate::physics::contact::circle_circle(circle(a), circle(b));
+        }
+        for (&(a, b), contact) in pairs.iter().zip(contacts) {
             if a >= PICKUP || b >= PICKUP {
                 let pickup_first = a >= PICKUP;
                 let (rock_index, pickup_index) =
@@ -37825,7 +37841,7 @@ impl RolloutWorld {
                 } else {
                     (rock_circle, pickup_circle)
                 };
-                let Some(contact) = crate::physics::contact::circle_circle(ca, cb) else {
+                let Some(contact) = contact else {
                     continue;
                 };
                 let rock = &mut self.players[rock_index];
@@ -37856,15 +37872,7 @@ impl RolloutWorld {
                 }
                 continue;
             }
-            let ca = Circle {
-                center: self.players[a].base.position,
-                radius: self.players[a].rock.collider_radius,
-            };
-            let cb = Circle {
-                center: self.players[b].base.position,
-                radius: self.players[b].rock.collider_radius,
-            };
-            let Some(contact) = crate::physics::contact::circle_circle(ca, cb) else {
+            let Some(contact) = contact else {
                 continue;
             };
             let [first, second] = self.players.get_disjoint_mut([a, b]).unwrap();
