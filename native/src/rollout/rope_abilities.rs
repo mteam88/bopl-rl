@@ -1720,63 +1720,36 @@ impl RolloutWorld {
             }
             let owner = self.ropes[rope_index].owner;
             let end_player = self.ropes[rope_index].hook_end_player;
-            let mut victim = None;
+            // DetPhysics calls back every circle-circle pair (a Rock, an
+            // item, a shot, a node) before any circle-box pair (a form's
+            // box, a clone, a spike), and the hook takes the first.
+            let mut rock_victim = None;
+            let mut box_victim = None;
             for player in 0..self.players.len() {
                 if (player == owner || player == end_player) || !self.playable(player) {
                     continue;
                 }
                 let slot = &self.players[player];
-                let hit = if slot.active == ActiveAbility::Rock {
+                if slot.active == ActiveAbility::Rock {
                     let rock = Circle {
                         center: slot.base.position,
                         radius: slot.rock.collider_radius,
                     };
-                    crate::physics::contact::circle_circle(circle, rock).is_some()
-                } else {
+                    if rock_victim.is_none()
+                        && crate::physics::contact::circle_circle(circle, rock).is_some()
+                    {
+                        rock_victim = Some(player);
+                    }
+                } else if box_victim.is_none() && self.player_hit_by_circle(player, circle) {
                     // A form's own Player-layer collider carries its
                     // PlayerBody, so the hook meets the form's box.
-                    self.player_hit_by_circle(player, circle)
-                };
-                if hit {
-                    victim = Some(player);
-                    break;
+                    box_victim = Some(player);
                 }
             }
-            // RopeHook ignores bodies by player id, so another player's
-            // clone takes the hook just as that player's slime would.
-            let clone_victim = self.player_layer_clones().into_iter().find(|&index| {
-                let clone = &self.abilityless_clones[index];
-                victim.is_none()
-                    && clone.owner != owner
-                    && clone.owner != end_player
-                    && crate::physics::contact::circle_box(circle, clone.base.collider).is_some()
-            });
-            if let Some(index) = clone_victim {
-                let tick = self.tick;
-                let clone = &mut self.abilityless_clones[index];
-                if let Some(old) = clone.grip.rope
-                    && old != rope_index
-                {
-                    self.ropes[old].physics.detach(true);
-                    self.ropes[old].physics.detach(false);
-                    clone.grip.rope = None;
-                }
-                attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, Some(rope_index), true, tick);
-                let rope = &mut self.ropes[rope_index];
-                rope.physics.time_since_hook_arrived = Fix::ZERO;
-                rope.reel_in = true;
-                rope.hook_active = false;
-                rope.hook_remove_next = true;
-                if let Some(entity) = rope.hook_entity {
-                    self.entities[entity].flags =
-                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
-                }
-                continue;
-            }
-            let mut parent = victim
-                .filter(|&v| self.players[v].active == ActiveAbility::Rock)
-                .map(RopeParent::Rock);
-            if victim.is_none() {
+            let mut victim = rock_victim;
+            let mut parent = victim.map(RopeParent::Rock);
+            let mut offset = Vec2::ZERO;
+            if victim.is_none() && parent.is_none() {
                 // Thrown items sit on the item layer, which the hook's Rope
                 // layer collides with.
                 parent = self.thrown_items.iter().enumerate().find_map(|(index, item)| {
@@ -1803,37 +1776,6 @@ impl RolloutWorld {
                         && crate::physics::contact::circle_circle(circle, body).is_some())
                     .then_some(RopeParent::Shot(index, shot.born_tick))
                 });
-            }
-            let mut offset = Vec2::ZERO;
-            if victim.is_none() && parent.is_none() {
-                // A SpikeAttack box sits on LethalTerrain, which the hook
-                // takes only when its centre is inside the collider. The end
-                // then keeps the hook's place on the spike (RopeHook.cs:91-98,
-                // 158-171).
-                let spike_data = data::get();
-                for index in 0..self.spike_attacks.len() {
-                    let spike = self.spike_attacks[index];
-                    if !spike.active
-                        || spike.macho_carried
-                        || !spike
-                            .entity
-                            .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
-                    {
-                        continue;
-                    }
-                    let collider = self.spike_attack_box(spike, spike_data);
-                    if crate::physics::contact::circle_box(circle, collider).is_none()
-                        || !collider.overlaps(position)
-                    {
-                        continue;
-                    }
-                    let (root, _) = spike_transform(&spike, &self.platform_dynamics);
-                    let rotation = self.platform_dynamics[spike.platform_index].body.orientation
-                        + spike.relative_rotation;
-                    offset = (position - root).complex_mul(Vec2::angle(-rotation)) / spike.scale;
-                    parent = Some(RopeParent::Spike(index, spike.born_tick));
-                    break;
-                }
             }
             if victim.is_none() && parent.is_none() {
                 // A placed spark node's circle sits on NonLethalTerrain, which
@@ -1864,6 +1806,71 @@ impl RolloutWorld {
                         .complex_mul(Vec2::angle(-node.collider_rotation))
                         / node.scale;
                     parent = Some(RopeParent::Node(index, node.born_tick));
+                    break;
+                }
+            }
+            if parent.is_none() {
+                victim = box_victim;
+            }
+            // RopeHook ignores bodies by player id, so another player's
+            // clone takes the hook just as that player's slime would.
+            let clone_victim = self.player_layer_clones().into_iter().find(|&index| {
+                let clone = &self.abilityless_clones[index];
+                victim.is_none()
+                    && parent.is_none()
+                    && clone.owner != owner
+                    && clone.owner != end_player
+                    && crate::physics::contact::circle_box(circle, clone.base.collider).is_some()
+            });
+            if let Some(index) = clone_victim {
+                let tick = self.tick;
+                let clone = &mut self.abilityless_clones[index];
+                if let Some(old) = clone.grip.rope
+                    && old != rope_index
+                {
+                    self.ropes[old].physics.detach(true);
+                    self.ropes[old].physics.detach(false);
+                    clone.grip.rope = None;
+                }
+                attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, Some(rope_index), true, tick);
+                let rope = &mut self.ropes[rope_index];
+                rope.physics.time_since_hook_arrived = Fix::ZERO;
+                rope.reel_in = true;
+                rope.hook_active = false;
+                rope.hook_remove_next = true;
+                if let Some(entity) = rope.hook_entity {
+                    self.entities[entity].flags =
+                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                }
+                continue;
+            }
+            if victim.is_none() && parent.is_none() {
+                // A SpikeAttack box sits on LethalTerrain, which the hook
+                // takes only when its centre is inside the collider. The end
+                // then keeps the hook's place on the spike (RopeHook.cs:91-98,
+                // 158-171).
+                let spike_data = data::get();
+                for index in 0..self.spike_attacks.len() {
+                    let spike = self.spike_attacks[index];
+                    if !spike.active
+                        || spike.macho_carried
+                        || !spike
+                            .entity
+                            .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                    {
+                        continue;
+                    }
+                    let collider = self.spike_attack_box(spike, spike_data);
+                    if crate::physics::contact::circle_box(circle, collider).is_none()
+                        || !collider.overlaps(position)
+                    {
+                        continue;
+                    }
+                    let (root, _) = spike_transform(&spike, &self.platform_dynamics);
+                    let rotation = self.platform_dynamics[spike.platform_index].body.orientation
+                        + spike.relative_rotation;
+                    offset = (position - root).complex_mul(Vec2::angle(-rotation)) / spike.scale;
+                    parent = Some(RopeParent::Spike(index, spike.born_tick));
                     break;
                 }
             }
