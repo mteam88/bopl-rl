@@ -12592,8 +12592,12 @@ impl RolloutWorld {
                 // so nothing is kicked.
                 ActiveAbility::Drill => {}
                 // The caster slime was destroyed by a stock death; its
-                // replacement is neither that slime nor an Ability form.
-                ActiveAbility::None if effect.slime_id != slime_id => {}
+                // replacement is neither that slime nor an Ability form, even
+                // before it registers its own body.
+                ActiveAbility::None
+                    if effect.slime_id != slime_id
+                        || slot.stock_clone_pending
+                        || slot.revival_clone_pending => {}
                 _ => {
                     // A Platform form, like a Drill, has a PlayerBody but
                     // neither a PlayerPhysics nor a BoplBody.
