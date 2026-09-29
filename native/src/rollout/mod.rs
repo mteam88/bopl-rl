@@ -20175,7 +20175,12 @@ impl RolloutWorld {
         }
         if wave.collision_mask & (1 << LAYER_ITEM) != 0 {
             for item in &mut self.thrown_items {
-                if !item.active || item.entity.is_none() {
+                // CircleCastAll skips a collider a TeleportedObjectEffect
+                // disabled.
+                let Some(entity) = item.entity else { continue };
+                if !item.active
+                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                {
                     continue;
                 }
                 let radius = thrown_item_radius(data::get(), *item);
