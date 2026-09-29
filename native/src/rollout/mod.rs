@@ -6026,6 +6026,19 @@ impl RolloutWorld {
             (self.entities[entity].hierarchy, index)
         });
         for &index in &player_order[..player_count] {
+            if has(ABILITY_BLINK) {
+                // A wall QuantumTunnel registered before the object holding
+                // this player has already restored or hidden its wall when
+                // the player's turn comes. Prefab rows carry the Updater's
+                // 100000000 offset.
+                let slot = &self.players[index];
+                let entity = match Self::hurtbox_entity(slot) {
+                    usize::MAX => slot.body_entity,
+                    entity => entity,
+                };
+                let hierarchy = self.entities[entity].hierarchy.saturating_sub(100_000_000);
+                self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
+            }
             let packet = &actions[index];
             // An ordinary slime's drop test closes its grounded Move instead
             // (`player_tick`).
