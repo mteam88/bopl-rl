@@ -2022,6 +2022,9 @@ pub struct AbilitylessClone {
     /// `player.Scale` one pass later, as a slime's does.
     pub physics_scale: Fix,
     pub eating: EatingState,
+    /// The pass and the position before this clone's updaters ran on it: an
+    /// Updater object older than the clone still sees it there.
+    pub pass_start: (u32, Vec2),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -27467,6 +27470,7 @@ impl RolloutWorld {
             grip: rope_abilities::RopeGrip::default(),
             physics_scale: Fix::ONE,
             eating: EatingState::default(),
+            pass_start: (u32::MAX, Vec2::ZERO),
         };
         if let Some(free) = self
             .abilityless_clones
@@ -32957,6 +32961,10 @@ impl RolloutWorld {
             .iter()
             .find(|clone| clone.active && clone.owner == owner)
         {
+            // A clone newer than the hammer moves after its UpdateSim.
+            if clone.hierarchy_base > hierarchy && clone.pass_start.0 == self.tick {
+                return Some(clone.pass_start.1);
+            }
             return Some(clone.base.position);
         }
         present.then_some(if teleported_later { before } else { slot.base.position })
@@ -38081,6 +38089,9 @@ impl RolloutWorld {
         // fill a slot freed below an older one.
         let mut order = std::mem::take(&mut self.scratch.item_order);
         hierarchy_order(&mut order, &self.abilityless_clones, |clone| clone.hierarchy_base);
+        for clone in &mut self.abilityless_clones {
+            clone.pass_start = (self.tick, clone.base.position);
+        }
         for &clone_index in &order {
             if !self.abilityless_clones[clone_index].active
                 || self.abilityless_clones[clone_index].born_tick >= self.tick
