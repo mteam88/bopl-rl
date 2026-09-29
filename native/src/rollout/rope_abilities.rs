@@ -758,9 +758,10 @@ impl RolloutWorld {
             radius: source.grapple_player_cast_radius,
         };
         let mut nearby_player = None;
+        // A slime in its spawn animation already has its hurtbox enabled.
         for candidate in 0..self.players.len() {
             if candidate != player
-                && self.playable(candidate)
+                && self.hittable(candidate)
                 && self.players[candidate].active != ActiveAbility::Rock
                 && crate::physics::contact::circle_box(
                     player_query,
