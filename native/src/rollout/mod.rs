@@ -9916,6 +9916,17 @@ impl RolloutWorld {
                             collider_rotation: slot.base.rotation,
                             ..SpikeCastState::default()
                         };
+                        // Ability.EnterAbility scales the box, then
+                        // PlayerPhysics.SyncPhysicsTo(PlayerInfo) UpdateScales
+                        // the form's radius. Spike.OnEnterAbility puts the
+                        // body back at the slime's position after the sync,
+                        // so only the radius carries over.
+                        self.scale_spike_form(index, data);
+                        let slot = &mut self.players[index];
+                        slot.base.radius = slot.forms[s].physics_radius();
+                        // The entry pass's Ability.UpdateSim.
+                        self.scale_spike_form(index, data);
+                        let slot = &mut self.players[index];
                         // Spike follows Ability in the prefab updater list:
                         // its grounded Move(zero) already runs on the entry
                         // pass, carrying the slime's grounded speed.
@@ -12767,6 +12778,7 @@ impl RolloutWorld {
     }
 
     fn spike_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
+        self.scale_spike_form(index, data);
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
@@ -12797,6 +12809,9 @@ impl RolloutWorld {
             self.exit_spike_cast(index);
             return;
         }
+        // PlayerPhysics.UpdateScale.
+        let slot = &mut self.players[index];
+        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         if self.form_bounds_kill(index, data) {
             return;
         }
@@ -12809,18 +12824,26 @@ impl RolloutWorld {
         self.spike_form_move(index, published_position, jump_pressed);
     }
 
+    /// Ability.EnterAbility and each Ability.UpdateSim set
+    /// `potentialCollider.Scale = player.Scale` (Ability.cs:103-106, 133), so
+    /// the box keeps the inverse extents Box.SetExtents stored, which is what
+    /// CollisionTest(Circle, Box) builds its normal from (PhysTools.cs:
+    /// 767-820), and its FixTransform offset scales with it. Ability is the
+    /// prefab's first updatable, ahead of the SpriteAnimator that casts.
+    fn scale_spike_form(&mut self, index: usize, data: &data::RolloutData) {
+        let slot = &mut self.players[index];
+        slot.forms[slot.active_slot].set_scale_offset(
+            slot.player_scale,
+            data.spike.hurtbox_extents,
+            data.player.radius,
+            data.spike.collider_offset,
+        );
+    }
+
     fn spike_form_move(&mut self, index: usize, published: Vec2, jump_pressed: bool) {
         self.form_body_move(index, jump_pressed);
         // DetPhysics syncs the box to the body Move aligned to the surface.
         let slot = &mut self.players[index];
-        // Ability.EnterAbility and UpdateSim set `potentialCollider.Scale =
-        // player.Scale` (Ability.cs:103-106, 133), so the box keeps the
-        // inverse extents Box.SetExtents stored, which is what
-        // CollisionTest(Circle, Box) builds its normal from (PhysTools.cs:
-        // 767-820).
-        let scale = slot.player_scale;
-        let data = data::get();
-        slot.forms[slot.active_slot].set_scale(scale, data.spike.hurtbox_extents, data.player.radius);
         slot.spike_cast.collider_position = slot.base.position;
         slot.spike_cast.collider_up = slot.base.up;
         slot.spike_cast.collider_rotation = slot.base.rotation;
@@ -12852,6 +12875,8 @@ impl RolloutWorld {
             slot.obs_state = STATE_IDLE;
             slot.state_ticks = 0;
         } else {
+            // The slime's own PlayerPhysics radius, UpdateScaled on the way out.
+            slot.restore_slime_radius();
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.exit_to_fall();
@@ -13631,7 +13656,11 @@ impl RolloutWorld {
             return false;
         };
         let surface_position = body_position - normal * hit.far;
-        let scale = self.players[index].player_scale;
+        // SpikeAttack.Initialize takes the form box's Scale.
+        let scale = {
+            let slot = &self.players[index];
+            slot.forms[slot.active_slot].scale
+        };
 
         let ability_slot = self.players[index].active_slot;
         if let Some(old) = self.players[index].spike_attacks[ability_slot].take() {
@@ -40402,8 +40431,14 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
-                    let center = position + center_basis.complex_mul(data.spike.collider_offset);
-                    let collider = slot.forms[slot.active_slot].hurtbox(
+                    let form = slot.forms[slot.active_slot];
+                    let offset = if form.scale == Fix::ZERO {
+                        data.spike.collider_offset
+                    } else {
+                        form.offset
+                    };
+                    let center = position + center_basis.complex_mul(offset);
+                    let collider = form.hurtbox(
                         center,
                         collider_basis,
                         data.spike.hurtbox_extents,
