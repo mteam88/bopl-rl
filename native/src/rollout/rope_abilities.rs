@@ -109,6 +109,8 @@ pub(crate) struct RolloutRope {
     /// The pass and updater hierarchy of an UpdateSim that DestroyFix'd the
     /// platform; an older RopeAttachment still saw it alive that pass.
     pub platform_destroyed_at: (u32, u32),
+    /// This pass's UpdateSim waits for an older ScaleChanger on the platform.
+    pub after_changer: bool,
     /// Where the hook met a platform this pass. RopeHook.OnCollide takes the
     /// surface coordinate after DetPhysics synced the platform the contact
     /// passes pushed.
@@ -465,6 +467,7 @@ fn empty_rope() -> RolloutRope {
         platform_attach_tick: 0,
         platform_gone: false,
         platform_destroyed_at: (0, 0),
+        after_changer: false,
         hook_hit: None,
         black_hole: None,
         black_hole_reel_frames: 0,
@@ -1290,6 +1293,7 @@ impl RolloutWorld {
                 || self.ropes[index].born_tick == self.tick
                 || !hierarchies.contains(&self.ropes[index].hierarchy)
                 || self.ropes[index].hierarchy < self.scratch.ropes_ran_below
+                || self.ropes[index].after_changer != self.scratch.ropes_changer_pass
             {
                 continue;
             }

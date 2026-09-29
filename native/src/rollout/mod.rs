@@ -3263,6 +3263,8 @@ struct PlatformScratch {
     /// Tacks below this hierarchy ran their UpdateSim ahead of a
     /// later-instantiated player object this pass.
     tacks_ran_below: u32,
+    /// Set while the ropes waiting on a platform's ScaleChanger run.
+    ropes_changer_pass: bool,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
@@ -6714,6 +6716,28 @@ impl RolloutWorld {
             .min()
             .unwrap_or(u32::MAX);
         let ropes_before_clones = first_clone.min(first_hammer);
+        // A rope hanging from a platform that an older Shrink or Growth Ray
+        // ScaleChanger resizes this pass hangs from, and collides with, the
+        // resized platform.
+        let mut ropes_after_changers = false;
+        if has_rope && !self.scale_changers.is_empty() {
+            for index in 0..self.ropes.len() {
+                let rope = &self.ropes[index];
+                let after = (self.scratch.ropes_ran_below..ropes_before_clones)
+                    .contains(&rope.hierarchy)
+                    && rope.platform.is_some_and(|platform| {
+                        self.scale_changers.iter().any(|changer| {
+                            changer.active
+                                && changer.target_kind == 2
+                                && changer.born_tick < self.tick
+                                && changer.victim == platform
+                                && changer.hierarchy_base < rope.hierarchy
+                        })
+                    });
+                self.ropes[index].after_changer = after;
+                ropes_after_changers |= after;
+            }
+        }
         if has_rope {
             self.ropes_update(0..ropes_before_clones.min(first_teleport).min(first_platform));
         }
@@ -6873,6 +6897,14 @@ impl RolloutWorld {
         }
         if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
             self.scale_changers_tick(data, updater_dt, deferred_spikes, deferred_updaters);
+        }
+        if ropes_after_changers {
+            self.scratch.ropes_changer_pass = true;
+            self.ropes_update(0..ropes_before_clones);
+            self.scratch.ropes_changer_pass = false;
+            for rope in &mut self.ropes {
+                rope.after_changer = false;
+            }
         }
         if has(ABILITY_DUPLICATOR) {
             self.duplicate_platform_effects_tick(data, updater_dt, None);
