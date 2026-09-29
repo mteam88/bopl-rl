@@ -2054,6 +2054,7 @@ pub struct MachoBoulder {
     pub ability_generation: u32,
     pub platform_index: usize,
     pub born_tick: u32,
+    pub hierarchy_base: u32,
     pub held: bool,
     pub dropped: bool,
 }
@@ -4854,9 +4855,13 @@ impl RolloutWorld {
         let lo = Vec2::new(center.x, center.y.min(bottom.y));
         let hi = Vec2::new(center.x, center.y.max(bottom.y));
         let mut candidates = self.bounds.candidates(lo, hi);
+        let hierarchy = self.ability_pickups[index].hierarchy_base;
         while candidates != 0 {
             let platform_index = candidates.trailing_zeros() as usize;
             candidates &= candidates - 1;
+            if self.platform_removed_before(platform_index, hierarchy, data) {
+                continue;
+            }
             let platform = &self.platforms[platform_index];
             if let Some(hit) = platform.collider.raycast(center, -Vec2::UP)
                 && platform_height.is_none_or(|nearest| hit.near < nearest)
@@ -4887,6 +4892,27 @@ impl RolloutWorld {
             row.vx = state.body.velocity.x.raw();
             row.vy = state.body.velocity.y.raw();
         }
+    }
+
+    /// Boulder's DestroyIfOutsideSceneBounds destroys it below the water in
+    /// updater order, and the next RaycastToClosestRoundedRect drops it
+    /// (RemoveDestroyedColliders). macho_boulders_tick applies that destroy
+    /// after the pickups, so a later pickup raycasting in the same pass must
+    /// not see the boulder.
+    fn platform_removed_before(
+        &self,
+        platform_index: usize,
+        hierarchy: u32,
+        data: &data::RolloutData,
+    ) -> bool {
+        self.macho_boulders.iter().any(|boulder| {
+            boulder.active
+                && boulder.platform_index == platform_index
+                && boulder.hierarchy_base < hierarchy
+                && boulder.born_tick != self.tick
+                && self.platforms[platform_index].surface.center.y
+                    < data.maps[self.map].lower_boundary()
+        })
     }
 
     fn ability_pickups_tick_before(
@@ -18114,6 +18140,7 @@ impl RolloutWorld {
             ability_generation: self.players[owner].ability_generation,
             platform_index,
             born_tick: self.tick,
+            hierarchy_base,
             held,
             dropped: !held,
         };
