@@ -11935,11 +11935,17 @@ impl RolloutWorld {
                 slot.meteor.external_velocity = slot.base.external_velocity;
             }
             // The source counts raw updater passes in Dash even while time is
-            // stopped. Rust exits the form in `meteor_dash`, so this branch is
-            // retained for source completeness if a future callback exposes
-            // the intermediate state.
+            // stopped.
             _ => {
-                self.players[index].meteor.dash_updates += 1;
+                let scene_water = data.maps[self.map].scene_water_height();
+                let slot = &mut self.players[index];
+                slot.meteor.dash_updates += 1;
+                if slot.meteor.dash_updates > data.meteor.fixed_updates_in_dash {
+                    slot.base.position =
+                        Vec2::new(slot.base.position.x, scene_water - Fix::from_int(20));
+                    slot.base.sync_collider();
+                    slot.meteor.position = slot.base.position;
+                }
             }
         }
     }
@@ -12078,8 +12084,22 @@ impl RolloutWorld {
                 }
                 self.form_body_step(index);
             }
+            // A Dash that hit only players and items: after FixedUpdatesInDash
+            // passes the form is put below the water line, where
+            // DestroyIfOutsideSceneBounds takes it.
             _ => {
-                self.players[index].meteor.dash_updates += 1;
+                let scene_water = data.maps[self.map].scene_water_height();
+                let slot = &mut self.players[index];
+                slot.meteor.dash_updates += 1;
+                if slot.meteor.dash_updates > data.meteor.fixed_updates_in_dash {
+                    slot.base.position =
+                        Vec2::new(slot.base.position.x, scene_water - Fix::from_int(20));
+                }
+                if self.ability_boundary_kill(index, false) {
+                    return;
+                }
+                self.form_body_step(index);
+                self.players[index].base.sync_collider();
             }
         }
         let slot = &mut self.players[index];
@@ -12261,6 +12281,29 @@ impl RolloutWorld {
                 }
                 _ => unreachable!(),
             }
+        }
+        if !self.scratch.ray_hits.is_empty() {
+            // RaycastAll hit only players and items: Dash leaves the form in
+            // State.Dash at the last hit, still killing on contact, and its
+            // UpdateSim counts the passes from here.
+            let slot = &mut self.players[index];
+            let published = slot.base.collider.center;
+            slot.meteor.phase = 3;
+            slot.meteor.dash_updates = 0;
+            slot.base.velocity = Vec2::ZERO;
+            slot.base.external_velocity = Vec2::ZERO;
+            if self.ability_boundary_kill(index, false) {
+                return;
+            }
+            self.form_body_step(index);
+            let slot = &mut self.players[index];
+            slot.base.sync_collider();
+            slot.meteor.position = slot.base.position;
+            slot.meteor.velocity = slot.base.velocity;
+            slot.meteor.external_velocity = slot.base.external_velocity;
+            slot.reported_position = published;
+            slot.reported_tick = self.tick;
+            return;
         }
 
         self.spawn_meteor_smear(start, Vec2::new(start.x, scene_water), index, data);
