@@ -1994,6 +1994,10 @@ pub struct MachoThrowState {
     pub collider_right: Vec2,
     pub collider_rotation: Fix,
     pub collider_basis: Vec2,
+    /// The pass a freeze ray forced the form out. That bypass skips
+    /// MachoThrow2.ExitAbility's rotation reset (FreezeRayGun.cs:128), so the
+    /// form's box stays synced where and as it stood.
+    pub forced_exit_tick: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -28912,6 +28916,16 @@ impl RolloutWorld {
             // which LateUpdateSim last turned onto the surface.
             slot.throw_item.collider_rotation = slot.base.rotation;
         }
+        if slot.active == ActiveAbility::Throw {
+            let throw = &mut slot.macho_throw;
+            throw.forced_exit_tick = Some(self.tick);
+            throw.collider_position = slot.base.position;
+            throw.collider_right = slot.base.up.perp_cw();
+            if throw.collider_rotation != slot.base.rotation {
+                throw.collider_rotation = slot.base.rotation;
+                throw.collider_basis = Vec2::angle(slot.base.rotation);
+            }
+        }
         slot.active = ActiveAbility::None;
         slot.base.dash.active = false;
         slot.base.radius = data.player.radius;
@@ -41184,8 +41198,11 @@ impl RolloutWorld {
                 if macho_throwing {
                     box_row.owner = slot.base.id;
                 }
+                let forced_exit = slot.macho_throw.forced_exit_tick == Some(self.tick);
                 if macho_throwing || was_active {
-                    let (position, center_basis, rotation, collider_basis) = if macho_throwing {
+                    let (position, center_basis, rotation, collider_basis) = if macho_throwing
+                        || forced_exit
+                    {
                         (
                             slot.macho_throw.collider_position,
                             slot.macho_throw.collider_right,
