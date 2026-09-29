@@ -14323,6 +14323,10 @@ impl RolloutWorld {
         // CastSpell exits with a default AbilityExitInfo: facing left.
         slot.facing_right = false;
         slot.active = ActiveAbility::None;
+        // onExitAbility assigns Player.Scale to the slime's hurtbox, and
+        // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
+        slot.set_ordinary_body_scale(slot.player_scale);
+        slot.restore_slime_radius();
         slot.exit_to_fall();
         slot.base.collision_rays(terrain!(self));
         slot.reported_position = published_position;
