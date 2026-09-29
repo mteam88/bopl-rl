@@ -3229,7 +3229,7 @@ struct PlatformScratch {
     /// Smoke grenades an active grapple hook touched this pass.
     hook_smoke_hits: Vec<usize>,
     /// Smoke clouds that already updated this pass, ahead of a younger
-    /// Teleport marker.
+    /// Teleport marker or stock-respawned slime.
     smoke_updated_early: Vec<(usize, u32)>,
     /// Sweep keys of the wall manifolds resolved as one batch: the
     /// Circle/RoundedRect group's, or the Box/RoundedRect group's.
@@ -3552,7 +3552,7 @@ impl RolloutWorld {
                 item_contacts: Vec::with_capacity(256),
                 item_platform_contacts: Vec::with_capacity(256),
                 hook_smoke_hits: Vec::with_capacity(4),
-                smoke_updated_early: Vec::with_capacity(4),
+                smoke_updated_early: Vec::with_capacity(32),
                 circle_wall_order: Vec::with_capacity(256),
                 pickup_order: Vec::with_capacity(16),
                 pickup_window: Vec::with_capacity(16),
@@ -6402,6 +6402,11 @@ impl RolloutWorld {
                     }
                     self.ropes_update(ropes.clone());
                     self.scratch.ropes_ran_below = ropes.end;
+                }
+                // So does a Smoke cloud's FlammableSmoke, whose detonation
+                // takes the explosion's hierarchy before a Meteor lands.
+                if has(ABILITY_SMOKE) {
+                    self.smoke_clouds_update_early(data, updater_dt, spawned.clone());
                 }
                 if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
                     self.player_scale_changers_update(data, spawned);
@@ -20737,6 +20742,24 @@ impl RolloutWorld {
                 self.detonate_smoke_cloud(cloud_index, data);
             }
         }
+    }
+
+    /// Updates, ahead of `smoke_tick`, the live clouds whose prefab rows fall
+    /// in `spawned`.
+    fn smoke_clouds_update_early(&mut self, data: &data::RolloutData, updater_dt: Fix, spawned: std::ops::Range<u32>) {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.smoke_clouds, |cloud| cloud.hierarchy_base);
+        for &cloud_index in &order {
+            let key = (cloud_index, self.smoke_clouds[cloud_index].hierarchy_base);
+            if spawned.contains(&(100_000_000 + key.1))
+                && self.smoke_clouds[cloud_index].active
+                && !self.scratch.smoke_updated_early.contains(&key)
+            {
+                self.scratch.smoke_updated_early.push(key);
+                self.smoke_cloud_update(cloud_index, data, updater_dt);
+            }
+        }
+        self.scratch.item_order = order;
     }
 
     fn smoke_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
