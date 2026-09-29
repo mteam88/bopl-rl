@@ -3107,8 +3107,28 @@ impl PlayerSlot {
         }
     }
 
-    /// The Time Stop form's CastSpell circle radius and FixTransform offset,
-    /// which Ability scales to Player.Scale.
+    /// A circle form's radius and FixTransform offset, which Ability scales
+    /// to Player.Scale.
+    fn form_circle(&self, entity: usize, radius: Fix, offset: Vec2) -> (Fix, Vec2) {
+        let slot = (self.form_entities.iter())
+            .position(|&form| form == entity)
+            .unwrap_or(self.active_slot);
+        let form = &self.forms[slot];
+        if form.scale == Fix::ZERO {
+            (radius, offset)
+        } else {
+            (form.circle_radius, form.offset)
+        }
+    }
+
+    /// `potentialCollider.Scale = Player.Scale` on the active circle form
+    /// (Ability.cs:105, 135).
+    fn scale_form_circle(&mut self, radius: Fix, offset: Vec2) {
+        let scale = self.player_scale;
+        self.forms[self.active_slot].set_circle_scale_offset(scale, radius, offset);
+    }
+
+    /// The Time Stop form's CastSpell circle radius and FixTransform offset.
     fn time_stop_circle(&self, data: &data::RolloutData) -> (Fix, Vec2) {
         let form = &self.forms[self.active_slot];
         if form.scale == Fix::ZERO {
@@ -3118,15 +3138,8 @@ impl PlayerSlot {
         }
     }
 
-    /// `potentialCollider.Scale = Player.Scale` on the Time Stop form
-    /// (Ability.cs:105, 135).
     fn scale_time_stop_circle(&mut self, data: &data::RolloutData) {
-        let scale = self.player_scale;
-        self.forms[self.active_slot].set_circle_scale_offset(
-            scale,
-            data.time_stop.hurtbox_radius,
-            data.time_stop.collider_offset,
-        );
+        self.scale_form_circle(data.time_stop.hurtbox_radius, data.time_stop.collider_offset);
     }
 
     fn set_ordinary_body_scale(&mut self, scale: Fix) {
@@ -10972,6 +10985,7 @@ impl RolloutWorld {
                             attached_ground,
                             ..GustState::default()
                         };
+                        slot.scale_form_circle(data.gust.hurtbox_radius, data.gust.collider_offset);
                         // QuickSpell synchronizes the copied PlayerInfo,
                         // ungrounds by the standard 0.05-unit separation and
                         // then clears both velocity channels.
@@ -11016,6 +11030,7 @@ impl RolloutWorld {
                             attached_ground,
                             ..RevivalState::default()
                         };
+                        slot.scale_form_circle(data.revival.hurtbox_radius, data.revival.collider_offset);
                         if let Some(normal) = detach_normal {
                             slot.base.position += normal * Fix::from_f32(0.05);
                         }
@@ -13220,6 +13235,11 @@ impl RolloutWorld {
     fn quick_spell_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
         let form = self.players[index].active;
         let slot = &mut self.players[index];
+        if form == ActiveAbility::Gust {
+            slot.scale_form_circle(data.gust.hurtbox_radius, data.gust.collider_offset);
+        } else {
+            slot.scale_form_circle(data.revival.hurtbox_radius, data.revival.collider_offset);
+        }
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
         if form == ActiveAbility::Gust {
@@ -42522,10 +42542,16 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO)
                     };
-                    let offset = Vec2::angle(rotation).complex_mul(data.gust.collider_offset);
+                    let (radius, offset) = slot.form_circle(
+                        slot.gust_entity,
+                        data.gust.hurtbox_radius,
+                        data.gust.collider_offset,
+                    );
+                    let offset = Vec2::angle(rotation).complex_mul(offset);
                     circle.x = (position + offset).x.raw();
                     circle.y = (position + offset).y.raw();
                     circle.rotation = rotation.raw();
+                    circle.radius = radius.raw();
                 }
             }
             if revival_e != usize::MAX {
@@ -42546,10 +42572,16 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO)
                     };
-                    let offset = Vec2::angle(rotation).complex_mul(data.revival.collider_offset);
+                    let (radius, offset) = slot.form_circle(
+                        slot.revival_entity,
+                        data.revival.hurtbox_radius,
+                        data.revival.collider_offset,
+                    );
+                    let offset = Vec2::angle(rotation).complex_mul(offset);
                     circle.x = (position + offset).x.raw();
                     circle.y = (position + offset).y.raw();
                     circle.rotation = rotation.raw();
+                    circle.radius = radius.raw();
                 }
             }
             if spike_e != usize::MAX {
@@ -43085,10 +43117,16 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO)
                     };
-                    let offset = Vec2::angle(rotation).complex_mul(data.gust.collider_offset);
+                    let (radius, offset) = slot.form_circle(
+                        slot.gust_entity,
+                        data.gust.hurtbox_radius,
+                        data.gust.collider_offset,
+                    );
+                    let offset = Vec2::angle(rotation).complex_mul(offset);
                     circle.x = (position + offset).x.raw();
                     circle.y = (position + offset).y.raw();
                     circle.rotation = rotation.raw();
+                    circle.radius = radius.raw();
                 }
             }
         }
