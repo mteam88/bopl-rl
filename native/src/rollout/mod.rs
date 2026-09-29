@@ -40009,6 +40009,18 @@ impl RolloutWorld {
                     circle.rotation = 0;
                 }
             }
+            // The Rock in another slot, left the pass before: BounceBall.
+            // ExitAbility zeroed its body rotation, and DetPhysics keeps
+            // syncing the deactivated transform.
+            for (&e, &ability) in slot.form_entities.iter().zip(&slot.abilities) {
+                if ability == ABILITY_ROCK
+                    && e != usize::MAX
+                    && e != rock_e
+                    && self.entities[e].flags & E_ACTIVE == 0
+                {
+                    self.entities[e].rotation = 0;
+                }
+            }
             if roll_e != usize::MAX {
                 let circle = &mut self.entities[roll_e];
                 let was_active = circle.flags & E_ACTIVE != 0;
