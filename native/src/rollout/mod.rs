@@ -20611,7 +20611,12 @@ impl RolloutWorld {
     /// enter animation's radius, and FlammableSmoke's ignition.
     fn smoke_cloud_update(&mut self, cloud_index: usize, data: &data::RolloutData, updater_dt: Fix) {
         let entity = self.smoke_clouds[cloud_index].entity;
-        if self.blink_object_hidden(entity) || self.teleport_revealed_this_pass(entity) {
+        // A QuantumTunnel always updates after the cloud it swallowed, so
+        // the pass that lets the cloud go has already passed it by.
+        if self.blink_object_hidden(entity)
+            || self.blink_object_released(entity)
+            || self.teleport_revealed_this_pass(entity)
+        {
             return;
         }
         if self.smoke_clouds[cloud_index].active
