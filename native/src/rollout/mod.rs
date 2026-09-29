@@ -29345,9 +29345,13 @@ impl RolloutWorld {
             {
                 continue;
             }
-            // A spark node older than the tunnel reads its partners first.
+            // A spark node older than the tunnel reads its partners first, and
+            // an older pickup raycasts for ground before the wall goes.
             let hierarchy = state.blink_tunnel_hierarchy;
             self.tesla_nodes_update(data, updater_dt, hierarchy);
+            if !self.ability_pickups.is_empty() {
+                self.ability_pickups_tick_before(hierarchy, data, updater_dt);
+            }
             let state = &mut self.platform_dynamics[platform_index];
             state.blink_tunnel_stepped_tick = Some(self.tick);
             if !state.blink_tunnel_initialized {
