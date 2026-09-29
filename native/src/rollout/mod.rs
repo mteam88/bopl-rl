@@ -38117,13 +38117,21 @@ impl RolloutWorld {
     /// copy's shake moves it, and resetting the rotation drops the rounding a
     /// resize earlier in the pass left in its box.
     fn sync_inactive_platform(&mut self, i: usize) {
-        if self.platform_dynamics[i].attached_children == 0 {
-            let surface = &self.platforms[i].surface;
-            let (center, right) = (surface.center, surface.right);
-            let inner = &mut self.platforms[i].collider.inner;
-            inner.center = center;
-            inner.right = (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(right);
-            inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(right);
+        let surface = &self.platforms[i].surface;
+        let (center, right) = (surface.center, surface.right);
+        let inner = &mut self.platforms[i].collider.inner;
+        inner.center = center;
+        inner.right = (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(right);
+        inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(right);
+        // SynCompositeToFixTransAndRelativeValues re-anchors an inactive
+        // composite too, carrying its child colliders (DetPhysics.cs:2467-2496).
+        if self.platform_dynamics[i].attached_children != 0 {
+            let dynamics = &mut self.platform_dynamics[i];
+            dynamics.composite_position = center;
+            if let Some(rotation) = dynamics.transform_rotation.take() {
+                dynamics.body.orientation = rotation;
+            }
+            self.sync_composite_children(i, center);
         }
     }
 
