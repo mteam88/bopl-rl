@@ -9019,8 +9019,12 @@ impl RolloutWorld {
         } else {
             std::mem::take(&mut self.players[index].ground_destroyed)
         };
+        // The check is gated on isGrounded (SlimeController.cs:1063): a
+        // rewind that ended on the pass the ground went away already lifted
+        // the slime off it, so the record is stale.
         if let Some(lost) = lost
             && !finds_it_later
+            && self.players[index].base.grounded
         {
             let tick = self.tick;
             let slot = &mut self.players[index];
