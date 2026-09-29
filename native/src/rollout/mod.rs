@@ -6217,6 +6217,10 @@ impl RolloutWorld {
             if self.playable(index) && self.players[index].active != ActiveAbility::None {
                 self.apply_platform_drop(index, data);
             }
+            // A stock clone spawned earlier in this pass first updates on the
+            // next one, so the destroyed slime's Player.Position stands.
+            let stock_clone_spawned =
+                self.players[index].stock_death.is_some_and(|(tick, _)| tick == self.tick);
             if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
                 if self.players[index].active == ActiveAbility::Missile {
                     // SparkShot still runs while frozen. Its turn angle uses
@@ -6328,14 +6332,16 @@ impl RolloutWorld {
                 } else {
                     Fix::from_f64(0.95)
                 };
-                self.players[index].reported_position = self.players[index].base.position;
-                self.players[index].reported_tick = self.tick;
+                if !stock_clone_spawned {
+                    self.players[index].reported_position = self.players[index].base.position;
+                    self.players[index].reported_tick = self.tick;
+                }
                 continue;
             }
             // SlimeController is absent after destruction and disabled during
             // TeleportedObjectEffect, so neither state may publish a new
             // Player.Position through Player.SetPosition.
-            if self.players[index].base.alive {
+            if self.players[index].base.alive && !stock_clone_spawned {
                 self.publish_ability_position(index);
             }
             let action = packet.aim_action();
@@ -39179,6 +39185,16 @@ impl RolloutWorld {
             // steps the body off even a stale attachedGround.
             slot.force_unground(&self.platforms, self.tick);
             slot.stock_death = Some((self.tick, slot.base.position));
+            // Player.Position keeps the destroyed slime's last SetPosition
+            // until the clone's first OldUpdate on the next pass: this pass's
+            // publish if it already ran, else the last pass's.
+            if slot.reported_tick != self.tick
+                && slot.reported_tick.checked_add(1) != Some(self.tick)
+                && !slot.teleport_effect_active
+            {
+                slot.reported_position = slot.base.position;
+            }
+            slot.reported_tick = self.tick;
             slot.base.position = data::get().maps[self.map].respawn_points[1];
             slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity = Vec2::ZERO;
