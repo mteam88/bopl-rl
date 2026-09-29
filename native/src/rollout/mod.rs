@@ -11920,6 +11920,16 @@ impl RolloutWorld {
             ActiveAbility::Mjolnir => data.mjolnir.constants.jump_strength,
             ActiveAbility::PokeBall => data.poke_ball.constants.jump_strength,
             ActiveAbility::Smoke => data.smoke.constants.jump_strength,
+            // These forms keep the slime's movement constants here, but their
+            // prefabs carry their own PlayerPhysics with jumpStrength 30.
+            ActiveAbility::Gust
+            | ActiveAbility::Revival
+            | ActiveAbility::TimeStop
+            | ActiveAbility::Spike
+            | ActiveAbility::Engine
+            | ActiveAbility::Tesla
+            | ActiveAbility::Push
+            | ActiveAbility::Dash => Fix::from_int(30),
             _ => self.players[index].base.constants.jump_strength,
         };
         let slime_id = self
