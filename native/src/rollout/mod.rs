@@ -1951,6 +1951,9 @@ pub struct AbilitylessClone {
     pub ground_destroyed: Option<DestroyedGround>,
     /// The clone's PlayerBody hold on a rope a rope ability hooked it with.
     pub grip: rope_abilities::RopeGrip,
+    /// PlayerPhysics.prevScal: the radius follows the hurtbox's
+    /// `player.Scale` one pass later, as a slime's does.
+    pub physics_scale: Fix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3072,6 +3075,9 @@ struct PlatformScratch {
     arrow_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Slime-vs-slime shoves of one DetPhysics pass: (pushed, other, lower id).
     slime_shoves: Vec<(usize, usize, bool)>,
+    /// This pass's Player.Scale changes by a ScaleChanger, in hierarchy order:
+    /// (player, changer hierarchy, scale before).
+    player_scale_changes: Vec<(usize, u32, Fix)>,
     /// Grounded slimes a wall squished this pass, in callback order:
     /// (abilityless clone, player or clone index).
     squished: Vec<(bool, usize)>,
@@ -25991,7 +25997,10 @@ impl RolloutWorld {
             dash: DashState::default(),
             collider,
             collider_rotation: Fix::ZERO,
-            collider_inverse_extents: Vec2::ZERO,
+            collider_inverse_extents: Vec2::new(
+                Fix::ONE / data.player.hurtbox_extents.x,
+                Fix::ONE / data.player.hurtbox_extents.y,
+            ),
             collider_basis: Vec2::RIGHT,
             aligned: None,
             input_normalized: None,
@@ -26018,6 +26027,7 @@ impl RolloutWorld {
             late_pull: Vec2::ZERO,
             ground_destroyed: None,
             grip: rope_abilities::RopeGrip::default(),
+            physics_scale: Fix::ONE,
         };
         if let Some(free) = self
             .abilityless_clones
@@ -28606,6 +28616,7 @@ impl RolloutWorld {
     /// do not commute: each add is clamped, and a resize rounds against the
     /// scale the other just wrote.
     fn scale_changers_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        self.scratch.player_scale_changes.clear();
         let mut order = std::mem::take(&mut self.scratch.item_order);
         order.clear();
         order.extend(0..self.scale_changers.len());
@@ -28653,6 +28664,11 @@ impl RolloutWorld {
                 }
                 let delta = ray.scale_curve.evaluate(effect.time) * ray.player_multiplier;
                 let slot = &mut self.players[effect.victim];
+                self.scratch.player_scale_changes.push((
+                    effect.victim,
+                    effect.hierarchy_base,
+                    slot.player_scale,
+                ));
                 slot.player_scale =
                     (slot.player_scale + delta).clamp(Fix::from_f64(0.3), Fix::from_int(3));
                 self.scale_changers[index].time += DT;
@@ -36013,6 +36029,14 @@ impl RolloutWorld {
                 &self.platforms
             };
             let terrain = Terrain { platforms, bounds: &self.bounds };
+            {
+                // PlayerPhysics.UpdateScale.
+                let clone = &mut self.abilityless_clones[clone_index];
+                if clone.base.scale != clone.physics_scale {
+                    clone.base.radius *= clone.base.scale / clone.physics_scale;
+                    clone.physics_scale = clone.base.scale;
+                }
+            }
             if !stopped {
                 // A clone's PlayerPhysics.UpdateSim also runs before its
                 // SlimeController: gravity and the landing raycasts come first.
@@ -36075,6 +36099,19 @@ impl RolloutWorld {
                         false,
                     );
                 }
+            }
+            {
+                // SlimeController.UpdateSim: `hurtBox.Scale = player.Scale`
+                // after OldUpdate, every pass (SlimeController.cs:1078). A
+                // ScaleChanger after the clone in the hierarchy has not run yet.
+                let scale = (self.scratch.player_scale_changes.iter())
+                    .find(|&&(player, changer, _)| player == owner && changer > hierarchy)
+                    .map_or(self.players[owner].player_scale, |&(_, _, before)| before);
+                let scale = hurtbox_scale(scale);
+                let clone = &mut self.abilityless_clones[clone_index].base;
+                let ratio = (Fix::ONE / clone.scale) * scale;
+                clone.collider_inverse_extents = clone.collider_inverse_extents / ratio;
+                clone.scale = scale;
             }
             if !self.abilityless_clones[clone_index].base.alive {
                 // The clone's DestroyIfOutsideSceneBounds instantiates the
@@ -36158,10 +36195,10 @@ impl RolloutWorld {
                 hierarchy: self.entities[entity].hierarchy,
                 x: collider.center.x.raw(),
                 y: collider.center.y.raw(),
-                right_x: (collider.right * clone.base.scale).x.raw(),
-                right_y: (collider.right * clone.base.scale).y.raw(),
-                up_x: (collider.up * clone.base.scale).x.raw(),
-                up_y: (collider.up * clone.base.scale).y.raw(),
+                right_x: collider.right.x.raw(),
+                right_y: collider.right.y.raw(),
+                up_x: collider.up.x.raw(),
+                up_y: collider.up.y.raw(),
                 rotation: clone.base.rotation.raw(),
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
