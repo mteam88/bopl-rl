@@ -8849,6 +8849,9 @@ impl RolloutWorld {
         if !in_ability {
             self.players[index].slime_updated = true;
             self.players[index].slime_input = movement_input;
+            // attachToGround's flip on a ceiling landing in this pass's Move,
+            // which an instant cast aiming by the facing reads before.
+            let mut landing_flip = false;
             for s in 0..3 {
                 let button_down = action.buttons & (2 << s) as u8 != 0;
                 self.players[index].reset_ignored_cooldown(s, button_down);
@@ -8919,8 +8922,16 @@ impl RolloutWorld {
                         slot.obs_state = STATE_FALL;
                         slot.state_ticks = 0;
                     } else if slot.obs_state == STATE_FALL && frozen.grounded && !resting_fall {
+                        // Move runs after OldUpdate's EnterAbility, where an
+                        // instant ability has already cast (SlimeController.cs:
+                        // 1068, 1084, 1134): Web Swing and Portal Gun aim from
+                        // the facing before this flip.
                         if frozen.attach_upside_down == Some(true) {
-                            slot.facing_right = !slot.facing_right;
+                            if matches!(ability, ABILITY_WEB_SWING | ABILITY_PORTAL_GUN) {
+                                landing_flip = true;
+                            } else {
+                                slot.facing_right = !slot.facing_right;
+                            }
                         }
                         slot.obs_state = STATE_LAND;
                         // An instant ability leaves the state machine running
@@ -8979,6 +8990,7 @@ impl RolloutWorld {
                     ABILITY_WEB_SWING => {
                         self.fire_web(index, s);
                         self.players[index].base.instant_cast_this_pass = true;
+                        self.players[index].facing_right ^= landing_flip;
                         break;
                     }
                     ABILITY_INVISIBILITY => {
@@ -9069,6 +9081,7 @@ impl RolloutWorld {
                         self.players[index].telemetry.ability_activations[s] += 1;
                         self.spawn_portal_shot(index, s, direction, data);
                         self.players[index].base.instant_cast_this_pass = true;
+                        self.players[index].facing_right ^= landing_flip;
                         break;
                     }
                     ABILITY_REWIND => {
