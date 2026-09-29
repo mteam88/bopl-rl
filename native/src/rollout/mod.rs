@@ -30910,14 +30910,15 @@ impl RolloutWorld {
             }
             slot.late_obs_position = capture_position;
             slot.late_obs_state = STATE_FALL;
-            slot.obs_state = STATE_RAGDOLL;
-            slot.ragdoll = RagdollState {
-                active: true,
-                skip_physics: true,
-                hold_on_ground: false,
-                time: Fix::ZERO,
-                duration: data.poke_ball.capture_seconds + Fix::ONE,
-            };
+            // BeginCapture applies ragdoll first, then UnGround invokes
+            // SlimeController.OnNoLongerGrounded and overwrites the state with
+            // Fall. Until a hold ragdolls it again, the slime's next pass is an
+            // ordinary falling one, Move and its landing rays included;
+            // PlayerPhysics.skipNextUpdate only suppresses its gravity.
+            slot.obs_state = STATE_FALL;
+            slot.state_ticks = 0;
+            slot.ragdoll = RagdollState::default();
+            slot.base.skip_next_gravity = true;
         }
         let item = &mut self.thrown_items[item_index];
         item.capture_victim = Some(victim);
@@ -31112,10 +31113,13 @@ impl RolloutWorld {
                 slot.base.velocity = Vec2::ZERO;
                 slot.base.sync_collider();
                 slot.obs_state = STATE_RAGDOLL;
+                // A victim that landed while BeginCapture had left it falling
+                // stays attached: this ragdoll keeps it on the ground, and
+                // PlayerPhysics.LateUpdateSim puts it back on its platform.
                 slot.ragdoll = RagdollState {
                     active: true,
                     skip_physics: true,
-                    hold_on_ground: false,
+                    hold_on_ground: slot.base.grounded,
                     time: Fix::ZERO,
                     duration: Fix::ONE,
                 };
