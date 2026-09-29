@@ -2399,6 +2399,34 @@ impl AbilitylessClone {
     fn force_unground(&mut self, platforms: &[Platform], tick: u32) {
         force_unground(&mut self.base, &mut self.ground_destroyed, platforms, tick);
     }
+
+    /// PlayerPhysics.DropPlatformTest closing a grounded Move: a platform
+    /// dropping its riders ungrounds the clone and pushes it off along the
+    /// normal (PlayerPhysics.cs:285-301).
+    fn drop_platform_test(&mut self, platforms: &[Platform], dynamics: &[PlatformDynamics]) {
+        let Some(index) = self.base.ground.and_then(|ground| {
+            platforms.iter().position(|platform| platform.id == ground && platform.active)
+        }) else {
+            return;
+        };
+        let dynamics = &dynamics[index];
+        if dynamics.drop_players_frames <= 0 || dynamics.dont_drop_player_id == self.base.id {
+            return;
+        }
+        let normal = platforms[index].surface.normal(self.base.position);
+        let base = &mut self.base;
+        // UnGround lifts the body off the surface before the push.
+        base.position += normal * Fix::from_f32(0.05);
+        base.velocity += normal * dynamics.drop_force;
+        base.position += base.velocity / Fix::from_int(100);
+        base.grounded = false;
+        base.ground = None;
+        base.grounded_speed = Fix::ZERO;
+        base.rotation = Fix::ZERO;
+        base.up = Vec2::UP;
+        self.obs_state = STATE_FALL;
+        self.state_ticks = 1;
+    }
 }
 
 /// One player's match state beyond the movement body.
@@ -35998,9 +36026,14 @@ impl RolloutWorld {
                 // SlimeController jumps on the owner's jumpButton_PressedThisFrame.
                 clone.base.previous_jump = !jump_pressed[owner];
                 clone.base.capture_pre_move(terrain.platforms);
-                if clone.grip.rope.is_none() {
-                    clone.base.move_step(action, movement, terrain);
-                } else if clone.base.move_unintegrated(action, movement, terrain) {
+                let grounded = clone.base.grounded;
+                let integrate = clone.base.move_unintegrated(action, movement, terrain);
+                if grounded && integrate {
+                    clone.drop_platform_test(terrain.platforms, &self.platform_dynamics);
+                }
+                if integrate && clone.grip.rope.is_none() {
+                    clone.base.integrate();
+                } else if integrate {
                     // SlimeController.cs:1086-1089, then PlayerBody.UpdateSim.
                     if !clone.base.grounded
                         && clone.grip.rope.is_some_and(|rope| self.ropes[rope].physics.enabled)
