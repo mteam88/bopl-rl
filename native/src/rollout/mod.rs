@@ -29181,7 +29181,13 @@ impl RolloutWorld {
             // DPhysicsRoundedRect sixth.
             (data.platform.spawn_updatable_count, data.platform.spawn_collider_hierarchy)
         } else {
-            (7, 5)
+            // A Macho boulder, or a copy of one: the Boulder prefab's six
+            // updatables all sit on its root in prefab order, so DuplicateObject
+            // renumbers them 1-6 and its DPhysicsRoundedRect stays second.
+            (
+                data.macho_throw.boulder_updatable_count,
+                data.macho_throw.boulder_collider_hierarchy,
+            )
         };
         let updatable_count = updatable_count + self.platform_dynamics[source].stuck_arrows;
         let hierarchy_base = self.next_spawn_hierarchy;
