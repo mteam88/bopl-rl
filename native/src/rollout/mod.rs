@@ -2299,6 +2299,9 @@ pub struct Shockwave {
     pub portal_shot_indices: [usize; 50],
     pub smoke_count: usize,
     pub smoke_indices: [usize; 50],
+    /// The retained cloud's spawn, so a pooled slot a newer cloud reuses is
+    /// not the object the cast hit.
+    pub smoke_hierarchy: [u32; 50],
     pub black_hole_count: usize,
     pub black_hole_indices: [usize; 50],
     /// The spawned prefab's first Updater slot.
@@ -2329,6 +2332,7 @@ impl Default for Shockwave {
             portal_shot_indices: [usize::MAX; 50],
             smoke_count: 0,
             smoke_indices: [usize::MAX; 50],
+            smoke_hierarchy: [0; 50],
             black_hole_count: 0,
             black_hole_indices: [usize::MAX; 50],
             hierarchy_base: 0,
@@ -22390,6 +22394,7 @@ impl RolloutWorld {
                 }
                 // The cast already tested the cloud's live, animated radius.
                 wave.smoke_indices[wave.smoke_count] = cloud_index;
+                wave.smoke_hierarchy[wave.smoke_count] = cloud.hierarchy_base;
                 wave.smoke_count += 1;
             }
             // RigidBodyAffector bypasses IPhysicsCollider and calls
@@ -22665,7 +22670,12 @@ impl RolloutWorld {
             let Some(cloud) = self.smoke_clouds.get_mut(cloud_index) else {
                 continue;
             };
-            if !cloud.active || !cloud.registered {
+            // Shockwave skips a hit whose object has been destroyed
+            // (Shockwave.cs:182); a cloud spawned since is a different one.
+            if !cloud.active
+                || !cloud.registered
+                || cloud.hierarchy_base != wave.smoke_hierarchy[target]
+            {
                 continue;
             }
             let direction = cloud.position - wave.position;
