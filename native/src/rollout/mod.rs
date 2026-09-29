@@ -1483,8 +1483,11 @@ pub struct FormScale {
 }
 
 impl FormScale {
-    /// `potentialCollider.Scale = Player.Scale` (Ability.cs:105, 135).
+    /// `potentialCollider.Scale = Player.Scale` (Ability.cs:105, 135). Every
+    /// form prefab's box clamps it to MinScale (Fix)0.3f, above Player.Scale's
+    /// own (Fix)0.3 floor.
     fn set_scale(&mut self, value: Fix, extents: Vec2, radius: Fix) {
+        let value = hurtbox_scale(value);
         if self.scale == Fix::ZERO {
             *self = FormScale {
                 scale: Fix::ONE,
@@ -1505,6 +1508,7 @@ impl FormScale {
 
     /// `set_scale` for a box collider with an offset.
     fn set_scale_offset(&mut self, value: Fix, extents: Vec2, radius: Fix, offset: Vec2) {
+        let value = hurtbox_scale(value);
         let fresh = self.scale == Fix::ZERO;
         let old = if fresh { Fix::ONE } else { self.scale };
         self.set_scale(value, extents, radius);
