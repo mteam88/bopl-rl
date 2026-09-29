@@ -38246,16 +38246,19 @@ impl RolloutWorld {
         }
         for node in &self.tesla_nodes {
             if let Some(entity) = node.entity {
+                let hidden = self.attached_hidden(node.platform_index, node.entity);
                 let row = &mut self.entities[entity];
                 if row.flags & E_DESTROYED != 0 {
                     continue;
                 }
                 row.flags |= E_SPARK_NODE | E_EXPLOSIVE;
                 if node.active && !node.macho_carried {
-                    // DetPhysics.IsActive follows the wall it was planted on.
-                    match self.platforms.get(node.platform_index) {
-                        Some(platform) if !platform.active => row.flags &= !E_ACTIVE,
-                        _ => row.flags |= E_ACTIVE,
+                    // DetPhysics.IsActive follows the wall it was planted on,
+                    // and a node Blink hit directly is tunnelled itself.
+                    if hidden {
+                        row.flags &= !E_ACTIVE;
+                    } else {
+                        row.flags |= E_ACTIVE;
                     }
                 }
                 row.reserved[0] = self.players[node.owner]
