@@ -415,14 +415,16 @@ fn clamp_revival_position(mut position: Vec2) -> Vec2 {
     position
 }
 
-fn retained_ground(player: &PlayerSlot, platforms: &[Platform]) -> Option<u32> {
+/// `obs_state` is the slime's state when EnterAbility runs, before the
+/// deactivated slime's Move for the pass can land it.
+fn retained_ground(player: &PlayerSlot, obs_state: u32, platforms: &[Platform]) -> Option<u32> {
     if player.base.grounded {
         return player.base.ground;
     }
     // The ordinary controller can finish a landing animation with its public
     // Idle state one pass before this slice restores `ground`. PlayerInfo in
     // the game still carries the attached platform into the ability prefab.
-    if player.obs_state == STATE_FALL || player.obs_state == STATE_NOTHING {
+    if obs_state == STATE_FALL || obs_state == STATE_NOTHING {
         return None;
     }
     let mut best = None;
@@ -9488,6 +9490,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
+                let entry_obs_state;
                 {
                     let slot = &mut self.players[index];
                     // SlimeController.UpdateSim ungrounds a slime whose ground
@@ -9527,6 +9530,8 @@ impl RolloutWorld {
                     if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == self.tick) {
                         slot.tie_position = Some((self.tick, slot.base.position));
                     }
+                    // EnterAbility reads the state before this pass's Move.
+                    entry_obs_state = slot.obs_state;
                     // The PlayerInfo package carries the post-gravity state;
                     // PlayerBody has not integrated the position yet. The
                     // deactivated slime still gets this pass's Move
@@ -10922,7 +10927,7 @@ impl RolloutWorld {
                         // cast 0.05 units along a stale normal. Revival, the
                         // other QuickSpell form, already reads it this way.
                         let attached_ground =
-                            retained_ground(&self.players[index], &self.platforms);
+                            retained_ground(&self.players[index], entry_obs_state, &self.platforms);
                         let detach_normal = attached_ground
                             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
                             .map(|platform| {
@@ -10966,7 +10971,7 @@ impl RolloutWorld {
                     }
                     ABILITY_REVIVAL => {
                         let attached_ground =
-                            retained_ground(&self.players[index], &self.platforms);
+                            retained_ground(&self.players[index], entry_obs_state, &self.platforms);
                         let detach_normal = attached_ground
                             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
                             .map(|platform| {
