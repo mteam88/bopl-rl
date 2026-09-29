@@ -20959,6 +20959,8 @@ impl RolloutWorld {
             slot.frozen_solid_count = 0;
             slot.freeze_form_exit_tick = u32::MAX;
             slot.ragdoll_grounded_fall = false;
+            // The clone's own PlayerPhysics has no skipNextUpdate pending.
+            slot.base.skip_next_gravity = false;
             slot.captured_by_ball = None;
             slot.poke_invulnerable = false;
             slot.late_obs_tick = u32::MAX;
@@ -21458,6 +21460,8 @@ impl RolloutWorld {
             slot.frozen_solid_count = 0;
             slot.freeze_form_exit_tick = u32::MAX;
             slot.ragdoll_grounded_fall = false;
+            // The clone's own PlayerPhysics has no skipNextUpdate pending.
+            slot.base.skip_next_gravity = false;
             slot.captured_by_ball = None;
             slot.poke_invulnerable = false;
             slot.late_obs_tick = u32::MAX;
