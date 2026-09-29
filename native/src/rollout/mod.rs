@@ -2363,6 +2363,18 @@ fn active_throw_ability(active: ActiveAbility) -> u32 {
     }
 }
 
+/// The serialized FirepointOffset of a gun ability's prefab.
+fn gun_firepoint_offset(data: &data::RolloutData, ability: u32) -> Vec2 {
+    match ability {
+        ABILITY_FREEZE => data.freeze.firepoint_offset,
+        ABILITY_BLINK => data.blink.firepoint_offset,
+        ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY => scale_ray_data(data, ability).firepoint_offset,
+        ABILITY_DUPLICATOR => data.duplicator.firepoint_offset,
+        ABILITY_MAGNET => data.magnet.firepoint_offset,
+        _ => Vec2::ZERO,
+    }
+}
+
 fn scale_ray_data(data: &data::RolloutData, ability: u32) -> &data::ScaleRayData {
     match ability {
         ABILITY_GROWTH_RAY => &data.scale_rays.growth,
@@ -2552,16 +2564,18 @@ pub struct PlayerSlot {
     pub push: PushState,
     pub gun: GunState,
     pub magnet: MagnetState,
-    /// Each equipped MagnetGun prefab mutates its serialized FirepointOffset
-    /// by Ability.OnScaleChanged's incremental scale multiplier.
-    pub magnet_firepoint_offsets: [Vec2; 3],
+    /// Each equipped GunTransform or MagnetGun prefab mutates its serialized
+    /// FirepointOffset by Ability.OnScaleChanged's incremental scale
+    /// multiplier.
+    pub gun_firepoint_offsets: [Vec2; 3],
     /// Each MagnetGun's `extraOffset`, set from the object it picks up and
     /// never cleared: it outlasts the hold and the use, into the next cast.
     pub magnet_extra_offsets: [Vec2; 3],
     /// Each MachoThrow2's `boulderType`: the ground it was last entered on,
     /// kept through an airborne entry. Its boulders are ice when that was.
     pub macho_boulder_ice: [bool; 3],
-    pub magnet_prev_scales: [Fix; 3],
+    /// Each slot's Ability.prevScale: the Player.Scale its last UpdateSim saw.
+    pub gun_prev_scales: [Fix; 3],
     /// PlayerPhysics.gravity_modifier on each slot's GunTransform, MagnetGun or
     /// BowTransform form. Entering airborne sets 0.03 and firing sets 1, but entering
     /// grounded leaves it alone, so a form whose ground vanishes inside Move
@@ -2837,6 +2851,18 @@ impl PlayerSlot {
     /// `potentialCollider.Scale = Player.Scale` on a form's box, from
     /// Ability.EnterAbility and every Ability.UpdateSim (Ability.cs:105, 135).
     /// These prefabs' boxes clamp it to MinScale 0.3 and MaxScale 3.
+    /// Ability.UpdateSim's OnScaleChanged: a GunTransform or MagnetGun
+    /// multiplies its FirepointOffset by the change in Player.Scale since the
+    /// slot's last UpdateSim.
+    fn on_scale_changed(&mut self) {
+        let s = self.active_slot;
+        let previous = self.gun_prev_scales[s];
+        if self.player_scale != previous {
+            self.gun_firepoint_offsets[s] *= self.player_scale / previous;
+            self.gun_prev_scales[s] = self.player_scale;
+        }
+    }
+
     fn scale_form(&mut self, extents: Vec2, radius: Fix, offset: Vec2) {
         let scale = hurtbox_scale(self.player_scale);
         self.forms[self.active_slot].set_scale_offset(scale, extents, radius, offset);
@@ -4530,10 +4556,10 @@ impl RolloutWorld {
                 push: PushState::default(),
                 gun: GunState::default(),
                 magnet: MagnetState::default(),
-                magnet_firepoint_offsets: [data.magnet.firepoint_offset; 3],
+                gun_firepoint_offsets: abilities.map(|ability| gun_firepoint_offset(data, ability)),
                 magnet_extra_offsets: [Vec2::ZERO; 3],
                 macho_boulder_ice: [false; 3],
-                magnet_prev_scales: [Fix::ONE; 3],
+                gun_prev_scales: [Fix::ONE; 3],
                 form_gravity: [Fix::ONE; 3],
                 ragdoll: RagdollState::default(),
                 eating: EatingState::default(),
@@ -5340,11 +5366,11 @@ impl RolloutWorld {
         self.players[player_index].pending_ability_hierarchy[ability_slot] = u32::MAX;
         self.players[player_index].form_gravity[ability_slot] = Fix::ONE;
 
+        self.players[player_index].gun_firepoint_offsets[ability_slot] =
+            gun_firepoint_offset(data, ability);
+        self.players[player_index].gun_prev_scales[ability_slot] = Fix::ONE;
         if ability == ABILITY_MAGNET {
-            self.players[player_index].magnet_firepoint_offsets[ability_slot] =
-                data.magnet.firepoint_offset;
             self.players[player_index].magnet_extra_offsets[ability_slot] = Vec2::ZERO;
-            self.players[player_index].magnet_prev_scales[ability_slot] = Fix::ONE;
         }
 
         if ability == ABILITY_ROCK {
@@ -20453,9 +20479,9 @@ impl RolloutWorld {
             slot.push = PushState::default();
             slot.gun = GunState::default();
             slot.magnet = MagnetState::default();
-            slot.magnet_firepoint_offsets = [data.magnet.firepoint_offset; 3];
+            slot.gun_firepoint_offsets = slot.abilities.map(|ability| gun_firepoint_offset(data, ability));
             slot.magnet_extra_offsets = [Vec2::ZERO; 3];
-            slot.magnet_prev_scales = [Fix::ONE; 3];
+            slot.gun_prev_scales = [Fix::ONE; 3];
             slot.form_gravity = [Fix::ONE; 3];
             slot.blink_tunnel_active = false;
             slot.blink_tunnel_age = Fix::ZERO;
@@ -20930,9 +20956,9 @@ impl RolloutWorld {
             slot.push = PushState::default();
             slot.gun = GunState::default();
             slot.magnet = MagnetState::default();
-            slot.magnet_firepoint_offsets = [data.magnet.firepoint_offset; 3];
+            slot.gun_firepoint_offsets = slot.abilities.map(|ability| gun_firepoint_offset(data, ability));
             slot.magnet_extra_offsets = [Vec2::ZERO; 3];
-            slot.magnet_prev_scales = [Fix::ONE; 3];
+            slot.gun_prev_scales = [Fix::ONE; 3];
             slot.form_gravity = [Fix::ONE; 3];
             slot.blink_tunnel_active = false;
             slot.blink_tunnel_age = Fix::ZERO;
@@ -23032,6 +23058,7 @@ impl RolloutWorld {
         }
 
         // Ability follows the shoot component in the prefab.
+        self.players[index].on_scale_changed();
         self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
@@ -23135,9 +23162,8 @@ impl RolloutWorld {
         }
         let firepoint = {
             let slot = &self.players[index];
-            slot.base.position
-                + slot.base.up * data.freeze.firepoint_offset.y
-                + aim * data.freeze.firepoint_offset.x
+            let offset = slot.gun_firepoint_offsets[slot.active_slot];
+            slot.base.position + slot.base.up * offset.y + aim * offset.x
         };
         self.shoot_freeze_ray(firepoint, aim, data);
         if self.players[index].active != ActiveAbility::Freeze {
@@ -23190,6 +23216,7 @@ impl RolloutWorld {
         }
 
         // Ability follows the shoot component in the prefab.
+        self.players[index].on_scale_changed();
         self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
@@ -23292,9 +23319,8 @@ impl RolloutWorld {
         }
         let firepoint = {
             let slot = &self.players[index];
-            slot.base.position
-                + slot.base.up * data.blink.firepoint_offset.y
-                + aim * data.blink.firepoint_offset.x
+            let offset = slot.gun_firepoint_offsets[slot.active_slot];
+            slot.base.position + slot.base.up * offset.y + aim * offset.x
         };
         self.shoot_blink_ray(firepoint, aim, index, data);
         if self.players[index].active != ActiveAbility::Blink {
@@ -23345,6 +23371,7 @@ impl RolloutWorld {
         }
 
         // Ability follows the shoot component in the prefab.
+        self.players[index].on_scale_changed();
         self.players[index].scale_form(ray.hurtbox_extents, ray.radius, ray.collider_offset);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
@@ -23452,7 +23479,7 @@ impl RolloutWorld {
         }
         let firepoint = {
             let slot = &self.players[index];
-            let offset = ray.firepoint_offset * slot.base.scale;
+            let offset = slot.gun_firepoint_offsets[slot.active_slot];
             slot.base.position + slot.base.up * offset.y + aim * offset.x
         };
         self.shoot_scale_ray(firepoint, aim, index, growth, data);
@@ -23496,6 +23523,7 @@ impl RolloutWorld {
         }
 
         // Ability follows the shoot component in the prefab.
+        self.players[index].on_scale_changed();
         self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
@@ -23608,11 +23636,7 @@ impl RolloutWorld {
     fn magnet_ability_update_scale(&mut self, index: usize, data: &data::RolloutData) {
         let ability_slot = self.players[index].active_slot;
         let scale = self.players[index].player_scale;
-        let previous = self.players[index].magnet_prev_scales[ability_slot];
-        if scale != previous {
-            self.players[index].magnet_firepoint_offsets[ability_slot] *= scale / previous;
-            self.players[index].magnet_prev_scales[ability_slot] = scale;
-        }
+        self.players[index].on_scale_changed();
         // It assigns Player.Scale to the box, and PlayerPhysics UpdateScales
         // the form's radius to it.
         let slot = &mut self.players[index];
@@ -23830,7 +23854,7 @@ impl RolloutWorld {
         let multiplier = magnet
             .pull_curve
             .evaluate(slot.magnet.time_spent_pulling / magnet.max_pull_duration);
-        let raw_firepoint_offset = slot.magnet_firepoint_offsets[slot.active_slot];
+        let raw_firepoint_offset = slot.gun_firepoint_offsets[slot.active_slot];
         let ground = slot.base.ground;
         let body_position = slot.base.position;
         let mut changed = false;
@@ -24108,7 +24132,7 @@ impl RolloutWorld {
         let up = right.perp();
         // OnScaleChanged scales the serialized firepoint while extraOffset is
         // assigned in world units from the selected object.
-        let offset = slot.magnet_firepoint_offsets[slot.active_slot]
+        let offset = slot.gun_firepoint_offsets[slot.active_slot]
             + slot.magnet_extra_offsets[slot.active_slot];
         slot.base.position + up * offset.y + right * offset.x
     }
@@ -24147,7 +24171,7 @@ impl RolloutWorld {
         // magnitude; only TryPullItems and Fire normalize it again.
         let direction = slot.magnet.aim;
         let offset_x =
-            slot.magnet_firepoint_offsets[slot.active_slot].x
+            slot.gun_firepoint_offsets[slot.active_slot].x
                 + slot.magnet_extra_offsets[slot.active_slot].x;
         let root = firepoint - slot.magnet.body_right * offset_x;
         let side = data.magnet.raycast_offset * slot.base.scale;
@@ -25383,7 +25407,7 @@ impl RolloutWorld {
         }
         let firepoint = {
             let slot = &self.players[index];
-            let offset = gun.firepoint_offset * slot.base.scale;
+            let offset = slot.gun_firepoint_offsets[slot.active_slot];
             slot.base.position + slot.base.up * offset.y + aim * offset.x
         };
         self.shoot_duplicator_ray(firepoint, aim, index, data, false);
@@ -42562,23 +42586,24 @@ mod tests {
         world.reset(&test_config()).unwrap();
         world.players[0].active_slot = 0;
         let authored = data::get().magnet.firepoint_offset;
+        world.players[0].gun_firepoint_offsets[0] = authored;
         let first = Fix::from_f64(1.3);
         let second = Fix::from_f64(0.7);
 
         world.players[0].player_scale = first;
         world.magnet_ability_update_scale(0, data::get());
         assert_eq!(
-            world.players[0].magnet_firepoint_offsets[0],
+            world.players[0].gun_firepoint_offsets[0],
             authored * first
         );
 
         world.players[0].player_scale = second;
         world.magnet_ability_update_scale(0, data::get());
         assert_eq!(
-            world.players[0].magnet_firepoint_offsets[0],
+            world.players[0].gun_firepoint_offsets[0],
             authored * first * (second / first)
         );
-        assert_eq!(world.players[0].magnet_prev_scales[0], second);
+        assert_eq!(world.players[0].gun_prev_scales[0], second);
     }
 
     #[test]
