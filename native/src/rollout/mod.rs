@@ -3115,6 +3115,9 @@ struct PlatformScratch {
     item_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Smoke grenades an active grapple hook touched this pass.
     hook_smoke_hits: Vec<usize>,
+    /// Smoke clouds that already updated this pass, ahead of a younger
+    /// Teleport marker.
+    smoke_updated_early: Vec<(usize, u32)>,
     /// Sweep keys of the wall manifolds resolved as one batch: the
     /// Circle/RoundedRect group's, or the Box/RoundedRect group's.
     circle_wall_order: Vec<(SweepRank, SweepRank, u8, usize)>,
@@ -3424,6 +3427,7 @@ impl RolloutWorld {
                 item_contacts: Vec::with_capacity(256),
                 item_platform_contacts: Vec::with_capacity(256),
                 hook_smoke_hits: Vec::with_capacity(4),
+                smoke_updated_early: Vec::with_capacity(4),
                 circle_wall_order: Vec::with_capacity(256),
                 pickup_order: Vec::with_capacity(16),
                 pickup_window: Vec::with_capacity(16),
@@ -19892,49 +19896,59 @@ impl RolloutWorld {
     /// FlammableSmoke.UpdateSim in hierarchy order. A lit cloud instantiates its
     /// Explosion in its own update (FlammableSmoke.cs:66-76), so detonations and
     /// the bounds splashes claim spawn hierarchy in the clouds' order.
+    /// SmokeCircle's updaters for one cloud: DestroyIfOutsideSceneBounds, the
+    /// enter animation's radius, and FlammableSmoke's ignition.
+    fn smoke_cloud_update(&mut self, cloud_index: usize, data: &data::RolloutData, updater_dt: Fix) {
+        let entity = self.smoke_clouds[cloud_index].entity;
+        if self.blink_object_hidden(entity) || self.teleport_revealed_this_pass(entity) {
+            return;
+        }
+        if self.smoke_clouds[cloud_index].active
+            && self.smoke_clouds[cloud_index].registered
+            && self.smoke_clouds[cloud_index].position.y
+                < data::get().maps[self.map].lower_boundary()
+        {
+            // SmokeCircle's DestroyIfOutsideSceneBounds also instantiates
+            // the two-updatable water splash (or, in space, the
+            // two-updatable UpEffect).
+            self.next_spawn_hierarchy += 2;
+            self.remove_smoke_cloud(cloud_index);
+            return;
+        }
+        let cloud = &mut self.smoke_clouds[cloud_index];
+        if !cloud.active || !cloud.registered {
+            return;
+        }
+        let frame = data
+            .smoke
+            .cloud_enter_frame_ticks
+            .partition_point(|&end| end <= cloud.age_ticks)
+            .min(data.smoke.cloud_radii.len() - 1);
+        if let Some(entity) = cloud.entity {
+            self.entities[entity].radius = (data.smoke.cloud_radii[frame] * cloud.scale).raw();
+        }
+        if updater_dt > Fix::ZERO {
+            cloud.age_ticks = cloud.age_ticks.saturating_add(1);
+        }
+        if cloud.ignition_time >= Fix::ZERO {
+            cloud.ignition_time += updater_dt;
+            if cloud.ignition_time > cloud.ignition_delay {
+                self.detonate_smoke_cloud(cloud_index, data);
+            }
+        }
+    }
+
     fn smoke_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         hierarchy_order(&mut order, &self.smoke_clouds, |cloud| cloud.hierarchy_base);
         for &cloud_index in &order {
-            let entity = self.smoke_clouds[cloud_index].entity;
-            if self.blink_object_hidden(entity) || self.teleport_revealed_this_pass(entity) {
-                continue;
-            }
-            if self.smoke_clouds[cloud_index].active
-                && self.smoke_clouds[cloud_index].registered
-                && self.smoke_clouds[cloud_index].position.y
-                    < data::get().maps[self.map].lower_boundary()
-            {
-                // SmokeCircle's DestroyIfOutsideSceneBounds also instantiates
-                // the two-updatable water splash (or, in space, the
-                // two-updatable UpEffect).
-                self.next_spawn_hierarchy += 2;
-                self.remove_smoke_cloud(cloud_index);
-                continue;
-            }
-            let cloud = &mut self.smoke_clouds[cloud_index];
-            if !cloud.active || !cloud.registered {
-                continue;
-            }
-            let frame = data
-                .smoke
-                .cloud_enter_frame_ticks
-                .partition_point(|&end| end <= cloud.age_ticks)
-                .min(data.smoke.cloud_radii.len() - 1);
-            if let Some(entity) = cloud.entity {
-                self.entities[entity].radius = (data.smoke.cloud_radii[frame] * cloud.scale).raw();
-            }
-            if updater_dt > Fix::ZERO {
-                cloud.age_ticks = cloud.age_ticks.saturating_add(1);
-            }
-            if cloud.ignition_time >= Fix::ZERO {
-                cloud.ignition_time += updater_dt;
-                if cloud.ignition_time > cloud.ignition_delay {
-                    self.detonate_smoke_cloud(cloud_index, data);
-                }
+            let key = (cloud_index, self.smoke_clouds[cloud_index].hierarchy_base);
+            if !self.scratch.smoke_updated_early.contains(&key) {
+                self.smoke_cloud_update(cloud_index, data, updater_dt);
             }
         }
         self.scratch.item_order = order;
+        self.scratch.smoke_updated_early.clear();
 
         for explosion in &mut self.smoke_explosions {
             if !explosion.active || !explosion.registered {
@@ -20291,6 +20305,7 @@ impl RolloutWorld {
     }
 
     fn teleport_pending_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        self.scratch.smoke_updated_early.clear();
         for owner in 0..self.players.len() {
             let Some(marker_index) = self.players[owner].teleport_pending_marker.take() else {
                 continue;
@@ -20299,6 +20314,21 @@ impl RolloutWorld {
             if !marker.active {
                 continue;
             }
+            // An older smoke cloud's updaters run before the marker's, so a
+            // burning cloud detonates, and instantiates its explosion, first.
+            let mut order = std::mem::take(&mut self.scratch.item_order);
+            hierarchy_order(&mut order, &self.smoke_clouds, |cloud| cloud.hierarchy_base);
+            for &cloud_index in &order {
+                let key = (cloud_index, self.smoke_clouds[cloud_index].hierarchy_base);
+                if key.1 < marker.hierarchy_base
+                    && self.smoke_clouds[cloud_index].active
+                    && !self.scratch.smoke_updated_early.contains(&key)
+                {
+                    self.scratch.smoke_updated_early.push(key);
+                    self.smoke_cloud_update(cloud_index, data, updater_dt);
+                }
+            }
+            self.scratch.item_order = order;
             let from = self.players[owner].teleport_pending_position;
             let diff = marker.position - from;
             let player_query = Circle {
