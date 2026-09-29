@@ -38412,18 +38412,17 @@ impl RolloutWorld {
     fn live_slime_abilities(&self) -> [[u32; 3]; MAX_PLAYERS + 1] {
         let mut held = [[ABILITY_NULL; 3]; MAX_PLAYERS + 1];
         for slot in &self.players {
-            // The same liveness test `fill_slimes` applies to build the rows
-            // RlObservation.Write collects from `Updater.updatables`.
-            if slot.base.alive
-                && slot.unspawned == 0
-                && !slot.revival_clone_pending
-                && !slot.stock_clone_pending
-                && (slot.base.id as usize) < held.len()
-            {
+            if Self::slime_listed(slot) && (slot.base.id as usize) < held.len() {
                 held[slot.base.id as usize] = slot.abilities;
             }
         }
         held
+    }
+
+    /// The same liveness test `fill_slimes` applies to build the rows
+    /// RlObservation.Write collects from `Updater.updatables`.
+    fn slime_listed(slot: &PlayerSlot) -> bool {
+        slot.base.alive && slot.unspawned == 0 && !slot.revival_clone_pending && !slot.stock_clone_pending
     }
 
     /// Drop the source ability of every published row whose caster no longer
@@ -38434,6 +38433,16 @@ impl RolloutWorld {
     /// caster of a platform can come back on a later stock.
     fn gate_published_source_abilities(&self, out: &mut [CEntity]) {
         let held = self.live_slime_abilities();
+        let mut live_forms = [u32::MAX; MAX_PLAYERS * 3];
+        for (slot, forms) in self.players.iter().zip(live_forms.chunks_mut(3)) {
+            if Self::slime_listed(slot) {
+                for (id, &entity) in forms.iter_mut().zip(&slot.form_entities) {
+                    if entity != usize::MAX {
+                        *id = self.entities[entity].id;
+                    }
+                }
+            }
+        }
         let any_platform = held.iter().any(|slots| slots.contains(&ABILITY_PLATFORM));
         let drill_hitbox_layer = data::get().drill.hitbox_layer;
         for row in out.iter_mut() {
@@ -38477,6 +38486,14 @@ impl RolloutWorld {
                 // The only rounded rectangle credited to Platform is a
                 // ResizablePlatform the ability spawned.
                 if !any_platform {
+                    row.reserved[0] = ABILITY_NULL;
+                }
+            } else if row.layer == LAYER_PLAYER {
+                // An ability prefab's box: `AbilityId` finds its component
+                // only in a listed slime's `abilities`, so a prefab
+                // AddAdditionalAbility replaced publishes 0 even while the
+                // slime holds the same ability in another slot.
+                if !live_forms.contains(&row.id) {
                     row.reserved[0] = ABILITY_NULL;
                 }
             } else if row.owner != 0 && !held[row.owner as usize].contains(&row.reserved[0]) {
