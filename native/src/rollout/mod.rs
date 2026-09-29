@@ -707,6 +707,10 @@ pub struct SmokeCloud {
     /// a fresh ring even when it occupies the same ability slot.
     pub source_group: u32,
     pub age_ticks: u32,
+    /// The collider radius FlammableSmoke.UpdateSim replaced on
+    /// `radius_tick`, still current for updaters that run before it.
+    pub radius_before: i64,
+    pub radius_tick: u32,
     pub ignition_time: Fix,
     pub ignition_delay: Fix,
     /// Smoke born from a duplicated grenade is independently placed on
@@ -14739,6 +14743,7 @@ impl RolloutWorld {
                         center: fire,
                         radius: data.engine.fire_radius * engine.scale,
                     };
+                    let engine_hierarchy = engine.hierarchy_base;
                     let smoke_hit = self
                         .smoke_clouds
                         .iter()
@@ -14748,12 +14753,21 @@ impl RolloutWorld {
                                 return false;
                             }
                             let entity = cloud.entity.expect("registered smoke cloud");
+                            // A cloud whose FlammableSmoke updater comes later
+                            // in the pass has not resized itself yet.
+                            let radius = if engine_hierarchy < cloud.hierarchy_base
+                                && cloud.radius_tick == self.tick
+                            {
+                                cloud.radius_before
+                            } else {
+                                self.entities[entity].radius
+                            };
                             self.entities[entity].flags & E_ENABLED != 0
                                 && crate::physics::contact::circle_circle(
                                     flame,
                                     Circle {
                                         center: cloud.position,
-                                        radius: Fix::from_raw(self.entities[entity].radius),
+                                        radius: Fix::from_raw(radius),
                                     },
                                 )
                                 .is_some()
@@ -14761,7 +14775,6 @@ impl RolloutWorld {
                         .min_by_key(|(_, cloud)| cloud.entity.expect("registered smoke cloud"))
                         .map(|(index, _)| index);
                     if let Some(cloud_index) = smoke_hit {
-                        let engine_hierarchy = engine.hierarchy_base;
                         let cloud = &mut self.smoke_clouds[cloud_index];
                         cloud.ignition_time = Fix::ZERO;
                         // A cloud whose FlammableSmoke updater comes after this
@@ -20644,6 +20657,8 @@ impl RolloutWorld {
             .partition_point(|&end| end <= cloud.age_ticks)
             .min(data.smoke.cloud_radii.len() - 1);
         if let Some(entity) = cloud.entity {
+            cloud.radius_before = self.entities[entity].radius;
+            cloud.radius_tick = self.tick;
             self.entities[entity].radius = (data.smoke.cloud_radii[frame] * cloud.scale).raw();
         }
         if updater_dt > Fix::ZERO {
