@@ -1550,6 +1550,18 @@ impl FormScale {
         self.scale = value;
     }
 
+    /// `set_circle_scale` for a circle whose FixTransform carries an offset,
+    /// which SetScale_DPhysicsOnly multiplies by `new / old`.
+    fn set_circle_scale_offset(&mut self, value: Fix, radius: Fix, offset: Vec2) {
+        let fresh = self.scale == Fix::ZERO;
+        let old = if fresh { Fix::ONE } else { self.scale };
+        self.set_circle_scale(value, radius);
+        if fresh {
+            self.offset = offset;
+        }
+        self.offset = self.offset * (self.scale / old);
+    }
+
     /// PlayerPhysics.UpdateScale.
     fn physics_radius(&mut self) -> Fix {
         if self.physics_scale != self.scale {
@@ -3047,6 +3059,28 @@ impl PlayerSlot {
                 self.rewind.finish_next_tick = false;
             }
         }
+    }
+
+    /// The Time Stop form's CastSpell circle radius and FixTransform offset,
+    /// which Ability scales to Player.Scale.
+    fn time_stop_circle(&self, data: &data::RolloutData) -> (Fix, Vec2) {
+        let form = &self.forms[self.active_slot];
+        if form.scale == Fix::ZERO {
+            (data.time_stop.hurtbox_radius, data.time_stop.collider_offset)
+        } else {
+            (form.circle_radius, form.offset)
+        }
+    }
+
+    /// `potentialCollider.Scale = Player.Scale` on the Time Stop form
+    /// (Ability.cs:105, 135).
+    fn scale_time_stop_circle(&mut self, data: &data::RolloutData) {
+        let scale = self.player_scale;
+        self.forms[self.active_slot].set_circle_scale_offset(
+            scale,
+            data.time_stop.hurtbox_radius,
+            data.time_stop.collider_offset,
+        );
     }
 
     fn set_ordinary_body_scale(&mut self, scale: Fix) {
@@ -7141,14 +7175,9 @@ impl RolloutWorld {
             // transform; OnCollide needs that circle to touch the slime's box.
             if self.players[other].active == ActiveAbility::TimeStop {
                 let caster = &self.players[other];
-                let radius = if caster.time_stop_entity == usize::MAX {
-                    data.time_stop.hurtbox_radius
-                } else {
-                    Fix::from_raw(self.entities[caster.time_stop_entity].radius)
-                };
+                let (radius, offset) = caster.time_stop_circle(data);
                 let circle = Circle {
-                    center: caster.base.position
-                        + caster.base.up.perp_cw().complex_mul(data.time_stop.collider_offset),
+                    center: caster.base.position + caster.base.up.perp_cw().complex_mul(offset),
                     radius,
                 };
                 if crate::physics::contact::circle_box(circle, self.players[pushed].base.collider)
@@ -10215,6 +10244,10 @@ impl RolloutWorld {
                             phase: if grounded { 0 } else { 1 },
                             ..CastSpellState::default()
                         };
+                        // Ability.EnterAbility scales the circle; the form's
+                        // Ability.UpdateSim scales it again this pass, in
+                        // `time_stop_cast_tick`.
+                        slot.scale_time_stop_circle(data);
                         if !grounded {
                             slot.base.rotation = Fix::ZERO;
                             slot.base.up = Vec2::UP;
@@ -13036,6 +13069,7 @@ impl RolloutWorld {
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
+            slot.scale_time_stop_circle(data);
             slot.cast_spell.collider_position = published_position;
             slot.cast_spell.collider_right = slot.base.up.perp_cw();
             slot.cast_spell.collider_rotation = slot.base.rotation;
@@ -13146,19 +13180,14 @@ impl RolloutWorld {
         let inverse_mass = Fix::from_raw(214_748_368);
         let air_resistance = Fix::from_raw(4_166_118_400);
         let slot = &self.players[index];
-        let entity = slot.time_stop_entity;
-        let radius = if entity == usize::MAX {
-            data::get().time_stop.hurtbox_radius
-        } else {
-            Fix::from_raw(self.entities[entity].radius)
-        };
+        let (radius, offset) = slot.time_stop_circle(data::get());
         // CircleCastAll is centred on the FixTransform, but the manifold uses
         // the registered circle, which keeps its offset pose from the last
         // sync (OnEnterAbility's UpdatePhysicsPositions, then Simulate).
         let cast = Circle { center: slot.base.position, radius };
         let own = Circle {
             center: slot.cast_spell.collider_position
-                + slot.cast_spell.collider_right.complex_mul(data::get().time_stop.collider_offset),
+                + slot.cast_spell.collider_right.complex_mul(offset),
             radius,
         };
         // Both casts fill a five-entry buffer; walls are the rounded rects.
@@ -41982,10 +42011,12 @@ impl RolloutWorld {
                     // basis copied from PlayerPhysics. Its published angle is
                     // derived from that vector and rebuilding the basis from
                     // the angle loses the source vector's last few Q32 bits.
-                    let offset = basis.complex_mul(data.time_stop.collider_offset);
+                    let (radius, offset) = slot.time_stop_circle(data);
+                    let offset = basis.complex_mul(offset);
                     circle.x = (position + offset).x.raw();
                     circle.y = (position + offset).y.raw();
                     circle.rotation = rotation.raw();
+                    circle.radius = radius.raw();
                 }
             }
         }
