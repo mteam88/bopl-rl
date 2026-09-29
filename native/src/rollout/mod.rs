@@ -2182,6 +2182,7 @@ pub struct TeleportObjectEffect {
     pub entity_id: u32,
     pub age: Fix,
     pub restore_flags: u32,
+    pub hierarchy: u32,
     /// The pass that reactivated the object. The effect updates after every
     /// updater of the object it hid, so those skip that pass.
     pub revealed_tick: Option<u32>,
@@ -6570,7 +6571,14 @@ impl RolloutWorld {
             self.revival_effects_tick(data);
         }
         if has(ABILITY_TELEPORT) {
-            self.teleport_effects_tick(data, updater_dt);
+            // A slime's QuantumTunnel older than an effect draws its release
+            // position first; blink_tunnels_tick steps the newer effects.
+            let first_tunnel = if has(ABILITY_BLINK) {
+                self.first_blink_tunnel_hierarchy()
+            } else {
+                u32::MAX
+            };
+            self.teleport_effects_tick(data, updater_dt, 0..first_tunnel);
             self.teleport_pending_tick(data, updater_dt, spawned_from);
         }
         if has_rope && first_teleport < ropes_before_clones {
@@ -20000,9 +20008,17 @@ impl RolloutWorld {
         }
     }
 
-    fn teleport_effects_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// Steps the TeleportedObjectEffects registered in `hierarchies`.
+    fn teleport_effects_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        hierarchies: std::ops::Range<u32>,
+    ) {
         for index in 0..self.players.len() {
-            if !self.players[index].teleport_effect_active {
+            if !self.players[index].teleport_effect_active
+                || !hierarchies.contains(&self.players[index].teleport_effect_hierarchy)
+            {
                 continue;
             }
             self.players[index].teleport_effect_time += updater_dt;
@@ -20022,7 +20038,8 @@ impl RolloutWorld {
         }
         for index in 0..self.teleport_object_effects.len() {
             let effect = self.teleport_object_effects[index];
-            if !effect.active || effect.born_tick == self.tick {
+            if !effect.active || effect.born_tick == self.tick || !hierarchies.contains(&effect.hierarchy)
+            {
                 continue;
             }
             self.teleport_object_effects[index].age += updater_dt;
@@ -28332,6 +28349,7 @@ impl RolloutWorld {
             entity_id,
             age: Fix::ZERO,
             restore_flags: self.entities[entity].flags,
+            hierarchy: self.next_spawn_hierarchy,
             revealed_tick: None,
         };
         if let Some(index) = self
@@ -28451,12 +28469,26 @@ impl RolloutWorld {
         }
     }
 
+    /// The oldest slime QuantumTunnel that `blink_tunnels_tick` steps this pass.
+    fn first_blink_tunnel_hierarchy(&self) -> u32 {
+        self.players
+            .iter()
+            .filter(|slot| slot.blink_tunnel_active && slot.blink_tunnel_born_tick != self.tick)
+            .map(|slot| slot.blink_tunnel_hierarchy)
+            .min()
+            .unwrap_or(u32::MAX)
+    }
+
     /// QuantumTunnel.UpdateSim for player victims. The visual copy has no
     /// collider row, so its clock, RNG, relocation and active state suffice.
     /// The tunnels run in hierarchy order (QuantumTunnel.cs:144), after the
     /// older wall tunnels: each release draws from the shared RNG and picks
     /// among the walls left active.
     fn blink_tunnels_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        // TeleportedObjectEffects from the first tunnel on run in turn with
+        // the tunnels; both draw from Updater's RNG (QuantumTunnel.cs:263-273,
+        // TeleportedObjectEffect.cs:38).
+        let mut effects_from = self.first_blink_tunnel_hierarchy();
         let mut order = [0usize; MAX_PLAYERS];
         let order = &mut order[..self.players.len()];
         for (victim, slot) in order.iter_mut().enumerate() {
@@ -28471,6 +28503,8 @@ impl RolloutWorld {
             }
             let hierarchy = self.players[victim].blink_tunnel_hierarchy;
             self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
+            self.teleport_effects_tick(data, updater_dt, effects_from..hierarchy);
+            effects_from = effects_from.max(hierarchy);
             if self.players[victim].blink_tunnel_age > data.blink.player_duration {
                 let slot = &mut self.players[victim];
                 slot.blink_tunnel_active = false;
@@ -28513,6 +28547,7 @@ impl RolloutWorld {
                 self.players[victim].blink_tunnel_released = true;
             }
         }
+        self.teleport_effects_tick(data, updater_dt, effects_from..u32::MAX);
     }
 
     /// QuantumTunnel.UpdateSim for clone victims, in the tunnels' hierarchy
