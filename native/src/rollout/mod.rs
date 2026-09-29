@@ -472,6 +472,9 @@ pub struct Arrow {
     /// BoplBody.UpdateSim divides the inverse mass and inertia by each
     /// scale change, so a grown arrow hits harder.
     pub mass_scale: Fix,
+    /// Pass in which a ScaleChanger, newer than this arrow's BoplBody,
+    /// changed `scale`: the mass follows on the next pass.
+    pub scaled_tick: u32,
     pub inverse_mass: Fix,
     pub inverse_inertia: Fix,
     pub velocity: Vec2,
@@ -503,6 +506,20 @@ impl Arrow {
             inverse_mass: self.inverse_mass,
             inverse_inertia: self.inverse_inertia,
             ..*base
+        }
+    }
+
+    /// BoplBody.UpdateSim divides the inverse mass and inertia by a scale
+    /// change since it last ran.
+    fn sync_mass(&mut self) {
+        if self.scale != self.mass_scale
+            && self.inverse_mass != Fix::ZERO
+            && self.inverse_inertia != Fix::ZERO
+        {
+            let ratio = self.mass_scale / self.scale;
+            self.inverse_mass *= ratio;
+            self.inverse_inertia *= ratio;
+            self.mass_scale = self.scale;
         }
     }
 }
@@ -26682,6 +26699,7 @@ impl RolloutWorld {
                 position,
                 scale: source.scale,
                 mass_scale: Fix::ONE,
+                scaled_tick: u32::MAX,
                 inverse_mass: data.arrow.body.inverse_mass,
                 inverse_inertia: data.arrow.body.inverse_inertia,
                 velocity,
@@ -28273,6 +28291,12 @@ impl RolloutWorld {
                     .iter()
                     .find(|rock| rock.active && rock.entity == Some(entity))
                     .map(|rock| rock.scale)
+            })
+            .or_else(|| {
+                self.arrows
+                    .iter()
+                    .find(|arrow| arrow.active && arrow.entity == Some(entity))
+                    .map(|arrow| arrow.scale)
             })
             .or_else(|| {
                 let id = self.entities[entity].id;
@@ -29872,6 +29896,19 @@ impl RolloutWorld {
                 for rock in &mut self.duplicated_rocks {
                     if rock.active && rock.entity == Some(effect.victim) {
                         rock.scale = scale;
+                    }
+                }
+                for arrow in &mut self.arrows {
+                    if arrow.active && arrow.entity == Some(effect.victim) {
+                        // The arrow's older BoplBody already followed the
+                        // scale it saw this pass; the circle resizes now and
+                        // the mass waits for that BoplBody's next UpdateSim.
+                        if arrow.scaled_tick != self.tick {
+                            arrow.sync_mass();
+                        }
+                        arrow.scale = scale;
+                        arrow.scaled_tick = self.tick;
+                        self.entities[effect.victim].inverse_mass = arrow.inverse_mass.raw();
                     }
                 }
                 self.scale_changers[index].time = time;
@@ -31543,6 +31580,7 @@ impl RolloutWorld {
             position,
             scale,
             mass_scale: Fix::ONE,
+            scaled_tick: u32::MAX,
             inverse_mass: data::get().arrow.body.inverse_mass,
             inverse_inertia: data::get().arrow.body.inverse_inertia,
             velocity,
@@ -31899,14 +31937,8 @@ impl RolloutWorld {
                 }
                 let arrow = &mut self.arrows[i];
                 arrow.time_passed += updater_dt;
-                if arrow.scale != arrow.mass_scale
-                    && arrow.inverse_mass != Fix::ZERO
-                    && arrow.inverse_inertia != Fix::ZERO
-                {
-                    let ratio = arrow.mass_scale / arrow.scale;
-                    arrow.inverse_mass *= ratio;
-                    arrow.inverse_inertia *= ratio;
-                    arrow.mass_scale = arrow.scale;
+                if arrow.scaled_tick != self.tick {
+                    arrow.sync_mass();
                 }
                 if !arrow.can_hurt_owner
                     && arrow.hurt_owner_after > Fix::ZERO
