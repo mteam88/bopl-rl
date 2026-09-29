@@ -20807,6 +20807,12 @@ impl RolloutWorld {
                     }
                     continue;
                 }
+                // IsActive also asks the collider to be enabled
+                // (DetPhysics.cs:1658-1663): a burning Smoke cloud has
+                // disabled its circle.
+                if row.flags & E_ENABLED == 0 {
+                    continue;
+                }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
                 let overlaps = match kind {
                     0 => crate::physics::contact::circle_circle(
