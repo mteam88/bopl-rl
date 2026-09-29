@@ -9407,6 +9407,17 @@ impl RolloutWorld {
                                 collider_rotation: slot.base.rotation,
                                 ..MissileFormState::default()
                             };
+                            // Ability.EnterAbility assigns Player.Scale to
+                            // the form's box, and the form's Ability.UpdateSim
+                            // assigns it again on the entry pass.
+                            let scale = slot.player_scale;
+                            for _ in 0..2 {
+                                slot.forms[s].set_scale(
+                                    scale,
+                                    data.missile.hurtbox_extents,
+                                    data.missile.physics_radius,
+                                );
+                            }
                             slot.base.position = form_position;
                             slot.base.radius = form_radius;
                             // The form's Ability.UpdateSim runs on the entry
@@ -22049,6 +22060,14 @@ impl RolloutWorld {
             }
             _ => {}
         }
+        // Ability.UpdateSim, after the animator, assigns Player.Scale to the
+        // form's box.
+        let slot = &mut self.players[index];
+        slot.forms[slot.active_slot].set_scale(
+            slot.player_scale,
+            data.missile.hurtbox_extents,
+            data.missile.physics_radius,
+        );
 
         // PlayerPhysics' gravity raycast can attach the form, and move it
         // onto the surface, before the boundary check sees it.
@@ -27778,7 +27797,7 @@ impl RolloutWorld {
             ActiveAbility::Magnet => return Some(Self::row_box(self.entities[slot.magnet_entity])),
             // SparkShot.OnEnterAbility syncs its hurtbox too (SparkShot.cs:89-90).
             ActiveAbility::Missile => {
-                return Some(OrientedBox::from_basis(
+                return Some(slot.forms[slot.active_slot].hurtbox(
                     slot.base.collider.center,
                     Vec2::angle(slot.missile.collider_rotation),
                     data.missile.hurtbox_extents,
@@ -39779,7 +39798,7 @@ impl RolloutWorld {
                         (exit_position, rotation)
                     };
                     let hurtbox = if missile_row {
-                        OrientedBox::from_basis(
+                        slot.forms[slot.entity_slot(throw_e)].hurtbox(
                             center,
                             Vec2::angle(rotation),
                             data.missile.hurtbox_extents,
