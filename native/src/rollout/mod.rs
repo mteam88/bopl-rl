@@ -18186,14 +18186,11 @@ impl RolloutWorld {
         if rope_index >= self.ropes.len() || !self.ropes[rope_index].physics.enabled {
             return;
         }
+        // The attachment's FixTransform is where RepositionOnParent last put
+        // it, not where its platform has since moved (MachoThrow2.cs:590).
         let old_position = self.ropes[rope_index]
             .platform
-            .filter(|&platform| platform < self.platforms.len())
-            .map(|platform| {
-                self.platforms[platform]
-                    .surface
-                    .position(self.ropes[rope_index].platform_local, Fix::ZERO)
-            })
+            .map(|_| self.ropes[rope_index].platform_anchor)
             .unwrap_or_else(|| {
                 let endpoint = if self.ropes[rope_index].platform_top {
                     0
