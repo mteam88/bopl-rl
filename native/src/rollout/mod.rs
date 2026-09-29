@@ -12292,40 +12292,46 @@ impl RolloutWorld {
             .form_jump_speed
             .expect("Gold Mushroom form jump speed");
         // The kick uses the jumpStrength of whichever PlayerPhysics holds the
-        // player: the slime's, or the form's own, which is lower for guns
-        // and throw forms (SuperStarEffect.UpdateSim).
-        let jump_strength = match self.players[index].active {
-            ActiveAbility::None => data.player.constants.jump_strength,
-            ActiveAbility::Bow => data.bow.constants.jump_strength,
-            ActiveAbility::BlackHole => data.black_hole.constants.jump_strength,
-            ActiveAbility::Beam => data.beam.constants.jump_strength,
-            ActiveAbility::Grenade => data.grenade.constants.jump_strength,
-            ActiveAbility::Missile => data.missile.constants.jump_strength,
-            ActiveAbility::Mine => data.mine.constants.jump_strength,
-            ActiveAbility::Throw => data.macho_throw.constants.jump_strength,
-            ActiveAbility::Freeze => data.freeze.constants.jump_strength,
-            ActiveAbility::Blink => data.blink.constants.jump_strength,
-            ActiveAbility::Roll => data.roll.constants.jump_strength,
-            ActiveAbility::Meteor => data.meteor.constants.jump_strength,
-            ActiveAbility::GrowthRay => data.scale_rays.growth.constants.jump_strength,
-            ActiveAbility::ShrinkRay => data.scale_rays.shrink.constants.jump_strength,
-            ActiveAbility::Duplicator => data.duplicator.constants.jump_strength,
-            ActiveAbility::Magnet => data.magnet.constants.jump_strength,
-            ActiveAbility::Tack => data.tack.constants.jump_strength,
-            ActiveAbility::Mjolnir => data.mjolnir.constants.jump_strength,
-            ActiveAbility::PokeBall => data.poke_ball.constants.jump_strength,
-            ActiveAbility::Smoke => data.smoke.constants.jump_strength,
-            // These forms keep the slime's movement constants here, but their
-            // prefabs carry their own PlayerPhysics with jumpStrength 30.
-            ActiveAbility::Gust
-            | ActiveAbility::Revival
-            | ActiveAbility::TimeStop
-            | ActiveAbility::Spike
-            | ActiveAbility::Engine
-            | ActiveAbility::Tesla
-            | ActiveAbility::Push
-            | ActiveAbility::Dash => Fix::from_int(30),
-            _ => self.players[index].base.constants.jump_strength,
+        // player: the slime's, or the form's own, which is lower for every
+        // form but Throw (SuperStarEffect.UpdateSim). A form with no
+        // PlayerPhysics gets no kick.
+        let form = match self.players[index].active {
+            ActiveAbility::None => ABILITY_NULL,
+            ActiveAbility::Dash => ABILITY_DASH,
+            ActiveAbility::Bow => ABILITY_BOW,
+            ActiveAbility::Grenade => ABILITY_GRENADE,
+            ActiveAbility::Tack => ABILITY_TACK,
+            ActiveAbility::Mjolnir => ABILITY_MJOLNIR,
+            ActiveAbility::PokeBall => ABILITY_POKE_BALL,
+            ActiveAbility::Smoke => ABILITY_SMOKE,
+            ActiveAbility::Rock => ABILITY_ROCK,
+            ActiveAbility::Roll => ABILITY_ROLL,
+            ActiveAbility::Meteor => ABILITY_METEOR,
+            ActiveAbility::Push => ABILITY_PUSH,
+            ActiveAbility::Freeze => ABILITY_FREEZE,
+            ActiveAbility::Blink => ABILITY_BLINK,
+            ActiveAbility::GrowthRay => ABILITY_GROWTH_RAY,
+            ActiveAbility::ShrinkRay => ABILITY_SHRINK_RAY,
+            ActiveAbility::Missile => ABILITY_MISSILE,
+            ActiveAbility::Mine => ABILITY_MINE,
+            ActiveAbility::Spike => ABILITY_SPIKE,
+            ActiveAbility::Engine => ABILITY_ENGINE,
+            ActiveAbility::Tesla => ABILITY_TESLA,
+            ActiveAbility::TimeStop => ABILITY_TIME_STOP,
+            ActiveAbility::Gust => ABILITY_GUST,
+            ActiveAbility::Revival => ABILITY_REVIVAL,
+            ActiveAbility::BlackHole => ABILITY_BLACK_HOLE,
+            ActiveAbility::Throw => ABILITY_THROW,
+            ActiveAbility::Drill => ABILITY_DRILL,
+            ActiveAbility::Beam => ABILITY_BEAM,
+            ActiveAbility::Duplicator => ABILITY_DUPLICATOR,
+            ActiveAbility::Magnet => ABILITY_MAGNET,
+            ActiveAbility::Platform => ABILITY_PLATFORM,
+        };
+        let jump_strength = if form == ABILITY_NULL {
+            Some(data.player.constants.jump_strength)
+        } else {
+            data.abilities[form as usize].form_jump_strength
         };
         let slime_id = self
             .entities
@@ -12368,7 +12374,14 @@ impl RolloutWorld {
                 // replacement is neither that slime nor an Ability form.
                 ActiveAbility::None if effect.slime_id != slime_id => {}
                 _ => {
-                    if jump_pressed && !slot.base.grounded && slot.rope.is_none() && !hidden {
+                    // A Platform form, like a Drill, has a PlayerBody but
+                    // neither a PlayerPhysics nor a BoplBody.
+                    if let Some(jump_strength) = jump_strength
+                        && jump_pressed
+                        && !slot.base.grounded
+                        && slot.rope.is_none()
+                        && !hidden
+                    {
                         slot.base.velocity.y = jump_strength * air_jump;
                     }
                 }

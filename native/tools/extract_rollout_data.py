@@ -2063,6 +2063,12 @@ def main():
         air_jump_strength = None
         form_jump_speed = None
         effect_updatable_count = None
+        # SuperStarEffect kicks a form through its own PlayerPhysics, so only
+        # a form with both a PlayerBody and a PlayerPhysics has a jumpStrength
+        # to kick with.
+        types = {c["type"] for c in components}
+        form_jump_strength = (fix(component(prefab, "PlayerPhysics"), "jumpStrength")
+                              if {"PlayerBody", "PlayerPhysics"} <= types else None)
         if item["name"] == "Gold mushroom":
             star = next(c for c in components if c["type"] == "SuperStar")
             effect = ASSETS[guid_of(star["properties"]["effectPrefab"])]
@@ -2094,6 +2100,7 @@ def main():
             "effect_duration": effect_duration,
             "air_jump_strength": air_jump_strength,
             "form_jump_speed": form_jump_speed,
+            "form_jump_strength": form_jump_strength,
             "effect_updatable_count": effect_updatable_count,
         })
     out["abilities"] = ability_catalog

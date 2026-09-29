@@ -1255,6 +1255,7 @@ struct RawAbility {
     effect_duration: Option<i64>,
     air_jump_strength: Option<i64>,
     form_jump_speed: Option<i64>,
+    form_jump_strength: Option<i64>,
     effect_updatable_count: Option<u32>,
 }
 
@@ -2301,6 +2302,9 @@ pub struct AbilityData {
     pub effect_duration: Option<Fix>,
     pub air_jump_strength: Option<Fix>,
     pub form_jump_speed: Option<Fix>,
+    /// The form prefab's PlayerPhysics.jumpStrength, when it has a
+    /// PlayerBody and a PlayerPhysics.
+    pub form_jump_strength: Option<Fix>,
     /// Updatables registered by the effect object an instant ability spawns.
     pub effect_updatable_count: Option<u32>,
 }
@@ -3708,6 +3712,7 @@ pub fn get() -> &'static RolloutData {
                         effect_duration: ability.effect_duration.map(Fix::from_raw),
                         air_jump_strength: ability.air_jump_strength.map(Fix::from_raw),
                         form_jump_speed: ability.form_jump_speed.map(Fix::from_raw),
+                        form_jump_strength: ability.form_jump_strength.map(Fix::from_raw),
                         effect_updatable_count: ability.effect_updatable_count,
                     }
                 })
