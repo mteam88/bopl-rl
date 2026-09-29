@@ -9136,7 +9136,10 @@ impl RolloutWorld {
                     slot.state_ticks = 0;
                 }
             }
-            slot.base.unground_off(lost.attached(tick), false);
+            // Spike finds it in its UpdateSim's Move, whose UnGround() nulls
+            // the rotation (Spike.cs:163-166, PlayerPhysics.cs:216-219).
+            let null_rotation = slot.active == ActiveAbility::Spike;
+            slot.base.unground_off(lost.attached(tick), null_rotation);
             slot.base.ground = None;
         }
         if !in_ability {
