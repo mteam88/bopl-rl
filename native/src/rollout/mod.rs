@@ -1017,11 +1017,12 @@ fn place_drill_hitbox_rows(entities: &mut [CEntity], slot: &PlayerSlot, data: &d
         let row = &mut entities[entity];
         let (offset, extents) = data.drill.hitboxes[hitbox_index];
         let basis = slot.drill.hitbox_up.perp_cw();
-        let center = slot.drill.hitbox_position + (offset * slot.player_scale).complex_mul(basis);
+        let scale = hurtbox_scale(slot.player_scale);
+        let center = slot.drill.hitbox_position + (offset * scale).complex_mul(basis);
         let collider = OrientedBox::from_basis(
             center,
             Vec2::angle(slot.drill.hitbox_rotation),
-            extents * slot.player_scale,
+            extents * scale,
         );
         row.x = center.x.raw();
         row.y = center.y.raw();
@@ -2826,7 +2827,8 @@ pub struct PlayerSlot {
 
 /// The slime hurtbox clamps an assigned Scale to its serialized bounds,
 /// MinScale `(Fix)0.3f` and MaxScale 3 (Player.prefab), and its FixTransform
-/// takes the clamped value. Player.Scale itself clamps to `(Fix)0.3`.
+/// takes the clamped value. Player.Scale itself clamps to `(Fix)0.3`. The Drill
+/// and Roll form colliders carry the same bounds (Drill.prefab, Roll.prefab).
 fn hurtbox_scale(scale: Fix) -> Fix {
     scale.clamp(Fix::from_f32(0.3), Fix::from_int(3))
 }
@@ -9832,8 +9834,8 @@ impl RolloutWorld {
                     }
                     ABILITY_ROLL => {
                         let grounded = self.players[index].base.grounded;
-                        let roll_physics_radius =
-                            data.roll.physics_radius * self.players[index].player_scale;
+                        let scale = hurtbox_scale(self.players[index].player_scale);
+                        let roll_physics_radius = data.roll.physics_radius * scale;
                         let form_position = if grounded {
                             let base = &self.players[index].base;
                             base.ground
@@ -11397,7 +11399,7 @@ impl RolloutWorld {
         if speed == Fix::ZERO || self.players[index].dead_ground(self.tick).is_some() {
             return;
         }
-        let hurtbox_radius = data.roll.radius * self.players[index].player_scale;
+        let hurtbox_radius = data.roll.radius * hurtbox_scale(self.players[index].player_scale);
         let count = (speed.abs() * DT * data.roll.move_collision_density / hurtbox_radius)
             .to_int()
             .max(0) as usize
@@ -11441,7 +11443,8 @@ impl RolloutWorld {
         visited: &mut [u32; 5],
         data: &data::RolloutData,
     ) {
-        let physics_radius = data.roll.physics_radius * self.players[index].player_scale;
+        let scale = hurtbox_scale(self.players[index].player_scale);
+        let physics_radius = data.roll.physics_radius * scale;
         // The source recurses until a hop has no blocker. The five entries
         // limit only which prior platforms are excluded, not recursion depth;
         // the residual movement is multiplied by dt on every hop.
@@ -37911,7 +37914,7 @@ impl RolloutWorld {
             self.scratch.ray_hits.clear();
             let query = Circle {
                 center,
-                radius: data.roll.radius * self.players[roller].player_scale,
+                radius: data.roll.radius * hurtbox_scale(self.players[roller].player_scale),
             };
             for (entity, row) in self.entities.iter().copied().enumerate() {
                 if entity == roller_entity
@@ -40595,7 +40598,7 @@ impl RolloutWorld {
                     circle.y = position.y.raw();
                     circle.vx = 0;
                     circle.vy = 0;
-                    circle.radius = (data.roll.radius * slot.player_scale).raw();
+                    circle.radius = (data.roll.radius * hurtbox_scale(slot.player_scale)).raw();
                     circle.rotation = rotation.raw();
                 }
             }
@@ -41281,12 +41284,12 @@ impl RolloutWorld {
                         )
                     };
                     let basis = up.perp_cw();
-                    let center = position
-                        + (data.drill.collider_offset * slot.player_scale).complex_mul(basis);
+                    let scale = hurtbox_scale(slot.player_scale);
+                    let center = position + (data.drill.collider_offset * scale).complex_mul(basis);
                     let collider = OrientedBox::from_basis(
                         center,
                         Vec2::angle(rotation),
-                        data::surface_extents(data.drill.hurtbox_extents) * slot.player_scale,
+                        data::surface_extents(data.drill.hurtbox_extents) * scale,
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
