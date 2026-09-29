@@ -2025,6 +2025,9 @@ pub struct AbilitylessClone {
     /// The pass and the position before this clone's updaters ran on it: an
     /// Updater object older than the clone still sees it there.
     pub pass_start: (u32, Vec2),
+    /// The pass this clone left the scene bounds in its own update: an
+    /// older Updater on that pass still found it alive.
+    pub drowned_tick: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -27503,6 +27506,7 @@ impl RolloutWorld {
             physics_scale: Fix::ONE,
             eating: EatingState::default(),
             pass_start: (u32::MAX, Vec2::ZERO),
+            drowned_tick: u32::MAX,
         };
         if let Some(free) = self
             .abilityless_clones
@@ -32965,6 +32969,14 @@ impl RolloutWorld {
             && !slot.blink_tunnel_active
     }
 
+    /// An abilityless clone of `owner` newer than `hierarchy` that drowned in
+    /// its own update this pass: an older Updater still found it alive.
+    fn later_drowned_clone(&self, owner: usize, hierarchy: u32) -> Option<&AbilitylessClone> {
+        self.abilityless_clones.iter().find(|clone| {
+            clone.owner == owner && clone.drowned_tick == self.tick && clone.hierarchy_base > hierarchy
+        })
+    }
+
     /// Mjolnir.TryFindOwnerPosition searches live SlimeControllers first,
     /// then active Ability objects. An abilityless clone therefore becomes
     /// the recall target while the owner's original slime is transformed.
@@ -32992,6 +33004,7 @@ impl RolloutWorld {
             .abilityless_clones
             .iter()
             .find(|clone| clone.active && clone.owner == owner)
+            .or_else(|| self.later_drowned_clone(owner, hierarchy))
         {
             // A clone newer than the hammer moves after its UpdateSim.
             if clone.hierarchy_base > hierarchy && clone.pass_start.0 == self.tick {
@@ -33594,11 +33607,13 @@ impl RolloutWorld {
                 item.phase = 1;
             }
         } else {
-            if self.players[owner].out {
+            let hierarchy = self.thrown_items[item_index].hierarchy_base;
+            // A last clone newer than the hammer drowns in its own update,
+            // after the hammer's IsAlive check.
+            if self.players[owner].out && self.later_drowned_clone(owner, hierarchy).is_none() {
                 self.remove_thrown_item(item_index, false);
                 return;
             }
-            let hierarchy = self.thrown_items[item_index].hierarchy_base;
             let Some(owner_position) = self.mjolnir_owner_position(owner, hierarchy) else {
                 return;
             };
@@ -38294,6 +38309,7 @@ impl RolloutWorld {
                 // The clone's DestroyIfOutsideSceneBounds instantiates the
                 // water/bounds effect too.
                 self.next_spawn_hierarchy += data::get().player.boundary_effect_updatable_count;
+                self.abilityless_clones[clone_index].drowned_tick = self.tick;
                 self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT);
                 continue;
             }
