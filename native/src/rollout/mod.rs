@@ -20924,6 +20924,18 @@ impl RolloutWorld {
                 if self.players[player_index].active == ActiveAbility::Missile {
                     self.players[player_index].missile.collider_rotation = Fix::ZERO;
                 }
+                // A gun form's box offset turns with the FixTransform, which
+                // UnGround set to identity.
+                if matches!(
+                    self.players[player_index].active,
+                    ActiveAbility::Freeze
+                        | ActiveAbility::Blink
+                        | ActiveAbility::GrowthRay
+                        | ActiveAbility::ShrinkRay
+                        | ActiveAbility::Duplicator
+                ) {
+                    self.players[player_index].gun.collider_up = Vec2::UP;
+                }
             }
             self.players[player_index].teleported_from =
                 (self.tick, marker_hierarchy, self.players[player_index].base.position);
