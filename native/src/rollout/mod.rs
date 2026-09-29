@@ -539,6 +539,10 @@ pub struct AbilityPickup {
     /// Root FixTransform position. The collider centre includes `pickup.offset`.
     pub position: Vec2,
     pub scale: Fix,
+    /// Live FixTransform.offset and DPhysicsCircle.radius. Each Scale write
+    /// compounds them (FixTransform.cs:102, DPhysicsCircle.cs:216-220).
+    pub offset: Vec2,
+    pub radius: Fix,
     pub body: Body,
     pub enabled: bool,
     pub time_passed: Fix,
@@ -5000,6 +5004,8 @@ impl RolloutWorld {
             ability,
             position,
             scale: Fix::ONE,
+            offset: pickup.offset,
+            radius: pickup.radius,
             body,
             ..AbilityPickup::default()
         });
@@ -5168,8 +5174,8 @@ impl RolloutWorld {
         if let Some(entity) = state.entity {
             let row = &mut self.entities[entity];
             row.flags = E_ACTIVE | if state.enabled { E_ENABLED } else { 0 };
-            row.x = (state.position + pickup.offset * state.scale).x.raw();
-            row.y = (state.position + pickup.offset * state.scale).y.raw();
+            row.x = (state.position + state.offset).x.raw();
+            row.y = (state.position + state.offset).y.raw();
             row.vx = state.body.velocity.x.raw();
             row.vy = state.body.velocity.y.raw();
         }
@@ -5253,7 +5259,7 @@ impl RolloutWorld {
         self.pickup_wobble_cache[tick]
     }
 
-    fn ability_pickups_integrate(&mut self, data: &data::RolloutData, physics_dt: Fix) {
+    fn ability_pickups_integrate(&mut self, physics_dt: Fix) {
         for index in 0..self.ability_pickups.len() {
             if self.blink_object_hidden(self.ability_pickups[index].entity) {
                 continue;
@@ -5265,7 +5271,7 @@ impl RolloutWorld {
             state.position += state.body.integrate(physics_dt, Fix::ZERO);
             if let Some(entity) = state.entity {
                 let row = &mut self.entities[entity];
-                let center = state.position + data.pickup.offset * state.scale;
+                let center = state.position + state.offset;
                 row.x = center.x.raw();
                 row.y = center.y.raw();
                 row.vx = state.body.velocity.x.raw();
@@ -5317,7 +5323,7 @@ impl RolloutWorld {
     /// Weapon-layer pickups ignore walls but collide physically with one
     /// another. DetPhysics resolves their Circle/Circle manifolds before the
     /// DynamicAbilityPickup callbacks that may hand one to a slime.
-    fn ability_pickup_pair_contacts(&mut self, data: &data::RolloutData) {
+    fn ability_pickup_pair_contacts(&mut self) {
         if self
             .ability_pickups
             .iter()
@@ -5331,8 +5337,8 @@ impl RolloutWorld {
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
-        let center = |pickup: AbilityPickup| pickup.position + data.pickup.offset * pickup.scale;
-        let radius = |pickup: AbilityPickup| data.pickup.radius * pickup.scale;
+        let center = |pickup: AbilityPickup| pickup.position + pickup.offset;
+        let radius = |pickup: AbilityPickup| pickup.radius;
 
         let mut order = std::mem::take(&mut self.scratch.pickup_order);
         order.clear();
@@ -5387,7 +5393,7 @@ impl RolloutWorld {
             window.push(current);
         }
         for &(a_index, b_index, contact) in contacts.iter() {
-            self.resolve_pickup_pair(a_index, b_index, contact, data);
+            self.resolve_pickup_pair(a_index, b_index, contact);
         }
         for pickup in &self.ability_pickups {
             let Some(entity) = pickup.entity.filter(|_| pickup.active) else {
@@ -5413,9 +5419,8 @@ impl RolloutWorld {
         a_index: usize,
         b_index: usize,
         contact: Contact,
-        data: &data::RolloutData,
     ) {
-        let center = |pickup: AbilityPickup| pickup.position + data.pickup.offset * pickup.scale;
+        let center = |pickup: AbilityPickup| pickup.position + pickup.offset;
         let a = self.ability_pickups[a_index];
         let b = self.ability_pickups[b_index];
         let mut body_a = a.body;
@@ -5470,8 +5475,8 @@ impl RolloutWorld {
                 continue;
             }
             let circle = Circle {
-                center: pickup.position + data.pickup.offset * pickup.scale,
-                radius: data.pickup.radius * pickup.scale,
+                center: pickup.position + pickup.offset,
+                radius: pickup.radius,
             };
             let pickup_rank =
                 sweep_rank(&self.entities, axis(circle.center) - circle.radius, pickup.entity);
@@ -7032,7 +7037,7 @@ impl RolloutWorld {
             self.arrows_integrate(data, updater_dt, physics_dt);
         }
         if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
-            self.ability_pickups_integrate(data, physics_dt);
+            self.ability_pickups_integrate(physics_dt);
         }
         if has(ABILITY_MISSILE) {
             self.guided_missiles_integrate(data, physics_dt);
@@ -7110,7 +7115,7 @@ impl RolloutWorld {
         // With a Rock in play, its Circle/Circle stage also resolves the
         // pickup pairs.
         if !has(ABILITY_ROCK) {
-            self.ability_pickup_pair_contacts(data);
+            self.ability_pickup_pair_contacts();
         }
         if has_rope {
             self.ropes_physics(physics_dt);
@@ -16231,7 +16236,7 @@ impl RolloutWorld {
                 if !pickup.active || !pickup.enabled || self.blink_object_hidden(pickup.entity) {
                     continue;
                 }
-                let center = pickup.position + data.pickup.offset * pickup.scale;
+                let center = pickup.position + pickup.offset;
                 if let Some(force) = Self::black_hole_force(
                     position,
                     center,
@@ -25262,8 +25267,8 @@ impl RolloutWorld {
                 continue;
             }
             let collider = Circle {
-                center: pickup.position + data.pickup.offset * pickup.scale,
-                radius: data.pickup.radius * pickup.scale,
+                center: pickup.position + pickup.offset,
+                radius: pickup.radius,
             };
             if crate::physics::contact::circle_box(collider, query).is_none() {
                 continue;
@@ -25590,7 +25595,7 @@ impl RolloutWorld {
             if !pickup.active || self.blink_object_hidden(pickup.entity) {
                 continue;
             }
-            let center = pickup.position + data.pickup.offset * pickup.scale;
+            let center = pickup.position + pickup.offset;
             consider(
                 MagnetHeld::AbilityPickup(pickup_index),
                 pickup.position,
@@ -25598,7 +25603,7 @@ impl RolloutWorld {
                     pickup_circle,
                     Circle {
                         center,
-                        radius: data.pickup.radius * pickup.scale,
+                        radius: pickup.radius,
                     },
                 )
                 .is_some(),
@@ -26337,11 +26342,11 @@ impl RolloutWorld {
             }
             MagnetHeld::AbilityPickup(i) => {
                 let velocity = self.ability_pickups[i].body.velocity;
-                let scale = self.ability_pickups[i].scale;
+                let (offset, radius) = (self.ability_pickups[i].offset, self.ability_pickups[i].radius);
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
                 let correction = self.magnet_circle_out_of_walls(Circle {
-                    center: position + data.pickup.offset * scale,
-                    radius: data.pickup.radius * scale,
+                    center: position + offset,
+                    radius,
                 });
                 let pickup = &mut self.ability_pickups[i];
                 pickup.position = position + correction;
@@ -27147,6 +27152,8 @@ impl RolloutWorld {
                 ability: source.ability,
                 position,
                 scale: source.scale,
+                offset: source.offset,
+                radius: source.radius,
                 body,
                 enabled: false,
                 time_passed: Fix::ZERO,
@@ -28377,7 +28384,7 @@ impl RolloutWorld {
         let pickup = self.ability_pickups[index];
         let entity = self.entities.len();
         let id = self.next_id();
-        let center = pickup.position + data.pickup.offset * pickup.scale;
+        let center = pickup.position + pickup.offset;
         self.entities.push(CEntity {
             id,
             kind: 0,
@@ -28388,7 +28395,7 @@ impl RolloutWorld {
             y: center.y.raw(),
             vx: pickup.body.velocity.x.raw(),
             vy: pickup.body.velocity.y.raw(),
-            radius: (data.pickup.radius * pickup.scale).raw(),
+            radius: pickup.radius.raw(),
             rotation: pickup.body.orientation.raw(),
             angular_velocity: pickup.body.angular_velocity.raw(),
             inverse_mass: pickup.body.inverse_mass.raw(),
@@ -30338,6 +30345,19 @@ impl RolloutWorld {
                         arrow.scale = scale;
                         arrow.scaled_tick = self.tick;
                         self.entities[effect.victim].inverse_mass = arrow.inverse_mass.raw();
+                    }
+                }
+                // DPhysicsCircle.Scale (DPhysicsCircle.cs:208) runs
+                // FixTransform.SetScale_DPhysicsOnly, which scales the
+                // pickup's collider offset (FixTransform.cs:99). The prefab's
+                // BoplBody has momentOfInertia 0, so BoplBody.UpdateSim
+                // (BoplBody.cs:332) never rescales its mass.
+                for pickup in &mut self.ability_pickups {
+                    if pickup.active && pickup.entity == Some(effect.victim) {
+                        pickup.offset = pickup.offset * (scale / pickup.scale);
+                        pickup.radius = pickup.radius * ((Fix::ONE / pickup.scale) * scale);
+                        pickup.scale = scale;
+                        self.entities[effect.victim].inverse_mass = pickup.body.inverse_mass.raw();
                     }
                 }
                 self.scale_changers[index].time = time;
@@ -38532,8 +38552,8 @@ impl RolloutWorld {
         let pickup_circle = |index: usize| {
             let pickup = &self.ability_pickups[index];
             Circle {
-                center: pickup.position + data.pickup.offset * pickup.scale,
-                radius: data.pickup.radius * pickup.scale,
+                center: pickup.position + pickup.offset,
+                radius: pickup.radius,
             }
         };
         let participant_min = |index: usize| {
@@ -38623,11 +38643,11 @@ impl RolloutWorld {
         for (&(a, b), contact) in pairs.iter().zip(contacts) {
             if a >= PICKUP && b >= PICKUP {
                 if let Some(contact) = contact {
-                    self.resolve_pickup_pair(a - PICKUP, b - PICKUP, contact, data);
+                    self.resolve_pickup_pair(a - PICKUP, b - PICKUP, contact);
                     for index in [a - PICKUP, b - PICKUP] {
                         let pickup = self.ability_pickups[index];
                         if let Some(entity) = pickup.entity {
-                            let center = pickup.position + data.pickup.offset * pickup.scale;
+                            let center = pickup.position + pickup.offset;
                             let row = &mut self.entities[entity];
                             row.x = center.x.raw();
                             row.y = center.y.raw();
@@ -38647,10 +38667,10 @@ impl RolloutWorld {
                     radius: self.players[rock_index].rock.collider_radius,
                 };
                 let pickup = self.ability_pickups[pickup_index];
-                let pickup_center = pickup.position + data.pickup.offset * pickup.scale;
+                let pickup_center = pickup.position + pickup.offset;
                 let pickup_circle = Circle {
                     center: pickup_center,
-                    radius: data.pickup.radius * pickup.scale,
+                    radius: pickup.radius,
                 };
                 let (ca, cb) = if pickup_first {
                     (pickup_circle, rock_circle)
@@ -38679,7 +38699,7 @@ impl RolloutWorld {
                 rock.base.velocity = rock.rock.body.velocity;
                 state.position += pickup_shift;
                 if let Some(entity) = state.entity {
-                    let center = state.position + data.pickup.offset * state.scale;
+                    let center = state.position + state.offset;
                     let row = &mut self.entities[entity];
                     row.x = center.x.raw();
                     row.y = center.y.raw();
