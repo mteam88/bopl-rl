@@ -16229,6 +16229,34 @@ impl RolloutWorld {
             // Revival and Teleport markers are spell-layer circles, which
             // BlackHole.UpdateSim skips (BlackHole.cs:379-382).
 
+            // A Smoke cloud is a registered circle body too; a lit one has
+            // disabled its collider (FlammableSmoke.Ignite), so DetPhysics
+            // .IsActive passes it by.
+            for cloud_index in 0..self.smoke_clouds.len() {
+                let cloud = self.smoke_clouds[cloud_index];
+                let Some(entity) = cloud.entity else {
+                    continue;
+                };
+                if !cloud.active
+                    || !cloud.registered
+                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED)
+                        != (E_ACTIVE | E_ENABLED)
+                    || self.blink_object_hidden(cloud.entity)
+                {
+                    continue;
+                }
+                if let Some(force) = Self::black_hole_force(
+                    position,
+                    cloud.position,
+                    radius,
+                    mass,
+                    cloud.body.inverse_mass,
+                    data,
+                ) {
+                    self.smoke_clouds[cloud_index].body.force += force;
+                }
+            }
+
             // Guided Missile is the only independent positive-mass box body.
             for missile_index in 0..self.guided_missiles.len() {
                 let missile = self.guided_missiles[missile_index];
@@ -16597,6 +16625,32 @@ impl RolloutWorld {
                 );
                 self.revival_marker_pool[marker_index].active = false;
                 self.revival_marker_pool[marker_index].registered = false;
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+            }
+            // Smoke (layer 22) pairs with RigidBodyAffector, so an unlit cloud
+            // is eaten like any other positive-mass circle.
+            for cloud_index in 0..self.smoke_clouds.len() {
+                let cloud = self.smoke_clouds[cloud_index];
+                let Some(entity) = cloud.entity else {
+                    continue;
+                };
+                if !cloud.active
+                    || !cloud.registered
+                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED)
+                        != (E_ACTIVE | E_ENABLED)
+                    || cloud.body.inverse_mass <= Fix::ZERO
+                    || !self.circle_overlaps_entity(query, entity)
+                {
+                    continue;
+                }
+                Self::black_hole_grow(
+                    &mut self.black_holes[hole_index],
+                    cloud.body.inverse_mass,
+                    Fix::ZERO,
+                    data,
+                );
+                self.smoke_clouds[cloud_index].active = false;
+                self.smoke_clouds[cloud_index].registered = false;
                 self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
             for marker_index in 0..self.teleport_marker_pool.len() {
@@ -19921,6 +19975,14 @@ impl RolloutWorld {
         for missile in &self.guided_missiles {
             if !missile.active
                 && let Some(entity) = missile.entity
+                && self.entities[entity].flags & E_DESTROYED != 0
+            {
+                self.entities[entity].flags = E_REMOVED;
+            }
+        }
+        for cloud in &self.smoke_clouds {
+            if !cloud.active
+                && let Some(entity) = cloud.entity
                 && self.entities[entity].flags & E_DESTROYED != 0
             {
                 self.entities[entity].flags = E_REMOVED;
