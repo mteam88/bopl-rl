@@ -12832,6 +12832,11 @@ impl RolloutWorld {
                 slot.rewind.attached_ground = None;
                 continue;
             }
+            // UpdateRewind holds the playback while time is stopped for the
+            // slime: its FixedDeltaTime is zero.
+            if DT * self.player_time_scale <= Fix::ZERO && !self.time_stop_protected[index] {
+                continue;
+            }
 
             let (from, target, rotation, done) = {
                 let slot = &mut self.players[index];
