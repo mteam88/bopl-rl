@@ -14758,8 +14758,14 @@ impl RolloutWorld {
                         .min_by_key(|(_, cloud)| cloud.entity.expect("registered smoke cloud"))
                         .map(|(index, _)| index);
                     if let Some(cloud_index) = smoke_hit {
+                        let engine_hierarchy = engine.hierarchy_base;
                         let cloud = &mut self.smoke_clouds[cloud_index];
                         cloud.ignition_time = Fix::ZERO;
+                        // A cloud whose FlammableSmoke updater comes after this
+                        // engine's in the pass counts its first tick lit now.
+                        if engine_hierarchy < cloud.hierarchy_base {
+                            cloud.ignition_time += updater_dt;
+                        }
                         let entity = cloud.entity.expect("registered smoke cloud");
                         self.entities[entity].flags = E_ACTIVE;
                     }
