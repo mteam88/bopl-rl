@@ -1776,7 +1776,9 @@ pub struct ScaleChangerState {
     /// rounded-platform slot, three a thrown item, four a Smoke cloud and
     /// five an otherwise modeled collider entity.
     pub target_kind: u8,
-    /// Generic entity identity and shared FixTransform scale at creation.
+    /// Generic entity identity and shared FixTransform scale at creation. On
+    /// a player target, a nonzero id is the abilityless clone's hurtbox the
+    /// changer took as its victim.
     pub entity_id: u32,
     pub current_scale: Fix,
     pub time: Fix,
@@ -27154,6 +27156,16 @@ impl RolloutWorld {
             self.begin_scale_change(victim, 0, growth, ray.changer_updatable_count);
             return;
         }
+        // A clone's SlimeController hands the changer its Player; the clone's
+        // hurtbox stays the victim whose destruction ends it.
+        if let Some(clone) = (self.abilityless_clones.iter())
+            .find(|clone| clone.active && clone.entity == Some(entity))
+        {
+            let owner = clone.owner;
+            let changer = self.begin_scale_change(owner, 0, growth, ray.changer_updatable_count);
+            self.scale_changers[changer].entity_id = self.entities[entity].id;
+            return;
+        }
         if let Some(victim) = self
             .guided_missiles
             .iter()
@@ -27195,7 +27207,7 @@ impl RolloutWorld {
         target_kind: u8,
         growth: bool,
         updatable_count: u32,
-    ) {
+    ) -> usize {
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += updatable_count;
         let effect = ScaleChangerState {
@@ -27211,8 +27223,10 @@ impl RolloutWorld {
         };
         if let Some(free) = self.scale_changers.iter().position(|state| !state.active) {
             self.scale_changers[free] = effect;
+            free
         } else {
             self.scale_changers.push(effect);
+            self.scale_changers.len() - 1
         }
     }
 
@@ -28586,9 +28600,17 @@ impl RolloutWorld {
                 .time;
             // A dead player's slime and ability colliders are destroyed, and
             // the changer destroys itself on seeing its victim gone.
-            if effect.time > duration
-                || (effect.target_kind == 0 && !self.players[effect.victim].base.alive)
-            {
+            let victim_gone = || {
+                if effect.entity_id != 0 {
+                    !self.abilityless_clones.iter().any(|clone| {
+                        clone.active
+                            && clone.entity.is_some_and(|e| self.entities[e].id == effect.entity_id)
+                    })
+                } else {
+                    !self.players[effect.victim].base.alive
+                }
+            };
+            if effect.time > duration || (effect.target_kind == 0 && victim_gone()) {
                 self.scale_changers[index].active = false;
                 continue;
             }
