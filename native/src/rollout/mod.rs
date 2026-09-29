@@ -2294,6 +2294,8 @@ pub struct Shockwave {
     pub smoke_indices: [usize; 50],
     pub black_hole_count: usize,
     pub black_hole_indices: [usize; 50],
+    /// The spawned prefab's first Updater slot.
+    pub hierarchy_base: u32,
 }
 impl Default for Shockwave {
     fn default() -> Self {
@@ -2322,6 +2324,7 @@ impl Default for Shockwave {
             smoke_indices: [usize::MAX; 50],
             black_hole_count: 0,
             black_hole_indices: [usize::MAX; 50],
+            hierarchy_base: 0,
         }
     }
 }
@@ -6363,7 +6366,7 @@ impl RolloutWorld {
                     self.black_holes_update(data, updater_dt, spawned.clone());
                 }
                 if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
-                    self.poke_balls_and_tacks_tick(data, updater_dt, spawned.clone());
+                    self.poke_balls_and_tacks_tick(data, updater_dt, spawned.clone(), spawned.clone());
                 }
                 if has(ABILITY_PORTAL_GUN) {
                     self.portals_update(data, updater_dt, spawned.clone());
@@ -6761,6 +6764,24 @@ impl RolloutWorld {
         if has_rope && first_platform < ropes_before_clones.min(first_teleport) {
             self.ropes_update(first_platform..ropes_before_clones.min(first_teleport));
         }
+        // A Poke Ball older than every live Shockwave runs its UpdateSim (a
+        // capture hop sets the ball's velocity) before the wave pushes it. A
+        // Tack keeps its later turn: the wave defers its impulse to it.
+        let mut balls_from = spawned_from;
+        if has(ABILITY_POKE_BALL) {
+            let first_wave = self
+                .gust_waves
+                .iter()
+                .chain(self.meteor_waves.iter())
+                .filter(|wave| wave.active && wave.registered)
+                .map(|wave| 100_000_000 + wave.hierarchy_base)
+                .min()
+                .unwrap_or(0);
+            if first_wave > balls_from {
+                self.poke_balls_and_tacks_tick(data, updater_dt, balls_from..first_wave, 0..0);
+                balls_from = first_wave;
+            }
+        }
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT);
         }
@@ -6822,7 +6843,7 @@ impl RolloutWorld {
             self.thrown_item_scale_mass_tick();
         }
         if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
-            self.poke_balls_and_tacks_tick(data, updater_dt, spawned_from..u32::MAX);
+            self.poke_balls_and_tacks_tick(data, updater_dt, balls_from..u32::MAX, spawned_from..u32::MAX);
         }
         if has_rope && has(ABILITY_TACK) {
             self.rope_parents_update(rope_abilities::RopeParentPass::OlderTack);
@@ -12617,9 +12638,9 @@ impl RolloutWorld {
     ) {
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.meteor.shockwave_updatable_count;
-        let _ = hierarchy_base;
         self.meteor_waves.push(Shockwave {
             active: true,
+            hierarchy_base,
             born_tick: self.tick,
             position,
             meteor: true,
@@ -13093,9 +13114,11 @@ impl RolloutWorld {
         slot.gust.ticks += 1;
         if slot.gust.phase == 0 && slot.gust.ticks > data.gust.cast_ticks {
             let wave = index * 3 + slot.active_slot;
+            let hierarchy_base = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.gust.shockwave_updatable_count;
             self.gust_waves[wave] = Shockwave {
                 active: true,
+                hierarchy_base,
                 born_tick: self.tick,
                 position: slot.base.position + data.gust.shockwave_offset * slot.base.scale,
                 scale: slot.base.scale,
@@ -32529,14 +32552,19 @@ impl RolloutWorld {
         &mut self,
         data: &data::RolloutData,
         updater_dt: Fix,
-        hierarchy: std::ops::Range<u32>,
+        balls: std::ops::Range<u32>,
+        tacks: std::ops::Range<u32>,
     ) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         order.clear();
         order.extend((0..self.thrown_items.len()).filter(|&index| {
             let item = &self.thrown_items[index];
-            matches!(item.ability, ABILITY_TACK | ABILITY_POKE_BALL)
-                && hierarchy.contains(&(100_000_000 + item.hierarchy_base))
+            let hierarchy = 100_000_000 + item.hierarchy_base;
+            match item.ability {
+                ABILITY_POKE_BALL => balls.contains(&hierarchy),
+                ABILITY_TACK => tacks.contains(&hierarchy),
+                _ => false,
+            }
         }));
         order.sort_unstable_by_key(|&index| (self.thrown_items[index].hierarchy_base, index));
         for &item_index in &order {
@@ -43853,7 +43881,7 @@ mod tests {
         });
         world.tick = 2;
 
-        world.poke_balls_and_tacks_tick(data::get(), DT, 0..u32::MAX);
+        world.poke_balls_and_tacks_tick(data::get(), DT, 0..u32::MAX, 0..u32::MAX);
 
         assert!(world.thrown_items[0].capture_victim_is_clone);
         assert_eq!(world.thrown_items[0].capture_victim, Some(0));
