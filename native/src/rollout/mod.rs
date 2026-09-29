@@ -35239,7 +35239,17 @@ impl RolloutWorld {
                     }
                     continue;
                 }
-                self.spawn_missile_explosion(missile_center, missile.owner, false, Fix::ONE, data);
+                // Each item contact calls Missile.OnCollide, and so does each
+                // player the corrected box touches in the later Box/Box group.
+                let corrected_box = OrientedBox {
+                    center: missile_center,
+                    ..missile_box
+                };
+                let hits =
+                    item_contact_count + self.guided_missile_player_hits(missile, corrected_box);
+                for _ in 0..hits {
+                    self.spawn_missile_explosion(missile_center, missile.owner, false, Fix::ONE, data);
+                }
                 self.destroy_guided_missile(missile_index, true);
                 if let Some(entity) = missile.entity {
                     let row = &mut self.entities[entity];
