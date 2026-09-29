@@ -2553,6 +2553,9 @@ pub struct PlayerSlot {
     /// PlayerCollision suppresses every later callback after one callback
     /// reaches its kill path in the same updater pass.
     pub callback_killed_tick: Option<u32>,
+    /// Where a stock death left the destroyed slime body, with its pass: the
+    /// slot itself moves to the respawn point at once.
+    pub stock_death: Option<(u32, Vec2)>,
     /// PokeBall mutates a victim after RlObservation has sampled the slime's
     /// controller fields. Preserve that pre-callback row for the current pass.
     pub late_obs_tick: u32,
@@ -4475,6 +4478,7 @@ impl RolloutWorld {
                 captured_by_ball: None,
                 poke_invulnerable: false,
                 callback_killed_tick: None,
+                stock_death: None,
                 late_obs_tick: u32::MAX,
                 late_obs_position: spawn,
                 late_obs_rotation: Fix::ZERO,
@@ -6840,7 +6844,12 @@ impl RolloutWorld {
                 continue;
             }
             self.try_bite(pushed, other);
-            let other_position = self.players[other].base.position;
+            // An earlier callback's stock death leaves the other slime's
+            // destroyed body where it died, and OnCollide still reads it.
+            let other_position = match self.players[other].stock_death {
+                Some((tick, position)) if tick == self.tick => position,
+                _ => self.players[other].base.position,
+            };
             self.players[pushed].base.push_from(other_position, lower_id);
         }
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
@@ -37868,6 +37877,10 @@ impl RolloutWorld {
             slot.respawn_spawn_ticks = 0;
             slot.respawn_selected = 1;
             slot.base.alive = true;
+            // The stock branch of killPlayer starts with UnGround, which
+            // steps the body off even a stale attachedGround.
+            slot.force_unground(&self.platforms, self.tick);
+            slot.stock_death = Some((self.tick, slot.base.position));
             slot.base.position = data::get().maps[self.map].respawn_points[1];
             slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity = Vec2::ZERO;
