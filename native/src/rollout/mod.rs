@@ -3198,6 +3198,7 @@ struct PlatformScratch {
     engine_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_spike_hits: Vec<(usize, usize, Vec2)>,
+    item_spike_hits: Vec<(usize, usize, Vec2)>,
     tesla_wall_contacts: Vec<(usize, usize, Contact)>,
     /// Portal shots' wall manifolds: (shot, wall, contact).
     portal_shot_wall_contacts: Vec<(usize, usize, Contact)>,
@@ -7120,6 +7121,7 @@ impl RolloutWorld {
         }
         if has(ABILITY_SPIKE) {
             self.spike_wall_callbacks(data);
+            self.spike_item_pushes(data);
         }
         if has(ABILITY_MJOLNIR) {
             self.mjolnir_wall_pushes(data);
@@ -15088,6 +15090,38 @@ impl RolloutWorld {
         }
         self.scratch.spike_wall_contacts = contacts;
         self.scratch.spike_wall_contacts.clear();
+    }
+
+    /// SpikeAttack.OnCollide for its Circle/Box manifolds with thrown items,
+    /// after the Box/RR wall callbacks: a young spike knocks the item's
+    /// circle away from its FixTransform with an immediate impulse at the
+    /// contact point and pushes back on its own platform once per pass.
+    fn spike_item_pushes(&mut self, data: &data::RolloutData) {
+        let hits = std::mem::take(&mut self.scratch.item_spike_hits);
+        if self.player_time_scale >= Fix::from_f32(0.01) {
+            for &(item_index, spike_index, point) in &hits {
+                if self.spike_attacks[spike_index].time >= data.spike.push_time
+                    || !self.thrown_items[item_index].active
+                {
+                    continue;
+                }
+                let direction =
+                    (point - self.spike_attack_root(spike_index, data)).normalized_safe();
+                let item = &mut self.thrown_items[item_index];
+                let arm = (point - item.position).normalized_safe();
+                item.body.apply_impulse(direction * data.spike.knock_player, arm);
+                if let Some(entity) = item.entity {
+                    let body = item.body;
+                    let row = &mut self.entities[entity];
+                    row.vx = body.velocity.x.raw();
+                    row.vy = body.velocity.y.raw();
+                    row.angular_velocity = body.angular_velocity.raw();
+                }
+                self.spike_attack_self_push(spike_index, point, data.spike.knock_player, data);
+            }
+        }
+        self.scratch.item_spike_hits = hits;
+        self.scratch.item_spike_hits.clear();
     }
 
     fn spike_contacts(&mut self, data: &data::RolloutData) {
@@ -35496,6 +35530,11 @@ impl RolloutWorld {
             } else {
                 self.thrown_items[index].body = circle_body;
                 self.thrown_items[index].position += correction[0];
+                if engine_index >= SPIKE {
+                    self.scratch
+                        .item_spike_hits
+                        .push((index, engine_index - SPIKE, contact.point));
+                }
             }
             self.platform_dynamics[platform].body = platform_body;
             self.platform_dynamics[platform].composite_position += correction[1];
