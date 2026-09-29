@@ -28924,10 +28924,13 @@ impl RolloutWorld {
             return true;
         }
         // Both flags stand for PlayerPhysics.skipNextUpdate, which the
-        // ragdolled slime's PlayerPhysics still consumes every pass.
-        let skip = std::mem::take(&mut slot.ragdoll.skip_physics)
-            | std::mem::take(&mut slot.base.skip_next_gravity);
-        if !skip && !slot.base.grounded {
+        // ragdolled slime's PlayerPhysics still consumes every pass, unless a
+        // rewind has disabled it (RewindRecorder.cs:155).
+        let physics = !slot.rewind.rewinding;
+        let skip = physics
+            && (std::mem::take(&mut slot.ragdoll.skip_physics)
+                | std::mem::take(&mut slot.base.skip_next_gravity));
+        if physics && !skip && !slot.base.grounded {
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
                 &mut slot.base.velocity,
