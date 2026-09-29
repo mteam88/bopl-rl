@@ -146,6 +146,8 @@ pub enum RopeParent {
     /// A placed Tesla spark node by slot and birth tick: its circle is on
     /// NonLethalTerrain.
     Node(usize, u32),
+    /// A Bow arrow by slot and id: its circle is on Projectile.
+    Arrow(usize, u32),
 }
 
 /// The SpikeAttack FixTransform's pose: SyncGameObject's copy of the box
@@ -162,7 +164,12 @@ fn parent_position(
     players: &[PlayerSlot],
     items: &[ThrownItem],
     shots: &[PortalShotState],
-    (spikes, nodes, dynamics): (&[SpawnedSpike], &[SpawnedTeslaNode], &[PlatformDynamics]),
+    (spikes, nodes, dynamics, arrows): (
+        &[SpawnedSpike],
+        &[SpawnedTeslaNode],
+        &[PlatformDynamics],
+        &[Arrow],
+    ),
     parent: RopeParent,
     offset: Vec2,
 ) -> Option<Vec2> {
@@ -194,6 +201,9 @@ fn parent_position(
             let right = Vec2::angle(node.transform_rotation);
             let root = node.transform_center - node.collider_offset.complex_mul(right);
             Some(root + right.perp() * offset.y * node.scale + right * offset.x * node.scale)
+        }
+        RopeParent::Arrow(index, id) => {
+            (arrows[index].active && arrows[index].id == id).then_some(arrows[index].position)
         }
     }
 }
@@ -1453,7 +1463,7 @@ impl RolloutWorld {
                 &self.players,
                 &self.thrown_items,
                 &self.portal_shots,
-                (&self.spike_attacks, &self.tesla_nodes, &self.platform_dynamics),
+                (&self.spike_attacks, &self.tesla_nodes, &self.platform_dynamics, &self.arrows),
                 parent,
                 self.ropes[index].parent_offset,
             ) else {
@@ -1477,17 +1487,25 @@ impl RolloutWorld {
                 };
                 let arm = (self.ropes[index].platform_anchor - centre).normalized_safe();
                 let body = match parent {
-                    RopeParent::Rock(player) => &mut self.players[player].rock.body,
-                    RopeParent::Item(item, _) => &mut self.thrown_items[item].body,
-                    RopeParent::Shot(shot, _) => &mut self.portal_shots[shot].body,
-                    RopeParent::Spike(spike, _) => {
-                        &mut self.platform_dynamics[self.spike_attacks[spike].platform_index].body
-                    }
-                    RopeParent::Node(node, _) => {
-                        &mut self.platform_dynamics[self.tesla_nodes[node].platform_index].body
-                    }
+                    RopeParent::Rock(player) => Some(&mut self.players[player].rock.body),
+                    RopeParent::Item(item, _) => Some(&mut self.thrown_items[item].body),
+                    RopeParent::Shot(shot, _) => Some(&mut self.portal_shots[shot].body),
+                    RopeParent::Spike(spike, _) => Some(
+                        &mut self.platform_dynamics[self.spike_attacks[spike].platform_index].body,
+                    ),
+                    RopeParent::Node(node, _) => Some(
+                        &mut self.platform_dynamics[self.tesla_nodes[node].platform_index].body,
+                    ),
+                    RopeParent::Arrow(..) => None,
                 };
-                body.apply_impulse(force, arm);
+                if let Some(body) = body {
+                    body.apply_impulse(force, arm);
+                } else if let RopeParent::Arrow(arrow, _) = parent {
+                    // An arrow keeps its BoplBody's velocities on itself.
+                    let arrow = &mut self.arrows[arrow];
+                    arrow.velocity += force * arrow.inverse_mass;
+                    arrow.angular_velocity += arrow.inverse_inertia * arm.cross(force);
+                }
             }
             self.ropes[index].platform_anchor = position;
             for segment in 0..self.ropes[index].physics.count.saturating_sub(2) {
@@ -1787,6 +1805,21 @@ impl RolloutWorld {
                 });
             }
             if victim.is_none() && parent.is_none() {
+                // A Bow arrow's circle is on Projectile, which RopeHook
+                // attaches to with no offset (RopeHook.cs:160-172).
+                let radius = data::get().arrow.radius;
+                parent = self.arrows.iter().enumerate().find_map(|(index, arrow)| {
+                    let body = Circle {
+                        center: arrow.position,
+                        radius: radius * arrow.scale,
+                    };
+                    (arrow.active
+                        && arrow.registered
+                        && crate::physics::contact::circle_circle(circle, body).is_some())
+                    .then_some(RopeParent::Arrow(index, arrow.id))
+                });
+            }
+            if victim.is_none() && parent.is_none() {
                 // A placed spark node's circle sits on NonLethalTerrain, which
                 // the hook takes only when its centre is inside it.
                 for index in 0..self.tesla_nodes.len() {
@@ -1890,6 +1923,7 @@ impl RolloutWorld {
                     RopeParent::Shot(..) => Fix::ONE,
                     RopeParent::Spike(spike, _) => self.spike_attacks[spike].scale,
                     RopeParent::Node(node, _) => self.tesla_nodes[node].scale,
+                    RopeParent::Arrow(arrow, _) => self.arrows[arrow].scale,
                 };
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.mass_start = Fix::ONE;
@@ -2066,7 +2100,12 @@ impl RolloutWorld {
         }
         self.clone_ropes_late();
         let (players, items, shots) = (&self.players, &self.thrown_items, &self.portal_shots);
-        let spikes = (&self.spike_attacks[..], &self.tesla_nodes[..], &self.platform_dynamics[..]);
+        let spikes = (
+            &self.spike_attacks[..],
+            &self.tesla_nodes[..],
+            &self.platform_dynamics[..],
+            &self.arrows[..],
+        );
         for rope in &mut self.ropes {
             // DetPhysics.VeryLateRopeUpdate clears this for all 128 pool
             // entries, including bodies disabled during the current pass.
