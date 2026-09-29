@@ -38451,6 +38451,31 @@ impl RolloutWorld {
                 self.entities[entity].y = center.y.raw();
             }
         }
+        // Each child box also takes the composite's rotation (SetRotation);
+        // a circle child only its orientation.
+        let boxes = (self.spike_attacks.iter())
+            .filter(|c| c.platform_index < self.platforms.len())
+            .map(|c| {
+                let rotation =
+                    self.platform_dynamics[c.platform_index].body.orientation + c.relative_rotation;
+                let extents = data::surface_extents(data.spike.attack_extents * c.scale);
+                (c.active, c.macho_carried, c.entity, rotation, extents)
+            })
+            .chain((self.engines.iter()).map(|c| {
+                let extents = data::surface_extents(data.engine.rocket_extents * c.scale);
+                (c.active, c.macho_carried, c.entity, c.collider_rotation, extents)
+            }));
+        for (active, carried, entity, rotation, extents) in boxes {
+            if let (true, false, Some(entity)) = (active, carried, entity) {
+                let basis = Vec2::angle(rotation);
+                let row = &mut self.entities[entity];
+                row.right_x = (basis * extents.x).x.raw();
+                row.right_y = (basis * extents.x).y.raw();
+                row.up_x = (Vec2::UP * extents.y).complex_mul(basis).x.raw();
+                row.up_y = (Vec2::UP * extents.y).complex_mul(basis).y.raw();
+                row.rotation = rotation.raw();
+            }
+        }
         // CollisionInformation stores the shape as it was during narrow phase;
         // PlayerCollision's later squish callback tests that copy, before the
         // RR positional corrections below move either platform.
