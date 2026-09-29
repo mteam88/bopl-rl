@@ -2236,6 +2236,9 @@ pub struct TeleportObjectEffect {
     /// The pass that reactivated the object. The effect updates after every
     /// updater of the object it hid, so those skip that pass.
     pub revealed_tick: Option<u32>,
+    /// Hierarchy of the TeleportIndicator whose UpdateSim hid the object:
+    /// the object's own updaters that come earlier ran on the hiding pass.
+    pub source_hierarchy: u32,
 }
 
 /// One invisible Portal endpoint. Portals have no DetPhysics collider or
@@ -20944,7 +20947,7 @@ impl RolloutWorld {
             clone.obs_state = STATE_FALL;
             self.entities[entity].x += shift.x.raw();
             self.entities[entity].y += shift.y.raw();
-            self.begin_teleport_object_effect(entity, data);
+            self.begin_teleport_object_effect(entity, marker_hierarchy, data);
             return;
         }
 
@@ -21049,7 +21052,7 @@ impl RolloutWorld {
         }
         self.entities[entity].x += shift.x.raw();
         self.entities[entity].y += shift.y.raw();
-        self.begin_teleport_object_effect(entity, data);
+        self.begin_teleport_object_effect(entity, marker_hierarchy, data);
     }
 
     /// Fires the pending TeleportIndicators registered below `older_than`.
@@ -29132,7 +29135,12 @@ impl RolloutWorld {
         self.entities[entity].flags &= !E_ACTIVE;
     }
 
-    fn begin_teleport_object_effect(&mut self, entity: usize, data: &data::RolloutData) {
+    fn begin_teleport_object_effect(
+        &mut self,
+        entity: usize,
+        source_hierarchy: u32,
+        data: &data::RolloutData,
+    ) {
         if entity >= self.entities.len() || self.entities[entity].flags & E_ACTIVE == 0 {
             return;
         }
@@ -29146,6 +29154,7 @@ impl RolloutWorld {
             restore_flags: self.entities[entity].flags,
             hierarchy: self.next_spawn_hierarchy,
             revealed_tick: None,
+            source_hierarchy,
         };
         if let Some(index) = self
             .teleport_object_effects
@@ -29184,6 +29193,26 @@ impl RolloutWorld {
                 && effect.entity == entity
                 && effect.entity_id == entity_id
         })
+    }
+
+    /// Whether the object's only hider is a TeleportIndicator that ran after
+    /// `hierarchy` on this pass, so the object's updater there already ran.
+    fn teleport_hid_after(&self, entity: Option<usize>, hierarchy: u32) -> bool {
+        let Some(entity) = entity else {
+            return false;
+        };
+        let entity_id = self.entities.get(entity).map_or(0, |row| row.id);
+        let same = |e: usize, id: u32| e == entity && id == entity_id;
+        !self
+            .blink_object_tunnels
+            .iter()
+            .any(|tunnel| tunnel.active && same(tunnel.entity, tunnel.entity_id))
+            && self.teleport_object_effects.iter().any(|effect| {
+                effect.active
+                    && same(effect.entity, effect.entity_id)
+                    && effect.born_tick == self.tick
+                    && effect.source_hierarchy > hierarchy
+            })
     }
 
     #[inline]
