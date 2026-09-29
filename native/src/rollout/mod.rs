@@ -7128,6 +7128,26 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // The TimeStop form's CastSpell circle sits offset above its
+            // transform; OnCollide needs that circle to touch the slime's box.
+            if self.players[other].active == ActiveAbility::TimeStop {
+                let caster = &self.players[other];
+                let radius = if caster.time_stop_entity == usize::MAX {
+                    data.time_stop.hurtbox_radius
+                } else {
+                    Fix::from_raw(self.entities[caster.time_stop_entity].radius)
+                };
+                let circle = Circle {
+                    center: caster.base.position
+                        + caster.base.up.perp_cw().complex_mul(data.time_stop.collider_offset),
+                    radius,
+                };
+                if crate::physics::contact::circle_box(circle, self.players[pushed].base.collider)
+                    .is_none()
+                {
+                    continue;
+                }
+            }
             self.try_bite(pushed, Prey::Player(other), data);
             // An earlier callback's stock death leaves the other slime's
             // destroyed body where it died, and OnCollide still reads it.
