@@ -39364,6 +39364,21 @@ impl RolloutWorld {
         {
             self.beam_orbs[orb].holder_destroyed = Some(self.tick);
         }
+        if by_callback
+            && self.players[index].active == ActiveAbility::TimeStop
+            && self.players[index].time_stop_entity != usize::MAX
+        {
+            // Simulate synced the CastSpell circle from the form's
+            // FixTransform before this callback destroyed it, and the
+            // destroyed circle keeps that pose.
+            let slot = &self.players[index];
+            let (_, offset) = slot.time_stop_circle(data::get());
+            let center = slot.base.position + slot.base.up.perp_cw().complex_mul(offset);
+            let row = &mut self.entities[slot.time_stop_entity];
+            row.x = center.x.raw();
+            row.y = center.y.raw();
+            row.rotation = slot.base.rotation.raw();
+        }
         if form_exit
             && matches!(
                 self.players[index].active,
