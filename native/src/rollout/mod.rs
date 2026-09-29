@@ -22720,8 +22720,11 @@ impl RolloutWorld {
                         slot.reported_position = slot.base.position;
                         // KillPlayerOnCollision kills with spawnEffect
                         // (PlayerCollision.cs:457).
-                        self.kill(index, killer, cause, false, true);
-                        if let Some(owner) = arrow_owner
+                        // PlayerCollision counts an arrow hit only when
+                        // killPlayer took (PlayerCollision.cs:458).
+                        let killed = self.kill(index, killer, cause, false, true);
+                        if killed
+                            && let Some(owner) = arrow_owner
                             && owner != caster_id
                             && owner >= 1
                         {
@@ -34147,8 +34150,10 @@ impl RolloutWorld {
             }
             let victim_id = self.players[victim].base.id;
             let cause = if owner == victim_id { CAUSE_ACCIDENT } else { CAUSE_OTHER };
-            self.kill(victim, owner, cause, true, true);
-            if owner != victim_id && owner >= 1 {
+            // An invulnerable victim (inside a Poke Ball) makes killPlayer
+            // return false, and PlayerCollision counts no arrow hit.
+            let killed = self.kill(victim, owner, cause, true, true);
+            if killed && owner != victim_id && owner >= 1 {
                 self.players[owner as usize - 1].telemetry.arrow_hits += 1;
             }
         }
@@ -39368,14 +39373,14 @@ impl RolloutWorld {
         cause: u32,
         by_callback: bool,
         spawn_effect: bool,
-    ) {
+    ) -> bool {
         // A callback kill is the victim's PlayerCollision.killPlayer, and
         // Rock.prefab has no PlayerCollision: only its BounceBall hears the
         // contact. Rock dies through Ability.ExitAbility or scene bounds.
         if by_callback && self.players[index].active == ActiveAbility::Rock {
-            return;
+            return false;
         }
-        self.kill_with(index, killer, cause, by_callback, spawn_effect, true);
+        self.kill_with(index, killer, cause, by_callback, spawn_effect, true)
     }
 
     /// `form_exit` is false when the caller hands the form's Ability an exit
@@ -39388,7 +39393,7 @@ impl RolloutWorld {
         by_callback: bool,
         spawn_effect: bool,
         form_exit: bool,
-    ) {
+    ) -> bool {
         // PlayerCollision.killPlayer detaches the slime's rope as its very
         // first action, ahead of the invulnerability early-return, so even a
         // kill that returns false marks the rope detached
@@ -39417,11 +39422,11 @@ impl RolloutWorld {
         if self.players[index].poke_invulnerable
             && !(killer == ENVIRONMENT && cause == CAUSE_ACCIDENT)
         {
-            return;
+            return false;
         }
         if by_callback {
             if self.players[index].callback_killed_tick == Some(self.tick) {
-                return;
+                return false;
             }
             self.players[index].callback_killed_tick = Some(self.tick);
         }
@@ -39650,7 +39655,7 @@ impl RolloutWorld {
             slot.respawn_ticks = 0;
             slot.respawn_spawn_ticks = 0;
             slot.obs_state = STATE_NOTHING;
-            return;
+            return true;
         }
         // Stocks: spawn the replacement clone at the chooser's safe center
         // point. Since Player.Kill sees that clone, it does not mark the
@@ -39742,6 +39747,7 @@ impl RolloutWorld {
                 self.spawn_ability_pickup(drop_position, dropped_ability, direction, data::get());
             }
         }
+        true
     }
 
     /// killPlayer's stock branch (PlayerCollision.cs:166-189) past its
