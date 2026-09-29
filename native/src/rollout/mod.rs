@@ -22009,8 +22009,12 @@ impl RolloutWorld {
                 slot.base.sync_collider();
                 self.dash_rope_exit(index, input, data::get().dash.leave_speed);
                 // Dash.ExitAbility: `isFacingRight = Dot(inputVector, right) <= 0`.
-                self.players[index].facing_right = input.x <= Fix::ZERO;
-                self.players[index].exit_to_fall();
+                // EnterFall aligns it before its raycasts, which dash_step has
+                // already run, so a landed exit is aligned too.
+                let slot = &mut self.players[index];
+                slot.facing_right = input.x <= Fix::ZERO;
+                slot.align_transform_air();
+                slot.exit_to_fall();
             }
         }
         let dash_cast = {
