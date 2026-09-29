@@ -10094,6 +10094,14 @@ impl RolloutWorld {
                         slot.reported_position = slot.base.position;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
+                        // The form's DestroyIfOutsideSceneBounds runs on the
+                        // entry pass too, and sees the placement above: a slime
+                        // casting Push on a platform sunk below the water drowns.
+                        if slot.base.outside_bounds() {
+                            self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                            self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+                            return;
+                        }
                         self.push_tick(index, action, data);
                         return;
                     }
