@@ -39315,6 +39315,12 @@ impl RolloutWorld {
         if !slot.base.alive {
             return;
         }
+        // Updater.RegisterUpdatable queues the StockRespawnChooser and clone a
+        // death creates until the next pass, even when it came ahead of this
+        // slime's turn.
+        if slot.stock_death.is_some_and(|(tick, _)| tick == self.tick) {
+            return;
+        }
         // OldUpdate returns early while the replacement waits, but its
         // UpdateSim still compares isInvisible with its last look
         // (SlimeController.cs:1073-1077), so an Invisibility that runs out
