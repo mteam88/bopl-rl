@@ -6027,10 +6027,12 @@ impl RolloutWorld {
             *value = self.entities[entity].hierarchy;
         }
         player_order[..player_count].sort_by_key(|&index| (player_hierarchy[index], index));
-        // A Black Hole spawned before a stock-respawned slime sits ahead of
-        // it in the Updater: its pull lands before that slime's PlayerBody
-        // damps and integrates the external velocity this pass.
-        let mut black_holes_from = 0;
+        // A Black Hole or Poke Ball spawned before a stock-respawned slime
+        // sits ahead of it in the Updater: a hole's pull lands before that
+        // slime's PlayerBody damps and integrates the external velocity, and
+        // a ball's hold moves it before its SlimeController publishes
+        // Player.Position.
+        let mut spawned_from = 0;
         for &index in &player_order[..player_count] {
             if has(ABILITY_BLINK) {
                 // A wall QuantumTunnel registered before the object holding
@@ -6045,9 +6047,15 @@ impl RolloutWorld {
                 let hierarchy = self.entities[entity].hierarchy.saturating_sub(100_000_000);
                 self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
             }
-            if has(ABILITY_BLACK_HOLE) && black_holes_from < player_hierarchy[index] {
-                self.black_holes_update(data, updater_dt, black_holes_from..player_hierarchy[index]);
-                black_holes_from = player_hierarchy[index];
+            if spawned_from < player_hierarchy[index] {
+                let spawned = spawned_from..player_hierarchy[index];
+                if has(ABILITY_BLACK_HOLE) {
+                    self.black_holes_update(data, updater_dt, spawned.clone());
+                }
+                if has(ABILITY_POKE_BALL) {
+                    self.poke_balls_update(data, updater_dt, spawned);
+                }
+                spawned_from = player_hierarchy[index];
             }
             let packet = &actions[index];
             // An ordinary slime's drop test closes its grounded Move instead
@@ -6356,7 +6364,7 @@ impl RolloutWorld {
         // player prefab. A hole fired by BlackHoleClap therefore receives its
         // time-zero UpdateSim later in this same updater pass.
         if has(ABILITY_BLACK_HOLE) {
-            self.black_holes_tick(data, updater_dt, black_holes_from);
+            self.black_holes_tick(data, updater_dt, spawned_from);
         }
         if has_rope {
             self.rope_parents_update(rope_abilities::RopeParentPass::NewerShot);
@@ -6462,7 +6470,7 @@ impl RolloutWorld {
             self.thrown_item_scale_mass_tick();
         }
         if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
-            self.poke_balls_and_tacks_tick(data, updater_dt);
+            self.poke_balls_and_tacks_tick(data, updater_dt, spawned_from);
         }
         if has_rope && has(ABILITY_TACK) {
             self.rope_parents_update(rope_abilities::RopeParentPass::OlderTack);
@@ -31029,11 +31037,43 @@ impl RolloutWorld {
     /// PokeBall.UpdateSim and BananaPeel.UpdateSim in Updater hierarchy order: the
     /// first to run owns a capture or a kill, and slot order no longer tracks
     /// spawn order once the item pool reuses a slot.
-    fn poke_balls_and_tacks_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// Poke Balls whose updater hierarchy falls in `hierarchy`, ahead of the
+    /// slimes above them.
+    fn poke_balls_update(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        hierarchy: std::ops::Range<u32>,
+    ) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         order.clear();
         order.extend((0..self.thrown_items.len()).filter(|&index| {
-            matches!(self.thrown_items[index].ability, ABILITY_POKE_BALL | ABILITY_TACK)
+            let item = &self.thrown_items[index];
+            item.ability == ABILITY_POKE_BALL
+                && hierarchy.contains(&(100_000_000 + item.hierarchy_base))
+        }));
+        order.sort_unstable_by_key(|&index| (self.thrown_items[index].hierarchy_base, index));
+        for &item_index in &order {
+            self.poke_ball_tick(item_index, data, updater_dt);
+        }
+        self.scratch.item_order = order;
+    }
+
+    /// The balls from `poke_balls_from` up, which no slime came after, and
+    /// every tack.
+    fn poke_balls_and_tacks_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        poke_balls_from: u32,
+    ) {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        order.clear();
+        order.extend((0..self.thrown_items.len()).filter(|&index| {
+            let item = &self.thrown_items[index];
+            item.ability == ABILITY_TACK
+                || (item.ability == ABILITY_POKE_BALL
+                    && 100_000_000 + item.hierarchy_base >= poke_balls_from)
         }));
         order.sort_unstable_by_key(|&index| (self.thrown_items[index].hierarchy_base, index));
         for &item_index in &order {
@@ -41727,7 +41767,7 @@ mod tests {
         });
         world.tick = 2;
 
-        world.poke_balls_and_tacks_tick(data::get(), DT);
+        world.poke_balls_and_tacks_tick(data::get(), DT, 0);
 
         assert!(world.thrown_items[0].capture_victim_is_clone);
         assert_eq!(world.thrown_items[0].capture_victim, Some(0));
