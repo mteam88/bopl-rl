@@ -20596,6 +20596,13 @@ impl RolloutWorld {
             if !self.players[index].revival_clone_pending {
                 continue;
             }
+            // DetPhysics.Simulate drops the dead slime's callback casualties
+            // this pass, and the clone's rows take over the slot.
+            for entity in self.players[index].owned_rows() {
+                if entity != usize::MAX {
+                    self.entities[entity].flags = E_REMOVED;
+                }
+            }
             let marker_index = self.players[index]
                 .revival_target_marker
                 .expect("pending Revival clone marker");
