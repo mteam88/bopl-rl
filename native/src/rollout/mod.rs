@@ -15777,22 +15777,8 @@ impl RolloutWorld {
                 }
             }
 
-            for marker_index in 0..self.revival_marker_pool.len() {
-                let marker = self.revival_marker_pool[marker_index];
-                if !marker.active || !marker.registered || self.blink_object_hidden(marker.entity) {
-                    continue;
-                }
-                if let Some(force) = Self::black_hole_force(
-                    position,
-                    marker.position,
-                    radius,
-                    mass,
-                    marker.body.inverse_mass,
-                    data,
-                ) {
-                    self.revival_marker_pool[marker_index].body.force += force;
-                }
-            }
+            // Revival and Teleport markers are spell-layer circles, which
+            // BlackHole.UpdateSim skips (BlackHole.cs:379-382).
 
             // Guided Missile is the only independent positive-mass box body.
             for missile_index in 0..self.guided_missiles.len() {
