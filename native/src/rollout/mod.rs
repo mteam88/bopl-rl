@@ -20464,6 +20464,19 @@ impl RolloutWorld {
             }
             self.players[player_index].base.position += shift;
             self.players[player_index].base.sync_collider();
+            // A planting form hidden mid-cast keeps its FixTransform, which
+            // DetPhysics syncs to its box: the moved, unrotated body.
+            let slot = &mut self.players[player_index];
+            let (position, up) = (slot.base.position, slot.base.up);
+            if slot.active == ActiveAbility::Spike {
+                slot.spike_cast.collider_position = position;
+                slot.spike_cast.collider_up = up;
+                slot.spike_cast.collider_rotation = Fix::ZERO;
+            } else if matches!(slot.active, ActiveAbility::Engine | ActiveAbility::Tesla) {
+                slot.plant_cast.collider_position = position;
+                slot.plant_cast.collider_up = up;
+                slot.plant_cast.collider_rotation = Fix::ZERO;
+            }
             self.players[player_index].teleport_effect_active = true;
             self.players[player_index].teleport_effect_time = Fix::ZERO;
             self.players[player_index].teleport_effect_hierarchy = self.next_spawn_hierarchy;
