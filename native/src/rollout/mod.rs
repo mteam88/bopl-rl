@@ -2692,10 +2692,11 @@ pub struct PlayerSlot {
     /// new prefab's colliders and SlimeController register next pass.
     pub stock_clone_pending: bool,
     /// Spawn hierarchies are claimed when SpawnClone runs inside the death
-    /// callback. This matters when one explosion kills multiple players: the
-    /// first clone is instantiated before the second death effect exists.
-    pub stock_clone_player_hierarchy: u32,
-    pub stock_clone_ability_hierarchy: [u32; 3],
+    /// callback, for a stock or a Revival clone. This matters when one
+    /// explosion kills multiple players: the first clone is instantiated
+    /// before the second death effect exists.
+    pub clone_player_hierarchy: u32,
+    pub clone_ability_hierarchy: [u32; 3],
     pub stock_indicator_hierarchy: [u32; 3],
     pub revival_target_marker: Option<usize>,
     pub revival_effect_ticks: u32,
@@ -4637,8 +4638,8 @@ impl RolloutWorld {
                 revival_markers: [None; 3],
                 revival_clone_pending: false,
                 stock_clone_pending: false,
-                stock_clone_player_hierarchy: u32::MAX,
-                stock_clone_ability_hierarchy: [u32::MAX; 3],
+                clone_player_hierarchy: u32::MAX,
+                clone_ability_hierarchy: [u32::MAX; 3],
                 stock_indicator_hierarchy: [u32::MAX; 3],
                 revival_target_marker: None,
                 revival_effect_ticks: 0,
@@ -20609,14 +20610,9 @@ impl RolloutWorld {
             let position = self.revival_marker_pool[marker_index].position;
             let abilities = self.players[index].abilities;
 
-            let player_hierarchy = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += 8;
-            let mut ability_hierarchy = [0u32; 3];
-            for (slot, hierarchy) in ability_hierarchy.iter_mut().enumerate() {
-                *hierarchy = self.next_spawn_hierarchy;
-                self.next_spawn_hierarchy +=
-                    data.abilities[abilities[slot] as usize].updatable_count;
-            }
+            let player_hierarchy = self.players[index].clone_player_hierarchy;
+            let ability_hierarchy = self.players[index].clone_ability_hierarchy;
+            debug_assert_ne!(player_hierarchy, u32::MAX);
 
             let mut form_entities = [usize::MAX; 3];
             let mut platform_entity = usize::MAX;
@@ -20911,10 +20907,6 @@ impl RolloutWorld {
                     ..CEntity::default()
                 });
             }
-            // ReviveEffect is instantiated after the clone and its copied
-            // ability prefabs. It has no collider but consumes hierarchy.
-            self.next_spawn_hierarchy += data.revival.effect_updatable_count;
-
             let slot = &mut self.players[index];
             slot.ability_generation = slot.ability_generation.wrapping_add(1);
             // The fresh ability instances carry their prefab cooldowns, not
@@ -21044,6 +21036,8 @@ impl RolloutWorld {
             slot.drill_entity = drill_entity;
             slot.beam_entity = beam_entity;
             slot.revival_clone_pending = false;
+            slot.clone_player_hierarchy = u32::MAX;
+            slot.clone_ability_hierarchy = [u32::MAX; 3];
         }
     }
 
@@ -21067,7 +21061,7 @@ impl RolloutWorld {
             }
         }
         pending[..pending_count]
-            .sort_unstable_by_key(|&index| self.players[index].stock_clone_player_hierarchy);
+            .sort_unstable_by_key(|&index| self.players[index].clone_player_hierarchy);
         for &index in &pending[..pending_count] {
             for entity in self.players[index].owned_rows() {
                 if entity != usize::MAX {
@@ -21077,8 +21071,8 @@ impl RolloutWorld {
 
             let abilities = self.players[index].abilities;
             let position = self.players[index].base.position;
-            let player_hierarchy = self.players[index].stock_clone_player_hierarchy;
-            let ability_hierarchy = self.players[index].stock_clone_ability_hierarchy;
+            let player_hierarchy = self.players[index].clone_player_hierarchy;
+            let ability_hierarchy = self.players[index].clone_ability_hierarchy;
             let stock_indicator_hierarchy = self.players[index].stock_indicator_hierarchy;
             debug_assert_ne!(player_hierarchy, u32::MAX);
 
@@ -21524,8 +21518,8 @@ impl RolloutWorld {
             slot.beam_entity = beam_entity;
             slot.stock_indicator_entities = indicator_entities;
             slot.stock_clone_pending = false;
-            slot.stock_clone_player_hierarchy = u32::MAX;
-            slot.stock_clone_ability_hierarchy = [u32::MAX; 3];
+            slot.clone_player_hierarchy = u32::MAX;
+            slot.clone_ability_hierarchy = [u32::MAX; 3];
             slot.stock_indicator_hierarchy = [u32::MAX; 3];
         }
         for entity in new_circle_entities[..new_circle_count]
@@ -39112,6 +39106,17 @@ impl RolloutWorld {
             if spawn_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
+            // SpawnClone copies the dead slime's abilities, then ReviveEffect
+            // is instantiated; it has no collider but consumes hierarchy
+            // (PlayerCollision.cs:140-158).
+            slot.clone_player_hierarchy = self.next_spawn_hierarchy;
+            self.next_spawn_hierarchy += 8;
+            for ability_slot in 0..3 {
+                slot.clone_ability_hierarchy[ability_slot] = self.next_spawn_hierarchy;
+                self.next_spawn_hierarchy +=
+                    data::get().abilities[slot.abilities[ability_slot] as usize].updatable_count;
+            }
+            self.next_spawn_hierarchy += data::get().revival.effect_updatable_count;
             let rows = slot.owned_rows();
             for entity in rows {
                 if entity == usize::MAX {
@@ -39160,10 +39165,10 @@ impl RolloutWorld {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
             let abilities = slot.abilities;
-            let stock_clone_player_hierarchy = self.next_spawn_hierarchy;
+            let clone_player_hierarchy = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += 8;
-            let mut stock_clone_ability_hierarchy = [0u32; 3];
-            for (ability_slot, hierarchy) in stock_clone_ability_hierarchy.iter_mut().enumerate() {
+            let mut clone_ability_hierarchy = [0u32; 3];
+            for (ability_slot, hierarchy) in clone_ability_hierarchy.iter_mut().enumerate() {
                 *hierarchy = self.next_spawn_hierarchy;
                 self.next_spawn_hierarchy +=
                     data::get().abilities[abilities[ability_slot] as usize].updatable_count;
@@ -39186,8 +39191,8 @@ impl RolloutWorld {
             }
             slot.stocks -= 1;
             slot.stock_clone_pending = true;
-            slot.stock_clone_player_hierarchy = stock_clone_player_hierarchy;
-            slot.stock_clone_ability_hierarchy = stock_clone_ability_hierarchy;
+            slot.clone_player_hierarchy = clone_player_hierarchy;
+            slot.clone_ability_hierarchy = clone_ability_hierarchy;
             slot.stock_indicator_hierarchy = stock_indicator_hierarchy;
             slot.respawn_ticks = 360;
             slot.respawn_spawn_ticks = 0;
