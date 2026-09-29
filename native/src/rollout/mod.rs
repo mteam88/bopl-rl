@@ -41849,7 +41849,55 @@ impl RolloutWorld {
         order[..count].sort_unstable_by_key(|&index| {
             self.entities[self.players[index].body_entity].hierarchy
         });
+        let mut clone_order = [usize::MAX; MAX_PLAYERS * 16];
+        let mut clone_count = 0usize;
+        for (index, clone) in self.abilityless_clones.iter().enumerate() {
+            // Updater.updatables holds the clone from its registration on.
+            if clone.active && clone.entity.is_some() {
+                clone_order[clone_count] = index;
+                clone_count += 1;
+            }
+        }
+        clone_order[..clone_count].sort_unstable_by_key(|&index| {
+            self.abilityless_clones[index]
+                .entity
+                .map_or(u32::MAX, |entity| self.entities[entity].hierarchy)
+        });
+        // Abilityless clones are SlimeControllers too, so they interleave with
+        // the slimes that registered after them, like a stock clone.
+        let clone_row = |index: usize| {
+            let clone = &self.abilityless_clones[index];
+            let active = if clone.blink_tunnel_active { 0 } else { S_ACTIVE };
+            CSlime {
+                id: clone.entity.map_or(0, |entity| self.entities[entity].id),
+                owner: clone.base.id,
+                flags: active | S_SPAWNED | S_SIMULATED | S_ABILITYLESS,
+                state: clone.obs_state,
+                x: clone.base.position.x.raw(),
+                y: clone.base.position.y.raw(),
+                vx: (clone.base.velocity + clone.base.external_velocity).x.raw(),
+                vy: (clone.base.velocity + clone.base.external_velocity).y.raw(),
+                rotation: clone.base.rotation.raw(),
+                scale: clone.base.scale.raw(),
+                abilities: [0; 3],
+                ability_flags: [0; 3],
+                cooldowns: [0; 3],
+                // SlimeController.Init fills its three timers with -1.5 and
+                // no ability ever advances them.
+                timers: [Fix::from_f32(-1.5).raw(); 3],
+            }
+        };
+        let mut next_clone = 0;
         for &index in &order[..count] {
+            let hierarchy = self.entities[self.players[index].body_entity].hierarchy;
+            while next_clone < clone_count
+                && self.abilityless_clones[clone_order[next_clone]]
+                    .entity
+                    .is_some_and(|entity| self.entities[entity].hierarchy < hierarchy)
+            {
+                slimes.push(clone_row(clone_order[next_clone]));
+                next_clone += 1;
+            }
             let slot = &self.players[index];
             let in_ability = slot.active != ActiveAbility::None;
             let respawning = slot.respawn_ticks > 0
@@ -41963,41 +42011,8 @@ impl RolloutWorld {
                 ],
             });
         }
-        let mut clone_order = [usize::MAX; MAX_PLAYERS * 16];
-        let mut clone_count = 0usize;
-        for (index, clone) in self.abilityless_clones.iter().enumerate() {
-            // Updater.updatables holds the clone from its registration on.
-            if clone.active && clone.entity.is_some() {
-                clone_order[clone_count] = index;
-                clone_count += 1;
-            }
-        }
-        clone_order[..clone_count].sort_unstable_by_key(|&index| {
-            self.abilityless_clones[index]
-                .entity
-                .map_or(u32::MAX, |entity| self.entities[entity].hierarchy)
-        });
-        for &index in &clone_order[..clone_count] {
-            let clone = &self.abilityless_clones[index];
-            let active = if clone.blink_tunnel_active { 0 } else { S_ACTIVE };
-            slimes.push(CSlime {
-                id: clone.entity.map_or(0, |entity| self.entities[entity].id),
-                owner: clone.base.id,
-                flags: active | S_SPAWNED | S_SIMULATED | S_ABILITYLESS,
-                state: clone.obs_state,
-                x: clone.base.position.x.raw(),
-                y: clone.base.position.y.raw(),
-                vx: (clone.base.velocity + clone.base.external_velocity).x.raw(),
-                vy: (clone.base.velocity + clone.base.external_velocity).y.raw(),
-                rotation: clone.base.rotation.raw(),
-                scale: clone.base.scale.raw(),
-                abilities: [0; 3],
-                ability_flags: [0; 3],
-                cooldowns: [0; 3],
-                // SlimeController.Init fills its three timers with -1.5 and
-                // no ability ever advances them.
-                timers: [Fix::from_f32(-1.5).raw(); 3],
-            });
+        for &index in &clone_order[next_clone..clone_count] {
+            slimes.push(clone_row(index));
         }
     }
 
