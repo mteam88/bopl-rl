@@ -5024,7 +5024,16 @@ impl RolloutWorld {
             if !platform.active {
                 continue;
             }
-            if let Some(hit) = platform.collider.raycast(center, -Vec2::UP)
+            let mut collider = platform.collider;
+            // An older spawned platform's ResizablePlatform.UpdateSim has
+            // already resized it to its own extents this pass
+            // (ResizablePlatform.cs:240-247), so the ray meets the box
+            // Box.UpdateExtents left; the Spawned platform pass runs after
+            // this pickup walk.
+            if self.platform_resized_before(platform_index, hierarchy) {
+                collider.inner = collider.inner.reset_extents().0;
+            }
+            if let Some(hit) = collider.raycast(center, -Vec2::UP)
                 && platform_height.is_none_or(|nearest| hit.near < nearest)
             {
                 platform_height = Some(hit.near);
@@ -5074,6 +5083,19 @@ impl RolloutWorld {
                 && self.platforms[platform_index].surface.center.y
                     < data.maps[self.map].lower_boundary()
         })
+    }
+
+    /// Whether `ResizablePlatform.UpdateSim` for platform `i` precedes the
+    /// updatable at `hierarchy` in this pass, under the same conditions
+    /// `platform_resizable` applies.
+    fn platform_resized_before(&self, i: usize, hierarchy: u32) -> bool {
+        self.platform_dynamics[i].body_resizable
+            && self.platform_pass(i) == PlatformPass::Spawned
+            && !self.spawned.iter().any(|s| s.active && s.being_removed && s.platform_index == i)
+            && self
+                .spawned
+                .iter()
+                .any(|s| s.active && s.platform_index == i && s.hierarchy_base < hierarchy)
     }
 
     fn ability_pickups_tick_before(
@@ -36446,18 +36468,8 @@ impl RolloutWorld {
         }
         self.reposition_platform_children(i, data, false);
         let radius = self.platforms[i].collider.radius;
-        let inner = &mut self.platforms[i].collider.inner;
-        // DPhysicsRoundedRect.CalcExtents
-        let extents = Vec2::new(
-            Fix::ONE / inner.inverse_extents.x,
-            Fix::ONE / inner.inverse_extents.y,
-        );
-        // DPhysicsRoundedRect.SetExtents -> Box.UpdateExtents
-        inner.right *= inner.inverse_extents.x;
-        inner.up *= inner.inverse_extents.y;
-        inner.inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
-        inner.right *= extents.x;
-        inner.up *= extents.y;
+        let (inner, extents) = self.platforms[i].collider.inner.reset_extents();
+        self.platforms[i].collider.inner = inner;
         // StickyRect.UpdateBounds reads the perimeter back the same way.
         self.platforms[i].surface.extents = data::surface_extents(extents);
         self.platforms[i].surface.radius = radius;

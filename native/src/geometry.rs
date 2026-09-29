@@ -36,6 +36,22 @@ impl OrientedBox {
             inverse_extents,
         }
     }
+    /// DPhysicsRoundedRect.CalcExtents fed back through SetExtents, as
+    /// ResizablePlatform.UpdateSim does on every pass: Box.UpdateExtents
+    /// (Box.cs:37-44) rescales the existing axes by `One / (One / e)`.
+    /// Returns the box and the extents it was resized to.
+    pub fn reset_extents(mut self) -> (Self, Vec2) {
+        let extents = Vec2::new(
+            Fix::ONE / self.inverse_extents.x,
+            Fix::ONE / self.inverse_extents.y,
+        );
+        self.right *= self.inverse_extents.x;
+        self.up *= self.inverse_extents.y;
+        self.inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+        self.right *= extents.x;
+        self.up *= extents.y;
+        (self, extents)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
