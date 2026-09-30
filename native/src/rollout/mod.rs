@@ -6686,8 +6686,11 @@ impl RolloutWorld {
         } else {
             dir
         };
+        // A timed ragdoll that expired on the ground leaves State.fall on an
+        // attached slime until something attaches it again: a Move that hops
+        // onto another surface fires attachToGround and lands it.
         if slot.ragdoll_grounded_fall {
-            if slot.base.grounded {
+            if slot.base.grounded && slot.base.attach_upside_down.is_none() {
                 return;
             }
             slot.ragdoll_grounded_fall = false;
