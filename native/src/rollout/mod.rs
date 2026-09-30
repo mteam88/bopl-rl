@@ -2304,6 +2304,9 @@ pub struct DrillState {
     pub hitbox_position: Vec2,
     pub hitbox_up: Vec2,
     pub hitbox_rotation: Fix,
+    /// The pass whose OnEnterAbility or UpdateSim last moved the Drill's
+    /// FixTransform, which SyncAll then syncs its box to.
+    pub updated_tick: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3002,11 +3005,6 @@ pub struct PlayerSlot {
     /// advances later in the same updater pass.
     pub reported_position: Vec2,
     pub reported_tick: u32,
-    /// The pass, row and box of a form's OnEnterAbility
-    /// hurtbox.UpdatePhysicsPositions. DetPhysics keeps that pose until the
-    /// pass's Simulate, so everything reading the collider in between
-    /// (BlackHole, overlap casts) sees it rather than the form's first move.
-    pub entry_sync: Option<(u32, usize, DetCollider)>,
     /// Where the form's FixTransform stopped when its GameObject went
     /// inactive: an exit, or a teleport hiding the form.
     pub form_frozen: Option<FrozenForm>,
@@ -3700,12 +3698,12 @@ impl PlayerSlot {
     /// QuickSpell.cs:79-80, PlatformTransform.cs:124-125): `position + right *
     /// offset`, a grounded form aligned to the normal there and an airborne
     /// one unrotated. Later queries this pass see the circle there.
-    fn sync_entry_circle(&mut self, platforms: &[Platform], tick: u32, position: Vec2, radius: Fix, offset: Vec2) {
+    fn sync_entry_circle(&self, entities: &mut [CEntity], platforms: &[Platform], position: Vec2, radius: Fix, offset: Vec2) {
         let up = (self.base.platform(platforms))
             .filter(|_| self.base.grounded)
             .map_or(Vec2::UP, |platform| platform.surface.normal(position));
         let circle = Circle { center: position + up.perp_cw().complex_mul(offset), radius };
-        self.entry_sync = Some((tick, RolloutWorld::hurtbox_entity(self), DetCollider::Circle(circle)));
+        RolloutWorld::sync_form_row(entities, RolloutWorld::hurtbox_entity(self), DetCollider::Circle(circle));
     }
 
     /// `potentialCollider.Scale = Player.Scale` on the active circle form
@@ -5430,7 +5428,6 @@ impl RolloutWorld {
                 ability_time: Fix::ZERO,
                 reported_position: spawn,
                 reported_tick: u32::MAX,
-                entry_sync: None,
                 form_frozen: None,
                 ground_destroyed: None,
                 bow: BowState::default(),
@@ -7583,11 +7580,6 @@ impl RolloutWorld {
             }
         }
         self.refresh_actor_entities();
-        // SyncAll also overwrites a form's OnEnterAbility sync: from here
-        // DetPhysics holds each form where its row now is.
-        for slot in &mut self.players {
-            slot.entry_sync = None;
-        }
         if self.intro_phase == 3 {
             self.platforms_tick(data, physics_dt);
         } else {
@@ -10559,7 +10551,7 @@ impl RolloutWorld {
                                 Vec2::angle(entry_rotation),
                                 data.missile.hurtbox_extents,
                             );
-                            slot.entry_sync = Some((self.tick, slot.throw_entity, DetCollider::Box(collider)));
+                            Self::sync_form_row(&mut self.entities, slot.throw_entity, DetCollider::Box(collider));
                             slot.base.position = form_position;
                             slot.base.radius = form_radius;
                             // The form's Ability.UpdateSim runs on the entry
@@ -10739,7 +10731,7 @@ impl RolloutWorld {
                             Vec2::angle(slot.base.rotation),
                             data::surface_extents(data.push.hurtbox_extents),
                         );
-                        slot.entry_sync = Some((self.tick, slot.push_entity, DetCollider::Box(collider)));
+                        Self::sync_form_row(&mut self.entities, slot.push_entity, DetCollider::Box(collider));
                         slot.reported_position = slot.base.position;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
@@ -10924,7 +10916,7 @@ impl RolloutWorld {
                         // SyncPhysicsTo pose (Roll.cs:175-176).
                         let (radius, offset) =
                             slot.form_circle(slot.roll_entity, data.roll.radius, Vec2::ZERO);
-                        slot.sync_entry_circle(&self.platforms, self.tick, form_position, radius, offset);
+                        slot.sync_entry_circle(&mut self.entities, &self.platforms, form_position, radius, offset);
                         slot.base.external_velocity *= Fix::from_f64(0.2);
                         // Ability.UpdateSim publishes the newly positioned
                         // Roll collider later in this same updater pass.
@@ -11106,7 +11098,7 @@ impl RolloutWorld {
                         let slot = &mut self.players[index];
                         let (radius, offset) = slot.time_stop_circle(data);
                         let position = slot.base.position;
-                        slot.sync_entry_circle(&self.platforms, self.tick, position, radius, offset);
+                        slot.sync_entry_circle(&mut self.entities, &self.platforms, position, radius, offset);
                         self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
@@ -11660,7 +11652,7 @@ impl RolloutWorld {
                         let (radius, offset) =
                             slot.form_circle(slot.gust_entity, data.gust.hurtbox_radius, data.gust.collider_offset);
                         let position = slot.base.position;
-                        slot.sync_entry_circle(&self.platforms, self.tick, position, radius, offset);
+                        slot.sync_entry_circle(&mut self.entities, &self.platforms, position, radius, offset);
                         // QuickSpell synchronizes the copied PlayerInfo,
                         // ungrounds by the standard 0.05-unit separation and
                         // then clears both velocity channels.
@@ -11702,7 +11694,7 @@ impl RolloutWorld {
                         let (radius, offset) =
                             slot.form_circle(slot.revival_entity, data.revival.hurtbox_radius, data.revival.collider_offset);
                         let position = slot.base.position;
-                        slot.sync_entry_circle(&self.platforms, self.tick, position, radius, offset);
+                        slot.sync_entry_circle(&mut self.entities, &self.platforms, position, radius, offset);
                         let surface = attached_ground
                             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
                             .map(|platform| &platform.surface);
@@ -11767,7 +11759,7 @@ impl RolloutWorld {
                             Vec2::angle(rotation),
                             data.black_hole.hurtbox_extents,
                         );
-                        slot.entry_sync = Some((self.tick, slot.black_hole_entity, DetCollider::Box(collider)));
+                        Self::sync_form_row(&mut self.entities, slot.black_hole_entity, DetCollider::Box(collider));
                         slot.base.radius = radius;
                         slot.base.constants = data.black_hole.constants.clone();
                         if grounded {
@@ -11937,7 +11929,7 @@ impl RolloutWorld {
                             right,
                             data::surface_extents(data.drill.hurtbox_extents) * scale,
                         );
-                        slot.entry_sync = Some((self.tick, slot.drill_entity, DetCollider::Box(collider)));
+                        Self::sync_form_row(&mut self.entities, slot.drill_entity, DetCollider::Box(collider));
                         // OnEnterAbility moves the hitbox combo to the entry
                         // pose and syncs it, so a form that dies this pass
                         // leaves its boxes there (Drill.cs:178-181).
@@ -12056,7 +12048,7 @@ impl RolloutWorld {
                                 Vec2::angle(entry_rotation),
                                 extents,
                             );
-                            slot.entry_sync = Some((self.tick, slot.beam_entity, DetCollider::Box(collider)));
+                            Self::sync_form_row(&mut self.entities, slot.beam_entity, DetCollider::Box(collider));
                             slot.base.position = form_position;
                             slot.base.radius = physics_radius;
                             slot.base.constants = data.beam.constants.clone();
@@ -12123,7 +12115,7 @@ impl RolloutWorld {
                         slot.forms[s].set_circle_scale(scale, data.platform.hurtbox_radius);
                         slot.forms[s].set_circle_scale(scale, data.platform.hurtbox_radius);
                         let (position, radius) = (slot.base.position, slot.forms[s].circle_radius);
-                        slot.sync_entry_circle(&self.platforms, self.tick, position, radius, Vec2::ZERO);
+                        slot.sync_entry_circle(&mut self.entities, &self.platforms, position, radius, Vec2::ZERO);
                         self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
@@ -18047,6 +18039,7 @@ impl RolloutWorld {
         );
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
+        self.players[index].drill.updated_tick = Some(self.tick);
         if advance_animation {
             let drill = &mut self.players[index].drill;
             if drill.phase == 0 && drill.ticks >= data.drill.enter_ticks {
@@ -30216,15 +30209,36 @@ impl RolloutWorld {
         })
     }
 
-    /// The hurtbox DetPhysics holds for a slime whose row is stale. onExitAbility
-    /// (SlimeController.cs:251) and the OnEnterAbility of GunTransform
-    /// (GunTransform.cs:67-68), MachoThrow, Drill, Spike, QuickSpell and MagnetGun (MagnetGun.cs:295) sync it
-    /// mid-pass, while the row keeps its flags, and all but Magnet's its pose, until
-    /// the next refresh. Other forms' boxes move only in DetPhysics' own sync.
     /// DPhysicsBox.UpdatePhysicsPositions in a form's OnEnterAbility.
     fn sync_form_box(&mut self, index: usize, collider: OrientedBox) {
         let entity = Self::hurtbox_entity(&self.players[index]);
-        self.players[index].entry_sync = Some((self.tick, entity, DetCollider::Box(collider)));
+        Self::sync_form_row(&mut self.entities, entity, DetCollider::Box(collider));
+    }
+
+    /// A form's row carries its collider's pose as DetPhysics holds it:
+    /// SyncAll's refresh writes it, and so does an explicit sync such as
+    /// OnEnterAbility's UpdatePhysicsPositions (GunTransform.cs:67-68,
+    /// Drill.cs:176, MagnetGun.cs:295), which later queries this pass read.
+    /// Its flags wait for the refresh.
+    fn sync_form_row(entities: &mut [CEntity], entity: usize, collider: DetCollider) {
+        let Some(row) = entities.get_mut(entity) else {
+            return;
+        };
+        match collider {
+            DetCollider::Box(collider) => {
+                row.x = collider.center.x.raw();
+                row.y = collider.center.y.raw();
+                row.right_x = collider.right.x.raw();
+                row.right_y = collider.right.y.raw();
+                row.up_x = collider.up.x.raw();
+                row.up_y = collider.up.y.raw();
+            }
+            DetCollider::Circle(circle) => {
+                row.x = circle.center.x.raw();
+                row.y = circle.center.y.raw();
+                row.radius = circle.radius.raw();
+            }
+        }
     }
 
     /// OnEnterAbility's PlayerPhysics.SyncPhysicsTo pose, which the entry arm
@@ -30261,9 +30275,8 @@ impl RolloutWorld {
     }
 
     /// What DetPhysics holds for the slime's current hurtbox: the slime's box
-    /// where its last sync put it; a form's collider where its OnEnterAbility
-    /// synced it this pass until Simulate's SyncAll, else where DetPhysics last
-    /// synced it, which is the pose its row last published.
+    /// where its last sync put it; a form's collider where its row holds it,
+    /// as SyncAll's refresh or an explicit sync since (OnEnterAbility) left it.
     /// A form's GameObject is active from EnterAbility, before its row turns
     /// active at the refresh. None: the collider is not in DetPhysics now.
     fn hurtbox_collider(&self, index: usize) -> Option<DetCollider> {
@@ -30275,11 +30288,6 @@ impl RolloutWorld {
             return (!slot.base.dash.active).then_some(DetCollider::Box(slot.base.synced));
         }
         let entity = Self::hurtbox_entity(slot);
-        if let Some((_, _, collider)) =
-            slot.entry_sync.filter(|&(tick, synced, _)| tick == self.tick && synced == entity)
-        {
-            return Some(collider);
-        }
         // BounceBall moves only the Rock's FixTransform, even on entry, so its
         // circle's centre is where DetPhysics last synced it, the pose its row
         // published; DPhysicsCircle.radius writes DetPhysics directly
@@ -43649,8 +43657,7 @@ impl RolloutWorld {
                 // A form left in the pass it was entered never published
                 // active, but EnterAbility gave it its owner and DetPhysics
                 // syncs its frozen transform.
-                let entered_now =
-                    slot.entry_sync.is_some_and(|(tick, entity, _)| tick == self.tick && entity == drill_e);
+                let entered_now = slot.drill.updated_tick == Some(self.tick);
                 if drilling || entered_now {
                     box_row.owner = slot.base.id;
                 }
