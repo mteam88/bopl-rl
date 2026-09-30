@@ -16773,6 +16773,14 @@ impl RolloutWorld {
                 hierarchy.start,
                 self.black_holes[hole_index].hierarchy_base,
             );
+            // So has an older runtime-spawned platform, such as a Macho
+            // boulder: its BoplBody has already rescaled the mass this hole
+            // pulls with.
+            self.spawned_platforms_tick(
+                data,
+                dt,
+                hierarchy.start..100_000_000 + self.black_holes[hole_index].hierarchy_base,
+            );
             // The older updaters above may spawn a Duplicator copy, which
             // this hole then pulls itself.
             self.black_holes[hole_index].updated_tick = Some(self.tick);
