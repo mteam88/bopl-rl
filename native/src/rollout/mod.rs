@@ -23221,8 +23221,10 @@ impl RolloutWorld {
                 continue;
             };
             // ReviveParticle registers in Awake and again in InitRevive, so it
-            // updates twice a pass, on its player's FixedDeltaTime.
-            let dt = if self.time_stop_protected[index] {
+            // updates twice a pass, on its player's FixedDeltaTime, or on the
+            // plain one once the clone it revives is destroyed.
+            let revives = self.players[index].base.alive;
+            let dt = if !revives || self.time_stop_protected[index] {
                 DT
             } else {
                 DT * self.player_time_scale
@@ -23248,6 +23250,9 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.revival_effect_ticks = 0;
             slot.revival_particle = None;
+            if !revives {
+                continue;
+            }
             // SlimeController.ReSpawn places the clone where the marker is.
             slot.base.position = target;
             slot.base.sync_collider();
@@ -39248,7 +39253,6 @@ impl RolloutWorld {
             let slot = &self.players[index];
             !slot.out
                 && slot.respawn_ticks == 0
-                && slot.respawn_spawn_ticks == 0
                 && !slot.base.alive
                 && slot.base.out_of_bounds
         };
@@ -42742,9 +42746,13 @@ impl RolloutWorld {
         // `HasGameEnded()`, which is `!gameInProgress`: once the round is
         // resolved the loser does not get a replacement clone even though
         // `WinGame` has already lowered the sudden-death flag.
+        // The stock branch needs ExtraLife == NoRevive; a revival clone stays
+        // isbeingRevived until ReSpawn, so its death is a plain one
+        // (PlayerCollision.cs:166, 190).
         if !already_won
             && !clones_alive
             && slot.stocks > 0
+            && slot.revival_effect_ticks == 0
             && !self.sudden_death
             && self.game_in_progress
         {
@@ -42945,6 +42953,19 @@ impl RolloutWorld {
         // meanwhile restarts that slot's timer.
         if !slot.stock_clone_pending && !slot.revival_clone_pending {
             slot.slime_updated = true;
+        }
+        // From the pass after SpawnClone, the revival clone's
+        // DestroyIfOutsideSceneBounds runs at the marker position
+        // PrepareToRevive gave it while it waits for the ReviveParticle, so a
+        // marker a hair below the water line drowns it
+        // (DestroyIfOutsideSceneBounds.cs:54, PlayerCollision.cs:145-150).
+        // It keeps running through the spawn animation after ReSpawn or
+        // ReSpawnFast, while the body holds still.
+        let waits_for_particle = slot.revival_effect_ticks > 0 && !slot.revival_clone_pending;
+        if (waits_for_particle || slot.respawn_spawn_ticks > 0) && slot.base.outside_bounds() {
+            slot.base.alive = false;
+            slot.base.out_of_bounds = true;
+            return;
         }
 
         if slot.unspawned > 0 {
