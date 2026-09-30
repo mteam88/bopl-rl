@@ -27655,8 +27655,9 @@ impl RolloutWorld {
         slot.base.rotation = facing.normalized_angle();
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.magnet.knockback);
-            // gap: MagnetGun.cs:408 nulls the rotation.
-            UngroundBody::Form(slot).unground(&self.platforms, self.tick, false);
+            // UnGround(nullRotation) resets the FixTransform (MagnetGun.cs:408).
+            UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
+            slot.magnet.body_right = Vec2::RIGHT;
         } else {
             slot.base.velocity = -(aim * data.magnet.knockback);
         }
