@@ -7273,6 +7273,9 @@ impl RolloutWorld {
         if has_thrown_item && has(ABILITY_ROCK) {
             self.thrown_item_rock_contacts(data);
         }
+        if has(ABILITY_ROCK) {
+            self.rocks_box_contacts(data);
+        }
         // DynamicAbilityPickup.OnCollide is a callback: a pickup a slime
         // collects this pass still resolved its Circle/Circle pairs first.
         if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
@@ -39291,6 +39294,23 @@ impl RolloutWorld {
             }
         }
 
+    }
+
+    /// DetPhysics' Circle/Box group runs after every Circle/Circle pair has
+    /// resolved (DetPhysics.cs:3052-3129), so a Rock's Circle/Box manifolds
+    /// see the corrections of its Circle/Circle pairs with items and rocks,
+    /// and all of them are built before the first one resolves.
+    fn rocks_box_contacts(&mut self, data: &data::RolloutData) {
+        let mut swept = [Circle::default(); MAX_PLAYERS];
+        let mut centers = [Vec2::ZERO; MAX_PLAYERS];
+        for ((circle, center), slot) in swept.iter_mut().zip(&mut centers).zip(&self.players) {
+            *circle = slot.rock.swept;
+            *center = slot.base.position;
+        }
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let rock_min = |rock: usize| axis(swept[rock].center) - swept[rock].radius;
+
         // Circle/Box: a Spike attack is a solid box child of its platform's
         // CompositeBody, so a Rock bounces off it. ResolveCollision takes the
         // combined body at CompositeBody.position; PositionalCorrection the
@@ -39385,7 +39405,7 @@ impl RolloutWorld {
                 continue;
             }
             let rock = Circle {
-                center: self.players[rock_index].base.position,
+                center: centers[rock_index],
                 radius: self.players[rock_index].rock.collider_radius,
             };
             for victim in 0..self.players.len() {
@@ -44820,7 +44840,7 @@ mod tests {
             Fix::from_raw(world.entities[target_entity].y),
         );
 
-        world.rocks_contacts(data::get());
+        world.rocks_box_contacts(data::get());
 
         assert_eq!(world.players[0].rock.body.force, Vec2::ZERO);
     }
