@@ -1825,11 +1825,10 @@ impl RolloutWorld {
             }
             if victim.is_none() && parent.is_none() {
                 // Portal Gun shots share the item layer.
-                let radius = data::get().portal_gun.shot_radius;
                 parent = self.portal_shots.iter().enumerate().find_map(|(index, shot)| {
                     let body = Circle {
                         center: shot.position,
-                        radius,
+                        radius: shot.collider_radius,
                     };
                     (shot.active
                         && shot.registered

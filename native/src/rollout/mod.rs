@@ -2327,6 +2327,9 @@ pub struct PortalShotState {
     pub orphan: Option<usize>,
     /// The collider's scale, which a ray's ScaleChanger sets.
     pub scale: Fix,
+    /// DPhysicsCircle.radius, which the Scale setter multiplies by
+    /// `(1 / old) * new` (DPhysicsCircle.cs:208-222); every contact reads it.
+    pub collider_radius: Fix,
     /// BoplBody.prevScale: the body follows a rescale on its next update.
     pub body_prev_scale: Fix,
 }
@@ -7580,7 +7583,7 @@ impl RolloutWorld {
             self.beam_contacts(beam_contact_count);
         }
         if has(ABILITY_PORTAL_GUN) {
-            self.portal_shots_contacts(data);
+            self.portal_shots_contacts();
         }
         if has(ABILITY_BLACK_HOLE) {
             self.black_hole_contacts(data);
@@ -7616,7 +7619,7 @@ impl RolloutWorld {
             self.duplicated_rock_contacts(data);
         }
         if has(ABILITY_PORTAL_GUN) && has(ABILITY_ROCK) {
-            self.portal_shot_rock_contacts(data);
+            self.portal_shot_rock_contacts();
         }
         if has_thrown_item && has(ABILITY_ROCK) {
             self.thrown_item_rock_contacts(data);
@@ -7953,6 +7956,7 @@ impl RolloutWorld {
             fire_velocity: body.velocity,
             fire_applied: false,
             scale: Fix::ONE,
+            collider_radius: data.portal_gun.shot_radius,
             body_prev_scale: Fix::ONE,
             ..PortalShotState::default()
         };
@@ -8371,7 +8375,7 @@ impl RolloutWorld {
     /// Builds the portal shots' wall manifolds. They resolve with the other
     /// Circle/RoundedRectangle pairs in sweep order, and PortalShot.OnCollide
     /// lands the shot afterwards as a queued callback.
-    fn portal_shots_contacts(&mut self, data: &data::RolloutData) {
+    fn portal_shots_contacts(&mut self) {
         let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
         shot_contacts.clear();
         for shot_index in 0..self.portal_shots.len() {
@@ -8383,7 +8387,7 @@ impl RolloutWorld {
             }
             let circle = Circle {
                 center: self.portal_shots[shot_index].position,
-                radius: data.portal_gun.shot_radius,
+                radius: self.portal_shots[shot_index].collider_radius,
             };
             if let Some((wall_index, contact)) = (0..self.platforms.len())
                 .filter(|&wall_index| {
@@ -8434,7 +8438,7 @@ impl RolloutWorld {
     /// contacts (including Rock against a platform) resolve before the global
     /// circle/circle pass, so this must run after `rocks_contacts` rather than
     /// alongside the shot's wall callback above.
-    fn portal_shot_rock_contacts(&mut self, data: &data::RolloutData) {
+    fn portal_shot_rock_contacts(&mut self) {
         for shot_index in 0..self.portal_shots.len() {
             if !self.portal_shots[shot_index].active || !self.portal_shots[shot_index].registered {
                 continue;
@@ -8442,7 +8446,7 @@ impl RolloutWorld {
 
             let shot_circle = Circle {
                 center: self.portal_shots[shot_index].position,
-                radius: data.portal_gun.shot_radius,
+                radius: self.portal_shots[shot_index].collider_radius,
             };
             let mut contacts = [(usize::MAX, Contact::default(), false); MAX_BODIES];
             let mut contact_count = 0usize;
@@ -21471,7 +21475,6 @@ impl RolloutWorld {
                 item.body.apply_impulse(impulse, Vec2::ZERO);
             }
             // A Portal Gun shot is an item-layer circle with its own BoplBody.
-            let shot_radius = data::get().portal_gun.shot_radius;
             for shot in &mut self.portal_shots {
                 if !shot.active
                     || !shot.registered
@@ -21479,7 +21482,7 @@ impl RolloutWorld {
                         query,
                         Circle {
                             center: shot.position,
-                            radius: shot_radius,
+                            radius: shot.collider_radius,
                         },
                     )
                     .is_none()
@@ -26478,7 +26481,7 @@ impl RolloutWorld {
             if crate::physics::contact::circle_box(
                 Circle {
                     center: shot.position,
-                    radius: data.portal_gun.shot_radius,
+                    radius: shot.collider_radius,
                 },
                 query,
             )
@@ -26809,7 +26812,7 @@ impl RolloutWorld {
                     pickup_circle,
                     Circle {
                         center: shot.position,
-                        radius: data.portal_gun.shot_radius,
+                        radius: shot.collider_radius,
                     },
                 )
                 .is_some(),
@@ -27579,7 +27582,7 @@ impl RolloutWorld {
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
                 let correction = self.magnet_circle_out_of_walls(Circle {
                     center: position,
-                    radius: data.portal_gun.shot_radius,
+                    radius: self.portal_shots[i].collider_radius,
                 });
                 let shot = &mut self.portal_shots[i];
                 shot.position = position + correction;
@@ -31603,6 +31606,7 @@ impl RolloutWorld {
             for shot in &mut self.portal_shots {
                 if shot.active && shot.entity == Some(effect.victim) {
                     shot.scale = scale;
+                    shot.collider_radius *= ratio;
                     self.entities[effect.victim].inverse_mass = shot.body.inverse_mass.raw();
                 }
             }
@@ -35633,7 +35637,7 @@ impl RolloutWorld {
                 if let Some(contact) = crate::physics::contact::circle_circle(
                     Circle {
                         center: shot.position,
-                        radius: data.portal_gun.shot_radius,
+                        radius: shot.collider_radius,
                     },
                     circle,
                 ) {
@@ -36848,7 +36852,7 @@ impl RolloutWorld {
         const NODE: u8 = 1;
         // Portal shots are DetPhysics circles in the same batch.
         let shot_min = |shot_index: usize| {
-            axis(self.portal_shots[shot_index].position) - data.portal_gun.shot_radius
+            axis(self.portal_shots[shot_index].position) - self.portal_shots[shot_index].collider_radius
         };
         const ROCK: u8 = 2;
         const SHOT: u8 = 3;
@@ -37209,7 +37213,7 @@ impl RolloutWorld {
             } else if index >= SHOT {
                 Circle {
                     center: shots[index - SHOT].position,
-                    radius: data.portal_gun.shot_radius,
+                    radius: shots[index - SHOT].collider_radius,
                 }
             } else {
                 Circle {
@@ -37520,7 +37524,7 @@ impl RolloutWorld {
             } else if index >= SHOT {
                 Circle {
                     center: self.portal_shots[index - SHOT].position,
-                    radius: data.portal_gun.shot_radius,
+                    radius: self.portal_shots[index - SHOT].collider_radius,
                 }
             } else {
                 let item = self.thrown_items[index];
@@ -37568,7 +37572,7 @@ impl RolloutWorld {
                 let node = self.tesla_nodes[index - NODE];
                 axis(node.swept_center) - node.radius
             } else if index >= SHOT {
-                axis(self.portal_shots[index - SHOT].position) - data.portal_gun.shot_radius
+                axis(self.portal_shots[index - SHOT].position) - self.portal_shots[index - SHOT].collider_radius
             } else {
                 let item = self.thrown_items[index];
                 axis(item.swept_position) - thrown_item_radius(data, item)
