@@ -2161,6 +2161,8 @@ pub struct MachoBoulder {
     pub hierarchy_base: u32,
     pub held: bool,
     pub dropped: bool,
+    /// Boulder.shouldDrop: false from Awake until its first UpdateSim.
+    pub should_drop: bool,
 }
 
 /// A RevivePositionIndicator spawned by one Revival ability instance.
@@ -19618,6 +19620,7 @@ impl RolloutWorld {
             hierarchy_base,
             held,
             dropped: !held,
+            should_drop: false,
         };
         let boulder_index = if let Some(free) = self.macho_boulders.iter().position(|b| !b.active) {
             self.macho_boulders[free] = state;
@@ -20091,6 +20094,14 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // Boulder.UpdateSim drops a boulder nobody held since its last
+            // update, which a Duplicator copy is (Boulder.cs:21-29).
+            if !boulder.held && !boulder.dropped && boulder.should_drop {
+                Self::drop_boulder(&mut self.platform_dynamics[boulder.platform_index], data);
+                self.macho_boulders[boulder_index].dropped = true;
+                self.platforms_changed();
+            }
+            self.macho_boulders[boulder_index].should_drop = true;
             // Boulder.prefab only destroys below the water boundary:
             // DestroyIfTooFarX=false and DoNotDestroyUp=true. The updater's
             // DestroyFix removes it before this pass's contacts and export.
@@ -31114,6 +31125,37 @@ impl RolloutWorld {
             flags: E_ACTIVE | E_ENABLED,
             ..source_row
         });
+        // A boulder's copy is a fresh, undropped Boulder: Drop only wrote the
+        // source's live body, so its BoplBody holds the prefab gravity and
+        // bounciness (DPhysicsRoundedRect.SetGravityScale, SetBounciness).
+        let boulder = self
+            .macho_boulders
+            .iter()
+            .any(|boulder| boulder.active && boulder.platform_index == source);
+        if boulder {
+            let prefab = data.macho_throw.boulder_body;
+            for body in [&mut dynamics.body, &mut dynamics.root_body] {
+                body.gravity_scale = prefab.gravity_scale;
+                body.bounciness = prefab.bounciness;
+            }
+            let state = MachoBoulder {
+                active: true,
+                owner: usize::MAX,
+                ability_slot: 0,
+                ability_generation: 0,
+                platform_index: self.platforms.len(),
+                born_tick: self.tick,
+                hierarchy_base,
+                held: false,
+                dropped: false,
+                should_drop: false,
+            };
+            if let Some(free) = self.macho_boulders.iter().position(|b| !b.active) {
+                self.macho_boulders[free] = state;
+            } else {
+                self.macho_boulders.push(state);
+            }
+        }
         self.platforms.push(platform);
         self.platform_dynamics.push(dynamics);
         self.platform_defs.push(definition);
