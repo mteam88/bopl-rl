@@ -6890,6 +6890,7 @@ impl RolloutWorld {
         // Forms that ended earlier in the pass cleared the Player's form
         // flags before any body's turn can set them again.
         self.track_form_flags();
+        self.scratch.platform_resizes.clear();
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
             self.scratch.updater_hierarchy = player_hierarchy[index];
             if index >= self.player_count && !self.players[index].base.alive {
@@ -7211,7 +7212,6 @@ impl RolloutWorld {
         if has(ABILITY_REWIND) {
             self.rewind_recorders_tick(&player_order[recorded..player_count]);
         }
-        self.scratch.platform_resizes.clear();
         let action_count = actions.len().min(self.player_count);
         self.scratch.clone_action_count = action_count;
         self.scratch.clone_actions[..action_count].copy_from_slice(&actions[..action_count]);
@@ -8118,8 +8118,9 @@ impl RolloutWorld {
     /// copy's or a spawned platform's updaters, a hole's pull, a Tack, Poke
     /// Ball or Mjolnir, a Portal, a DynamicAbilityPickup (one newer than a
     /// live ScaleChanger waits for it), a RocketEngine's push, a hook's Rope
-    /// and RopeAttachment, a Smoke cloud's FlammableSmoke, and a player
-    /// ScaleChanger. The per-kind passes later in the pass run the rest.
+    /// and RopeAttachment, a Smoke cloud's FlammableSmoke, a player
+    /// ScaleChanger, and a DuplicatePlatformEffect. The per-kind passes later
+    /// in the pass run the rest.
     fn run_spawned_before(&mut self, data: &data::RolloutData, updater_dt: Fix, before: u32) {
         let tick = self.tick;
         let mut queue = std::mem::take(&mut self.scratch.spawned_queue);
@@ -8185,6 +8186,11 @@ impl RolloutWorld {
                 push(100_000_000 + effect.hierarchy_base, 10, i);
             }
         }
+        for (i, effect) in self.duplicate_platform_effects.iter().enumerate() {
+            if effect.active && effect.born_tick != tick && effect.stepped_tick != Some(tick) {
+                push(100_000_000 + effect.hierarchy_base, 11, i);
+            }
+        }
         queue.sort_unstable();
         for &(hierarchy, kind, index) in &queue {
             let turn = hierarchy..hierarchy + 1;
@@ -8211,7 +8217,12 @@ impl RolloutWorld {
                 7 => self.grapple_ropes_update(hierarchy - 100_000_000..hierarchy - 99_999_999),
                 8 => self.ropes_update(hierarchy - 100_000_000..hierarchy - 99_999_999),
                 9 => self.smoke_clouds_update_early(data, updater_dt, turn),
-                _ => self.player_scale_changers_update(data, turn),
+                10 => self.player_scale_changers_update(data, turn),
+                _ => self.duplicate_platform_effects_tick(
+                    data,
+                    updater_dt,
+                    Some(hierarchy - 99_999_999),
+                ),
             }
             // Updater never returns to a turn it has passed: one skipped here,
             // hidden or disabled, waits for the next pass.
@@ -8226,6 +8237,7 @@ impl RolloutWorld {
                 8 => self.ropes[index].rope_ran_tick = tick,
                 9 => self.smoke_clouds[index].updater_ran_tick = tick,
                 10 => self.scale_changers[index].early_tick = tick,
+                11 => self.duplicate_platform_effects[index].stepped_tick = tick,
                 // A pickup newer than a live ScaleChanger keeps its turn
                 // behind it.
                 _ => {
@@ -15678,6 +15690,13 @@ impl RolloutWorld {
             {
                 continue;
             }
+            // A DuplicatePlatformEffect instantiated before this engine has
+            // already rescaled its source and spawned its copy.
+            if !self.duplicate_platform_effects.is_empty() {
+                let hierarchy = engine.hierarchy_base;
+                self.duplicate_platform_effects_tick(data, updater_dt, Some(hierarchy));
+            }
+            let engine = &self.engines[engine_index];
             // A running engine's BlowUpSmokeTouchingTheFire casts through
             // DetPhysics.circleCastCircles, and every cast first runs
             // RemoveDestroyedColliders: a composite that lost a child to
