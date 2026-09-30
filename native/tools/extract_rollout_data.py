@@ -2148,6 +2148,12 @@ def main():
             print(f"UNMATCHED center {p['name']} {key}", file=sys.stderr)
     print(f"Level1 platform cross-check: {matched}/{len(mine)} matched")
 
+    # Physics2D's layer collision matrix, which DetPhysics' SortAndSweep asks
+    # through GetIgnoreLayerCollision (DetPhysics.cs:2183, 2252): bit b of row
+    # a is set when layers a and b collide.
+    with open(ROOT.parent / "sim" / "Export" / "settings.json") as fh:
+        out["collision_matrix"] = json.load(fh)["collisionMatrix"]
+
     target = ROOT / "data" / "rollout.json"
     with open(target, "w") as fh:
         json.dump(out, fh, indent=1)

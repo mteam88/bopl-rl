@@ -1243,6 +1243,7 @@ struct RawRollout {
     maps: Vec<RawMap>,
     prefabs: RawPrefabs,
     abilities: Vec<RawAbility>,
+    collision_matrix: [u32; 32],
 }
 #[derive(Deserialize)]
 struct RawAbility {
@@ -2351,6 +2352,9 @@ pub struct AbilityData {
 }
 pub struct RolloutData {
     pub maps: Vec<MapDef>,
+    /// Physics2D's layer collision matrix: bit b of row a is set when layers
+    /// a and b collide.
+    pub collision_matrix: [u32; 32],
     pub player: MovementData,
     pub black_hole: BlackHoleData,
     pub dash: DashData,
@@ -2639,6 +2643,14 @@ fn map_def(raw: &RawMap) -> MapDef {
     }
 }
 
+impl RolloutData {
+    /// Whether DetPhysics pairs colliders on these layers:
+    /// !Physics2D.GetIgnoreLayerCollision (UnityShim World.cs:113-125).
+    pub fn layers_collide(&self, a: u32, b: u32) -> bool {
+        self.collision_matrix[a as usize] & (1 << b) != 0
+    }
+}
+
 pub fn get() -> &'static RolloutData {
     static DATA: OnceLock<RolloutData> = OnceLock::new();
     DATA.get_or_init(|| {
@@ -2654,6 +2666,7 @@ pub fn get() -> &'static RolloutData {
         let plat = &raw.prefabs.platform_ability;
         RolloutData {
             maps: raw.maps.iter().map(map_def).collect(),
+            collision_matrix: raw.collision_matrix,
             player: MovementData {
                 constants: constants(&raw.prefabs.player.physics),
                 radius: Fix::from_raw(raw.prefabs.player.physics.radius),

@@ -1,7 +1,8 @@
-//! DetPhysics' Circle/Box group (DetPhysics.cs:3090-3129), for the colliders
-//! the rollout lists here: every registered circle against every registered
-//! box the broadphase paired, all manifolds built before any resolves, each
-//! pair's callbacks queued circle side first (DetPhysics.cs:2405-2437).
+//! DetPhysics' Circle/Circle and Circle/Box groups (DetPhysics.cs:3052-3129),
+//! for the colliders the rollout lists here: every pair of registered
+//! colliders the broadphase found on layers the collision matrix pairs, all
+//! of a group's manifolds built before any resolves, each pair's callbacks
+//! queued first side first (DetPhysics.cs:2405-2437).
 use super::*;
 use crate::physics::shape::Collider;
 
@@ -14,6 +15,12 @@ pub(super) enum Part {
     Engine(usize),
     Spike(usize),
     Missile(usize),
+    /// A Rock form's circle, by player.
+    Rock(usize),
+    /// A DynamicAbilityPickup's circle.
+    Pickup(usize),
+    /// A Duplicator's Rock_noPlayer copy.
+    DuplicatedRock(usize),
 }
 
 impl RolloutWorld {
@@ -37,6 +44,38 @@ impl RolloutWorld {
                 Collider::Box(Self::spike_attack_box_in(&self.platform_dynamics, self.spike_attacks[i]))
             }
             Part::Missile(i) => Collider::Box(self.guided_missiles[i].collider()),
+            Part::Rock(i) => Collider::Circle(Circle {
+                center: self.players[i].base.position,
+                radius: self.players[i].rock_circle().circle_radius,
+            }),
+            Part::Pickup(i) => {
+                let pickup = &self.ability_pickups[i];
+                Collider::Circle(Circle { center: pickup.position + pickup.offset, radius: pickup.radius })
+            }
+            Part::DuplicatedRock(i) => Collider::Circle(Circle {
+                center: self.duplicated_rocks[i].position,
+                radius: self.duplicated_rocks[i].collider_radius,
+            }),
+        }
+    }
+
+    /// The layer SortAndSweep checks against the collision matrix.
+    fn part_layer(&self, part: Part, data: &data::RolloutData) -> u32 {
+        match part {
+            Part::Item(i) => self.thrown_items[i].entity.map_or(LAYER_ITEM, |entity| self.entities[entity].layer),
+            Part::Shot(_) => data.portal_gun.shot_layer,
+            // SimpleSparkNode moves a lethal node's circle to LethalTerrain.
+            Part::Node(i) if self.tesla_nodes[i].lethal => LAYER_LETHAL_TERRAIN,
+            Part::Node(_) => data.tesla.node_layer,
+            Part::Engine(_) => data.engine.rocket_layer,
+            Part::Spike(_) => data.spike.attack_layer,
+            Part::Missile(_) => data.missile.spark_layer,
+            Part::Rock(_) => LAYER_PLAYER,
+            Part::Pickup(i) => self.ability_pickups[i].entity.map_or(LAYER_WEAPON, |entity| self.entities[entity].layer),
+            // Rock_noPlayer is a LethalTerrain circle.
+            Part::DuplicatedRock(i) => {
+                self.duplicated_rocks[i].entity.map_or(LAYER_LETHAL_TERRAIN, |entity| self.entities[entity].layer)
+            }
         }
     }
 
@@ -68,6 +107,9 @@ impl RolloutWorld {
             Part::Engine(i) => self.engines[i].entity,
             Part::Spike(i) => self.spike_attacks[i].entity,
             Part::Missile(i) => self.guided_missiles[i].entity,
+            Part::Rock(i) => Some(self.players[i].rock_entity),
+            Part::Pickup(i) => self.ability_pickups[i].entity,
+            Part::DuplicatedRock(i) => self.duplicated_rocks[i].entity,
         }
     }
 
@@ -77,7 +119,12 @@ impl RolloutWorld {
             Part::Node(i) => Some(self.tesla_nodes[i].platform_index),
             Part::Engine(i) => Some(self.engines[i].platform_index),
             Part::Spike(i) => Some(self.spike_attacks[i].platform_index),
-            Part::Item(_) | Part::Shot(_) | Part::Missile(_) => None,
+            Part::Item(_)
+            | Part::Shot(_)
+            | Part::Missile(_)
+            | Part::Rock(_)
+            | Part::Pickup(_)
+            | Part::DuplicatedRock(_) => None,
         }
     }
 
@@ -91,6 +138,9 @@ impl RolloutWorld {
             Part::Engine(i) => self.engines[i].body,
             Part::Spike(i) => self.spike_attacks[i].body,
             Part::Missile(i) => self.guided_missiles[i].body,
+            Part::Rock(i) => self.players[i].rock.body,
+            Part::Pickup(i) => self.ability_pickups[i].body,
+            Part::DuplicatedRock(i) => self.duplicated_rocks[i].body,
         }
     }
 
@@ -102,6 +152,9 @@ impl RolloutWorld {
             Part::Engine(i) => self.engines[i].active,
             Part::Spike(i) => self.spike_attacks[i].active,
             Part::Missile(i) => self.guided_missiles[i].active,
+            Part::Rock(i) => self.players[i].active == ActiveAbility::Rock,
+            Part::Pickup(i) => self.ability_pickups[i].active,
+            Part::DuplicatedRock(i) => self.duplicated_rocks[i].active,
         }
     }
 
@@ -113,6 +166,12 @@ impl RolloutWorld {
             (Part::Item(i), None) => (self.thrown_items[i].body, self.thrown_items[i].position),
             (Part::Shot(i), None) => (self.portal_shots[i].body, self.portal_shots[i].position),
             (Part::Missile(i), None) => (self.guided_missiles[i].body, self.guided_missiles[i].position),
+            (Part::Rock(i), None) => (self.players[i].rock.body, self.players[i].base.position),
+            (Part::Pickup(i), None) => {
+                let pickup = &self.ability_pickups[i];
+                (pickup.body, pickup.position + pickup.offset)
+            }
+            (Part::DuplicatedRock(i), None) => (self.duplicated_rocks[i].body, self.duplicated_rocks[i].position),
             _ => unreachable!(),
         }
     }
@@ -139,6 +198,31 @@ impl RolloutWorld {
             Part::Missile(i) => {
                 self.guided_missiles[i].body = body;
                 self.guided_missiles[i].position += delta;
+            }
+            Part::Rock(i) => {
+                let slot = &mut self.players[i];
+                slot.rock.body = body;
+                slot.base.position += delta;
+                slot.base.velocity = body.velocity;
+            }
+            Part::Pickup(i) => {
+                let pickup = &mut self.ability_pickups[i];
+                pickup.body = body;
+                pickup.position += delta;
+                let center = pickup.position + pickup.offset;
+                pickup.synced_center = center;
+                if let Some(entity) = pickup.entity {
+                    let row = &mut self.entities[entity];
+                    row.x = center.x.raw();
+                    row.y = center.y.raw();
+                    row.vx = body.velocity.x.raw();
+                    row.vy = body.velocity.y.raw();
+                }
+            }
+            Part::DuplicatedRock(i) => {
+                self.duplicated_rocks[i].body = body;
+                self.duplicated_rocks[i].position += delta;
+                self.sync_duplicated_rock_entity(i);
             }
         }
         if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_), Some(entity)) = (part, self.part_entity(part)) {
@@ -168,6 +252,9 @@ impl RolloutWorld {
             }
             Part::Spike(i) => self.spike_attack_root(i),
             Part::Missile(i) => self.guided_missiles[i].position,
+            Part::Rock(i) => self.players[i].base.position,
+            Part::Pickup(i) => self.ability_pickups[i].position,
+            Part::DuplicatedRock(i) => self.duplicated_rocks[i].position,
         }
     }
 
@@ -181,10 +268,14 @@ impl RolloutWorld {
             (Part::Item(i), None) => &mut self.thrown_items[i].body,
             (Part::Shot(i), None) => &mut self.portal_shots[i].body,
             (Part::Missile(i), None) => &mut self.guided_missiles[i].body,
+            (Part::Rock(i), None) => &mut self.players[i].rock.body,
             _ => unreachable!(),
         };
         body.apply_impulse(force, arm);
         let body = *body;
+        if let Part::Rock(i) = part {
+            self.players[i].base.velocity = body.velocity;
+        }
         if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_), Some(entity)) = (part, self.part_entity(part)) {
             let row = &mut self.entities[entity];
             row.vx = body.velocity.x.raw();
@@ -284,19 +375,111 @@ impl RolloutWorld {
             }
         }
         for &(_, circle, part, contact) in &contacts {
-            let (circle_own, part_own) = (self.part_body(circle), self.part_body(part));
-            if circle_own.inverse_mass < Fix::ZERO || part_own.inverse_mass < Fix::ZERO {
-                continue;
-            }
-            let (mut circle_body, circle_position) = self.part_resolve_body(circle);
-            let (mut part_body, part_position) = self.part_resolve_body(part);
-            resolve(contact, &mut circle_body, &mut part_body, circle_position, part_position);
-            let correction =
-                positional_correction(contact, circle_own.inverse_mass, part_own.inverse_mass, false);
-            self.set_part_body(circle, circle_body, correction[0]);
-            self.set_part_body(part, part_body, correction[1]);
+            self.resolve_parts(circle, part, contact);
         }
         self.scratch.cb_parts = parts;
         self.scratch.cb_contacts = contacts;
+    }
+
+    /// ResolveCollision on each side's body, a composite child's
+    /// CompositeBody at CompositeBody.position, then PositionalCorrection on
+    /// each side's own inverse mass.
+    fn resolve_parts(&mut self, a: Part, b: Part, contact: Contact) {
+        let (a_own, b_own) = (self.part_body(a), self.part_body(b));
+        if a_own.inverse_mass < Fix::ZERO || b_own.inverse_mass < Fix::ZERO {
+            return;
+        }
+        let (mut a_body, a_position) = self.part_resolve_body(a);
+        let (mut b_body, b_position) = self.part_resolve_body(b);
+        resolve(contact, &mut a_body, &mut b_body, a_position, b_position);
+        let correction = positional_correction(contact, a_own.inverse_mass, b_own.inverse_mass, false);
+        self.set_part_body(a, a_body, correction[0]);
+        self.set_part_body(b, b_body, correction[1]);
+    }
+
+    /// DetPhysics' Circle/Circle group, after every Circle/RoundedRect pair
+    /// and before the Circle/Box pairs' narrow phase. Its callbacks the
+    /// rollout reacts to are a Rock's bounce off another Rock and a Smoke's,
+    /// which reads `cc_contacts`.
+    pub(super) fn circle_circle_group(&mut self, data: &data::RolloutData) {
+        let mut parts = std::mem::take(&mut self.scratch.cb_parts);
+        parts.clear();
+        for (i, item) in self.thrown_items.iter().enumerate() {
+            if item.active
+                && item.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                && item.callback_registered_tick != self.tick
+            {
+                parts.push(Part::Item(i));
+            }
+        }
+        // A node whose platform went inactive earlier in this pass is skipped
+        // by DetPhysics, though its row still shows the last publish.
+        for (i, node) in self.tesla_nodes.iter().enumerate() {
+            if node.active
+                && !node.macho_carried
+                && node.platform_index < self.platforms.len()
+                && node.body.inverse_mass >= Fix::ZERO
+                && !self.attached_hidden(node.platform_index, node.entity)
+                && node.entity.is_some_and(|entity| {
+                    self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
+                })
+            {
+                parts.push(Part::Node(i));
+            }
+        }
+        for (i, shot) in self.portal_shots.iter().enumerate() {
+            if shot.active && shot.registered && !self.blink_object_hidden(shot.entity) {
+                parts.push(Part::Shot(i));
+            }
+        }
+        for i in 0..self.players.len() {
+            if self.players[i].active == ActiveAbility::Rock && self.playable(i) {
+                parts.push(Part::Rock(i));
+            }
+        }
+        for (i, pickup) in self.ability_pickups.iter().enumerate() {
+            if pickup.active && pickup.enabled && !self.blink_object_hidden(pickup.entity) {
+                parts.push(Part::Pickup(i));
+            }
+        }
+        for (i, rock) in self.duplicated_rocks.iter().enumerate() {
+            if rock.active && !self.blink_object_hidden(rock.entity) {
+                parts.push(Part::DuplicatedRock(i));
+            }
+        }
+        parts.sort_by_key(|&part| self.part_rank(part));
+        let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
+        contacts.clear();
+        for (k, &current) in parts.iter().enumerate() {
+            for &prior in &parts[..k] {
+                // SameCompositeAs: nodes of one platform share its composite.
+                if self.part_composite(prior).is_some_and(|c| Some(c) == self.part_composite(current))
+                    || !data.layers_collide(self.part_layer(prior, data), self.part_layer(current, data))
+                    || !self.swept_pair(Swept::Part(prior), Swept::Part(current))
+                {
+                    continue;
+                }
+                if let Some(contact) = self.part_collider(prior).contact(self.part_collider(current)) {
+                    contacts.push((prior, current, contact));
+                }
+            }
+        }
+        for &(a, b, contact) in &contacts {
+            self.resolve_parts(a, b, contact);
+            // BounceBall.OnCollide: a Rock pushed by another Player-layer
+            // collider bounces off it, unless it hangs on a rope
+            // (BounceBall.cs:310-322). Both callbacks get the manifold's
+            // normal.
+            if let (Part::Rock(first), Part::Rock(second)) = (a, b) {
+                let impulse = contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
+                for rock in [first, second] {
+                    if self.players[rock].rope.is_none() {
+                        self.players[rock].rock.body.force += impulse;
+                    }
+                }
+            }
+        }
+        self.scratch.cb_parts = parts;
+        self.scratch.cc_contacts = contacts;
     }
 }

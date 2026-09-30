@@ -417,8 +417,10 @@ const TURN_TICKS: u32 = 12;
 
 // Layers (sim/Export/settings.json).
 const LAYER_PLAYER: u32 = 8;
+const LAYER_LETHAL_TERRAIN: u32 = 16;
 const LAYER_PROJECTILE: u32 = 9;
 const LAYER_ITEM: u32 = 10;
+const LAYER_WEAPON: u32 = 13;
 const LAYER_WALL: u32 = 11;
 const LAYER_WATER: u32 = 4;
 
@@ -3845,7 +3847,7 @@ struct PlatformScratch {
     /// Portal shots' wall manifolds: (shot, wall, contact).
     portal_shot_wall_contacts: Vec<(usize, usize, Contact)>,
     item_order: Vec<usize>,
-    item_contacts: Vec<(usize, usize, Contact)>,
+    cc_contacts: Vec<(Part, Part, Contact)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Smoke grenades an active grapple hook touched this pass.
     hook_smoke_hits: Vec<usize>,
@@ -3853,7 +3855,6 @@ struct PlatformScratch {
     /// Circle/RoundedRect group's, or the Box/RoundedRect group's.
     circle_wall_order: Vec<(SweepRank, SweepRank, u8, usize)>,
     pickup_order: Vec<usize>,
-    pickup_contacts: Vec<(usize, usize, Contact)>,
     /// Guided-Missile Box/Box manifolds. Every manifold is captured before
     /// either Missile callback destroys a participant.
     missile_contacts: Vec<(usize, usize, Contact)>,
@@ -3938,12 +3939,11 @@ impl PlatformScratch {
     fn new() -> Self {
         PlatformScratch {
             item_order: Vec::with_capacity(192),
-            item_contacts: Vec::with_capacity(256),
+            cc_contacts: Vec::with_capacity(256),
             item_platform_contacts: Vec::with_capacity(256),
             hook_smoke_hits: Vec::with_capacity(4),
             circle_wall_order: Vec::with_capacity(256),
             pickup_order: Vec::with_capacity(16),
-            pickup_contacts: Vec::with_capacity(32),
             missile_contacts: Vec::with_capacity(256),
             callback_hits: Vec::with_capacity(16),
             arrow_platform_contacts: Vec::with_capacity(64),
@@ -5939,12 +5939,9 @@ impl RolloutWorld {
                 continue;
             }
             // SyncAllPhysicsObjectsToFixTransformPosition carries a disabled
-            // hitbox to its FixTransform too.
-            state.synced_center = state.position + state.offset;
-            if !state.enabled {
-                continue;
-            }
-            if !hidden {
+            // hitbox to its FixTransform too, so the row publishes where a
+            // portal or a moving platform put a freshly dropped pickup.
+            if state.enabled && !hidden {
                 state.position += state.body.integrate(physics_dt, Fix::ZERO);
             }
             let center = state.position + state.offset;
@@ -6002,109 +5999,6 @@ impl RolloutWorld {
             variance += Vec2::new(delta.x * delta.x, delta.y * delta.y);
         }
         variance.x > variance.y
-    }
-
-    /// Weapon-layer pickups ignore walls but collide physically with one
-    /// another. DetPhysics resolves their Circle/Circle manifolds before the
-    /// DynamicAbilityPickup callbacks that may hand one to a slime.
-    fn ability_pickup_pair_contacts(&mut self) {
-        if self
-            .ability_pickups
-            .iter()
-            .filter(|pickup| pickup.active && pickup.enabled)
-            .take(2)
-            .count()
-            < 2
-        {
-            return;
-        }
-        let center = |pickup: AbilityPickup| pickup.position + pickup.offset;
-        let radius = |pickup: AbilityPickup| pickup.radius;
-
-        let mut order = std::mem::take(&mut self.scratch.pickup_order);
-        order.clear();
-        order.extend(
-            self.ability_pickups
-                .iter()
-                .enumerate()
-                .filter_map(|(index, pickup)| {
-                    (pickup.active && pickup.enabled && !self.blink_object_hidden(pickup.entity))
-                        .then_some(index)
-                }),
-        );
-        order.sort_unstable_by_key(|&index| {
-            sweep_rank(&self.entities, self.swept_min(Swept::Pickup(index)), self.ability_pickups[index].entity)
-        });
-        let mut contacts = std::mem::take(&mut self.scratch.pickup_contacts);
-        contacts.clear();
-        for (k, &current) in order.iter().enumerate() {
-            let current_pickup = self.ability_pickups[current];
-            for &prior in &order[..k] {
-                if !self.swept_pair(Swept::Pickup(prior), Swept::Pickup(current)) {
-                    continue;
-                }
-                let prior_pickup = self.ability_pickups[prior];
-                if let Some(contact) = crate::physics::contact::circle_circle(
-                    Circle {
-                        center: center(prior_pickup),
-                        radius: radius(prior_pickup),
-                    },
-                    Circle {
-                        center: center(current_pickup),
-                        radius: radius(current_pickup),
-                    },
-                ) {
-                    contacts.push((prior, current, contact));
-                }
-            }
-        }
-        for &(a_index, b_index, contact) in contacts.iter() {
-            self.resolve_pickup_pair(a_index, b_index, contact);
-        }
-        for pickup in &self.ability_pickups {
-            let Some(entity) = pickup.entity.filter(|_| pickup.active) else {
-                continue;
-            };
-            let row = &mut self.entities[entity];
-            let position = center(*pickup);
-            row.x = position.x.raw();
-            row.y = position.y.raw();
-            row.vx = pickup.body.velocity.x.raw();
-            row.vy = pickup.body.velocity.y.raw();
-        }
-        order.clear();
-        contacts.clear();
-        self.scratch.pickup_order = order;
-        self.scratch.pickup_contacts = contacts;
-    }
-
-    fn resolve_pickup_pair(
-        &mut self,
-        a_index: usize,
-        b_index: usize,
-        contact: Contact,
-    ) {
-        let center = |pickup: AbilityPickup| pickup.position + pickup.offset;
-        let a = self.ability_pickups[a_index];
-        let b = self.ability_pickups[b_index];
-        let mut body_a = a.body;
-        let mut body_b = b.body;
-        resolve(contact, &mut body_a, &mut body_b, center(a), center(b));
-        let correction =
-            positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
-        if a_index < b_index {
-            let (left, right) = self.ability_pickups.split_at_mut(b_index);
-            left[a_index].body = body_a;
-            left[a_index].position += correction[0];
-            right[0].body = body_b;
-            right[0].position += correction[1];
-        } else {
-            let (left, right) = self.ability_pickups.split_at_mut(a_index);
-            right[0].body = body_a;
-            right[0].position += correction[0];
-            left[b_index].body = body_b;
-            left[b_index].position += correction[1];
-        }
     }
 
     /// DynamicAbilityPickup.OnCollide only accepts the FixTransform carrying
@@ -7625,11 +7519,6 @@ impl RolloutWorld {
         self.slime_pairs();
         self.scratch.circle_colliders.clear();
         self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
-        // With a Rock in play, its Circle/Circle stage also resolves the
-        // pickup pairs.
-        if !has(ABILITY_ROCK) {
-            self.ability_pickup_pair_contacts();
-        }
         if has_rope {
             self.ropes_physics(physics_dt);
         }
@@ -7677,24 +7566,25 @@ impl RolloutWorld {
         if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_ROCK) || has(ABILITY_PORTAL_GUN) || has(ABILITY_BOW) {
             self.thrown_item_platform_contacts(data);
         }
-        if has(ABILITY_ROCK) {
-            self.rocks_contacts(data);
+        let has_pickups = self.ability_spawner_enabled || !self.ability_pickups.is_empty();
+        if has_thrown_item
+            || has(ABILITY_TESLA)
+            || has(ABILITY_PORTAL_GUN)
+            || has(ABILITY_ROCK)
+            || has(ABILITY_DUPLICATOR)
+            || has_pickups
+        {
+            self.circle_circle_group(data);
         }
         if has(ABILITY_DUPLICATOR) {
             self.duplicated_rock_contacts();
-        }
-        if has(ABILITY_PORTAL_GUN) && has(ABILITY_ROCK) {
-            self.portal_shot_rock_contacts();
-        }
-        if has_thrown_item && has(ABILITY_ROCK) {
-            self.thrown_item_rock_contacts(data);
         }
         if has(ABILITY_ROCK) {
             self.rocks_box_contacts(data);
         }
         // DynamicAbilityPickup.OnCollide is a callback: a pickup a slime
         // collects this pass still resolved its Circle/Circle pairs first.
-        if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
+        if has_pickups {
             self.ability_pickups_contacts();
         }
         // That was the last correction that moves a wall. The squish callback
@@ -8430,157 +8320,6 @@ impl RolloutWorld {
                 row.angular_velocity = shot.body.angular_velocity.raw();
             }
             self.land_portal_shot(shot_index, -contact.normal, true, data);
-        }
-    }
-
-    /// PortalShot and BounceBall are both DetPhysics circles. Circle/rounded
-    /// contacts (including Rock against a platform) resolve before the global
-    /// circle/circle pass, so this must run after `rocks_contacts` rather than
-    /// alongside the shot's wall callback above.
-    fn portal_shot_rock_contacts(&mut self) {
-        for shot_index in 0..self.portal_shots.len() {
-            if !self.portal_shots[shot_index].active || !self.portal_shots[shot_index].registered {
-                continue;
-            }
-
-            let shot_circle = Circle {
-                center: self.portal_shots[shot_index].position,
-                radius: self.portal_shots[shot_index].collider_radius,
-            };
-            let mut contacts = [(usize::MAX, Contact::default(), false); MAX_BODIES];
-            let mut contact_count = 0usize;
-            for rock_index in 0..self.players.len() {
-                if self.players[rock_index].active != ActiveAbility::Rock
-                    || !self.playable(rock_index)
-                    || !self.swept_pair(Swept::Part(Part::Shot(shot_index)), Swept::Player(rock_index))
-                {
-                    continue;
-                }
-                let rock_circle = Circle {
-                    center: self.players[rock_index].base.position,
-                    radius: self.players[rock_index].rock_circle().circle_radius,
-                };
-                // SortAndSweep supplies circle A from the earlier box.
-                let shot_first =
-                    self.part_rank(Part::Shot(shot_index)) < self.player_sweep_rank(rock_index);
-                let contact = if shot_first {
-                    crate::physics::contact::circle_circle(shot_circle, rock_circle)
-                } else {
-                    crate::physics::contact::circle_circle(rock_circle, shot_circle)
-                };
-                if let Some(contact) = contact {
-                    contacts[contact_count] = (rock_index, contact, shot_first);
-                    contact_count += 1;
-                }
-            }
-
-            for &(rock_index, contact, shot_first) in &contacts[..contact_count] {
-                let shot_position = self.portal_shots[shot_index].position;
-                let rock_position = self.players[rock_index].base.position;
-                let correction = if shot_first {
-                    let shot_body = &mut self.portal_shots[shot_index].body;
-                    let rock_body = &mut self.players[rock_index].rock.body;
-                    resolve(contact, shot_body, rock_body, shot_position, rock_position);
-                    positional_correction(
-                        contact,
-                        shot_body.inverse_mass,
-                        rock_body.inverse_mass,
-                        false,
-                    )
-                } else {
-                    let rock_body = &mut self.players[rock_index].rock.body;
-                    let shot_body = &mut self.portal_shots[shot_index].body;
-                    resolve(contact, rock_body, shot_body, rock_position, shot_position);
-                    let pair = positional_correction(
-                        contact,
-                        rock_body.inverse_mass,
-                        shot_body.inverse_mass,
-                        false,
-                    );
-                    [pair[1], pair[0]]
-                };
-                self.portal_shots[shot_index].position += correction[0];
-                self.players[rock_index].base.position += correction[1];
-                self.players[rock_index].base.velocity =
-                    self.players[rock_index].rock.body.velocity;
-                // PortalShot is on the item layer. BounceBall's callback only
-                // adds authored force for Player and Projectile contacts, so
-                // this pair has the ordinary rigid-body impulse alone.
-            }
-
-            if contact_count != 0
-                && let Some(entity) = self.portal_shots[shot_index].entity
-            {
-                let shot = self.portal_shots[shot_index];
-                let row = &mut self.entities[entity];
-                row.x = shot.position.x.raw();
-                row.y = shot.position.y.raw();
-                row.vx = shot.body.velocity.x.raw();
-                row.vy = shot.body.velocity.y.raw();
-                row.rotation = shot.body.orientation.raw();
-                row.angular_velocity = shot.body.angular_velocity.raw();
-            }
-        }
-    }
-
-    /// A Rock form is a Player-layer BoplBody circle, and the item layer
-    /// collides with Player, so a thrown item and a Rock bounce off each
-    /// other like any two DetPhysics circles. The item callbacks (a grenade
-    /// or mine set off, a PokeBall finding no SlimeController) are handled
-    /// with the other player contacts; BounceBall ignores the item layer.
-    fn thrown_item_rock_contacts(&mut self, data: &data::RolloutData) {
-        for item_index in 0..self.thrown_items.len() {
-            let item = self.thrown_items[item_index];
-            if !item.active
-                || item.callback_registered_tick == self.tick
-                || !item.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
-                || self.blink_object_hidden(item.entity)
-            {
-                continue;
-            }
-            let radius = thrown_item_radius(data, item);
-            let item_swept = Swept::Part(Part::Item(item_index));
-            for rock_index in 0..self.players.len() {
-                if self.players[rock_index].active != ActiveAbility::Rock
-                    || !self.playable(rock_index)
-                    || !self.swept_pair(item_swept, Swept::Player(rock_index))
-                {
-                    continue;
-                }
-                let item_circle = Circle { center: self.thrown_items[item_index].position, radius };
-                let rock_circle = Circle {
-                    center: self.players[rock_index].base.position,
-                    radius: self.players[rock_index].rock_circle().circle_radius,
-                };
-                // SortAndSweep makes A the circle whose box starts first.
-                let item_first = self.swept_min(item_swept) < self.swept_min(Swept::Player(rock_index));
-                let contact = if item_first {
-                    crate::physics::contact::circle_circle(item_circle, rock_circle)
-                } else {
-                    crate::physics::contact::circle_circle(rock_circle, item_circle)
-                };
-                let Some(contact) = contact else {
-                    continue;
-                };
-                let item_position = item_circle.center;
-                let rock_position = rock_circle.center;
-                let mut item_body = self.thrown_items[item_index].body;
-                let mut rock_body = self.players[rock_index].rock.body;
-                let correction = if item_first {
-                    resolve(contact, &mut item_body, &mut rock_body, item_position, rock_position);
-                    positional_correction(contact, item_body.inverse_mass, rock_body.inverse_mass, false)
-                } else {
-                    resolve(contact, &mut rock_body, &mut item_body, rock_position, item_position);
-                    let pair =
-                        positional_correction(contact, rock_body.inverse_mass, item_body.inverse_mass, false);
-                    [pair[1], pair[0]]
-                };
-                self.thrown_items[item_index].body = item_body;
-                self.thrown_items[item_index].position += correction[0];
-                self.players[rock_index].rock.body = rock_body;
-                self.players[rock_index].base.position += correction[1];
-                self.players[rock_index].base.velocity = rock_body.velocity;
-            }
         }
     }
 
@@ -36830,314 +36569,9 @@ impl RolloutWorld {
         }
     }
 
+    /// The Circle/Circle group, then the Circle/Box group built from the
+    /// corrected circles, then the Smoke callbacks.
     fn thrown_item_pair_contacts(&mut self, data: &data::RolloutData) {
-        let radius = |item: ThrownItem| thrown_item_radius(data, item);
-
-        // Circle/Circle pairs follow DetPhysics' global sort-and-sweep order,
-        // not component registration order. Pair orientation is observable:
-        // fixed-point positional correction gives the remainder to a
-        // different body when A and B are exchanged. Compute the same global
-        // sweep axis, then retain only the item circles from that ordering.
-
-        // Tesla nodes are circle children of their platform's CompositeBody
-        // and share this pass; participants from NODE up are nodes. Portal
-        // shots are item-layer circles like the items; participants from
-        // SHOT up are shots.
-        const NODE: usize = 1 << 16;
-        const SHOT: usize = 1 << 15;
-        let items = &self.thrown_items;
-        let nodes = &self.tesla_nodes;
-        let shots = &self.portal_shots;
-        let circle = |index: usize| {
-            if index >= NODE {
-                let node = &nodes[index - NODE];
-                Circle {
-                    center: node.collider_center,
-                    radius: node.radius,
-                }
-            } else if index >= SHOT {
-                Circle {
-                    center: shots[index - SHOT].position,
-                    radius: shots[index - SHOT].collider_radius,
-                }
-            } else {
-                Circle {
-                    center: items[index].position,
-                    radius: radius(items[index]),
-                }
-            }
-        };
-
-        let order = &mut self.scratch.item_order;
-        order.clear();
-        order.extend(
-            self.thrown_items
-                .iter()
-                .enumerate()
-                .filter_map(|(index, item)| {
-                    (item.active
-                        && item.entity.is_some()
-                        && item
-                            .entity
-                            .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
-                        && item.callback_registered_tick != self.tick)
-                        .then_some(index)
-                }),
-        );
-        // A node whose platform went inactive earlier in this pass is skipped
-        // by DetPhysics, though its row still shows the last publish.
-        for index in 0..self.tesla_nodes.len() {
-            let node = self.tesla_nodes[index];
-            if node.active
-                && !node.macho_carried
-                && node.platform_index < self.platforms.len()
-                && node.body.inverse_mass >= Fix::ZERO
-                && !self.attached_hidden(node.platform_index, node.entity)
-                && node.entity.is_some_and(|entity| {
-                    self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
-                })
-            {
-                self.scratch.item_order.push(NODE + index);
-            }
-        }
-        for index in 0..self.portal_shots.len() {
-            let shot = self.portal_shots[index];
-            if shot.active && shot.registered && !self.blink_object_hidden(shot.entity) {
-                self.scratch.item_order.push(SHOT + index);
-            }
-        }
-        // The broadphase pairs the bounding boxes taken before any Circle/RR
-        // correction; the manifold then tests the corrected circles.
-        let swept = |index: usize| {
-            Swept::Part(if index >= NODE {
-                Part::Node(index - NODE)
-            } else if index >= SHOT {
-                Part::Shot(index - SHOT)
-            } else {
-                Part::Item(index)
-            })
-        };
-        let row = |index: usize| {
-            if index >= NODE {
-                nodes[index - NODE].entity
-            } else if index >= SHOT {
-                shots[index - SHOT].entity
-            } else {
-                items[index].entity
-            }
-        };
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        let mut contacts = std::mem::take(&mut self.scratch.item_contacts);
-        order.sort_unstable_by_key(|&index| {
-            sweep_rank(&self.entities, self.swept_min(swept(index)), row(index))
-        });
-        contacts.clear();
-        for (k, &current) in order.iter().enumerate() {
-            for &prior in &order[..k] {
-                // Nodes of one platform share its composite, which DetPhysics
-                // never tests against itself.
-                if prior >= NODE
-                    && current >= NODE
-                    && nodes[prior - NODE].platform_index == nodes[current - NODE].platform_index
-                {
-                    continue;
-                }
-                if !self.swept_pair(swept(prior), swept(current)) {
-                    continue;
-                }
-                if let Some(contact) =
-                    crate::physics::contact::circle_circle(circle(prior), circle(current))
-                {
-                    contacts.push((prior, current, contact));
-                }
-            }
-        }
-        self.scratch.item_order = order;
-        self.scratch.item_contacts = contacts;
-        let contacts = &self.scratch.item_contacts;
-        // DetPhysics builds every narrow-phase manifold before resolving any
-        // of them. In particular the three overlapping fan copies must all
-        // use their initial positions rather than a prior pair's correction.
-        for &(a_index, b_index, contact) in contacts.iter() {
-            if a_index >= NODE && b_index >= NODE {
-                // Nodes of two platforms: both sides swap to their combined
-                // bodies, and each child collider and CompositeBody.position
-                // takes its own correction.
-                let (a, b) = (self.tesla_nodes[a_index - NODE], self.tesla_nodes[b_index - NODE]);
-                let (a_platform, b_platform) = (a.platform_index, b.platform_index);
-                let mut body_a = self.platform_dynamics[a_platform].body;
-                let mut body_b = self.platform_dynamics[b_platform].body;
-                resolve(
-                    contact,
-                    &mut body_a,
-                    &mut body_b,
-                    self.platform_dynamics[a_platform].composite_position,
-                    self.platform_dynamics[b_platform].composite_position,
-                );
-                let correction =
-                    positional_correction(contact, a.body.inverse_mass, b.body.inverse_mass, false);
-                self.platform_dynamics[a_platform].body = body_a;
-                self.platform_dynamics[a_platform].composite_position += correction[0];
-                self.tesla_nodes[a_index - NODE].collider_center += correction[0];
-                self.platform_dynamics[b_platform].body = body_b;
-                self.platform_dynamics[b_platform].composite_position += correction[1];
-                self.tesla_nodes[b_index - NODE].collider_center += correction[1];
-                continue;
-            }
-            if (SHOT..NODE).contains(&a_index) && (SHOT..NODE).contains(&b_index) {
-                // The item layer collides with itself, so two portal shots
-                // bounce off each other; neither callback lands off a wall.
-                let (a, b) = (a_index - SHOT, b_index - SHOT);
-                let mut body_a = self.portal_shots[a].body;
-                let mut body_b = self.portal_shots[b].body;
-                let (a_position, b_position) =
-                    (self.portal_shots[a].position, self.portal_shots[b].position);
-                resolve(contact, &mut body_a, &mut body_b, a_position, b_position);
-                let correction =
-                    positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
-                let sides = [(a, body_a, correction[0]), (b, body_b, correction[1])];
-                for (shot_index, body, delta) in sides {
-                    let shot = &mut self.portal_shots[shot_index];
-                    shot.body = body;
-                    shot.position += delta;
-                    if let Some(entity) = shot.entity {
-                        let shot = *shot;
-                        let row = &mut self.entities[entity];
-                        row.x = shot.position.x.raw();
-                        row.y = shot.position.y.raw();
-                        row.vx = shot.body.velocity.x.raw();
-                        row.vy = shot.body.velocity.y.raw();
-                        row.rotation = shot.body.orientation.raw();
-                        row.angular_velocity = shot.body.angular_velocity.raw();
-                    }
-                }
-                continue;
-            }
-            if a_index >= NODE || b_index >= NODE {
-                // ResolveCollision swaps a composite child for its combined
-                // body and position; PositionalCorrection still takes the
-                // child's own inverse mass, and moves the child collider and
-                // CompositeBody.position, not the platform's own collider.
-                // The other circle is an item or a portal shot.
-                let other_first = b_index >= NODE;
-                let (other_index, node_index) = if other_first {
-                    (a_index, b_index - NODE)
-                } else {
-                    (b_index, a_index - NODE)
-                };
-                let (mut other_body, other_position) = if other_index >= SHOT {
-                    let shot = self.portal_shots[other_index - SHOT];
-                    (shot.body, shot.position)
-                } else {
-                    let item = self.thrown_items[other_index];
-                    (item.body, item.position)
-                };
-                let node = self.tesla_nodes[node_index];
-                let platform = node.platform_index;
-                let platform_center = self.platform_dynamics[platform].composite_position;
-                let mut platform_body = self.platform_dynamics[platform].body;
-                let (other_delta, node_delta) = if other_first {
-                    resolve(contact, &mut other_body, &mut platform_body, other_position, platform_center);
-                    let c = positional_correction(contact, other_body.inverse_mass, node.body.inverse_mass, false);
-                    (c[0], c[1])
-                } else {
-                    resolve(contact, &mut platform_body, &mut other_body, platform_center, other_position);
-                    let c = positional_correction(contact, node.body.inverse_mass, other_body.inverse_mass, false);
-                    (c[1], c[0])
-                };
-                if other_index >= SHOT {
-                    let shot = &mut self.portal_shots[other_index - SHOT];
-                    shot.body = other_body;
-                    shot.position += other_delta;
-                    if let Some(entity) = shot.entity {
-                        let shot = *shot;
-                        let row = &mut self.entities[entity];
-                        row.x = shot.position.x.raw();
-                        row.y = shot.position.y.raw();
-                        row.vx = shot.body.velocity.x.raw();
-                        row.vy = shot.body.velocity.y.raw();
-                        row.rotation = shot.body.orientation.raw();
-                        row.angular_velocity = shot.body.angular_velocity.raw();
-                    }
-                } else {
-                    self.thrown_items[other_index].body = other_body;
-                    self.thrown_items[other_index].position += other_delta;
-                }
-                self.platform_dynamics[platform].body = platform_body;
-                self.platform_dynamics[platform].composite_position += node_delta;
-                self.tesla_nodes[node_index].collider_center += node_delta;
-                continue;
-            }
-            if (SHOT..NODE).contains(&a_index) || (SHOT..NODE).contains(&b_index) {
-                // PortalShot's Projectile does not ignite explosives and its
-                // own callback only lands on walls: the impulse is all.
-                let shot_first = a_index >= SHOT;
-                let (item_index, shot_index) = if shot_first {
-                    (b_index, a_index - SHOT)
-                } else {
-                    (a_index, b_index - SHOT)
-                };
-                let item_position = self.thrown_items[item_index].position;
-                let shot_position = self.portal_shots[shot_index].position;
-                let mut item_body = self.thrown_items[item_index].body;
-                let mut shot_body = self.portal_shots[shot_index].body;
-                let (item_delta, shot_delta) = if shot_first {
-                    resolve(contact, &mut shot_body, &mut item_body, shot_position, item_position);
-                    let c = positional_correction(
-                        contact,
-                        shot_body.inverse_mass,
-                        item_body.inverse_mass,
-                        false,
-                    );
-                    (c[1], c[0])
-                } else {
-                    resolve(contact, &mut item_body, &mut shot_body, item_position, shot_position);
-                    let c = positional_correction(
-                        contact,
-                        item_body.inverse_mass,
-                        shot_body.inverse_mass,
-                        false,
-                    );
-                    (c[0], c[1])
-                };
-                self.thrown_items[item_index].body = item_body;
-                self.thrown_items[item_index].position += item_delta;
-                let shot = &mut self.portal_shots[shot_index];
-                shot.body = shot_body;
-                shot.position += shot_delta;
-                if let Some(entity) = shot.entity {
-                    let shot = *shot;
-                    let row = &mut self.entities[entity];
-                    row.x = shot.position.x.raw();
-                    row.y = shot.position.y.raw();
-                    row.vx = shot.body.velocity.x.raw();
-                    row.vy = shot.body.velocity.y.raw();
-                    row.rotation = shot.body.orientation.raw();
-                    row.angular_velocity = shot.body.angular_velocity.raw();
-                }
-                continue;
-            }
-            let a = self.thrown_items[a_index];
-            let b = self.thrown_items[b_index];
-            let mut body_a = a.body;
-            let mut body_b = b.body;
-            resolve(contact, &mut body_a, &mut body_b, a.position, b.position);
-            let correction =
-                positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
-            if a_index < b_index {
-                let (left, right) = self.thrown_items.split_at_mut(b_index);
-                left[a_index].body = body_a;
-                left[a_index].position += correction[0];
-                right[0].body = body_b;
-                right[0].position += correction[1];
-            } else {
-                let (left, right) = self.thrown_items.split_at_mut(a_index);
-                right[0].body = body_a;
-                right[0].position += correction[0];
-                left[b_index].body = body_b;
-                left[b_index].position += correction[1];
-            }
-        }
         for item in &self.thrown_items {
             let Some(entity) = item.entity.filter(|_| item.active) else {
                 continue;
@@ -37186,15 +36620,15 @@ impl RolloutWorld {
         }
         self.scratch.hook_smoke_hits = hook_smoke_hits;
         self.scratch.hook_smoke_hits.clear();
-        for &(a_index, b_index, _) in self.scratch.item_contacts.iter() {
+        for &(a, b, _) in &self.scratch.cc_contacts {
             // A portal shot's Projectile does not ignite explosives.
-            if (SHOT..NODE).contains(&a_index) || (SHOT..NODE).contains(&b_index) {
+            if matches!(a, Part::Shot(_)) || matches!(b, Part::Shot(_)) {
                 continue;
             }
-            for item_index in [a_index, b_index] {
-                if item_index >= NODE {
+            for part in [a, b] {
+                let Part::Item(item_index) = part else {
                     continue;
-                }
+                };
                 let item = self.thrown_items[item_index];
                 if item.active
                     && item.ability == ABILITY_SMOKE
@@ -40142,42 +39576,6 @@ impl RolloutWorld {
         }
     }
 
-    /// A copy's Circle/Circle pair with a Rock form or another copy:
-    /// ResolveCollision and PositionalCorrection, with no callback.
-    /// Participants from `duplicate` up are copies, the rest Rock forms.
-    fn resolve_duplicated_rock_pair(&mut self, a: usize, b: usize, duplicate: usize, contact: Contact) {
-        let state = |world: &Self, index: usize| {
-            if index >= duplicate {
-                let rock = &world.duplicated_rocks[index - duplicate];
-                (rock.body, rock.position)
-            } else {
-                let slot = &world.players[index];
-                (slot.rock.body, slot.base.position)
-            }
-        };
-        let (mut body_a, position_a) = state(self, a);
-        let (mut body_b, position_b) = state(self, b);
-        resolve(contact, &mut body_a, &mut body_b, position_a, position_b);
-        let correction =
-            positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
-        for (index, body, position) in [
-            (a, body_a, position_a + correction[0]),
-            (b, body_b, position_b + correction[1]),
-        ] {
-            if index >= duplicate {
-                let rock = &mut self.duplicated_rocks[index - duplicate];
-                rock.body = body;
-                rock.position = position;
-                self.sync_duplicated_rock_entity(index - duplicate);
-            } else {
-                let slot = &mut self.players[index];
-                slot.rock.body = body;
-                slot.base.position = position;
-                slot.base.velocity = body.velocity;
-            }
-        }
-    }
-
     fn resolve_duplicated_rock_wall_contact(
         &mut self,
         rock_index: usize,
@@ -40414,261 +39812,6 @@ impl RolloutWorld {
         self.players[rock_index].base.position += correction[0];
         self.shift_platform_collider(wall_index, correction[1]);
         self.players[rock_index].base.velocity = rock_velocity;
-    }
-
-    /// Rock forms' Circle/Circle and Circle/Box pairs and their callbacks,
-    /// after every Circle/RoundedRectangle pair resolved.
-    fn rocks_contacts(&mut self, data: &data::RolloutData) {
-
-        // Circle/Circle between Rock forms first resolves both BoplBodies,
-        // then queues the same manifold normal to both BounceBall callbacks.
-        // Neither form owns a PlayerCollision component, so it is nonlethal.
-        // SortAndSweep makes A the rock whose box starts first on the sweep
-        // axis, which fixes the normal's sign for both bounces.
-        //
-        // A DynamicAbilityPickup is a weapon-layer circle with a BoplBody, and
-        // weapon collides with Player, so a Rock and a pickup meet in the same
-        // group. Neither callback reacts: the Rock is no SlimeController and
-        // BounceBall ignores the weapon layer. Participants from PICKUP up
-        // are pickups.
-        const PICKUP: usize = 1 << 16;
-        // A Rock_noPlayer is a LethalTerrain circle, which pairs with the
-        // Player layer and with other copies. BounceBall ignores that layer
-        // and the copy has no callback, so the pair only moves the bodies.
-        // Participants from DUPLICATE up are copies.
-        const DUPLICATE: usize = 1 << 17;
-        let duplicate_usable = |index: usize| {
-            let rock = &self.duplicated_rocks[index];
-            rock.active && !self.blink_object_hidden(rock.entity)
-        };
-        let pickup_circle = |index: usize| {
-            let pickup = &self.ability_pickups[index];
-            Circle {
-                center: pickup.position + pickup.offset,
-                radius: pickup.radius,
-            }
-        };
-        let swept = |index: usize| {
-            if index >= DUPLICATE {
-                Swept::DuplicatedRock(index - DUPLICATE)
-            } else if index >= PICKUP {
-                Swept::Pickup(index - PICKUP)
-            } else {
-                Swept::Player(index)
-            }
-        };
-        let meet = |a: usize, b: usize| self.swept_pair(swept(a), swept(b));
-        let rank = |index: usize| {
-            let entity = if index >= DUPLICATE {
-                self.duplicated_rocks[index - DUPLICATE].entity
-            } else if index >= PICKUP {
-                self.ability_pickups[index - PICKUP].entity
-            } else {
-                Some(self.players[index].rock_entity)
-            };
-            sweep_rank(&self.entities, self.swept_min(swept(index)), entity)
-        };
-        let mut pairs = [(0usize, 0usize); 64];
-        let mut pair_count = 0;
-        for a in 0..self.players.len() {
-            if self.players[a].active != ActiveAbility::Rock || !self.playable(a) {
-                continue;
-            }
-            for b in a + 1..self.players.len() {
-                if self.players[b].active != ActiveAbility::Rock
-                    || !self.playable(b)
-                    || !meet(a, b)
-                    || pair_count == pairs.len()
-                {
-                    continue;
-                }
-                pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
-                pair_count += 1;
-            }
-            for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
-                if !pickup.active
-                    || !pickup.enabled
-                    || self.blink_object_hidden(pickup.entity)
-                    || !meet(a, PICKUP + pickup_index)
-                    || pair_count == pairs.len()
-                {
-                    continue;
-                }
-                let b = PICKUP + pickup_index;
-                pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
-                pair_count += 1;
-            }
-            for duplicate in 0..self.duplicated_rocks.len() {
-                if !duplicate_usable(duplicate)
-                    || !meet(a, DUPLICATE + duplicate)
-                    || pair_count == pairs.len()
-                {
-                    continue;
-                }
-                let b = DUPLICATE + duplicate;
-                pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
-                pair_count += 1;
-            }
-        }
-        for first in 0..self.duplicated_rocks.len() {
-            if !duplicate_usable(first) {
-                continue;
-            }
-            for second in first + 1..self.duplicated_rocks.len() {
-                if !duplicate_usable(second)
-                    || !meet(DUPLICATE + first, DUPLICATE + second)
-                    || pair_count == pairs.len()
-                {
-                    continue;
-                }
-                let (a, b) = (DUPLICATE + first, DUPLICATE + second);
-                pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
-                pair_count += 1;
-            }
-        }
-        let usable = |pickup: &AbilityPickup| {
-            pickup.active && pickup.enabled && !self.blink_object_hidden(pickup.entity)
-        };
-        for (first, pickup) in self.ability_pickups.iter().enumerate() {
-            if !usable(pickup) {
-                continue;
-            }
-            for second in first + 1..self.ability_pickups.len() {
-                if !usable(&self.ability_pickups[second])
-                    || !meet(PICKUP + first, PICKUP + second)
-                    || pair_count == pairs.len()
-                {
-                    continue;
-                }
-                let (a, b) = (PICKUP + first, PICKUP + second);
-                pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
-                pair_count += 1;
-            }
-        }
-        let pairs = &mut pairs[..pair_count];
-        pairs.sort_by_key(|&(a, b)| (rank(b), rank(a)));
-        // CollisionTest builds every Circle/Circle manifold before the first
-        // ResolveCollision, so a later pair keeps its pre-correction contact.
-        let circle = |index: usize| {
-            if index >= DUPLICATE {
-                let rock = &self.duplicated_rocks[index - DUPLICATE];
-                Circle {
-                    center: rock.position,
-                    radius: rock.collider_radius,
-                }
-            } else if index >= PICKUP {
-                pickup_circle(index - PICKUP)
-            } else {
-                Circle {
-                    center: self.players[index].base.position,
-                    radius: self.players[index].rock_circle().circle_radius,
-                }
-            }
-        };
-        let mut contacts = [None; 64];
-        for (contact, &(a, b)) in contacts.iter_mut().zip(pairs.iter()) {
-            *contact = crate::physics::contact::circle_circle(circle(a), circle(b));
-        }
-        for (&(a, b), contact) in pairs.iter().zip(contacts) {
-            if a >= DUPLICATE || b >= DUPLICATE {
-                if let Some(contact) = contact {
-                    self.resolve_duplicated_rock_pair(a, b, DUPLICATE, contact);
-                }
-                continue;
-            }
-            if a >= PICKUP && b >= PICKUP {
-                if let Some(contact) = contact {
-                    self.resolve_pickup_pair(a - PICKUP, b - PICKUP, contact);
-                    for index in [a - PICKUP, b - PICKUP] {
-                        let pickup = self.ability_pickups[index];
-                        let center = pickup.position + pickup.offset;
-                        self.ability_pickups[index].synced_center = center;
-                        if let Some(entity) = pickup.entity {
-                            let row = &mut self.entities[entity];
-                            row.x = center.x.raw();
-                            row.y = center.y.raw();
-                            row.vx = pickup.body.velocity.x.raw();
-                            row.vy = pickup.body.velocity.y.raw();
-                        }
-                    }
-                }
-                continue;
-            }
-            if a >= PICKUP || b >= PICKUP {
-                let pickup_first = a >= PICKUP;
-                let (rock_index, pickup_index) =
-                    if pickup_first { (b, a - PICKUP) } else { (a, b - PICKUP) };
-                let rock_circle = Circle {
-                    center: self.players[rock_index].base.position,
-                    radius: self.players[rock_index].rock_circle().circle_radius,
-                };
-                let pickup = self.ability_pickups[pickup_index];
-                let pickup_center = pickup.position + pickup.offset;
-                let pickup_circle = Circle {
-                    center: pickup_center,
-                    radius: pickup.radius,
-                };
-                let (ca, cb) = if pickup_first {
-                    (pickup_circle, rock_circle)
-                } else {
-                    (rock_circle, pickup_circle)
-                };
-                let Some(contact) = contact else {
-                    continue;
-                };
-                let rock = &mut self.players[rock_index];
-                let state = &mut self.ability_pickups[pickup_index];
-                let (body_a, body_b) = if pickup_first {
-                    (&mut state.body, &mut rock.rock.body)
-                } else {
-                    (&mut rock.rock.body, &mut state.body)
-                };
-                resolve(contact, body_a, body_b, ca.center, cb.center);
-                let correction =
-                    positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
-                let (rock_shift, pickup_shift) = if pickup_first {
-                    (correction[1], correction[0])
-                } else {
-                    (correction[0], correction[1])
-                };
-                rock.base.position += rock_shift;
-                rock.base.velocity = rock.rock.body.velocity;
-                state.position += pickup_shift;
-                let center = state.position + state.offset;
-                state.synced_center = center;
-                if let Some(entity) = state.entity {
-                    let row = &mut self.entities[entity];
-                    row.x = center.x.raw();
-                    row.y = center.y.raw();
-                    row.vx = state.body.velocity.x.raw();
-                    row.vy = state.body.velocity.y.raw();
-                }
-                continue;
-            }
-            let Some(contact) = contact else {
-                continue;
-            };
-            let [first, second] = self.players.get_disjoint_mut([a, b]).unwrap();
-            let a_position = first.base.position;
-            let b_position = second.base.position;
-            resolve(contact, &mut first.rock.body, &mut second.rock.body, a_position, b_position);
-            let correction = positional_correction(
-                contact,
-                first.rock.body.inverse_mass,
-                second.rock.body.inverse_mass,
-                false,
-            );
-            first.base.position += correction[0];
-            second.base.position += correction[1];
-            let impulse = contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
-            for rock in [first, second] {
-                if rock.rope.is_none() {
-                    rock.rock.body.force += impulse;
-                }
-                rock.base.velocity = rock.rock.body.velocity;
-            }
-        }
-
     }
 
     /// DetPhysics' Circle/Box group runs after every Circle/Circle pair has
@@ -43484,7 +42627,7 @@ impl RolloutWorld {
                     id: self.entities[entity].id,
                     kind: 0,
                     layer: if node.lethal {
-                        16
+                        LAYER_LETHAL_TERRAIN
                     } else {
                         data.tesla.node_layer
                     },
