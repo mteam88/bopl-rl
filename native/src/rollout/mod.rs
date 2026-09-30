@@ -1559,6 +1559,10 @@ pub struct PlatformDynamics {
     /// AnimateVelocity.Init (Updater.cs:265-273): the spring homes on the
     /// position physics had already corrected on the spawn tick.
     pub init_tick: Option<u32>,
+    /// Pass that instantiated the platform mid-game. Its components wait in
+    /// Updater's queue until the next pass's Init walk, so none of them
+    /// updates on this one (Updater.cs:258-287).
+    pub born_tick: Option<u32>,
     /// DuplicatePlatformEffect asks AnimateVelocity to suppress its home
     /// spring on the next pass and re-home at the displaced body position.
     pub float_next_frame: bool,
@@ -5122,6 +5126,7 @@ impl RolloutWorld {
                 home_position: intro_surface.center,
                 transform_rotation: None,
                 init_tick: None,
+                born_tick: None,
                 float_next_frame: false,
                 spring_step: None,
                 unscaled_inverse_mass: None,
@@ -20400,6 +20405,7 @@ impl RolloutWorld {
             composite_rebuild: false,
             transform_rotation: None,
             init_tick: None,
+            born_tick: Some(self.tick),
             float_next_frame: false,
             spring_step: None,
             unscaled_inverse_mass: None,
@@ -32185,6 +32191,7 @@ impl RolloutWorld {
         // The clone's AnimateVelocity is not initialized by DuplicateObject;
         // it homes where this pass's integration left it, on the next pass.
         dynamics.init_tick = Some(self.tick + 1);
+        dynamics.born_tick = Some(self.tick);
         // actAsFloatingPlatformThisFrame is private (AnimateVelocity.cs:52): a
         // copy floats only if an effect's cast finds it after it spawns.
         dynamics.float_next_frame = false;
@@ -32994,6 +33001,7 @@ impl RolloutWorld {
             home_position: position,
             transform_rotation: None,
             init_tick: Some(self.tick + 1),
+            born_tick: Some(self.tick),
             float_next_frame: false,
             spring_step: None,
             unscaled_inverse_mass: None,
@@ -39156,6 +39164,7 @@ impl RolloutWorld {
         self.platform_pass(i) == pass
             && (pass == PlatformPass::Authored
                 || self.platform_dynamics[i].updater_ran_tick != Some(self.tick))
+            && self.platform_dynamics[i].born_tick != Some(self.tick)
             && window.as_ref().is_none_or(|window| {
                 window.contains(&self.entities[self.platform_entities[i]].hierarchy)
             })
@@ -39318,18 +39327,6 @@ impl RolloutWorld {
             {
                 continue;
             }
-            // MachoThrow2 instantiates a boulder in its own UpdateSim, so the
-            // boulder's BoplBody joins the updater next pass (Updater.cs:258-282).
-            if self.macho_boulders.iter().any(|b| {
-                b.active && b.platform_index == i && b.born_tick == self.tick
-            }) {
-                continue;
-            }
-            // So does the BoplBody of a Duplicator copy or ability platform
-            // instantiated earlier this pass.
-            if self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick) {
-                continue;
-            }
             let dynamics = &mut self.platform_dynamics[i];
             let previous = dynamics.body_scale;
             let scale = dynamics.scale;
@@ -39370,7 +39367,6 @@ impl RolloutWorld {
             let (platform_index, target) = self.orbits[k];
             if !self.platforms[platform_index].active
                 || !self.platform_updates_in(platform_index, pass)
-                || self.platform_dynamics[platform_index].init_tick.is_some_and(|t| t > self.tick)
             {
                 continue;
             }
@@ -39416,10 +39412,7 @@ impl RolloutWorld {
     /// slime landing this pass still sees it before the ease back.
     fn platform_sticky_tick(&mut self, updater_dt: Fix, pass: PlatformPass) {
         for i in 0..self.platforms.len() {
-            if !self.platforms[i].active
-                || !self.platform_updates_in(i, pass)
-                || self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick)
-            {
+            if !self.platforms[i].active || !self.platform_updates_in(i, pass) {
                 continue;
             }
             if self.platform_dynamics[i].drop_players_frames >= 0 {
@@ -39465,9 +39458,6 @@ impl RolloutWorld {
             for &platform_index in &self.vector_fields {
                 if !self.platforms[platform_index].active
                     || !self.platform_updates_in(platform_index, pass)
-                    || self.platform_dynamics[platform_index]
-                        .init_tick
-                        .is_some_and(|t| t > self.tick)
                 {
                     continue;
                 }
