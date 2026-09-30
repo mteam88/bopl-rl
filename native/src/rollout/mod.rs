@@ -1953,6 +1953,8 @@ pub struct BlackHoleState {
     pub velocity: Vec2,
     pub mass: Fix,
     pub time_since_growth: Fix,
+    /// The simulation tick of this hole's last UpdateSim.
+    pub updated_tick: Option<u32>,
     pub previous_target_size: Fix,
     pub target_size: Fix,
     pub radius: Fix,
@@ -16050,6 +16052,7 @@ impl RolloutWorld {
             velocity: Vec2::ZERO,
             mass: data.black_hole.starting_mass,
             time_since_growth: Fix::ZERO,
+            updated_tick: None,
             previous_target_size: Fix::from_int(100),
             target_size,
             radius: initial_radius,
@@ -16209,6 +16212,9 @@ impl RolloutWorld {
                 hierarchy.start,
                 self.black_holes[hole_index].hierarchy_base,
             );
+            // The older updaters above may spawn a Duplicator copy, which
+            // this hole then pulls itself.
+            self.black_holes[hole_index].updated_tick = Some(self.tick);
             if !stopped {
                 self.black_holes[hole_index].time_since_growth += dt;
             }
@@ -27405,6 +27411,7 @@ impl RolloutWorld {
             velocity,
             mass: source.mass,
             time_since_growth: Fix::ZERO,
+            updated_tick: None,
             previous_target_size: Fix::from_int(100),
             target_size,
             radius: Fix::ZERO,
@@ -30939,8 +30946,11 @@ impl RolloutWorld {
         let platform_index = self.platforms.len() - 1;
         for hole_index in 0..self.black_holes.len() {
             let hole = &self.black_holes[hole_index];
+            // Only a newer hole that has already run this pass: one still to
+            // come pulls the copy itself.
             if !hole.active
                 || hole.hierarchy_base < effect_hierarchy
+                || hole.updated_tick != Some(self.tick)
                 || self.blink_object_hidden(hole.entity)
             {
                 continue;
