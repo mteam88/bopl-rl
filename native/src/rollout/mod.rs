@@ -24576,6 +24576,54 @@ impl RolloutWorld {
     /// callback, its circle auto-registers on the following scheduler pass,
     /// and grounded throws are forced along the attached surface normal.
     fn mine_throw_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        // The gExit/aExit animation's ExitAbility callback runs before
+        // Ability.UpdateSim, and the form it deactivates skips that pass's
+        // Scale set, DestroyIfOutsideSceneBounds and ThrowItem.UpdateSim.
+        if self.players[index].throw_item.phase == 2 {
+            // Fire picks gExit or aExit by whether the form is grounded
+            // then, whatever it entered on (ThrowItem.cs:205-212); a teleport
+            // can unground a form that entered on the ground.
+            let exit_ticks = if self.players[index].throw_item.fired_from_ground {
+                data.mine.ground_exit_ticks
+            } else {
+                data.mine.air_exit_ticks
+            };
+            if self.players[index].throw_item.ticks + 1 > exit_ticks {
+                let grounded = self.players[index].base.grounded;
+                let slot = &mut self.players[index];
+                slot.set_active_form(&mut self.entities, ActiveAbility::None);
+                // A form fired from the ground exits with the Fire's
+                // knockback; SyncPhysicsTo drops it again if the slime is
+                // restored onto a live ground (ThrowItem.cs:194,
+                // PlayerPhysics.cs:554-582).
+                if slot.throw_item.fired_from_ground {
+                    slot.base.velocity = slot.throw_item.exit_velocity;
+                }
+                // Ability.ExitAbility publishes before EnterFall's landing
+                // raycasts move the restored slime. The frozen form keeps
+                // the transform a moving ground left it with last pass.
+                slot.reported_position = slot.base.position;
+                slot.throw_item.collider_rotation = slot.base.rotation;
+                slot.throw_item.collider_right = slot.base.up.perp_cw();
+                slot.reported_tick = self.tick;
+                if grounded {
+                    slot.obs_state = STATE_LAND;
+                    slot.state_ticks = LAND_TICKS + 2;
+                } else {
+                    slot.exit_to_fall();
+                    slot.base.rotation = Fix::ZERO;
+                    slot.base.up = Vec2::UP;
+                    slot.restore_slime_radius();
+                    slot.base.collision_rays(terrain!(self));
+                    slot.set_ordinary_body_scale(slot.player_scale);
+                }
+                if grounded {
+                    self.sync_exit_to_ground(index);
+                }
+                return;
+            }
+        }
+
         // Ability.UpdateSim assigns Player.Scale to the box every pass, the
         // entering one included, and PlayerPhysics UpdateScales the radius.
         let slot = &mut self.players[index];
@@ -24659,50 +24707,6 @@ impl RolloutWorld {
         }
         if fire {
             self.fire_mine(index, data);
-        }
-
-        if self.players[index].throw_item.phase == 2 {
-            // Fire picks gExit or aExit by whether the form is grounded
-            // then, whatever it entered on (ThrowItem.cs:205-212); a teleport
-            // can unground a form that entered on the ground.
-            let exit_ticks = if self.players[index].throw_item.fired_from_ground {
-                data.mine.ground_exit_ticks
-            } else {
-                data.mine.air_exit_ticks
-            };
-            if self.players[index].throw_item.ticks > exit_ticks {
-                let grounded = self.players[index].base.grounded;
-                let slot = &mut self.players[index];
-                slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                // A form fired from the ground exits with the Fire's
-                // knockback; SyncPhysicsTo drops it again if the slime is
-                // restored onto a live ground (ThrowItem.cs:194,
-                // PlayerPhysics.cs:554-582).
-                if slot.throw_item.fired_from_ground {
-                    slot.base.velocity = slot.throw_item.exit_velocity;
-                }
-                // Ability.ExitAbility publishes before EnterFall's landing
-                // raycasts move the restored slime. The frozen form keeps
-                // the transform a moving ground left it with last pass.
-                slot.reported_position = slot.base.position;
-                slot.throw_item.collider_right = slot.base.up.perp_cw();
-                slot.reported_tick = self.tick;
-                if grounded {
-                    slot.obs_state = STATE_LAND;
-                    slot.state_ticks = LAND_TICKS + 2;
-                } else {
-                    slot.exit_to_fall();
-                    slot.base.rotation = Fix::ZERO;
-                    slot.base.up = Vec2::UP;
-                    slot.restore_slime_radius();
-                    slot.base.collision_rays(terrain!(self));
-                    slot.set_ordinary_body_scale(slot.player_scale);
-                }
-                if grounded {
-                    self.sync_exit_to_ground(index);
-                }
-                return;
-            }
         }
 
         if self.players[index].base.grounded {
