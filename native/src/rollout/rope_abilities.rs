@@ -1701,7 +1701,7 @@ impl RolloutWorld {
 
     /// The hooks' Circle/Circle and Circle/Box pairs, on the colliders the
     /// Circle/RoundedRect corrections left.
-    pub(super) fn grapple_hook_pairs(&mut self, data: &data::RolloutData) {
+    pub(super) fn grapple_hook_pairs(&mut self) {
         self.scratch.hook_smoke_hits.clear();
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
@@ -1739,7 +1739,7 @@ impl RolloutWorld {
                     && item.entity.is_some()
                     && touches(Circle { center: item.position, radius: item.collider_radius })
                 {
-                    let rank = self.part_rank(Part::Item(index), data);
+                    let rank = self.part_rank(Part::Item(index));
                     hits.push((rope, circle_circle, rank, HookTarget::Item(index)));
                 }
             }
@@ -1748,7 +1748,7 @@ impl RolloutWorld {
                     && shot.registered
                     && touches(Circle { center: shot.position, radius: shot.collider_radius })
                 {
-                    let rank = self.part_rank(Part::Shot(index), data);
+                    let rank = self.part_rank(Part::Shot(index));
                     hits.push((rope, circle_circle, rank, HookTarget::Shot(index)));
                 }
             }
@@ -1768,7 +1768,7 @@ impl RolloutWorld {
                     && node.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
                     && touches(Circle { center: node.collider_center, radius: node.radius })
                 {
-                    let rank = self.part_rank(Part::Node(index), data);
+                    let rank = self.part_rank(Part::Node(index));
                     hits.push((rope, circle_circle, rank, HookTarget::Node(index)));
                 }
             }
@@ -1820,7 +1820,7 @@ impl RolloutWorld {
                     && spike.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
                     && crate::physics::contact::circle_box(circle, self.spike_attack_box(spike)).is_some()
                 {
-                    let rank = self.part_rank(Part::Spike(index), data);
+                    let rank = self.part_rank(Part::Spike(index));
                     hits.push((rope, GROUP_CB, rank, HookTarget::Spike(index)));
                 }
             }

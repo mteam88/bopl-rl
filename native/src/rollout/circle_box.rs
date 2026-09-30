@@ -18,7 +18,7 @@ pub(super) enum Part {
 
 impl RolloutWorld {
     /// Its collider now, after the corrections of earlier groups.
-    fn part_collider(&self, part: Part, data: &data::RolloutData) -> Collider {
+    pub(super) fn part_collider(&self, part: Part) -> Collider {
         match part {
             Part::Item(i) => Collider::Circle(Circle {
                 center: self.thrown_items[i].position,
@@ -40,27 +40,9 @@ impl RolloutWorld {
         }
     }
 
-    /// Its collider where the broadphase took its bounding box.
-    pub(super) fn part_swept(&self, part: Part, data: &data::RolloutData) -> Collider {
-        let mut collider = self.part_collider(part, data);
-        let swept = match part {
-            Part::Item(i) => Some(self.thrown_items[i].swept_position),
-            Part::Node(i) => Some(self.tesla_nodes[i].swept_center),
-            Part::Engine(i) => self.scratch.engine_swept.get(i).copied(),
-            Part::Spike(i) => self.scratch.spike_swept.get(i).copied(),
-            Part::Missile(i) => Some(self.guided_missiles[i].swept_position),
-            Part::Shot(_) => None,
-        };
-        if let Some(center) = swept {
-            collider.set_center(center);
-        }
-        collider
-    }
-
     /// Its place in SortAndSweep's order.
-    pub(super) fn part_rank(&self, part: Part, data: &data::RolloutData) -> SweepRank {
-        let min = self.part_swept(part, data).bounds()[0];
-        sweep_rank(&self.entities, if self.sweep_x() { min.x } else { min.y }, self.part_entity(part))
+    pub(super) fn part_rank(&self, part: Part) -> SweepRank {
+        sweep_rank(&self.entities, self.swept_min(Swept::Part(part)), self.part_entity(part))
     }
 
     /// A wall's place in SortAndSweep's order, from the collider the
@@ -224,7 +206,7 @@ impl RolloutWorld {
     /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
     /// PositionalCorrection on each side's own inverse mass; every pair
     /// queues both sides' OnCollide, which run after the last group.
-    pub(super) fn circle_box_group(&mut self, data: &data::RolloutData) {
+    pub(super) fn circle_box_group(&mut self) {
         let mut parts = std::mem::take(&mut self.scratch.cb_parts);
         parts.clear();
         for (i, item) in self.thrown_items.iter().enumerate() {
@@ -261,33 +243,20 @@ impl RolloutWorld {
                 parts.push(Part::Missile(i));
             }
         }
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
         let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
         contacts.clear();
         for &circle in &parts[..circles] {
-            let circle_bounds = self.part_swept(circle, data).bounds();
-            let circle_rank = sweep_rank(&self.entities, axis(circle_bounds[0]), self.part_entity(circle));
+            let circle_rank = self.part_rank(circle);
             for &part in &parts[circles..] {
                 // SameCompositeAs: a node never meets its own platform's
                 // children; an item, shot or missile has no composite.
-                if self.part_composite(circle).is_some_and(|c| Some(c) == self.part_composite(part)) {
-                    continue;
-                }
-                let bounds = self.part_swept(part, data).bounds();
-                let rank = sweep_rank(&self.entities, axis(bounds[0]), self.part_entity(part));
-                // SortAndSweep pairs the later collider with each earlier one
-                // whose bounds still reach it (DetPhysics.cs:2169-2231).
-                let (earlier, later) =
-                    if circle_rank < rank { (circle_bounds, bounds) } else { (bounds, circle_bounds) };
-                if axis(earlier[1]) <= axis(later[0])
-                    || other(earlier[1]) <= other(later[0])
-                    || other(earlier[0]) >= other(later[1])
+                if self.part_composite(circle).is_some_and(|c| Some(c) == self.part_composite(part))
+                    || !self.swept_pair(Swept::Part(circle), Swept::Part(part))
                 {
                     continue;
                 }
-                if let Some(contact) = self.part_collider(circle, data).contact(self.part_collider(part, data)) {
+                let rank = self.part_rank(part);
+                if let Some(contact) = self.part_collider(circle).contact(self.part_collider(part)) {
                     let (later, earlier) = sweep_pair(circle_rank, rank);
                     contacts.push(((GROUP_CB, later, earlier), circle, part, contact));
                 }

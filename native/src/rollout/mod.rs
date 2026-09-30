@@ -29,7 +29,9 @@ pub mod data;
 pub mod replay;
 mod circle_box;
 mod rope_abilities;
+mod sweep;
 use circle_box::Part;
+use sweep::Swept;
 use rope_abilities::HookTarget;
 
 pub const ABI_VERSION: u32 = 3;
@@ -230,16 +232,6 @@ fn sweep_rank(entities: &[CEntity], min: Fix, entity: Option<usize>) -> SweepRan
 /// (DetPhysics.cs:2169-2231).
 fn sweep_pair(a: SweepRank, b: SweepRank) -> (SweepRank, SweepRank) {
     if a > b { (a, b) } else { (b, a) }
-}
-
-/// Whether SortAndSweep pairs two colliders: their bounding boxes, taken
-/// before any group corrected either, overlap strictly on both axes.
-fn swept_meet(a: [Vec2; 2], b: [Vec2; 2]) -> bool {
-    a[0].x < b[1].x && b[0].x < a[1].x && a[0].y < b[1].y && b[0].y < a[1].y
-}
-
-fn bounds(center: Vec2, half: Vec2) -> [Vec2; 2] {
-    [center - half, center + half]
 }
 
 fn earliest_key(first: &mut Option<CallbackKey>, key: CallbackKey) {
@@ -623,9 +615,6 @@ pub struct ThrownItem {
     /// registry immediately but cannot enter the already-built manifold set.
     pub callback_registered_tick: u32,
     pub position: Vec2,
-    /// The position DetPhysics' broadphase swept this pass, before any
-    /// correction moved it.
-    pub swept_position: Vec2,
     pub body: Body,
     /// Live DPhysicsCircle/FixTransform scale. `body_scale` is the value the
     /// earlier BoplBody updater has consumed; a late ScaleChanger mutation is
@@ -743,8 +732,6 @@ pub struct GuidedMissile {
     pub entity: Option<usize>,
     pub owner: usize,
     pub position: Vec2,
-    /// `position` when DetPhysics took its bounding boxes this pass.
-    pub swept_position: Vec2,
     pub body: Body,
     pub up: Vec2,
     pub scale: Fix,
@@ -1041,9 +1028,6 @@ pub struct SpawnedTeslaNode {
     pub relative_center: Vec2,
     pub relative_rotation: Fix,
     pub collider_center: Vec2,
-    /// `collider_center` when DetPhysics took its bounding boxes this pass,
-    /// before any contact pass pushed the platform.
-    pub swept_center: Vec2,
     pub collider_rotation: Fix,
     /// The pose SyncGameObject last copied from the collider into this
     /// child's FixTransform (DetPhysics.cs:1653-1656, 3172-3192). A
@@ -1825,9 +1809,6 @@ pub struct BowState {
 #[derive(Clone, Copy, Default)]
 pub struct RockState {
     pub body: Body,
-    /// The circle DetPhysics' broadphase swept this pass, before any
-    /// correction moved it.
-    pub swept: Circle,
     pub time: Fix,
     pub exit_time: Fix,
     pub scale_sum: Fix,
@@ -3780,14 +3761,10 @@ struct PlatformScratch {
     contacts: Vec<(usize, usize, Contact)>,
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
     engine_wall_contacts: Vec<(usize, usize, Contact)>,
-    /// RocketEngine and Spike attack box centres when DetPhysics took its
-    /// bounding boxes, before the Box/RoundedRect group corrected them.
-    engine_swept: Vec<Vec2>,
-    spike_swept: Vec<Vec2>,
+    /// Every collider's bounding box in this pass's SortAndSweep.
+    sweep: sweep::SweepBounds,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
     duplicated_rock_wall_contacts: Vec<(usize, usize, Contact)>,
-    /// Duplicated rocks' circles after integration, before any correction.
-    duplicated_rock_swept: Vec<Circle>,
     rock_spike_hits: Vec<(usize, usize, Vec2)>,
     /// Each slime's position before PlayerPhysics.LateUpdateSim follows its
     /// ground, where an older Mine's LateUpdateSim still finds it.
@@ -3817,7 +3794,6 @@ struct PlatformScratch {
     /// Portal shots' wall manifolds: (shot, wall, contact).
     portal_shot_wall_contacts: Vec<(usize, usize, Contact)>,
     item_order: Vec<usize>,
-    item_window: Vec<usize>,
     item_contacts: Vec<(usize, usize, Contact)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Smoke grenades an active grapple hook touched this pass.
@@ -3914,7 +3890,6 @@ impl PlatformScratch {
     fn new() -> Self {
         PlatformScratch {
             item_order: Vec::with_capacity(192),
-            item_window: Vec::with_capacity(192),
             item_contacts: Vec::with_capacity(256),
             item_platform_contacts: Vec::with_capacity(256),
             hook_smoke_hits: Vec::with_capacity(4),
@@ -7632,16 +7607,14 @@ impl RolloutWorld {
         self.refresh_actor_entities();
         if self.intro_phase == 3 {
             self.platforms_tick(data, physics_dt);
+        } else {
+            let mut sweep = std::mem::take(&mut self.scratch.sweep);
+            self.take_sweep(&mut sweep, data);
+            self.scratch.sweep = sweep;
         }
         self.slime_pairs();
         self.scratch.circle_colliders.clear();
         self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
-        for node in self.tesla_nodes.iter_mut().chain(&mut self.retired_tesla_contacts) {
-            node.swept_center = node.collider_center;
-        }
-        for missile in &mut self.guided_missiles {
-            missile.swept_position = missile.position;
-        }
         // With a Rock in play, its Circle/Circle stage also resolves the
         // pickup pairs.
         if !has(ABILITY_ROCK) {
@@ -7689,12 +7662,9 @@ impl RolloutWorld {
         // one, so an item's wall correction moves it before an arrow's
         // manifold with it is built.
         if has(ABILITY_MISSILE) {
-            self.guided_missile_wall_contacts(data);
+            self.guided_missile_wall_contacts();
         }
         if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_ROCK) || has(ABILITY_PORTAL_GUN) || has(ABILITY_BOW) {
-            for item in &mut self.thrown_items {
-                item.swept_position = item.position;
-            }
             self.thrown_item_platform_contacts(data);
         }
         if has(ABILITY_ROCK) {
@@ -7726,7 +7696,7 @@ impl RolloutWorld {
             self.arrows_contacts(data);
         }
         if has(ABILITY_GRAPPLING_HOOK) {
-            self.grapple_hook_pairs(data);
+            self.grapple_hook_pairs();
         }
         // The global circle/circle pass: items, Portal shots, and Tesla
         // nodes of different platforms, then the Circle/Box group.
@@ -8550,8 +8520,6 @@ impl RolloutWorld {
     /// or mine set off, a PokeBall finding no SlimeController) are handled
     /// with the other player contacts; BounceBall ignores the item layer.
     fn thrown_item_rock_contacts(&mut self, data: &data::RolloutData) {
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         for item_index in 0..self.thrown_items.len() {
             let item = self.thrown_items[item_index];
             if !item.active
@@ -8562,18 +8530,11 @@ impl RolloutWorld {
                 continue;
             }
             let radius = thrown_item_radius(data, item);
-            let item_swept = Circle { center: item.swept_position, radius };
+            let item_swept = Swept::Part(Part::Item(item_index));
             for rock_index in 0..self.players.len() {
                 if self.players[rock_index].active != ActiveAbility::Rock
                     || !self.playable(rock_index)
-                {
-                    continue;
-                }
-                let rock_swept = self.players[rock_index].rock.swept;
-                if (item_swept.center.x - rock_swept.center.x).abs()
-                    >= item_swept.radius + rock_swept.radius
-                    || (item_swept.center.y - rock_swept.center.y).abs()
-                        >= item_swept.radius + rock_swept.radius
+                    || !self.swept_pair(item_swept, Swept::Player(rock_index))
                 {
                     continue;
                 }
@@ -8583,8 +8544,7 @@ impl RolloutWorld {
                     radius: self.players[rock_index].rock_circle().circle_radius,
                 };
                 // SortAndSweep makes A the circle whose box starts first.
-                let item_first = axis(item_swept.center) - item_swept.radius
-                    < axis(rock_swept.center) - rock_swept.radius;
+                let item_first = self.swept_min(item_swept) < self.swept_min(Swept::Player(rock_index));
                 let contact = if item_first {
                     crate::physics::contact::circle_circle(item_circle, rock_circle)
                 } else {
@@ -14813,7 +14773,6 @@ impl RolloutWorld {
             relative_center,
             relative_rotation,
             collider_center: center,
-            swept_center: Vec2::ZERO,
             collider_rotation: node_rotation,
             transform_center: center,
             transform_rotation: node_rotation,
@@ -16410,10 +16369,7 @@ impl RolloutWorld {
             // SortAndSweep pairs the node by its bounding box from before this
             // pass's contacts pushed its platform; the manifold tests where
             // they left it.
-            let swept_node = Circle {
-                center: node.swept_center,
-                ..node_circle
-            };
+            let swept_node = Swept::Part(Part::Node(node_index));
             let line = if node.line_active && node.line_collider_enabled {
                 Some(OrientedBox {
                     center: node.line_center,
@@ -16507,16 +16463,15 @@ impl RolloutWorld {
                     continue;
                 }
                 let row = self.entities[entity];
-                let (node_pass, player_min, node_hit, line_hit) = if row.kind == 0 {
+                let paired = self.swept_pair(swept_node, Swept::Player(player_index));
+                let (node_pass, node_hit, line_hit) = if row.kind == 0 {
                     let player = Circle {
                         center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
                         radius: Fix::from_raw(row.radius),
                     };
                     (
                         GROUP_CC,
-                        axis(player.center) - player.radius,
-                        swept_node.bounds_overlap(player)
-                            && crate::physics::contact::circle_circle(node_circle, player).is_some(),
+                        paired && crate::physics::contact::circle_circle(node_circle, player).is_some(),
                         line.is_some_and(|line| {
                             crate::physics::contact::circle_box(player, line).is_some()
                         }),
@@ -16533,23 +16488,15 @@ impl RolloutWorld {
                             Fix::ONE / up.length(),
                         ),
                     };
-                    let reach = Vec2::new(
-                        right.x.abs() + up.x.abs() + swept_node.radius,
-                        right.y.abs() + up.y.abs() + swept_node.radius,
-                    );
-                    let offset = swept_node.center - player.center;
                     (
                         GROUP_CB,
-                        box_min(player),
-                        offset.x.abs() < reach.x
-                            && offset.y.abs() < reach.y
-                            && crate::physics::contact::circle_box(node_circle, player).is_some(),
+                        paired && crate::physics::contact::circle_box(node_circle, player).is_some(),
                         line.is_some_and(|line| {
                             crate::physics::contact::box_box(player, line).is_some()
                         }),
                     )
                 };
-                let player = sweep_rank(&self.entities, player_min, Some(entity));
+                let player = sweep_rank(&self.entities, self.player_sweep_min(player_index), Some(entity));
                 // The lightning line has no entity row; among equal minima it
                 // is placed after the rows.
                 let pair = |pass: u8, other_min: Fix, other: Option<usize>| {
@@ -16557,7 +16504,7 @@ impl RolloutWorld {
                         sweep_pair(player, sweep_rank(&self.entities, other_min, other));
                     (pass, later, earlier)
                 };
-                let node_min = axis(swept_node.center) - swept_node.radius;
+                let node_min = self.swept_min(swept_node);
                 let node_key = node_hit.then(|| pair(node_pass, node_min, node.entity));
                 let line_key = line
                     .filter(|_| line_hit)
@@ -24884,7 +24831,6 @@ impl RolloutWorld {
             entity: None,
             callback_registered_tick: u32::MAX,
             position,
-            swept_position: position,
             body: Body {
                 velocity,
                 ..data.mine.item_body
@@ -25267,7 +25213,6 @@ impl RolloutWorld {
             entity: None,
             callback_registered_tick: u32::MAX,
             position,
-            swept_position: self.players[index].base.position,
             body: Body {
                 orientation: self.players[index].base.rotation,
                 ..config.item_body
@@ -29064,7 +29009,6 @@ impl RolloutWorld {
             relative_center,
             relative_rotation: rotation - parent_rotation,
             collider_center: center,
-            swept_center: Vec2::ZERO,
             collider_rotation: rotation,
             transform_center: center,
             transform_rotation: rotation,
@@ -33868,24 +33812,6 @@ impl RolloutWorld {
         }
     }
 
-    /// DetPhysics' sort-and-sweep pairing: the two bounding boxes overlap
-    /// strictly on both axes.
-    fn circle_entity_bounds_overlap(&self, query: Circle, entity: usize) -> bool {
-        let row = self.entities[entity];
-        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-        let extent = if row.kind == 0 {
-            Vec2::new(Fix::from_raw(row.radius), Fix::from_raw(row.radius))
-        } else {
-            Vec2::new(
-                Fix::from_raw(row.right_x).abs() + Fix::from_raw(row.up_x).abs(),
-                Fix::from_raw(row.right_y).abs() + Fix::from_raw(row.up_y).abs(),
-            )
-        };
-        query.center.x + query.radius > center.x - extent.x
-            && query.center.x - query.radius < center.x + extent.x
-            && query.center.y + query.radius > center.y - extent.y
-            && query.center.y - query.radius < center.y + extent.y
-    }
 
     #[inline]
     fn circle_overlaps_entity(&self, query: Circle, entity: usize) -> bool {
@@ -35634,14 +35560,10 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                // The broadphase pairs the Rock by its bounding box before
-                // its wall corrections; the manifold tests the corrected
-                // circle.
-                let swept = player.rock.swept;
-                let reach = swept.radius + circle.radius;
-                if (swept.center.x - circle.center.x).abs() >= reach
-                    || (swept.center.y - circle.center.y).abs() >= reach
-                {
+                // The broadphase pairs them by their bounding boxes before
+                // any wall correction; the manifold tests the corrected
+                // circles.
+                if !self.swept_pair(Swept::Player(player_index), Swept::Arrow(i)) {
                     continue;
                 }
                 if let Some(contact) = crate::physics::contact::circle_circle(
@@ -35818,7 +35740,7 @@ impl RolloutWorld {
                     - data.arrow.radius * arrow.scale;
                 let arrow_rank = sweep_rank(&self.entities, min, arrow.entity);
                 for &(missile_index, _) in &missile_contacts[..missile_contact_count] {
-                    self.queue_missile_blast(missile_index, GROUP_CB, arrow_rank, data);
+                    self.queue_missile_blast(missile_index, GROUP_CB, arrow_rank);
                 }
                 continue;
             }
@@ -36125,8 +36047,8 @@ impl RolloutWorld {
     /// Missile.OnCollide for one pair of its box, queued at the pair's place.
     /// DestroyFix only marks the missile, so every pair of the pass calls it
     /// (Missile.cs:181-192, Updater.cs:89-110).
-    fn queue_missile_blast(&mut self, missile: usize, group: u8, other: SweepRank, data: &data::RolloutData) {
-        let rank = self.part_rank(Part::Missile(missile), data);
+    fn queue_missile_blast(&mut self, missile: usize, group: u8, other: SweepRank) {
+        let rank = self.part_rank(Part::Missile(missile));
         let (later, earlier) = sweep_pair(rank, other);
         self.scratch.callback_hits.push(((group, later, earlier), CallbackHit::MissileBlast { missile }));
     }
@@ -36139,26 +36061,16 @@ impl RolloutWorld {
     /// Missile/Missile Box/Box pairs. DetPhysics builds the complete batch
     /// before it resolves any; A is the box whose bounds start first on the
     /// sweep axis, which changes the contact normal's rounding.
-    fn guided_missile_pair_contacts(&mut self, data: &data::RolloutData) {
+    fn guided_missile_pair_contacts(&mut self) {
         let mut contacts = std::mem::take(&mut self.scratch.missile_contacts);
         contacts.clear();
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
         let mut order = std::mem::take(&mut self.scratch.item_order);
         order.clear();
         order.extend((0..self.guided_missiles.len()).filter(|&index| self.guided_missile_live(index)));
-        order.sort_unstable_by_key(|&index| self.part_rank(Part::Missile(index), data));
-        let mut window = std::mem::take(&mut self.scratch.item_window);
-        window.clear();
-        for &current in &order {
-            let b_bounds = self.part_swept(Part::Missile(current), data).bounds();
-            window.retain(|&prior| {
-                axis(self.part_swept(Part::Missile(prior), data).bounds()[1]) > axis(b_bounds[0])
-            });
-            for &prior in &window {
-                let a_bounds = self.part_swept(Part::Missile(prior), data).bounds();
-                if other(a_bounds[1]) <= other(b_bounds[0]) || other(a_bounds[0]) >= other(b_bounds[1]) {
+        order.sort_unstable_by_key(|&index| self.part_rank(Part::Missile(index)));
+        for (k, &current) in order.iter().enumerate() {
+            for &prior in &order[..k] {
+                if !self.swept_pair(Swept::Part(Part::Missile(prior)), Swept::Part(Part::Missile(current))) {
                     continue;
                 }
                 let a_box = self.guided_missiles[prior].collider();
@@ -36167,16 +36079,14 @@ impl RolloutWorld {
                     contacts.push((prior, current, contact));
                 }
             }
-            window.push(current);
         }
         self.scratch.item_order = order;
-        self.scratch.item_window = window;
 
         for &(first, second, contact) in &contacts {
-            let first_rank = self.part_rank(Part::Missile(first), data);
-            let second_rank = self.part_rank(Part::Missile(second), data);
-            self.queue_missile_blast(first, GROUP_BB, second_rank, data);
-            self.queue_missile_blast(second, GROUP_BB, first_rank, data);
+            let first_rank = self.part_rank(Part::Missile(first));
+            let second_rank = self.part_rank(Part::Missile(second));
+            self.queue_missile_blast(first, GROUP_BB, second_rank);
+            self.queue_missile_blast(second, GROUP_BB, first_rank);
             let a = self.guided_missiles[first];
             let b = self.guided_missiles[second];
             let mut a_body = a.body;
@@ -36196,7 +36106,7 @@ impl RolloutWorld {
     /// whole group before the Circle/RoundedRect one, so an item resting on a
     /// wall the Missile struck meets the wall where the Missile pushed it
     /// (DetPhysics.cs:2973-3014). Each pair queues Missile.OnCollide.
-    fn guided_missile_wall_contacts(&mut self, data: &data::RolloutData) {
+    fn guided_missile_wall_contacts(&mut self) {
         for missile_index in 0..self.guided_missiles.len() {
             if !self.guided_missiles[missile_index].active
                 || !self.guided_missiles[missile_index].registered
@@ -36253,7 +36163,7 @@ impl RolloutWorld {
                 live.body = body;
                 for &(platform_index, _) in &contacts[..contact_count] {
                     let rank = self.wall_rank(platform_index);
-                    self.queue_missile_blast(missile_index, GROUP_BOX_RR, rank, data);
+                    self.queue_missile_blast(missile_index, GROUP_BOX_RR, rank);
                 }
             }
         }
@@ -36267,10 +36177,10 @@ impl RolloutWorld {
     /// sides' OnCollide, the earlier side first: a young spike ahead of the
     /// missile knocks it before Missile.OnCollide destroys it, and one behind
     /// it finds the missile destroyed.
-    fn guided_missile_child_contacts(&mut self, missile_index: usize, data: &data::RolloutData) {
+    fn guided_missile_child_contacts(&mut self, missile_index: usize) {
         let missile = self.guided_missiles[missile_index];
         let missile_box = missile.collider();
-        let missile_rank = self.part_rank(Part::Missile(missile_index), data);
+        let missile_rank = self.part_rank(Part::Missile(missile_index));
         let live = |entity: Option<usize>| {
             entity.is_some_and(|entity| self.entities[entity].flags & 3 == 3)
         };
@@ -36281,7 +36191,7 @@ impl RolloutWorld {
                 continue;
             }
             let child = Self::spike_attack_box_in(&self.platform_dynamics, *spike);
-            let child_first = self.part_rank(Part::Spike(index), data) < missile_rank;
+            let child_first = self.part_rank(Part::Spike(index)) < missile_rank;
             let contact = if child_first {
                 crate::physics::contact::box_box(child, missile_box)
             } else {
@@ -36297,7 +36207,7 @@ impl RolloutWorld {
                 continue;
             }
             let child = engine.rocket_box();
-            let child_first = self.part_rank(Part::Engine(index), data) < missile_rank;
+            let child_first = self.part_rank(Part::Engine(index)) < missile_rank;
             let contact = if child_first {
                 crate::physics::contact::box_box(child, missile_box)
             } else {
@@ -36314,9 +36224,9 @@ impl RolloutWorld {
         let mut body = missile.body;
         let mut center = missile.position;
         for &(child, contact, child_first) in &contacts[..count] {
-            let child_rank = self.part_rank(child, data);
+            let child_rank = self.part_rank(child);
             if !child_first {
-                self.queue_missile_blast(missile_index, GROUP_BB, child_rank, data);
+                self.queue_missile_blast(missile_index, GROUP_BB, child_rank);
             }
             if let Part::Spike(spike) = child {
                 let (later, earlier) = sweep_pair(child_rank, missile_rank);
@@ -36325,7 +36235,7 @@ impl RolloutWorld {
                 self.scratch.callback_hits.push(((GROUP_BB, later, earlier), hit));
             }
             if child_first {
-                self.queue_missile_blast(missile_index, GROUP_BB, child_rank, data);
+                self.queue_missile_blast(missile_index, GROUP_BB, child_rank);
             }
             let (platform_index, child_inverse_mass) = match child {
                 Part::Spike(i) => (self.spike_attacks[i].platform_index, self.spike_attacks[i].body.inverse_mass),
@@ -36366,17 +36276,15 @@ impl RolloutWorld {
     /// pair queues Missile.OnCollide; a held missile suppresses it after
     /// DetPhysics resolved the pair.
     fn guided_missile_contacts(&mut self, data: &data::RolloutData) {
-        self.guided_missile_pair_contacts(data);
+        self.guided_missile_pair_contacts();
         for missile_index in 0..self.guided_missiles.len() {
             if !self.guided_missile_live(missile_index) {
                 continue;
             }
-            self.guided_missile_child_contacts(missile_index, data);
+            self.guided_missile_child_contacts(missile_index);
             let missile = self.guided_missiles[missile_index];
             let missile_box = missile.collider();
-            // The trigger pairs are the ones SortAndSweep found before a wall
-            // pushed the missile.
-            let swept = self.part_swept(Part::Missile(missile_index), data).bounds();
+            let swept = Swept::Part(Part::Missile(missile_index));
             // Water is a trigger box, so it does not resolve the body.
             if let Some((water_position, water_extents, _)) = data.maps[self.map].water {
                 let water = OrientedBox::from_basis(
@@ -36384,22 +36292,21 @@ impl RolloutWorld {
                     Vec2::RIGHT,
                     data::surface_extents(water_extents),
                 );
-                if swept_meet(swept, bounds(water.center, data::surface_extents(water_extents)))
+                if self.swept_pair(swept, Swept::Water)
                     && crate::physics::contact::box_box(missile_box, water).is_some()
                 {
                     let rank = sweep_rank(&self.entities, self.box_sweep_min(water), None);
-                    self.queue_missile_blast(missile_index, GROUP_BB, rank, data);
+                    self.queue_missile_blast(missile_index, GROUP_BB, rank);
                 }
             }
-            self.queue_missile_trigger_blasts(missile_index, missile_box, swept, data);
+            self.queue_missile_trigger_blasts(missile_index, missile_box);
             for player_index in 0..self.players.len() {
-                let (center, half) = self.player_bounds(player_index);
-                if swept_meet(swept, bounds(center, half))
+                if self.swept_pair(swept, Swept::Player(player_index))
                     && self.guided_missile_hits_player(missile, missile_box, player_index)
                 {
                     let category = GROUP_BB - self.player_is_circle(player_index) as u8;
                     let rank = self.player_sweep_rank(player_index);
-                    self.queue_missile_blast(missile_index, category, rank, data);
+                    self.queue_missile_blast(missile_index, category, rank);
                 }
             }
             if let Some(entity) = missile.entity {
@@ -36422,31 +36329,26 @@ impl RolloutWorld {
         &mut self,
         missile_index: usize,
         missile_box: OrientedBox,
-        swept: [Vec2; 2],
-        data: &data::RolloutData,
     ) {
         let missile_entity = self.guided_missiles[missile_index].entity;
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let swept = Swept::Part(Part::Missile(missile_index));
         for entity in 0..self.entities.len() {
             let row = self.entities[entity];
             if Some(entity) == missile_entity
                 || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
                 || !matches!(row.layer, 18 | 26)
                 || self.blasting_missile_explosion(entity)
+                || !self.swept_pair(swept, Swept::Row(entity))
             {
                 continue;
             }
             let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-            let min = match row.kind {
+            match row.kind {
                 0 => {
                     let circle = Circle { center, radius: Fix::from_raw(row.radius) };
-                    if !swept_meet(swept, bounds(center, Vec2::new(circle.radius, circle.radius)))
-                        || crate::physics::contact::circle_box(circle, missile_box).is_none()
-                    {
+                    if crate::physics::contact::circle_box(circle, missile_box).is_none() {
                         continue;
                     }
-                    axis(center) - circle.radius
                 }
                 1 => {
                     let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
@@ -36460,18 +36362,14 @@ impl RolloutWorld {
                         up,
                         inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
                     };
-                    let half = Vec2::new(right.x.abs() + up.x.abs(), right.y.abs() + up.y.abs());
-                    if !swept_meet(swept, bounds(center, half))
-                        || crate::physics::contact::box_box(trigger, missile_box).is_none()
-                    {
+                    if crate::physics::contact::box_box(trigger, missile_box).is_none() {
                         continue;
                     }
-                    axis(center) - axis(half)
                 }
                 _ => continue,
-            };
-            let rank = sweep_rank(&self.entities, min, Some(entity));
-            self.queue_missile_blast(missile_index, GROUP_BB - (row.kind == 0) as u8, rank, data);
+            }
+            let rank = sweep_rank(&self.entities, self.swept_min(Swept::Row(entity)), Some(entity));
+            self.queue_missile_blast(missile_index, GROUP_BB - (row.kind == 0) as u8, rank);
         }
     }
 
@@ -36601,10 +36499,7 @@ impl RolloutWorld {
         let mut order = std::mem::take(&mut self.scratch.circle_wall_order);
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let item_min = |item_index: usize| {
-            let item = self.thrown_items[item_index];
-            axis(item.position) - thrown_item_radius(data, item)
-        };
+        let item_min = |item_index: usize| self.swept_min(Swept::Part(Part::Item(item_index)));
         let platform_min = |platform_index: usize| {
             let swept = self
                 .scratch
@@ -36632,32 +36527,19 @@ impl RolloutWorld {
         });
         // Tesla nodes' wall pairs are in the same Circle/RoundedRectangle
         // batch, so their impulses interleave with the items' in sweep order.
-        let node_min = |node_index: usize| {
-            let node = &self.tesla_nodes[node_index];
-            axis(node.collider_center) - node.radius
-        };
+        let node_min = |node_index: usize| self.swept_min(Swept::Part(Part::Node(node_index)));
         // Rock forms' wall pairs are in the batch too (rock_wall_manifolds).
-        let rock_min = |rock_index: usize| {
-            let swept = self.players[rock_index].rock.swept;
-            axis(swept.center) - swept.radius
-        };
+        let rock_min = |rock_index: usize| self.swept_min(Swept::Player(rock_index));
         const ITEM: u8 = 0;
         const NODE: u8 = 1;
         // Portal shots are DetPhysics circles in the same batch.
-        let shot_min = |shot_index: usize| {
-            axis(self.portal_shots[shot_index].position) - self.portal_shots[shot_index].collider_radius
-        };
+        let shot_min = |shot_index: usize| self.swept_min(Swept::Part(Part::Shot(shot_index)));
         const ROCK: u8 = 2;
         const SHOT: u8 = 3;
         const ARROW: u8 = 4;
         const DUPLICATED_ROCK: u8 = 5;
-        let duplicate_min = |rock_index: usize| {
-            let rock = &self.duplicated_rocks[rock_index];
-            axis(rock.position) - rock.collider_radius
-        };
-        let arrow_min = |arrow_index: usize| {
-            axis(self.arrows[arrow_index].position) - self.arrows[arrow_index].collider_radius
-        };
+        let duplicate_min = |rock_index: usize| self.swept_min(Swept::DuplicatedRock(rock_index));
+        let arrow_min = |arrow_index: usize| self.swept_min(Swept::Arrow(arrow_index));
         let pair = |min: Fix, entity: Option<usize>, wall_index: usize| {
             sweep_pair(sweep_rank(&self.entities, min, entity), wall_rank(wall_index))
         };
@@ -36860,60 +36742,39 @@ impl RolloutWorld {
     /// CompositeBody.position (DetPhysics.cs:3131-3168, PhysTools.cs:1006).
     fn composite_child_box_contacts(&mut self) {
         const SPIKE: usize = 1 << 16;
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
         let live = |platform: usize, entity: Option<usize>| {
             platform < self.platforms.len()
                 && self.platforms[platform].active
                 && entity.is_none_or(|entity| self.entities[entity].flags & E_ACTIVE != 0)
         };
-        // (child, platform, entity, box, box at the sweep)
+        // (child, platform, entity, box, collider in the sweep)
         let mut children = Vec::new();
         for (index, engine) in self.engines.iter().enumerate() {
             if !engine.active || engine.macho_carried || !live(engine.platform_index, engine.entity) {
                 continue;
             }
-            let rocket = engine.rocket_box();
-            let swept = self.scratch.engine_swept.get(index).copied();
-            let swept = OrientedBox { center: swept.unwrap_or(rocket.center), ..rocket };
-            children.push((index, engine.platform_index, engine.entity, rocket, swept));
+            let swept = Swept::Part(Part::Engine(index));
+            children.push((index, engine.platform_index, engine.entity, engine.rocket_box(), swept));
         }
         for (index, spike) in self.spike_attacks.iter().copied().enumerate() {
             if !spike.active || spike.macho_carried || !live(spike.platform_index, spike.entity) {
                 continue;
             }
             let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike);
-            let swept = self.scratch.spike_swept.get(index).copied();
-            let swept = OrientedBox { center: swept.unwrap_or(attack_box.center), ..attack_box };
+            let swept = Swept::Part(Part::Spike(index));
             children.push((SPIKE + index, spike.platform_index, spike.entity, attack_box, swept));
         }
         if children.len() < 2 {
             return;
         }
-        let half = |b: OrientedBox| {
-            Vec2::new(b.right.x.abs() + b.up.x.abs(), b.right.y.abs() + b.up.y.abs())
-        };
-        let rank = |b: OrientedBox, entity| {
-            sweep_rank(&self.entities, axis(b.center) - axis(half(b)), entity)
-        };
-        children.sort_by_key(|&(_, _, entity, _, b)| rank(b, entity));
+        let rank = |swept: Swept, entity| sweep_rank(&self.entities, self.swept_min(swept), entity);
+        children.sort_by_key(|&(_, _, entity, _, swept)| rank(swept, entity));
         let mut contacts = Vec::new();
-        let mut window: Vec<usize> = Vec::new();
         for current in 0..children.len() {
             let (_, b_platform, _, b_box, b_swept) = children[current];
-            let b_half = half(b_swept);
-            window.retain(|&prior| {
-                let a_swept = children[prior].4;
-                axis(a_swept.center) + axis(half(a_swept)) > axis(b_swept.center) - axis(b_half)
-            });
-            for &prior in &window {
+            for prior in 0..current {
                 let (_, a_platform, _, a_box, a_swept) = children[prior];
-                let a_half = half(a_swept);
-                if a_platform == b_platform
-                    || other(a_swept.center) + other(a_half) <= other(b_swept.center) - other(b_half)
-                    || other(a_swept.center) - other(a_half) >= other(b_swept.center) + other(b_half)
-                {
+                if a_platform == b_platform || !self.swept_pair(a_swept, b_swept) {
                     continue;
                 }
                 if let Some(contact) = crate::physics::contact::box_box(a_box, b_box) {
@@ -36924,7 +36785,6 @@ impl RolloutWorld {
                     contacts.push((children[prior].0, children[current].0, contact, key));
                 }
             }
-            window.push(current);
         }
         let child = |world: &Self, child: usize| {
             if child >= SPIKE {
@@ -36980,9 +36840,6 @@ impl RolloutWorld {
         // fixed-point positional correction gives the remainder to a
         // different body when A and B are exchanged. Compute the same global
         // sweep axis, then retain only the item circles from that ordering.
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
 
         // Tesla nodes are circle children of their platform's CompositeBody
         // and share this pass; participants from NODE up are nodes. Portal
@@ -37054,14 +36911,13 @@ impl RolloutWorld {
         // The broadphase pairs the bounding boxes taken before any Circle/RR
         // correction; the manifold then tests the corrected circles.
         let swept = |index: usize| {
-            let center = if index >= NODE {
-                nodes[index - NODE].swept_center
+            Swept::Part(if index >= NODE {
+                Part::Node(index - NODE)
             } else if index >= SHOT {
-                shots[index - SHOT].position
+                Part::Shot(index - SHOT)
             } else {
-                items[index].swept_position
-            };
-            Circle { center, radius: circle(index).radius }
+                Part::Item(index)
+            })
         };
         let row = |index: usize| {
             if index >= NODE {
@@ -37072,21 +36928,14 @@ impl RolloutWorld {
                 items[index].entity
             }
         };
-        let order = &mut self.scratch.item_order;
-        let entities = &self.entities;
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        let mut contacts = std::mem::take(&mut self.scratch.item_contacts);
         order.sort_unstable_by_key(|&index| {
-            sweep_rank(entities, axis(swept(index).center) - swept(index).radius, row(index))
+            sweep_rank(&self.entities, self.swept_min(swept(index)), row(index))
         });
-
-        let window = &mut self.scratch.item_window;
-        let contacts = &mut self.scratch.item_contacts;
-        window.clear();
         contacts.clear();
-        for &current in order.iter() {
-            let current_swept = swept(current);
-            let current_min = axis(current_swept.center) - current_swept.radius;
-            window.retain(|&prior| axis(swept(prior).center) + swept(prior).radius > current_min);
-            for &prior in window.iter() {
+        for (k, &current) in order.iter().enumerate() {
+            for &prior in &order[..k] {
                 // Nodes of one platform share its composite, which DetPhysics
                 // never tests against itself.
                 if prior >= NODE
@@ -37095,12 +36944,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let prior_swept = swept(prior);
-                if other(prior_swept.center) + prior_swept.radius
-                    <= other(current_swept.center) - current_swept.radius
-                    || other(prior_swept.center) - prior_swept.radius
-                        >= other(current_swept.center) + current_swept.radius
-                {
+                if !self.swept_pair(swept(prior), swept(current)) {
                     continue;
                 }
                 if let Some(contact) =
@@ -37109,8 +36953,10 @@ impl RolloutWorld {
                     contacts.push((prior, current, contact));
                 }
             }
-            window.push(current);
         }
+        self.scratch.item_order = order;
+        self.scratch.item_contacts = contacts;
+        let contacts = &self.scratch.item_contacts;
         // DetPhysics builds every narrow-phase manifold before resolving any
         // of them. In particular the three overlapping fan copies must all
         // use their initial positions rather than a prior pair's correction.
@@ -37307,7 +37153,7 @@ impl RolloutWorld {
             row.angular_velocity = item.body.angular_velocity.raw();
         }
         // The Circle/Box group follows, built from the corrected circles.
-        self.circle_box_group(data);
+        self.circle_box_group();
         // SmokeGrenadeExplode2 accepts every non-projectile collision once
         // its owner gate is open, a rounded wall included. Manifolds were all
         // constructed before this callback phase, so destroying one Smoke
@@ -37605,12 +37451,9 @@ impl RolloutWorld {
             // The pair comes from the broadphase, swept before a wall or an
             // arrow corrected the item this pass; the manifold then tests the
             // corrected circle.
-            let swept = Circle {
-                center: item.swept_position,
-                radius: item_radius,
-            };
+            let swept = Swept::Part(Part::Item(item_index));
             for player_index in 0..self.players.len() {
-                if !self.hittable(player_index) || !self.player_swept_pairs(player_index, swept) {
+                if !self.hittable(player_index) || !self.swept_pair(swept, Swept::Player(player_index)) {
                     continue;
                 }
                 let player = &self.players[player_index];
@@ -37679,9 +37522,7 @@ impl RolloutWorld {
                     }
                 };
                 if hit {
-                    let player_min = self.player_sweep_min(player_index, self.sweep_x());
-                    let entity = Some(Self::hurtbox_entity(&self.players[player_index]));
-                    let rank = sweep_rank(&self.entities, player_min, entity);
+                    let rank = self.player_sweep_rank(player_index);
                     let category = GROUP_CB - self.player_is_circle(player_index) as u8;
                     let (later, earlier) = sweep_pair(item_rank, rank);
                     earliest_key(&mut first_key, (category, later, earlier));
@@ -37875,7 +37716,7 @@ impl RolloutWorld {
     }
 
     fn player_sweep_rank(&self, player_index: usize) -> SweepRank {
-        let player_min = self.player_sweep_min(player_index, self.sweep_x());
+        let player_min = self.player_sweep_min(player_index);
         let entity = Some(Self::hurtbox_entity(&self.players[player_index]));
         sweep_rank(&self.entities, player_min, entity)
     }
@@ -37907,7 +37748,7 @@ impl RolloutWorld {
                 continue;
             }
             for b in a + 1..players {
-                if !self.slime_box_registered(b) {
+                if !self.slime_box_registered(b) || !self.swept_pair(Swept::Player(a), Swept::Player(b)) {
                     continue;
                 }
                 let a_slime = self.players[a].active == ActiveAbility::None;
@@ -37930,6 +37771,7 @@ impl RolloutWorld {
             for player in 0..players {
                 if self.playable(player)
                     && Self::slime_collider_enabled(&self.players[player])
+                    && self.swept_pair(Swept::Clone(clone), Swept::Player(player))
                     && self.player_hit_by_box(player, clone_box)
                 {
                     let slime = self.players[player].active == ActiveAbility::None;
@@ -37938,6 +37780,7 @@ impl RolloutWorld {
             }
             for other in clone + 1..self.abilityless_clones.len() {
                 if self.clone_box_registered(other)
+                    && self.swept_pair(Swept::Clone(clone), Swept::Clone(other))
                     && crate::physics::contact::box_box(
                         clone_box,
                         self.abilityless_clones[other].base.collider,
@@ -37971,8 +37814,8 @@ impl RolloutWorld {
         let rank = |prey: Prey| match prey {
             Prey::Player(index) => self.player_sweep_rank(index),
             Prey::Clone(index) => {
-                let clone = &self.abilityless_clones[index];
-                sweep_rank(&self.entities, self.box_sweep_min(clone.base.collider), clone.entity)
+                let min = self.swept_min(Swept::Clone(index));
+                sweep_rank(&self.entities, min, self.abilityless_clones[index].entity)
             }
         };
         let entity = |prey: Prey| match prey {
@@ -38178,27 +38021,6 @@ impl RolloutWorld {
         }
     }
 
-    /// The centre and half size of the bounding box of the player's
-    /// registered Player-layer shape (PhysTools.ComputeBoundingBox).
-    fn player_bounds(&self, player_index: usize) -> (Vec2, Vec2) {
-        let player = &self.players[player_index];
-        let half = |right: Vec2, up: Vec2| {
-            Vec2::new(right.x.abs() + up.x.abs(), right.y.abs() + up.y.abs())
-        };
-        if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
-            let collider = player.base.collider;
-            return (collider.center, half(collider.right, collider.up));
-        }
-        let row = self.entities[Self::hurtbox_entity(player)];
-        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-        if row.kind == 0 {
-            let radius = Fix::from_raw(row.radius);
-            return (center, Vec2::new(radius, radius));
-        }
-        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-        (center, half(right, up))
-    }
 
     fn player_is_circle(&self, player_index: usize) -> bool {
         let player = &self.players[player_index];
@@ -38208,13 +38030,10 @@ impl RolloutWorld {
 
     /// The low edge, on the broadphase sweep axis, of the player's registered
     /// Player-layer shape.
-    fn player_sweep_min(&self, player_index: usize, sweep_x: bool) -> Fix {
-        let (center, half) = self.player_bounds(player_index);
-        if sweep_x { center.x - half.x } else { center.y - half.y }
+    fn player_sweep_min(&self, player_index: usize) -> Fix {
+        self.swept_min(Swept::Player(player_index))
     }
 
-    /// Whether SortAndSweep pairs the circle with the player's shape: their
-    /// bounding boxes overlap strictly on both axes.
     /// How many burning smoke cloud Explosions overlap the circle. They hit on
     /// their first registered pass, like a grenade's, so they set off grenades
     /// and mines too.
@@ -38308,12 +38127,6 @@ impl RolloutWorld {
             })
             .min();
         (count, key)
-    }
-
-    fn player_swept_pairs(&self, player_index: usize, circle: Circle) -> bool {
-        let (center, half) = self.player_bounds(player_index);
-        let reach = half + Vec2::new(circle.radius, circle.radius);
-        (circle.center.x - center.x).abs() < reach.x && (circle.center.y - center.y).abs() < reach.y
     }
 
     /// `player_hit_by_box` for a circle hitbox.
@@ -40345,13 +40158,11 @@ impl RolloutWorld {
     fn duplicated_rock_wall_manifolds(&mut self) {
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.duplicated_rock_wall_contacts.clear();
-        scratch.duplicated_rock_swept.clear();
         for (rock_index, rock) in self.duplicated_rocks.iter().enumerate() {
             let circle = Circle {
                 center: rock.position,
                 radius: rock.collider_radius,
             };
-            scratch.duplicated_rock_swept.push(circle);
             if !rock.active || self.blink_object_hidden(rock.entity) {
                 continue;
             }
@@ -40394,7 +40205,7 @@ impl RolloutWorld {
                 let entity = Self::hurtbox_entity(&self.players[victim]);
                 if entity == usize::MAX
                     || self.entities[entity].layer != LAYER_PLAYER
-                    || !self.circle_entity_bounds_overlap(circle, entity)
+                    || !self.swept_pair(Swept::DuplicatedRock(rock_index), Swept::Player(victim))
                     || self.circle_entity_contact(circle, entity).is_none()
                 {
                     continue;
@@ -40404,8 +40215,8 @@ impl RolloutWorld {
                 } else {
                     CAUSE_OTHER
                 };
-                let axis = if self.sweep_x() { circle.center.x } else { circle.center.y };
-                let rank = sweep_rank(&self.entities, axis - circle.radius, rock.entity);
+                let min = self.swept_min(Swept::DuplicatedRock(rock_index));
+                let rank = sweep_rank(&self.entities, min, rock.entity);
                 self.queue_callback_kill(victim, true, rank, killer, cause);
             }
         }
@@ -40635,9 +40446,6 @@ impl RolloutWorld {
     fn rock_wall_manifolds(&mut self) {
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.rock_wall_contacts.clear();
-        // DetPhysics pairs colliders by the bounding boxes taken after
-        // integration, before any contact pass pushes a body out.
-        let mut swept = [Circle::default(); MAX_BODIES];
         for (rock_index, slot) in self.players.iter().enumerate() {
             // A Blink tunnel or teleport disables the form's GameObject,
             // taking its body out of DetPhysics.
@@ -40654,7 +40462,6 @@ impl RolloutWorld {
                 // BounceBall's pulse is applied only in the later LateUpdate.
                 radius: slot.rock_circle().circle_radius,
             };
-            swept[rock_index] = circle;
             for (wall_index, platform) in self.platforms.iter().enumerate() {
                 if !platform.active || !scratch.swept_pairs(self.tick, wall_index, circle) {
                     continue;
@@ -40669,9 +40476,6 @@ impl RolloutWorld {
                         .push((rock_index, wall_index, contact));
                 }
             }
-        }
-        for (slot, &circle) in self.players.iter_mut().zip(&swept) {
-            slot.rock.swept = circle;
         }
         self.scratch = scratch;
     }
@@ -40695,13 +40499,6 @@ impl RolloutWorld {
     /// Rock forms' Circle/Circle and Circle/Box pairs and their callbacks,
     /// after every Circle/RoundedRectangle pair resolved.
     fn rocks_contacts(&mut self, data: &data::RolloutData) {
-        let mut swept = [Circle::default(); MAX_BODIES];
-        for (circle, slot) in swept.iter_mut().zip(&self.players) {
-            *circle = slot.rock.swept;
-        }
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let rock_min = |rock: usize| axis(swept[rock].center) - swept[rock].radius;
 
         // Circle/Circle between Rock forms first resolves both BoplBodies,
         // then queues the same manifold normal to both BounceBall callbacks.
@@ -40720,10 +40517,9 @@ impl RolloutWorld {
         // and the copy has no callback, so the pair only moves the bodies.
         // Participants from DUPLICATE up are copies.
         const DUPLICATE: usize = 1 << 17;
-        let duplicate_swept = std::mem::take(&mut self.scratch.duplicated_rock_swept);
         let duplicate_usable = |index: usize| {
             let rock = &self.duplicated_rocks[index];
-            rock.active && index < duplicate_swept.len() && !self.blink_object_hidden(rock.entity)
+            rock.active && !self.blink_object_hidden(rock.entity)
         };
         let pickup_circle = |index: usize| {
             let pickup = &self.ability_pickups[index];
@@ -40732,17 +40528,16 @@ impl RolloutWorld {
                 radius: pickup.radius,
             }
         };
-        let participant_min = |index: usize| {
+        let swept = |index: usize| {
             if index >= DUPLICATE {
-                let circle = duplicate_swept[index - DUPLICATE];
-                axis(circle.center) - circle.radius
+                Swept::DuplicatedRock(index - DUPLICATE)
             } else if index >= PICKUP {
-                let circle = pickup_circle(index - PICKUP);
-                axis(circle.center) - circle.radius
+                Swept::Pickup(index - PICKUP)
             } else {
-                rock_min(index)
+                Swept::Player(index)
             }
         };
+        let meet = |a: usize, b: usize| self.swept_pair(swept(a), swept(b));
         let rank = |index: usize| {
             let entity = if index >= DUPLICATE {
                 self.duplicated_rocks[index - DUPLICATE].entity
@@ -40751,7 +40546,7 @@ impl RolloutWorld {
             } else {
                 Some(self.players[index].rock_entity)
             };
-            sweep_rank(&self.entities, participant_min(index), entity)
+            sweep_rank(&self.entities, self.swept_min(swept(index)), entity)
         };
         let mut pairs = [(0usize, 0usize); 64];
         let mut pair_count = 0;
@@ -40762,7 +40557,7 @@ impl RolloutWorld {
             for b in a + 1..self.players.len() {
                 if self.players[b].active != ActiveAbility::Rock
                     || !self.playable(b)
-                    || !swept[a].bounds_overlap(swept[b])
+                    || !meet(a, b)
                     || pair_count == pairs.len()
                 {
                     continue;
@@ -40774,7 +40569,7 @@ impl RolloutWorld {
                 if !pickup.active
                     || !pickup.enabled
                     || self.blink_object_hidden(pickup.entity)
-                    || !swept[a].bounds_overlap(pickup_circle(pickup_index))
+                    || !meet(a, PICKUP + pickup_index)
                     || pair_count == pairs.len()
                 {
                     continue;
@@ -40785,7 +40580,7 @@ impl RolloutWorld {
             }
             for duplicate in 0..self.duplicated_rocks.len() {
                 if !duplicate_usable(duplicate)
-                    || !swept[a].bounds_overlap(duplicate_swept[duplicate])
+                    || !meet(a, DUPLICATE + duplicate)
                     || pair_count == pairs.len()
                 {
                     continue;
@@ -40801,7 +40596,7 @@ impl RolloutWorld {
             }
             for second in first + 1..self.duplicated_rocks.len() {
                 if !duplicate_usable(second)
-                    || !duplicate_swept[first].bounds_overlap(duplicate_swept[second])
+                    || !meet(DUPLICATE + first, DUPLICATE + second)
                     || pair_count == pairs.len()
                 {
                     continue;
@@ -40820,7 +40615,7 @@ impl RolloutWorld {
             }
             for second in first + 1..self.ability_pickups.len() {
                 if !usable(&self.ability_pickups[second])
-                    || !pickup_circle(first).bounds_overlap(pickup_circle(second))
+                    || !meet(PICKUP + first, PICKUP + second)
                     || pair_count == pairs.len()
                 {
                     continue;
@@ -40854,7 +40649,6 @@ impl RolloutWorld {
         for (contact, &(a, b)) in contacts.iter_mut().zip(pairs.iter()) {
             *contact = crate::physics::contact::circle_circle(circle(a), circle(b));
         }
-        self.scratch.duplicated_rock_swept = duplicate_swept;
         for (&(a, b), contact) in pairs.iter().zip(contacts) {
             if a >= DUPLICATE || b >= DUPLICATE {
                 if let Some(contact) = contact {
@@ -40962,15 +40756,10 @@ impl RolloutWorld {
     /// see the corrections of its Circle/Circle pairs with items and rocks,
     /// and all of them are built before the first one resolves.
     fn rocks_box_contacts(&mut self, data: &data::RolloutData) {
-        let mut swept = [Circle::default(); MAX_BODIES];
         let mut centers = [Vec2::ZERO; MAX_BODIES];
-        for ((circle, center), slot) in swept.iter_mut().zip(&mut centers).zip(&self.players) {
-            *circle = slot.rock.swept;
+        for (center, slot) in centers.iter_mut().zip(&self.players) {
             *center = slot.base.position;
         }
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let rock_min = |rock: usize| axis(swept[rock].center) - swept[rock].radius;
 
         // Circle/Box: a Spike attack is a solid box child of its platform's
         // CompositeBody, so a Rock bounces off it. ResolveCollision takes the
@@ -40993,16 +40782,10 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let attack_box = self.spike_attack_box(spike);
-                let bounds = attack_box.bounds(Fix::ZERO);
-                let rock = swept[rock_index];
-                if rock.center.x + rock.radius <= bounds.min.x
-                    || rock.center.x - rock.radius >= bounds.max.x
-                    || rock.center.y + rock.radius <= bounds.min.y
-                    || rock.center.y - rock.radius >= bounds.max.y
-                {
+                if !self.swept_pair(Swept::Player(rock_index), Swept::Part(Part::Spike(spike_index))) {
                     continue;
                 }
+                let attack_box = self.spike_attack_box(spike);
                 let circle = Circle {
                     center: self.players[rock_index].base.position,
                     radius: self.players[rock_index].rock_circle().circle_radius,
@@ -41079,7 +40862,7 @@ impl RolloutWorld {
                 let entity = Self::hurtbox_entity(&self.players[victim]);
                 if entity == usize::MAX
                     || self.entities[entity].layer != LAYER_PLAYER
-                    || !self.circle_entity_bounds_overlap(swept[rock_index], entity)
+                    || !self.swept_pair(Swept::Player(rock_index), Swept::Player(victim))
                 {
                     continue;
                 }
@@ -41092,7 +40875,7 @@ impl RolloutWorld {
                     killers[victim_count] = self.players[rock_index].base.id;
                     rock_ranks[victim_count] = sweep_rank(
                         &self.entities,
-                        rock_min(rock_index),
+                        self.swept_min(Swept::Player(rock_index)),
                         Some(self.players[rock_index].rock_entity),
                     );
                     victim_count += 1;
@@ -41108,7 +40891,7 @@ impl RolloutWorld {
                 let Some(entity) = self.abilityless_clones[clone_index].entity else {
                     continue;
                 };
-                if !self.circle_entity_bounds_overlap(swept[rock_index], entity) {
+                if !self.swept_pair(Swept::Player(rock_index), Swept::Clone(clone_index)) {
                     continue;
                 }
                 if let Some(contact) = self.circle_entity_contact(rock, entity) {
@@ -41584,6 +41367,9 @@ impl RolloutWorld {
                     self.sync_inactive_platform(i);
                 }
             }
+            let mut sweep = std::mem::take(&mut self.scratch.sweep);
+            self.take_sweep(&mut sweep, data);
+            self.scratch.sweep = sweep;
             // Walls that stand still still squish a slime walked into them.
             let mut colliders = std::mem::take(&mut self.scratch.box_callback_colliders);
             colliders.clear();
@@ -41814,10 +41600,13 @@ impl RolloutWorld {
         scratch
             .box_callback_colliders
             .extend(self.platforms.iter().map(|p| p.collider));
-        scratch.engine_swept.clear();
-        scratch.engine_swept.extend(self.engines.iter().map(|e| e.collider_center));
-        scratch.spike_swept.clear();
-        scratch.spike_swept.extend(self.spike_attacks.iter().map(|s| s.collider_center));
+        // SortAndSweep bounds every collider here: the RoundedRect
+        // corrections above moved the walls and composite roots, not their
+        // children's colliders.
+        let mut sweep = std::mem::take(&mut scratch.sweep);
+        self.take_sweep(&mut sweep, data);
+        let scratch = &mut self.scratch;
+        scratch.sweep = sweep;
 
         // DetPhysics' Box/RoundedRect group follows RoundedRect/RoundedRect.
         // SpikeAttack boxes are composite children, so impulses and
@@ -47019,7 +46808,6 @@ mod tests {
             active: true,
             lethal: true,
             collider_center: position,
-            swept_center: position,
             scale: Fix::ONE,
             radius: data::get().tesla.node_radius,
             ..SpawnedTeslaNode::default()
