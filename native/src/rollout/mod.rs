@@ -1179,6 +1179,15 @@ pub struct SpawnedTeslaNode {
     pub duplicate_shake_offset: Vec2,
 }
 
+/// The collider DetPhysics.MoveObjectOutOfWalls moves, as its opening
+/// UpdatePhysicsPositions placed it.
+#[derive(Clone, Copy)]
+enum WallMover {
+    Circle(Circle),
+    Box(OrientedBox),
+    Rounded(RoundedRect),
+}
+
 /// A DetPhysics collider as a query sees it: a box or a circle.
 #[derive(Clone, Copy)]
 pub enum DetCollider {
@@ -27296,29 +27305,48 @@ impl RolloutWorld {
     }
 
     /// DetPhysics.MoveObjectOutOfWalls corrects with inverse masses 1 and 0
-    /// whatever the body's own mass, and on a hit puts the FixTransform at the
-    /// collider's centre plus the correction, offset and all
-    /// (DetPhysics.cs:2567). Without a hit `position` stays.
-    fn magnet_circle_out_of_walls(&mut self, position: Vec2, circle: Circle) -> Vec2 {
-        use crate::physics::contact::{circle_box, circle_circle, circle_rounded};
+    /// whatever the body's own mass.
+    /// DetPhysics.MoveObjectOutOfWalls (DetPhysics.cs:2533-2723): the full
+    /// correction, at inverse masses 1 and 0, from the first overlapping
+    /// active rounded rect, else wall or terrain circle, else wall or terrain
+    /// box, each registry in order and never the mover's own collider `own`.
+    /// Pairs keep the source's argument order: a circle or box met first
+    /// against a moving rounded rect, or a circle against a moving box, hands
+    /// the mover its own correction. The caller sets the transform to the
+    /// collider centre plus the correction.
+    fn move_object_out_of_walls(&mut self, mover: WallMover, own: Option<usize>) -> Option<Vec2> {
+        use crate::physics::contact::{box_box, circle_box, circle_circle, circle_rounded, rounded_rounded};
         self.remove_destroyed_colliders();
-        let moved = |contact| circle.center + positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0];
-        if let Some(contact) =
-            self.platforms.iter().find_map(|platform| circle_rounded(circle, platform.collider))
-        {
-            return moved(contact);
+        let correction = |contact| positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0];
+        let flat = |inner| RoundedRect { inner, radius: Fix::ZERO };
+        for (platform, &entity) in self.platforms.iter().zip(&self.platform_entities) {
+            if !platform.active || Some(entity) == own {
+                continue;
+            }
+            let contact = match mover {
+                WallMover::Circle(circle) => circle_rounded(circle, platform.collider),
+                WallMover::Box(shape) => rounded_rounded(flat(shape), platform.collider),
+                WallMover::Rounded(shape) => rounded_rounded(shape, platform.collider),
+            };
+            if let Some(contact) = contact {
+                return Some(correction(contact));
+            }
         }
-        // Failing a rounded rect, the first wall, LethalTerrain or
-        // NonLethalTerrain circle in registration order, such as a Tesla
-        // node, then the first such box (DetPhysics.cs:2572-2606).
+        // Then the first wall, LethalTerrain or NonLethalTerrain circle in
+        // registration order, such as a Tesla node, then the first such box,
+        // each where DetPhysics last synced it (DetPhysics.cs:2572-2606).
         const TERRAIN: u32 = 1 << LAYER_WALL | 1 << LAYER_LETHAL_TERRAIN | 1 << LAYER_NON_LETHAL_TERRAIN;
         let first_hit = |boxes: bool| {
             (0..self.entities.len())
-                .filter(|&entity| TERRAIN & (1 << self.entities[entity].layer) != 0)
+                .filter(|&entity| TERRAIN & (1 << self.entities[entity].layer) != 0 && Some(entity) != own)
                 .filter_map(|entity| {
-                    let contact = match self.detphysics_collider(entity)? {
-                        DetCollider::Circle(wall) if !boxes => circle_circle(circle, wall),
-                        DetCollider::Box(wall) if boxes => circle_box(circle, wall),
+                    let contact = match (self.detphysics_collider(entity)?, mover) {
+                        (DetCollider::Circle(wall), WallMover::Circle(shape)) if !boxes => circle_circle(shape, wall),
+                        (DetCollider::Circle(wall), WallMover::Box(shape)) if !boxes => circle_box(wall, shape),
+                        (DetCollider::Circle(wall), WallMover::Rounded(shape)) if !boxes => circle_rounded(wall, shape),
+                        (DetCollider::Box(wall), WallMover::Circle(shape)) if boxes => circle_box(shape, wall),
+                        (DetCollider::Box(wall), WallMover::Box(shape)) if boxes => box_box(shape, wall),
+                        (DetCollider::Box(wall), WallMover::Rounded(shape)) if boxes => rounded_rounded(flat(wall), shape),
                         _ => None,
                     }?;
                     Some((self.entities[entity].id, contact))
@@ -27326,7 +27354,7 @@ impl RolloutWorld {
                 .min_by_key(|&(id, _)| id)
                 .map(|(_, contact)| contact)
         };
-        first_hit(false).or_else(|| first_hit(true)).map_or(position, moved)
+        first_hit(false).or_else(|| first_hit(true)).map(correction)
     }
 
     /// DetPhysics.SynCompositeToFixTransAndRelativeValues for the children of
@@ -27466,12 +27494,11 @@ impl RolloutWorld {
                     self.entities[entity].y = position.y.raw();
                 }
                 self.thrown_items[i].synced_center = position;
-                let moved = self.magnet_circle_out_of_walls(position, Circle {
-                    center: position,
-                    radius,
-                });
+                let circle = Circle { center: position, radius };
+                let own = self.thrown_items[i].entity;
+                let correction = self.move_object_out_of_walls(WallMover::Circle(circle), own);
                 let item = &mut self.thrown_items[i];
-                item.position = moved;
+                item.position = position + correction.unwrap_or(Vec2::ZERO);
                 item.body.velocity = Vec2::ZERO;
                 item.magnet_holder = Some(index);
                 item.magnet_hold_ticks = 2;
@@ -27493,28 +27520,20 @@ impl RolloutWorld {
                 missile.body.velocity = Vec2::ZERO;
                 missile.magnet_holder = Some(index);
                 missile.magnet_hold_ticks = 2;
-                let shape = RoundedRect {
-                    inner: missile.collider(),
-                    radius: Fix::ZERO,
-                };
-                if let Some(contact) = self.platforms.iter().find_map(|platform| {
-                    crate::physics::contact::rounded_rounded(shape, platform.collider)
-                }) {
-                    missile.position +=
-                        positional_correction(contact, missile.body.inverse_mass, Fix::ZERO, true)
-                            [0];
+                let (shape, own) = (missile.collider(), missile.entity);
+                if let Some(correction) = self.move_object_out_of_walls(WallMover::Box(shape), own) {
+                    self.guided_missiles[i].position = shape.center + correction;
                 }
             }
             MagnetHeld::Arrow(i) => {
                 let velocity = self.arrows[i].velocity;
                 let radius = self.arrows[i].collider_radius;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
-                let moved = self.magnet_circle_out_of_walls(position, Circle {
-                    center: position,
-                    radius,
-                });
+                let circle = Circle { center: position, radius };
+                let own = self.arrows[i].entity;
+                let correction = self.move_object_out_of_walls(WallMover::Circle(circle), own);
                 let arrow = &mut self.arrows[i];
-                arrow.position = moved;
+                arrow.position = position + correction.unwrap_or(Vec2::ZERO);
                 arrow.velocity = Vec2::ZERO;
                 arrow.magnet_holder = Some(index);
                 arrow.magnet_hold_ticks = 2;
@@ -27553,12 +27572,11 @@ impl RolloutWorld {
                 // The item branch compensates BounceBall.LateUpdateSim's
                 // activation clock so a held player Rock does not expire.
                 self.players[i].rock.time -= holder_dt;
-                let moved = self.magnet_circle_out_of_walls(position, Circle {
-                    center: position,
-                    radius: self.players[i].rock_circle().circle_radius,
-                });
+                let circle = Circle { center: position, radius: self.players[i].rock_circle().circle_radius };
+                let own = Some(Self::hurtbox_entity(&self.players[i]));
+                let correction = self.move_object_out_of_walls(WallMover::Circle(circle), own);
                 let rock = &mut self.players[i];
-                rock.base.position = moved;
+                rock.base.position = position + correction.unwrap_or(Vec2::ZERO);
                 rock.rock.body.velocity = Vec2::ZERO;
                 rock.base.velocity = Vec2::ZERO;
             }
@@ -27585,41 +27603,9 @@ impl RolloutWorld {
                 let mut shape = self.platforms[platform].collider;
                 shape.inner.center = position;
                 let collider_position = position;
-                let wall_push = self
-                    .platforms
-                    .iter()
-                    .enumerate()
-                    .filter(|&(other, wall)| other != platform && wall.active)
-                    .find_map(|(_, wall)| {
-                        crate::physics::contact::rounded_rounded(shape, wall.collider)
-                    })
-                    .map(|contact| positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0]);
-                // Failing that, the first overlapping terrain circle in
-                // registration order, a Tesla node, is tested as (circle,
-                // boulder), and the circle's own correction, away from the
-                // boulder, is what moves the boulder (DetPhysics.cs:2631-2644).
-                let node_push = || {
-                    self.tesla_nodes
-                        .iter()
-                        .filter(|node| node.active && !node.macho_carried)
-                        .filter_map(|node| {
-                            if !self.collides(node.entity?) {
-                                return None;
-                            }
-                            let entity = &self.entities[node.entity?];
-                            let circle = Circle {
-                                center: node.collider_center,
-                                radius: node.radius,
-                            };
-                            crate::physics::contact::circle_rounded(circle, shape)
-                                .map(|contact| (entity.id, contact))
-                        })
-                        .min_by_key(|&(id, _)| id)
-                        .map(|(_, contact)| {
-                            positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0]
-                        })
-                };
-                let position = position + wall_push.or_else(node_push).unwrap_or(Vec2::ZERO);
+                let own = Some(self.platform_entities[platform]);
+                let correction = self.move_object_out_of_walls(WallMover::Rounded(shape), own);
+                let position = position + correction.unwrap_or(Vec2::ZERO);
                 self.platforms[platform].surface.center = position;
                 self.platforms[platform].collider.inner.center = collider_position;
                 self.platform_dynamics[platform].composite_position = position;
@@ -27636,24 +27622,22 @@ impl RolloutWorld {
                 let offset = Vec2::angle(pickup.body.orientation).complex_mul(pickup.offset);
                 let radius = pickup.radius;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
-                let moved = self.magnet_circle_out_of_walls(position, Circle {
-                    center: position + offset,
-                    radius,
-                });
+                let circle = Circle { center: position + offset, radius };
+                let own = pickup.entity;
+                let correction = self.move_object_out_of_walls(WallMover::Circle(circle), own);
                 let pickup = &mut self.ability_pickups[i];
-                pickup.synced_center = position + offset;
-                pickup.position = moved;
+                pickup.synced_center = circle.center;
+                pickup.position = correction.map_or(position, |correction| circle.center + correction);
                 pickup.body.velocity = Vec2::ZERO;
             }
             MagnetHeld::PortalShot(i) => {
                 let velocity = self.portal_shots[i].body.velocity;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
-                let moved = self.magnet_circle_out_of_walls(position, Circle {
-                    center: position,
-                    radius: self.portal_shots[i].collider_radius,
-                });
+                let circle = Circle { center: position, radius: self.portal_shots[i].collider_radius };
+                let own = self.portal_shots[i].entity;
+                let correction = self.move_object_out_of_walls(WallMover::Circle(circle), own);
                 let shot = &mut self.portal_shots[i];
-                shot.position = moved;
+                shot.position = position + correction.unwrap_or(Vec2::ZERO);
                 shot.body.velocity = Vec2::ZERO;
             }
             MagnetHeld::RevivalMarker(i) => {
