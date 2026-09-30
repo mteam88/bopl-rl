@@ -5725,14 +5725,14 @@ impl RolloutWorld {
 
     fn ability_pickups_integrate(&mut self, physics_dt: Fix) {
         for index in 0..self.ability_pickups.len() {
-            if self.blink_object_hidden(self.ability_pickups[index].entity) {
-                continue;
-            }
+            let hidden = self.blink_object_hidden(self.ability_pickups[index].entity);
             let state = &mut self.ability_pickups[index];
             if !state.active || !state.enabled {
                 continue;
             }
-            state.position += state.body.integrate(physics_dt, Fix::ZERO);
+            if !hidden {
+                state.position += state.body.integrate(physics_dt, Fix::ZERO);
+            }
             if let Some(entity) = state.entity {
                 let row = &mut self.entities[entity];
                 let center = state.position + state.offset;
@@ -8177,14 +8177,14 @@ impl RolloutWorld {
 
     fn portal_shots_integrate(&mut self, physics_dt: Fix) {
         for shot_index in 0..self.portal_shots.len() {
-            if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
-                continue;
-            }
+            let hidden = self.blink_object_hidden(self.portal_shots[shot_index].entity);
             let shot = &mut self.portal_shots[shot_index];
             if !shot.active || !shot.registered {
                 continue;
             }
-            shot.position += shot.body.integrate(physics_dt, Fix::ZERO);
+            if !hidden {
+                shot.position += shot.body.integrate(physics_dt, Fix::ZERO);
+            }
             let entity = shot.entity.expect("registered PortalShot collider");
             let row = &mut self.entities[entity];
             row.x = shot.position.x.raw();
@@ -8198,11 +8198,10 @@ impl RolloutWorld {
 
     fn smoke_clouds_integrate(&mut self, physics_dt: Fix) {
         for index in 0..self.smoke_clouds.len() {
-            // A cloud a Blink tunnel or Teleport effect deactivated this pass
-            // is skipped by DetPhysics like any inactive GameObject.
-            if self.blink_object_hidden(self.smoke_clouds[index].entity) {
-                continue;
-            }
+            // A cloud a Blink tunnel or Teleport effect deactivated is skipped
+            // by DetPhysics like any inactive GameObject, but RlObservation
+            // still exports its body's velocity, which a Shockwave pushed.
+            let hidden = self.blink_object_hidden(self.smoke_clouds[index].entity);
             let cloud = &mut self.smoke_clouds[index];
             if !cloud.active || !cloud.registered {
                 continue;
@@ -8210,7 +8209,7 @@ impl RolloutWorld {
             // Ignite disables the circle, and DetPhysics integrates only
             // active colliders (FlammableSmoke.cs:88). The row still shows
             // the body's velocity, which a Shockwave keeps pushing.
-            if cloud.ignition_time < Fix::ZERO {
+            if !hidden && cloud.ignition_time < Fix::ZERO {
                 cloud.position += cloud.body.integrate(physics_dt, Fix::ZERO);
             }
             if let Some(entity) = cloud.entity {
@@ -33381,10 +33380,13 @@ impl RolloutWorld {
 
     fn guided_missiles_integrate(&mut self, data: &data::RolloutData, physics_dt: Fix) {
         for index in 0..self.guided_missiles.len() {
-            if !self.guided_missiles[index].active
-                || !self.guided_missiles[index].registered
-                || self.blink_object_hidden(self.guided_missiles[index].entity)
-            {
+            if !self.guided_missiles[index].active || !self.guided_missiles[index].registered {
+                continue;
+            }
+            // A hidden Spark takes neither its updaters nor DetPhysics, but
+            // RlObservation still exports its body.
+            if self.blink_object_hidden(self.guided_missiles[index].entity) {
+                self.sync_guided_missile_entity(index, data);
                 continue;
             }
             let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
@@ -33442,28 +33444,34 @@ impl RolloutWorld {
                 }
             }
             missile.position += missile.body.integrate(physics_dt, Fix::from_int(-40));
-            let entity = missile.entity.expect("registered Missile collider");
-            let collider = OrientedBox::from_basis(
-                missile.position,
-                Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents * missile.scale,
-            );
-            let row = &mut self.entities[entity];
-            row.x = missile.position.x.raw();
-            row.y = missile.position.y.raw();
-            row.vx = missile.body.velocity.x.raw();
-            row.vy = missile.body.velocity.y.raw();
-            row.right_x = collider.right.x.raw();
-            row.right_y = collider.right.y.raw();
-            row.up_x = collider.up.x.raw();
-            row.up_y = collider.up.y.raw();
-            row.rotation = missile.body.orientation.raw();
-            row.angular_velocity = missile.body.angular_velocity.raw();
+            self.sync_guided_missile_entity(index, data);
             // DetPhysics writes PhysicsBody.orientation back through the
             // FixTransform rotation setter after simulation, rebuilding the
             // basis that SparkShot reads on the following updater pass.
+            let missile = &mut self.guided_missiles[index];
             missile.up = Vec2::angle(missile.body.orientation).perp();
         }
+    }
+
+    fn sync_guided_missile_entity(&mut self, index: usize, data: &data::RolloutData) {
+        let missile = self.guided_missiles[index];
+        let entity = missile.entity.expect("registered Missile collider");
+        let collider = OrientedBox::from_basis(
+            missile.position,
+            Vec2::angle(missile.body.orientation),
+            data.missile.spark_extents * missile.scale,
+        );
+        let row = &mut self.entities[entity];
+        row.x = missile.position.x.raw();
+        row.y = missile.position.y.raw();
+        row.vx = missile.body.velocity.x.raw();
+        row.vy = missile.body.velocity.y.raw();
+        row.right_x = collider.right.x.raw();
+        row.right_y = collider.right.y.raw();
+        row.up_x = collider.up.x.raw();
+        row.up_y = collider.up.y.raw();
+        row.rotation = missile.body.orientation.raw();
+        row.angular_velocity = missile.body.angular_velocity.raw();
     }
 
     /// DetPhysics integrates every BoplBody before constructing contact
@@ -34513,18 +34521,20 @@ impl RolloutWorld {
 
         // DetPhysics then integrates each body on its own.
         for item_index in 0..self.thrown_items.len() {
-            if self.blink_object_hidden(self.thrown_items[item_index].entity)
-                || !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].entity.is_none()
-            {
+            if !self.thrown_items[item_index].active || self.thrown_items[item_index].entity.is_none() {
                 continue;
             }
+            let hidden = self.blink_object_hidden(self.thrown_items[item_index].entity);
             let item = &mut self.thrown_items[item_index];
-            let delta = item.body.integrate(physics_dt, Fix::from_int(-40));
-            item.position += delta;
+            if !hidden {
+                let delta = item.body.integrate(physics_dt, Fix::from_int(-40));
+                item.position += delta;
+            }
             let entity = item.entity.expect("active thrown item collider");
             let row = &mut self.entities[entity];
-            row.flags = E_ACTIVE | E_ENABLED;
+            if !hidden {
+                row.flags = E_ACTIVE | E_ENABLED;
+            }
             row.x = item.position.x.raw();
             row.y = item.position.y.raw();
             row.vx = item.body.velocity.x.raw();
@@ -40377,9 +40387,13 @@ impl RolloutWorld {
     fn duplicated_rocks_integrate(&mut self, physics_dt: Fix, data: &data::RolloutData) {
         let map = &data.maps[self.map];
         for rock_index in 0..self.duplicated_rocks.len() {
-            if !self.duplicated_rocks[rock_index].active
-                || self.blink_object_hidden(self.duplicated_rocks[rock_index].entity)
-            {
+            if !self.duplicated_rocks[rock_index].active {
+                continue;
+            }
+            // A hidden rock takes neither its updaters nor DetPhysics, but
+            // RlObservation still exports its body.
+            if self.blink_object_hidden(self.duplicated_rocks[rock_index].entity) {
+                self.sync_duplicated_rock_entity(rock_index);
                 continue;
             }
             // Rock_noPlayer's DestroyIfOutsideSceneBounds: below the water it
