@@ -26870,6 +26870,37 @@ impl RolloutWorld {
                         slot.reported_position = body;
                     }
                     self.players[index].magnet.held_position = self.players[i].base.position;
+                } else if matches!(
+                    self.players[i].active,
+                    ActiveAbility::Grenade
+                        | ActiveAbility::Smoke
+                        | ActiveAbility::Tack
+                        | ActiveAbility::Mjolnir
+                        | ActiveAbility::PokeBall
+                ) {
+                    // ThrowItem2.ExitAbility overwrites the packet with its
+                    // body's position, velocities, facing and grounding
+                    // (ThrowItem2.cs:196-205), so MagnetGun holds the slime
+                    // where the form stood, and UnGround below lifts a grounded
+                    // one. ApplyRagDoll then zeroes only the self-imposed part.
+                    // Its unfired payload is released first.
+                    self.release_held_throw_item_on_exit(i, false, data);
+                    let slot = &self.players[i];
+                    let (body, velocity, external) =
+                        (slot.base.position, slot.base.velocity, slot.base.external_velocity);
+                    let (facing_right, grounded, ground, local) =
+                        (slot.facing_right, slot.base.grounded, slot.base.ground, slot.base.local);
+                    self.exit_form_for_freeze_at(i, body, velocity, external, data);
+                    let slot = &mut self.players[i];
+                    slot.facing_right = facing_right;
+                    if grounded {
+                        slot.base.grounded = true;
+                        slot.base.ground = ground;
+                        slot.base.local = local;
+                    }
+                    slot.base.velocity = Vec2::ZERO;
+                    slot.form_frozen = frozen(body);
+                    self.players[index].magnet.held_position = body;
                 } else if self.players[i].active == ActiveAbility::Magnet {
                     // The held form's own MagnetGun.ExitAbility ungrounds it
                     // and hands over its body's position and velocities
