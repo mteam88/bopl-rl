@@ -56,6 +56,15 @@ fn box_half(right: Vec2, up: Vec2) -> Vec2 {
     Vec2::new(right.x.abs() + up.x.abs(), right.y.abs() + up.y.abs())
 }
 
+fn collider_bounds(collider: DetCollider) -> [Vec2; 2] {
+    match collider {
+        DetCollider::Box(collider) => box_bounds(collider),
+        DetCollider::Circle(collider) => {
+            bounds(collider.center, Vec2::new(collider.radius, collider.radius))
+        }
+    }
+}
+
 fn box_bounds(collider: OrientedBox) -> [Vec2; 2] {
     bounds(collider.center, box_half(collider.right, collider.up))
 }
@@ -135,7 +144,7 @@ impl RolloutWorld {
                 // of DetPhysics.
                 let clone = &self.abilityless_clones[index];
                 match clone.entity {
-                    Some(entity) => self.detphysics_box(entity, data).map_or(NOWHERE, box_bounds),
+                    Some(entity) => self.detphysics_collider(entity).map_or(NOWHERE, collider_bounds),
                     None => box_bounds(clone.base.synced),
                 }
             }
@@ -154,16 +163,16 @@ impl RolloutWorld {
                 bounds(pickup.position + pickup.offset, Vec2::new(pickup.radius, pickup.radius))
             }
             Swept::Row(entity) => {
+                // A slime's, form's or clone's collider is where DetPhysics
+                // last synced it, which an explicit sync since the export moves.
+                if let Some(collider) = self.detphysics_collider(entity) {
+                    return collider_bounds(collider);
+                }
                 let row = self.entities[entity];
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
                 if row.kind == 0 {
                     let radius = Fix::from_raw(row.radius);
                     return bounds(center, Vec2::new(radius, radius));
-                }
-                // A slime's, form's or clone's box is where DetPhysics last
-                // synced it, which an explicit sync since the export moves.
-                if let Some(collider) = self.detphysics_box(entity, data) {
-                    return box_bounds(collider);
                 }
                 let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
                 let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
