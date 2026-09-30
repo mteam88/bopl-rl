@@ -4114,9 +4114,6 @@ pub struct RolloutWorld {
     platform_epoch: u64,
     /// `platform_epoch` the platform entity rows were written for.
     platform_rows_epoch: u64,
-    /// `platform_epoch` at which `platforms_tick` last found every body at
-    /// rest at its home, so the check need not be repeated until a change.
-    quiet_epoch: u64,
     /// Buffers of the platform physics stage, kept between ticks so a level
     /// with moving platforms does not allocate on every tick.
     scratch: PlatformScratch,
@@ -4228,7 +4225,6 @@ pub struct RolloutWorld {
     pub intro_phase: u8,
     pub intro_progress: Fix,
     pub intro_delay_elapsed: Fix,
-    pub intro_contacts_pending: bool,
     pub next_platform_id: u32,
     pub next_entity_id: u32,
     /// Published id per internal entity id (0 = not yet observed), and the
@@ -4305,7 +4301,6 @@ impl RolloutWorld {
             platforms: Platforms::with_capacity(64),
             platform_epoch: 1,
             platform_rows_epoch: 0,
-            quiet_epoch: 0,
             scratch: PlatformScratch::new(),
             platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
@@ -4372,7 +4367,6 @@ impl RolloutWorld {
             intro_phase: 0,
             intro_progress: Fix::ZERO,
             intro_delay_elapsed: Fix::ZERO,
-            intro_contacts_pending: false,
             next_platform_id: 0,
             next_entity_id: 0,
             observed_ids: Vec::with_capacity(256),
@@ -4418,7 +4412,6 @@ impl RolloutWorld {
         self.platforms.clone_from(&src.platforms);
         self.platform_epoch = src.platform_epoch;
         self.platform_rows_epoch = src.platform_rows_epoch;
-        self.quiet_epoch = src.quiet_epoch;
         self.platform_dynamics.clone_from(&src.platform_dynamics);
         self.platform_defs.clone_from(&src.platform_defs);
         self.platform_entities.clone_from(&src.platform_entities);
@@ -4492,7 +4485,6 @@ impl RolloutWorld {
         self.intro_phase = src.intro_phase;
         self.intro_progress = src.intro_progress;
         self.intro_delay_elapsed = src.intro_delay_elapsed;
-        self.intro_contacts_pending = src.intro_contacts_pending;
         self.next_platform_id = src.next_platform_id;
         self.next_entity_id = src.next_entity_id;
         self.observed_ids.clone_from(&src.observed_ids);
@@ -4529,7 +4521,6 @@ impl RolloutWorld {
             platforms: _,
             platform_epoch: _,
             platform_rows_epoch: _,
-            quiet_epoch: _,
             scratch: _,
             platform_dynamics: _,
             platform_defs: _,
@@ -4596,7 +4587,6 @@ impl RolloutWorld {
             intro_phase: _,
             intro_progress: _,
             intro_delay_elapsed: _,
-            intro_contacts_pending: _,
             next_platform_id: _,
             next_entity_id: _,
             observed_ids: _,
@@ -4745,7 +4735,6 @@ impl RolloutWorld {
         self.intro_phase = 0;
         self.intro_progress = def.start_animation_progress;
         self.intro_delay_elapsed = Fix::ZERO;
-        self.intro_contacts_pending = false;
         for intro_order in 0..def.platforms.len() {
             let platform_index = def
                 .platforms
@@ -38935,11 +38924,6 @@ impl RolloutWorld {
                     self.platform_dynamics[i].intro_disabled = false;
                 }
                 self.intro_phase = 3;
-                // DetPhysics still executes once when newly enabled bodies
-                // are motionless. Some later maps author touching/overlapping
-                // grounds whose first contact impulse starts persistent map
-                // motion, so the steady-state quiet fast path cannot skip it.
-                self.intro_contacts_pending = true;
                 self.platforms_changed();
             }
             _ => {}
@@ -40284,60 +40268,6 @@ impl RolloutWorld {
             }
         }
 
-        // Most short episodes never create or disturb a platform. Preserve
-        // that hot path without changing semantics: a body exactly at its
-        // home with zero velocity cannot produce motion or a new contact.
-        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-        let orbit_running = !self.sudden_death
-            && self.orbits.iter().any(|orbit| {
-                self.platforms[orbit.0].active
-                    && data.maps[self.map].platforms[self.platform_defs[orbit.0]]
-                        .orbit
-                        .as_ref()
-                        .is_some_and(|o| sim_time >= o.delay && !o.path.is_empty())
-            });
-        // Bodies and homes only change through paths that bump
-        // `platform_epoch`, so a level found quiet stays quiet until then.
-        let disturbed = self.intro_contacts_pending
-            || (self.quiet_epoch != self.platform_epoch
-                && self.platforms.iter().zip(&self.platform_dynamics).any(
-                    |(platform, dynamics)| {
-                        platform.active
-                            && (platform.surface.center != dynamics.home_position
-                                || dynamics.body.force != Vec2::ZERO
-                                || dynamics.body.velocity != Vec2::ZERO
-                                || dynamics.body.angular_velocity != Fix::ZERO
-                                || dynamics.body.orientation != dynamics.home_rotation
-                                || dynamics.transform_rotation.is_some())
-                    },
-                ));
-        if !disturbed {
-            self.quiet_epoch = self.platform_epoch;
-        }
-        if !self.sudden_death_latched
-            && !orbit_running
-            && !disturbed
-            && !self.spawned.iter().any(|spawn| spawn.active)
-        {
-            // Simulate syncs every rect before it finds nothing to move.
-            for i in 0..self.platforms.len() {
-                if !self.platforms[i].active {
-                    self.sync_inactive_platform(i);
-                }
-            }
-            let mut sweep = std::mem::take(&mut self.scratch.sweep);
-            self.take_sweep(&mut sweep, data);
-            self.scratch.sweep = sweep;
-            // Walls that stand still still squish a slime walked into them.
-            let mut colliders = std::mem::take(&mut self.scratch.box_callback_colliders);
-            colliders.clear();
-            colliders.extend(self.platforms.iter().map(|p| p.collider));
-            self.squish_grounded(&colliders);
-            self.scratch.box_callback_colliders = colliders;
-            return;
-        }
-        // Everything below may move a body.
-        self.intro_contacts_pending = false;
         for (index, vector, cube, mass, controlled) in late_pulls {
             let dynamics = &mut self.platform_dynamics[index];
             let body = if dynamics.attached_children != 0 {
