@@ -2198,6 +2198,26 @@ impl RolloutWorld {
         }
     }
 
+    /// Mine.LateUpdateSim's anticipation Shake moves the mine's transform,
+    /// and a RopeAttachment newer than the mine follows it in LateUpdateSim
+    /// order, so it pins the end where the shake left the mine.
+    pub(super) fn ropes_late_on_older_mines(&mut self) {
+        for rope in &mut self.ropes {
+            if !rope.physics.enabled || rope.born_tick == self.tick || rope.hook_active {
+                continue;
+            }
+            let Some(RopeParent::Item(item, id)) = rope.parent else {
+                continue;
+            };
+            let mine = &self.thrown_items[item];
+            if mine.id != id || mine.ability != ABILITY_MINE || mine.hierarchy_base >= rope.hierarchy {
+                continue;
+            }
+            rope.platform_anchor = mine.position;
+            rope.physics.segment[0] = mine.position;
+        }
+    }
+
     pub(super) fn disable_rope(&mut self, rope: usize) {
         if self.ropes[rope].physics.enabled {
             self.ropes[rope].physics.enabled = false;

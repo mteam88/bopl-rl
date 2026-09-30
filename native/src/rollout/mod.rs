@@ -7552,6 +7552,9 @@ impl RolloutWorld {
         }
         if has(ABILITY_MINE) {
             self.mines_late_tick(data);
+            if has_rope {
+                self.ropes_late_on_older_mines();
+            }
         }
         if has(ABILITY_ROCK) {
             self.rocks_late_tick(data);
