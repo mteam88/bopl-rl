@@ -25194,7 +25194,7 @@ impl RolloutWorld {
         let gun = &data.freeze;
         // SpriteAnimator precedes GunTransform. The callback therefore exits
         // on the pass after all authored fire-frame durations have elapsed.
-        if self.players[index].gun.has_fired {
+        if self.players[index].gun.has_fired && self.animates(index) {
             if self.players[index].gun.fire_ticks == 0 {
                 self.exit_freeze_animation(index);
                 return;
@@ -25364,7 +25364,7 @@ impl RolloutWorld {
         let gun = &data.blink;
         // SpriteAnimator precedes GunTransform. The callback therefore exits
         // on the pass after all authored fire-frame durations have elapsed.
-        if self.players[index].gun.has_fired {
+        if self.players[index].gun.has_fired && self.animates(index) {
             if self.players[index].gun.fire_ticks == 0 {
                 self.exit_freeze_animation(index);
                 return;
@@ -25540,7 +25540,7 @@ impl RolloutWorld {
         } else {
             &data.scale_rays.shrink
         };
-        if self.players[index].gun.has_fired {
+        if self.players[index].gun.has_fired && self.animates(index) {
             if self.players[index].gun.fire_ticks == 0 {
                 self.exit_scale_ray_animation(index);
                 return;
@@ -25705,7 +25705,7 @@ impl RolloutWorld {
     /// guns), while the movement rules are GunTransform's shared rules.
     fn duplicator_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         let gun = &data.duplicator;
-        if self.players[index].gun.has_fired {
+        if self.players[index].gun.has_fired && self.animates(index) {
             if self.players[index].gun.fire_ticks == 0 {
                 self.exit_scale_ray_animation(index);
                 return;
@@ -32105,8 +32105,9 @@ impl RolloutWorld {
         // (100000021). The fireGround/fireAir callback runs on the update
         // after the animation's last frame tick (SpriteAnimator.cs:190-231)
         // and exits the ability before this pass's aim and movement.
+        let animates = self.animates(index);
         let b = &mut self.players[index].bow;
-        if b.has_fired {
+        if b.has_fired && animates {
             if b.fire_ticks_left == 0 {
                 bow_exit(&mut self.players[index], &mut self.entities, terrain!(self), self.tick);
                 return;
@@ -32146,7 +32147,9 @@ impl RolloutWorld {
         let dir = action.direction();
         let fire_now = {
             let b = &mut self.players[index].bow;
-            b.ticks += 1;
+            if animates {
+                b.ticks += 1;
+            }
             // OldUpdate: the aim follows the stick until release (deadzone:
             // the direction table only emits unit vectors or zero).
             if dir != Vec2::ZERO && !b.released {
@@ -37772,6 +37775,12 @@ impl RolloutWorld {
                     | ActiveAbility::Spike
                     | ActiveAbility::Engine
                     | ActiveAbility::Tesla
+                    | ActiveAbility::Bow
+                    | ActiveAbility::Freeze
+                    | ActiveAbility::Blink
+                    | ActiveAbility::GrowthRay
+                    | ActiveAbility::ShrinkRay
+                    | ActiveAbility::Duplicator
             );
         if self.is_time_stopped_for(index) && !runs_frozen {
             self.scratch.frozen_turns |= 1 << index;
