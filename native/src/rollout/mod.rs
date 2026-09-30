@@ -20375,11 +20375,14 @@ impl RolloutWorld {
                 self.players[index].macho_throw.ticks,
                 &data.macho_throw.dummy_frame_ticks,
             );
+            // quickThrowFirePos (MachoThrow2.cs:746-756) scales only the
+            // low spawn position; past the swap frame it takes
+            // currentDummyPos as is.
             let mut local = if frame > data.macho_throw.quick_position_swap_frame {
                 self.players[index].macho_throw.current_dummy_pos
             } else {
-                data.macho_throw.quick_projectile_position
-            } * self.players[index].base.scale;
+                data.macho_throw.quick_projectile_position * self.players[index].base.scale
+            };
             if !self.players[index].macho_throw.facing_right {
                 local.x = -local.x;
             }
