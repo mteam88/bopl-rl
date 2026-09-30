@@ -19948,6 +19948,10 @@ impl RolloutWorld {
         };
         if held {
             self.players[owner].macho_throw.held_boulder = Some(boulder_index);
+        } else {
+            // Fire(quickThrow) sets Scale again after ManualInit, through the
+            // live collider, whose (1/scale)*scale ratio falls a hair short of one.
+            self.set_platform_scale(platform_index, self.players[owner].base.scale, false);
         }
         self.macho_attach_engine_to_boulder(owner, platform_index);
         self.macho_attach_tesla_to_boulder(owner, platform_index, data);
