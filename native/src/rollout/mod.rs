@@ -32638,8 +32638,11 @@ impl RolloutWorld {
             PLATFORM_ANTICIPATION => {
                 if self.players[index].platform.ticks >= pd.anticipation_ticks {
                     // CreatePlatform: spawn at the frozen player position.
+                    // `StickyRect.rr.Scale = fixTrans.Scale` (PlatformTransform.cs:156):
+                    // the form's FixTransform scale, which Ability assigned from
+                    // Player.Scale earlier this pass.
                     let position = self.players[index].base.position;
-                    let scale = self.players[index].base.scale;
+                    let scale = self.players[index].forms[self.players[index].active_slot].scale;
                     let platform_index = self.spawn_ability_platform(index, position, scale);
                     self.transfer_player_rope_to_platform(index, platform_index);
                     let st = &mut self.players[index].platform;
