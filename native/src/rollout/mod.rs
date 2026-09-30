@@ -13582,6 +13582,7 @@ impl RolloutWorld {
         // The smash exits through ExitAbilityGrounded, isFacingRight true.
         slot.facing_right = true;
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
+        slot.restore_slime_radius();
         slot.base.position = landing;
         slot.base.constants = data.player.constants.clone();
         slot.base.external_velocity = Vec2::ZERO;
@@ -13603,6 +13604,7 @@ impl RolloutWorld {
         // MeteorSmash exits hand over isFacingRight true.
         slot.facing_right = true;
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
+        slot.restore_slime_radius();
         slot.base.constants = data.player.constants.clone();
         slot.base.grounded_speed = Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
@@ -13849,6 +13851,7 @@ impl RolloutWorld {
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
+        slot.restore_slime_radius();
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.obs_state = STATE_IDLE;
@@ -14238,6 +14241,7 @@ impl RolloutWorld {
             // raycasts it (Ability.cs:151, SlimeController.cs:217-272).
             let ability_position = slot.base.position;
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
+            slot.restore_slime_radius();
             // QuickSpell exits with a default AbilityExitInfo, whose isFacingRight
             // is false; SlimeController flips to match.
             slot.facing_right = false;
@@ -16705,6 +16709,7 @@ impl RolloutWorld {
             slot.facing_right = false;
             slot.exit_to_fall();
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
+            slot.restore_slime_radius();
             slot.base.collision_rays(terrain!(self));
             return;
         }
@@ -32878,6 +32883,9 @@ impl RolloutWorld {
                     slot.base.ground = None;
                     slot.base.grounded_speed = Fix::ZERO;
                     slot.set_active_form(&mut self.entities, ActiveAbility::None);
+                    // SyncPhysicsTo's UpdateScale catches the slime's radius
+                    // up with a Player.Scale a ray changed mid-form.
+                    slot.restore_slime_radius();
                     slot.exit_to_fall();
                     // Ability.ExitAbility republishes potentialCollider.position
                     // after PlatformTransform has applied the final ejection.
@@ -41652,6 +41660,7 @@ impl RolloutWorld {
                     circle.write_circle_scale(exit_scale, min, max);
                     let slot = &mut self.players[index];
                     slot.set_active_form(&mut self.entities, ActiveAbility::None);
+                    slot.restore_slime_radius();
                     slot.base.velocity = velocity;
                     slot.base.external_velocity = Vec2::ZERO;
                     slot.base.rotation = Fix::ZERO;
