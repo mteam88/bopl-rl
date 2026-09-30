@@ -2126,9 +2126,14 @@ pub struct AbilitylessClone {
     /// The pass and the position before this clone's updaters ran on it: an
     /// Updater object older than the clone still sees it there.
     pub pass_start: (u32, Vec2),
+    /// The hurtbox centre DetPhysics last synced, from before this pass's
+    /// update moved the clone.
+    pub synced_center: Vec2,
     /// The pass this clone left the scene bounds in its own update: an
     /// older Updater on that pass still found it alive.
     pub drowned_tick: u32,
+    /// The Updater pass in which the clone's updaters last took their turn.
+    pub updater_ran_tick: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3530,9 +3535,6 @@ struct PlatformScratch {
     /// The Updater hierarchy of the SlimeController updating now: 0 before
     /// the slimes' turns, `u32::MAX` after them (DetPhysics' callbacks).
     updater_hierarchy: u32,
-    /// Clones whose updaters already ran this pass, ahead of a newer
-    /// TeleportIndicator.
-    clones_updated_early: Vec<usize>,
     item_spike_hits: Vec<(usize, usize, Vec2)>,
     tesla_wall_contacts: Vec<(usize, usize, Contact)>,
     /// Portal shots' wall manifolds: (shot, wall, contact).
@@ -3592,8 +3594,7 @@ struct PlatformScratch {
     turn_count: usize,
     next_turn: usize,
     turns_recorded: usize,
-    /// The walk's actions, Updater delta, and whether a Rewind is in play.
-    turn_actions: [CAction; MAX_BODIES],
+    /// The walk's Updater delta, and whether a Rewind is in play.
     turn_dt: Fix,
     turn_rewind: bool,
     /// Bodies whose form entry recorded the Player's form flags before the
@@ -6909,11 +6910,26 @@ impl RolloutWorld {
         self.scratch.turn_count = player_count;
         self.scratch.next_turn = 0;
         self.scratch.turns_recorded = 0;
-        let action_count = actions.len().min(MAX_BODIES);
-        self.scratch.turn_actions[..action_count].copy_from_slice(&actions[..action_count]);
+        // A clone older than a slime or form takes its turn in their walk.
+        let action_count = actions.len().min(self.player_count);
+        self.scratch.clone_action_count = action_count;
+        self.scratch.clone_actions[..action_count].copy_from_slice(&actions[..action_count]);
         self.scratch.turn_dt = updater_dt;
         self.scratch.turn_rewind = has(ABILITY_REWIND);
+        // Updater updates every Player's frame-dependent button edges before
+        // any MonoUpdatable, so a clone whose turn comes ahead of its owner's
+        // already reads this pass's jump edge. A frozen player keeps its input.
         self.scratch.clone_jump_pressed = [false; MAX_BODIES];
+        for &index in &player_order[..player_count] {
+            if (index >= self.player_count && !self.players[index].base.alive)
+                || (self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index])
+            {
+                continue;
+            }
+            let action = self.scratch.clone_actions[self.players[index].owner].aim_action();
+            self.scratch.clone_jump_pressed[index] =
+                action.buttons & 1 != 0 && !self.players[index].input_jump_was_down;
+        }
         // A form's entry takes the turns of the slimes between it and the
         // form's own turn first (`form_entry_turn`).
         while self.scratch.next_turn < player_count {
@@ -6932,10 +6948,6 @@ impl RolloutWorld {
         if has(ABILITY_REWIND) {
             self.rewind_recorders_tick(&player_order[recorded..player_count]);
         }
-        let action_count = actions.len().min(self.player_count);
-        self.scratch.clone_action_count = action_count;
-        self.scratch.clone_actions[..action_count].copy_from_slice(&actions[..action_count]);
-        self.scratch.clones_updated_early.clear();
         self.platform_updaters(data, updater_dt, PlatformPass::Duplicated, 0..u32::MAX);
         if has(ABILITY_MAGNET) {
             self.magnet_parries_tick(data);
@@ -6945,7 +6957,7 @@ impl RolloutWorld {
         let first_clone = self
             .abilityless_clones
             .iter()
-            .filter(|clone| clone.active)
+            .filter(|clone| clone.active && clone.updater_ran_tick != Some(self.tick))
             .map(|clone| clone.hierarchy_base)
             .min()
             .unwrap_or(u32::MAX);
@@ -7899,6 +7911,11 @@ impl RolloutWorld {
                 push(100_000_000 + state.blink_tunnel_hierarchy, 13, i);
             }
         }
+        for (i, clone) in self.abilityless_clones.iter().enumerate() {
+            if clone.active && clone.born_tick < tick && clone.updater_ran_tick != Some(tick) {
+                push(100_000_000 + clone.hierarchy_base, 14, i);
+            }
+        }
         queue.sort_unstable();
         for &(hierarchy, kind, index) in &queue {
             let turn = hierarchy..hierarchy + 1;
@@ -7930,11 +7947,16 @@ impl RolloutWorld {
                     Some(hierarchy - 99_999_999),
                 ),
                 12 => self.teleport_pending_tick(data, updater_dt, hierarchy - 99_999_999),
-                _ => self.blink_platform_tunnels_tick(
+                13 => self.blink_platform_tunnels_tick(
                     data,
                     updater_dt,
                     Some(hierarchy - 99_999_999),
                 ),
+                _ => {
+                    let clone = &mut self.abilityless_clones[index];
+                    clone.pass_start = (tick, clone.base.position);
+                    self.abilityless_clone_update_tagged(index);
+                }
             }
             // Updater never returns to a turn it has passed: one skipped here,
             // hidden or disabled, waits for the next pass.
@@ -7952,6 +7974,7 @@ impl RolloutWorld {
                 11 => self.duplicate_platform_effects[index].stepped_tick = tick,
                 12 => {}
                 13 => self.platform_dynamics[index].blink_tunnel_stepped_tick = tick,
+                14 => self.abilityless_clones[index].updater_ran_tick = tick,
                 // A pickup newer than a live ScaleChanger keeps its turn
                 // behind it.
                 _ => {
@@ -9473,15 +9496,16 @@ impl RolloutWorld {
                 };
                 (prey_scale, prey_box, slot.team, slot.poke_invulnerable, eating)
             }
-            Prey::Clone(clone) => {
-                let clone = &self.abilityless_clones[clone];
+            Prey::Clone(clone_index) => {
+                let clone = &self.abilityless_clones[clone_index];
                 let eating = EatingState {
                     victim: clone.owner,
                     victim_clone: clone.entity,
                     ..EatingState::default()
                 };
                 let team = self.players[clone.owner].team;
-                (clone.base.scale, clone.base.collider, team, clone.poke_invulnerable, eating)
+                let prey_box = self.clone_synced_box(clone_index);
+                (clone.base.scale, prey_box, team, clone.poke_invulnerable, eating)
             }
         };
         if scale - prey_scale < SCALE_DIFF_BEFORE_NOM_NOM
@@ -16831,7 +16855,7 @@ impl RolloutWorld {
                 let Some(_entity) = clone.entity else {
                     continue;
                 };
-                let vector = position - self.abilityless_clones[clone_index].base.collider.center;
+                let vector = position - self.clone_synced_box(clone_index).center;
                 let squared = vector.length_squared();
                 if squared == Fix::ZERO {
                     continue;
@@ -21969,21 +21993,6 @@ impl RolloutWorld {
                     }
                     self.thrown_item_update(item_index, data, updater_dt);
                 }
-            }
-            // So have an older abilityless clone's PlayerPhysics and
-            // SlimeController: the teleport moves it from where they left it.
-            let older_clone_hit = player_hits[..player_count]
-                .iter()
-                .chain(&marker_hits[..marker_count])
-                .any(|&entity| {
-                    self.abilityless_clones.iter().any(|clone| {
-                        clone.active
-                            && clone.entity == Some(entity)
-                            && clone.hierarchy_base < marker.hierarchy_base
-                    })
-                });
-            if older_clone_hit {
-                self.abilityless_clones_update_below(marker.hierarchy_base);
             }
             for &entity in &player_hits[..player_count] {
                 self.teleport_entity(entity, diff, marker.hierarchy_base, data);
@@ -28195,7 +28204,9 @@ impl RolloutWorld {
             physics_scale: Fix::ONE,
             eating: EatingState::default(),
             pass_start: (u32::MAX, Vec2::ZERO),
+            synced_center: Vec2::ZERO,
             drowned_tick: u32::MAX,
+            updater_ran_tick: None,
         };
         if let Some(free) = self
             .abilityless_clones
@@ -38749,7 +38760,7 @@ impl RolloutWorld {
         }
         let hierarchy = self.scratch.turn_hierarchy[index];
         self.run_spawned_before(data, self.scratch.turn_dt, hierarchy);
-        let packet = self.scratch.turn_actions[self.players[index].owner];
+        let packet = self.scratch.clone_actions[self.players[index].owner];
         // An ordinary slime's drop test closes its grounded Move instead
         // (`player_tick`).
         if self.playable(index) && self.players[index].active != ActiveAbility::None {
@@ -38913,7 +38924,6 @@ impl RolloutWorld {
         self.players[index].last_movement_input = movement_input;
         let jump_down = action.buttons & 1 != 0;
         let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
-        self.scratch.clone_jump_pressed[index] = jump_pressed;
         // SlimeController.Jump reads that same edge
         // (jumpButton_PressedThisFrame, SlimeController.cs:796); the
         // movement slice's copy must not go stale while an ability runs.
@@ -39599,7 +39609,8 @@ impl RolloutWorld {
             }
         }
         for &clone_index in &order {
-            if !self.scratch.clones_updated_early.contains(&clone_index) {
+            if self.abilityless_clones[clone_index].updater_ran_tick != Some(self.tick) {
+                self.abilityless_clones[clone_index].updater_ran_tick = Some(self.tick);
                 self.abilityless_clone_update_tagged(clone_index);
             }
         }
@@ -39607,25 +39618,6 @@ impl RolloutWorld {
         for clone in &mut self.abilityless_clones {
             clone.base.external_velocity += std::mem::take(&mut clone.late_pull);
         }
-    }
-
-    /// Runs the updaters of every clone older than `hierarchy` that has not
-    /// updated this pass, ahead of the clone batch.
-    fn abilityless_clones_update_below(&mut self, hierarchy: u32) {
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        hierarchy_order(&mut order, &self.abilityless_clones, |clone| clone.hierarchy_base);
-        for &clone_index in &order {
-            if self.abilityless_clones[clone_index].hierarchy_base >= hierarchy
-                || self.scratch.clones_updated_early.contains(&clone_index)
-            {
-                continue;
-            }
-            self.scratch.clones_updated_early.push(clone_index);
-            let clone = &mut self.abilityless_clones[clone_index];
-            clone.pass_start = (self.tick, clone.base.position);
-            self.abilityless_clone_update_tagged(clone_index);
-        }
-        self.scratch.item_order = order;
     }
 
     /// A clone's update, with Player.SetPosition's calls and destructions
@@ -39637,6 +39629,8 @@ impl RolloutWorld {
             .and_then(|entity| self.entities.get(entity))
             .map_or(u32::MAX, |row| row.hierarchy);
         let outer = std::mem::replace(&mut self.scratch.updater_hierarchy, hierarchy);
+        let clone = &mut self.abilityless_clones[clone_index];
+        clone.synced_center = clone.base.collider.center;
         self.abilityless_clone_update(clone_index);
         self.scratch.updater_hierarchy = outer;
     }
@@ -39918,6 +39912,18 @@ impl RolloutWorld {
         self.entities.push(CEntity { id, hierarchy, ..CEntity::default() });
         self.abilityless_clones[clone_index].entity = Some(entity);
         self.sync_abilityless_clone_entity(clone_index);
+    }
+
+    /// The clone's DPhysicsBox, which only DetPhysics' sync moves: a clone
+    /// whose Updater turn already came this pass is still, for every other
+    /// reader, where the pass began.
+    fn clone_synced_box(&self, clone_index: usize) -> OrientedBox {
+        let clone = &self.abilityless_clones[clone_index];
+        if clone.updater_ran_tick == Some(self.tick) {
+            OrientedBox { center: clone.synced_center, ..clone.base.collider }
+        } else {
+            clone.base.collider
+        }
     }
 
     fn sync_abilityless_clone_entity(&mut self, clone_index: usize) {
