@@ -24424,10 +24424,12 @@ impl RolloutWorld {
         } else {
             Vec2::UP
         };
+        let animates = self.animates(index);
         let state = &mut self.players[index].throw_item;
         // The gLoop animation's Fire callback runs before ThrowItem.UpdateSim,
         // so on the pass the loop runs out this pass's input is never read.
-        let loop_ends = state.phase == 1 && state.ticks + 1 > data.mine.ground_loop_ticks;
+        let loop_ends =
+            animates && state.phase == 1 && state.ticks + 1 > data.mine.ground_loop_ticks;
         if !state.has_inputted_fire && !loop_ends {
             // ThrowItem.OldUpdate follows the live stick until the button is
             // released. The release pass always replaces that direction with
@@ -24446,7 +24448,9 @@ impl RolloutWorld {
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
         let state = &mut self.players[index].throw_item;
-        state.ticks += 1;
+        if animates {
+            state.ticks += 1;
+        }
         state.time_passed += DT;
 
         let mut fire = false;
@@ -24486,7 +24490,7 @@ impl RolloutWorld {
             // rotation, but PlayerBody owns the later world-position move.
             slot.base.position = before_player_physics;
             slot.base.velocity = Vec2::ZERO;
-            slot.base.position += slot.base.external_velocity * DT;
+            slot.base.position += slot.base.external_velocity * slot.base.fixed_delta_time;
             slot.base.external_velocity *= Fix::from_f64(0.95);
             slot.throw_item.collider_rotation = slot.base.rotation;
             slot.throw_item.collider_right = slot.base.up.perp_cw();
@@ -24520,7 +24524,7 @@ impl RolloutWorld {
                     slot.throw_item.direction = -slot.base.up;
                     self.fire_mine(index, data);
                     let slot = &mut self.players[index];
-                    slot.base.position += slot.base.external_velocity * DT;
+                    slot.base.position += slot.base.external_velocity * slot.base.fixed_delta_time;
                     slot.base.external_velocity *= Fix::from_f64(0.95);
                     slot.throw_item.collider_rotation = slot.base.rotation;
                     slot.throw_item.collider_right = slot.base.up.perp_cw();
@@ -24717,7 +24721,8 @@ impl RolloutWorld {
         // SpriteAnimator is the first updatable on every ThrowItem2 prefab, so
         // the exit animation's ExitAbility callback runs on the pass it ends,
         // before DestroyIfOutsideSceneBounds can kill the form.
-        if self.players[index].throw_item.phase == 1 {
+        let animates = self.animates(index);
+        if animates && self.players[index].throw_item.phase == 1 {
             let exit_ticks = if self.players[index].throw_item.grounded {
                 gd.ground_exit_ticks
             } else {
@@ -24768,7 +24773,7 @@ impl RolloutWorld {
         } else {
             gd.air_enter_ticks
         };
-        if state.phase == 0 && state.item.is_none() && state.ticks + 1 > enter_ticks {
+        if animates && state.phase == 0 && state.item.is_none() && state.ticks + 1 > enter_ticks {
             // The held grenade has no registered collider because its
             // DPhysicsCircle uses manuallyCallInit. Keep only the payload
             // state until release calls `Fire`.
@@ -24848,9 +24853,12 @@ impl RolloutWorld {
             state.fire_input_time = state.time_passed;
         }
 
+        let dt = self.fixed_delta_time(index, DT);
         let state = &mut self.players[index].throw_item;
-        state.ticks += 1;
-        state.time_passed += DT;
+        if animates {
+            state.ticks += 1;
+        }
+        state.time_passed += dt;
 
         if self.players[index].throw_item.phase == 0
             && self.players[index].throw_item.item.is_some()
@@ -37782,6 +37790,12 @@ impl RolloutWorld {
                     | ActiveAbility::ShrinkRay
                     | ActiveAbility::Duplicator
                     | ActiveAbility::Magnet
+                    | ActiveAbility::Mine
+                    | ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
             );
         if self.is_time_stopped_for(index) && !runs_frozen {
             self.scratch.frozen_turns |= 1 << index;
