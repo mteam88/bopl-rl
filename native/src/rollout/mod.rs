@@ -3256,6 +3256,10 @@ struct PlatformScratch {
     contacts: Vec<(usize, usize, Contact)>,
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
     engine_wall_contacts: Vec<(usize, usize, Contact)>,
+    /// RocketEngine and Spike attack box centres when DetPhysics took its
+    /// bounding boxes, before the Box/RoundedRect group corrected them.
+    engine_swept: Vec<Vec2>,
+    spike_swept: Vec<Vec2>,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
     duplicated_rock_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_spike_hits: Vec<(usize, usize, Vec2)>,
@@ -7326,6 +7330,9 @@ impl RolloutWorld {
         // nodes of different platforms.
         if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_PORTAL_GUN) {
             self.thrown_item_pair_contacts(data);
+        }
+        if has(ABILITY_ENGINE) || has(ABILITY_SPIKE) {
+            self.composite_child_box_contacts(data);
         }
         if has(ABILITY_PORTAL_GUN) {
             let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
@@ -36041,6 +36048,121 @@ impl RolloutWorld {
     }
 
     /// Item circles participate in ordinary rigid-body contacts.
+    /// DetPhysics' Box/Box group between composite children of different
+    /// platforms: RocketEngine boxes (layer 21) and Spike attack boxes
+    /// (layer 16), which meet each other and themselves. Pairs come out of the
+    /// sort-and-sweep with A the box whose bounds start first. Every manifold
+    /// is built before any resolves; ResolveCollision swaps each child for its
+    /// combined body and position, and PositionalCorrection takes the
+    /// children's own inverse masses and moves their colliders and
+    /// CompositeBody.position (DetPhysics.cs:3131-3168, PhysTools.cs:1006).
+    fn composite_child_box_contacts(&mut self, data: &data::RolloutData) {
+        const SPIKE: usize = 1 << 16;
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
+        let live = |platform: usize, entity: Option<usize>| {
+            platform < self.platforms.len()
+                && self.platforms[platform].active
+                && entity.is_none_or(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+        };
+        // (child, platform, entity, box, box at the sweep)
+        let mut children = Vec::new();
+        for (index, engine) in self.engines.iter().enumerate() {
+            if !engine.active || engine.macho_carried || !live(engine.platform_index, engine.entity) {
+                continue;
+            }
+            let basis = Vec2::angle(engine.collider_rotation);
+            let extents = data.engine.rocket_extents * engine.scale;
+            let surface = data::surface_extents(extents);
+            let rocket = OrientedBox {
+                center: engine.collider_center,
+                right: basis * surface.x,
+                up: (Vec2::UP * surface.y).complex_mul(basis),
+                inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+            };
+            let swept = self.scratch.engine_swept.get(index).copied();
+            let swept = OrientedBox { center: swept.unwrap_or(rocket.center), ..rocket };
+            children.push((index, engine.platform_index, engine.entity, rocket, swept));
+        }
+        for (index, spike) in self.spike_attacks.iter().copied().enumerate() {
+            if !spike.active || spike.macho_carried || !live(spike.platform_index, spike.entity) {
+                continue;
+            }
+            let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike, data);
+            let swept = self.scratch.spike_swept.get(index).copied();
+            let swept = OrientedBox { center: swept.unwrap_or(attack_box.center), ..attack_box };
+            children.push((SPIKE + index, spike.platform_index, spike.entity, attack_box, swept));
+        }
+        if children.len() < 2 {
+            return;
+        }
+        let half = |b: OrientedBox| {
+            Vec2::new(b.right.x.abs() + b.up.x.abs(), b.right.y.abs() + b.up.y.abs())
+        };
+        children.sort_by_key(|&(_, _, entity, _, b)| {
+            sweep_rank(&self.entities, axis(b.center) - axis(half(b)), entity)
+        });
+        let mut contacts = Vec::new();
+        let mut window: Vec<usize> = Vec::new();
+        for current in 0..children.len() {
+            let (_, b_platform, _, b_box, b_swept) = children[current];
+            let b_half = half(b_swept);
+            window.retain(|&prior| {
+                let a_swept = children[prior].4;
+                axis(a_swept.center) + axis(half(a_swept)) > axis(b_swept.center) - axis(b_half)
+            });
+            for &prior in &window {
+                let (_, a_platform, _, a_box, a_swept) = children[prior];
+                let a_half = half(a_swept);
+                if a_platform == b_platform
+                    || other(a_swept.center) + other(a_half) <= other(b_swept.center) - other(b_half)
+                    || other(a_swept.center) - other(a_half) >= other(b_swept.center) + other(b_half)
+                {
+                    continue;
+                }
+                if let Some(contact) = crate::physics::contact::box_box(a_box, b_box) {
+                    contacts.push((children[prior].0, children[current].0, contact));
+                }
+            }
+            window.push(current);
+        }
+        let child = |world: &Self, child: usize| {
+            if child >= SPIKE {
+                let spike = world.spike_attacks[child - SPIKE];
+                (spike.platform_index, spike.body.inverse_mass)
+            } else {
+                let engine = world.engines[child];
+                (engine.platform_index, engine.body.inverse_mass)
+            }
+        };
+        for (a, b, contact) in contacts {
+            let (a_platform, a_inverse_mass) = child(self, a);
+            let (b_platform, b_inverse_mass) = child(self, b);
+            let mut a_body = self.platform_dynamics[a_platform].body;
+            let mut b_body = self.platform_dynamics[b_platform].body;
+            resolve(
+                contact,
+                &mut a_body,
+                &mut b_body,
+                self.platform_dynamics[a_platform].composite_position,
+                self.platform_dynamics[b_platform].composite_position,
+            );
+            let correction = positional_correction(contact, a_inverse_mass, b_inverse_mass, false);
+            self.platform_dynamics[a_platform].body = a_body;
+            self.platform_dynamics[b_platform].body = b_body;
+            for (index, platform, delta) in [(a, a_platform, correction[0]), (b, b_platform, correction[1])] {
+                self.platform_dynamics[platform].composite_position += delta;
+                if index >= SPIKE {
+                    self.spike_attacks[index - SPIKE].collider_center += delta;
+                } else {
+                    self.engines[index].collider_center += delta;
+                }
+            }
+            self.platforms_changed();
+        }
+    }
+
     fn thrown_item_pair_contacts(&mut self, data: &data::RolloutData) {
         let radius = |item: ThrownItem| thrown_item_radius(data, item);
 
@@ -40374,6 +40496,10 @@ impl RolloutWorld {
         scratch
             .box_callback_colliders
             .extend(self.platforms.iter().map(|p| p.collider));
+        scratch.engine_swept.clear();
+        scratch.engine_swept.extend(self.engines.iter().map(|e| e.collider_center));
+        scratch.spike_swept.clear();
+        scratch.spike_swept.extend(self.spike_attacks.iter().map(|s| s.collider_center));
 
         // DetPhysics' Box/RoundedRect group follows RoundedRect/RoundedRect.
         // SpikeAttack boxes are composite children, so impulses and
