@@ -3891,6 +3891,30 @@ enum CallbackHit {
     Squish { clone: bool, index: usize },
     /// A young SpikeAttack.OnCollide with a wall (SpikeAttack.cs:116-131).
     SpikeWallKnock { spike: usize, wall: usize, point: Vec2 },
+    /// BlackHole.OnCollide with `target`, whose collider's inverseMass was
+    /// `inverse_mass` when the pair was found.
+    BlackHole { hole: usize, target: HoleTarget, inverse_mass: Fix },
+}
+
+/// The collider a BlackHole met.
+#[derive(Clone, Copy)]
+enum HoleTarget {
+    Wall(usize),
+    Arrow(usize),
+    Pickup(usize),
+    Item(usize),
+    Shot(usize),
+    DuplicatedRock(usize),
+    Missile(usize),
+    RevivalMarker(usize),
+    Cloud(usize),
+    TeleportMarker(usize),
+    Spike(usize),
+    Engine(usize),
+    Node(usize),
+    Hole(usize),
+    Player(usize),
+    Clone(usize),
 }
 
 /// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
@@ -7677,7 +7701,7 @@ impl RolloutWorld {
             self.portal_shots_contacts();
         }
         if has(ABILITY_BLACK_HOLE) {
-            self.black_hole_contacts(data);
+            self.black_hole_contacts();
         }
         if has(ABILITY_DRILL) {
             self.drill_contacts();
@@ -17417,154 +17441,82 @@ impl RolloutWorld {
         }
     }
 
-    fn black_hole_contacts(&mut self, data: &data::RolloutData) {
-        // Circle/RoundedRect callbacks precede the circle/circle and
-        // circle/box groups. A wall is eaten only when it contains the hole's
-        // centre, even though the two colliders can overlap much earlier.
-        // DetPhysics queues every contact before dispatching any, so a wall
-        // one hole eats this pass is eaten by every later hole containing it.
-        let mut destroyed_before = 0u64;
-        for (platform_index, &entity) in self.platform_entities.iter().enumerate() {
-            if self.entities[entity].flags & E_DESTROYED != 0 {
-                destroyed_before |= 1 << platform_index;
-            }
-        }
+    /// BlackHole.OnCollide's pairs. DetPhysics finds a hole's walls in the
+    /// Circle/RoundedRect group and its other colliders in the Circle/Circle
+    /// and Circle/Box groups, and calls every pair back from its queue after
+    /// all groups resolved, in SortAndSweep pair order (DetPhysics.cs:3197-3199).
+    /// The callback reads the hole's mass only then (BlackHole.cs:447), so a
+    /// white hole's pairs are queued too.
+    fn black_hole_contacts(&mut self) {
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let hole_rank = |world: &Self, hole: &BlackHoleState| {
+            sweep_rank(&world.entities, axis(hole.position) - hole.radius, hole.entity)
+        };
         for hole_index in 0..self.black_holes.len() {
-            if !self.black_holes[hole_index].active
-                || self.black_holes[hole_index].mass < Fix::ZERO
-                || self.blink_object_hidden(self.black_holes[hole_index].entity)
-            {
+            let hole = self.black_holes[hole_index];
+            if !hole.active || self.blink_object_hidden(hole.entity) {
                 continue;
             }
-            let mut platform_index = 0;
-            while platform_index < self.platforms.len() {
-                let hole = self.black_holes[hole_index];
+            let rank = hole_rank(self, &hole);
+            let circle = Circle {
+                center: hole.position,
+                radius: hole.radius,
+            };
+            let queue = |world: &mut Self, target: HoleTarget, inverse_mass: Fix, other: SweepRank, group: u8| {
+                let (later, earlier) = sweep_pair(rank, other);
+                let hit = CallbackHit::BlackHole { hole: hole_index, target, inverse_mass };
+                world.scratch.callback_hits.push(((group, later, earlier), hit));
+            };
+
+            // A wall is eaten only when the collider the manifold copied
+            // contains the hole's centre (BlackHole.cs:209, 516-547), even
+            // though the two overlap much earlier. A wall destroyed before
+            // this pass is out of DetPhysics.
+            for platform_index in 0..self.platforms.len() {
                 let platform_entity = self.platform_entities[platform_index];
-                if destroyed_before & (1 << platform_index) != 0
+                if self.entities[platform_entity].flags & E_DESTROYED != 0
                     || !self.platforms[platform_index].active
                 {
-                    platform_index += 1;
                     continue;
                 }
-                // The Circle/RoundedRect narrow phase follows the
-                // platform/platform and box/platform corrections.
                 let collider = self.circle_collider(platform_index);
-                if crate::physics::contact::circle_rounded(
-                    Circle {
-                        center: hole.position,
-                        radius: hole.radius,
-                    },
-                    collider,
-                )
-                .is_some()
+                if crate::physics::contact::circle_rounded(circle, collider).is_some()
                     && collider.overlaps(hole.position)
                 {
                     let inverse_mass = self.platform_dynamics[platform_index].body.inverse_mass;
-                    if inverse_mass != Fix::ZERO {
-                        Self::black_hole_grow(
-                            &mut self.black_holes[hole_index],
-                            inverse_mass,
-                            Fix::ZERO,
-                            data,
-                        );
-                    }
-                    // Updater.DestroyFix is deferred until DetPhysics's next
-                    // remove-destroyed pass, so this callback frame still
-                    // exports the wall with its destroyed bit.
-                    let children = self.platform_dynamics[platform_index].attached_children;
-                    let composite = if children != 0 { E_COMPOSITE } else { 0 };
-                    let row = &mut self.entities[platform_entity];
-                    row.flags = destroyed_flags(row.flags) | composite;
-                    self.mark_wall_nodes_destroyed(platform_index);
+                    let wall = self.wall_rank(platform_index);
+                    queue(self, HoleTarget::Wall(platform_index), inverse_mass, wall, GROUP_CIRCLE_RR);
                 }
-                platform_index += 1;
             }
-        }
 
-        // Circle/Circle trigger pairs do not receive a rigid-body impulse,
-        // but both callbacks still run. A positive-mass BlackHole consumes a
-        // live Arrow, grows from its BoplBody inverse mass, and destroys the
-        // whole projectile object in the callback row.
-        for hole_index in 0..self.black_holes.len() {
-            let hole = self.black_holes[hole_index];
-            if !hole.active || hole.mass < Fix::ZERO || self.blink_object_hidden(hole.entity) {
-                continue;
-            }
             for arrow_index in 0..self.arrows.len() {
                 let arrow = self.arrows[arrow_index];
                 if !arrow.active || !arrow.registered || self.blink_object_hidden(arrow.entity) {
                     continue;
                 }
-                if crate::physics::contact::circle_circle(
-                    Circle {
-                        center: hole.position,
-                        radius: hole.radius,
-                    },
-                    Circle {
-                        center: arrow.position,
-                        radius: arrow.collider_radius,
-                    },
-                )
-                .is_none()
-                {
-                    continue;
-                }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    arrow.inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.destroy_arrow(arrow_index);
-                if let Some(entity) = arrow.entity {
-                    let row = &mut self.entities[entity];
-                    row.flags = destroyed_flags(row.flags);
-                    row.owner = 0;
-                    row.x = arrow.position.x.raw();
-                    row.y = arrow.position.y.raw();
-                    row.vx = arrow.velocity.x.raw();
-                    row.vy = arrow.velocity.y.raw();
-                    row.rotation = arrow.rotation.raw();
-                    row.angular_velocity = 0;
+                let other = Circle {
+                    center: arrow.position,
+                    radius: arrow.collider_radius,
+                };
+                if crate::physics::contact::circle_circle(circle, other).is_some() {
+                    let other = self.part_rank(Part::Arrow(arrow_index));
+                    queue(self, HoleTarget::Arrow(arrow_index), arrow.inverse_mass, other, GROUP_CC);
                 }
             }
-        }
-
-        // The remaining positive-mass circles and boxes take the generic
-        // BlackHole.OnCollide path: grow from the collider's live inverse
-        // mass, then DestroyFix the whole object. Shape rows are the collision
-        // snapshot, so this also preserves scale and offsets without another
-        // source-specific approximation.
-        let sweep_x = self.sweep_x();
-        for hole_index in 0..self.black_holes.len() {
-            let hole = self.black_holes[hole_index];
-            if !hole.active || hole.mass < Fix::ZERO || self.blink_object_hidden(hole.entity) {
-                continue;
-            }
-            let query = Circle {
-                center: hole.position,
-                radius: hole.radius,
-            };
 
             for pickup_index in 0..self.ability_pickups.len() {
                 let pickup = self.ability_pickups[pickup_index];
                 let Some(entity) = pickup.entity else {
                     continue;
                 };
-                if self.detphysics_collider(entity).is_none()
-                    || pickup.body.inverse_mass <= Fix::ZERO
-                    || !self.circle_overlaps_entity(query, entity)
+                if self.detphysics_collider(entity).is_some()
+                    && self.circle_overlaps_entity(circle, entity)
                 {
-                    continue;
+                    let other = self.part_rank(Part::Pickup(pickup_index));
+                    let target = HoleTarget::Pickup(pickup_index);
+                    queue(self, target, pickup.body.inverse_mass, other, GROUP_CC);
                 }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    pickup.body.inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.ability_pickups[pickup_index].active = false;
-                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
 
             for item_index in 0..self.thrown_items.len() {
@@ -17573,37 +17525,26 @@ impl RolloutWorld {
                     continue;
                 };
                 if !item.active
-                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED)
-                        != (E_ACTIVE | E_ENABLED)
-                    || item.body.inverse_mass <= Fix::ZERO
-                    || !self.circle_overlaps_entity(query, entity)
+                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                    || !self.circle_overlaps_entity(circle, entity)
                 {
                     continue;
                 }
                 // SmokeGrenadeExplode2.OnCollide takes the hole like any other
-                // non-projectile contact. A Circle/Circle pair calls back its
-                // earlier-sorted collider first (DetPhysics.cs:2186,3070), so a
-                // Smoke that sorts before the hole detonates before the hole's
-                // DestroyFix marks it destroyed.
-                if item.ability == ABILITY_SMOKE && item.detonates_on_owner {
-                    let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-                    let row = &self.entities[entity];
-                    let item_min = axis(Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)))
-                        - Fix::from_raw(row.radius);
-                    let hole_rank =
-                        sweep_rank(&self.entities, axis(hole.position) - hole.radius, hole.entity);
-                    let item_rank = sweep_rank(&self.entities, item_min, Some(entity));
-                    if sweep_pair(hole_rank, item_rank).1 == item_rank {
-                        self.detonate_smoke(item_index, true, data);
-                    }
+                // non-projectile collider, unless the hole's callback already
+                // destroyed it (SmokeGrenadeExplode2.cs:63-78). A pair calls
+                // back its earlier-sorted collider first (DetPhysics.cs:2186, 3070).
+                let other = self.part_rank(Part::Item(item_index));
+                let (later, earlier) = sweep_pair(rank, other);
+                let smoke = CallbackHit::ItemDetonate { item: item_index, count: 1 };
+                let smoke_first = item.ability == ABILITY_SMOKE && earlier == other;
+                if smoke_first {
+                    self.scratch.callback_hits.push(((GROUP_CC, later, earlier), smoke));
                 }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    item.body.inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.remove_thrown_item(item_index, true);
+                queue(self, HoleTarget::Item(item_index), item.body.inverse_mass, other, GROUP_CC);
+                if item.ability == ABILITY_SMOKE && !smoke_first {
+                    self.scratch.callback_hits.push(((GROUP_CC, later, earlier), smoke));
+                }
             }
 
             for shot_index in 0..self.portal_shots.len() {
@@ -17611,26 +17552,10 @@ impl RolloutWorld {
                 let Some(entity) = shot.entity else {
                     continue;
                 };
-                if !shot.active
-                    || !shot.registered
-                    || shot.body.inverse_mass <= Fix::ZERO
-                    || !self.circle_overlaps_entity(query, entity)
-                {
-                    continue;
+                if shot.active && shot.registered && self.circle_overlaps_entity(circle, entity) {
+                    let other = self.part_rank(Part::Shot(shot_index));
+                    queue(self, HoleTarget::Shot(shot_index), shot.body.inverse_mass, other, GROUP_CC);
                 }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    shot.body.inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.portal_shots[shot_index].active = false;
-                self.portal_shots[shot_index].registered = false;
-                self.portal_shots[shot_index].remove_next_tick = true;
-                // The destroyed object no longer answers IPlayerIdHolder.
-                let row = &mut self.entities[entity];
-                row.flags = destroyed_flags(row.flags);
-                row.owner = 0;
             }
 
             for rock_index in 0..self.duplicated_rocks.len() {
@@ -17638,20 +17563,11 @@ impl RolloutWorld {
                 let Some(entity) = rock.entity else {
                     continue;
                 };
-                if !rock.active
-                    || rock.body.inverse_mass <= Fix::ZERO
-                    || !self.circle_overlaps_entity(query, entity)
-                {
-                    continue;
+                if rock.active && self.circle_overlaps_entity(circle, entity) {
+                    let other = self.part_rank(Part::DuplicatedRock(rock_index));
+                    let target = HoleTarget::DuplicatedRock(rock_index);
+                    queue(self, target, rock.body.inverse_mass, other, GROUP_CC);
                 }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    rock.body.inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.duplicated_rocks[rock_index].active = false;
-                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
 
             for missile_index in 0..self.guided_missiles.len() {
@@ -17659,43 +17575,31 @@ impl RolloutWorld {
                 let Some(entity) = missile.entity else {
                     continue;
                 };
-                if !missile.active
-                    || !missile.registered
-                    || missile.body.inverse_mass <= Fix::ZERO
-                    || !self.circle_overlaps_entity(query, entity)
-                {
-                    continue;
+                if missile.active && missile.registered && self.circle_overlaps_entity(circle, entity) {
+                    let other = self.part_rank(Part::Missile(missile_index));
+                    let target = HoleTarget::Missile(missile_index);
+                    queue(self, target, missile.body.inverse_mass, other, GROUP_CB);
                 }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    missile.body.inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.destroy_guided_missile(missile_index, true);
             }
 
+            // Colliders with no other callback here: ranked, and grouped by
+            // shape, from their rows.
+            let row_rank = |world: &Self, entity: usize| {
+                sweep_rank(&world.entities, world.swept_min(Swept::Row(entity)), Some(entity))
+            };
+            let row_group = |world: &Self, entity: usize| {
+                if world.entities[entity].kind == 0 { GROUP_CC } else { GROUP_CB }
+            };
             for marker_index in 0..self.revival_marker_pool.len() {
                 let marker = self.revival_marker_pool[marker_index];
                 let Some(entity) = marker.entity else {
                     continue;
                 };
-                if !marker.active
-                    || !marker.registered
-                    || marker.body.inverse_mass <= Fix::ZERO
-                    || !self.circle_overlaps_entity(query, entity)
-                {
-                    continue;
+                if marker.active && marker.registered && self.circle_overlaps_entity(circle, entity) {
+                    let (other, group) = (row_rank(self, entity), row_group(self, entity));
+                    let target = HoleTarget::RevivalMarker(marker_index);
+                    queue(self, target, marker.body.inverse_mass, other, group);
                 }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    marker.body.inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.revival_marker_pool[marker_index].active = false;
-                self.revival_marker_pool[marker_index].registered = false;
-                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
             // Smoke (layer 22) pairs with RigidBodyAffector, so an unlit cloud
             // is eaten like any other positive-mass circle.
@@ -17704,355 +17608,349 @@ impl RolloutWorld {
                 let Some(entity) = cloud.entity else {
                     continue;
                 };
-                if !cloud.active
-                    || !cloud.registered
-                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED)
-                        != (E_ACTIVE | E_ENABLED)
-                    || cloud.body.inverse_mass <= Fix::ZERO
-                    || !self.circle_overlaps_entity(query, entity)
+                if cloud.active
+                    && cloud.registered
+                    && self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == (E_ACTIVE | E_ENABLED)
+                    && self.circle_overlaps_entity(circle, entity)
                 {
-                    continue;
+                    let (other, group) = (row_rank(self, entity), row_group(self, entity));
+                    queue(self, HoleTarget::Cloud(cloud_index), cloud.body.inverse_mass, other, group);
                 }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    cloud.body.inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.smoke_clouds[cloud_index].active = false;
-                self.smoke_clouds[cloud_index].registered = false;
-                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
             for marker_index in 0..self.teleport_marker_pool.len() {
                 let marker = self.teleport_marker_pool[marker_index];
                 let Some(entity) = marker.entity else {
                     continue;
                 };
-                if !marker.active
-                    || !marker.registered
-                    || data.teleport.marker_body.inverse_mass <= Fix::ZERO
-                    || !self.circle_overlaps_entity(query, entity)
-                {
-                    continue;
+                if marker.active && marker.registered && self.circle_overlaps_entity(circle, entity) {
+                    let (other, group) = (row_rank(self, entity), row_group(self, entity));
+                    let inverse_mass = data::get().teleport.marker_body.inverse_mass;
+                    queue(self, HoleTarget::TeleportMarker(marker_index), inverse_mass, other, group);
                 }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    data.teleport.marker_body.inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.teleport_marker_pool[marker_index].active = false;
-                self.teleport_marker_pool[marker_index].registered = false;
-                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
 
+            // A composite child's collider answers with its CompositeBody's
+            // inverse mass.
             for spike_index in 0..self.spike_attacks.len() {
                 let spike = self.spike_attacks[spike_index];
                 let Some(entity) = spike.entity else {
                     continue;
                 };
-                if !spike.active
-                    || spike.macho_carried
-                    || spike.platform_index >= self.platform_dynamics.len()
-                    || !self.circle_overlaps_entity(query, entity)
+                if spike.active
+                    && !spike.macho_carried
+                    && spike.platform_index < self.platform_dynamics.len()
+                    && self.circle_overlaps_entity(circle, entity)
                 {
-                    continue;
+                    let inverse_mass = self.platform_dynamics[spike.platform_index].body.inverse_mass;
+                    let other = self.part_rank(Part::Spike(spike_index));
+                    queue(self, HoleTarget::Spike(spike_index), inverse_mass, other, GROUP_CB);
                 }
-                let inverse_mass = self.platform_dynamics[spike.platform_index]
-                    .body
-                    .inverse_mass;
-                if inverse_mass <= Fix::ZERO {
-                    continue;
-                }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.remove_spike(spike_index);
-                // As an engine: the box stays in its CompositeBody for the pass.
-                self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
             }
             for engine_index in 0..self.engines.len() {
                 let engine = self.engines[engine_index];
                 let Some(entity) = engine.entity else {
                     continue;
                 };
-                if !engine.active
-                    || engine.macho_carried
-                    || engine.platform_index >= self.platform_dynamics.len()
-                    || !self.circle_overlaps_entity(query, entity)
+                if engine.active
+                    && !engine.macho_carried
+                    && engine.platform_index < self.platform_dynamics.len()
+                    && self.circle_overlaps_entity(circle, entity)
                 {
-                    continue;
+                    let inverse_mass = self.platform_dynamics[engine.platform_index].body.inverse_mass;
+                    let other = self.part_rank(Part::Engine(engine_index));
+                    queue(self, HoleTarget::Engine(engine_index), inverse_mass, other, GROUP_CB);
                 }
-                let inverse_mass = self.platform_dynamics[engine.platform_index]
-                    .body
-                    .inverse_mass;
-                if inverse_mass <= Fix::ZERO {
-                    continue;
-                }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.remove_engine(engine_index);
-                // OnCollide only queues the DestroyFix: the box stays in its
-                // CompositeBody, which still carries it, for the rest of the pass.
-                self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
             }
             for node_index in 0..self.tesla_nodes.len() {
                 let node = self.tesla_nodes[node_index];
                 let Some(entity) = node.entity else {
                     continue;
                 };
-                if !node.active
-                    || node.macho_carried
-                    || node.platform_index >= self.platform_dynamics.len()
-                    || !self.circle_overlaps_entity(query, entity)
+                if node.active
+                    && !node.macho_carried
+                    && node.platform_index < self.platform_dynamics.len()
+                    && self.circle_overlaps_entity(circle, entity)
                 {
-                    continue;
+                    let inverse_mass = self.platform_dynamics[node.platform_index].body.inverse_mass;
+                    let other = self.part_rank(Part::Node(node_index));
+                    queue(self, HoleTarget::Node(node_index), inverse_mass, other, GROUP_CC);
                 }
-                let inverse_mass = self.platform_dynamics[node.platform_index]
-                    .body
-                    .inverse_mass;
-                if inverse_mass <= Fix::ZERO {
-                    continue;
-                }
-                Self::black_hole_grow(
-                    &mut self.black_holes[hole_index],
-                    inverse_mass,
-                    Fix::ZERO,
-                    data,
-                );
-                self.remove_tesla_node(node_index, true);
-                // As an engine: the circle stays in its CompositeBody for the pass.
-                self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
             }
-        }
 
-        // Equal holes use SpriteRenderer.sortingOrder as a deterministic
-        // tiebreak: the later-created one consumes the older one. Pool slots
-        // are reused, so hierarchy allocation order carries that identity.
-        for a_index in 0..self.black_holes.len() {
-            if !self.black_holes[a_index].active
-                || self.blink_object_hidden(self.black_holes[a_index].entity)
-            {
-                continue;
-            }
-            for b_index in 0..a_index {
-                if !self.black_holes[b_index].active
-                    || self.blink_object_hidden(self.black_holes[b_index].entity)
-                {
+            // Another hole: both callbacks run, the earlier-sorted one's first.
+            for other_index in 0..hole_index {
+                let other = self.black_holes[other_index];
+                if !other.active || self.blink_object_hidden(other.entity) {
                     continue;
                 }
-                let a = self.black_holes[a_index];
-                let b = self.black_holes[b_index];
-                if crate::physics::contact::circle_circle(
-                    Circle {
-                        center: a.position,
-                        radius: a.radius,
-                    },
-                    Circle {
-                        center: b.position,
-                        radius: b.radius,
-                    },
-                )
-                .is_none()
-                {
-                    continue;
-                }
-                let consumer = if a.mass >= Fix::ZERO && a.mass > b.mass {
-                    a_index
-                } else if b.mass >= Fix::ZERO && b.mass > a.mass {
-                    b_index
-                } else if a.mass >= Fix::ZERO && a.mass == b.mass {
-                    if a.hierarchy_base > b.hierarchy_base {
-                        a_index
-                    } else {
-                        b_index
-                    }
-                } else {
-                    continue;
+                let other_circle = Circle {
+                    center: other.position,
+                    radius: other.radius,
                 };
-                let consumed = if consumer == a_index {
-                    b_index
-                } else {
-                    a_index
+                if crate::physics::contact::circle_circle(circle, other_circle).is_none() {
+                    continue;
+                }
+                let other_rank = hole_rank(self, &other);
+                let (later, earlier) = sweep_pair(rank, other_rank);
+                let this = CallbackHit::BlackHole {
+                    hole: hole_index,
+                    target: HoleTarget::Hole(other_index),
+                    inverse_mass: -Fix::ONE,
                 };
-                Self::black_hole_grow(
-                    &mut self.black_holes[consumer],
-                    -Fix::ONE,
-                    data.black_hole.merge_growth,
-                    data,
-                );
-                self.black_holes[consumed].active = false;
-                if let Some(entity) = self.black_holes[consumed].entity {
-                    self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
-                }
-                if consumed == a_index {
-                    break;
-                }
+                let that = CallbackHit::BlackHole {
+                    hole: other_index,
+                    target: HoleTarget::Hole(hole_index),
+                    inverse_mass: -Fix::ONE,
+                };
+                let (first, second) = if earlier == rank { (this, that) } else { (that, this) };
+                self.scratch.callback_hits.push(((GROUP_CC, later, earlier), first));
+                self.scratch.callback_hits.push(((GROUP_CC, later, earlier), second));
             }
-        }
 
-        // Kills run in DetPhysics callback order: the circle/circle group,
-        // then circle/box, each in SortAndSweep order. Only the last body of
-        // a player drops its ability, so a slime and its clone eaten in one
-        // pass must die in that order.
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let mut victims: Vec<((bool, SweepRank, SweepRank), bool, usize, u32)> = Vec::new();
-        for hole_index in 0..self.black_holes.len() {
-            let hole = self.black_holes[hole_index];
-            if !hole.active || hole.mass < Fix::ZERO || self.blink_object_hidden(hole.entity) {
-                continue;
-            }
-            let circle = Circle {
-                center: hole.position,
-                radius: hole.radius,
-            };
-            let hole_rank = sweep_rank(&self.entities, axis(hole.position) - hole.radius, hole.entity);
-            let key = |boxed: bool, min: Fix, entity: Option<usize>| {
-                let (later, earlier) = sweep_pair(hole_rank, sweep_rank(&self.entities, min, entity));
-                (boxed, later, earlier)
-            };
-            let killer = hole.killer(&self.players);
-            for (player_index, player) in self.players.iter().enumerate() {
+            // Slimes and abilityless clones, on the Player layer. Grow reads
+            // the collider's inverseMass: -1 unless a BoplBody owns it, as the
+            // Rock form's BounceBall does.
+            for player_index in 0..self.players.len() {
+                let player = &self.players[player_index];
                 if !self.playable_slot(player) || player.out {
                     continue;
                 }
-                let entity = match player.active {
-                    ActiveAbility::None => player.body_entity,
-                    ActiveAbility::Dash => player.dash_entity,
-                    ActiveAbility::Bow => player.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => player.throw_entity,
-                    ActiveAbility::Mine => player.mine_entity,
-                    ActiveAbility::Rock => player.rock_entity,
-                    ActiveAbility::Roll => player.roll_entity,
-                    ActiveAbility::Meteor => player.meteor_entity,
-                    ActiveAbility::Push => player.push_entity,
-                    ActiveAbility::Freeze => player.freeze_entity,
-                    ActiveAbility::Blink => player.blink_entity,
-                    ActiveAbility::GrowthRay => player.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
-                    ActiveAbility::Duplicator => player.duplicator_entity,
-                    ActiveAbility::Magnet => player.magnet_entity,
-                    ActiveAbility::Spike => player.spike_entity,
-                    ActiveAbility::Engine => player.engine_entity,
-                    ActiveAbility::Tesla => player.tesla_entity,
-                    ActiveAbility::TimeStop => player.time_stop_entity,
-                    ActiveAbility::Gust => player.gust_entity,
-                    ActiveAbility::Revival => player.revival_entity,
-                    ActiveAbility::BlackHole => player.black_hole_entity,
-                    ActiveAbility::Throw => player.macho_throw_entity,
-                    ActiveAbility::Drill => player.drill_entity,
-                    ActiveAbility::Beam => player.beam_entity,
-                    ActiveAbility::Platform => player.circle_entity,
-                };
+                let entity = Self::hurtbox_entity(player);
                 if !self.collides(entity) {
                     continue;
                 }
                 let row = self.entities[entity];
+                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
                 let overlaps = if row.kind == 0 {
-                    crate::physics::contact::circle_circle(
-                        circle,
-                        Circle {
-                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                            radius: Fix::from_raw(row.radius),
-                        },
-                    )
-                    .is_some()
+                    let radius = Fix::from_raw(row.radius);
+                    crate::physics::contact::circle_circle(circle, Circle { center, radius }).is_some()
                 } else {
                     let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
                     let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    crate::physics::contact::circle_box(
-                        circle,
-                        OrientedBox {
-                            center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                            right,
-                            up,
-                            inverse_extents: Vec2::new(
-                                Fix::ONE / right.length(),
-                                Fix::ONE / up.length(),
-                            ),
-                        },
-                    )
-                    .is_some()
+                    let inverse_extents = Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length());
+                    let body = OrientedBox { center, right, up, inverse_extents };
+                    crate::physics::contact::circle_box(circle, body).is_some()
                 };
-                if overlaps {
-                    let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                    let min = if row.kind == 0 {
-                        axis(center) - Fix::from_raw(row.radius)
-                    } else {
-                        axis(center)
-                            - axis(Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y)))
-                                .abs()
-                            - axis(Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)))
-                                .abs()
-                    };
-                    victims.push((key(row.kind != 0, min, Some(entity)), false, player_index, killer));
-                    // Grow reads the collider's inverseMass: -1 unless a
-                    // BoplBody owns it, as the Rock form's BounceBall does.
-                    let inverse_mass = if player.active == ActiveAbility::Rock {
-                        player.rock.body.inverse_mass
-                    } else {
-                        -Fix::ONE
-                    };
-                    Self::black_hole_grow(
-                        &mut self.black_holes[hole_index],
-                        inverse_mass,
-                        Fix::ZERO,
-                        data,
-                    );
+                if !overlaps {
+                    continue;
                 }
+                let inverse_mass = if player.active == ActiveAbility::Rock {
+                    player.rock.body.inverse_mass
+                } else {
+                    -Fix::ONE
+                };
+                let hit = CallbackHit::BlackHole {
+                    hole: hole_index,
+                    target: HoleTarget::Player(player_index),
+                    inverse_mass,
+                };
+                self.queue_callback_hit(player_index, true, rank, hit);
             }
             for clone_index in 0..self.abilityless_clones.len() {
                 let clone = &self.abilityless_clones[clone_index];
                 if !clone.active || self.abilityless_clone_hidden(clone) {
                     continue;
                 }
-                let body = clone.base.collider;
-                if crate::physics::contact::circle_box(circle, body).is_some() {
-                    let min = axis(body.center) - axis(body.right).abs() - axis(body.up).abs();
-                    victims.push((key(true, min, clone.entity), true, clone_index, killer));
-                    Self::black_hole_grow(
-                        &mut self.black_holes[hole_index],
-                        -Fix::ONE,
-                        Fix::ZERO,
-                        data,
-                    );
+                if crate::physics::contact::circle_box(circle, clone.base.collider).is_some() {
+                    let other = sweep_rank(&self.entities, self.swept_min(Swept::Clone(clone_index)), clone.entity);
+                    queue(self, HoleTarget::Clone(clone_index), -Fix::ONE, other, GROUP_CB);
                 }
             }
         }
-        victims.sort_by_key(|&(key, ..)| key);
-        for (_, clone, index, killer) in victims {
-            if clone {
-                let entity = self.abilityless_clones[index].entity;
-                let alive = self.abilityless_clones[index].active;
-                self.kill_abilityless_clone(index, killer, CAUSE_OTHER);
+    }
+
+    /// BlackHole.OnCollide (BlackHole.cs:445-593), run from DetPhysics'
+    /// queue. It never asks whether either collider is already destroyed, so
+    /// every hole that met a collider grows from it, and a hole another ate
+    /// earlier in the queue still eats; DestroyFix of a destroyed object does
+    /// nothing more.
+    fn black_hole_collide(
+        &mut self,
+        hole_index: usize,
+        target: HoleTarget,
+        inverse_mass: Fix,
+        data: &data::RolloutData,
+    ) {
+        let hole = self.black_holes[hole_index];
+        if hole.mass < Fix::ZERO {
+            return;
+        }
+        let grow = |world: &mut Self, extra: Fix| {
+            Self::black_hole_grow(&mut world.black_holes[hole_index], inverse_mass, extra, data);
+        };
+        match target {
+            // Equal holes use SpriteRenderer.sortingOrder: the later-created
+            // one eats the older one. Pool slots are reused, so hierarchy
+            // allocation order carries that identity.
+            HoleTarget::Hole(other_index) => {
+                let other = self.black_holes[other_index];
+                if hole.mass > other.mass
+                    || (hole.mass == other.mass && hole.hierarchy_base > other.hierarchy_base)
+                {
+                    grow(self, data.black_hole.merge_growth);
+                    self.black_holes[other_index].active = false;
+                    if let Some(entity) = other.entity {
+                        self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                    }
+                }
+            }
+            HoleTarget::Player(index) => {
+                grow(self, Fix::ZERO);
+                // killPlayer's ignoreInvulnerability also takes a stock clone
+                // that ReSpawnFast is still animating in, and asks for no
+                // death effect. A form gets Ability.ExitAbility at its
+                // FixTransform, not the form's own exit (BlackHole.cs:486-495).
+                if self.hittable(index) {
+                    let killer = hole.killer(&self.players);
+                    self.kill_with(index, killer, CAUSE_OTHER, true, false, false, true);
+                }
+            }
+            HoleTarget::Clone(index) => {
+                grow(self, Fix::ZERO);
+                let clone = &self.abilityless_clones[index];
+                let (entity, alive) = (clone.entity, clone.active);
+                self.kill_abilityless_clone(index, hole.killer(&self.players), CAUSE_OTHER);
                 // A callback casualty stays visible as destroyed until the
                 // next pass's DetPhysics.Simulate drops it.
                 if let Some(entity) = entity.filter(|_| alive) {
                     self.entities[entity].flags = E_DESTROYED | E_TRIGGER;
                     self.entities[entity].owner = 0;
                 }
-            } else if self.hittable(index) {
-                // The victim's hurtbox was live when the hole touched it, and
-                // killPlayer's ignoreInvulnerability also takes a stock clone
-                // that ReSpawnFast is still animating in.
-                // BlackHole explicitly requests no ordinary death effect,
-                // while still executing from DetPhysics's callback queue.
-                // A form gets Ability.ExitAbility at its FixTransform, not
-                // the form's own exit (BlackHole.cs:486-495).
-                self.kill_with(index, killer, CAUSE_OTHER, true, false, false, true);
+            }
+            HoleTarget::Wall(platform_index) => {
+                if inverse_mass != Fix::ZERO {
+                    grow(self, Fix::ZERO);
+                }
+                // Updater.DestroyFix is deferred until DetPhysics's next
+                // remove-destroyed pass, so this callback frame still exports
+                // the wall with its destroyed bit.
+                let children = self.platform_dynamics[platform_index].attached_children;
+                let composite = if children != 0 { E_COMPOSITE } else { 0 };
+                let row = &mut self.entities[self.platform_entities[platform_index]];
+                row.flags = destroyed_flags(row.flags) | composite;
+                self.mark_wall_nodes_destroyed(platform_index);
+            }
+            _ if inverse_mass <= Fix::ZERO => {}
+            HoleTarget::Arrow(index) => {
+                grow(self, Fix::ZERO);
+                let arrow = self.arrows[index];
+                if arrow.active {
+                    self.destroy_arrow(index);
+                    if let Some(entity) = arrow.entity {
+                        let row = &mut self.entities[entity];
+                        row.flags = destroyed_flags(row.flags);
+                        row.owner = 0;
+                        row.x = arrow.position.x.raw();
+                        row.y = arrow.position.y.raw();
+                        row.vx = arrow.velocity.x.raw();
+                        row.vy = arrow.velocity.y.raw();
+                        row.rotation = arrow.rotation.raw();
+                        row.angular_velocity = 0;
+                    }
+                }
+            }
+            HoleTarget::Pickup(index) => {
+                grow(self, Fix::ZERO);
+                let pickup = &mut self.ability_pickups[index];
+                if pickup.active {
+                    pickup.active = false;
+                    if let Some(entity) = pickup.entity {
+                        self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                    }
+                }
+            }
+            HoleTarget::Item(index) => {
+                grow(self, Fix::ZERO);
+                if self.thrown_items[index].active {
+                    self.remove_thrown_item(index, true);
+                }
+            }
+            HoleTarget::Shot(index) => {
+                grow(self, Fix::ZERO);
+                let shot = &mut self.portal_shots[index];
+                if shot.active {
+                    shot.active = false;
+                    shot.registered = false;
+                    shot.remove_next_tick = true;
+                    // The destroyed object no longer answers IPlayerIdHolder.
+                    if let Some(entity) = shot.entity {
+                        let row = &mut self.entities[entity];
+                        row.flags = destroyed_flags(row.flags);
+                        row.owner = 0;
+                    }
+                }
+            }
+            HoleTarget::DuplicatedRock(index) => {
+                grow(self, Fix::ZERO);
+                let rock = &mut self.duplicated_rocks[index];
+                if rock.active {
+                    rock.active = false;
+                    if let Some(entity) = rock.entity {
+                        self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                    }
+                }
+            }
+            HoleTarget::Missile(index) => {
+                grow(self, Fix::ZERO);
+                if self.guided_missiles[index].active {
+                    self.destroy_guided_missile(index, true);
+                }
+            }
+            HoleTarget::RevivalMarker(index) => {
+                grow(self, Fix::ZERO);
+                let marker = &mut self.revival_marker_pool[index];
+                if marker.active {
+                    marker.active = false;
+                    marker.registered = false;
+                    if let Some(entity) = marker.entity {
+                        self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                    }
+                }
+            }
+            HoleTarget::Cloud(index) => {
+                grow(self, Fix::ZERO);
+                let cloud = &mut self.smoke_clouds[index];
+                if cloud.active {
+                    cloud.active = false;
+                    cloud.registered = false;
+                    if let Some(entity) = cloud.entity {
+                        self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                    }
+                }
+            }
+            HoleTarget::TeleportMarker(index) => {
+                grow(self, Fix::ZERO);
+                let marker = &mut self.teleport_marker_pool[index];
+                if marker.active {
+                    marker.active = false;
+                    marker.registered = false;
+                    if let Some(entity) = marker.entity {
+                        self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                    }
+                }
+            }
+            // OnCollide only queues the DestroyFix: a composite child's
+            // collider stays in its CompositeBody for the pass.
+            HoleTarget::Spike(index) => {
+                grow(self, Fix::ZERO);
+                if let Some(entity) = self.spike_attacks[index].entity.filter(|_| self.spike_attacks[index].active) {
+                    self.remove_spike(index);
+                    self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
+                }
+            }
+            HoleTarget::Engine(index) => {
+                grow(self, Fix::ZERO);
+                if let Some(entity) = self.engines[index].entity.filter(|_| self.engines[index].active) {
+                    self.remove_engine(index);
+                    self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
+                }
+            }
+            HoleTarget::Node(index) => {
+                grow(self, Fix::ZERO);
+                if let Some(entity) = self.tesla_nodes[index].entity.filter(|_| self.tesla_nodes[index].active) {
+                    self.remove_tesla_node(index, true);
+                    self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
+                }
             }
         }
     }
@@ -37168,6 +37066,9 @@ impl RolloutWorld {
                     self.slime_collide(slime, other, lower);
                 }
                 CallbackHit::Squish { clone, index } => self.squish(clone, index),
+                CallbackHit::BlackHole { hole, target, inverse_mass } => {
+                    self.black_hole_collide(hole, target, inverse_mass, data);
+                }
                 CallbackHit::SpikeWallKnock { spike, wall, point } => {
                     if self.player_time_scale < Fix::from_f32(0.01)
                         || self.spike_attacks[spike].time >= data.spike.push_time
@@ -46152,7 +46053,8 @@ mod tests {
             ..BlackHoleState::default()
         });
 
-        world.black_hole_contacts(data::get());
+        world.black_hole_contacts();
+        world.run_callback_hits(data::get());
 
         assert!(world.black_holes[0].active);
         assert!(!world.black_holes[1].active);
