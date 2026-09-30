@@ -19879,8 +19879,11 @@ impl RolloutWorld {
         if !slot.macho_throw.facing_right {
             local.x = -local.x;
         }
-        if slot.macho_throw.held_boulder.is_some() {
-            local.y += data.macho_throw.boulder_radius * (slot.base.scale - Fix::ONE)
+        if let Some(held) = slot.macho_throw.held_boulder {
+            // heldBoulder.hitbox.Scale: the boulder's own, clamped to its
+            // prefab's range and rescaled by any ray (MachoThrow2.cs:764).
+            let boulder_scale = self.platform_dynamics[self.macho_boulders[held].platform_index].scale;
+            local.y += data.macho_throw.boulder_radius * (boulder_scale - Fix::ONE)
                 + data.macho_throw.ground_to_hands * (slot.base.scale - Fix::ONE);
         }
         slot.base.position + local.complex_mul(slot.base.up.perp_cw())
