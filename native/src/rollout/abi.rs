@@ -233,7 +233,7 @@ pub unsafe extern "C" fn bopl_rl_step(
     let Some(handle) = (unsafe { world.as_mut() }) else {
         return ARGUMENT;
     };
-    if actions.is_null() || !handle.world.valid || count != handle.world.players.len() {
+    if actions.is_null() || !handle.world.valid || count != handle.world.player_count {
         return ARGUMENT;
     }
     if !(1..=16).contains(&repeat) {
@@ -269,7 +269,7 @@ pub unsafe extern "C" fn bopl_rl_step_sampled(
     let Some(handle) = (unsafe { world.as_mut() }) else {
         return ARGUMENT;
     };
-    if actions.is_null() || !handle.world.valid || count != handle.world.players.len() {
+    if actions.is_null() || !handle.world.valid || count != handle.world.player_count {
         return ARGUMENT;
     }
     if first < 1 || second < 1 || first > 16 || second > 16 || first > 16 - second {

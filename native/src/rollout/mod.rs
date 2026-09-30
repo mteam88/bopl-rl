@@ -2624,6 +2624,32 @@ impl AbilitylessClone {
 }
 
 /// One player's match state beyond the movement body.
+/// The circle rows a revival clone registers ahead of every clone's boxes.
+#[derive(Clone, Copy)]
+struct RevivalCircles {
+    form_entities: [usize; 3],
+    platform_entity: usize,
+    roll_entity: usize,
+    rock_hierarchy: [u32; 3],
+    gust_entity: usize,
+    revival_entity: usize,
+    time_stop_entity: usize,
+}
+
+impl Default for RevivalCircles {
+    fn default() -> Self {
+        Self {
+            form_entities: [usize::MAX; 3],
+            platform_entity: usize::MAX,
+            roll_entity: usize::MAX,
+            rock_hierarchy: [0; 3],
+            gust_entity: usize::MAX,
+            revival_entity: usize::MAX,
+            time_stop_entity: usize::MAX,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PlayerSlot {
     pub base: Player,
@@ -3152,6 +3178,76 @@ impl PlayerSlot {
     /// Player.Kill is ignored but PlayerCollision still destroys the slime.
     fn slime_destroyed(&self) -> bool {
         self.out || self.slime_gone || (self.won && !self.base.alive && self.respawn_ticks == 0)
+    }
+
+    /// Copies the per-player state (the C# Player object's, and the port's
+    /// bookkeeping for it) from the player's own slot onto this body.
+    fn take_player_state(&mut self, player: &PlayerSlot) {
+        self.owner = player.owner;
+        self.team = player.team;
+        self.keyboard = player.keyboard;
+        self.stocks = player.stocks;
+        self.kills = player.kills;
+        self.deaths = player.deaths;
+        self.cause_of_death = player.cause_of_death;
+        self.death_tick = player.death_tick;
+        self.won = player.won;
+        self.out = player.out;
+        self.telemetry = player.telemetry;
+        self.slime_gone = player.slime_gone;
+        self.reported_position = player.reported_position;
+        self.reported_tick = player.reported_tick;
+        self.tie_position = player.tie_position;
+        self.unpublished_tick = player.unpublished_tick;
+        self.player_scale = player.player_scale;
+        self.invisible = player.invisible;
+        self.invisible_time = player.invisible_time;
+        self.ability_time = player.ability_time;
+        self.form_flags_cleared = player.form_flags_cleared;
+        self.input_jump_was_down = player.input_jump_was_down;
+        self.last_movement_input = player.last_movement_input;
+        self.last_action = player.last_action;
+        self.unspawned = player.unspawned;
+        self.respawn_ticks = player.respawn_ticks;
+        self.respawn_spawn_ticks = player.respawn_spawn_ticks;
+        self.respawn_selected = player.respawn_selected;
+        self.stock_indicator_markers = player.stock_indicator_markers;
+        self.stock_death = player.stock_death;
+    }
+
+    /// Forgets the entity rows this body held.
+    fn clear_entity_rows(&mut self) {
+        self.drill_hitbox_entities = [[usize::MAX; 3]; 3];
+        self.form_entities = [usize::MAX; 3];
+        self.circle_entity = usize::MAX;
+        self.rock_entity = usize::MAX;
+        self.roll_entity = usize::MAX;
+        self.push_entity = usize::MAX;
+        self.freeze_entities = [usize::MAX; 3];
+        self.freeze_entity = usize::MAX;
+        self.blink_entity = usize::MAX;
+        self.growth_ray_entity = usize::MAX;
+        self.shrink_ray_entity = usize::MAX;
+        self.duplicator_entity = usize::MAX;
+        self.magnet_entity = usize::MAX;
+        self.gust_entity = usize::MAX;
+        self.revival_entity = usize::MAX;
+        self.body_entity = usize::MAX;
+        self.dash_entities = [usize::MAX; 3];
+        self.dash_entity = usize::MAX;
+        self.bow_entity = usize::MAX;
+        self.throw_entities = [usize::MAX; 3];
+        self.throw_entity = usize::MAX;
+        self.mine_entity = usize::MAX;
+        self.spike_entity = usize::MAX;
+        self.time_stop_entity = usize::MAX;
+        self.engine_entity = usize::MAX;
+        self.tesla_entity = usize::MAX;
+        self.meteor_entity = usize::MAX;
+        self.black_hole_entity = usize::MAX;
+        self.macho_throw_entity = usize::MAX;
+        self.drill_entity = usize::MAX;
+        self.beam_entity = usize::MAX;
     }
 
     /// Every collider row the slime and its ability objects own. A dead
@@ -6527,7 +6623,13 @@ impl RolloutWorld {
         // at the turn of whichever object holds it this pass: the slime, or
         // the ability form it is in. A stock respawn in kill order or a form
         // picked up later puts that ahead of or behind player index order.
-        let player_count = actions.len().min(self.players.len());
+        // A player's extra bodies take their turns in the same walk, on the
+        // player's input.
+        let player_count = if actions.len() >= self.player_count {
+            self.players.len()
+        } else {
+            actions.len()
+        };
         let mut player_order = [0usize; MAX_BODIES];
         for (index, value) in player_order[..player_count].iter_mut().enumerate() {
             *value = index;
@@ -6556,7 +6658,11 @@ impl RolloutWorld {
         self.scratch.ropes_ran_below = 0;
         self.scratch.tacks_ran_below = 0;
         self.scratch.engines_ran_below = 0;
+        self.scratch.clones_positioned = [false; MAX_BODIES];
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
+            if index >= self.player_count && !self.players[index].base.alive {
+                continue;
+            }
             // SlimeController.Awake adds the RewindRecorder to the slime itself
             // (RewindRecorder.cs:93), so each slime already updated took its
             // sample before anything later acts: spawned updaters, and another
@@ -6634,7 +6740,7 @@ impl RolloutWorld {
                 }
                 spawned_from = player_hierarchy[index];
             }
-            let packet = &actions[index];
+            let packet = &actions[self.players[index].owner];
             // An ordinary slime's drop test closes its grounded Move instead
             // (`player_tick`).
             if self.playable(index) && self.players[index].active != ActiveAbility::None {
@@ -6807,6 +6913,10 @@ impl RolloutWorld {
             };
             self.exited_ability(index, data);
             self.player_tick(index, action, movement_input, jump_pressed, data);
+            if index >= self.player_count {
+                self.publish_extra_body_position(index);
+                self.fold_extra_body_telemetry(index);
+            }
             // The slime's movement raycasts (PlayerPhysics.Move through
             // StickyRoundedRectangle.maxMovementAllowed) drop the colliders
             // DestroyFix marked, such as the node a placement just evicted
@@ -6906,10 +7016,10 @@ impl RolloutWorld {
         }
         self.scratch.player_scale_changes.clear();
         self.scratch.platform_resizes.clear();
-        self.scratch.clone_action_count = player_count;
-        self.scratch.clone_actions[..player_count].copy_from_slice(&actions[..player_count]);
+        let action_count = actions.len().min(self.player_count);
+        self.scratch.clone_action_count = action_count;
+        self.scratch.clone_actions[..action_count].copy_from_slice(&actions[..action_count]);
         self.scratch.clone_jump_pressed = jump_pressed_by_player;
-        self.scratch.clones_positioned = [false; MAX_BODIES];
         self.scratch.clones_updated_early.clear();
         self.duplicated_platforms_tick(data, updater_dt, spawned_from..u32::MAX);
         self.scratch.duplicates_window = None;
@@ -7210,7 +7320,8 @@ impl RolloutWorld {
         // updater pass left (Updater.cs:303-323); a grounded slime's body only
         // moves to its new surface local in PlayerPhysics.LateUpdateSim
         // (PlayerPhysics.cs:138-146), after the contacts below.
-        for (index, action) in actions.iter().enumerate() {
+        for index in 0..self.players.len().min(player_count) {
+            let action = &actions[self.players[index].owner];
             // The TimeStop effect can restore the global scale later in this
             // updater pass. DetPhysics still observes the zero delta that was
             // captured at the pass start and retains frozen colliders once
@@ -21817,454 +21928,501 @@ impl RolloutWorld {
     }
 
     fn register_pending_revival_clones(&mut self, data: &data::RolloutData) {
+        // DetPhysics keeps circles and boxes in separate registries, so the
+        // new circles of every clone instantiated since the last pass (one
+        // killPlayer's marker clones, in SpawnClone order) come before their
+        // boxes.
+        let mut pending = [usize::MAX; MAX_BODIES];
+        let mut count = 0;
         for index in 0..self.players.len() {
-            if !self.players[index].revival_clone_pending {
+            if self.players[index].revival_clone_pending {
+                pending[count] = index;
+                count += 1;
+            }
+        }
+        pending[..count].sort_by_key(|&index| (self.players[index].clone_player_hierarchy, index));
+        let mut circles = [RevivalCircles::default(); MAX_BODIES];
+        for (circles, &index) in circles.iter_mut().zip(&pending[..count]) {
+            *circles = self.register_revival_clone_circles(index, data);
+        }
+        for (&circles, &index) in circles.iter().zip(&pending[..count]) {
+            self.register_revival_clone_rest(index, circles, data);
+        }
+    }
+
+    fn register_revival_clone_circles(&mut self, index: usize, data: &data::RolloutData) -> RevivalCircles {
+        // DetPhysics.Simulate drops the dead slime's callback casualties
+        // this pass, and the clone's rows take over the slot.
+        for entity in self.players[index].owned_rows() {
+            if entity != usize::MAX {
+                self.entities[entity].flags = E_REMOVED;
+            }
+        }
+        let abilities = self.players[index].abilities;
+
+        let player_hierarchy = self.players[index].clone_player_hierarchy;
+        let ability_hierarchy = self.players[index].clone_ability_hierarchy;
+        debug_assert_ne!(player_hierarchy, u32::MAX);
+
+        let mut form_entities = [usize::MAX; 3];
+        let mut platform_entity = usize::MAX;
+        let mut roll_entity = usize::MAX;
+        let mut rock_hierarchy = [0u32; 3];
+        let mut gust_entity = usize::MAX;
+        let mut revival_entity = usize::MAX;
+        let mut time_stop_entity = usize::MAX;
+        for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
+            if abilities[slot] == ABILITY_ROCK {
+                rock_hierarchy[slot] = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
                 continue;
             }
-            // DetPhysics.Simulate drops the dead slime's callback casualties
-            // this pass, and the clone's rows take over the slot.
-            for entity in self.players[index].owned_rows() {
-                if entity != usize::MAX {
-                    self.entities[entity].flags = E_REMOVED;
-                }
-            }
-            let position = self.players[index].revival_clone_position;
-            let abilities = self.players[index].abilities;
-
-            let player_hierarchy = self.players[index].clone_player_hierarchy;
-            let ability_hierarchy = self.players[index].clone_ability_hierarchy;
-            debug_assert_ne!(player_hierarchy, u32::MAX);
-
-            let mut form_entities = [usize::MAX; 3];
-            let mut platform_entity = usize::MAX;
-            let mut roll_entity = usize::MAX;
-            let mut rock_hierarchy = [0u32; 3];
-            let mut gust_entity = usize::MAX;
-            let mut revival_entity = usize::MAX;
-            let mut time_stop_entity = usize::MAX;
-            for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
-                if abilities[slot] == ABILITY_ROCK {
-                    rock_hierarchy[slot] = 100_000_000 + hierarchy + data.rock.collider_hierarchy;
-                    continue;
-                }
-                let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
-                    ABILITY_ROLL => (
-                        data.roll.radius,
-                        Vec2::ZERO,
-                        data.roll.collider_hierarchy,
-                        &mut roll_entity,
-                    ),
-                    ABILITY_GUST => (
-                        data.gust.hurtbox_radius,
-                        data.gust.collider_offset,
-                        8,
-                        &mut gust_entity,
-                    ),
-                    ABILITY_PLATFORM => (
-                        data.platform.hurtbox_radius,
-                        Vec2::ZERO,
-                        7,
-                        &mut platform_entity,
-                    ),
-                    ABILITY_REVIVAL => (
-                        data.revival.hurtbox_radius,
-                        data.revival.collider_offset,
-                        8,
-                        &mut revival_entity,
-                    ),
-                    ABILITY_TIME_STOP => (
-                        data.time_stop.hurtbox_radius,
-                        data.time_stop.collider_offset,
-                        data.time_stop.collider_hierarchy,
-                        &mut time_stop_entity,
-                    ),
-                    _ => continue,
-                };
-                let id = self.next_id();
-                *target = self.entities.len();
-                form_entities[slot] = *target;
-                self.entities.push(CEntity {
-                    id,
-                    kind: 0,
-                    layer: LAYER_PLAYER,
-                    flags: E_ENABLED | E_TRIGGER | ability_collider_flags(abilities[slot]),
-                    reserved: [abilities[slot], 0],
-                    hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
-                    x: offset.x.raw(),
-                    y: offset.y.raw(),
-                    radius: radius.raw(),
-                    inverse_mass: -Fix::ONE.raw(),
-                    ..CEntity::default()
-                });
-            }
-
-            let body_entity = self.entities.len();
-            let body_id = self.next_id();
+            let (radius, offset, relative_hierarchy, target) = match abilities[slot] {
+                ABILITY_ROLL => (
+                    data.roll.radius,
+                    Vec2::ZERO,
+                    data.roll.collider_hierarchy,
+                    &mut roll_entity,
+                ),
+                ABILITY_GUST => (
+                    data.gust.hurtbox_radius,
+                    data.gust.collider_offset,
+                    8,
+                    &mut gust_entity,
+                ),
+                ABILITY_PLATFORM => (
+                    data.platform.hurtbox_radius,
+                    Vec2::ZERO,
+                    7,
+                    &mut platform_entity,
+                ),
+                ABILITY_REVIVAL => (
+                    data.revival.hurtbox_radius,
+                    data.revival.collider_offset,
+                    8,
+                    &mut revival_entity,
+                ),
+                ABILITY_TIME_STOP => (
+                    data.time_stop.hurtbox_radius,
+                    data.time_stop.collider_offset,
+                    data.time_stop.collider_hierarchy,
+                    &mut time_stop_entity,
+                ),
+                _ => continue,
+            };
+            let id = self.next_id();
+            *target = self.entities.len();
+            form_entities[slot] = *target;
             self.entities.push(CEntity {
-                id: body_id,
-                kind: 1,
+                id,
+                kind: 0,
                 layer: LAYER_PLAYER,
-                owner: player_id(&self.players, index),
-                flags: E_ACTIVE | E_TRIGGER,
-                hierarchy: 100_000_000 + player_hierarchy + 6,
-                x: position.x.raw(),
-                y: position.y.raw(),
-                right_x: data.player.hurtbox_extents.x.raw(),
-                up_y: data.player.hurtbox_extents.y.raw(),
+                flags: E_ENABLED | E_TRIGGER | ability_collider_flags(abilities[slot]),
+                reserved: [abilities[slot], 0],
+                hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
+                x: offset.x.raw(),
+                y: offset.y.raw(),
+                radius: radius.raw(),
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
             });
-            let mut dash_entities = [usize::MAX; 3];
-            let mut bow_entity = usize::MAX;
-            let mut throw_entities = [usize::MAX; 3];
-            let mut mine_entity = usize::MAX;
-            let mut push_entity = usize::MAX;
-            let mut freeze_entities = [usize::MAX; 3];
-            let mut blink_entity = usize::MAX;
-            let mut growth_ray_entity = usize::MAX;
-            let mut shrink_ray_entity = usize::MAX;
-            let mut duplicator_entity = usize::MAX;
-            let mut magnet_entity = usize::MAX;
-            let mut spike_entity = usize::MAX;
-            let mut engine_entity = usize::MAX;
-            let mut tesla_entity = usize::MAX;
-            let mut meteor_entity = usize::MAX;
-            let mut black_hole_entity = usize::MAX;
-            let mut macho_throw_entity = usize::MAX;
-            let mut drill_entity = usize::MAX;
-            let mut beam_entity = usize::MAX;
-            for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
-                let (extents, relative_hierarchy, target) = match abilities[slot] {
-                    ABILITY_DASH => (
-                        data::surface_extents(data.dash.hurtbox_extents),
-                        7,
-                        &mut dash_entities[slot],
-                    ),
-                    ABILITY_BOW => (
-                        data::surface_extents(data.bow.hurtbox_extents),
-                        7,
-                        &mut bow_entity,
-                    ),
-                    ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
-                    | ABILITY_POKE_BALL) => (
-                        data::surface_extents(throw_config(data, ability).hurtbox_extents),
-                        8,
-                        &mut throw_entities[slot],
-                    ),
-                    ABILITY_MISSILE => (
-                        data::surface_extents(data.missile.hurtbox_extents),
-                        7,
-                        &mut throw_entities[slot],
-                    ),
-                    ABILITY_MINE => (
-                        data::surface_extents(data.mine.hurtbox_extents),
-                        7,
-                        &mut mine_entity,
-                    ),
-                    ABILITY_PUSH => (
-                        data::surface_extents(data.push.hurtbox_extents),
-                        data.push.collider_hierarchy,
-                        &mut push_entity,
-                    ),
-                    ABILITY_FREEZE => (
-                        data::surface_extents(data.freeze.hurtbox_extents),
-                        data.freeze.collider_hierarchy,
-                        &mut freeze_entities[slot],
-                    ),
-                    ABILITY_BLINK => (
-                        data::surface_extents(data.blink.hurtbox_extents),
-                        data.blink.collider_hierarchy,
-                        &mut blink_entity,
-                    ),
-                    ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
-                        let ray = scale_ray_data(data, ability);
-                        (
-                            data::surface_extents(ray.hurtbox_extents),
-                            ray.collider_hierarchy,
-                            if ability == ABILITY_GROWTH_RAY {
-                                &mut growth_ray_entity
-                            } else {
-                                &mut shrink_ray_entity
-                            },
-                        )
-                    }
-                    ABILITY_DUPLICATOR => (
-                        data::surface_extents(data.duplicator.hurtbox_extents),
-                        data.duplicator.collider_hierarchy,
-                        &mut duplicator_entity,
-                    ),
-                    ABILITY_MAGNET => (
-                        data::surface_extents(data.magnet.hurtbox_extents),
-                        data.magnet.collider_hierarchy,
-                        &mut magnet_entity,
-                    ),
-                    ABILITY_SPIKE => (
-                        data.spike.hurtbox_extents,
-                        data.spike.collider_hierarchy,
-                        &mut spike_entity,
-                    ),
-                    ABILITY_ENGINE => (
-                        data::surface_extents(data.engine.hurtbox_extents),
-                        data.engine.collider_hierarchy,
-                        &mut engine_entity,
-                    ),
-                    ABILITY_TESLA => (
-                        data::surface_extents(data.tesla.hurtbox_extents),
-                        data.tesla.collider_hierarchy,
-                        &mut tesla_entity,
-                    ),
-                    ABILITY_METEOR => (
-                        data::surface_extents(data.meteor.hurtbox_extents),
-                        data.meteor.collider_hierarchy,
-                        &mut meteor_entity,
-                    ),
-                    ABILITY_BLACK_HOLE => (
-                        data.black_hole.hurtbox_extents,
-                        data.black_hole.collider_hierarchy,
-                        &mut black_hole_entity,
-                    ),
-                    ABILITY_THROW => (
-                        data::surface_extents(data.macho_throw.hurtbox_extents),
-                        data.macho_throw.collider_hierarchy,
-                        &mut macho_throw_entity,
-                    ),
-                    ABILITY_DRILL => (
-                        data::surface_extents(data.drill.hurtbox_extents),
-                        data.drill.collider_hierarchy,
-                        &mut drill_entity,
-                    ),
-                    ABILITY_BEAM => (
-                        data::surface_extents(data.beam.hurtbox_extents),
-                        data.beam.collider_hierarchy,
-                        &mut beam_entity,
-                    ),
-                    _ => continue,
-                };
-                let id = self.next_id();
-                *target = self.entities.len();
-                form_entities[slot] = *target;
-                self.entities.push(CEntity {
-                    id,
-                    kind: 1,
-                    layer: LAYER_PLAYER,
-                    flags: E_ENABLED | E_TRIGGER | ability_collider_flags(abilities[slot]),
-                    reserved: [abilities[slot], 0],
-                    hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
-                    x: if abilities[slot] == ABILITY_SPIKE {
-                        data.spike.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_ENGINE {
-                        data.engine.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_TESLA {
-                        data.tesla.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_MINE {
-                        data.mine.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_PUSH {
-                        data.push.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_FREEZE {
-                        data.freeze.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_BLINK {
-                        data.blink.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_DUPLICATOR {
-                        data.duplicator.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_MAGNET {
-                        data.magnet.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_METEOR {
-                        data.meteor.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_BLACK_HOLE {
-                        data.black_hole.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_THROW {
-                        data.macho_throw.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_DRILL {
-                        data.drill.collider_offset.x.raw()
-                    } else if abilities[slot] == ABILITY_BEAM {
-                        data.beam.collider_offset.x.raw()
-                    } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
-                        scale_ray_data(data, abilities[slot])
-                            .collider_offset
-                            .x
-                            .raw()
-                    } else {
-                        0
-                    },
-                    y: if abilities[slot] == ABILITY_SPIKE {
-                        data.spike.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_ENGINE {
-                        data.engine.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_TESLA {
-                        data.tesla.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_MINE {
-                        data.mine.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_PUSH {
-                        data.push.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_FREEZE {
-                        data.freeze.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_BLINK {
-                        data.blink.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_DUPLICATOR {
-                        data.duplicator.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_MAGNET {
-                        data.magnet.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_METEOR {
-                        data.meteor.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_BLACK_HOLE {
-                        data.black_hole.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_THROW {
-                        data.macho_throw.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_DRILL {
-                        data.drill.collider_offset.y.raw()
-                    } else if abilities[slot] == ABILITY_BEAM {
-                        data.beam.collider_offset.y.raw()
-                    } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
-                        scale_ray_data(data, abilities[slot])
-                            .collider_offset
-                            .y
-                            .raw()
-                    } else {
-                        0
-                    },
-                    right_x: extents.x.raw(),
-                    up_y: extents.y.raw(),
-                    inverse_mass: -Fix::ONE.raw(),
-                    ..CEntity::default()
-                });
-            }
-            let slot = &mut self.players[index];
-            for generation in &mut slot.ability_generation {
-                *generation = generation.wrapping_add(1);
-            }
-            // The fresh ability instances carry their prefab cooldowns, not
-            // what Invisibility, Gold Mushroom or Web Swing set on the old ones.
-            for (cooldown, &ability) in slot.cooldowns.iter_mut().zip(&slot.abilities) {
-                if ability != ABILITY_NULL {
-                    *cooldown = data.abilities[ability as usize].cooldown;
-                }
-            }
-            // The new SlimeController has not seen the player invisible yet.
-            slot.was_invisible = false;
-            slot.ability_instantiated = [true; 3];
-            slot.beam_orb_slots = [None; 3];
-            slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
-            slot.forms = [FormScale::default(); 3];
-            slot.pending_ability_hierarchy = [u32::MAX; 3];
-            slot.base.position = position;
-            slot.base.external_velocity = Vec2::ZERO;
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
-            slot.base.grounded = false;
-            slot.base.ground = None;
-            slot.base.grounded_speed = Fix::ZERO;
-            slot.base.radius = data.player.radius;
-            // SpawnClone instantiates the empty player prefab, whose
-            // PlayerPhysics has the slime's constants, not those of the form
-            // the dead slime was in (PlayerCollision.cs:249).
-            slot.base.constants = data.player.constants.clone();
-            slot.base.skip_next_gravity = false;
-            slot.physics_scale = Fix::ONE;
-            slot.body_collider_scale = Fix::ONE;
-            slot.body_inverse_extents = Vec2::new(
-                Fix::ONE / data.player.hurtbox_extents.x,
-                Fix::ONE / data.player.hurtbox_extents.y,
-            );
-            slot.set_ordinary_body_scale(slot.player_scale);
-            slot.base.sync_collider();
-            slot.reported_position = position;
-            slot.reported_tick = self.tick;
-            slot.obs_state = STATE_NOTHING;
-            slot.timers.fill(Fix::from_f32(-1.5));
-            slot.active = ActiveAbility::None;
-            slot.ability_origin_scale = slot.player_scale;
-            slot.rock = RockState::default();
-            // The clone's WebSwing and HookshotInstant are new instances: a
-            // strand the dead slime let go keeps hanging, since only the
-            // destroyed instance's UpdateCooldowns would time it out
-            // (WebSwing.cs:98-110).
-            slot.web_swing = [rope_abilities::WebSwingState::default(); 3];
-            slot.grapple = [rope_abilities::GrappleState::default(); 3];
-            slot.roll = RollState::default();
-            slot.meteor = MeteorState::default();
-            slot.push = PushState::default();
-            slot.gun = GunState::default();
-            slot.magnet = MagnetState::default();
-            slot.gun_firepoint_offsets = slot.abilities.map(|ability| gun_firepoint_offset(data, ability));
-            slot.magnet_extra_offsets = [Vec2::ZERO; 3];
-            slot.gun_prev_scales = [Fix::ONE; 3];
-            slot.form_gravity = [Fix::ONE; 3];
-            slot.blink_tunnel_active = false;
-            slot.blink_tunnel_age = Fix::ZERO;
-            slot.blink_tunnel_released = false;
-            slot.ragdoll = RagdollState::default();
-            slot.frozen_solid_count = 0;
-            slot.freeze_form_exit_tick = u32::MAX;
-            slot.ragdoll_grounded_fall = false;
-            // The clone's own PlayerPhysics has no skipNextUpdate pending.
-            slot.base.skip_next_gravity = false;
-            slot.captured_by_ball = None;
-            slot.poke_invulnerable = false;
-            slot.late_obs_tick = u32::MAX;
-            slot.missile = MissileFormState::default();
-            slot.throw_item = ThrowItemState::default();
-            slot.cast_spell = CastSpellState::default();
-            slot.spike_cast = SpikeCastState::default();
-            slot.plant_cast = PlantCastState::default();
-            slot.black_hole_cast = BlackHoleCastState::default();
-            slot.macho_throw = MachoThrowState::default();
-            slot.drill = DrillState::default();
-            slot.beam = BeamState::default();
-            slot.beam_orb_slots = [None; 3];
-            slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
-            slot.black_hole_castable = [true; 3];
-            slot.spike_attacks = [None; 3];
-            slot.platform_hurtbox_disabled = [false; 3];
-            slot.portal_blue = [None; 3];
-            slot.portal_orange = [None; 3];
-            slot.rewind = RewindState::default();
-            slot.form_entities = form_entities;
-            slot.body_entity = body_entity;
-            slot.dash_entities = dash_entities;
-            slot.dash_entity = dash_entities
-                .iter()
-                .copied()
-                .find(|&entity| entity != usize::MAX)
-                .unwrap_or(usize::MAX);
-            slot.bow_entity = bow_entity;
-            slot.throw_entities = throw_entities;
-            slot.throw_entity = throw_entities
-                .iter()
-                .copied()
-                .find(|&entity| entity != usize::MAX)
-                .unwrap_or(usize::MAX);
-            slot.mine_entity = mine_entity;
-            slot.spike_entity = spike_entity;
-            slot.circle_entity = platform_entity;
-            slot.roll_entity = roll_entity;
-            slot.rock_entity = usize::MAX;
-            slot.rock_hierarchy = rock_hierarchy;
-            slot.push_entity = push_entity;
-            slot.freeze_entities = freeze_entities;
-            slot.freeze_entity = freeze_entities
-                .iter()
-                .copied()
-                .find(|&entity| entity != usize::MAX)
-                .unwrap_or(usize::MAX);
-            slot.blink_entity = blink_entity;
-            slot.growth_ray_entity = growth_ray_entity;
-            slot.shrink_ray_entity = shrink_ray_entity;
-            slot.duplicator_entity = duplicator_entity;
-            slot.magnet_entity = magnet_entity;
-            slot.gust_entity = gust_entity;
-            slot.revival_entity = revival_entity;
-            slot.time_stop_entity = time_stop_entity;
-            slot.engine_entity = engine_entity;
-            slot.tesla_entity = tesla_entity;
-            slot.meteor_entity = meteor_entity;
-            slot.black_hole_entity = black_hole_entity;
-            slot.macho_throw_entity = macho_throw_entity;
-            slot.drill_entity = drill_entity;
-            slot.beam_entity = beam_entity;
-            slot.revival_clone_pending = false;
-            slot.clone_player_hierarchy = u32::MAX;
-            slot.clone_ability_hierarchy = [u32::MAX; 3];
         }
+
+        RevivalCircles {
+            form_entities,
+            platform_entity,
+            roll_entity,
+            rock_hierarchy,
+            gust_entity,
+            revival_entity,
+            time_stop_entity,
+        }
+    }
+
+    fn register_revival_clone_rest(
+        &mut self,
+        index: usize,
+        circles: RevivalCircles,
+        data: &data::RolloutData,
+    ) {
+        let RevivalCircles {
+            mut form_entities,
+            platform_entity,
+            roll_entity,
+            rock_hierarchy,
+            gust_entity,
+            revival_entity,
+            time_stop_entity,
+        } = circles;
+        let position = self.players[index].revival_clone_position;
+        let abilities = self.players[index].abilities;
+        let ability_hierarchy = self.players[index].clone_ability_hierarchy;
+        let player_hierarchy = self.players[index].clone_player_hierarchy;
+        let body_entity = self.entities.len();
+        let body_id = self.next_id();
+        self.entities.push(CEntity {
+            id: body_id,
+            kind: 1,
+            layer: LAYER_PLAYER,
+            owner: player_id(&self.players, index),
+            flags: E_ACTIVE | E_TRIGGER,
+            hierarchy: 100_000_000 + player_hierarchy + 6,
+            x: position.x.raw(),
+            y: position.y.raw(),
+            right_x: data.player.hurtbox_extents.x.raw(),
+            up_y: data.player.hurtbox_extents.y.raw(),
+            inverse_mass: -Fix::ONE.raw(),
+            ..CEntity::default()
+        });
+        let mut dash_entities = [usize::MAX; 3];
+        let mut bow_entity = usize::MAX;
+        let mut throw_entities = [usize::MAX; 3];
+        let mut mine_entity = usize::MAX;
+        let mut push_entity = usize::MAX;
+        let mut freeze_entities = [usize::MAX; 3];
+        let mut blink_entity = usize::MAX;
+        let mut growth_ray_entity = usize::MAX;
+        let mut shrink_ray_entity = usize::MAX;
+        let mut duplicator_entity = usize::MAX;
+        let mut magnet_entity = usize::MAX;
+        let mut spike_entity = usize::MAX;
+        let mut engine_entity = usize::MAX;
+        let mut tesla_entity = usize::MAX;
+        let mut meteor_entity = usize::MAX;
+        let mut black_hole_entity = usize::MAX;
+        let mut macho_throw_entity = usize::MAX;
+        let mut drill_entity = usize::MAX;
+        let mut beam_entity = usize::MAX;
+        for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
+            let (extents, relative_hierarchy, target) = match abilities[slot] {
+                ABILITY_DASH => (
+                    data::surface_extents(data.dash.hurtbox_extents),
+                    7,
+                    &mut dash_entities[slot],
+                ),
+                ABILITY_BOW => (
+                    data::surface_extents(data.bow.hurtbox_extents),
+                    7,
+                    &mut bow_entity,
+                ),
+                ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
+                | ABILITY_POKE_BALL) => (
+                    data::surface_extents(throw_config(data, ability).hurtbox_extents),
+                    8,
+                    &mut throw_entities[slot],
+                ),
+                ABILITY_MISSILE => (
+                    data::surface_extents(data.missile.hurtbox_extents),
+                    7,
+                    &mut throw_entities[slot],
+                ),
+                ABILITY_MINE => (
+                    data::surface_extents(data.mine.hurtbox_extents),
+                    7,
+                    &mut mine_entity,
+                ),
+                ABILITY_PUSH => (
+                    data::surface_extents(data.push.hurtbox_extents),
+                    data.push.collider_hierarchy,
+                    &mut push_entity,
+                ),
+                ABILITY_FREEZE => (
+                    data::surface_extents(data.freeze.hurtbox_extents),
+                    data.freeze.collider_hierarchy,
+                    &mut freeze_entities[slot],
+                ),
+                ABILITY_BLINK => (
+                    data::surface_extents(data.blink.hurtbox_extents),
+                    data.blink.collider_hierarchy,
+                    &mut blink_entity,
+                ),
+                ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
+                    let ray = scale_ray_data(data, ability);
+                    (
+                        data::surface_extents(ray.hurtbox_extents),
+                        ray.collider_hierarchy,
+                        if ability == ABILITY_GROWTH_RAY {
+                            &mut growth_ray_entity
+                        } else {
+                            &mut shrink_ray_entity
+                        },
+                    )
+                }
+                ABILITY_DUPLICATOR => (
+                    data::surface_extents(data.duplicator.hurtbox_extents),
+                    data.duplicator.collider_hierarchy,
+                    &mut duplicator_entity,
+                ),
+                ABILITY_MAGNET => (
+                    data::surface_extents(data.magnet.hurtbox_extents),
+                    data.magnet.collider_hierarchy,
+                    &mut magnet_entity,
+                ),
+                ABILITY_SPIKE => (
+                    data.spike.hurtbox_extents,
+                    data.spike.collider_hierarchy,
+                    &mut spike_entity,
+                ),
+                ABILITY_ENGINE => (
+                    data::surface_extents(data.engine.hurtbox_extents),
+                    data.engine.collider_hierarchy,
+                    &mut engine_entity,
+                ),
+                ABILITY_TESLA => (
+                    data::surface_extents(data.tesla.hurtbox_extents),
+                    data.tesla.collider_hierarchy,
+                    &mut tesla_entity,
+                ),
+                ABILITY_METEOR => (
+                    data::surface_extents(data.meteor.hurtbox_extents),
+                    data.meteor.collider_hierarchy,
+                    &mut meteor_entity,
+                ),
+                ABILITY_BLACK_HOLE => (
+                    data.black_hole.hurtbox_extents,
+                    data.black_hole.collider_hierarchy,
+                    &mut black_hole_entity,
+                ),
+                ABILITY_THROW => (
+                    data::surface_extents(data.macho_throw.hurtbox_extents),
+                    data.macho_throw.collider_hierarchy,
+                    &mut macho_throw_entity,
+                ),
+                ABILITY_DRILL => (
+                    data::surface_extents(data.drill.hurtbox_extents),
+                    data.drill.collider_hierarchy,
+                    &mut drill_entity,
+                ),
+                ABILITY_BEAM => (
+                    data::surface_extents(data.beam.hurtbox_extents),
+                    data.beam.collider_hierarchy,
+                    &mut beam_entity,
+                ),
+                _ => continue,
+            };
+            let id = self.next_id();
+            *target = self.entities.len();
+            form_entities[slot] = *target;
+            self.entities.push(CEntity {
+                id,
+                kind: 1,
+                layer: LAYER_PLAYER,
+                flags: E_ENABLED | E_TRIGGER | ability_collider_flags(abilities[slot]),
+                reserved: [abilities[slot], 0],
+                hierarchy: 100_000_000 + hierarchy + relative_hierarchy,
+                x: if abilities[slot] == ABILITY_SPIKE {
+                    data.spike.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_ENGINE {
+                    data.engine.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_TESLA {
+                    data.tesla.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_MINE {
+                    data.mine.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_PUSH {
+                    data.push.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_FREEZE {
+                    data.freeze.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_BLINK {
+                    data.blink.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_DUPLICATOR {
+                    data.duplicator.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_MAGNET {
+                    data.magnet.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_METEOR {
+                    data.meteor.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_BLACK_HOLE {
+                    data.black_hole.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_THROW {
+                    data.macho_throw.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_DRILL {
+                    data.drill.collider_offset.x.raw()
+                } else if abilities[slot] == ABILITY_BEAM {
+                    data.beam.collider_offset.x.raw()
+                } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
+                    scale_ray_data(data, abilities[slot])
+                        .collider_offset
+                        .x
+                        .raw()
+                } else {
+                    0
+                },
+                y: if abilities[slot] == ABILITY_SPIKE {
+                    data.spike.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_ENGINE {
+                    data.engine.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_TESLA {
+                    data.tesla.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_MINE {
+                    data.mine.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_PUSH {
+                    data.push.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_FREEZE {
+                    data.freeze.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_BLINK {
+                    data.blink.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_DUPLICATOR {
+                    data.duplicator.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_MAGNET {
+                    data.magnet.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_METEOR {
+                    data.meteor.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_BLACK_HOLE {
+                    data.black_hole.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_THROW {
+                    data.macho_throw.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_DRILL {
+                    data.drill.collider_offset.y.raw()
+                } else if abilities[slot] == ABILITY_BEAM {
+                    data.beam.collider_offset.y.raw()
+                } else if matches!(abilities[slot], ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) {
+                    scale_ray_data(data, abilities[slot])
+                        .collider_offset
+                        .y
+                        .raw()
+                } else {
+                    0
+                },
+                right_x: extents.x.raw(),
+                up_y: extents.y.raw(),
+                inverse_mass: -Fix::ONE.raw(),
+                ..CEntity::default()
+            });
+        }
+        let slot = &mut self.players[index];
+        for generation in &mut slot.ability_generation {
+            *generation = generation.wrapping_add(1);
+        }
+        // The fresh ability instances carry their prefab cooldowns, not
+        // what Invisibility, Gold Mushroom or Web Swing set on the old ones.
+        for (cooldown, &ability) in slot.cooldowns.iter_mut().zip(&slot.abilities) {
+            if ability != ABILITY_NULL {
+                *cooldown = data.abilities[ability as usize].cooldown;
+            }
+        }
+        // The new SlimeController has not seen the player invisible yet.
+        slot.was_invisible = false;
+        slot.ability_instantiated = [true; 3];
+        slot.beam_orb_slots = [None; 3];
+        slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
+        slot.forms = [FormScale::default(); 3];
+        slot.pending_ability_hierarchy = [u32::MAX; 3];
+        slot.base.position = position;
+        slot.base.external_velocity = Vec2::ZERO;
+        slot.base.rotation = Fix::ZERO;
+        slot.base.up = Vec2::UP;
+        slot.base.grounded = false;
+        slot.base.ground = None;
+        slot.base.grounded_speed = Fix::ZERO;
+        slot.base.radius = data.player.radius;
+        // SpawnClone instantiates the empty player prefab, whose
+        // PlayerPhysics has the slime's constants, not those of the form
+        // the dead slime was in (PlayerCollision.cs:249).
+        slot.base.constants = data.player.constants.clone();
+        slot.base.skip_next_gravity = false;
+        slot.physics_scale = Fix::ONE;
+        slot.body_collider_scale = Fix::ONE;
+        slot.body_inverse_extents = Vec2::new(
+            Fix::ONE / data.player.hurtbox_extents.x,
+            Fix::ONE / data.player.hurtbox_extents.y,
+        );
+        slot.set_ordinary_body_scale(slot.player_scale);
+        slot.base.sync_collider();
+        slot.reported_position = position;
+        slot.reported_tick = self.tick;
+        slot.obs_state = STATE_NOTHING;
+        slot.timers.fill(Fix::from_f32(-1.5));
+        slot.active = ActiveAbility::None;
+        slot.ability_origin_scale = slot.player_scale;
+        slot.rock = RockState::default();
+        // The clone's WebSwing and HookshotInstant are new instances: a
+        // strand the dead slime let go keeps hanging, since only the
+        // destroyed instance's UpdateCooldowns would time it out
+        // (WebSwing.cs:98-110).
+        slot.web_swing = [rope_abilities::WebSwingState::default(); 3];
+        slot.grapple = [rope_abilities::GrappleState::default(); 3];
+        slot.roll = RollState::default();
+        slot.meteor = MeteorState::default();
+        slot.push = PushState::default();
+        slot.gun = GunState::default();
+        slot.magnet = MagnetState::default();
+        slot.gun_firepoint_offsets = slot.abilities.map(|ability| gun_firepoint_offset(data, ability));
+        slot.magnet_extra_offsets = [Vec2::ZERO; 3];
+        slot.gun_prev_scales = [Fix::ONE; 3];
+        slot.form_gravity = [Fix::ONE; 3];
+        slot.blink_tunnel_active = false;
+        slot.blink_tunnel_age = Fix::ZERO;
+        slot.blink_tunnel_released = false;
+        slot.ragdoll = RagdollState::default();
+        slot.frozen_solid_count = 0;
+        slot.freeze_form_exit_tick = u32::MAX;
+        slot.ragdoll_grounded_fall = false;
+        // The clone's own PlayerPhysics has no skipNextUpdate pending.
+        slot.base.skip_next_gravity = false;
+        slot.captured_by_ball = None;
+        slot.poke_invulnerable = false;
+        slot.late_obs_tick = u32::MAX;
+        slot.missile = MissileFormState::default();
+        slot.throw_item = ThrowItemState::default();
+        slot.cast_spell = CastSpellState::default();
+        slot.spike_cast = SpikeCastState::default();
+        slot.plant_cast = PlantCastState::default();
+        slot.black_hole_cast = BlackHoleCastState::default();
+        slot.macho_throw = MachoThrowState::default();
+        slot.drill = DrillState::default();
+        slot.beam = BeamState::default();
+        slot.beam_orb_slots = [None; 3];
+        slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
+        slot.black_hole_castable = [true; 3];
+        slot.spike_attacks = [None; 3];
+        slot.platform_hurtbox_disabled = [false; 3];
+        slot.portal_blue = [None; 3];
+        slot.portal_orange = [None; 3];
+        slot.rewind = RewindState::default();
+        slot.form_entities = form_entities;
+        slot.body_entity = body_entity;
+        slot.dash_entities = dash_entities;
+        slot.dash_entity = dash_entities
+            .iter()
+            .copied()
+            .find(|&entity| entity != usize::MAX)
+            .unwrap_or(usize::MAX);
+        slot.bow_entity = bow_entity;
+        slot.throw_entities = throw_entities;
+        slot.throw_entity = throw_entities
+            .iter()
+            .copied()
+            .find(|&entity| entity != usize::MAX)
+            .unwrap_or(usize::MAX);
+        slot.mine_entity = mine_entity;
+        slot.spike_entity = spike_entity;
+        slot.circle_entity = platform_entity;
+        slot.roll_entity = roll_entity;
+        slot.rock_entity = usize::MAX;
+        slot.rock_hierarchy = rock_hierarchy;
+        slot.push_entity = push_entity;
+        slot.freeze_entities = freeze_entities;
+        slot.freeze_entity = freeze_entities
+            .iter()
+            .copied()
+            .find(|&entity| entity != usize::MAX)
+            .unwrap_or(usize::MAX);
+        slot.blink_entity = blink_entity;
+        slot.growth_ray_entity = growth_ray_entity;
+        slot.shrink_ray_entity = shrink_ray_entity;
+        slot.duplicator_entity = duplicator_entity;
+        slot.magnet_entity = magnet_entity;
+        slot.gust_entity = gust_entity;
+        slot.revival_entity = revival_entity;
+        slot.time_stop_entity = time_stop_entity;
+        slot.engine_entity = engine_entity;
+        slot.tesla_entity = tesla_entity;
+        slot.meteor_entity = meteor_entity;
+        slot.black_hole_entity = black_hole_entity;
+        slot.macho_throw_entity = macho_throw_entity;
+        slot.drill_entity = drill_entity;
+        slot.beam_entity = beam_entity;
+        slot.revival_clone_pending = false;
+        slot.clone_player_hierarchy = u32::MAX;
+        slot.clone_ability_hierarchy = [u32::MAX; 3];
     }
 
     fn register_pending_stock_clones(&mut self, data: &data::RolloutData) {
@@ -27856,10 +28014,11 @@ impl RolloutWorld {
         data: &data::RolloutData,
     ) {
         // SpawnAbilityLessClone rejects the seventeenth clone for an owner.
+        let owner = self.players[victim].owner;
         if self
             .abilityless_clones
             .iter()
-            .filter(|clone| clone.active && clone.owner == victim)
+            .filter(|clone| clone.active && clone.owner == owner)
             .count()
             >= 16
         {
@@ -27934,7 +28093,7 @@ impl RolloutWorld {
             born_tick: self.tick,
             hierarchy_base,
             entity: None,
-            owner: victim,
+            owner,
             base,
             obs_state: STATE_FALL,
             state_ticks: 0,
@@ -27970,7 +28129,7 @@ impl RolloutWorld {
         } else {
             self.abilityless_clones.push(clone);
         }
-        self.players[victim].form_flags_cleared = true;
+        self.players[owner].form_flags_cleared = true;
     }
 
     fn duplicate_lethal_rock(
@@ -41277,6 +41436,71 @@ impl RolloutWorld {
         self.kill_with(index, killer, cause, by_callback, spawn_effect, true, ignore_invulnerability)
     }
 
+    /// Player.SetPosition from an extra body's SlimeController: with the
+    /// player's own slime gone, the first body to update this pass publishes
+    /// (Player.cs:311-322), ahead of any abilityless clone's.
+    fn publish_extra_body_position(&mut self, body: usize) {
+        let owner = self.players[body].owner;
+        if self.players[owner].base.alive
+            || !self.players[body].base.alive
+            || self.players[body].revival_clone_pending
+            || self.scratch.clones_positioned[owner]
+        {
+            return;
+        }
+        self.scratch.clones_positioned[owner] = true;
+        let slot = &self.players[body];
+        let position =
+            if slot.reported_tick == self.tick { slot.reported_position } else { slot.base.position };
+        self.players[owner].reported_position = position;
+        self.players[owner].reported_tick = self.tick;
+    }
+
+    /// A slot for a new extra body: a dead one past the players' own slots,
+    /// or a new one while the body arrays have room.
+    /// RlTelemetry counts on the Player every body shares, so an extra
+    /// body's activations and shots land on its player's slot.
+    fn fold_extra_body_telemetry(&mut self, body: usize) {
+        let extra = std::mem::take(&mut self.players[body].telemetry);
+        let owner = self.players[body].owner;
+        let telemetry = &mut self.players[owner].telemetry;
+        for slot in 0..3 {
+            telemetry.ability_activations[slot] += extra.ability_activations[slot];
+        }
+        telemetry.arrows_fired += extra.arrows_fired;
+        telemetry.arrow_hits += extra.arrow_hits;
+        telemetry.deaths_environment += extra.deaths_environment;
+        telemetry.deaths_opponent += extra.deaths_opponent;
+        telemetry.deaths_self += extra.deaths_self;
+        telemetry.deaths_other += extra.deaths_other;
+    }
+
+    fn free_extra_body(&mut self) -> Option<usize> {
+        if let Some(body) = (self.player_count..self.players.len()).find(|&body| {
+            let slot = &self.players[body];
+            !slot.base.alive && !slot.revival_clone_pending && !slot.stock_clone_pending
+        }) {
+            return Some(body);
+        }
+        if self.players.len() == MAX_BODIES {
+            return None;
+        }
+        self.players.push(self.players[0].clone());
+        Some(self.players.len() - 1)
+    }
+
+    fn retire_extra_body(&mut self, body: usize) {
+        let slot = &mut self.players[body];
+        slot.base.alive = false;
+        slot.active = ActiveAbility::None;
+        slot.revival_clone_pending = false;
+        slot.stock_clone_pending = false;
+        slot.revival_target_marker = None;
+        slot.revival_effect_ticks = 0;
+        slot.revival_particle = None;
+        slot.clear_entity_rows();
+    }
+
     /// `form_exit` is false when the caller hands the form's Ability an exit
     /// directly (BlackHole.OnCollide), skipping the form's own ExitAbility.
     /// `ignore_invulnerability` is killPlayer's own flag: a Poke Ball
@@ -41433,39 +41657,64 @@ impl RolloutWorld {
             }
         }
         self.deactivate_drill_hitboxes(index);
-        let revival_marker = (!already_won)
-            .then(|| {
-                self.players[index]
-                    .revival_markers
-                    .iter()
-                    .flatten()
-                    .copied()
-                    .next()
-            })
-            .flatten();
+        // Player.RespawnPositions: the marker of every Revive on the player's
+        // bodies, in the order they were set (Revive.SetReviveFlag).
+        let owner = self.players[index].owner;
+        let mut markers = [usize::MAX; MAX_BODIES * 3];
+        let mut marker_count = 0;
+        if !already_won {
+            for body in &self.players {
+                if body.owner == owner {
+                    for &marker in body.revival_markers.iter().flatten() {
+                        markers[marker_count] = marker;
+                        marker_count += 1;
+                    }
+                }
+            }
+            markers[..marker_count]
+                .sort_by_key(|&marker| self.revival_marker_pool[marker].hierarchy_base);
+        }
+        let revival_marker = markers[..marker_count].first().copied();
         // Player.Kill only eliminates the player with its last body; a death
         // while clones live counts but leaves CauseOfDeath and the round alone.
         let clones_alive = revival_marker.is_none()
-            && self.abilityless_clones.iter().any(|clone| clone.active && clone.owner == index);
-        let slot = &mut self.players[index];
-        slot.base.alive = false;
-        slot.blink_tunnel_active = false;
+            && (self.abilityless_clones.iter().any(|clone| clone.active && clone.owner == owner)
+                || (0..self.players.len()).any(|body| {
+                    body != index && self.players[body].owner == owner && self.players[body].base.alive
+                }));
+        // An extra body that is the player's last goes on in the player's own
+        // slot, whose slime is already gone, so the stock, elimination and
+        // ability drop below read the dying body there.
+        let index = if index != owner && revival_marker.is_none() && !clones_alive {
+            let mut last = self.players[index].clone();
+            last.take_player_state(&self.players[owner]);
+            last.slime_gone = false;
+            self.players[owner] = last;
+            self.retire_extra_body(index);
+            owner
+        } else {
+            index
+        };
+        self.players[index].base.alive = false;
+        self.players[index].blink_tunnel_active = false;
         if !already_won {
-            slot.deaths += 1;
+            let player = &mut self.players[owner];
+            player.deaths += 1;
             if !clones_alive {
-                slot.cause_of_death = cause;
+                player.cause_of_death = cause;
             }
             // Telemetry mirrors RlTelemetry.Death.
             if killer == ENVIRONMENT {
-                slot.telemetry.deaths_environment += 1;
-            } else if killer == slot.base.id {
-                slot.telemetry.deaths_self += 1;
+                player.telemetry.deaths_environment += 1;
+            } else if killer == player.base.id {
+                player.telemetry.deaths_self += 1;
             } else if killer >= 1 && killer <= players as u32 {
-                slot.telemetry.deaths_opponent += 1;
+                player.telemetry.deaths_opponent += 1;
             } else {
-                slot.telemetry.deaths_other += 1;
+                player.telemetry.deaths_other += 1;
             }
         }
+        let slot = &mut self.players[index];
         // SlimeController.DropAbilities reads the slime body. A death inside
         // an ability first moves that body to the ability object's position
         // (PlayerCollision.cs:124-131, SlimeController.cs:215-219).
@@ -41519,7 +41768,6 @@ impl RolloutWorld {
                 self.next_spawn_hierarchy +=
                     data::get().abilities[slot.abilities[ability_slot] as usize].updatable_count;
             }
-            self.next_spawn_hierarchy += data::get().revival.effect_updatable_count;
             let rows = slot.owned_rows();
             for entity in rows {
                 if entity == usize::MAX {
@@ -41550,8 +41798,37 @@ impl RolloutWorld {
             slot.respawn_ticks = 0;
             slot.respawn_spawn_ticks = 0;
             slot.obs_state = STATE_NOTHING;
+            // SpawnClone makes a clone for every marker, each with a copy of
+            // the dying slime's abilities (PlayerCollision.cs:145-152): the
+            // dying slot takes the first, an extra body each later one.
+            for &marker in &markers[1..marker_count] {
+                let Some(body) = self.free_extra_body() else {
+                    break;
+                };
+                let mut clone = self.players[index].clone();
+                clone.owner = owner;
+                clone.telemetry = CTelemetry::default();
+                clone.clone_player_hierarchy = self.next_spawn_hierarchy;
+                self.next_spawn_hierarchy += 8;
+                for ability_slot in 0..3 {
+                    clone.clone_ability_hierarchy[ability_slot] = self.next_spawn_hierarchy;
+                    self.next_spawn_hierarchy +=
+                        data::get().abilities[clone.abilities[ability_slot] as usize].updatable_count;
+                }
+                clone.revival_target_marker = Some(marker);
+                clone.revival_clone_position = self.revival_marker_pool[marker].position;
+                self.players[body] = clone;
+            }
+            self.next_spawn_hierarchy += data::get().revival.effect_updatable_count;
+            // Player.RespawnPositions.Clear().
+            for body in &mut self.players {
+                if body.owner == owner {
+                    body.revival_markers = [None; 3];
+                }
+            }
             return true;
         }
+        let slot = &mut self.players[index];
         // Stocks: spawn the replacement clone at the chooser's safe center
         // point. Since Player.Kill sees that clone, it does not mark the
         // player eliminated and leaves CauseOfDeath at NotDeadYet.
@@ -41985,6 +42262,7 @@ impl RolloutWorld {
         Self::write_state(
             &mut self.state,
             &self.players,
+            self.player_count,
             &self.abilityless_clones,
             &self.time_stop_protected,
             &self.state_entities,
@@ -42016,6 +42294,7 @@ impl RolloutWorld {
         Self::write_state(
             &mut self.sample,
             &self.players,
+            self.player_count,
             &self.abilityless_clones,
             &self.time_stop_protected,
             &self.sample_entities,
@@ -44480,7 +44759,8 @@ impl RolloutWorld {
     #[allow(clippy::too_many_arguments)]
     fn write_state(
         state: &mut CState,
-        players: &[PlayerSlot],
+        bodies: &[PlayerSlot],
+        player_count: usize,
         abilityless_clones: &[AbilitylessClone],
         time_stop_protected: &[bool; MAX_BODIES],
         entities: &[CEntity],
@@ -44497,7 +44777,7 @@ impl RolloutWorld {
             tick,
             episode_ticks,
             flags,
-            player_count: players.len() as u32,
+            player_count: player_count as u32,
             entity_count: entities.len() as u32,
             warmup_ticks: warmup,
             slime_count: slimes.len() as u32,
@@ -44507,7 +44787,7 @@ impl RolloutWorld {
             sudden_death: u32::from(sudden_death),
             reserved: 0,
         };
-        for (i, slot) in players.iter().enumerate() {
+        for (i, slot) in bodies[..player_count].iter().enumerate() {
             let mut player_flags = 0;
             // A winning player's later Player.Kill is ignored even though
             // PlayerCollision still destroys the physical slime object
@@ -44563,6 +44843,10 @@ impl RolloutWorld {
                 team: slot.team,
                 flags: player_flags,
                 alive_bodies: u32::from(slime_alive)
+                    + bodies[player_count..]
+                        .iter()
+                        .filter(|body| body.owner == i && body.base.alive)
+                        .count() as u32
                     + abilityless_clones
                         .iter()
                         .filter(|clone| clone.active && clone.owner == i)

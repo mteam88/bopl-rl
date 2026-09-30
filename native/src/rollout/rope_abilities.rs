@@ -895,10 +895,12 @@ impl RolloutWorld {
             rope.hook_entity = Some(hook_entity);
             rope.hook_position = hook_position;
             rope.hook_velocity = launch * source.grapple_speed;
+            // RopeHook ignores bodies by player id, so the end keeps the
+            // target's player, whichever of its bodies the cast found.
             rope.hook_end_player = match nearby_player {
-                Some(RopeTarget::Player(target)) => target,
+                Some(RopeTarget::Player(target)) => self.players[target].owner,
                 Some(RopeTarget::Clone(clone)) => self.abilityless_clones[clone].owner,
-                None => player,
+                None => self.players[player].owner,
             };
         }
         // FireHook zeroes the shooter's self-imposed velocity on both branches.
@@ -1762,7 +1764,8 @@ impl RolloutWorld {
                 }
                 continue;
             }
-            let owner = self.ropes[rope_index].owner;
+            // Every body of the caster's or the end's player is ignored.
+            let owner = self.players[self.ropes[rope_index].owner].owner;
             let end_player = self.ropes[rope_index].hook_end_player;
             // DetPhysics calls back every circle-circle pair (a Rock, an
             // item, a shot, a node) before any circle-box pair (a form's
@@ -1770,7 +1773,8 @@ impl RolloutWorld {
             let mut rock_victim = None;
             let mut box_victim = None;
             for player in 0..self.players.len() {
-                if (player == owner || player == end_player) || !self.playable(player) {
+                let body_player = self.players[player].owner;
+                if (body_player == owner || body_player == end_player) || !self.playable(player) {
                     continue;
                 }
                 let slot = &self.players[player];
