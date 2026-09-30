@@ -3589,6 +3589,7 @@ impl PlayerSlot {
 
     fn restore_slime_radius(&mut self) {
         self.base.radius = self.exit_slime_radius();
+        self.slime_radius = self.base.radius;
         self.physics_scale = hurtbox_scale(self.player_scale);
     }
 
@@ -10911,7 +10912,10 @@ impl RolloutWorld {
                                     slot.state_ticks = LAND_TICKS + 2;
                                     slot.reported_position = slot.base.position;
                                     slot.reported_tick = self.tick;
-                                    slot.base.sync_collider();
+                                    // The `justlanded` exit's SyncPhysicsTo
+                                    // UpdateScales the slime radius and
+                                    // re-places it from the form's local.
+                                    self.sync_exit_to_ground(index);
                                     return;
                                 }
                                 let slot = &mut self.players[index];
@@ -24690,9 +24694,11 @@ impl RolloutWorld {
                 slot.set_active_form(&mut self.entities, ActiveAbility::None);
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks = LAND_TICKS + 2;
-                slot.set_ordinary_body_scale(slot.player_scale);
                 // Ability.ExitAbility publishes the collider DetPhysics
                 // last synced, as Ability.UpdateSim already did this pass.
+                // SyncPhysicsTo UpdateScales the slime radius and re-places
+                // it from the form's local.
+                self.sync_exit_to_ground(index);
                 return;
             }
             let slot = &mut self.players[index];
