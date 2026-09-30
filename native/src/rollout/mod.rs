@@ -18342,11 +18342,8 @@ impl RolloutWorld {
     /// The three Explosion-layer boxes spawned by HitboxCombo use the drill
     /// owner's id and are ignored only by that drill form's PlayerCollision.
     fn drill_contacts(&mut self) {
-        let mut victims = [false; MAX_BODIES];
-        let mut killers = [0u32; MAX_BODIES];
-        // The kills land in the callbacks' SortAndSweep pair order: by the
-        // later collider's sweep rank, then the earlier's.
-        let mut keys = [((Fix::ZERO, 0, 0), (Fix::ZERO, 0, 0)); MAX_BODIES];
+        // Each hit is a PlayerCollision.OnCollide in the callback queue, run
+        // after every group resolved in SortAndSweep pair order.
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
@@ -18437,9 +18434,6 @@ impl RolloutWorld {
                         sweep_rank(&self.entities, row_min, Some(entity)),
                         sweep_rank(&self.entities, box_min(hitbox), Some(hitbox_entity)),
                     );
-                    if victims[victim] && keys[victim] <= key {
-                        continue;
-                    }
                     let hit = if row.kind == 0 {
                         crate::physics::contact::circle_box(
                             Circle {
@@ -18468,22 +18462,11 @@ impl RolloutWorld {
                         .is_some()
                     };
                     if hit {
-                        victims[victim] = true;
-                        killers[victim] = killer;
-                        keys[victim] = key;
+                        let group = if row.kind == 0 { GROUP_CB } else { GROUP_BB };
+                        let kill = CallbackHit::Kill { player: victim, killer, cause: CAUSE_OTHER };
+                        self.scratch.callback_hits.push(((group, key.0, key.1), kill));
                     }
                 }
-            }
-        }
-        let mut order = [0usize; MAX_BODIES];
-        let count = self.players.len();
-        for (index, slot) in order[..count].iter_mut().enumerate() {
-            *slot = index;
-        }
-        order[..count].sort_by_key(|&victim| keys[victim]);
-        for &victim in &order[..count] {
-            if victims[victim] && self.hittable(victim) {
-                self.kill(victim, killers[victim], CAUSE_OTHER, true, true);
             }
         }
     }
@@ -19746,9 +19729,11 @@ impl RolloutWorld {
         }
     }
 
+    /// BeamObject's hits. A PlayerCollision.OnCollide is a callback: it runs
+    /// from the queue after every group resolved, in SortAndSweep pair order.
     fn beam_contacts(&mut self, contact_count: usize) {
-        let mut victims = [false; MAX_BODIES];
-        let mut killers = [0u32; MAX_BODIES];
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         for slot in self.beam_pool.iter().take(contact_count) {
             let Some(entity) = slot.entity else {
                 continue;
@@ -19767,7 +19752,7 @@ impl RolloutWorld {
             };
             let swept = swept.bounds(Fix::ZERO);
             for victim in 0..self.players.len() {
-                if victims[victim] || !self.hittable(victim) {
+                if !self.hittable(victim) {
                     continue;
                 }
                 // PlayerCollision.IgnoreBeamId only suppresses the owning
@@ -19864,8 +19849,14 @@ impl RolloutWorld {
                     .is_some()
                 };
                 if overlap {
-                    victims[victim] = true;
-                    killers[victim] = slot.contact_owner_id as u32;
+                    let (later, earlier) = sweep_pair(
+                        sweep_rank(&self.entities, axis(center - extent), Some(target)),
+                        sweep_rank(&self.entities, axis(swept.min), Some(entity)),
+                    );
+                    let group = if row.kind == 0 { GROUP_CB } else { GROUP_BB };
+                    let killer = slot.contact_owner_id as u32;
+                    let kill = CallbackHit::Kill { player: victim, killer, cause: CAUSE_BEAMED };
+                    self.scratch.callback_hits.push(((group, later, earlier), kill));
                 }
             }
             // BeamObject is also an Explosion with igniteFlammables
@@ -19892,11 +19883,6 @@ impl RolloutWorld {
                     cloud.ignition_time = Fix::ZERO;
                     self.entities[entity].flags = E_ACTIVE;
                 }
-            }
-        }
-        for victim in 0..self.players.len() {
-            if victims[victim] && self.hittable(victim) {
-                self.kill(victim, killers[victim], CAUSE_BEAMED, true, true);
             }
         }
     }
