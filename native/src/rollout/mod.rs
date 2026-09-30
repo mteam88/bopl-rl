@@ -41144,7 +41144,10 @@ impl RolloutWorld {
         if !already_won {
             let player = &mut self.players[owner];
             player.deaths += 1;
-            if !clones_alive {
+            // killPlayer's revive branch spawns the marker clones before
+            // Player.Kill, which then finds more than one body alive and
+            // leaves CauseOfDeath alone (PlayerCollision.cs:140-154).
+            if !clones_alive && revival_marker.is_none() {
                 player.cause_of_death = cause;
             }
             // Telemetry mirrors RlTelemetry.Death.
@@ -41238,7 +41241,6 @@ impl RolloutWorld {
             slot.base.grounded = false;
             slot.base.ground = None;
             slot.base.grounded_speed = Fix::ZERO;
-            slot.cause_of_death = CAUSE_NOT_DEAD_YET;
             slot.revival_markers = [None; 3];
             slot.revival_clone_pending = true;
             slot.revival_target_marker = Some(marker_index);
