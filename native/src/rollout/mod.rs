@@ -13054,7 +13054,7 @@ impl RolloutWorld {
             let Some(row) = self.entities.get(entity).copied() else {
                 continue;
             };
-            if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+            if !self.collides(entity)
                 || data.meteor.raycast_mask & (1u32 << row.layer) == 0
             {
                 continue;
@@ -13072,7 +13072,7 @@ impl RolloutWorld {
             });
         }
         for (entity, row) in self.entities.iter().copied().enumerate() {
-            if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+            if !self.collides(entity)
                 || matches!(row.layer, LAYER_PLAYER | LAYER_WALL | LAYER_WATER)
                 || data.meteor.raycast_mask & (1u32 << row.layer) == 0
             {
@@ -21897,7 +21897,7 @@ impl RolloutWorld {
                     }
                     continue;
                 }
-                if row.flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
+                if !self.collides(entity) {
                     continue;
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
@@ -23415,7 +23415,7 @@ impl RolloutWorld {
                     for (entity, row) in self.entities.iter().enumerate() {
                         if row.kind != kind
                             || row.id <= previous_id
-                            || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                            || !self.collides(entity)
                             || config.mask & (1 << row.layer) == 0
                             || (row.layer == data.smoke.cloud_layer && unregistered(entity))
                         {
@@ -24009,7 +24009,7 @@ impl RolloutWorld {
             const DASH_NON_PLAYER_MASK: u32 =
                 (1 << LAYER_PROJECTILE) | (1 << 16) | (1 << 18) | (1 << 23) | (1 << 26);
             for (entity_index, row) in self.entities.iter().copied().enumerate() {
-                if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                if !self.collides(entity_index)
                     || DASH_NON_PLAYER_MASK & (1u32 << row.layer) == 0
                 {
                     continue;
@@ -26727,7 +26727,7 @@ impl RolloutWorld {
         for (item_index, item) in self.thrown_items.iter().enumerate() {
             let Some(entity) = item.entity else { continue };
             if !item.active
-                || self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED
+                || !self.collides(entity)
             {
                 continue;
             }
@@ -26814,9 +26814,7 @@ impl RolloutWorld {
                 continue;
             }
             let platform = &self.platforms[boulder.platform_index];
-            let live = self.entities[self.platform_entities[boulder.platform_index]].flags
-                & (E_ACTIVE | E_ENABLED)
-                == E_ACTIVE | E_ENABLED;
+            let live = self.collides(self.platform_entities[boulder.platform_index]);
             consider(
                 MagnetHeld::Boulder(boulder_index),
                 platform.surface.center,
@@ -33811,7 +33809,7 @@ impl RolloutWorld {
     fn circle_entity_contact(&self, query: Circle, entity: usize) -> Option<Contact> {
         let row = self.entities[entity];
         // DetPhysics.IsActive: the object is active and its collider enabled.
-        if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED) {
+        if !self.collides(entity) {
             return None;
         }
         if row.kind == 0 {
