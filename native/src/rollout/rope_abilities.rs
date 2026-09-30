@@ -2241,7 +2241,7 @@ impl RolloutWorld {
                 out.push(CEntity {
                     id: rope.segment_ids[segment],
                     kind: 3,
-                    owner: rope.owner as u32 + 1,
+                    owner: player_id(&self.players, rope.owner),
                     flags: E_ACTIVE
                         | E_ENABLED
                         | if rope.physics.detached { E_DETACHED } else { 0 },

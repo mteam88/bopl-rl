@@ -36,6 +36,10 @@ pub const ABI_VERSION: u32 = 3;
 /// The .NET catalog has 39 ability icons; index 0 is the menu placeholder.
 pub const ABILITY_COUNT: u32 = 39;
 pub const MAX_PLAYERS: usize = 6;
+/// Slime bodies that carry abilities: each player's own slot, plus the extra
+/// SlimeControllers a Revival with several markers or a clone's pickup
+/// makes (`PlayerSlot::owner` names their player).
+pub const MAX_BODIES: usize = 12;
 /// Catalog indices with real behaviour in this backend.
 pub const ABILITY_NULL: u32 = 0;
 pub const ABILITY_RANDOM: u32 = 1;
@@ -660,9 +664,14 @@ pub struct GrenadeExplosion {
     pub age: u32,
 }
 
+/// The player id of a body index, which objects store as their owner.
+fn player_id(players: &[PlayerSlot], body: usize) -> u32 {
+    players[body].base.id
+}
+
 impl GrenadeExplosion {
-    fn killer(&self) -> u32 {
-        if self.credited_owner { self.owner as u32 + 1 } else { 0 }
+    fn killer(&self, players: &[PlayerSlot]) -> u32 {
+        if self.credited_owner { player_id(players, self.owner) } else { 0 }
     }
 }
 
@@ -2035,8 +2044,8 @@ impl BlackHoleState {
     /// BlackHole.OwnerId, which BlackHoleClap sets (BlackHoleClap.cs:91). A
     /// Duplicator copy keeps the private field's ENVIRONMENTAL_PLAYER_ID
     /// (BlackHole.cs:52, ShootDuplicator.cs:318-327), so its kills go uncredited.
-    fn killer(&self) -> u32 {
-        if self.duplicated { ENVIRONMENT } else { self.owner as u32 + 1 }
+    fn killer(&self, players: &[PlayerSlot]) -> u32 {
+        if self.duplicated { ENVIRONMENT } else { player_id(players, self.owner) }
     }
 }
 
@@ -2618,6 +2627,9 @@ impl AbilitylessClone {
 #[derive(Clone)]
 pub struct PlayerSlot {
     pub base: Player,
+    /// The player this body belongs to: its own index for a player's slot, and
+    /// that slot's index for an extra body past `RolloutWorld::player_count`.
+    pub owner: usize,
     pub team: u32,
     pub keyboard: bool,
     pub stocks: u32,
@@ -3336,14 +3348,14 @@ struct PlatformScratch {
     rock_spike_hits: Vec<(usize, usize, Vec2)>,
     /// Each slime's position before PlayerPhysics.LateUpdateSim follows its
     /// ground, where an older Mine's LateUpdateSim still finds it.
-    before_ground_follow: [Vec2; MAX_PLAYERS],
+    before_ground_follow: [Vec2; MAX_BODIES],
     /// The owners' inputs as the clones' SlimeControllers read them this pass,
     /// held for a clone that updates ahead of the clone batch.
-    clone_actions: [CAction; MAX_PLAYERS],
+    clone_actions: [CAction; MAX_BODIES],
     clone_action_count: usize,
-    clone_jump_pressed: [bool; MAX_PLAYERS],
+    clone_jump_pressed: [bool; MAX_BODIES],
     /// Players whose first clone to update this pass took Player.Position.
-    clones_positioned: [bool; MAX_PLAYERS],
+    clones_positioned: [bool; MAX_BODIES],
     /// Clones whose updaters already ran this pass, ahead of a newer
     /// TeleportIndicator.
     clones_updated_early: Vec<usize>,
@@ -3487,6 +3499,9 @@ pub struct RolloutWorld {
     pub episode_ticks: u32,
     pub rng: Random,
     pub players: Vec<PlayerSlot>,
+    /// Players in the session; `players` holds their own slots first, then any
+    /// extra bodies.
+    pub player_count: usize,
     pub platforms: Vec<Platform>,
     /// Raycast broad phase over `platforms` (`rebuild_bounds`).
     pub bounds: PlatformBounds,
@@ -3543,13 +3558,13 @@ pub struct RolloutWorld {
     pub frozen_solids: Vec<FrozenSolidState>,
     pub scale_changers: Vec<ScaleChangerState>,
     pub player_time_scale: Fix,
-    pub time_stop_protected: [bool; MAX_PLAYERS],
+    pub time_stop_protected: [bool; MAX_BODIES],
     pub spawned: Vec<SpawnedPlatform>,
     /// Black Hole pulls on a shrinking platform whose ResizablePlatform ran
     /// earlier in the pass: (platform, vector, distance cubed, hole mass,
     /// Push-controlled). They read the mass the shrink leaves.
     pub late_platform_pulls: Vec<(usize, Vec2, Fix, Fix, bool)>,
-    pub gust_waves: [Shockwave; MAX_PLAYERS * 3],
+    pub gust_waves: [Shockwave; MAX_BODIES * 3],
     pub revival_marker_pool: Vec<RevivalMarker>,
     pub teleport_marker_pool: Vec<TeleportMarker>,
     pub portal_shots: Vec<PortalShotState>,
@@ -3681,7 +3696,8 @@ impl RolloutWorld {
             tick: 0,
             episode_ticks: 0,
             rng: Random::new(1),
-            players: Vec::with_capacity(MAX_PLAYERS),
+            players: Vec::with_capacity(MAX_BODIES),
+            player_count: 0,
             platforms: Vec::with_capacity(64),
             bounds: PlatformBounds::default(),
             platform_epoch: 1,
@@ -3739,10 +3755,10 @@ impl RolloutWorld {
             frozen_solids: Vec::with_capacity(32),
             scale_changers: Vec::with_capacity(32),
             player_time_scale: Fix::ONE,
-            time_stop_protected: [false; MAX_PLAYERS],
+            time_stop_protected: [false; MAX_BODIES],
             spawned: Vec::with_capacity(64),
             late_platform_pulls: Vec::new(),
-            gust_waves: [Shockwave::default(); MAX_PLAYERS * 3],
+            gust_waves: [Shockwave::default(); MAX_BODIES * 3],
             revival_marker_pool: Vec::with_capacity(64),
             teleport_marker_pool: Vec::with_capacity(64),
             portal_shots: Vec::with_capacity(32),
@@ -3815,6 +3831,7 @@ impl RolloutWorld {
         self.episode_ticks = src.episode_ticks;
         self.rng = src.rng;
         self.players.clone_from(&src.players);
+        self.player_count = src.player_count;
         self.platforms.clone_from(&src.platforms);
         self.bounds.clone_from(&src.bounds);
         self.platform_epoch = src.platform_epoch;
@@ -3925,6 +3942,7 @@ impl RolloutWorld {
             episode_ticks: _,
             rng: _,
             players: _,
+            player_count: _,
             platforms: _,
             bounds: _,
             platform_epoch: _,
@@ -4100,7 +4118,7 @@ impl RolloutWorld {
         self.ability_spawner_state.clear();
         self.active_subsystems = 0;
         self.player_time_scale = Fix::ONE;
-        self.time_stop_protected = [false; MAX_PLAYERS];
+        self.time_stop_protected = [false; MAX_BODIES];
         self.spawned.clear();
         self.late_platform_pulls.clear();
         for wave in &mut self.gust_waves {
@@ -4124,6 +4142,7 @@ impl RolloutWorld {
         self.beam_snapshot = crate::beam::graph::Snapshot::default();
         self.beam_inputs.clear();
         self.players.clear();
+        self.player_count = players;
         self.platforms.clear();
         self.platform_dynamics.clear();
         self.platforms_changed();
@@ -4153,7 +4172,7 @@ impl RolloutWorld {
             self.intro_random_delays[platform_index] =
                 self.rng.fix_range(Fix::ZERO, Fix::ONE) * def.max_random_delay;
         }
-        let mut resolved_abilities = [[0u32; 3]; MAX_PLAYERS];
+        let mut resolved_abilities = [[0u32; 3]; MAX_BODIES];
         for (i, abilities) in resolved_abilities.iter_mut().enumerate().take(players) {
             abilities[..slots].copy_from_slice(&config.player[i].abilities[..slots]);
             let all_random = abilities[..slots]
@@ -4193,8 +4212,8 @@ impl RolloutWorld {
         self.next_entity_id = 0;
         self.observed_ids.clear();
         self.last_observed_id = 0;
-        let mut player_hierarchy = [0u32; MAX_PLAYERS];
-        let mut ability_hierarchy = [[0u32; 3]; MAX_PLAYERS];
+        let mut player_hierarchy = [0u32; MAX_BODIES];
+        let mut ability_hierarchy = [[0u32; 3]; MAX_BODIES];
         let mut hierarchy_cursor = 0u32;
         for i in 0..players {
             player_hierarchy[i] = hierarchy_cursor;
@@ -4206,33 +4225,33 @@ impl RolloutWorld {
             }
         }
         self.next_spawn_hierarchy = hierarchy_cursor;
-        let mut form_entities = [[usize::MAX; 3]; MAX_PLAYERS];
-        let mut circle_entity = [usize::MAX; MAX_PLAYERS];
-        let mut roll_entity = [usize::MAX; MAX_PLAYERS];
-        let mut rock_hierarchy = [[0u32; 3]; MAX_PLAYERS];
-        let mut gust_entity = [usize::MAX; MAX_PLAYERS];
-        let mut revival_entity = [usize::MAX; MAX_PLAYERS];
-        let mut time_stop_entity = [usize::MAX; MAX_PLAYERS];
-        let mut body_entity = [usize::MAX; MAX_PLAYERS];
-        let mut dash_entity = [[usize::MAX; 3]; MAX_PLAYERS];
-        let mut bow_entity = [usize::MAX; MAX_PLAYERS];
-        let mut throw_entity = [[usize::MAX; 3]; MAX_PLAYERS];
-        let mut mine_entity = [usize::MAX; MAX_PLAYERS];
-        let mut push_entity = [usize::MAX; MAX_PLAYERS];
-        let mut freeze_entities = [[usize::MAX; 3]; MAX_PLAYERS];
-        let mut blink_entity = [usize::MAX; MAX_PLAYERS];
-        let mut growth_ray_entity = [usize::MAX; MAX_PLAYERS];
-        let mut shrink_ray_entity = [usize::MAX; MAX_PLAYERS];
-        let mut duplicator_entity = [usize::MAX; MAX_PLAYERS];
-        let mut magnet_entity = [usize::MAX; MAX_PLAYERS];
-        let mut spike_entity = [usize::MAX; MAX_PLAYERS];
-        let mut engine_entity = [usize::MAX; MAX_PLAYERS];
-        let mut tesla_entity = [usize::MAX; MAX_PLAYERS];
-        let mut meteor_entity = [usize::MAX; MAX_PLAYERS];
-        let mut black_hole_entity = [usize::MAX; MAX_PLAYERS];
-        let mut macho_throw_entity = [usize::MAX; MAX_PLAYERS];
-        let mut drill_entity = [usize::MAX; MAX_PLAYERS];
-        let mut beam_entity = [usize::MAX; MAX_PLAYERS];
+        let mut form_entities = [[usize::MAX; 3]; MAX_BODIES];
+        let mut circle_entity = [usize::MAX; MAX_BODIES];
+        let mut roll_entity = [usize::MAX; MAX_BODIES];
+        let mut rock_hierarchy = [[0u32; 3]; MAX_BODIES];
+        let mut gust_entity = [usize::MAX; MAX_BODIES];
+        let mut revival_entity = [usize::MAX; MAX_BODIES];
+        let mut time_stop_entity = [usize::MAX; MAX_BODIES];
+        let mut body_entity = [usize::MAX; MAX_BODIES];
+        let mut dash_entity = [[usize::MAX; 3]; MAX_BODIES];
+        let mut bow_entity = [usize::MAX; MAX_BODIES];
+        let mut throw_entity = [[usize::MAX; 3]; MAX_BODIES];
+        let mut mine_entity = [usize::MAX; MAX_BODIES];
+        let mut push_entity = [usize::MAX; MAX_BODIES];
+        let mut freeze_entities = [[usize::MAX; 3]; MAX_BODIES];
+        let mut blink_entity = [usize::MAX; MAX_BODIES];
+        let mut growth_ray_entity = [usize::MAX; MAX_BODIES];
+        let mut shrink_ray_entity = [usize::MAX; MAX_BODIES];
+        let mut duplicator_entity = [usize::MAX; MAX_BODIES];
+        let mut magnet_entity = [usize::MAX; MAX_BODIES];
+        let mut spike_entity = [usize::MAX; MAX_BODIES];
+        let mut engine_entity = [usize::MAX; MAX_BODIES];
+        let mut tesla_entity = [usize::MAX; MAX_BODIES];
+        let mut meteor_entity = [usize::MAX; MAX_BODIES];
+        let mut black_hole_entity = [usize::MAX; MAX_BODIES];
+        let mut macho_throw_entity = [usize::MAX; MAX_BODIES];
+        let mut drill_entity = [usize::MAX; MAX_BODIES];
+        let mut beam_entity = [usize::MAX; MAX_BODIES];
         for i in 0..players {
             for (s, &hierarchy) in ability_hierarchy[i].iter().enumerate().take(slots) {
                 let ability = resolved_abilities[i][s];
@@ -4715,7 +4734,7 @@ impl RolloutWorld {
         // GameSessionHandler maps sorted distinct team ids onto authored
         // spawn slots, then fans teammates (and wrapped extra teams) out in
         // alternating down-left/down-right offsets.
-        let mut distinct_teams = [u32::MAX; MAX_PLAYERS];
+        let mut distinct_teams = [u32::MAX; MAX_BODIES];
         let mut distinct_count = 0usize;
         for player in &config.player[..players] {
             let team = player.team;
@@ -4725,7 +4744,7 @@ impl RolloutWorld {
             }
         }
         distinct_teams[..distinct_count].sort_unstable();
-        let mut spawn_counts = [0u32; MAX_PLAYERS];
+        let mut spawn_counts = [0u32; MAX_BODIES];
 
         // Players at their resolved team spawns.
         for i in 0..players {
@@ -4796,6 +4815,7 @@ impl RolloutWorld {
                     aligned: None,
                     input_normalized: None,
                 },
+                owner: i,
                 team,
                 keyboard: config.player[i].keyboard != 0,
                 stocks: self.stocks,
@@ -6342,7 +6362,7 @@ impl RolloutWorld {
         if self.terminal {
             return Err("Episode has ended".into());
         }
-        if actions.len() != self.players.len() {
+        if actions.len() != self.player_count {
             return Err("One action per player is required".into());
         }
         for action in actions {
@@ -6502,17 +6522,17 @@ impl RolloutWorld {
                 slot.ability_time = Fix::ZERO;
             }
         }
-        let mut jump_pressed_by_player = [false; MAX_PLAYERS];
+        let mut jump_pressed_by_player = [false; MAX_BODIES];
         // The Updater walks objects in hierarchy order, so each player runs
         // at the turn of whichever object holds it this pass: the slime, or
         // the ability form it is in. A stock respawn in kill order or a form
         // picked up later puts that ahead of or behind player index order.
         let player_count = actions.len().min(self.players.len());
-        let mut player_order = [0usize; MAX_PLAYERS];
+        let mut player_order = [0usize; MAX_BODIES];
         for (index, value) in player_order[..player_count].iter_mut().enumerate() {
             *value = index;
         }
-        let mut player_hierarchy = [0u32; MAX_PLAYERS];
+        let mut player_hierarchy = [0u32; MAX_BODIES];
         for (index, value) in player_hierarchy[..player_count].iter_mut().enumerate() {
             let slot = &self.players[index];
             let entity = match Self::hurtbox_entity(slot) {
@@ -6889,7 +6909,7 @@ impl RolloutWorld {
         self.scratch.clone_action_count = player_count;
         self.scratch.clone_actions[..player_count].copy_from_slice(&actions[..player_count]);
         self.scratch.clone_jump_pressed = jump_pressed_by_player;
-        self.scratch.clones_positioned = [false; MAX_PLAYERS];
+        self.scratch.clones_positioned = [false; MAX_BODIES];
         self.scratch.clones_updated_early.clear();
         self.duplicated_platforms_tick(data, updater_dt, spawned_from..u32::MAX);
         self.scratch.duplicates_window = None;
@@ -8047,7 +8067,7 @@ impl RolloutWorld {
                 center: self.portal_shots[shot_index].position,
                 radius: data.portal_gun.shot_radius,
             };
-            let mut contacts = [(usize::MAX, Contact::default(), false); MAX_PLAYERS];
+            let mut contacts = [(usize::MAX, Contact::default(), false); MAX_BODIES];
             let mut contact_count = 0usize;
             for rock_index in 0..self.players.len() {
                 if self.players[rock_index].active != ActiveAbility::Rock
@@ -12749,7 +12769,7 @@ impl RolloutWorld {
             .iter()
             .find(|explosion| explosion.active && explosion.entity == Some(entity))
         {
-            return (explosion.killer(), true, CAUSE_OTHER);
+            return (explosion.killer(&self.players), true, CAUSE_OTHER);
         }
         if let Some(explosion) = self
             .missile_explosions
@@ -12758,7 +12778,7 @@ impl RolloutWorld {
         {
             return (
                 if explosion.credited_owner {
-                    explosion.owner as u32 + 1
+                    player_id(&self.players, explosion.owner)
                 } else {
                     0
                 },
@@ -12771,7 +12791,7 @@ impl RolloutWorld {
             .iter()
             .find(|explosion| explosion.active && explosion.entity == Some(entity))
         {
-            return (explosion.owner as u32 + 1, true, CAUSE_OTHER);
+            return (player_id(&self.players, explosion.owner), true, CAUSE_OTHER);
         }
         // ShootDuplicator gives the copy's Explosion the slime's id.
         if let Some(rock) = self
@@ -12779,7 +12799,7 @@ impl RolloutWorld {
             .iter()
             .find(|rock| rock.active && rock.entity == Some(entity))
         {
-            return (rock.owner as u32 + 1, true, CAUSE_OTHER);
+            return (player_id(&self.players, rock.owner), true, CAUSE_OTHER);
         }
         if let Some(smear) = self
             .meteor_smears
@@ -12788,14 +12808,14 @@ impl RolloutWorld {
         {
             // SpawnSmearEffect puts the smear in the caster's ignore list, and
             // every form copies that list on entry (Ability.cs:97).
-            return (smear.owner as u32 + 1, false, CAUSE_OTHER);
+            return (player_id(&self.players, smear.owner), false, CAUSE_OTHER);
         }
         if let Some(orb) = self
             .beam_orbs
             .iter()
             .find(|orb| orb.active && orb.entity == Some(entity))
         {
-            return (orb.owner as u32 + 1, false, CAUSE_OTHER);
+            return (player_id(&self.players, orb.owner), false, CAUSE_OTHER);
         }
         if let Some(beam) = self
             .beam_pool
@@ -14168,7 +14188,7 @@ impl RolloutWorld {
             id,
             kind: 0,
             layer: data.tesla.node_layer,
-            owner: index as u32 + 1,
+            owner: player_id(&self.players, index),
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
             radius: (data.tesla.node_radius * collider_scale).raw(),
@@ -14916,7 +14936,7 @@ impl RolloutWorld {
                 // that its final UpdateSim wrote before destroying itself.
                 if !self.terminal {
                     self.player_time_scale = Fix::ONE;
-                    self.time_stop_protected = [false; MAX_PLAYERS];
+                    self.time_stop_protected = [false; MAX_BODIES];
                 }
             } else {
                 let team = self.players[effect.caster].team;
@@ -15331,7 +15351,7 @@ impl RolloutWorld {
             id,
             kind: 1,
             layer: data.tesla.lightning_layer,
-            owner: node.owner as u32 + 1,
+            owner: player_id(&self.players, node.owner),
             flags: E_ENABLED | E_TRIGGER,
             hierarchy: 100_000_000
                 + node.line_hierarchy_base
@@ -15699,7 +15719,7 @@ impl RolloutWorld {
             // LethalTerrain layer never pairs with Smoke, so the attack does
             // not light a cloud.
             let attack_box = self.spike_attack_box(spike);
-            let mut victims = [None; MAX_PLAYERS];
+            let mut victims = [None; MAX_BODIES];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 if !self.hittable(player_index) {
                     continue;
@@ -15809,7 +15829,7 @@ impl RolloutWorld {
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
-        let mut victims: [Option<CallbackKey>; MAX_PLAYERS] = [None; MAX_PLAYERS];
+        let mut victims: [Option<CallbackKey>; MAX_BODIES] = [None; MAX_BODIES];
         let live_nodes = self.tesla_nodes.len();
         for (node_index, node) in self
             .tesla_nodes
@@ -17389,7 +17409,7 @@ impl RolloutWorld {
                 let (later, earlier) = sweep_pair(hole_rank, sweep_rank(&self.entities, min, entity));
                 (boxed, later, earlier)
             };
-            let killer = hole.killer();
+            let killer = hole.killer(&self.players);
             for (player_index, player) in self.players.iter().enumerate() {
                 if !self.playable_slot(player) || player.out {
                     continue;
@@ -17809,11 +17829,11 @@ impl RolloutWorld {
     /// The three Explosion-layer boxes spawned by HitboxCombo use the drill
     /// owner's id and are ignored only by that drill form's PlayerCollision.
     fn drill_contacts(&mut self) {
-        let mut victims = [false; MAX_PLAYERS];
-        let mut killers = [0u32; MAX_PLAYERS];
+        let mut victims = [false; MAX_BODIES];
+        let mut killers = [0u32; MAX_BODIES];
         // The kills land in the callbacks' SortAndSweep pair order: by the
         // later collider's sweep rank, then the earlier's.
-        let mut keys = [((Fix::ZERO, 0, 0), (Fix::ZERO, 0, 0)); MAX_PLAYERS];
+        let mut keys = [((Fix::ZERO, 0, 0), (Fix::ZERO, 0, 0)); MAX_BODIES];
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
@@ -17942,7 +17962,7 @@ impl RolloutWorld {
                 }
             }
         }
-        let mut order = [0usize; MAX_PLAYERS];
+        let mut order = [0usize; MAX_BODIES];
         let count = self.players.len();
         for (index, slot) in order[..count].iter_mut().enumerate() {
             *slot = index;
@@ -19169,8 +19189,8 @@ impl RolloutWorld {
     }
 
     fn beam_contacts(&mut self, contact_count: usize) {
-        let mut victims = [false; MAX_PLAYERS];
-        let mut killers = [0u32; MAX_PLAYERS];
+        let mut victims = [false; MAX_BODIES];
+        let mut killers = [0u32; MAX_BODIES];
         for slot in self.beam_pool.iter().take(contact_count) {
             let Some(entity) = slot.entity else {
                 continue;
@@ -20494,7 +20514,7 @@ impl RolloutWorld {
             id,
             kind: 0,
             layer: data.revival.marker_layer,
-            owner: marker.owner as u32 + 1,
+            owner: player_id(&self.players, marker.owner),
             flags: E_ACTIVE | E_ENABLED,
             hierarchy: 100_000_000
                 + marker.hierarchy_base
@@ -21884,7 +21904,7 @@ impl RolloutWorld {
                 id: body_id,
                 kind: 1,
                 layer: LAYER_PLAYER,
-                owner: index as u32 + 1,
+                owner: player_id(&self.players, index),
                 flags: E_ACTIVE | E_TRIGGER,
                 hierarchy: 100_000_000 + player_hierarchy + 6,
                 x: position.x.raw(),
@@ -22252,13 +22272,13 @@ impl RolloutWorld {
         // RlObservation first encounters every new circle, then every new
         // box, even when several stock clones were instantiated in one
         // explosion callback pass. Assign public ids in that same order.
-        let mut new_circle_entities = [usize::MAX; MAX_PLAYERS * 6];
+        let mut new_circle_entities = [usize::MAX; MAX_BODIES * 6];
         let mut new_circle_count = 0usize;
-        let mut new_box_entities = [usize::MAX; MAX_PLAYERS * 4];
+        let mut new_box_entities = [usize::MAX; MAX_BODIES * 4];
         let mut new_box_count = 0usize;
         // The clones were instantiated in kill order, which their reserved
         // player hierarchy records.
-        let mut pending = [0usize; MAX_PLAYERS];
+        let mut pending = [0usize; MAX_BODIES];
         let mut pending_count = 0usize;
         for index in 0..self.players.len() {
             if self.players[index].stock_clone_pending {
@@ -22371,7 +22391,7 @@ impl RolloutWorld {
                 self.entities.push(CEntity {
                     kind: 0,
                     layer: data.revival.marker_layer,
-                    owner: index as u32 + 1,
+                    owner: player_id(&self.players, index),
                     flags: E_ACTIVE | E_ENABLED,
                     hierarchy: 100_000_000
                         + hierarchy_base
@@ -22392,7 +22412,7 @@ impl RolloutWorld {
             self.entities.push(CEntity {
                 kind: 1,
                 layer: LAYER_PLAYER,
-                owner: index as u32 + 1,
+                owner: player_id(&self.players, index),
                 flags: E_ACTIVE | E_TRIGGER,
                 hierarchy: 100_000_000 + player_hierarchy + 6,
                 x: position.x.raw(),
@@ -23540,7 +23560,7 @@ impl RolloutWorld {
                             if let Some(hole_index) = self.black_holes.iter().position(|hole| {
                                 hole.active && hole.entity == Some(entity) && hole.mass >= Fix::ZERO
                             }) {
-                                let killer = self.black_holes[hole_index].killer();
+                                let killer = self.black_holes[hole_index].killer(&self.players);
                                 Self::black_hole_grow(
                                     &mut self.black_holes[hole_index],
                                     -Fix::ONE,
@@ -23576,7 +23596,7 @@ impl RolloutWorld {
                             .iter()
                             .find(|explosion| explosion.active && explosion.entity == Some(entity))
                         {
-                            killer = explosion.killer();
+                            killer = explosion.killer(&self.players);
                             can_hurt_owner = true;
                         } else if let Some(explosion) = self
                             .missile_explosions
@@ -23584,7 +23604,7 @@ impl RolloutWorld {
                             .find(|explosion| explosion.active && explosion.entity == Some(entity))
                         {
                             killer = if explosion.credited_owner {
-                                explosion.owner as u32 + 1
+                                player_id(&self.players, explosion.owner)
                             } else {
                                 0
                             };
@@ -23594,7 +23614,7 @@ impl RolloutWorld {
                             .iter()
                             .find(|explosion| explosion.active && explosion.entity == Some(entity))
                         {
-                            killer = explosion.owner as u32 + 1;
+                            killer = player_id(&self.players, explosion.owner);
                             can_hurt_owner = true;
                         } else if let Some(smear) = self
                             .meteor_smears
@@ -23603,14 +23623,14 @@ impl RolloutWorld {
                         {
                             // The caster's PlayerCollision ignores its smear,
                             // and Dash copies that list on entry (Ability.cs:97).
-                            killer = smear.owner as u32 + 1;
+                            killer = player_id(&self.players, smear.owner);
                             can_hurt_owner = false;
                         } else if let Some(orb) = self
                             .beam_orbs
                             .iter()
                             .find(|orb| orb.active && orb.entity == Some(entity))
                         {
-                            killer = orb.owner as u32 + 1;
+                            killer = player_id(&self.players, orb.owner);
                             can_hurt_owner = false;
                         } else if let Some(beam) = self
                             .beam_pool
@@ -28294,7 +28314,7 @@ impl RolloutWorld {
             id,
             kind: 0,
             layer: data.tesla.node_layer,
-            owner: caster as u32 + 1,
+            owner: player_id(&self.players, caster),
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
             radius: (data.tesla.node_radius * source.collider_scale).raw(),
@@ -30000,7 +30020,7 @@ impl RolloutWorld {
         // the tunnels; both draw from Updater's RNG (QuantumTunnel.cs:263-273,
         // TeleportedObjectEffect.cs:38).
         let mut effects_from = self.first_blink_tunnel_hierarchy();
-        let mut order = [0usize; MAX_PLAYERS];
+        let mut order = [0usize; MAX_BODIES];
         let order = &mut order[..self.players.len()];
         for (victim, slot) in order.iter_mut().enumerate() {
             *slot = victim;
@@ -33152,7 +33172,7 @@ impl RolloutWorld {
     }
 
     fn mine_scan_target(&self, item_index: usize, data: &data::RolloutData) -> Option<Vec2> {
-        const MAX_CANDIDATES: usize = MAX_PLAYERS * 17;
+        const MAX_CANDIDATES: usize = MAX_BODIES + MAX_PLAYERS * 16;
         let mine = self.thrown_items[item_index];
         let query = Circle {
             center: mine.position,
@@ -33626,7 +33646,7 @@ impl RolloutWorld {
             let speed = item.body.velocity.length().max(Fix::ONE);
             item.body.angular_velocity = Fix::from_int(-6) * item.body.velocity.x / speed;
             if let Some(entity) = item.entity {
-                self.entities[entity].owner = item.owner as u32 + 1;
+                self.entities[entity].owner = player_id(&self.players, item.owner);
             }
         }
         self.thrown_items[item_index].age += updater_dt;
@@ -33786,7 +33806,7 @@ impl RolloutWorld {
                 item.launched = true;
                 item.body.angular_velocity = Fix::from_int(4);
                 if let Some(entity) = item.entity {
-                    self.entities[entity].owner = item.owner as u32 + 1;
+                    self.entities[entity].owner = player_id(&self.players, item.owner);
                 }
             }
             if item.settled {
@@ -33858,7 +33878,7 @@ impl RolloutWorld {
             }
         }
         if let Some(victim) = victim {
-            let killer = owner as u32 + 1;
+            let killer = player_id(&self.players, owner);
             // BananaPeel invokes PlayerCollision.killPlayer from its
             // updater with the default CauseOfDeath.Other, its own thrower
             // included: it creates the normal death effect, while
@@ -34026,7 +34046,7 @@ impl RolloutWorld {
                     Fix::from_int(11)
                 };
                 if let Some(entity) = item.entity {
-                    self.entities[entity].owner = item.owner as u32 + 1;
+                    self.entities[entity].owner = player_id(&self.players, item.owner);
                 }
             }
             item.age += updater_dt;
@@ -34041,7 +34061,7 @@ impl RolloutWorld {
         let owner = item.owner;
         let hammer_radius = data.mjolnir.item_radius * item.scale;
         let mut victims = 0u8;
-        let mut clone_victims = [usize::MAX; MAX_PLAYERS];
+        let mut clone_victims = [usize::MAX; MAX_BODIES];
         let mut clone_victim_count = 0;
 
         // FindObjectsOfType<SlimeController> visits the live ordinary
@@ -34120,11 +34140,11 @@ impl RolloutWorld {
             // DropAbilities reads the body before the later ice pins it.
             self.players[player_index].base.position =
                 self.mjolnir_view(player_index, item.hierarchy_base);
-            self.kill(player_index, owner as u32 + 1, CAUSE_OTHER, false, false);
+            self.kill(player_index, player_id(&self.players, owner), CAUSE_OTHER, false, false);
         }
         for &clone_index in &clone_victims[..clone_victim_count] {
             self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-            self.kill_abilityless_clone(clone_index, owner as u32 + 1, CAUSE_OTHER);
+            self.kill_abilityless_clone(clone_index, player_id(&self.players, owner), CAUSE_OTHER);
         }
 
         if self.thrown_items[item_index].phase == 0 {
@@ -34777,7 +34797,7 @@ impl RolloutWorld {
             // the Arrow components before Rock's PlayerCollision can inspect
             // the Projectile. BounceBall still receives its projectile
             // callback after the physical manifold has resolved.
-            let mut rock_contacts = [(usize::MAX, Contact::default()); MAX_PLAYERS];
+            let mut rock_contacts = [(usize::MAX, Contact::default()); MAX_BODIES];
             let mut rock_contact_count = 0;
             for (player_index, player) in self.players.iter().enumerate() {
                 if rock_contact_count == rock_contacts.len()
@@ -37217,7 +37237,7 @@ impl RolloutWorld {
                 continue;
             }
 
-            let owner_id = item.owner as u32 + 1;
+            let owner_id = player_id(&self.players, item.owner);
             // The pair comes from the broadphase, swept before a wall or an
             // arrow corrected the item this pass; the manifold then tests the
             // corrected circle.
@@ -37333,7 +37353,7 @@ impl RolloutWorld {
                 Vec2::RIGHT,
                 data.grenade.explosion_extents * explosion.scale,
             );
-            let mut victims = [false; MAX_PLAYERS];
+            let mut victims = [false; MAX_BODIES];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 if !self.hittable(player_index) {
                     continue;
@@ -37356,7 +37376,7 @@ impl RolloutWorld {
                     self.player_hit_by_box(player_index, hitbox)
                 };
             }
-            let killer = explosion.killer();
+            let killer = explosion.killer(&self.players);
             let hitbox_min = self.box_sweep_min(hitbox);
             for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
                 if victim {
@@ -37387,7 +37407,7 @@ impl RolloutWorld {
                 Vec2::RIGHT,
                 data.missile.explosion_extents * explosion.scale,
             );
-            let mut victims = [false; MAX_PLAYERS];
+            let mut victims = [false; MAX_BODIES];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 if !self.hittable(player_index) {
                     continue;
@@ -37411,7 +37431,7 @@ impl RolloutWorld {
                 };
             }
             let killer = if explosion.credited_owner {
-                explosion.owner as u32 + 1
+                player_id(&self.players, explosion.owner)
             } else {
                 0
             };
@@ -37632,7 +37652,7 @@ impl RolloutWorld {
                 center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
                 radius: Fix::from_raw(row.radius),
             };
-            let mut victims = [false; MAX_PLAYERS];
+            let mut victims = [false; MAX_BODIES];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 if player_index == orb.owner || !self.hittable(player_index) {
                     continue;
@@ -37652,7 +37672,7 @@ impl RolloutWorld {
                     self.player_hit_by_circle(player_index, hitbox)
                 };
             }
-            let killer = orb.owner as u32 + 1;
+            let killer = player_id(&self.players, orb.owner);
             let hitbox_min = if self.sweep_x() { hitbox.center.x } else { hitbox.center.y }
                 - hitbox.radius;
             for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
@@ -37889,7 +37909,7 @@ impl RolloutWorld {
                 };
                 if hit {
                     let hitbox_min = self.box_sweep_min(hitbox);
-                    let killer = smear.owner as u32 + 1;
+                    let killer = player_id(&self.players, smear.owner);
                     let hitbox_rank = sweep_rank(&self.entities, hitbox_min, smear.entity);
                     self.queue_callback_kill(player_index, false, hitbox_rank, killer, CAUSE_OTHER);
                 }
@@ -37998,7 +38018,7 @@ impl RolloutWorld {
                 }
             }
 
-            let mut victims = [false; MAX_PLAYERS];
+            let mut victims = [false; MAX_BODIES];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 // A slime in its spawn animation already has its hurtbox on,
                 // as for the grenade's and the missile's Explosion.
@@ -38023,7 +38043,7 @@ impl RolloutWorld {
                     self.player_hit_by_box(player_index, hitbox)
                 };
             }
-            let killer = explosion.owner as u32 + 1;
+            let killer = player_id(&self.players, explosion.owner);
             let hitbox_min = self.box_sweep_min(hitbox);
             for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
                 if victim {
@@ -39312,7 +39332,7 @@ impl RolloutWorld {
             self.players[owner].telemetry.deaths_environment += 1;
         } else if killer == self.players[owner].base.id {
             self.players[owner].telemetry.deaths_self += 1;
-        } else if killer >= 1 && killer <= self.players.len() as u32 {
+        } else if killer >= 1 && killer <= self.player_count as u32 {
             self.players[owner].telemetry.deaths_opponent += 1;
         } else {
             self.players[owner].telemetry.deaths_other += 1;
@@ -39403,7 +39423,7 @@ impl RolloutWorld {
                     .duplicated_rocks
                     .iter()
                     .find(|rock| rock.active && rock.entity == Some(entity))
-                    .map_or(row.owner, |rock| rock.owner as u32 + 1);
+                    .map_or(row.owner, |rock| player_id(&self.players, rock.owner));
                 let hit = CallbackHit::CloneKill { clone: clone_index, killer };
                 self.scratch.callback_hits.push((key, hit));
             }
@@ -39512,7 +39532,7 @@ impl RolloutWorld {
                 center: rock.position,
                 radius: data.rock.radius * rock.scale,
             };
-            let killer = rock.owner as u32 + 1;
+            let killer = player_id(&self.players, rock.owner);
             for victim in 0..self.players.len() {
                 if !self.hittable(victim) {
                     continue;
@@ -39763,7 +39783,7 @@ impl RolloutWorld {
         scratch.rock_wall_contacts.clear();
         // DetPhysics pairs colliders by the bounding boxes taken after
         // integration, before any contact pass pushes a body out.
-        let mut swept = [Circle::default(); MAX_PLAYERS];
+        let mut swept = [Circle::default(); MAX_BODIES];
         for (rock_index, slot) in self.players.iter().enumerate() {
             // A Blink tunnel or teleport disables the form's GameObject,
             // taking its body out of DetPhysics.
@@ -39821,7 +39841,7 @@ impl RolloutWorld {
     /// Rock forms' Circle/Circle and Circle/Box pairs and their callbacks,
     /// after every Circle/RoundedRectangle pair resolved.
     fn rocks_contacts(&mut self, data: &data::RolloutData) {
-        let mut swept = [Circle::default(); MAX_PLAYERS];
+        let mut swept = [Circle::default(); MAX_BODIES];
         for (circle, slot) in swept.iter_mut().zip(&self.players) {
             *circle = slot.rock.swept;
         }
@@ -40086,8 +40106,8 @@ impl RolloutWorld {
     /// see the corrections of its Circle/Circle pairs with items and rocks,
     /// and all of them are built before the first one resolves.
     fn rocks_box_contacts(&mut self, data: &data::RolloutData) {
-        let mut swept = [Circle::default(); MAX_PLAYERS];
-        let mut centers = [Vec2::ZERO; MAX_PLAYERS];
+        let mut swept = [Circle::default(); MAX_BODIES];
+        let mut centers = [Vec2::ZERO; MAX_BODIES];
         for ((circle, center), slot) in swept.iter_mut().zip(&mut centers).zip(&self.players) {
             *circle = slot.rock.swept;
             *center = slot.base.position;
@@ -40177,9 +40197,9 @@ impl RolloutWorld {
 
         // Every live Player-layer slime/form callback sees Rock's Ability and
         // credits its owner. BounceBall independently queues its bounce force.
-        let mut victims = [usize::MAX; MAX_PLAYERS * MAX_PLAYERS];
-        let mut killers = [0u32; MAX_PLAYERS * MAX_PLAYERS];
-        let mut rock_ranks = [(Fix::ZERO, 0u32, 0usize); MAX_PLAYERS * MAX_PLAYERS];
+        let mut victims = [usize::MAX; MAX_BODIES * MAX_BODIES];
+        let mut killers = [0u32; MAX_BODIES * MAX_BODIES];
+        let mut rock_ranks = [(Fix::ZERO, 0u32, 0usize); MAX_BODIES * MAX_BODIES];
         let mut victim_count = 0usize;
         let mut clone_victims = [usize::MAX; MAX_PLAYERS * 16];
         let mut clone_killers = [0u32; MAX_PLAYERS * 16];
@@ -41312,7 +41332,7 @@ impl RolloutWorld {
             self.players[index].ability_entered = false;
             self.exit_ability_callback(index, data::get());
         }
-        let players = self.players.len();
+        let players = self.player_count;
         if matches!(
             self.players[index].active,
             ActiveAbility::Grenade
@@ -41846,23 +41866,23 @@ impl RolloutWorld {
             return;
         }
         // Distinct teams still in, on the stack: this runs every tick.
-        let mut alive_teams = [0u32; MAX_PLAYERS];
+        let mut alive_teams = [0u32; MAX_BODIES];
         let mut alive_count = 0;
-        for p in self.players.iter().filter(|p| !p.out) {
+        for p in self.players[..self.player_count].iter().filter(|p| !p.out) {
             if !alive_teams[..alive_count].contains(&p.team) {
                 alive_teams[alive_count] = p.team;
                 alive_count += 1;
             }
         }
         let alive_teams = &alive_teams[..alive_count];
-        if self.players.len() == 1 && self.players[0].out {
+        if self.player_count == 1 && self.players[0].out {
             self.end_round();
             self.players[0].won = true;
-        } else if self.players.len() > 1 && alive_teams.len() <= 1 {
+        } else if self.player_count > 1 && alive_teams.len() <= 1 {
             self.end_round();
             if alive_teams.len() == 1 {
                 let winner = alive_teams[0];
-                for p in &mut self.players {
+                for p in &mut self.players[..self.player_count] {
                     // WinGame(team) awards every player on the winning team,
                     // including a teammate eliminated earlier in the round.
                     if p.team == winner {
@@ -41874,21 +41894,25 @@ impl RolloutWorld {
                 // greatest SimulationTicks value, then expands that result to
                 // every member of their team. This is observable when the last
                 // bodies die during the same DetPhysics pass.
-                let latest = self.players.iter().map(|p| p.death_tick).max().unwrap_or(0);
-                let mut winning_teams = [0u32; MAX_PLAYERS];
+                let latest = self.players[..self.player_count].iter().map(|p| p.death_tick).max().unwrap_or(0);
+                let mut winning_teams = [0u32; MAX_BODIES];
                 let mut winning_count = 0;
-                for p in self.players.iter().filter(|p| p.death_tick == latest) {
+                for p in self.players[..self.player_count].iter().filter(|p| p.death_tick == latest) {
                     if !winning_teams[..winning_count].contains(&p.team) {
                         winning_teams[winning_count] = p.team;
                         winning_count += 1;
                     }
                 }
-                for p in &mut self.players {
+                for p in &mut self.players[..self.player_count] {
                     if winning_teams[..winning_count].contains(&p.team) {
                         p.won = true;
                     }
                 }
             }
+        }
+        // A player's extra bodies share its WonThisRound.
+        for body in self.player_count..self.players.len() {
+            self.players[body].won = self.players[self.players[body].owner].won;
         }
     }
 
@@ -42186,7 +42210,7 @@ impl RolloutWorld {
     /// caster of a platform can come back on a later stock.
     fn gate_published_source_abilities(&self, out: &mut [CEntity]) {
         let held = self.live_slime_abilities();
-        let mut live_forms = [u32::MAX; MAX_PLAYERS * 3];
+        let mut live_forms = [u32::MAX; MAX_BODIES * 3];
         for (slot, forms) in self.players.iter().zip(live_forms.chunks_mut(3)) {
             if Self::slime_listed(slot) {
                 for (id, &entity) in forms.iter_mut().zip(&slot.form_entities) {
@@ -42590,7 +42614,7 @@ impl RolloutWorld {
                     } else {
                         data.tesla.node_layer
                     },
-                    owner: if flags & E_DESTROYED != 0 { 0 } else { node.owner as u32 + 1 },
+                    owner: if flags & E_DESTROYED != 0 { 0 } else { player_id(&self.players, node.owner) },
                     flags,
                     hierarchy: self.entities[entity].hierarchy,
                     x: node.collider_center.x.raw(),
@@ -42618,7 +42642,7 @@ impl RolloutWorld {
                 id: self.entities[line_entity].id,
                 kind: 1,
                 layer: data.tesla.lightning_layer,
-                owner: node.owner as u32 + 1,
+                owner: player_id(&self.players, node.owner),
                 // LightningLine implements IGrenadeDetonation; the authored
                 // Tesla form collider itself does not.
                 flags: E_TRIGGER
@@ -44261,7 +44285,7 @@ impl RolloutWorld {
 
     fn fill_slimes(&self, slimes: &mut Vec<CSlime>) {
         slimes.clear();
-        let mut order = [usize::MAX; MAX_PLAYERS];
+        let mut order = [usize::MAX; MAX_BODIES];
         let mut count = 0;
         for (index, slot) in self.players.iter().enumerate() {
             if slot.base.alive
@@ -44458,7 +44482,7 @@ impl RolloutWorld {
         state: &mut CState,
         players: &[PlayerSlot],
         abilityless_clones: &[AbilitylessClone],
-        time_stop_protected: &[bool; MAX_PLAYERS],
+        time_stop_protected: &[bool; MAX_BODIES],
         entities: &[CEntity],
         slimes: &[CSlime],
         tick: u32,
@@ -46431,7 +46455,7 @@ mod tests {
         world.players[0].base.velocity = Vec2::ZERO;
         world.players[0].base.external_velocity = Vec2::ZERO;
         world.player_time_scale = Fix::ZERO;
-        let actions = [CAction::default(); MAX_PLAYERS];
+        let actions = [CAction::default(); MAX_BODIES];
 
         world.step(&actions[..world.players.len()], 1).unwrap();
 
