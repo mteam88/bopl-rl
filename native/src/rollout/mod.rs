@@ -9380,6 +9380,13 @@ impl RolloutWorld {
         if self.time_stop_protected[index] { dt } else { dt * self.player_time_scale }
     }
 
+    /// SpriteAnimator.UpdateSim advances a player's animations, and with them
+    /// their callbacks, unless time is stopped for that player
+    /// (SpriteAnimator.cs:85-102).
+    fn animates(&self, index: usize) -> bool {
+        !self.is_time_stopped_for(index)
+    }
+
     /// SlimeController.OldUpdate's cooldown clocks (SlimeController.cs:727-731):
     /// under any Time Stop an ability flagged CooldownStoppedDuringTimeStop
     /// holds, even for the caster's team; the rest advance by FixedDeltaTime.
@@ -13437,20 +13444,28 @@ impl RolloutWorld {
         // Its UnGround off a destroyed ground leaves the form airborne, and
         // the dead ground no longer resolves, so it takes the `!IsGrounded`
         // exit below (ControlPlatform.cs:142-146).
+        let mut dropped_off = None;
         if !self.players[index].move_off_destroyed(self.tick) {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
-            // After DropPlatformTest's exit, the `!IsGrounded` exit below
-            // hands the slime the same packet again, and releases the ground
-            // the form still names (ControlPlatform.cs:120-130).
             let ground = self.players[index].base.ground;
             if self.apply_platform_drop(index, data) {
-                if let Some(platform) = self.platforms.iter().position(|p| Some(p.id) == ground) {
-                    self.platform_dynamics[platform].being_controlled = false;
-                }
-                return;
+                dropped_off = Some(ground);
             }
+        }
+        // ControlPlatform.cs:138-141.
+        if self.is_time_stopped_for(index) {
+            return;
+        }
+        // After DropPlatformTest's exit, the `!IsGrounded` exit below hands
+        // the slime the same packet again, and releases the ground the form
+        // still names (ControlPlatform.cs:120-130).
+        if let Some(ground) = dropped_off {
+            if let Some(platform) = self.platforms.iter().position(|p| Some(p.id) == ground) {
+                self.platform_dynamics[platform].being_controlled = false;
+            }
+            return;
         }
         // UnGround (a grounded rope's pull, PlayerPhysics.cs:156) keeps
         // attachedGround; ControlPlatform exits on IsGrounded alone.
@@ -14119,9 +14134,12 @@ impl RolloutWorld {
         self.scale_spike_form(index, data);
         let published_position = self.players[index].base.position;
         self.players[index].sync_form_pose();
+        let animates = self.animates(index);
         let cast_now = {
             let cast = &mut self.players[index].spike_cast;
-            cast.ticks += 1;
+            if animates {
+                cast.ticks += 1;
+            }
             cast.phase == 0 && cast.ticks >= data.spike.cast_ticks
         };
         if cast_now {
@@ -14221,10 +14239,13 @@ impl RolloutWorld {
     fn engine_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
         self.scale_plant_form(index, data);
         let published_position = self.players[index].base.position;
+        let animates = self.animates(index);
         {
             let slot = &mut self.players[index];
             slot.sync_form_pose();
-            slot.plant_cast.ticks += 1;
+            if animates {
+                slot.plant_cast.ticks += 1;
+            }
         }
         let plant_now = self.players[index].plant_cast.phase == 0
             && self.players[index].plant_cast.ticks >= data.engine.cast_ticks;
@@ -14378,10 +14399,13 @@ impl RolloutWorld {
     fn tesla_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
         self.scale_plant_form(index, data);
         let published_position = self.players[index].base.position;
+        let animates = self.animates(index);
         {
             let slot = &mut self.players[index];
             slot.sync_form_pose();
-            slot.plant_cast.ticks += 1;
+            if animates {
+                slot.plant_cast.ticks += 1;
+            }
         }
         let plant_now = self.players[index].plant_cast.phase == 0
             && self.players[index].plant_cast.ticks >= data.tesla.cast_ticks;
@@ -23648,9 +23672,7 @@ impl RolloutWorld {
             self.rope_body_move(index, jump_pressed);
             return;
         }
-        let body = &mut self.players[index].base;
-        body.position += (body.velocity + body.external_velocity) * DT;
-        body.external_velocity *= Fix::from_f64(0.95);
+        self.players[index].base.integrate();
     }
 
     fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
@@ -37739,11 +37761,19 @@ impl RolloutWorld {
         let stock_clone_spawned =
             self.players[index].stock_death.is_some_and(|(tick, _)| tick == self.tick);
         self.players[index].base.fixed_delta_time = self.fixed_delta_time(index, DT);
-        // SlimeController runs as ever, only its FixedDeltaTime steps are zero.
-        let slime_runs = self.playable(index)
-            && self.players[index].active == ActiveAbility::None
-            && !self.players[index].base.dash.active;
-        if self.is_time_stopped_for(index) && !slime_runs {
+        // SlimeController and these forms run as ever: only their FixedDeltaTime
+        // steps are zero and their SpriteAnimators hold.
+        let runs_frozen = self.playable(index)
+            && !self.players[index].base.dash.active
+            && matches!(
+                self.players[index].active,
+                ActiveAbility::None
+                    | ActiveAbility::Push
+                    | ActiveAbility::Spike
+                    | ActiveAbility::Engine
+                    | ActiveAbility::Tesla
+            );
+        if self.is_time_stopped_for(index) && !runs_frozen {
             self.scratch.frozen_turns |= 1 << index;
             if self.players[index].active == ActiveAbility::Missile {
                 // SparkShot still runs while frozen. Its turn angle uses
