@@ -7282,6 +7282,9 @@ impl RolloutWorld {
         if has(ABILITY_ROCK) {
             self.rocks_contacts(data);
         }
+        if has(ABILITY_DUPLICATOR) {
+            self.duplicated_rock_contacts(data);
+        }
         if has(ABILITY_PORTAL_GUN) && has(ABILITY_ROCK) {
             self.portal_shot_rock_contacts(data);
         }
@@ -38831,7 +38834,12 @@ impl RolloutWorld {
                     sweep_rank(&self.entities, clone_min, clone_entity),
                 );
                 let key = (category, later, earlier);
-                let hit = CallbackHit::CloneKill { clone: clone_index, killer: row.owner };
+                let killer = self
+                    .duplicated_rocks
+                    .iter()
+                    .find(|rock| rock.active && rock.entity == Some(entity))
+                    .map_or(row.owner, |rock| rock.owner as u32 + 1);
+                let hit = CallbackHit::CloneKill { clone: clone_index, killer };
                 self.scratch.callback_hits.push((key, hit));
             }
         }
@@ -38903,6 +38911,44 @@ impl RolloutWorld {
             }
         }
         self.scratch = scratch;
+    }
+
+    /// A Rock_noPlayer's Explosion against slimes' hurtboxes. It carries no
+    /// BounceBall, so only the victim's PlayerCollision reacts, and its
+    /// canHurtOwner lets it kill the slime it was copied from.
+    fn duplicated_rock_contacts(&mut self, data: &data::RolloutData) {
+        for rock_index in 0..self.duplicated_rocks.len() {
+            let rock = self.duplicated_rocks[rock_index];
+            if !rock.active || self.blink_object_hidden(rock.entity) {
+                continue;
+            }
+            let circle = Circle {
+                center: rock.position,
+                radius: data.rock.radius * rock.scale,
+            };
+            let killer = rock.owner as u32 + 1;
+            for victim in 0..self.players.len() {
+                if !self.hittable(victim) {
+                    continue;
+                }
+                let entity = Self::hurtbox_entity(&self.players[victim]);
+                if entity == usize::MAX
+                    || self.entities[entity].layer != LAYER_PLAYER
+                    || !self.circle_entity_bounds_overlap(circle, entity)
+                    || self.circle_entity_contact(circle, entity).is_none()
+                {
+                    continue;
+                }
+                let cause = if self.players[victim].base.id == killer {
+                    CAUSE_ACCIDENT
+                } else {
+                    CAUSE_OTHER
+                };
+                let axis = if self.sweep_x() { circle.center.x } else { circle.center.y };
+                let rank = sweep_rank(&self.entities, axis - circle.radius, rock.entity);
+                self.queue_callback_kill(victim, true, rank, killer, cause);
+            }
+        }
     }
 
     fn resolve_duplicated_rock_wall_contact(
