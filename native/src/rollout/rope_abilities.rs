@@ -663,6 +663,18 @@ impl RolloutWorld {
         }
     }
 
+    /// Each rope ability's ready-indicator CircleCastClosestPlayers ahead of
+    /// its UpdateCooldowns (SlimeController.cs:737-743).
+    pub(super) fn rope_ready_casts(&mut self, player: usize) {
+        if self.players[player]
+            .abilities
+            .iter()
+            .any(|&ability| ability == ABILITY_WEB_SWING || ability == ABILITY_GRAPPLING_HOOK)
+        {
+            self.remove_destroyed_colliders();
+        }
+    }
+
     pub(super) fn web_cooldowns_tick(&mut self, player: usize, action: Action) {
         for ability_slot in 0..3 {
             if self.players[player].abilities[ability_slot] != ABILITY_WEB_SWING {
@@ -1094,6 +1106,8 @@ impl RolloutWorld {
         };
         let direction = Vec2::new(x, Fix::from_raw(3_517_578_240)).normalized_safe();
         let position = self.players[player].base.position;
+        // RaycastToClosestRoundedRect (WebSwing.cs:138).
+        self.remove_destroyed_colliders();
         let terrain = self.platforms.terrain();
         let hit = crate::world::closest(
             terrain,

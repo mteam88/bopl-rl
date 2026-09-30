@@ -5786,6 +5786,8 @@ impl RolloutWorld {
         };
         let mut height = self.ability_pickups[index].position.y - floor;
         let mut platform_height = None;
+        // RaycastToClosestRoundedRect (DynamicAbilityPickup.cs:121).
+        self.remove_destroyed_colliders();
         // DynamicAbilityPickup casts ten million units, not merely to the
         // water/space fallback plane. A hit beyond that plane still replaces
         // the fallback distance, so the broad phase must cover the full ray.
@@ -10065,6 +10067,7 @@ impl RolloutWorld {
             }
             // The same loop runs the rope abilities' UpdateCooldowns, which
             // see the rope BeginRewind let go (SlimeController.cs:737-752).
+            self.rope_ready_casts(index);
             self.web_cooldowns_tick(index, action);
             self.grapple_cooldowns_tick(index);
             let slot = &mut self.players[index];
@@ -10218,6 +10221,7 @@ impl RolloutWorld {
         // The rope abilities' UpdateCooldowns sits in the same !isInAbility
         // loop (SlimeController.cs:717-743).
         if !in_ability {
+            self.rope_ready_casts(index);
             self.web_cooldowns_tick(index, action);
             self.grapple_cooldowns_tick(index);
             // SlimeController.cs:750-753: a zero cooldown (a rope still out
@@ -13122,6 +13126,8 @@ impl RolloutWorld {
     }
 
     fn meteor_dash(&mut self, index: usize, data: &data::RolloutData) {
+        // RaycastAll (MeteorSmash.cs:335).
+        self.remove_destroyed_colliders();
         let start = self.players[index].base.position;
         let scene_water = data.maps[self.map].scene_water_height();
         let ray_start = start - Vec2::UP * self.players[index].base.radius;
@@ -13979,6 +13985,8 @@ impl RolloutWorld {
                 let destination = self.players[index].rewind.destination;
                 let preserved = self.players[index].timers[self.players[index].rewind.ability_slot];
                 let radius = self.players[index].base.radius + Fix::from_f32(0.05);
+                // PushCircleOutOfRoundedRects (RewindRecorder.cs:316).
+                self.remove_destroyed_colliders();
                 let position = push_circle_out_of_platforms(
                     &self.platforms,
                     self.players[index].base.position,
@@ -14046,6 +14054,8 @@ impl RolloutWorld {
             let travel = target - from;
             let distance = travel.length();
             if distance > Fix::ZERO {
+                // RaycastToClosestRoundedRect (RewindRecorder.cs:298).
+                self.remove_destroyed_colliders();
                 let direction = travel / distance;
                 let reach = distance + self.players[index].base.radius;
                 let mut nearest = Fix::MAX;
@@ -14285,6 +14295,8 @@ impl RolloutWorld {
     /// die if squished between two, then air resistance. Returns whether the
     /// caster was killed.
     fn time_stop_cast_airborne(&mut self, index: usize) -> bool {
+        // CircleCastAll (CastSpell.cs:197,216).
+        self.remove_destroyed_colliders();
         // Time stop.prefab: inverseMass 0.05, airResistance01 0.97.
         let inverse_mass = Fix::from_raw(214_748_368);
         let air_resistance = Fix::from_raw(4_166_118_400);
@@ -15173,17 +15185,6 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
-    /// DetPhysics.RemoveDestroyedColliders, which Simulate and every cast
-    /// query run first (DetPhysics.cs:2442-2468): DestroyCircle/DestroyBox
-    /// rebuild each composite that lost a child (DetPhysics.cs:1588-1611).
-    fn drop_destroyed_children(&mut self) {
-        for index in 0..self.platforms.len() {
-            if self.platform_dynamics[index].composite_rebuild {
-                self.rebuild_platform_attachment_body(index, true);
-            }
-        }
-    }
-
     /// `synced`: DetPhysics.Destroy* ran SynCompositeToFixTransAndRelativeValues
     /// first. MachoThrow2's pickup calls Remove*FromComposite directly.
     fn rebuild_platform_attachment_body(&mut self, platform_index: usize, synced: bool) {
@@ -15728,18 +15729,13 @@ impl RolloutWorld {
             self.run_spawned_before(data, updater_dt, hierarchy);
             let engine = &self.engines[engine_index];
             // A running engine's BlowUpSmokeTouchingTheFire casts through
-            // DetPhysics.circleCastCircles, and every cast first runs
-            // RemoveDestroyedColliders: a composite that lost a child to
-            // DestroyFix earlier this tick is rebuilt before the thrust.
+            // DetPhysics.circleCastCircles (RocketEngine.cs:69), which runs
+            // RemoveDestroyedColliders first.
             let turning_off = engine.phase == 2
                 && updater_dt != Fix::ZERO
                 && engine.ticks + 1 > data.engine.end_ticks;
             if matches!(engine.phase, 1 | 2) && !turning_off {
-                for index in 0..self.platforms.len() {
-                    if self.platform_dynamics[index].composite_rebuild {
-                        self.rebuild_platform_attachment_body(index, true);
-                    }
-                }
+                self.remove_destroyed_colliders();
             }
             let engine = &mut self.engines[engine_index];
             engine.updater_ran_tick = Some(self.tick);
@@ -18653,7 +18649,8 @@ impl RolloutWorld {
             purge |= slot.beam.glow && (space || fire.y >= Fix::from_f32(-11.22));
         }
         if purge {
-            self.purge_destroyed_colliders();
+            // RaycastBeam's RaycastToClosest (DetPhysics.cs:1126).
+            self.remove_destroyed_colliders();
         }
     }
 
@@ -21895,7 +21892,9 @@ impl RolloutWorld {
         }
     }
 
-    fn teleport_query(&self, query: Circle, mask: u32, hits: &mut [usize; 100]) -> usize {
+    fn teleport_query(&mut self, query: Circle, mask: u32, hits: &mut [usize; 100]) -> usize {
+        // CircleCastAll (TeleportIndicator.cs:101-102).
+        self.remove_destroyed_colliders();
         let mut count = 0usize;
         // DetPhysics.CircleCastAll visits its circle, box and rounded-rect
         // registries in that order and stops at the fixed 100-entry buffer.
@@ -23422,6 +23421,8 @@ impl RolloutWorld {
                 continue;
             }
             wave.registered = true;
+            // CircleCastAll (Shockwave.cs:82).
+            self.remove_destroyed_colliders();
             let config = wave.config(data);
             let query = Circle {
                 center: wave.position,
@@ -23982,6 +23983,8 @@ impl RolloutWorld {
             ))
         };
         if let Some((origin, direction, caster_id)) = dash_cast {
+            // RaycastAll (Dash.cs:134).
+            self.remove_destroyed_colliders();
             let data = data::get();
             let distance_limit = Fix::from_int(13);
             self.scratch.ray_hits.clear();
@@ -26282,6 +26285,8 @@ impl RolloutWorld {
     /// sign-symmetric in this `Fix` (it negates after dividing magnitudes), so
     /// only the multiplies had to move.
     fn magnet_pull(&mut self, index: usize, data: &data::RolloutData) {
+        // RaycastToClosestRoundedRect (MagnetGun.cs:495).
+        self.remove_destroyed_colliders();
         let magnet = &data.magnet;
         let slot = &self.players[index];
         let direction = slot.magnet.aim.normalized_safe();
@@ -26664,6 +26669,8 @@ impl RolloutWorld {
     }
 
     fn magnet_try_pickup_item(&mut self, index: usize, data: &data::RolloutData) {
+        // CircleCastAll (MagnetGun.cs:587).
+        self.remove_destroyed_colliders();
         let firepoint = self.magnet_firepoint(index, data);
         let slot = &self.players[index];
         let radius = data.magnet.pickup_radius * slot.forms[slot.active_slot].scale;
@@ -27231,7 +27238,7 @@ impl RolloutWorld {
     }
 
     fn magnet_interpolate_held_position(
-        &self,
+        &mut self,
         index: usize,
         firepoint: Vec2,
         raycast_walls: bool,
@@ -27252,6 +27259,10 @@ impl RolloutWorld {
             MagnetHeld::Boulder(boulder) => Some(self.macho_boulders[boulder].platform_index),
             _ => None,
         };
+        if raycast_walls {
+            // interpolationWallRaycast's RaycastToClosestRoundedRect (MagnetGun.cs:946).
+            self.remove_destroyed_colliders();
+        }
         if raycast_walls
             && let Some(wall) = self.magnet_wall_ray(
                 body_position,
@@ -27267,7 +27278,8 @@ impl RolloutWorld {
 
     /// DetPhysics.MoveObjectOutOfWalls corrects with inverse masses 1 and 0
     /// whatever the body's own mass.
-    fn magnet_circle_out_of_walls(&self, circle: Circle) -> Vec2 {
+    fn magnet_circle_out_of_walls(&mut self, circle: Circle) -> Vec2 {
+        self.remove_destroyed_colliders();
         self.platforms
             .iter()
             .find_map(|platform| {
@@ -27379,6 +27391,8 @@ impl RolloutWorld {
             held,
             MagnetHeld::BlackHole(_) | MagnetHeld::RevivalMarker(_) | MagnetHeld::TeleportMarker(_)
         ) {
+            // RaycastForWalls' RaycastToClosestRoundedRect (MagnetGun.cs:966-968).
+            self.remove_destroyed_colliders();
             firepoint = self.magnet_firepoint_before_item_walls(index, firepoint, data);
         }
         if (firepoint - object_position).length_squared() > data.magnet.max_lock_distance_squared {
@@ -27965,19 +27979,13 @@ impl RolloutWorld {
 
         // PointCheckAllRoundedRects precedes the ray and keeps the last
         // overlapping rounded rectangle in DetPhysics registration order.
-        let mut selected = None;
-        for (entity, row) in self.entities.iter().enumerate() {
-            if row.kind != 2 || row.flags & E_ACTIVE == 0 || excluded == Some(entity) {
-                continue;
-            }
-            if Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin)) {
-                selected = Some(DuplicatorRayHit {
-                    entity,
-                    distance: Fix::from_f32(0.001),
-                    position: origin,
-                });
-            }
-        }
+        let mut selected = self
+            .point_check_all_rounded_rects(origin, excluded)
+            .map(|entity| DuplicatorRayHit {
+                entity,
+                distance: Fix::from_f32(0.001),
+                position: origin,
+            });
 
         if selected.is_none() {
             let side = direction.perp() * gun.triple_raycast_radius;
@@ -28169,8 +28177,25 @@ impl RolloutWorld {
         })
     }
 
+    /// DetPhysics.PointCheckAllRoundedRects (DetPhysics.cs:1826): the last
+    /// active rounded rectangle, in registration order, containing `origin`.
+    fn point_check_all_rounded_rects(&mut self, origin: Vec2, excluded: Option<usize>) -> Option<usize> {
+        self.remove_destroyed_colliders();
+        self.entities
+            .iter()
+            .enumerate()
+            .rfind(|&(entity, row)| {
+                row.kind == 2
+                    && row.flags & E_ACTIVE != 0
+                    && excluded != Some(entity)
+                    && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
+            })
+            .map(|(entity, _)| entity)
+    }
+
+    /// DetPhysics.RaycastToClosest (DetPhysics.cs:2021).
     fn duplicator_raycast_one(
-        &self,
+        &mut self,
         origin: Vec2,
         direction: Vec2,
         max_distance: Fix,
@@ -28178,6 +28203,7 @@ impl RolloutWorld {
         excluded: Option<usize>,
         data: &data::RolloutData,
     ) -> Option<DuplicatorRayHit> {
+        self.remove_destroyed_colliders();
         let mut best = None;
         let mut nearest = Fix::MAX;
         // RaycastToClosest visits rounded rectangles, circles, then boxes.
@@ -29750,16 +29776,8 @@ impl RolloutWorld {
         // ShootScaleChange performs an unmasked rounded-rectangle point
         // query before its ordinary masked raycast.
         let point_hit = self
-            .entities
-            .iter()
-            .copied()
-            .enumerate()
-            .rfind(|(_, row)| {
-                row.kind == 2
-                    && row.flags & E_ACTIVE != 0
-                    && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
-            })
-            .map(|(entity, _)| DuplicatorRayHit {
+            .point_check_all_rounded_rects(origin, None)
+            .map(|entity| DuplicatorRayHit {
                 entity,
                 distance: Fix::ZERO,
                 position: origin,
@@ -30156,17 +30174,8 @@ impl RolloutWorld {
         // ShootQuantum checks every rounded rectangle at the muzzle before
         // applying its layer mask. Registration order is the tie-break.
         let point_hit = self
-            .entities
-            .iter()
-            .copied()
-            .enumerate()
-            .rfind(|(entity, row)| {
-                row.kind == 2
-                    && row.flags & E_ACTIVE != 0
-                    && excluded != Some(*entity)
-                    && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
-            })
-            .map(|(entity, _)| DuplicatorRayHit {
+            .point_check_all_rounded_rects(origin, excluded)
+            .map(|entity| DuplicatorRayHit {
                 entity,
                 distance: Fix::ZERO,
                 position: origin,
@@ -30657,7 +30666,11 @@ impl RolloutWorld {
     /// A platform child's row. DestroyFix on the platform destroys its children
     /// with it, and they stay in its CompositeBody until DetPhysics drops them.
     fn attached_flags(&self, platform_index: usize, entity: Option<usize>) -> u32 {
-        if self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED != 0 {
+        let platform_flags = self.entities[self.platform_entities[platform_index]].flags;
+        if platform_flags & E_REMOVED != 0 {
+            // RemoveDestroyedColliders dropped them with the platform.
+            E_REMOVED
+        } else if platform_flags & E_DESTROYED != 0 {
             E_DESTROYED | E_COMPOSITE
         } else if self.attached_hidden(platform_index, entity) {
             E_ENABLED | E_COMPOSITE
@@ -31010,11 +31023,7 @@ impl RolloutWorld {
                 self.rng.fix_range(min.x, max.x),
                 self.rng.fix_range(min.y, max.y),
             );
-            if !self
-                .platforms
-                .iter()
-                .any(|platform| platform.active && platform.collider.overlaps(position))
-            {
+            if self.point_check_all_rounded_rects(position, None).is_none() {
                 break;
             }
         }
@@ -31045,15 +31054,8 @@ impl RolloutWorld {
         // either query blocks the beam even though Freeze has no callback for
         // that layer.
         let point_hit = self
-            .entities
-            .iter()
-            .copied()
-            .enumerate()
-            .rfind(|(_, row)| {
-                row.flags & E_ACTIVE != 0
-                    && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
-            })
-            .map(|(entity, _)| DuplicatorRayHit {
+            .point_check_all_rounded_rects(origin, None)
+            .map(|entity| DuplicatorRayHit {
                 entity,
                 distance: Fix::ZERO,
                 position: origin,
@@ -31273,6 +31275,7 @@ impl RolloutWorld {
         for timer in &mut slot.timers {
             *timer += DT;
         }
+        self.rope_ready_casts(index);
         self.web_cooldowns_tick(index, action);
         self.grapple_cooldowns_tick(index);
         let slot = &mut self.players[index];
@@ -31942,6 +31945,8 @@ impl RolloutWorld {
             query.inner.inverse_extents =
                 Vec2::new(inverse(cast_extents.x), inverse(cast_extents.y));
             query.radius = self.platform_dynamics[source].start_radius + Fix::ONE;
+            // roundedRectCastRoundedRects (DuplicatePlatformEffect.cs:268).
+            self.remove_destroyed_colliders();
             for platform_index in 0..self.platforms.len() {
                 // A copy an older effect spawned this pass is still the
                 // unrotated box its Initialize stored.
@@ -33825,22 +33830,38 @@ impl RolloutWorld {
         self.circle_entity_contact(query, entity).is_some()
     }
 
-    /// Mine.ScanForPlayers uses DetPhysics' fixed four-entry CircleCastAll
-    /// buffer. Hits are written in collider-registry order (circles, boxes,
-    /// rounded rectangles) before Mine filters owners, teams or invisibility.
-    /// DetPhysics.RemoveDestroyedColliders, which every cast query runs
-    /// first: a collider a collision callback destroyed this pass is gone
-    /// before the pass is observed instead of showing once as destroyed.
-    fn purge_destroyed_colliders(&mut self) {
-        for platform_index in (0..self.platforms.len()).rev() {
-            if self.entities[self.platform_entities[platform_index]].flags & E_DESTROYED != 0 {
-                self.remove_platform(platform_index, false);
+    /// DetPhysics.RemoveDestroyedColliders (DetPhysics.cs:2439-2466), which
+    /// Simulate and every DetPhysics query that purges run first: a collider
+    /// DestroyFix marked is dropped, so it is gone from the pass's
+    /// observation instead of showing once as destroyed, and
+    /// DestroyCircle/DestroyBox rebuild each composite that lost a child
+    /// (DetPhysics.cs:1588-1611). Index-stable, so any query may run it: a
+    /// dropped platform keeps its storage, hidden and marked removed, until
+    /// the next pass compacts it.
+    fn remove_destroyed_colliders(&mut self) {
+        let mut hidden = false;
+        for i in 0..self.platforms.len() {
+            let row = &mut self.entities[self.platform_entities[i]];
+            if row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED {
+                // The kept E_DESTROYED bit leaves the row to the start-of-pass
+                // compaction and keeps the refresh from rewriting it.
+                row.flags = E_REMOVED | E_DESTROYED;
+                self.platforms[i].active = false;
+                hidden = true;
             }
         }
         for row in &mut self.entities {
-            if row.flags & E_DESTROYED != 0 {
+            if row.flags & (E_DESTROYED | E_REMOVED) == E_DESTROYED {
                 row.flags = E_REMOVED;
             }
+        }
+        for index in 0..self.platforms.len() {
+            if self.platform_dynamics[index].composite_rebuild {
+                self.rebuild_platform_attachment_body(index, true);
+            }
+        }
+        if hidden {
+            self.platforms_changed();
         }
     }
 
@@ -33991,7 +34012,8 @@ impl RolloutWorld {
                 continue;
             }
             let scan_target = if matches!(phase, 1 | 2) && !being_held {
-                self.purge_destroyed_colliders();
+                // Mine.ScanForPlayers' CircleCastAll (Mine.cs:131).
+                self.remove_destroyed_colliders();
                 self.mine_scan_target(item_index, data)
             } else {
                 None
@@ -38966,7 +38988,7 @@ impl RolloutWorld {
         // DestroyFix marked, such as the node a placement just evicted
         // (DetPhysics.cs:1724-1727).
         if self.players[index].base.alive {
-            self.drop_destroyed_children();
+            self.remove_destroyed_colliders();
         }
         // After OldUpdate, cast or not, UpdateSim compares isInvisible
         // with its last look. A new cast on the expiry frame keeps the
@@ -40953,7 +40975,7 @@ impl RolloutWorld {
                     // EnterFall's wall raycast runs RemoveDestroyedColliders
                     // (PlayerPhysics.cs:511-513), so a collider a collision
                     // callback destroyed this pass is gone before export.
-                    self.purge_destroyed_colliders();
+                    self.remove_destroyed_colliders();
                     continue;
                 }
                 let delta = circle.scale - st.scale_last_frame;
@@ -40997,6 +41019,10 @@ impl RolloutWorld {
         let roller_id = self.players[roller].base.id;
 
         for &center in &centers[..count] {
+            if !main {
+                // CollideExtraHurtBoxes' CircleCastAll (Roll.cs:314).
+                self.remove_destroyed_colliders();
+            }
             self.scratch.ray_hits.clear();
             let query = Circle {
                 center,
@@ -41246,7 +41272,8 @@ impl RolloutWorld {
     }
 
     fn platforms_tick(&mut self, data: &data::RolloutData, physics_dt: Fix) {
-        self.drop_destroyed_children();
+        // DetPhysics.Simulate opens with RemoveDestroyedColliders.
+        self.remove_destroyed_colliders();
         // An evicted platform's ResizablePlatform.UpdateSim resized it at its
         // Updater turn; at the removal curve's final key it destroyed it.
         let late_pulls = std::mem::take(&mut self.late_platform_pulls);
