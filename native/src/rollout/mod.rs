@@ -42847,7 +42847,8 @@ impl RolloutWorld {
     }
 
     /// The ability slots of every slime `RlObservation.Write` would collect,
-    /// indexed by player id. `AbilityId` (sim/Gameplay/RlObservation.cs:122-132)
+    /// indexed by body, as far as its list reaches (`Math.Min(3,
+    /// abilities.Count)`). `AbilityId` (sim/Gameplay/RlObservation.cs:122-132)
     /// matches an entity's ability component instance against `slime.abilities`
     /// of every slime in that LIVE list, and the owner-scoped fallback at the
     /// end of `SourceAbility` (sim/Gameplay/RlObservation.cs:203-217) skips
@@ -42863,14 +42864,27 @@ impl RolloutWorld {
     /// through `PlatformAbility` (sim/Gameplay/RlObservation.cs:154-175), which
     /// falls back to ANY live slime's platform slot when no spawner buffer
     /// holds the platform.
-    fn live_slime_abilities(&self) -> [[u32; 3]; MAX_PLAYERS + 1] {
-        let mut held = [[ABILITY_NULL; 3]; MAX_PLAYERS + 1];
-        for slot in &self.players {
-            if Self::slime_listed(slot) && (slot.base.id as usize) < held.len() {
-                held[slot.base.id as usize] = slot.abilities;
+    fn live_slime_abilities(&self) -> [[u32; 3]; MAX_BODIES] {
+        let mut held = [[ABILITY_NULL; 3]; MAX_BODIES];
+        for (slots, slot) in held.iter_mut().zip(&self.players) {
+            if Self::slime_listed(slot) {
+                let count = slot.ability_count.min(3);
+                slots[..count].copy_from_slice(&slot.abilities[..count]);
             }
         }
         held
+    }
+
+    /// Whether any listed slime of player `id` holds `ability`: the
+    /// owner-scoped searches of `SourceAbility` visit every slime whose
+    /// `GetPlayerId()` matches, the player's extra bodies included.
+    fn player_holds(
+        players: &[PlayerSlot],
+        held: &[[u32; 3]; MAX_BODIES],
+        id: u32,
+        ability: u32,
+    ) -> bool {
+        players.iter().zip(held).any(|(slot, slots)| slot.base.id == id && slots.contains(&ability))
     }
 
     /// The same liveness test `fill_slimes` applies to build the rows
@@ -42956,7 +42970,9 @@ impl RolloutWorld {
                 if !live_forms.contains(&row.id) {
                     row.reserved[0] = ABILITY_NULL;
                 }
-            } else if row.owner != 0 && !held[row.owner as usize].contains(&row.reserved[0]) {
+            } else if row.owner != 0
+                && !Self::player_holds(&self.players, &held, row.owner, row.reserved[0])
+            {
                 row.reserved[0] = ABILITY_NULL;
             }
         }
@@ -43151,13 +43167,11 @@ impl RolloutWorld {
                 let thrower = &self.players[item.owner];
                 row.reserved[0] = if !item.duplicated
                     && thrower.ability_generation[item.ability_slot] == item.ability_generation
-                    && held[thrower.base.id as usize][item.ability_slot] == item.ability
+                    && held[item.owner][item.ability_slot] == item.ability
                 {
                     item.ability
                 } else if row.flags & E_PROJECTILE != 0
-                    && held
-                        .get(row.owner as usize)
-                        .is_some_and(|slots| slots.contains(&ABILITY_BOW))
+                    && Self::player_holds(&self.players, &held, row.owner, ABILITY_BOW)
                 {
                     // With no thrower to credit, SourceAbility's last loop
                     // credits any Projectile to a live slime of the row's
