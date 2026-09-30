@@ -12349,7 +12349,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.roll.swept_len = 0;
             if slot.roll.charging {
-                slot.roll.seconds_charged += DT;
+                slot.roll.seconds_charged += slot.base.fixed_delta_time;
                 if slot.roll.jump_button_has_been_up && jump_down {
                     slot.base
                         .jump_with_strength(&self.platforms, data.roll.constants.jump_strength);
@@ -12357,7 +12357,7 @@ impl RolloutWorld {
                     return;
                 }
             } else {
-                slot.roll.time_since_release += DT;
+                slot.roll.time_since_release += slot.base.fixed_delta_time;
                 if slot.roll.jump_button_has_been_up && jump_down {
                     let right = slot.base.up.perp_cw();
                     let velocity = right * slot.roll.grounded_speed * Fix::from_f32(0.75);
@@ -12493,7 +12493,8 @@ impl RolloutWorld {
         }
         let slot = &self.players[index];
         let hurtbox_radius = slot.forms[slot.active_slot].circle_radius;
-        let count = (speed.abs() * DT * data.roll.move_collision_density / hurtbox_radius)
+        let dt = slot.base.fixed_delta_time;
+        let count = (speed.abs() * dt * data.roll.move_collision_density / hurtbox_radius)
             .to_int()
             .max(0) as usize
             + 1;
@@ -12549,7 +12550,7 @@ impl RolloutWorld {
                 *slot = platform_id;
             }
 
-            let movement = speed * DT;
+            let movement = speed * self.players[index].base.fixed_delta_time;
             let sign = movement.sign();
             let origin = self.platforms[platform_index]
                 .surface
@@ -37802,6 +37803,7 @@ impl RolloutWorld {
                     | ActiveAbility::PokeBall
                     | ActiveAbility::BlackHole
                     | ActiveAbility::Throw
+                    | ActiveAbility::Roll
             );
         if self.is_time_stopped_for(index) && !runs_frozen {
             self.scratch.frozen_turns |= 1 << index;
