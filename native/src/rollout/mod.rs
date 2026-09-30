@@ -9249,7 +9249,14 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let old_position = self.platform_dynamics[platform_index].composite_position;
+            // BoplBody.position is the FixTransform DetPhysics wrote back
+            // after its last Simulate: a lone rounded rect's centre, with the
+            // RR corrections that CompositeBody.position alone misses.
+            let old_position = if self.platform_dynamics[platform_index].attached_children == 0 {
+                self.platforms[platform_index].surface.center
+            } else {
+                self.platform_dynamics[platform_index].composite_position
+            };
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, old_position, data)
             {
