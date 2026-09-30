@@ -22236,6 +22236,18 @@ impl RolloutWorld {
             // (TeleportIndicator.cs:122-166).
             let tick = self.tick;
             let slot = &mut self.players[player_index];
+            // A planting form's FixTransform keeps that pose past the teleport,
+            // and the form's next cast publishes it until its first sync.
+            let (position, up, rotation) = (slot.base.position, slot.base.up, slot.base.rotation);
+            if slot.active == ActiveAbility::Spike {
+                slot.spike_cast.collider_position = position;
+                slot.spike_cast.collider_up = up;
+                slot.spike_cast.collider_rotation = rotation;
+            } else if matches!(slot.active, ActiveAbility::Engine | ActiveAbility::Tesla) {
+                slot.plant_cast.collider_position = position;
+                slot.plant_cast.collider_up = up;
+                slot.plant_cast.collider_rotation = rotation;
+            }
             if slot.active != ActiveAbility::None {
                 slot.form_frozen = Some(FrozenForm {
                     tick,
