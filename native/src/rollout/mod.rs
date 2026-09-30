@@ -34491,7 +34491,12 @@ impl RolloutWorld {
                     && self.abilityless_clones[victim].active
                     && self.abilityless_clones[victim].base.alive
             } else {
-                victim < self.players.len() && self.hittable(victim)
+                // A victim that casts an ability is SetActive(false) by
+                // onEnterAbility, so the ball bursts on its next UpdateSim.
+                victim < self.players.len()
+                    && self.hittable(victim)
+                    && self.players[victim].active == ActiveAbility::None
+                    && !self.players[victim].base.dash.active
             };
             if !valid {
                 if victim_is_clone {
@@ -35239,10 +35244,10 @@ impl RolloutWorld {
         // PlayerCollision.SetInvulnerable(false, 16) clears the bit rather
         // than decrementing a captor count.
         slot.poke_invulnerable = false;
-        slot.base.position = item.position + Vec2::UP * Fix::from_f32(0.4);
+        let position = item.position + Vec2::UP * Fix::from_f32(0.4);
         // PokeBall.cs:228 passes x / 3 to ApplyRagDoll, which divides it by
         // 3/2 again (SlimeController.cs:1027); each division rounds.
-        slot.base.velocity = Vec2::new(
+        let velocity = Vec2::new(
             item.body.velocity.x / Fix::from_int(3) / (Fix::from_int(3) / Fix::from_int(2)),
             data.poke_ball.pop_up_speed,
         );
@@ -35251,6 +35256,20 @@ impl RolloutWorld {
             data.poke_ball.pop_up_speed,
         )
         .normalized_safe();
+        if slot.active != ActiveAbility::None || slot.base.dash.active {
+            // The victim cast out of the ball: the eject lands on the
+            // deactivated slime the form left behind, and the form's exit
+            // overwrites it.
+            slot.ability_origin = position;
+            slot.ability_origin_velocity = velocity + slot.ability_origin_external;
+            if eject_direction != Vec2::ZERO {
+                slot.ability_origin_rotation = eject_direction.normalized_angle();
+            }
+            slot.ability_origin_state = STATE_RAGDOLL;
+            return;
+        }
+        slot.base.position = position;
+        slot.base.velocity = velocity;
         if eject_direction != Vec2::ZERO {
             slot.base.rotation = eject_direction.normalized_angle();
             slot.base.up = eject_direction.perp();
