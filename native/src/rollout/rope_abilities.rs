@@ -1995,7 +1995,7 @@ impl RolloutWorld {
 
     /// The abilityless clones whose Player-layer box DetPhysics holds, in
     /// the order their boxes registered.
-    fn player_layer_clones(&self) -> Vec<usize> {
+    pub(super) fn player_layer_clones(&self) -> Vec<usize> {
         let mut clones: Vec<usize> = (0..self.abilityless_clones.len())
             .filter(|&index| {
                 let clone = &self.abilityless_clones[index];

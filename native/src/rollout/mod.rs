@@ -292,6 +292,16 @@ pub struct CState {
 }
 
 pub const FLAG_TERMINAL: u32 = 1;
+
+/// The Player flag a form holds (RlObservation.cs:63-64).
+fn form_flag_bits(active: ActiveAbility) -> u32 {
+    match active {
+        ActiveAbility::Missile => 16,
+        ActiveAbility::Platform => 32,
+        ActiveAbility::Throw => 64,
+        _ => 0,
+    }
+}
 pub const FLAG_TRUNCATED: u32 = 2;
 pub const FLAG_STARTED: u32 = 4;
 
@@ -2675,6 +2685,9 @@ pub struct PlayerSlot {
     /// its empty ability list (PlayerCollision.cs:255), so every slot is
     /// empty rather than a NullAbility.
     pub abilityless: bool,
+    /// SlimeController.abilities.Count: the slots past it publish no
+    /// cooldown, keep Init's -1.5 timer, and cast nothing.
+    pub ability_count: usize,
     /// Ability catalog ids per slot, and which slots this backend simulates.
     pub abilities: [u32; 3],
     /// Incremented whenever a stock/revival clone instantiates fresh ability prefabs.
@@ -2754,6 +2767,11 @@ pub struct PlayerSlot {
     /// InMachoThrow and InPlatformTransform while the original stays in its
     /// form; only the next form entry sets them again.
     pub form_flags_cleared: bool,
+    /// The body whose form entry last set those Player flags; they follow
+    /// its form until any other body of the player leaves one.
+    pub form_flag_body: usize,
+    /// The form this body was last seen in by the form-flag bookkeeping.
+    pub form_seen: ActiveAbility,
     pub ability_time: Fix,
     /// SlimeController/Ability publishes Player.Position before the live body
     /// advances later in the same updater pass.
@@ -3204,6 +3222,7 @@ impl PlayerSlot {
         self.invisible_time = player.invisible_time;
         self.ability_time = player.ability_time;
         self.form_flags_cleared = player.form_flags_cleared;
+        self.form_flag_body = player.form_flag_body;
         self.input_jump_was_down = player.input_jump_was_down;
         self.last_movement_input = player.last_movement_input;
         self.last_action = player.last_action;
@@ -3598,6 +3617,9 @@ pub struct RolloutWorld {
     /// Players in the session; `players` holds their own slots first, then any
     /// extra bodies.
     pub player_count: usize,
+    /// A player slot as the episode built it, before any pass: the fresh
+    /// body a promoted abilityless clone starts from.
+    pub body_template: Option<Box<PlayerSlot>>,
     pub platforms: Vec<Platform>,
     /// Raycast broad phase over `platforms` (`rebuild_bounds`).
     pub bounds: PlatformBounds,
@@ -3794,6 +3816,7 @@ impl RolloutWorld {
             rng: Random::new(1),
             players: Vec::with_capacity(MAX_BODIES),
             player_count: 0,
+            body_template: None,
             platforms: Vec::with_capacity(64),
             bounds: PlatformBounds::default(),
             platform_epoch: 1,
@@ -3928,6 +3951,7 @@ impl RolloutWorld {
         self.rng = src.rng;
         self.players.clone_from(&src.players);
         self.player_count = src.player_count;
+        self.body_template.clone_from(&src.body_template);
         self.platforms.clone_from(&src.platforms);
         self.bounds.clone_from(&src.bounds);
         self.platform_epoch = src.platform_epoch;
@@ -4039,6 +4063,7 @@ impl RolloutWorld {
             rng: _,
             players: _,
             player_count: _,
+            body_template: _,
             platforms: _,
             bounds: _,
             platform_epoch: _,
@@ -4923,6 +4948,7 @@ impl RolloutWorld {
                 out: false,
                 slime_gone: false,
                 abilityless: false,
+                ability_count: slots,
                 abilities,
                 ability_generation: [0; 3],
                 ability_instantiated: [true; 3],
@@ -4964,6 +4990,8 @@ impl RolloutWorld {
                 ability_entered: false,
                 slime_updated: false,
                 form_flags_cleared: false,
+                form_flag_body: i,
+                form_seen: ActiveAbility::None,
                 ability_time: Fix::ZERO,
                 reported_position: spawn,
                 reported_tick: u32::MAX,
@@ -5109,6 +5137,7 @@ impl RolloutWorld {
                 beam_entity: beam_entity[i],
             });
         }
+        self.body_template = self.players.first().cloned().map(Box::new);
 
         // Warmup, as GameSessionHandler runs it. The level animates in
         // (StartAnimateInLevelRoutine; here platforms start at their homes,
@@ -5735,6 +5764,11 @@ impl RolloutWorld {
     /// SlimeController itself. Ability-form hurtboxes are also on the player
     /// layer, but do not have that component and therefore cannot collect.
     fn ability_pickups_contacts(&mut self, data: &data::RolloutData) {
+        #[derive(Clone, Copy)]
+        enum PickupTaker {
+            Body(usize),
+            Clone(usize),
+        }
         if !self
             .ability_pickups
             .iter()
@@ -5757,6 +5791,7 @@ impl RolloutWorld {
             let min = Fix::from_raw(center - right.abs() - up.abs());
             sweep_rank(&self.entities, min, Some(entity))
         };
+        let clones = self.player_layer_clones();
         let mut hits = Vec::new();
         for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
             if !pickup.active || !pickup.enabled {
@@ -5787,7 +5822,23 @@ impl RolloutWorld {
                 };
                 if crate::physics::contact::circle_box(circle, body).is_some() {
                     let (later, earlier) = sweep_pair(pickup_rank, body_rank(player_index));
-                    hits.push((later, earlier, pickup_index, player_index));
+                    hits.push((later, earlier, pickup_index, PickupTaker::Body(player_index)));
+                }
+            }
+            // An abilityless clone is a SlimeController too, and its
+            // hurtbox takes the pickup like a slime's.
+            for &clone_index in &clones {
+                let clone = &self.abilityless_clones[clone_index];
+                let entity = clone.entity.expect("player-layer clone has a row");
+                if crate::physics::contact::circle_box(circle, clone.base.collider).is_some() {
+                    let row = self.entities[entity];
+                    let center = if sweep_x { row.x } else { row.y };
+                    let right = if sweep_x { row.right_x } else { row.right_y };
+                    let up = if sweep_x { row.up_x } else { row.up_y };
+                    let min = Fix::from_raw(center - right.abs() - up.abs());
+                    let (later, earlier) =
+                        sweep_pair(pickup_rank, sweep_rank(&self.entities, min, Some(entity)));
+                    hits.push((later, earlier, pickup_index, PickupTaker::Clone(clone_index)));
                 }
             }
         }
@@ -5800,57 +5851,75 @@ impl RolloutWorld {
         // callback before any of them run. DestroyFix in the first pickup
         // callback therefore does not prevent the same pickup from being
         // granted to another overlapping slime later in that queue.
-        for &(_, _, pickup_index, player_index) in &hits {
+        let mut promoted: Vec<(usize, usize)> = Vec::new();
+        for &(_, _, pickup_index, taker) in &hits {
             let ability = self.ability_pickups[pickup_index].ability;
-            // AddAdditionalAbility has no slot to fill on an empty ability
-            // list (SlimeController.cs:332-345), but OnCollide has already
-            // instantiated the ability prefab, and the pickup is used up.
-            if self.players[player_index].abilityless {
-                self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
-                let state = &mut self.ability_pickups[pickup_index];
-                if state.active {
-                    state.active = false;
-                    if let Some(entity) = state.entity {
-                        self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+            let player_index = match taker {
+                PickupTaker::Body(body) => body,
+                PickupTaker::Clone(clone_index) => {
+                    if let Some(&(_, body)) =
+                        promoted.iter().find(|&&(clone, _)| clone == clone_index)
+                    {
+                        body
+                    } else if let Some(body) = self.promote_abilityless_clone(clone_index) {
+                        promoted.push((clone_index, body));
+                        body
+                    } else {
+                        continue;
                     }
                 }
-                continue;
-            }
+            };
             self.active_subsystems |= ability_bit(ability);
-            if self.players[player_index].abilities[2] == ABILITY_PORTAL_GUN {
-                self.orphan_portal_gun(player_index);
-            }
-            // AddAdditionalAbility replaces the third reference, changes the
-            // future-clone loadout, and makes the slot ready.
+            // AddAdditionalAbility (SlimeController.cs:332-394): a full
+            // list replaces the third reference, a shorter one appends, and
+            // an empty one starts a new list on a second, inactive instance
+            // of the prefab, leaving OnCollide's instance behind.
+            let count = self.players[player_index].ability_count;
+            let (ability_slot, timer) = if count >= 3 {
+                if self.players[player_index].abilities[2] == ABILITY_PORTAL_GUN {
+                    self.orphan_portal_gun(player_index);
+                }
+                (2, Fix::from_int(100_000))
+            } else if count > 0 {
+                (count, Fix::from_int(100_000))
+            } else {
+                self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+                (0, Fix::from_int(100))
+            };
+            // The new slot is ready at once, and the future-clone loadout
+            // follows it.
             let slot = &mut self.players[player_index];
-            slot.abilities[2] = ability;
-            slot.cooldowns[2] = data.abilities[ability as usize].cooldown;
-            slot.timers[2] = Fix::from_int(100_000);
-            slot.ability_instantiated[2] = false;
-            slot.form_entities[2] = usize::MAX;
+            slot.ability_count = slot.ability_count.max(ability_slot + 1);
+            slot.abilityless = false;
+            slot.abilities[ability_slot] = ability;
+            slot.cooldowns[ability_slot] = data.abilities[ability as usize].cooldown;
+            slot.timers[ability_slot] = timer;
+            slot.ability_instantiated[ability_slot] = false;
+            slot.form_entities[ability_slot] = usize::MAX;
             // The new Beam component has no orbEffect yet (Beam.cs:261).
-            slot.beam_orb_slots[2] = None;
-            slot.rope_prev[3] = (Vec2::ZERO, Vec2::ZERO);
-            slot.forms[2] = FormScale::default();
-            slot.drill_hitbox_entities[2] = [usize::MAX; 3];
-            slot.black_hole_castable[2] = true;
-            slot.platform_hurtbox_disabled[2] = false;
-            slot.portal_blue[2] = None;
-            slot.teleport_ignore_cooldown[2] = false;
-            slot.portal_orange[2] = None;
-            slot.teleport_markers[2] = None;
+            slot.beam_orb_slots[ability_slot] = None;
+            slot.rope_prev[ability_slot + 1] = (Vec2::ZERO, Vec2::ZERO);
+            slot.forms[ability_slot] = FormScale::default();
+            slot.drill_hitbox_entities[ability_slot] = [usize::MAX; 3];
+            slot.black_hole_castable[ability_slot] = true;
+            slot.platform_hurtbox_disabled[ability_slot] = false;
+            slot.portal_blue[ability_slot] = None;
+            slot.teleport_ignore_cooldown[ability_slot] = false;
+            slot.portal_orange[ability_slot] = None;
+            slot.teleport_markers[ability_slot] = None;
             // The new Spike's currentSpike is null, so its first cast leaves
             // the replaced instance's SpikeAttack in place (Spike.cs:96-99).
-            slot.spike_attacks[2] = None;
+            slot.spike_attacks[ability_slot] = None;
             // Engines, spark nodes, smoke clouds and thrown items stay with
             // the replaced instance: the new one's buffers start empty.
-            slot.ability_generation[2] = slot.ability_generation[2].wrapping_add(1);
+            slot.ability_generation[ability_slot] =
+                slot.ability_generation[ability_slot].wrapping_add(1);
             for spawn in &mut self.spawned {
-                if spawn.buffer == Some((player_index, 2)) {
+                if spawn.buffer == Some((player_index, ability_slot)) {
                     spawn.buffer = None;
                 }
             }
-            slot.pending_ability_hierarchy[2] = self.next_spawn_hierarchy;
+            slot.pending_ability_hierarchy[ability_slot] = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
 
             let state = &mut self.ability_pickups[pickup_index];
@@ -5861,6 +5930,66 @@ impl RolloutWorld {
                 }
             }
         }
+    }
+
+    /// A Duplicator clone is a SlimeController with an empty ability list.
+    /// Once AddAdditionalAbility gives it one, it casts on its player's
+    /// input like any slime, so it moves to an extra body that keeps its
+    /// hurtbox row and its turn in the Updater.
+    fn promote_abilityless_clone(&mut self, clone_index: usize) -> Option<usize> {
+        let entity = self.abilityless_clones[clone_index].entity?;
+        let body = self.free_extra_body()?;
+        let clone = self.abilityless_clones[clone_index].clone();
+        let owner = clone.owner;
+        let mut slot = (**self.body_template.as_ref()?).clone();
+        slot.take_player_state(&self.players[owner]);
+        slot.clear_entity_rows();
+        slot.body_entity = entity;
+        slot.telemetry = CTelemetry::default();
+        slot.slime_gone = false;
+        slot.stock_death = None;
+        slot.unspawned = 0;
+        slot.respawn_ticks = 0;
+        slot.respawn_spawn_ticks = 0;
+        slot.reported_tick = u32::MAX;
+        slot.abilityless = true;
+        slot.ability_count = 0;
+        slot.abilities = [ABILITY_NULL; 3];
+        slot.cooldowns = [Fix::ZERO; 3];
+        slot.timers = [Fix::from_f32(-1.5); 3];
+        slot.ability_instantiated = [true; 3];
+        slot.pending_ability_hierarchy = [u32::MAX; 3];
+        slot.clone_player_hierarchy = clone.hierarchy_base;
+        slot.base = clone.base;
+        slot.base.alive = true;
+        slot.obs_state = clone.obs_state;
+        slot.state_ticks = clone.state_ticks;
+        slot.facing_right = clone.facing_right;
+        slot.prev_input_align = clone.prev_input_align;
+        slot.captured_by_ball = clone.captured_by_ball;
+        slot.poke_invulnerable = clone.poke_invulnerable;
+        slot.blink_tunnel_active = clone.blink_tunnel_active;
+        slot.blink_tunnel_born_tick = clone.blink_tunnel_born_tick;
+        slot.blink_tunnel_hierarchy = clone.blink_tunnel_hierarchy;
+        slot.blink_tunnel_age = clone.blink_tunnel_age;
+        slot.blink_tunnel_released = clone.blink_tunnel_released;
+        slot.ground_destroyed = clone.ground_destroyed;
+        slot.physics_scale = clone.physics_scale;
+        slot.eating = clone.eating;
+        slot.pass_start = clone.pass_start;
+        self.players[body] = slot;
+        let retired = &mut self.abilityless_clones[clone_index];
+        let grip = retired.grip;
+        if grip.rope.is_some() {
+            rope_abilities::attach_grip(&retired.base, &mut retired.grip, &mut self.ropes, None, grip.top, 0);
+        }
+        retired.active = false;
+        retired.base.alive = false;
+        retired.entity = None;
+        if let Some(rope) = grip.rope {
+            self.attach_player_rope(body, Some(rope), grip.top);
+        }
+        Some(body)
     }
 
     /// Register the Awake work of an inactive ability prefab created by a
@@ -6474,6 +6603,7 @@ impl RolloutWorld {
             // current input immediately. Only Player.Position is stale; that
             // publication phase is represented explicitly in PlayerSlot.
             self.game_tick(actions);
+            self.track_form_flags();
             if self.terminal {
                 break;
             }
@@ -6498,6 +6628,7 @@ impl RolloutWorld {
             for _ in 0..second {
                 self.recording.push(RecordedActions::new(actions));
                 self.game_tick(actions);
+                self.track_form_flags();
                 if self.terminal {
                     break;
                 }
@@ -6641,7 +6772,8 @@ impl RolloutWorld {
                 usize::MAX => slot.body_entity,
                 entity => entity,
             };
-            *value = self.entities[entity].hierarchy;
+            // A retired extra body has no rows and no turn.
+            *value = self.entities.get(entity).map_or(u32::MAX, |row| row.hierarchy);
         }
         player_order[..player_count].sort_by_key(|&index| (player_hierarchy[index], index));
         // A Black Hole, Poke Ball or Tack spawned before a stock-respawned
@@ -6912,7 +7044,9 @@ impl RolloutWorld {
                 (in_ability || slot.base.dash.active, in_ability)
             };
             self.exited_ability(index, data);
+            let casts_before = self.players[index].telemetry.ability_activations;
             self.player_tick(index, action, movement_input, jump_pressed, data);
+            self.update_form_flags(index, casts_before);
             if index >= self.player_count {
                 self.publish_extra_body_position(index);
                 self.fold_extra_body_telemetry(index);
@@ -9494,7 +9628,9 @@ impl RolloutWorld {
         if slot.eating.swallowing && !stopped {
             slot.player_scale = (slot.player_scale + SCALE_INCREASE_ON_NOM)
                 .clamp(Fix::from_f64(0.3), Fix::from_int(3));
+            self.share_player_scale(index);
         }
+        let slot = &mut self.players[index];
         let scale = slot.player_scale;
         slot.set_ordinary_body_scale(scale);
         if slot.base.outside_bounds() {
@@ -9888,7 +10024,7 @@ impl RolloutWorld {
                 self.players[index].reset_ignored_cooldown(s, button_down);
                 let slot = &self.players[index];
                 // SlimeController.isAbilityReady uses a strict comparison.
-                if !button_down || slot.abilityless || slot.timers[s] <= slot.cooldowns[s] {
+                if !button_down || s >= slot.ability_count || slot.timers[s] <= slot.cooldowns[s] {
                     continue;
                 }
                 let ability = slot.abilities[s];
@@ -10303,11 +10439,11 @@ impl RolloutWorld {
                         } else {
                             (self.players[index].base.position, Fix::ZERO)
                         };
+                        self.enter_form_flags(index);
                         {
                             let slot = &mut self.players[index];
                             slot.timers[s] = Fix::ZERO;
                             slot.active = ActiveAbility::Missile;
-                            slot.form_flags_cleared = false;
                             slot.active_slot = s;
                             slot.ability_entry_action = action;
                             slot.telemetry.ability_activations[s] += 1;
@@ -11573,10 +11709,10 @@ impl RolloutWorld {
                                 data.macho_throw.ground_angular_multiplier;
                             self.platforms_changed();
                         }
+                        self.enter_form_flags(index);
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.active = ActiveAbility::Throw;
-                        slot.form_flags_cleared = false;
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11779,7 +11915,7 @@ impl RolloutWorld {
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
                         self.players[index].active = ActiveAbility::Platform;
-                        self.players[index].form_flags_cleared = false;
+                        self.enter_form_flags(index);
                         self.players[index].active_slot = s;
                         self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
@@ -23995,6 +24131,8 @@ impl RolloutWorld {
                     slot.base.radius = data.player.radius;
                     slot.exit_to_fall();
                     slot.base.collision_rays(terrain!(self));
+                    // SlimeController.ExitAbility: hurtBox.Scale = player.Scale.
+                    slot.set_ordinary_body_scale(slot.player_scale);
                 }
                 return;
             }
@@ -24067,6 +24205,7 @@ impl RolloutWorld {
             slot.base.radius = data.player.radius;
             slot.exit_to_fall();
             slot.base.collision_rays(terrain!(self));
+            slot.set_ordinary_body_scale(slot.player_scale);
             return;
         }
 
@@ -24119,6 +24258,7 @@ impl RolloutWorld {
                 slot.active = ActiveAbility::None;
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks = LAND_TICKS + 2;
+                slot.set_ordinary_body_scale(slot.player_scale);
                 // Ability.ExitAbility publishes the collider DetPhysics
                 // last synced, as Ability.UpdateSim already did this pass.
                 return;
@@ -30890,6 +31030,7 @@ impl RolloutWorld {
         let slot = &mut self.players[effect.victim];
         self.scratch.player_scale_changes.push((effect.victim, effect.hierarchy_base, slot.player_scale));
         slot.player_scale = (slot.player_scale + delta).clamp(Fix::from_f64(0.3), Fix::from_int(3));
+        self.share_player_scale(effect.victim);
         self.scale_changers[index].time += DT;
     }
 
@@ -39334,7 +39475,9 @@ impl RolloutWorld {
             let slot = &mut self.players[owner];
             slot.player_scale = (slot.player_scale + SCALE_INCREASE_ON_NOM)
                 .clamp(Fix::from_f64(0.3), Fix::from_int(3));
+            self.share_player_scale(owner);
         }
+        let clone = &mut self.abilityless_clones[clone_index];
         if clone.base.outside_bounds() {
             clone.base.alive = false;
             clone.base.out_of_bounds = true;
@@ -39468,7 +39611,10 @@ impl RolloutWorld {
         // spend a stock: killPlayer's stock branch then respawns an
         // ability-less clone of it.
         let last_body = self.players[owner].slime_gone
-            && !self.abilityless_clones.iter().any(|clone| clone.active && clone.owner == owner);
+            && !self.abilityless_clones.iter().any(|clone| clone.active && clone.owner == owner)
+            && !self.players[self.player_count..]
+                .iter()
+                .any(|body| body.owner == owner && body.base.alive);
         if last_body
             && !self.players[owner].won
             && self.players[owner].stocks > 0
@@ -39478,6 +39624,7 @@ impl RolloutWorld {
             let slot = &mut self.players[owner];
             slot.slime_gone = false;
             slot.abilityless = true;
+            slot.ability_count = 0;
             slot.abilities = [ABILITY_NULL; 3];
             slot.base.position = self.abilityless_clones[clone_index].base.position;
             self.begin_stock_respawn(owner);
@@ -41456,8 +41603,62 @@ impl RolloutWorld {
         self.players[owner].reported_tick = self.tick;
     }
 
-    /// A slot for a new extra body: a dead one past the players' own slots,
-    /// or a new one while the body arrays have room.
+    /// SparkShot, MachoThrow2 and PlatformTransform set Player.InSparkShot,
+    /// InMachoThrow and InPlatformTransform on entry.
+    fn enter_form_flags(&mut self, body: usize) {
+        let owner = self.players[body].owner;
+        self.players[owner].form_flags_cleared = false;
+        self.players[owner].form_flag_body = body;
+    }
+
+    /// SlimeController clears all three flags on the Player as any of its
+    /// bodies casts or leaves an ability (SlimeController.cs:207-209,
+    /// 684-686); a flag form then sets its own. The body that set them last
+    /// is read live, so its own exit needs no bookkeeping.
+    fn update_form_flags(&mut self, body: usize, casts_before: [u32; 3]) {
+        let slot = &self.players[body];
+        let entered = slot.active != slot.form_seen;
+        if !entered && slot.telemetry.ability_activations == casts_before {
+            return;
+        }
+        let active = slot.active;
+        let owner = slot.owner;
+        self.players[body].form_seen = active;
+        if entered && form_flag_bits(active) != 0 {
+            self.enter_form_flags(body);
+        } else {
+            self.players[owner].form_flags_cleared = true;
+        }
+    }
+
+    /// A live body's form that ended outside its own turn (a freeze ray's
+    /// forced exit) went through SlimeController's exit too.
+    fn track_form_flags(&mut self) {
+        for body in 0..self.players.len() {
+            let slot = &self.players[body];
+            if slot.active == slot.form_seen {
+                continue;
+            }
+            let owner = slot.owner;
+            if slot.base.alive && self.players[owner].form_flag_body != body {
+                self.players[owner].form_flags_cleared = true;
+            }
+            self.players[body].form_seen = self.players[body].active;
+        }
+    }
+
+    /// Player.Scale belongs to the Player, so every body of it reads the
+    /// scale any of them was given.
+    fn share_player_scale(&mut self, body: usize) {
+        let owner = self.players[body].owner;
+        let scale = self.players[body].player_scale;
+        for slot in &mut self.players {
+            if slot.owner == owner {
+                slot.player_scale = scale;
+            }
+        }
+    }
+
     /// RlTelemetry counts on the Player every body shares, so an extra
     /// body's activations and shots land on its player's slot.
     fn fold_extra_body_telemetry(&mut self, body: usize) {
@@ -41475,6 +41676,8 @@ impl RolloutWorld {
         telemetry.deaths_other += extra.deaths_other;
     }
 
+    /// A slot for a new extra body: a dead one past the players' own slots,
+    /// or a new one while the body arrays have room.
     fn free_extra_body(&mut self) -> Option<usize> {
         if let Some(body) = (self.player_count..self.players.len()).find(|&body| {
             let slot = &self.players[body];
@@ -41492,6 +41695,8 @@ impl RolloutWorld {
     fn retire_extra_body(&mut self, body: usize) {
         let slot = &mut self.players[body];
         slot.base.alive = false;
+        // Nothing of it is left in the scene.
+        slot.slime_gone = true;
         slot.active = ActiveAbility::None;
         slot.revival_clone_pending = false;
         slot.stock_clone_pending = false;
@@ -41686,10 +41891,21 @@ impl RolloutWorld {
         // slot, whose slime is already gone, so the stock, elimination and
         // ability drop below read the dying body there.
         let index = if index != owner && revival_marker.is_none() && !clones_alive {
+            // A body dying in its own turn has already published its place.
+            if self.players[index].reported_tick == self.tick
+                && !self.scratch.clones_positioned[owner]
+            {
+                self.scratch.clones_positioned[owner] = true;
+                self.players[owner].reported_position = self.players[index].reported_position;
+                self.players[owner].reported_tick = self.tick;
+            }
             let mut last = self.players[index].clone();
             last.take_player_state(&self.players[owner]);
             last.slime_gone = false;
             self.players[owner] = last;
+            if self.players[owner].form_flag_body == index {
+                self.players[owner].form_flag_body = owner;
+            }
             self.retire_extra_body(index);
             owner
         } else {
@@ -41763,7 +41979,7 @@ impl RolloutWorld {
             // (PlayerCollision.cs:140-158).
             slot.clone_player_hierarchy = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += 8;
-            for ability_slot in 0..3 {
+            for ability_slot in 0..slot.ability_count {
                 slot.clone_ability_hierarchy[ability_slot] = self.next_spawn_hierarchy;
                 self.next_spawn_hierarchy +=
                     data::get().abilities[slot.abilities[ability_slot] as usize].updatable_count;
@@ -41810,7 +42026,7 @@ impl RolloutWorld {
                 clone.telemetry = CTelemetry::default();
                 clone.clone_player_hierarchy = self.next_spawn_hierarchy;
                 self.next_spawn_hierarchy += 8;
-                for ability_slot in 0..3 {
+                for ability_slot in 0..clone.ability_count {
                     clone.clone_ability_hierarchy[ability_slot] = self.next_spawn_hierarchy;
                     self.next_spawn_hierarchy +=
                         data::get().abilities[clone.abilities[ability_slot] as usize].updatable_count;
@@ -41909,8 +42125,8 @@ impl RolloutWorld {
             // ended it returns before drawing anything. killPlayer only drops
             // for the player's last body.
             // DropAbilities returns before its draw on an empty ability list.
-            if self.game_in_progress && !clones_alive && !slot.abilityless {
-                let dropped_ability = slot.abilities[2];
+            if self.game_in_progress && !clones_alive && slot.ability_count > 0 {
+                let dropped_ability = slot.abilities[slot.ability_count.min(3) - 1];
                 let horizontal = self.rng.fix_range(Fix::from_f32(-0.3), Fix::from_f32(0.3));
                 let direction = (Vec2::UP + Vec2::new(horizontal, Fix::ZERO)).normalized_safe();
                 // A rope's icon override keeps the primary sprite in
@@ -41934,7 +42150,7 @@ impl RolloutWorld {
         let mut clone_ability_hierarchy = [0u32; 3];
         for (ability_slot, hierarchy) in clone_ability_hierarchy.iter_mut().enumerate() {
             *hierarchy = self.next_spawn_hierarchy;
-            if !slot.abilityless {
+            if ability_slot < slot.ability_count {
                 self.next_spawn_hierarchy +=
                     data.abilities[slot.abilities[ability_slot] as usize].updatable_count;
             }
@@ -44739,16 +44955,16 @@ impl RolloutWorld {
                 ability_flags,
                 // An empty ability list publishes no cooldowns, and OldUpdate
                 // never advances the timers from Init's -1.5.
-                cooldowns: if slot.abilityless {
-                    [0; 3]
-                } else {
-                    slot.cooldowns.map(Fix::raw)
-                },
-                timers: if slot.abilityless {
-                    [Fix::from_f32(-1.5).raw(); 3]
-                } else {
-                    slot.timers.map(Fix::raw)
-                },
+                cooldowns: std::array::from_fn(|s| {
+                    if s < slot.ability_count { slot.cooldowns[s].raw() } else { 0 }
+                }),
+                timers: std::array::from_fn(|s| {
+                    if s < slot.ability_count {
+                        slot.timers[s].raw()
+                    } else {
+                        Fix::from_f32(-1.5).raw()
+                    }
+                }),
             });
         }
         for &index in &clone_order[next_clone..clone_count] {
@@ -44812,13 +45028,11 @@ impl RolloutWorld {
             if time_stop_protected[i] {
                 player_flags |= 8;
             }
-            if !slot.form_flags_cleared {
-                match slot.active {
-                    ActiveAbility::Missile => player_flags |= 16,
-                    ActiveAbility::Platform => player_flags |= 32,
-                    ActiveAbility::Throw => player_flags |= 64,
-                    _ => {}
-                }
+            if !slot.form_flags_cleared
+                && let Some(body) = bodies.get(slot.form_flag_body)
+                && body.owner == i
+            {
+                player_flags |= form_flag_bits(body.active);
             }
             // Player.Position is only changed by a live SlimeController's
             // SetPosition call. Once the controller is destroyed, the Player
