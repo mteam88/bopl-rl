@@ -1261,11 +1261,14 @@ impl RolloutWorld {
     /// Dash.ExitAbility transfers the still-attached RopeBody back to the
     /// ordinary slime. The bottom endpoint is rebuilt as a straight strand so
     /// its stored Verlet velocity cannot inject the pre-dash swing on return.
+    /// It reads the Dash body's position before `ability.ExitAbility` hands
+    /// over to SlimeController.onExitAbility, whose VelocityBasedRaycasts
+    /// move the slime afterwards (Dash.cs:203-221, 240).
     pub(super) fn dash_rope_exit(&mut self, player: usize, input: Vec2, leave_speed: Fix) {
         let Some(rope_index) = self.players[player].rope else {
             return;
         };
-        let position = self.players[player].base.position;
+        let position = self.players[player].base.dash.exit_position;
         let top = self.players[player].rope_top;
         let rope = &mut self.ropes[rope_index].physics;
         let force = input * leave_speed * Fix::from_int(10);
