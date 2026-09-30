@@ -10726,8 +10726,19 @@ impl RolloutWorld {
                         let grounded = self.players[index].base.grounded;
                         // SyncPhysicsTo's UpdateScale brings the form's
                         // PlayerPhysics radius to Player.Scale before placing it.
-                        let form_radius =
-                            data.missile.physics_radius * self.players[index].player_scale;
+                        // Ability.EnterAbility assigns Player.Scale to the
+                        // slot's box first.
+                        let form_radius = {
+                            let slot = &mut self.players[index];
+                            let scale = slot.player_scale;
+                            let form = &mut slot.forms[s];
+                            form.set_scale(
+                                scale,
+                                data.missile.hurtbox_extents,
+                                data.missile.physics_radius,
+                            );
+                            form.physics_radius()
+                        };
                         // SparkShot.OnEnterAbility syncs the hurtbox after
                         // SyncPhysicsTo aligned (grounded) or zeroed (airborne)
                         // the rotation, and only then restores PlayerInfo's.
@@ -10757,17 +10768,14 @@ impl RolloutWorld {
                                 collider_rotation: entry_rotation,
                                 ..MissileFormState::default()
                             };
-                            // Ability.EnterAbility assigns Player.Scale to
-                            // the form's box, and the form's Ability.UpdateSim
-                            // assigns it again on the entry pass.
+                            // The form's Ability.UpdateSim assigns Player.Scale
+                            // again on the entry pass.
                             let scale = slot.player_scale;
-                            for _ in 0..2 {
-                                slot.forms[s].set_scale(
-                                    scale,
-                                    data.missile.hurtbox_extents,
-                                    data.missile.physics_radius,
-                                );
-                            }
+                            slot.forms[s].set_scale(
+                                scale,
+                                data.missile.hurtbox_extents,
+                                data.missile.physics_radius,
+                            );
                             let collider = slot.forms[s].hurtbox(
                                 form_position,
                                 Vec2::angle(entry_rotation),
@@ -24515,13 +24523,11 @@ impl RolloutWorld {
             _ => {}
         }
         // Ability.UpdateSim, after the animator, assigns Player.Scale to the
-        // form's box.
+        // form's box, and its PlayerPhysics.UpdateScale follows.
         let slot = &mut self.players[index];
-        slot.forms[slot.active_slot].set_scale(
-            slot.player_scale,
-            data.missile.hurtbox_extents,
-            data.missile.physics_radius,
-        );
+        let form = &mut slot.forms[slot.active_slot];
+        form.set_scale(slot.player_scale, data.missile.hurtbox_extents, data.missile.physics_radius);
+        slot.base.radius = form.physics_radius();
 
         // PlayerPhysics' gravity raycast can attach the form, and move it
         // onto the surface, before the boundary check sees it.
