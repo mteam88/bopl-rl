@@ -1691,6 +1691,21 @@ impl FormScale {
         self.scale = value;
     }
 
+    /// `set_circle_scale` for a circle form with its own PlayerPhysics, whose
+    /// radius `physics_radius` then follows.
+    fn set_circle_scale_physics(&mut self, value: Fix, radius: Fix, physics_radius: Fix) {
+        if self.scale == Fix::ZERO {
+            *self = FormScale {
+                scale: Fix::ONE,
+                circle_radius: radius,
+                radius: physics_radius,
+                physics_scale: Fix::ONE,
+                ..FormScale::default()
+            };
+        }
+        self.set_circle_scale(value, radius);
+    }
+
     /// `set_circle_scale` for a circle whose FixTransform carries an offset,
     /// which SetScale_DPhysicsOnly multiplies by `new / old`.
     fn set_circle_scale_offset(&mut self, value: Fix, radius: Fix, offset: Vec2) {
@@ -11063,8 +11078,20 @@ impl RolloutWorld {
                     }
                     ABILITY_ROLL => {
                         let grounded = self.players[index].base.grounded;
-                        let scale = hurtbox_scale(self.players[index].player_scale);
-                        let roll_physics_radius = data.roll.physics_radius * scale;
+                        // Ability.EnterAbility scales the slot's circle, and
+                        // SyncPhysicsTo's UpdateScale its PlayerPhysics radius,
+                        // before placing the body.
+                        let roll_physics_radius = {
+                            let slot = &mut self.players[index];
+                            let scale = slot.player_scale;
+                            let form = &mut slot.forms[s];
+                            form.set_circle_scale_physics(
+                                scale,
+                                data.roll.radius,
+                                data.roll.physics_radius,
+                            );
+                            form.physics_radius()
+                        };
                         let form_position = if grounded {
                             let base = &self.players[index].base;
                             base.ground
@@ -12568,6 +12595,15 @@ impl RolloutWorld {
     /// Roll.UpdateSim/OldUpdate. Ground travel is split exactly like the
     /// source so the same intermediate hurtboxes are available to contacts.
     fn roll_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
+        // Ability.UpdateSim assigns Player.Scale to the circle every pass, and
+        // the form's PlayerPhysics.UpdateScale carries its radius along.
+        {
+            let slot = &mut self.players[index];
+            let scale = slot.player_scale;
+            let form = &mut slot.forms[slot.active_slot];
+            form.set_circle_scale_physics(scale, data.roll.radius, data.roll.physics_radius);
+            slot.base.radius = form.physics_radius();
+        }
         let jump_down = action.buttons & 1 != 0;
         if !jump_down {
             self.players[index].roll.jump_button_has_been_up = true;
@@ -12738,7 +12774,8 @@ impl RolloutWorld {
         if speed == Fix::ZERO {
             return self.apply_platform_drop(index, data);
         }
-        let hurtbox_radius = data.roll.radius * hurtbox_scale(self.players[index].player_scale);
+        let slot = &self.players[index];
+        let hurtbox_radius = slot.forms[slot.active_slot].circle_radius;
         let count = (speed.abs() * DT * data.roll.move_collision_density / hurtbox_radius)
             .to_int()
             .max(0) as usize
@@ -12751,7 +12788,7 @@ impl RolloutWorld {
         let step_speed = Fix::ONE / Fix::from_int((count + 1) as i64) * speed;
         let mut visited = [u32::MAX; 5];
         for substep in 0..count {
-            self.roll_hop_step(index, step_speed, &mut visited, data);
+            self.roll_hop_step(index, step_speed, &mut visited);
             let position = self.players[index].base.position;
             let slot = &mut self.players[index];
             // The normal hurtbox covers the final move. Roll records only the
@@ -12776,15 +12813,9 @@ impl RolloutWorld {
     /// PlayerPhysics.MoveAlongCurrentPlatFormSwapIfBlocked. The source passes
     /// the already-delta-scaled remainder back as a speed, so each recursive
     /// platform hop multiplies the remainder by `dt` once more.
-    fn roll_hop_step(
-        &mut self,
-        index: usize,
-        mut speed: Fix,
-        visited: &mut [u32; 5],
-        data: &data::RolloutData,
-    ) {
-        let scale = hurtbox_scale(self.players[index].player_scale);
-        let physics_radius = data.roll.physics_radius * scale;
+    fn roll_hop_step(&mut self, index: usize, mut speed: Fix, visited: &mut [u32; 5]) {
+        // playerPhysics.radius (Roll.cs:270).
+        let physics_radius = self.players[index].base.radius;
         // The source recurses until a hop has no blocker. The five entries
         // limit only which prior platforms are excluded, not recursion depth;
         // the residual movement is multiplied by dt on every hop.
@@ -41669,7 +41700,7 @@ impl RolloutWorld {
             self.scratch.ray_hits.clear();
             let query = Circle {
                 center,
-                radius: data.roll.radius * hurtbox_scale(self.players[roller].player_scale),
+                radius: self.players[roller].forms[self.players[roller].active_slot].circle_radius,
             };
             for (entity, row) in self.entities.iter().copied().enumerate() {
                 if entity == roller_entity
@@ -44786,7 +44817,7 @@ impl RolloutWorld {
                     circle.y = position.y.raw();
                     circle.vx = 0;
                     circle.vy = 0;
-                    circle.radius = (data.roll.radius * hurtbox_scale(slot.player_scale)).raw();
+                    circle.radius = slot.forms[slot.entity_slot(roll_e)].circle_radius.raw();
                     circle.rotation = rotation.raw();
                 }
             }
