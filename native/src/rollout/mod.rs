@@ -3673,8 +3673,22 @@ impl PlayerSlot {
     /// later than a landing in PlayerPhysics.UpdateSim; `update_obs_state`
     /// adds this marker to LAND_TICKS.
     ///
-    /// An airborne exit's EnterFall first runs AlignTransformAir.
+    /// onExitAbility takes this arm when SyncPhysicsTo(AbilityExitInfo) left
+    /// the slime airborne, and that arm nulls attachedGround and
+    /// groundedSpeed (PlayerPhysics.cs:572-580), before any exit jump; a
+    /// grounded exit's Jump keeps attachedGround. A caller that has already
+    /// run EnterFall's landing raycast is grounded on what it hit.
     fn exit_to_fall(&mut self) {
+        if !self.base.grounded {
+            self.base.ground = None;
+            self.base.grounded_speed = Fix::ZERO;
+            self.ground_destroyed = None;
+        }
+        self.enter_fall();
+    }
+
+    /// An airborne exit's EnterFall first runs AlignTransformAir.
+    fn enter_fall(&mut self) {
         if !self.base.grounded {
             self.align_transform_air();
         }
@@ -9908,11 +9922,10 @@ impl RolloutWorld {
             slot.set_ordinary_body_scale(slot.player_scale);
             slot.restore_slime_radius();
             slot.base.constants = data.player.constants.clone();
-            slot.exit_to_fall();
-            slot.reported_position = slot.base.position; // Ability.cs:151
             // The slime's SyncPhysicsTo airborne arm (PlayerPhysics.cs:577),
             // then EnterFall's VelocityBasedRaycasts (SlimeController.cs:271).
-            slot.base.ground = None;
+            slot.exit_to_fall();
+            slot.reported_position = slot.base.position; // Ability.cs:151
             slot.base.collision_rays(terrain!(self));
             slot.reported_tick = self.tick;
         } else {
@@ -12873,8 +12886,6 @@ impl RolloutWorld {
             slot.base.position = exit_position;
             slot.base.up = Vec2::UP;
             slot.base.grounded = false;
-            slot.base.ground = None;
-            slot.base.grounded_speed = Fix::ZERO;
             slot.exit_to_fall();
             slot.base.collision_rays(terrain!(self));
         }
@@ -13540,8 +13551,6 @@ impl RolloutWorld {
         slot.base.velocity = Vec2::ZERO;
         slot.base.external_velocity = Vec2::ZERO;
         slot.base.grounded = false;
-        slot.base.ground = None;
-        slot.base.grounded_speed = Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.exit_to_fall();
@@ -13776,7 +13785,6 @@ impl RolloutWorld {
         if !self.sync_exit_to_ground(index) {
             let slot = &mut self.players[index];
             slot.base.grounded = false;
-            slot.base.ground = None;
             slot.exit_to_fall();
         }
     }
@@ -16772,8 +16780,6 @@ impl RolloutWorld {
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.base.grounded = false;
-            slot.base.ground = None;
-            slot.base.grounded_speed = Fix::ZERO;
             slot.exit_to_fall();
             slot.base.collision_rays(terrain!(self));
             // SlimeController.ExitAbility assigns Player.Scale to the hurtbox.
@@ -18303,8 +18309,6 @@ impl RolloutWorld {
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.base.grounded = false;
-        slot.base.ground = None;
-        slot.base.grounded_speed = Fix::ZERO;
         slot.facing_right = (slot.base.velocity + slot.base.external_velocity).x >= Fix::ZERO;
         slot.exit_to_fall();
         slot.base.collision_rays(terrain!(self));
@@ -18730,8 +18734,6 @@ impl RolloutWorld {
                 slot.base.rotation = Fix::ZERO;
                 slot.base.up = Vec2::UP;
                 slot.base.grounded = false;
-                slot.base.ground = None;
-                slot.base.grounded_speed = Fix::ZERO;
                 slot.exit_to_fall();
             }
             slot.reported_position = form_position;
@@ -20667,8 +20669,6 @@ impl RolloutWorld {
             slot.obs_state_held_this_tick = true;
         } else {
             slot.base.grounded = false;
-            slot.base.ground = None;
-            slot.base.grounded_speed = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.exit_to_fall();
             // EnterFall's velocity raycasts may land the slime at once.
@@ -24475,8 +24475,6 @@ impl RolloutWorld {
             slot.reported_tick = self.tick;
             slot.facing_right = true;
             slot.base.grounded = false;
-            slot.base.ground = None;
-            slot.base.grounded_speed = Fix::ZERO;
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.missile.collider_rotation = Fix::ZERO;
@@ -31161,8 +31159,6 @@ impl RolloutWorld {
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.base.grounded = false;
-        slot.base.ground = None;
-        slot.base.grounded_speed = Fix::ZERO;
         slot.facing_right = true;
         slot.exit_to_fall();
         // EnterFall issues its zero-velocity landing rays after the default
@@ -31263,7 +31259,7 @@ impl RolloutWorld {
                 // This EnterFall re-aims even on the ground.
                 slot.align_transform_air();
             }
-            slot.exit_to_fall();
+            slot.enter_fall();
             slot.ragdoll_grounded_fall = held_on_ground;
             return false;
         }
@@ -32759,8 +32755,6 @@ impl RolloutWorld {
                     slot.base.position += up * pd.ejection_offset;
                     slot.base.rotation = Fix::ZERO;
                     slot.base.grounded = false;
-                    slot.base.ground = None;
-                    slot.base.grounded_speed = Fix::ZERO;
                     slot.set_active_form(&mut self.entities, ActiveAbility::None);
                     // SyncPhysicsTo's UpdateScale catches the slime's radius
                     // up with a Player.Scale a ray changed mid-form.
@@ -39007,14 +39001,9 @@ impl RolloutWorld {
         // SlimeController.onExitAbility ends by syncing the hurtbox
         // (SlimeController.cs:251), so later updaters this pass (Black
         // Hole's pull, another Magnet) find the slime where it came out.
-        // Its airborne SyncPhysicsTo also drops attachedGround.
         self.exited_ability(index, data);
         if exited {
-            let base = &mut self.players[index].base;
-            base.sync_collider();
-            if !base.grounded {
-                base.ground = None;
-            }
+            self.players[index].base.sync_collider();
         }
         if self.players[index].active == ActiveAbility::Roll {
             self.roll_contacts_for(index, false, data);
@@ -40952,8 +40941,6 @@ impl RolloutWorld {
                     slot.base.rotation = Fix::ZERO;
                     slot.base.up = Vec2::UP;
                     slot.base.grounded = false;
-                    slot.base.ground = None;
-                    slot.base.grounded_speed = Fix::ZERO;
                     slot.base.sync_collider();
                     slot.facing_right = velocity.x >= Fix::ZERO;
                     slot.reported_position = slot.base.position;
