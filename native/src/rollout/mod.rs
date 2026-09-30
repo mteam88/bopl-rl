@@ -2851,6 +2851,9 @@ impl UngroundBody<'_> {
                     tick,
                     null_rotation,
                 );
+                if null_rotation {
+                    slot.null_form_box_rotation();
+                }
                 if slot.active == ActiveAbility::Beam {
                     slot.beam_on_ungrounded();
                 }
@@ -3565,6 +3568,31 @@ impl PlayerSlot {
     fn set_active_form(&mut self, entities: &mut [CEntity], form: ActiveAbility) {
         self.active = form;
         self.sync_slime_row(entities);
+    }
+
+    /// UnGround(nullRotation) zeroes a ThrowItem or SparkShot form's body
+    /// rotation too (PlayerPhysics.cs:372-376); its box takes it at the next
+    /// sync. A gun form's box offset turns with the FixTransform, which
+    /// UnGround set to identity.
+    fn null_form_box_rotation(&mut self) {
+        match self.active {
+            ActiveAbility::Grenade
+            | ActiveAbility::Smoke
+            | ActiveAbility::Tack
+            | ActiveAbility::Mjolnir
+            | ActiveAbility::PokeBall
+            | ActiveAbility::Mine => {
+                self.throw_item.collider_rotation = Fix::ZERO;
+                self.throw_item.collider_right = Vec2::RIGHT;
+            }
+            ActiveAbility::Missile => self.missile.collider_rotation = Fix::ZERO,
+            ActiveAbility::Freeze
+            | ActiveAbility::Blink
+            | ActiveAbility::GrowthRay
+            | ActiveAbility::ShrinkRay
+            | ActiveAbility::Duplicator => self.gun.collider_up = Vec2::UP,
+            _ => {}
+        }
     }
 
     /// The only writer of `teleport_effect_active`: teleportObject hides the
@@ -10204,11 +10232,30 @@ impl RolloutWorld {
                     slot.state_ticks = 0;
                 }
             }
-            // Spike finds it in its UpdateSim's Move, whose UnGround() nulls
-            // the rotation (Spike.cs:163-166, PlayerPhysics.cs:216-219).
-            let null_rotation = slot.active == ActiveAbility::Spike;
-            let attached = lost.as_ref().and_then(|lost| lost.attached(tick));
-            slot.base.unground(attached, null_rotation);
+            if slot.active == ActiveAbility::None {
+                let attached = lost.as_ref().and_then(|lost| lost.attached(tick));
+                slot.base.unground(attached, false);
+            } else {
+                // A form that finds it in its UpdateSim's Move takes Move's
+                // UnGround(), which nulls the rotation (PlayerPhysics.cs:216-219;
+                // Spike.cs:165, PlantObjectOnPlatform.cs:195, GunTransform.cs:147,
+                // ControlPlatform.cs:137, ThrowItem.cs:417).
+                let null_rotation = matches!(
+                    slot.active,
+                    ActiveAbility::Spike
+                        | ActiveAbility::Engine
+                        | ActiveAbility::Tesla
+                        | ActiveAbility::Freeze
+                        | ActiveAbility::Blink
+                        | ActiveAbility::GrowthRay
+                        | ActiveAbility::ShrinkRay
+                        | ActiveAbility::Duplicator
+                        | ActiveAbility::Platform
+                        | ActiveAbility::Mine
+                );
+                slot.ground_destroyed = lost;
+                UngroundBody::Form(slot).unground(&self.platforms, tick, null_rotation);
+            }
             slot.base.ground = None;
         }
         if !in_ability {
@@ -22027,36 +22074,6 @@ impl RolloutWorld {
                     UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
                     slot.obs_state = STATE_FALL;
                     slot.state_ticks = 0;
-                }
-                // UnGround(nullRotation) zeroes a ThrowItem or SparkShot
-                // form's body rotation too (PlayerPhysics.cs:372-376); its box
-                // takes it at the next sync.
-                if matches!(
-                    self.players[player_index].active,
-                    ActiveAbility::Grenade
-                        | ActiveAbility::Smoke
-                        | ActiveAbility::Tack
-                        | ActiveAbility::Mjolnir
-                        | ActiveAbility::PokeBall
-                        | ActiveAbility::Mine
-                ) {
-                    self.players[player_index].throw_item.collider_rotation = Fix::ZERO;
-                    self.players[player_index].throw_item.collider_right = Vec2::RIGHT;
-                }
-                if self.players[player_index].active == ActiveAbility::Missile {
-                    self.players[player_index].missile.collider_rotation = Fix::ZERO;
-                }
-                // A gun form's box offset turns with the FixTransform, which
-                // UnGround set to identity.
-                if matches!(
-                    self.players[player_index].active,
-                    ActiveAbility::Freeze
-                        | ActiveAbility::Blink
-                        | ActiveAbility::GrowthRay
-                        | ActiveAbility::ShrinkRay
-                        | ActiveAbility::Duplicator
-                ) {
-                    self.players[player_index].gun.collider_up = Vec2::UP;
                 }
             }
             self.players[player_index].teleported_from =
