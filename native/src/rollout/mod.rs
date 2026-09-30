@@ -41963,6 +41963,14 @@ impl RolloutWorld {
                 || (0..self.players.len()).any(|body| {
                     body != index && self.players[body].owner == owner && self.players[body].base.alive
                 }));
+        // Every branch below destroys the dying body's slime and ability
+        // objects, the stock and revival respawns included, and a ScaleChanger
+        // whose victim collider is destroyed destroys itself (ScaleChanger.cs:36).
+        for changer in &mut self.scale_changers {
+            if changer.active && changer.target_kind == 0 && changer.entity_id == 0 && changer.victim == index {
+                changer.active = false;
+            }
+        }
         // An extra body that is the player's last goes on in the player's own
         // slot, whose slime is already gone, so the stock, elimination and
         // ability drop below read the dying body there.
