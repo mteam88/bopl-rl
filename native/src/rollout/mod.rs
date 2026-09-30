@@ -19723,6 +19723,22 @@ impl RolloutWorld {
                         beam.direction * data.beam.platform_force * scale;
                     self.platforms_changed();
                 }
+            } else if let Some(spike) = self.spike_attacks.iter().find(|spike| {
+                spike.active
+                    && spike
+                        .entity
+                        .is_some_and(|entity| self.entities[entity].id == hit_id)
+            }) {
+                // A SpikeAttack is a LethalTerrain box inside its platform's
+                // composite, so DPhysicsBox.AddForce pushes the combined body
+                // (DetPhysics.cs:688-697, DPhysicsBox.cs:474-481).
+                let platform = spike.platform_index;
+                let endpoint = beam.position + beam.direction * beam.distance;
+                if endpoint.y > Fix::from_f32(-10.22) && !stopped {
+                    self.platform_dynamics[platform].body.force +=
+                        beam.direction * data.beam.platform_force * scale;
+                    self.platforms_changed();
+                }
             } else if let Some(hole_index) = self.black_holes.iter().position(|hole| {
                 hole.active
                     && hole
