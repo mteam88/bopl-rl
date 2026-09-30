@@ -24,7 +24,13 @@ pub(super) enum Part {
     DuplicatedRock(usize),
     /// A RopeHook's circle, by rope.
     Hook(usize),
+    /// A Bow arrow's circle.
+    Arrow(usize),
 }
+
+/// Arrow.StickTo: Player, item, wall, LethalTerrain and NonLethalTerrain
+/// (Arrow.prefab m_Bits 2166016).
+const ARROW_STICK_TO: u32 = 2166016;
 
 impl RolloutWorld {
     /// Its collider now, after the corrections of earlier groups.
@@ -60,6 +66,10 @@ impl RolloutWorld {
                 radius: self.duplicated_rocks[i].collider_radius,
             }),
             Part::Hook(r) => Collider::Circle(self.hook_circle(r)),
+            Part::Arrow(i) => Collider::Circle(Circle {
+                center: self.arrows[i].position,
+                radius: self.arrows[i].collider_radius,
+            }),
         }
     }
 
@@ -81,6 +91,7 @@ impl RolloutWorld {
                 self.duplicated_rocks[i].entity.map_or(LAYER_LETHAL_TERRAIN, |entity| self.entities[entity].layer)
             }
             Part::Hook(r) => self.ropes[r].hook_entity.map_or(LAYER_ROPE, |entity| self.entities[entity].layer),
+            Part::Arrow(i) => self.arrows[i].entity.map_or(LAYER_PROJECTILE, |entity| self.entities[entity].layer),
         }
     }
 
@@ -116,6 +127,7 @@ impl RolloutWorld {
             Part::Pickup(i) => self.ability_pickups[i].entity,
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].entity,
             Part::Hook(r) => self.ropes[r].hook_entity,
+            Part::Arrow(i) => self.arrows[i].entity,
         }
     }
 
@@ -131,7 +143,8 @@ impl RolloutWorld {
             | Part::Rock(_)
             | Part::Pickup(_)
             | Part::DuplicatedRock(_)
-            | Part::Hook(_) => None,
+            | Part::Hook(_)
+            | Part::Arrow(_) => None,
         }
     }
 
@@ -151,6 +164,7 @@ impl RolloutWorld {
             // A DPhysicsCircle with no BoplBody registers inverseMass -1, a
             // trigger that never resolves (DPhysicsCircle.cs:278-283).
             Part::Hook(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
+            Part::Arrow(i) => self.arrows[i].body(&data::get().arrow.body),
         }
     }
 
@@ -166,6 +180,7 @@ impl RolloutWorld {
             Part::Pickup(i) => self.ability_pickups[i].active,
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].active,
             Part::Hook(r) => self.hook_live(r),
+            Part::Arrow(i) => self.arrows[i].active,
         }
     }
 
@@ -184,6 +199,7 @@ impl RolloutWorld {
             }
             (Part::DuplicatedRock(i), None) => (self.duplicated_rocks[i].body, self.duplicated_rocks[i].position),
             (Part::Hook(r), None) => (self.part_body(part), self.ropes[r].hook_position),
+            (Part::Arrow(i), None) => (self.part_body(part), self.arrows[i].position),
             _ => unreachable!(),
         }
     }
@@ -237,8 +253,11 @@ impl RolloutWorld {
                 self.sync_duplicated_rock_entity(i);
             }
             Part::Hook(_) => {}
+            Part::Arrow(i) => self.set_arrow_body(i, body, delta),
         }
-        if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_), Some(entity)) = (part, self.part_entity(part)) {
+        if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_) | Part::Arrow(_), Some(entity)) =
+            (part, self.part_entity(part))
+        {
             let (body, position) = self.part_resolve_body(part);
             let row = &mut self.entities[entity];
             row.x = position.x.raw();
@@ -269,7 +288,16 @@ impl RolloutWorld {
             Part::Pickup(i) => self.ability_pickups[i].position,
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].position,
             Part::Hook(r) => self.ropes[r].hook_position,
+            Part::Arrow(i) => self.arrows[i].position,
         }
+    }
+
+    fn set_arrow_body(&mut self, i: usize, body: Body, delta: Vec2) {
+        let arrow = &mut self.arrows[i];
+        arrow.position += delta;
+        arrow.velocity = body.velocity;
+        arrow.rotation = body.orientation;
+        arrow.angular_velocity = body.angular_velocity;
     }
 
     /// DPhysicsCircle/DPhysicsBox.AddForceAtPosition: the impulse at `point`
@@ -277,6 +305,12 @@ impl RolloutWorld {
     /// (DPhysicsCircle.cs:377-392, DPhysicsBox.cs:436-451).
     pub(super) fn part_add_force_at(&mut self, part: Part, force: Vec2, point: Vec2) {
         let arm = (point - self.part_root(part)).normalized_safe();
+        if let Part::Arrow(i) = part {
+            let mut body = self.part_body(part);
+            body.apply_impulse(force, arm);
+            self.set_arrow_body(i, body, Vec2::ZERO);
+            return;
+        }
         let body = match (part, self.part_composite(part)) {
             (_, Some(p)) => &mut self.platform_dynamics[p].body,
             (Part::Item(i), None) => &mut self.thrown_items[i].body,
@@ -337,6 +371,11 @@ impl RolloutWorld {
                 parts.push(Part::Rock(i));
             }
         }
+        for i in 0..self.arrows.len() {
+            if self.arrow_registered(i) {
+                parts.push(Part::Arrow(i));
+            }
+        }
         let circles = parts.len();
         for (i, engine) in self.engines.iter().enumerate() {
             if self.child_registered(engine.active, engine.macho_carried, engine.platform_index, engine.entity) {
@@ -370,6 +409,7 @@ impl RolloutWorld {
                 if let Some(contact) = self.part_collider(circle).contact(self.part_collider(part)) {
                     let (later, earlier) = sweep_pair(circle_rank, rank);
                     contacts.push(((GROUP_CB, later, earlier), circle, part, contact));
+                    self.note_arrow_landing(circle, part, (GROUP_CB, later, earlier), data);
                 }
             }
         }
@@ -399,6 +439,26 @@ impl RolloutWorld {
         }
         self.scratch.cb_parts = parts;
         self.scratch.cb_contacts = contacts;
+    }
+
+    /// An arrow DetPhysics still simulates this pass.
+    fn arrow_registered(&self, i: usize) -> bool {
+        let arrow = &self.arrows[i];
+        arrow.active && arrow.registered && !self.blink_object_hidden(arrow.entity)
+    }
+
+    /// Arrow.OnCollide lands on a StickTo layer, but not on a Player-layer
+    /// collider without a BoplBody (Arrow.cs:87-96): of the Player-layer
+    /// parts only a Rock form has one.
+    fn note_arrow_landing(&mut self, a: Part, b: Part, key: CallbackKey, data: &data::RolloutData) {
+        let (arrow, other) = match (a, b) {
+            (Part::Arrow(arrow), other) | (other, Part::Arrow(arrow)) => (arrow, other),
+            _ => return,
+        };
+        let layer = self.part_layer(other, data);
+        if ARROW_STICK_TO & (1 << layer) != 0 && (layer != LAYER_PLAYER || matches!(other, Part::Rock(_))) {
+            self.scratch.arrow_landings.push((arrow, key));
+        }
     }
 
     /// ResolveCollision on each side's body, a composite child's
@@ -473,6 +533,12 @@ impl RolloutWorld {
                 parts.push(Part::Hook(rope));
             }
         }
+        for i in 0..self.arrows.len() {
+            if self.arrow_registered(i) {
+                parts.push(Part::Arrow(i));
+            }
+        }
+        self.scratch.arrow_landings.clear();
         parts.sort_by_key(|&part| self.part_rank(part));
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
@@ -487,6 +553,8 @@ impl RolloutWorld {
                 }
                 if let Some(contact) = self.part_collider(prior).contact(self.part_collider(current)) {
                     contacts.push((prior, current, contact));
+                    let (later, earlier) = sweep_pair(self.part_rank(prior), self.part_rank(current));
+                    self.note_arrow_landing(prior, current, (GROUP_CC, later, earlier), data);
                 }
             }
         }
@@ -513,6 +581,7 @@ impl RolloutWorld {
                     }
                     HookTarget::Player(player)
                 }
+                Part::Arrow(i) => HookTarget::Arrow(i),
                 // A hook on a Duplicator copy has no rope parent here yet.
                 Part::DuplicatedRock(_) => continue,
                 Part::Engine(_) | Part::Spike(_) | Part::Missile(_) | Part::Hook(_) => unreachable!(),
@@ -521,15 +590,29 @@ impl RolloutWorld {
         }
         for &(a, b, contact) in &contacts {
             self.resolve_parts(a, b, contact);
-            // BounceBall.OnCollide: a Rock pushed by another Player-layer
-            // collider bounces off it, unless it hangs on a rope
-            // (BounceBall.cs:310-322). Both callbacks get the manifold's
-            // normal.
-            if let (Part::Rock(first), Part::Rock(second)) = (a, b) {
-                let impulse = contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
-                for rock in [first, second] {
+            for (side, other) in [(a, b), (b, a)] {
+                // BounceBall.OnCollide: a Rock bounces off another
+                // Player-layer collider, and a tenth as hard off a
+                // Projectile, unless it hangs on a rope (BounceBall.cs:310-322).
+                // Both callbacks get the manifold's normal.
+                if let Part::Rock(rock) = side {
+                    let scale = match self.part_layer(other, data) {
+                        LAYER_PLAYER => Fix::ONE,
+                        LAYER_PROJECTILE => Fix::from_f32(0.1),
+                        _ => continue,
+                    };
                     if self.players[rock].rope.is_none() {
-                        self.players[rock].rock.body.force += impulse;
+                        self.players[rock].rock.body.force +=
+                            contact.normal * data.rock.player_collision_bounce * scale * Fix::from_int(60);
+                    }
+                }
+                // Mine.OnCollide: an arrow is an igniter, and the Mine sees
+                // the contact whether or not the arrow landed first.
+                if let (Part::Item(item), Part::Arrow(_)) = (side, other) {
+                    let mine = &mut self.thrown_items[item];
+                    if mine.ability == ABILITY_MINE && matches!(mine.phase, 1 | 2) {
+                        mine.time_since_anticipation = data.mine.anticipation_duration * Fix::from_f64(0.8);
+                        mine.phase = 3;
                     }
                 }
             }

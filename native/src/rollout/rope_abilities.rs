@@ -1716,8 +1716,8 @@ impl RolloutWorld {
         }
     }
 
-    /// The hooks' pairs with black holes and arrows, which circle_circle_group
-    /// does not list yet, and their Circle/Box pairs, on the colliders the
+    /// The hooks' pairs with black holes, which circle_circle_group does not
+    /// list yet, and their Circle/Box pairs, on the colliders the
     /// Circle/Circle corrections left.
     pub(super) fn grapple_hook_pairs(&mut self) {
         let sweep_x = self.sweep_x();
@@ -1737,16 +1737,6 @@ impl RolloutWorld {
                 {
                     let rank = sweep_rank(&self.entities, axis(hole.position) - hole.radius, hole.entity);
                     hits.push((rope, circle_circle, rank, HookTarget::BlackHole(index)));
-                }
-            }
-            for (index, arrow) in self.arrows.iter().enumerate() {
-                let radius = arrow.collider_radius;
-                if arrow.active
-                    && arrow.registered
-                    && touches(Circle { center: arrow.position, radius })
-                {
-                    let rank = sweep_rank(&self.entities, axis(arrow.position) - radius, arrow.entity);
-                    hits.push((rope, circle_circle, rank, HookTarget::Arrow(index)));
                 }
             }
             // RopeHook ignores every body of the caster's and the end's

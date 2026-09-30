@@ -3848,6 +3848,9 @@ struct PlatformScratch {
     portal_shot_wall_contacts: Vec<(usize, usize, Contact)>,
     item_order: Vec<usize>,
     cc_contacts: Vec<(Part, Part, Contact)>,
+    /// Each arrow's StickTo contacts in the Circle/Circle and Circle/Box
+    /// groups, by callback key.
+    arrow_landings: Vec<(usize, CallbackKey)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Sweep keys of the wall manifolds resolved as one batch: the
     /// Circle/RoundedRect group's, or the Box/RoundedRect group's.
@@ -3938,6 +3941,7 @@ impl PlatformScratch {
         PlatformScratch {
             item_order: Vec::with_capacity(192),
             cc_contacts: Vec::with_capacity(256),
+            arrow_landings: Vec::with_capacity(16),
             item_platform_contacts: Vec::with_capacity(256),
             circle_wall_order: Vec::with_capacity(256),
             pickup_order: Vec::with_capacity(16),
@@ -7569,6 +7573,7 @@ impl RolloutWorld {
             || has(ABILITY_PORTAL_GUN)
             || has(ABILITY_ROCK)
             || has(ABILITY_DUPLICATOR)
+            || has(ABILITY_BOW)
             || has_pickups
         {
             self.circle_circle_group(data);
@@ -7589,16 +7594,21 @@ impl RolloutWorld {
         // (DetPhysics.cs:3195-3199), so a form's dead ExitAbility ungrounds off
         // the wall where the item pushes left it.
         self.kill_squished();
-        if has(ABILITY_BOW) {
-            self.arrows_contacts(data);
-        }
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_pairs();
         }
         // The Circle/Box group, after the corrections of every Circle/Circle
         // pair.
-        if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_PORTAL_GUN) || has(ABILITY_ROCK) {
+        if has_thrown_item
+            || has(ABILITY_TESLA)
+            || has(ABILITY_PORTAL_GUN)
+            || has(ABILITY_ROCK)
+            || has(ABILITY_BOW)
+        {
             self.thrown_item_pair_contacts(data);
+        }
+        if has(ABILITY_BOW) {
+            self.arrows_contacts(data);
         }
         if has(ABILITY_MISSILE) {
             self.guided_missile_contacts(data);
@@ -35134,15 +35144,19 @@ impl RolloutWorld {
         self.shift_platform_collider(p, correction[1]);
     }
 
-    /// DetPhysics contact group order for Arrow's circle is Circle/RR,
-    /// Circle/Circle, then Circle/Box. Arrow.OnCollide consumes wall contacts,
-    /// but intentionally returns without destroying itself for PlayerBody
-    /// hurtboxes; PlayerCollision can therefore kill one or more slimes while
-    /// the arrow continues flying.
+    /// Arrow.OnCollide lands the arrow on its first StickTo callback in
+    /// ToMakeCallBacks order: a wall's Circle/RR pair, then its Circle/Circle
+    /// and Circle/Box pairs, which resolved in circle_circle_group and
+    /// circle_box_group (Arrow.cs:85-131). A PlayerBody hurtbox has no
+    /// BoplBody, so the arrow flies on through it: PlayerCollision callbacks
+    /// queued before the landing kill, and later ones find the Projectile
+    /// destroyed. Landing destroys the components from the callback queue:
+    /// this pass still observes the corrected collider and resolved body,
+    /// flagged destroyed and ownerless; the next pass removes it.
     fn arrows_contacts(&mut self, data: &data::RolloutData) {
-        // Circle/Box player hits, killed in SortAndSweep callback order:
-        // (sweep key, arrow owner, victim).
-        let mut player_hits: Vec<((SweepRank, SweepRank), u32, usize)> = Vec::new();
+        // PlayerCollision kills in callback order: (key, arrow owner, victim).
+        let mut player_hits: Vec<(CallbackKey, u32, usize)> = Vec::new();
+        let sweep_x = self.sweep_x();
         for i in 0..self.arrows.len() {
             if !self.arrows[i].active
                 || !self.arrows[i].registered
@@ -35155,523 +35169,21 @@ impl RolloutWorld {
                 center: arrow.position,
                 radius: arrow.collider_radius,
             };
-
-            // Arrow.OnCollide destroys the components from the callback
-            // queue: this pass still observes the corrected collider and
-            // resolved body, flagged destroyed and ownerless
-            // (Arrow.cs:124-128); the next pass removes it. That callback
-            // precedes all player shape groups: an arrow overlapping terrain
-            // and a player in the same pass never reaches PlayerCollision.
-            // A spike, engine or spark node on the wall is a Circle/Box or
-            // Circle/Circle pair, resolved too before the callbacks.
+            let arrow_rank = self.part_rank(Part::Arrow(i));
             let platform_hit = self
                 .scratch
                 .arrow_platform_contacts
                 .iter()
                 .find(|&&(a, ..)| a == i)
                 .map(|&(_, p, _)| p);
+            let landing = if platform_hit.is_some() {
+                Some((GROUP_CIRCLE_RR, arrow_rank, arrow_rank))
+            } else {
+                self.scratch.arrow_landings.iter().filter(|&&(a, _)| a == i).map(|&(_, key)| key).min()
+            };
 
-            // Circle/Circle: released item bodies are resolved before either
-            // callback runs. Arrow.OnCollide is queued first for this pair;
-            // it parents the visual to the item and destroys Arrow's
-            // FixTransform/Projectile. Later item callbacks therefore observe
-            // the destroyed transform; in GrenadeExplode's case it can no
-            // longer recover an igniting Projectile, so the payload survives.
-            // The pair lists the circle with the lower bounding-box minimum
-            // on the sweep axis first; the order decides the manifold's
-            // normal and so the rounding of each side's correction.
-            let mut item_contacts = [(usize::MAX, Contact::default(), false); 64];
-            let mut item_contact_count = 0;
-            let arrow_rank = sweep_rank(&self.entities, self.swept_min(Swept::Arrow(i)), arrow.entity);
-            for (item_index, item) in self.thrown_items.iter().enumerate() {
-                if item_contact_count == item_contacts.len()
-                    || !item.active
-                    || item.entity.is_none()
-                    || item.callback_registered_tick == self.tick
-                    || !self.swept_pair(Swept::Arrow(i), Swept::Part(Part::Item(item_index)))
-                {
-                    continue;
-                }
-                let item_circle = Circle {
-                    center: item.position,
-                    radius: thrown_item_radius(data, *item),
-                };
-                let arrow_first = arrow_rank < self.part_rank(Part::Item(item_index));
-                let contact = if arrow_first {
-                    crate::physics::contact::circle_circle(circle, item_circle)
-                } else {
-                    crate::physics::contact::circle_circle(item_circle, circle)
-                };
-                if let Some(contact) = contact {
-                    item_contacts[item_contact_count] = (item_index, contact, arrow_first);
-                    item_contact_count += 1;
-                }
-            }
-            if platform_hit.is_none() && item_contact_count > 0 {
-                let mut arrow_body = arrow.body(&data.arrow.body);
-                let mut arrow_center = arrow.position;
-                for &(item_index, contact, arrow_first) in &item_contacts[..item_contact_count] {
-                    let item = self.thrown_items[item_index];
-                    let mut item_body = item.body;
-                    let mut item_center = item.position;
-                    if arrow_first {
-                        resolve(contact, &mut arrow_body, &mut item_body, arrow_center, item_center);
-                        let correction = positional_correction(
-                            contact,
-                            arrow_body.inverse_mass,
-                            item_body.inverse_mass,
-                            false,
-                        );
-                        arrow_center += correction[0];
-                        item_center += correction[1];
-                    } else {
-                        resolve(contact, &mut item_body, &mut arrow_body, item_center, arrow_center);
-                        let correction = positional_correction(
-                            contact,
-                            item_body.inverse_mass,
-                            arrow_body.inverse_mass,
-                            false,
-                        );
-                        item_center += correction[0];
-                        arrow_center += correction[1];
-                    }
-                    let live = &mut self.thrown_items[item_index];
-                    live.position = item_center;
-                    live.body = item_body;
-                    // Mine.OnCollide sees the same contact after the Arrow
-                    // callback destroyed the arrow: an arrow is an igniter.
-                    if live.ability == ABILITY_MINE && matches!(live.phase, 1 | 2) {
-                        live.time_since_anticipation =
-                            data.mine.anticipation_duration * Fix::from_f64(0.8);
-                        live.phase = 3;
-                    }
-                    if let Some(entity) = live.entity {
-                        let row = &mut self.entities[entity];
-                        row.x = item_center.x.raw();
-                        row.y = item_center.y.raw();
-                        row.vx = item_body.velocity.x.raw();
-                        row.vy = item_body.velocity.y.raw();
-                        row.rotation = item_body.orientation.raw();
-                        row.angular_velocity = item_body.angular_velocity.raw();
-                    }
-                }
-                self.destroy_arrow(i);
-                if let Some(entity) = self.arrows[i].entity {
-                    let row = &mut self.entities[entity];
-                    row.flags = destroyed_flags(row.flags);
-                    row.owner = 0;
-                    row.x = arrow_center.x.raw();
-                    row.y = arrow_center.y.raw();
-                    row.vx = arrow_body.velocity.x.raw();
-                    row.vy = arrow_body.velocity.y.raw();
-                    row.rotation = arrow_body.orientation.raw();
-                    row.angular_velocity = arrow_body.angular_velocity.raw();
-                }
-                // Arrow.prefab serializes Projectile.IgnitesExplosives=false.
-                // SmokeGrenadeExplode2 therefore returns from its later
-                // callback even after the Arrow callback destroys the
-                // projectile components; the released Smoke survives.
-                continue;
-            }
-
-            // Circle/Circle: Rock is the only Player-layer ability form with
-            // a BoplBody. Arrow.OnCollide therefore parents to it and destroys
-            // the Arrow components before Rock's PlayerCollision can inspect
-            // the Projectile. BounceBall still receives its projectile
-            // callback after the physical manifold has resolved.
-            let mut rock_contacts = [(usize::MAX, Contact::default()); MAX_BODIES];
-            let mut rock_contact_count = 0;
-            for (player_index, player) in self.players.iter().enumerate() {
-                if rock_contact_count == rock_contacts.len()
-                    || !self.playable(player_index)
-                    || player.active != ActiveAbility::Rock
-                {
-                    continue;
-                }
-                // The broadphase pairs them by their bounding boxes before
-                // any wall correction; the manifold tests the corrected
-                // circles.
-                if !self.swept_pair(Swept::Player(player_index), Swept::Arrow(i)) {
-                    continue;
-                }
-                if let Some(contact) = crate::physics::contact::circle_circle(
-                    Circle {
-                        center: player.base.position,
-                        radius: player.rock_circle().circle_radius,
-                    },
-                    circle,
-                ) {
-                    rock_contacts[rock_contact_count] = (player_index, contact);
-                    rock_contact_count += 1;
-                }
-            }
-            if platform_hit.is_none() && rock_contact_count > 0 {
-                let mut arrow_body = arrow.body(&data.arrow.body);
-                let mut arrow_center = arrow.position;
-                for &(player_index, contact) in &rock_contacts[..rock_contact_count] {
-                    let rock_center = self.players[player_index].base.position;
-                    let mut rock_body = self.players[player_index].rock.body;
-                    resolve(
-                        contact,
-                        &mut rock_body,
-                        &mut arrow_body,
-                        rock_center,
-                        arrow_center,
-                    );
-                    let correction = positional_correction(
-                        contact,
-                        rock_body.inverse_mass,
-                        arrow_body.inverse_mass,
-                        false,
-                    );
-                    self.players[player_index].base.position += correction[0];
-                    arrow_center += correction[1];
-                    // BounceBall.OnCollide applies a tenth-strength impulse
-                    // for Projectile-layer contacts.
-                    // PrepareCollisionCallBacks passes the manifold normal to
-                    // both callbacks without flipping it. Rock is circle A
-                    // (preallocated before the spawned Arrow), so it receives
-                    // the Rock-to-Arrow normal here.
-                    if self.players[player_index].rope.is_none() {
-                        rock_body.force += contact.normal
-                            * data.rock.player_collision_bounce
-                            * Fix::from_f32(0.1)
-                            * Fix::from_int(60);
-                    }
-                    self.players[player_index].rock.body = rock_body;
-                }
-                self.destroy_arrow_contact(i, arrow_center, arrow_body);
-                continue;
-            }
-
-            // PortalShot is another live item-layer circle. Its callback only
-            // reacts to walls, so the Arrow is consumed while the shot keeps
-            // the resolved body and continues towards its normal portal
-            // landing/timeout path.
-            let mut portal_contacts = [(usize::MAX, Contact::default()); 64];
-            let mut portal_contact_count = 0;
-            for (shot_index, shot) in self.portal_shots.iter().enumerate() {
-                if portal_contact_count == portal_contacts.len()
-                    || !shot.active
-                    || !shot.registered
-                    || !self.swept_pair(Swept::Arrow(i), Swept::Part(Part::Shot(shot_index)))
-                {
-                    continue;
-                }
-                if let Some(contact) = crate::physics::contact::circle_circle(
-                    Circle {
-                        center: shot.position,
-                        radius: shot.collider_radius,
-                    },
-                    circle,
-                ) {
-                    portal_contacts[portal_contact_count] = (shot_index, contact);
-                    portal_contact_count += 1;
-                }
-            }
-            if platform_hit.is_none() && portal_contact_count > 0 {
-                let mut arrow_body = arrow.body(&data.arrow.body);
-                let mut arrow_center = arrow.position;
-                for &(shot_index, contact) in &portal_contacts[..portal_contact_count] {
-                    let shot = self.portal_shots[shot_index];
-                    let mut shot_body = shot.body;
-                    let mut shot_center = shot.position;
-                    resolve(
-                        contact,
-                        &mut shot_body,
-                        &mut arrow_body,
-                        shot_center,
-                        arrow_center,
-                    );
-                    let correction = positional_correction(
-                        contact,
-                        shot_body.inverse_mass,
-                        arrow_body.inverse_mass,
-                        false,
-                    );
-                    shot_center += correction[0];
-                    arrow_center += correction[1];
-                    let live = &mut self.portal_shots[shot_index];
-                    live.position = shot_center;
-                    live.body = shot_body;
-                    if let Some(entity) = live.entity {
-                        let row = &mut self.entities[entity];
-                        row.x = shot_center.x.raw();
-                        row.y = shot_center.y.raw();
-                        row.vx = shot_body.velocity.x.raw();
-                        row.vy = shot_body.velocity.y.raw();
-                        row.rotation = shot_body.orientation.raw();
-                        row.angular_velocity = shot_body.angular_velocity.raw();
-                    }
-                }
-                self.destroy_arrow_contact(i, arrow_center, arrow_body);
-                continue;
-            }
-
-            // Circle/Box: a guided Missile is a dynamic layer-item box. Both
-            // bodies resolve before the callback queue runs; Arrow then
-            // consumes its StickTo contact while Missile spawns its ownerless
-            // hit explosion. Keep the candidate set on the stack so this
-            // common projectile composition adds no tick allocation.
-            let mut missile_contacts = [(usize::MAX, Contact::default()); 64];
-            let mut missile_contact_count = 0;
-            for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
-                if missile_contact_count == missile_contacts.len() {
-                    break;
-                }
-                if !missile.active
-                    || !missile.registered
-                    || missile.magnet_hold_ticks >= 0
-                    || !self.swept_pair(Swept::Arrow(i), Swept::Part(Part::Missile(missile_index)))
-                {
-                    continue;
-                }
-                let missile_box = missile.collider();
-                if let Some(contact) = crate::physics::contact::circle_box(circle, missile_box) {
-                    missile_contacts[missile_contact_count] = (missile_index, contact);
-                    missile_contact_count += 1;
-                }
-            }
-            if platform_hit.is_none() && missile_contact_count > 0 {
-                let mut arrow_body = arrow.body(&data.arrow.body);
-                let mut arrow_center = arrow.position;
-                for &(missile_index, contact) in &missile_contacts[..missile_contact_count] {
-                    let missile = self.guided_missiles[missile_index];
-                    let mut missile_body = missile.body;
-                    let mut missile_center = missile.position;
-                    resolve(
-                        contact,
-                        &mut arrow_body,
-                        &mut missile_body,
-                        arrow_center,
-                        missile_center,
-                    );
-                    let correction = positional_correction(
-                        contact,
-                        arrow_body.inverse_mass,
-                        missile_body.inverse_mass,
-                        false,
-                    );
-                    arrow_center += correction[0];
-                    missile_center += correction[1];
-                    let live = &mut self.guided_missiles[missile_index];
-                    live.position = missile_center;
-                    live.body = missile_body;
-                }
-
-                self.destroy_arrow(i);
-                if let Some(entity) = self.arrows[i].entity {
-                    let row = &mut self.entities[entity];
-                    row.flags = destroyed_flags(row.flags);
-                    row.owner = 0;
-                    row.x = arrow_center.x.raw();
-                    row.y = arrow_center.y.raw();
-                    row.vx = arrow_body.velocity.x.raw();
-                    row.vy = arrow_body.velocity.y.raw();
-                    row.rotation = arrow_body.orientation.raw();
-                    row.angular_velocity = arrow_body.angular_velocity.raw();
-                }
-                let arrow_rank = sweep_rank(&self.entities, self.swept_min(Swept::Arrow(i)), arrow.entity);
-                for &(missile_index, _) in &missile_contacts[..missile_contact_count] {
-                    self.queue_missile_blast(missile_index, GROUP_CB, arrow_rank);
-                }
-                continue;
-            }
-
-            // The remaining serialized StickTo layers are LethalTerrain and
-            // NonLethalTerrain. Rounded platforms were handled first; this
-            // covers attached Spike/Tesla circle/box children and any future
-            // registered terrain child without ability-specific branching.
-            let mut terrain_contacts = [(usize::MAX, Contact::default(), false); 64];
-            let mut terrain_contact_count = 0;
-            let sweep_x = self.sweep_x();
-            for (entity, row) in self.entities.iter().copied().enumerate() {
-                if terrain_contact_count == terrain_contacts.len()
-                    || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
-                    || !matches!(row.layer, 16 | 21)
-                    || self.platform_entities.contains(&entity)
-                {
-                    continue;
-                }
-                // A composite child's collider moved with its platform's
-                // integration this pass; its row still holds the last one.
-                let center = self
-                    .tesla_nodes
-                    .iter()
-                    .find(|node| node.active && !node.macho_carried && node.entity == Some(entity))
-                    .map(|node| node.collider_center)
-                    .or_else(|| {
-                        self.spike_attacks
-                            .iter()
-                            .find(|spike| {
-                                spike.active && !spike.macho_carried && spike.entity == Some(entity)
-                            })
-                            .map(|spike| spike.collider_center)
-                    })
-                    .unwrap_or(Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)));
-                let engine_box = self
-                    .engines
-                    .iter()
-                    .find(|engine| {
-                        engine.active && !engine.macho_carried && engine.entity == Some(entity)
-                    })
-                    .map(|engine| engine.rocket_box());
-                // The live boxes: the rows still hold last pass's rotation.
-                let child_box = engine_box.or_else(|| {
-                    self.spike_attacks
-                        .iter()
-                        .find(|spike| {
-                            spike.active && !spike.macho_carried && spike.entity == Some(entity)
-                        })
-                        .map(|&spike| Self::spike_attack_box_in(&self.platform_dynamics, spike))
-                });
-                let contact = if let Some(child_box) = child_box {
-                    crate::physics::contact::circle_box(circle, child_box).map(|contact| (contact, false))
-                } else if row.kind == 0 {
-                    // Circle/Circle pairs list the lower sweep minimum first.
-                    let target = Circle {
-                        center,
-                        radius: Fix::from_raw(row.radius),
-                    };
-                    let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-                    if axis(target.center) - target.radius < axis(circle.center) - circle.radius {
-                        crate::physics::contact::circle_circle(target, circle)
-                            .map(|contact| (contact, true))
-                    } else {
-                        crate::physics::contact::circle_circle(circle, target)
-                            .map(|contact| (contact, false))
-                    }
-                } else if row.kind == 1 {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    (right != Vec2::ZERO && up != Vec2::ZERO)
-                        .then(|| {
-                            crate::physics::contact::circle_box(
-                                circle,
-                                OrientedBox {
-                                    center,
-                                    right,
-                                    up,
-                                    inverse_extents: Vec2::new(
-                                        Fix::ONE / right.length(),
-                                        Fix::ONE / up.length(),
-                                    ),
-                                },
-                            )
-                        })
-                        .flatten()
-                        .map(|contact| (contact, false))
-                } else {
-                    None
-                };
-                if let Some((contact, target_first)) = contact {
-                    terrain_contacts[terrain_contact_count] = (entity, contact, target_first);
-                    terrain_contact_count += 1;
-                }
-            }
-            if terrain_contact_count > 0 {
-                let mut arrow_body = arrow.body(&data.arrow.body);
-                let mut arrow_center = arrow.position;
-                for &(entity, contact, target_first) in &terrain_contacts[..terrain_contact_count] {
-                    // ResolveCollision uses the CompositeBody; PositionalCorrection
-                    // takes the child's own inverse mass and moves the child and
-                    // CompositeBody.position, not the platform's own collider.
-                    let node_index = self
-                        .tesla_nodes
-                        .iter()
-                        .position(|node| node.active && node.entity == Some(entity));
-                    let engine_index = self.engines.iter().position(|engine| {
-                        engine.active && !engine.macho_carried && engine.entity == Some(entity)
-                    });
-                    let spike_index = self.spike_attacks.iter().position(|spike| {
-                        spike.active && !spike.macho_carried && spike.entity == Some(entity)
-                    });
-                    let child = spike_index
-                        .map(|index| {
-                            let spike = &self.spike_attacks[index];
-                            (spike.platform_index, spike.body.inverse_mass)
-                        })
-                        .or_else(|| {
-                            node_index.map(|index| {
-                                let node = &self.tesla_nodes[index];
-                                (node.platform_index, node.body.inverse_mass)
-                            })
-                        })
-                        .or_else(|| {
-                            engine_index.map(|index| {
-                                let engine = &self.engines[index];
-                                (engine.platform_index, engine.body.inverse_mass)
-                            })
-                        });
-                    let Some((platform_index, child_inverse_mass)) = child else {
-                        continue;
-                    };
-                    let platform_center = self.platform_dynamics[platform_index].composite_position;
-                    let mut platform_body = self.platform_dynamics[platform_index].body;
-                    let correction = if target_first {
-                        resolve(
-                            contact,
-                            &mut platform_body,
-                            &mut arrow_body,
-                            platform_center,
-                            arrow_center,
-                        );
-                        positional_correction(
-                            contact,
-                            child_inverse_mass,
-                            arrow_body.inverse_mass,
-                            false,
-                        )
-                    } else {
-                        resolve(
-                            contact,
-                            &mut arrow_body,
-                            &mut platform_body,
-                            arrow_center,
-                            platform_center,
-                        );
-                        positional_correction(
-                            contact,
-                            arrow_body.inverse_mass,
-                            child_inverse_mass,
-                            false,
-                        )
-                    };
-                    let (platform_delta, arrow_delta) = if target_first {
-                        (correction[0], correction[1])
-                    } else {
-                        (correction[1], correction[0])
-                    };
-                    self.platform_dynamics[platform_index].body = platform_body;
-                    self.platform_dynamics[platform_index].composite_position += platform_delta;
-                    if let Some(index) = node_index {
-                        self.tesla_nodes[index].collider_center += platform_delta;
-                    }
-                    if let Some(index) = engine_index {
-                        self.engines[index].collider_center += platform_delta;
-                    }
-                    if let Some(index) = spike_index {
-                        self.spike_attacks[index].collider_center += platform_delta;
-                    }
-                    arrow_center += arrow_delta;
-                }
-                self.platforms_changed();
-                if let Some(p) = platform_hit {
-                    self.platform_dynamics[p].stuck_arrows += 1;
-                }
-                self.destroy_arrow_contact(i, arrow_center, arrow_body);
-                continue;
-            }
-            if let Some(p) = platform_hit {
-                self.platform_dynamics[p].stuck_arrows += 1;
-                self.destroy_arrow_contact(i, arrow.position, arrow.body(&data.arrow.body));
-                continue;
-            }
-
-            // Arrow runs in DetPhysics after every player-form collider was
-            // synchronized. Use the retained row so Circle/Box dispatch,
-            // rotation and scale match every active form. Rock was consumed
-            // above because its BoplBody changes Arrow.OnCollide semantics.
+            // The retained rows give every form's collider with the pose
+            // DetPhysics synchronized; a Rock form's circle is a part.
             for (j, player) in self.players.iter().enumerate() {
                 if !self.hittable(j)
                     || player.active == ActiveAbility::Rock
@@ -35718,7 +35230,6 @@ impl RolloutWorld {
                 if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED) {
                     continue;
                 }
-                let sweep_x = self.sweep_x();
                 let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
                 let (hit, row_min) = if row.kind == 0 {
@@ -35754,14 +35265,22 @@ impl RolloutWorld {
                     (false, Fix::ZERO)
                 };
                 if hit {
-                    let key = sweep_pair(
-                        sweep_rank(&self.entities, self.swept_min(Swept::Arrow(i)), arrow.entity),
-                        sweep_rank(&self.entities, row_min, Some(entity)),
-                    );
-                    player_hits.push((key, arrow.owner, j));
+                    let group = GROUP_BB - 1 - (row.kind == 0) as u8;
+                    let (later, earlier) = sweep_pair(arrow_rank, sweep_rank(&self.entities, row_min, Some(entity)));
+                    let key = (group, later, earlier);
+                    if landing.is_none_or(|landing| key < landing) {
+                        player_hits.push((key, arrow.owner, j));
+                    }
                 }
             }
+            if landing.is_some() {
+                if let Some(p) = platform_hit {
+                    self.platform_dynamics[p].stuck_arrows += 1;
+                }
+                self.destroy_arrow_contact(i, arrow.position, arrow.body(&data.arrow.body));
+            }
         }
+        self.scratch.arrow_landings.clear();
         player_hits.sort_by_key(|&(key, ..)| key);
         for (_, owner, victim) in player_hits {
             if !self.players[victim].base.alive {
@@ -36606,8 +36125,9 @@ impl RolloutWorld {
         // The hook is on the Rope layer, not a Projectile, so a Smoke it
         // touches goes off whatever the hook attaches to.
         for &(a, b, _) in &self.scratch.cc_contacts {
-            // A portal shot's Projectile does not ignite explosives.
-            if matches!(a, Part::Shot(_)) || matches!(b, Part::Shot(_)) {
+            // A portal shot's or an arrow's Projectile does not ignite
+            // explosives (Arrow.prefab IgnitesExplosives 0).
+            if matches!(a, Part::Shot(_) | Part::Arrow(_)) || matches!(b, Part::Shot(_) | Part::Arrow(_)) {
                 continue;
             }
             for part in [a, b] {
