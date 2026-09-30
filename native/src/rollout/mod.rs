@@ -1992,6 +1992,9 @@ pub struct DuplicatedRock {
     pub scale: Fix,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
+    pub hierarchy_base: u32,
+    /// The scale BoplBody.UpdateSim last divided the mass by.
+    pub mass_scale: Fix,
 }
 
 /// Empty-player prefab created by PlayerCollision.SpawnAbilityLessClone.
@@ -3327,6 +3330,7 @@ enum PendingObject {
     DuplicatedPickup,
     AbilitylessClone,
     BlackHole,
+    DuplicatedRock,
     ClappedBlackHole,
     PickedAbility,
     Mine,
@@ -3422,6 +3426,8 @@ pub struct RolloutWorld {
     /// Duplicated holes waiting for BlackHole.Init on the next pass.
     pub pending_black_holes: Vec<BlackHoleState>,
     pub duplicated_rocks: Vec<DuplicatedRock>,
+    /// Duplicated rocks whose circles register on the next pass.
+    pub pending_duplicated_rocks: Vec<DuplicatedRock>,
     pub abilityless_clones: Vec<AbilitylessClone>,
     pub macho_boulders: Vec<MachoBoulder>,
     pub thrown_items: Vec<ThrownItem>,
@@ -3617,6 +3623,7 @@ impl RolloutWorld {
             black_holes: Vec::with_capacity(16),
             pending_black_holes: Vec::new(),
             duplicated_rocks: Vec::with_capacity(MAX_PLAYERS * 8),
+            pending_duplicated_rocks: Vec::new(),
             abilityless_clones: Vec::with_capacity(MAX_PLAYERS * 16),
             macho_boulders: Vec::with_capacity(16),
             thrown_items: Vec::with_capacity(64),
@@ -3726,6 +3733,8 @@ impl RolloutWorld {
         self.black_holes.clone_from(&src.black_holes);
         self.pending_black_holes.clone_from(&src.pending_black_holes);
         self.duplicated_rocks.clone_from(&src.duplicated_rocks);
+        self.pending_duplicated_rocks
+            .clone_from(&src.pending_duplicated_rocks);
         self.abilityless_clones.clone_from(&src.abilityless_clones);
         self.macho_boulders.clone_from(&src.macho_boulders);
         self.thrown_items.clone_from(&src.thrown_items);
@@ -3836,6 +3845,7 @@ impl RolloutWorld {
             black_holes: _,
             pending_black_holes: _,
             duplicated_rocks: _,
+            pending_duplicated_rocks: _,
             abilityless_clones: _,
             macho_boulders: _,
             thrown_items: _,
@@ -3970,6 +3980,7 @@ impl RolloutWorld {
         self.black_holes.clear();
         self.pending_black_holes.clear();
         self.duplicated_rocks.clear();
+        self.pending_duplicated_rocks.clear();
         self.abilityless_clones.clear();
         self.macho_boulders.clear();
         self.thrown_items.clear();
@@ -12624,6 +12635,14 @@ impl RolloutWorld {
         {
             return (explosion.owner as u32 + 1, true, CAUSE_OTHER);
         }
+        // ShootDuplicator gives the copy's Explosion the slime's id.
+        if let Some(rock) = self
+            .duplicated_rocks
+            .iter()
+            .find(|rock| rock.active && rock.entity == Some(entity))
+        {
+            return (rock.owner as u32 + 1, true, CAUSE_OTHER);
+        }
         if let Some(smear) = self
             .meteor_smears
             .iter()
@@ -20336,6 +20355,9 @@ impl RolloutWorld {
         for (index, hole) in self.pending_black_holes.iter().enumerate() {
             pending.push((hole.hierarchy_base, PendingObject::BlackHole, index));
         }
+        for (index, rock) in self.pending_duplicated_rocks.iter().enumerate() {
+            pending.push((rock.hierarchy_base, PendingObject::DuplicatedRock, index));
+        }
         // A clapped hole's Init registers its circle with the other objects
         // queued in the prior pass, ahead of every player's updaters.
         for (index, player) in self.players.iter().enumerate() {
@@ -20415,6 +20437,7 @@ impl RolloutWorld {
                 PendingObject::DuplicatedPickup => self.register_duplicated_pickup(index, data),
                 PendingObject::AbilitylessClone => self.register_abilityless_clone(index),
                 PendingObject::BlackHole => self.register_black_hole(index, data),
+                PendingObject::DuplicatedRock => self.register_duplicated_rock(index, data),
                 PendingObject::ClappedBlackHole => {
                     if let Some((position, hierarchy)) = self.players[index].pending_black_hole.take() {
                         self.spawn_black_hole(index, position, hierarchy, data);
@@ -20439,6 +20462,7 @@ impl RolloutWorld {
             }
         }
         self.pending_black_holes.clear();
+        self.pending_duplicated_rocks.clear();
         self.scratch.pending_objects = pending;
         drowned
     }
@@ -27503,42 +27527,22 @@ impl RolloutWorld {
             body.velocity = (position - source_position).normalized_safe()
                 * (source.body.velocity.length() + Fix::from_int(15));
             body.orientation = source.body.orientation;
-            let entity = self.entities.len();
-            let id = self.next_id();
-            self.entities.push(CEntity {
-                id,
-                kind: 0,
-                layer: 16,
-                owner: self.players[victim].base.id,
-                flags: E_ACTIVE | E_ENABLED,
-                hierarchy: 100_000_000 + self.next_spawn_hierarchy + 3,
-                x: position.x.raw(),
-                y: position.y.raw(),
-                vx: body.velocity.x.raw(),
-                vy: body.velocity.y.raw(),
-                radius: (data.rock.radius * source.scale).raw(),
-                rotation: body.orientation.raw(),
-                angular_velocity: body.angular_velocity.raw(),
-                inverse_mass: body.inverse_mass.raw(),
-                ..CEntity::default()
-            });
-            self.next_spawn_hierarchy += 4;
-            let clone = DuplicatedRock {
+            // The Rock_noPlayer copy is a new GameObject, so its circle
+            // registers with next pass's queued objects.
+            self.pending_duplicated_rocks.push(DuplicatedRock {
                 active: true,
                 born_tick: self.tick,
-                entity: Some(entity),
+                entity: None,
                 owner: victim,
                 position,
                 body,
                 scale: source.scale,
                 duplicate_lifespan: 1800,
                 duplicate_shake_offset: Vec2::ZERO,
-            };
-            if let Some(free) = self.duplicated_rocks.iter().position(|rock| !rock.active) {
-                self.duplicated_rocks[free] = clone;
-            } else {
-                self.duplicated_rocks.push(clone);
-            }
+                hierarchy_base: self.next_spawn_hierarchy,
+                mass_scale: Fix::ONE,
+            });
+            self.next_spawn_hierarchy += 4;
             return;
         }
         let position = self.players[victim].base.position;
@@ -27683,41 +27687,49 @@ impl RolloutWorld {
         body.velocity =
             direction.normalized_safe() * (source.body.velocity.length() + Fix::from_int(15));
         body.orientation = source.body.orientation;
-        let entity = self.entities.len();
-        let id = self.next_id();
-        self.entities.push(CEntity {
-            id,
-            kind: 0,
-            layer: 16,
-            owner: source.owner as u32 + 1,
-            flags: E_ACTIVE | E_ENABLED,
-            hierarchy: 100_000_000 + self.next_spawn_hierarchy + 3,
-            x: position.x.raw(),
-            y: position.y.raw(),
-            vx: body.velocity.x.raw(),
-            vy: body.velocity.y.raw(),
-            radius: (data.rock.radius * source.scale).raw(),
-            rotation: body.orientation.raw(),
-            angular_velocity: body.angular_velocity.raw(),
-            inverse_mass: body.inverse_mass.raw(),
-            ..CEntity::default()
-        });
-        self.next_spawn_hierarchy += 4;
-        let clone = DuplicatedRock {
+        self.pending_duplicated_rocks.push(DuplicatedRock {
             active: true,
             born_tick: self.tick,
-            entity: Some(entity),
+            entity: None,
             owner: source.owner,
             position,
             body,
             scale: source.scale,
             duplicate_lifespan: 1800,
             duplicate_shake_offset: Vec2::ZERO,
-        };
+            hierarchy_base: self.next_spawn_hierarchy,
+            mass_scale: Fix::ONE,
+        });
+        self.next_spawn_hierarchy += 4;
+    }
+
+    /// The copy's circle joins DetPhysics. Its row reads no owner, since
+    /// Explosion is not an IPlayerIdHolder.
+    fn register_duplicated_rock(&mut self, index: usize, data: &data::RolloutData) {
+        let mut rock = self.pending_duplicated_rocks[index];
+        let entity = self.entities.len();
+        let id = self.next_id();
+        self.entities.push(CEntity {
+            id,
+            kind: 0,
+            layer: 16,
+            flags: E_ACTIVE | E_ENABLED,
+            hierarchy: 100_000_000 + rock.hierarchy_base + 3,
+            x: rock.position.x.raw(),
+            y: rock.position.y.raw(),
+            vx: rock.body.velocity.x.raw(),
+            vy: rock.body.velocity.y.raw(),
+            radius: (data.rock.radius * rock.scale).raw(),
+            rotation: rock.body.orientation.raw(),
+            angular_velocity: rock.body.angular_velocity.raw(),
+            inverse_mass: rock.body.inverse_mass.raw(),
+            ..CEntity::default()
+        });
+        rock.entity = Some(entity);
         if let Some(free) = self.duplicated_rocks.iter().position(|rock| !rock.active) {
-            self.duplicated_rocks[free] = clone;
+            self.duplicated_rocks[free] = rock;
         } else {
-            self.duplicated_rocks.push(clone);
+            self.duplicated_rocks.push(rock);
         }
     }
 
@@ -38810,6 +38822,13 @@ impl RolloutWorld {
             {
                 continue;
             }
+            let rock = &mut self.duplicated_rocks[rock_index];
+            if rock.scale != rock.mass_scale {
+                let ratio = rock.mass_scale / rock.scale;
+                rock.body.inverse_mass *= ratio;
+                rock.body.inverse_inertia *= ratio;
+                rock.mass_scale = rock.scale;
+            }
             let shift = self.duplicated_rocks[rock_index]
                 .body
                 .integrate(physics_dt, Fix::from_int(-40));
@@ -38857,6 +38876,7 @@ impl RolloutWorld {
                 row.vy = rock.body.velocity.y.raw();
                 row.rotation = rock.body.orientation.raw();
                 row.angular_velocity = rock.body.angular_velocity.raw();
+                row.inverse_mass = rock.body.inverse_mass.raw();
             }
         }
     }
@@ -45894,6 +45914,7 @@ mod tests {
             position: rock_position,
             body: data::get().rock.body,
             scale: Fix::ONE,
+            mass_scale: Fix::ONE,
             ..DuplicatedRock::default()
         });
         world.gust_waves[0] = Shockwave {
