@@ -917,9 +917,6 @@ pub struct SpikeCastState {
     /// 0: cast animation, 1: recover animation.
     pub phase: u8,
     pub ticks: u32,
-    pub collider_position: Vec2,
-    pub collider_up: Vec2,
-    pub collider_rotation: Fix,
 }
 
 /// PlantObjectOnPlatform animation state shared by Engine and Tesla coil.
@@ -927,9 +924,6 @@ pub struct SpikeCastState {
 pub struct PlantCastState {
     pub phase: u32,
     pub ticks: u32,
-    pub collider_position: Vec2,
-    pub collider_up: Vec2,
-    pub collider_rotation: Fix,
 }
 
 /// One RocketEngine collider attached to a rounded-platform composite.
@@ -1663,6 +1657,16 @@ pub struct FormScale {
     pub inverse_mass: Fix,
     pub inverse_inertia: Fix,
     pub mass_scale: Fix,
+    /// The form's FixTransform, which DetPhysics syncs its box from whether
+    /// the form is casting, hidden by a teleport or gone inactive.
+    pub pose: FormPose,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FormPose {
+    pub position: Vec2,
+    pub up: Vec2,
+    pub rotation: Fix,
 }
 
 impl FormScale {
@@ -1680,6 +1684,7 @@ impl FormScale {
                 ),
                 radius,
                 physics_scale: Fix::ONE,
+                pose: self.pose,
                 ..FormScale::default()
             };
         }
@@ -1707,6 +1712,7 @@ impl FormScale {
             *self = FormScale {
                 scale: Fix::ONE,
                 circle_radius: radius,
+                pose: self.pose,
                 ..FormScale::default()
             };
         }
@@ -1724,6 +1730,7 @@ impl FormScale {
                 circle_radius: radius,
                 radius: physics_radius,
                 physics_scale: Fix::ONE,
+                pose: self.pose,
                 ..FormScale::default()
             };
         }
@@ -2676,16 +2683,15 @@ pub struct DestroyedGround {
     pub pass: Option<u32>,
 }
 
-/// A form's FixTransform as its GameObject went inactive on `tick`'s pass. DetPhysics
-/// still syncs an inactive transform, so the form's row shows this pose: through the
-/// exit pass, or for as long as a teleport keeps the form hidden. `pose` (rotation,
-/// up) is None where the form's own exit rotation applies.
+/// A form whose GameObject went inactive on `tick`'s pass. DetPhysics still syncs an
+/// inactive transform, so the form's row shows its FixTransform (`FormScale::pose`):
+/// through the exit pass, or for as long as a teleport keeps the form hidden. Where
+/// `posed` is false only the position holds, and the form's own exit rotation applies.
 #[derive(Clone, Copy)]
 pub struct FrozenForm {
     pub tick: u32,
     pub entity: usize,
-    pub position: Vec2,
-    pub pose: Option<(Fix, Vec2)>,
+    pub posed: bool,
 }
 
 impl DestroyedGround {
@@ -3379,6 +3385,18 @@ impl PlayerSlot {
     /// that form's box behind after `active_slot` has moved on.
     fn entity_slot(&self, entity: usize) -> usize {
         self.form_entities.iter().position(|&e| e == entity).unwrap_or(self.active_slot)
+    }
+
+    /// The active form's FixTransform follows its body.
+    fn sync_form_pose(&mut self) {
+        let base = &self.base;
+        self.forms[self.active_slot].pose =
+            FormPose { position: base.position, up: base.up, rotation: base.rotation };
+    }
+
+    /// The FixTransform `frozen`'s form row publishes.
+    fn frozen_pose(&self, frozen: FrozenForm) -> FormPose {
+        self.forms[self.entity_slot(frozen.entity)].pose
     }
 
     /// GunTransform.OnEnterAbility syncs the hurtbox after SyncPhysicsTo has
@@ -11253,12 +11271,8 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        slot.spike_cast = SpikeCastState {
-                            collider_position: slot.base.position,
-                            collider_up: slot.base.up,
-                            collider_rotation: slot.base.rotation,
-                            ..SpikeCastState::default()
-                        };
+                        slot.spike_cast = SpikeCastState::default();
+                        slot.sync_form_pose();
                         // Ability.EnterAbility scales the box, then
                         // PlayerPhysics.SyncPhysicsTo(PlayerInfo) UpdateScales
                         // the form's radius. Spike.OnEnterAbility puts the
@@ -11319,12 +11333,8 @@ impl RolloutWorld {
                             // velocity; the external one survives.
                             slot.base.velocity = Vec2::ZERO;
                         }
-                        slot.plant_cast = PlantCastState {
-                            collider_position: slot.base.position,
-                            collider_up: slot.base.up,
-                            collider_rotation: slot.base.rotation,
-                            ..PlantCastState::default()
-                        };
+                        slot.plant_cast = PlantCastState::default();
+                        slot.sync_form_pose();
                         // Ability.EnterAbility, then the entry pass's UpdateSim.
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
@@ -11361,12 +11371,8 @@ impl RolloutWorld {
                             // velocity; the external one survives.
                             slot.base.velocity = Vec2::ZERO;
                         }
-                        slot.plant_cast = PlantCastState {
-                            collider_position: slot.base.position,
-                            collider_up: slot.base.up,
-                            collider_rotation: slot.base.rotation,
-                            ..PlantCastState::default()
-                        };
+                        slot.plant_cast = PlantCastState::default();
+                        slot.sync_form_pose();
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
                         self.plant_form_radius(index);
@@ -14331,12 +14337,7 @@ impl RolloutWorld {
     fn spike_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
         self.scale_spike_form(index, data);
         let published_position = self.players[index].base.position;
-        {
-            let slot = &mut self.players[index];
-            slot.spike_cast.collider_position = published_position;
-            slot.spike_cast.collider_up = slot.base.up;
-            slot.spike_cast.collider_rotation = slot.base.rotation;
-        }
+        self.players[index].sync_form_pose();
         let cast_now = {
             let cast = &mut self.players[index].spike_cast;
             cast.ticks += 1;
@@ -14399,9 +14400,7 @@ impl RolloutWorld {
         self.form_body_move(index, jump_pressed);
         // DetPhysics syncs the box to the body Move aligned to the surface.
         let slot = &mut self.players[index];
-        slot.spike_cast.collider_position = slot.base.position;
-        slot.spike_cast.collider_up = slot.base.up;
-        slot.spike_cast.collider_rotation = slot.base.rotation;
+        slot.sync_form_pose();
         slot.reported_position = published;
         slot.reported_tick = self.tick;
     }
@@ -14443,9 +14442,7 @@ impl RolloutWorld {
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
-            slot.plant_cast.collider_position = published_position;
-            slot.plant_cast.collider_up = slot.base.up;
-            slot.plant_cast.collider_rotation = slot.base.rotation;
+            slot.sync_form_pose();
             slot.plant_cast.ticks += 1;
         }
         let plant_now = self.players[index].plant_cast.phase == 0
@@ -14546,9 +14543,7 @@ impl RolloutWorld {
         self.form_body_move(index, jump_pressed);
         // DetPhysics syncs the box to the body Move aligned to the surface.
         let slot = &mut self.players[index];
-        slot.plant_cast.collider_position = slot.base.position;
-        slot.plant_cast.collider_up = slot.base.up;
-        slot.plant_cast.collider_rotation = slot.base.rotation;
+        slot.sync_form_pose();
         slot.reported_position = published;
         slot.reported_tick = self.tick;
     }
@@ -14604,9 +14599,7 @@ impl RolloutWorld {
         let published_position = self.players[index].base.position;
         {
             let slot = &mut self.players[index];
-            slot.plant_cast.collider_position = published_position;
-            slot.plant_cast.collider_up = slot.base.up;
-            slot.plant_cast.collider_rotation = slot.base.rotation;
+            slot.sync_form_pose();
             slot.plant_cast.ticks += 1;
         }
         let plant_now = self.players[index].plant_cast.phase == 0
@@ -16738,12 +16731,13 @@ impl RolloutWorld {
         slot.base.constants = data::get().player.constants.clone();
         // The exit re-places or levels only the slime; the form's frozen
         // FixTransform keeps its rotation and up.
-        let (entity, pose) = (slot.black_hole_entity, Some((slot.base.rotation, slot.base.up)));
+        let entity = slot.black_hole_entity;
+        slot.sync_form_pose();
+        slot.form_frozen = Some(FrozenForm { tick, entity, posed: true });
         if grounded && slot.base.ground.is_some() {
             slot.obs_state = STATE_IDLE;
             slot.state_ticks = 0;
             let position = slot.base.position;
-            slot.form_frozen = Some(FrozenForm { tick, entity, position, pose });
             self.sync_exit_to_ground(index);
             let slot = &mut self.players[index];
             slot.reported_position = position;
@@ -16759,7 +16753,8 @@ impl RolloutWorld {
             // SlimeController.ExitAbility assigns Player.Scale to the hurtbox.
             slot.set_ordinary_body_scale(slot.player_scale);
             let position = slot.base.position;
-            slot.form_frozen = Some(FrozenForm { tick, entity, position, pose });
+            let s = slot.entity_slot(entity);
+            slot.forms[s].pose.position = position;
         }
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
@@ -22051,25 +22046,9 @@ impl RolloutWorld {
             // (TeleportIndicator.cs:122-166).
             let tick = self.tick;
             let slot = &mut self.players[player_index];
-            // A planting form's FixTransform keeps that pose past the teleport,
-            // and the form's next cast publishes it until its first sync.
-            let (position, up, rotation) = (slot.base.position, slot.base.up, slot.base.rotation);
-            if slot.active == ActiveAbility::Spike {
-                slot.spike_cast.collider_position = position;
-                slot.spike_cast.collider_up = up;
-                slot.spike_cast.collider_rotation = rotation;
-            } else if matches!(slot.active, ActiveAbility::Engine | ActiveAbility::Tesla) {
-                slot.plant_cast.collider_position = position;
-                slot.plant_cast.collider_up = up;
-                slot.plant_cast.collider_rotation = rotation;
-            }
             if slot.active != ActiveAbility::None {
-                slot.form_frozen = Some(FrozenForm {
-                    tick,
-                    entity,
-                    position: slot.base.position,
-                    pose: Some((slot.base.rotation, slot.base.up)),
-                });
+                slot.sync_form_pose();
+                slot.form_frozen = Some(FrozenForm { tick, entity, posed: true });
             }
             self.players[player_index].set_teleport_hidden(&mut self.entities, true);
             self.players[player_index].teleport_effect_time = Fix::ZERO;
@@ -27044,7 +27023,13 @@ impl RolloutWorld {
             MagnetHeld::Player(i) => {
                 let entity = Self::hurtbox_entity(&self.players[i]);
                 let tick = self.tick;
-                let frozen = move |position| Some(FrozenForm { tick, entity, position, pose: None });
+                let frozen = Some(FrozenForm { tick, entity, posed: false });
+                // The form's FixTransform stops where its body left the slime.
+                let freeze_at = move |slot: &mut PlayerSlot, position: Vec2| {
+                    let s = slot.entity_slot(entity);
+                    slot.forms[s].pose.position = position;
+                    slot.form_frozen = frozen;
+                };
                 if self.players[i].active == ActiveAbility::Throw {
                     // MachoThrow2.ExitAbility overwrites the packet with the
                     // form's own grounding, so SyncPhysicsTo sets the slime
@@ -27052,7 +27037,7 @@ impl RolloutWorld {
                     // the slime after that, before UnGround lifts it.
                     let grounded = self.players[i].base.grounded;
                     self.exit_macho_throw(i, grounded, data);
-                    self.players[i].form_frozen = frozen(position);
+                    freeze_at(&mut self.players[i], position);
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active == ActiveAbility::Drill {
                     // Drill.ExitAbility hands the packet its body's velocities,
@@ -27067,7 +27052,7 @@ impl RolloutWorld {
                     let slot = &mut self.players[i];
                     slot.facing_right = (velocity + external).x >= Fix::ZERO;
                     slot.base.velocity = Vec2::ZERO;
-                    slot.form_frozen = frozen(position);
+                    freeze_at(slot, position);
                     // Ability.ExitAbility publishes the drill body's position.
                     // A slime updating after its holder publishes its own.
                     if i < index {
@@ -27103,7 +27088,7 @@ impl RolloutWorld {
                         slot.base.local = local;
                     }
                     slot.base.velocity = Vec2::ZERO;
-                    slot.form_frozen = frozen(body);
+                    freeze_at(slot, body);
                     self.players[index].magnet.held_position = body;
                 } else if self.players[i].active == ActiveAbility::Magnet {
                     // The held form's own MagnetGun.ExitAbility ungrounds it
@@ -27113,13 +27098,14 @@ impl RolloutWorld {
                     self.exit_magnet(i, false, data);
                     let slot = &mut self.players[i];
                     slot.base.velocity = Vec2::ZERO;
-                    slot.form_frozen = frozen(slot.base.position);
+                    let position = slot.base.position;
+                    freeze_at(slot, position);
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active != ActiveAbility::None {
                     self.exit_form_for_freeze(i, data);
                     self.players[i].base.position = position;
                     self.players[i].reported_position = position;
-                    self.players[i].form_frozen = frozen(position);
+                    freeze_at(&mut self.players[i], position);
                 }
                 let slot = &mut self.players[i];
                 // MagnetGun.cs:687 calls UnGround() with nullRotation.
@@ -43789,14 +43775,17 @@ impl RolloutWorld {
             let exit_position = slot
                 .form_frozen
                 .filter(|frozen| frozen.tick == self.tick)
-                .map_or(slot.reported_position, |frozen| frozen.position);
+                .map_or(slot.reported_position, |frozen| slot.frozen_pose(frozen).position);
             let frozen = slot.form_frozen.filter(|frozen| {
                 frozen.tick == self.tick || (slot.teleport_effect_active && in_ability)
             });
             let frozen_pose = |entity: usize| {
                 frozen
-                    .filter(|frozen| frozen.entity == entity)
-                    .and_then(|frozen| frozen.pose.map(|(rotation, up)| (frozen.position, rotation, up)))
+                    .filter(|frozen| frozen.entity == entity && frozen.posed)
+                    .map(|frozen| {
+                        let pose = slot.frozen_pose(frozen);
+                        (pose.position, pose.rotation, pose.up)
+                    })
             };
             // A gun form a freeze ray forced out this pass. The bypass's
             // Ability.ExitAbility skips GunTransform.ExitAbility's rotation
@@ -44593,20 +44582,12 @@ impl RolloutWorld {
                     box_row.owner = slot.base.id;
                 }
                 if spiking || was_active {
-                    let (position, rotation, center_basis, collider_basis) = if let Some((
-                        position,
-                        rotation,
-                        up,
-                    )) = frozen_pose(spike_e)
+                    // The form's FixTransform, casting or hidden.
+                    let (position, rotation, center_basis, collider_basis) = if spiking
+                        || frozen_pose(spike_e).is_some()
                     {
-                        (position, rotation, up.perp_cw(), Vec2::angle(rotation))
-                    } else if spiking {
-                        (
-                            slot.spike_cast.collider_position,
-                            slot.spike_cast.collider_rotation,
-                            slot.spike_cast.collider_up.perp_cw(),
-                            Vec2::angle(slot.spike_cast.collider_rotation),
-                        )
+                        let pose = slot.forms[slot.entity_slot(spike_e)].pose;
+                        (pose.position, pose.rotation, pose.up.perp_cw(), Vec2::angle(pose.rotation))
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
@@ -44643,20 +44624,12 @@ impl RolloutWorld {
                     box_row.owner = slot.base.id;
                 }
                 if planting_engine || was_active {
-                    let (position, rotation, center_basis, collider_basis) = if let Some((
-                        position,
-                        rotation,
-                        up,
-                    )) = frozen_pose(engine_e)
+                    // The form's FixTransform, casting or hidden.
+                    let (position, rotation, center_basis, collider_basis) = if planting_engine
+                        || frozen_pose(engine_e).is_some()
                     {
-                        (position, rotation, up.perp_cw(), Vec2::angle(rotation))
-                    } else if planting_engine {
-                        (
-                            slot.plant_cast.collider_position,
-                            slot.plant_cast.collider_rotation,
-                            slot.plant_cast.collider_up.perp_cw(),
-                            Vec2::angle(slot.plant_cast.collider_rotation),
-                        )
+                        let pose = slot.forms[slot.entity_slot(engine_e)].pose;
+                        (pose.position, pose.rotation, pose.up.perp_cw(), Vec2::angle(pose.rotation))
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
@@ -44693,20 +44666,12 @@ impl RolloutWorld {
                     box_row.owner = slot.base.id;
                 }
                 if planting_tesla || was_active {
-                    let (position, rotation, center_basis, collider_basis) = if let Some((
-                        position,
-                        rotation,
-                        up,
-                    )) = frozen_pose(tesla_e)
+                    // The form's FixTransform, casting or hidden.
+                    let (position, rotation, center_basis, collider_basis) = if planting_tesla
+                        || frozen_pose(tesla_e).is_some()
                     {
-                        (position, rotation, up.perp_cw(), Vec2::angle(rotation))
-                    } else if planting_tesla {
-                        (
-                            slot.plant_cast.collider_position,
-                            slot.plant_cast.collider_rotation,
-                            slot.plant_cast.collider_up.perp_cw(),
-                            Vec2::angle(slot.plant_cast.collider_rotation),
-                        )
+                        let pose = slot.forms[slot.entity_slot(tesla_e)].pose;
+                        (pose.position, pose.rotation, pose.up.perp_cw(), Vec2::angle(pose.rotation))
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
@@ -45040,7 +45005,7 @@ impl RolloutWorld {
             let exit_position = slot
                 .form_frozen
                 .filter(|frozen| frozen.tick == self.tick)
-                .map_or(slot.reported_position, |frozen| frozen.position);
+                .map_or(slot.reported_position, |frozen| slot.frozen_pose(frozen).position);
 
             let body = &mut self.entities[slot.body_entity];
             let body_was_active = body.flags & E_ACTIVE != 0;
