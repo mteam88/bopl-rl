@@ -1464,6 +1464,9 @@ pub struct SpawnedPlatform {
     pub removal_time: Fix,
     pub removal_extents: Vec2,
     pub removal_radius: Fix,
+    /// Its UpdateSim reached the removal curve's final key and called
+    /// DestroyFix this pass.
+    pub destroy_pending: bool,
     /// First updater hierarchy number of the platform prefab.
     pub hierarchy_base: u32,
 }
@@ -5238,7 +5241,7 @@ impl RolloutWorld {
             self.platform_updaters_tick(data, DT);
             if i < SLIME_AWAKE_TICK {
                 if self.intro_phase == 3 {
-                    self.platforms_tick(data, DT, DT);
+                    self.platforms_tick(data, DT);
                     self.kill_squished();
                 }
                 continue;
@@ -5247,7 +5250,7 @@ impl RolloutWorld {
                 spawn_anim = data.player.spawn_anim_ticks;
                 self.spawn_animation_overlap_pushes();
                 if self.intro_phase == 3 {
-                    self.platforms_tick(data, DT, DT);
+                    self.platforms_tick(data, DT);
                     self.kill_squished();
                 }
                 // The recorder starts sampling on the pass the slime wakes.
@@ -5265,7 +5268,7 @@ impl RolloutWorld {
                 }
                 self.record_warmup_rewind(i);
                 if self.intro_phase == 3 {
-                    self.platforms_tick(data, DT, DT);
+                    self.platforms_tick(data, DT);
                     self.kill_squished();
                 }
                 continue;
@@ -6417,7 +6420,7 @@ impl RolloutWorld {
                 slot.base.sync_collider();
             }
         }
-        self.platforms_tick(data, DT, DT);
+        self.platforms_tick(data, DT);
         self.kill_squished();
         for slot in &mut self.players {
             if slot.base.alive {
@@ -7350,7 +7353,7 @@ impl RolloutWorld {
         }
         self.refresh_actor_entities();
         if self.intro_phase == 3 {
-            self.platforms_tick(data, updater_dt, physics_dt);
+            self.platforms_tick(data, physics_dt);
         }
         self.scratch.circle_colliders.clear();
         self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
@@ -17082,13 +17085,14 @@ impl RolloutWorld {
                 // 275-290).
                 let controlled = self.platform_dynamics[platform_index].being_controlled;
                 // Updaters run in spawn order. A platform spawned before this
-                // hole has already shrunk by the time its pull is computed.
+                // hole has already shrunk by the time its pull is computed; one
+                // whose turn is still ahead here is pulled once it has shrunk.
                 let shrunk_first = self.spawned.iter().any(|spawn| {
                     spawn.active
                         && spawn.being_removed
                         && spawn.platform_index == platform_index
                         && spawn.hierarchy_base < self.black_holes[hole_index].hierarchy_base
-                });
+                }) && self.platform_dynamics[platform_index].updater_ran_tick != Some(self.tick);
                 if shrunk_first {
                     self.late_platform_pulls.push((platform_index, vector, cube, mass, controlled));
                     continue;
@@ -32639,6 +32643,7 @@ impl RolloutWorld {
             removal_time: Fix::ZERO,
             removal_extents: Vec2::ZERO,
             removal_radius: Fix::ZERO,
+            destroy_pending: false,
             hierarchy_base,
         });
         platform_index
@@ -38676,14 +38681,50 @@ impl RolloutWorld {
         if !self.platforms[i].active || !self.platform_dynamics[i].body_resizable {
             return;
         }
-        // `isBeingRemoved` takes the other branch of `UpdateSim` and
-        // resizes from the removal curve instead; that path already runs
-        // at the top of `platforms_tick`.
-        if self
+        // `isBeingRemoved` takes the other branch of `UpdateSim` and resizes
+        // from the removal curve, at this same turn: a RopeAttachment or Black
+        // Hole later in the pass sees the shrunk surface and mass.
+        if let Some(spawn) = self
             .spawned
             .iter()
-            .any(|s| s.active && s.being_removed && s.platform_index == i)
+            .position(|s| s.active && s.being_removed && s.platform_index == i)
         {
+            let end = data
+                .platform
+                .remove_curve
+                .keys
+                .last()
+                .expect("authored platform removal curve")
+                .time;
+            let spawn = &mut self.spawned[spawn];
+            // At the final key it only calls DestroyFix, which `platforms_tick`
+            // carries out once the Updater is done.
+            if spawn.removal_time >= end {
+                spawn.destroy_pending = true;
+                // A newer RopeAttachment on it sees IsDestroyed this pass.
+                let hierarchy = self.entities[self.platform_entities[i]].hierarchy - 100_000_000;
+                for rope in &mut self.ropes {
+                    if rope.platform == Some(i) {
+                        rope.platform_destroyed_at = (self.tick, hierarchy);
+                    }
+                }
+                return;
+            }
+            let amount = data.platform.remove_curve.evaluate(spawn.removal_time);
+            spawn.removal_time += DT * self.player_time_scale;
+            // Fix.Lerp clamps only the weight of `a` (Fix.cs:41606-41609),
+            // so the curve's overshoot past 1 scales the original size.
+            let minimum = Fix::from_f32(0.1);
+            let lerp =
+                |o: Fix| minimum * (Fix::ONE - amount.clamp(Fix::ZERO, Fix::ONE)) + o * amount;
+            let extents =
+                Vec2::new(lerp(spawn.removal_extents.x), lerp(spawn.removal_extents.y));
+            let radius = lerp(spawn.removal_radius);
+            // The children move before StickyRect.UpdateBounds takes the new
+            // size, but after the RoundedRect took its new radius.
+            self.platforms[i].surface.radius = radius;
+            self.reposition_platform_children(i, false);
+            self.reshape_platform(i, extents, radius);
             return;
         }
         self.reposition_platform_children(i, false);
@@ -41343,42 +41384,17 @@ impl RolloutWorld {
         }
     }
 
-    fn platforms_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, physics_dt: Fix) {
+    fn platforms_tick(&mut self, data: &data::RolloutData, physics_dt: Fix) {
         self.drop_destroyed_children();
-        // ResizablePlatform.UpdateSim runs every tick while an evicted platform
-        // remains a normal collidable body. It evaluates before incrementing
-        // time and destroys at the final key without applying another resize.
-        let removal_end = data
-            .platform
-            .remove_curve
-            .keys
-            .last()
-            .expect("authored platform removal curve")
-            .time;
+        // An evicted platform's ResizablePlatform.UpdateSim resized it at its
+        // Updater turn; at the removal curve's final key it destroyed it.
         let late_pulls = std::mem::take(&mut self.late_platform_pulls);
-        let mut removal_resizes = Vec::new();
         let mut removal_destroys = Vec::new();
         for spawn in &mut self.spawned {
-            if !spawn.active || !spawn.being_removed {
-                continue;
-            }
-            if spawn.removal_time >= removal_end {
+            if spawn.active && spawn.destroy_pending {
                 spawn.active = false;
                 removal_destroys.push(spawn.platform_index);
-                continue;
             }
-            let amount = data.platform.remove_curve.evaluate(spawn.removal_time);
-            spawn.removal_time += updater_dt;
-            // Fix.Lerp clamps only the weight of `a` (Fix.cs:41606-41609),
-            // so the curve's overshoot past 1 scales the original size.
-            let minimum = Fix::from_f32(0.1);
-            let lerp =
-                |o: Fix| minimum * (Fix::ONE - amount.clamp(Fix::ZERO, Fix::ONE)) + o * amount;
-            removal_resizes.push((
-                spawn.platform_index,
-                Vec2::new(lerp(spawn.removal_extents.x), lerp(spawn.removal_extents.y)),
-                lerp(spawn.removal_radius),
-            ));
         }
 
         // Most short episodes never create or disturb a platform. Preserve
@@ -41432,17 +41448,6 @@ impl RolloutWorld {
         }
         // Everything below may move a body.
         self.intro_contacts_pending = false;
-        // ResizablePlatform follows AnimateVelocity in its prefab
-        // (ResizablePlatform.prefab component order), so the spring impulse
-        // above used the pre-resize mass while DetPhysics integrates it with
-        // the new one.
-        for (index, extents, radius) in removal_resizes {
-            // The children move before StickyRect.UpdateBounds takes the new
-            // size, but after the RoundedRect took its new radius.
-            self.platforms[index].surface.radius = radius;
-            self.reposition_platform_children(index, false);
-            self.reshape_platform(index, extents, radius);
-        }
         for (index, vector, cube, mass, controlled) in late_pulls {
             let dynamics = &mut self.platform_dynamics[index];
             let body = if dynamics.attached_children != 0 {

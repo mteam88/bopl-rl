@@ -1390,11 +1390,14 @@ impl RolloutWorld {
                 continue;
             }
             // A boulder's DestroyIfOutsideSceneBounds, older than this
-            // RopeAttachment, drowns it earlier in the pass.
+            // RopeAttachment, drowns it earlier in the pass; an evicted
+            // platform's ResizablePlatform may have destroyed it already too.
             if platform >= self.platforms.len()
                 || self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
                 || !self.platforms[platform].active
                 || self.boulder_drowns_before(platform, hierarchy)
+                || (self.ropes[index].platform_destroyed_at.0 == self.tick
+                    && self.ropes[index].platform_destroyed_at.1 < hierarchy)
             {
                 let top = self.ropes[index].platform_top;
                 self.deattach_rope(index, top);
