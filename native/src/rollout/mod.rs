@@ -9875,13 +9875,22 @@ impl RolloutWorld {
                 // Their ExitAbility UnGrounds again before it reads the position
                 // (BowTransform.cs:120, GunTransform.cs:87, MagnetGun.cs:359).
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
+                // and hand on `isFacingRight = inputVector.x >= 0` and the body's
+                // externalVelocity (BowTransform.cs:123-125, GunTransform.cs:90-93).
+                let aim = match active {
+                    ActiveAbility::Bow => slot.bow.aim,
+                    ActiveAbility::Magnet => slot.magnet.aim,
+                    _ => slot.gun.aim,
+                };
+                slot.facing_right = aim.x >= Fix::ZERO;
+            } else {
+                slot.base.external_velocity = Vec2::ZERO;
             }
             // The slime's SyncPhysicsTo airborne arm (PlayerPhysics.cs:577).
             slot.base.ground = None;
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.base.radius = data.player.radius;
             slot.base.constants = data.player.constants.clone();
-            slot.base.external_velocity = Vec2::ZERO;
             slot.exit_to_fall();
             slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
