@@ -3196,6 +3196,10 @@ pub struct PlayerSlot {
     /// Last movement input accepted by Player.ForceSetInputProfile. New
     /// packets are ignored for an unprotected player during Time Stop.
     pub last_movement_input: Vec2,
+    /// The packet Player.OverrideInputWithNetworkInput last accepted: it
+    /// skips the write for a player time is stopped for (Player.cs:623-641),
+    /// so every read that pass sees the packet from before the stop.
+    pub input_packet: CAction,
     /// SlimeController.inputVector: the stick as of the slime's last own
     /// pass, which is the pass that entered its current ability.
     pub slime_input: Vec2,
@@ -3544,6 +3548,7 @@ impl PlayerSlot {
         self.form_flag_body = player.form_flag_body;
         self.input_jump_was_down = player.input_jump_was_down;
         self.last_movement_input = player.last_movement_input;
+        self.input_packet = player.input_packet;
         self.last_action = player.last_action;
         self.unspawned = player.unspawned;
         self.respawn_ticks = player.respawn_ticks;
@@ -3901,6 +3906,8 @@ struct PlatformScratch {
     /// Bodies whose form entry recorded the Player's form flags before the
     /// turns ahead of the form's own.
     form_flags_taken: u16,
+    /// Bodies whose turn this pass took the frozen-player branch.
+    frozen_turns: u16,
     /// Ropes from this hierarchy up wait for the abilityless clone pass.
     ropes_walk_limit: u32,
     /// Set while the ropes waiting on a platform's ScaleChanger run.
@@ -5285,6 +5292,7 @@ impl RolloutWorld {
                     grounded_speed: Fix::ZERO,
                     previous_jump: false,
                     skip_next_gravity: false,
+                    fixed_delta_time: DT,
                     instant_cast_this_pass: false,
                     was_upside_down: false,
                     pre_move_up: Vec2::UP,
@@ -5468,6 +5476,7 @@ impl RolloutWorld {
                 stock_indicator_markers: [None; 3],
                 input_jump_was_down: false,
                 last_movement_input: Vec2::ZERO,
+                input_packet: CAction::default(),
                 slime_input: Vec2::ZERO,
                 last_action: Action::default(),
                 telemetry: CTelemetry::default(),
@@ -6597,6 +6606,9 @@ impl RolloutWorld {
     /// then chain like the .NET callbacks (land->idle, stop->idle,
     /// turn->run); reversals while running pass through `stop`.
     fn update_obs_state(&mut self, index: usize, dir: Vec2) {
+        // The slime's SpriteAnimator holds while time is stopped for it
+        // (SpriteAnimator.cs:85-102), and with it the animation callbacks.
+        let stopped_for = self.is_time_stopped_for(index);
         let slot = &mut self.players[index];
         let held = std::mem::take(&mut slot.obs_state_held_this_tick);
         let disabled = std::mem::take(&mut slot.obs_state_disabled_this_tick);
@@ -6627,6 +6639,7 @@ impl RolloutWorld {
         {
             return;
         }
+        let animates = !stopped_for;
         Self::slime_state_switch(
             &mut slot.base,
             &mut slot.obs_state,
@@ -6635,6 +6648,7 @@ impl RolloutWorld {
             &mut slot.prev_input_align,
             dir,
             held,
+            animates,
         );
     }
 
@@ -6649,6 +6663,7 @@ impl RolloutWorld {
         prev_align: &mut Fix,
         dir: Vec2,
         held: bool,
+        animates: bool,
     ) {
         // SlimeController stores this pass's ground alignment in `prevInput`
         // at the end of OldUpdate (SlimeController.cs:889), on every pass that
@@ -6802,9 +6817,11 @@ impl RolloutWorld {
                 if !held && (align.abs() >= Fix::from_f32(0.2) || into_ground) {
                     *facing_right = align >= Fix::ZERO;
                 }
-                *state_ticks = state_ticks.saturating_sub(1);
-                if *state_ticks == 0 {
-                    *obs_state = STATE_IDLE;
+                if animates {
+                    *state_ticks = state_ticks.saturating_sub(1);
+                    if *state_ticks == 0 {
+                        *obs_state = STATE_IDLE;
+                    }
                 }
             }
             STATE_RUN => {
@@ -6829,7 +6846,7 @@ impl RolloutWorld {
                     *obs_state = STATE_TURN;
                     *state_ticks = TURN_TICKS;
                     *facing_right = input_right;
-                } else {
+                } else if animates {
                     *state_ticks = state_ticks.saturating_sub(1);
                     if *state_ticks == 0 {
                         *obs_state = STATE_IDLE;
@@ -6840,7 +6857,7 @@ impl RolloutWorld {
                 if !held && !moving {
                     *obs_state = STATE_STOP;
                     *state_ticks = STOP_TICKS;
-                } else {
+                } else if animates {
                     *state_ticks = state_ticks.saturating_sub(1);
                     if *state_ticks == 0 {
                         *obs_state = STATE_RUN;
@@ -6928,6 +6945,13 @@ impl RolloutWorld {
     /// session end checks.
     fn game_tick(&mut self, actions: &[CAction]) {
         let data = data::get();
+        // RlBridge hands the packets over before the tick; a player time is
+        // stopped for keeps the one it had (Player.cs:623-641).
+        for (index, action) in actions.iter().enumerate().take(self.player_count) {
+            if !self.is_time_stopped_for(index) {
+                self.players[index].input_packet = *action;
+            }
+        }
         let active_subsystems = self.active_subsystems;
         let has = |ability| active_subsystems & ability_bit(ability) != 0;
         let has_rope = has(ABILITY_GRAPPLING_HOOK) || has(ABILITY_WEB_SWING);
@@ -7013,18 +7037,10 @@ impl RolloutWorld {
         // Updater runs Player.UpdatePlayer for the full player list before
         // any MonoUpdatable. Invisibility therefore expires before the owning
         // SlimeController gets its cooldown/cast pass.
-        let player_count = self.player_count;
-        for (index, slot) in self.players[..player_count].iter_mut().enumerate() {
+        for index in 0..self.player_count {
+            let dt = self.fixed_delta_time(index, DT);
+            let slot = &mut self.players[index];
             if slot.invisible {
-                // Time-stop protection is added with the Time Stop port. In
-                // the ordinary clock state FixedDeltaTime is exactly DT.
-                let dt = if self.player_time_scale < Fix::from_f32(0.01)
-                    && !self.time_stop_protected[index]
-                {
-                    Fix::ZERO
-                } else {
-                    DT
-                };
                 slot.invisible_time += dt;
                 slot.ability_time += dt;
                 if slot.invisible_time > Fix::from_int(5) {
@@ -7087,17 +7103,18 @@ impl RolloutWorld {
         // A clone older than a slime or form takes its turn in their walk.
         let action_count = actions.len().min(self.player_count);
         self.scratch.clone_action_count = action_count;
-        self.scratch.clone_actions[..action_count].copy_from_slice(&actions[..action_count]);
+        for index in 0..action_count {
+            self.scratch.clone_actions[index] = self.players[index].input_packet;
+        }
         self.scratch.turn_dt = updater_dt;
         self.scratch.turn_rewind = has(ABILITY_REWIND);
         // Updater updates every Player's frame-dependent button edges before
         // any MonoUpdatable, so a clone whose turn comes ahead of its owner's
-        // already reads this pass's jump edge. A frozen player keeps its input.
+        // already reads this pass's jump edge.
+        self.scratch.frozen_turns = 0;
         self.scratch.clone_jump_pressed = [false; MAX_BODIES];
         for &index in &player_order[..player_count] {
-            if (index >= self.player_count && !self.players[index].base.alive)
-                || (self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index])
-            {
+            if index >= self.player_count && !self.players[index].base.alive {
                 continue;
             }
             let action = self.scratch.clone_actions[self.players[index].owner].aim_action();
@@ -7365,7 +7382,7 @@ impl RolloutWorld {
         // moves to its new surface local in PlayerPhysics.LateUpdateSim
         // (PlayerPhysics.cs:138-146), after the contacts below.
         for index in 0..self.players.len().min(player_count) {
-            let action = &actions[self.players[index].owner];
+            let action = self.scratch.clone_actions[self.players[index].owner];
             // The TimeStop effect can restore the global scale later in this
             // updater pass. DetPhysics still observes the zero delta that was
             // captured at the pass start and retains frozen colliders once
@@ -7416,7 +7433,7 @@ impl RolloutWorld {
                 // spawns, so SyncAll moves it to the point ReSpawnFast chose.
                 self.players[index].base.sync_collider();
             }
-            if !frozen {
+            if !frozen || self.scratch.frozen_turns & (1 << index) == 0 {
                 let input = action.input_direction(self.players[index].keyboard);
                 self.update_obs_state(index, input);
             }
@@ -9346,6 +9363,38 @@ impl RolloutWorld {
         self.hittable(index) && self.players[index].respawn_spawn_ticks == 0
     }
 
+    /// GameTime.IsTimeStopped: some Time Stop holds the global scale down.
+    fn is_time_stopped(&self) -> bool {
+        self.player_time_scale < Fix::from_f32(0.01)
+    }
+
+    /// GameTime.IsTimeStoppedFor: time is stopped and the body's player is
+    /// not on the caster's team.
+    fn is_time_stopped_for(&self, index: usize) -> bool {
+        self.is_time_stopped() && !self.time_stop_protected[index]
+    }
+
+    /// GameTime.FixedDeltaTime(id, dt): `dt` for a protected player, else `dt`
+    /// scaled by the global PlayerTimeScale.
+    fn fixed_delta_time(&self, index: usize, dt: Fix) -> Fix {
+        if self.time_stop_protected[index] { dt } else { dt * self.player_time_scale }
+    }
+
+    /// SlimeController.OldUpdate's cooldown clocks (SlimeController.cs:727-731):
+    /// under any Time Stop an ability flagged CooldownStoppedDuringTimeStop
+    /// holds, even for the caster's team; the rest advance by FixedDeltaTime.
+    fn advance_slime_cooldowns(&mut self, index: usize) {
+        let data = data::get();
+        let dt = self.fixed_delta_time(index, DT);
+        let stopped = self.is_time_stopped();
+        let slot = &mut self.players[index];
+        for s in 0..3 {
+            if !stopped || !data.abilities[slot.abilities[s] as usize].stopped_during_time_stop {
+                slot.timers[s] += dt;
+            }
+        }
+    }
+
     /// The slime GameObject's activeSelf, which its row carries live
     /// (`PlayerSlot::sync_slime_row`): FindObjectsOfType<SlimeController>
     /// finds only an active slime.
@@ -9503,8 +9552,7 @@ impl RolloutWorld {
     /// the slime's SpriteAnimator, a child after SlimeController, steps the
     /// eating animations.
     fn biting_tick(&mut self, index: usize, action: Action) {
-        let stopped =
-            self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index];
+        let stopped = self.is_time_stopped_for(index);
         let slot = &mut self.players[index];
         slot.base.previous_jump = action.buttons & 1 != 0;
         if slot.eating.swallowing && !stopped {
@@ -9804,9 +9852,7 @@ impl RolloutWorld {
             slot.reported_position = slot.base.position;
             slot.reported_tick = tick;
             slot.obs_input_suppressed_this_tick = true;
-            for timer in &mut slot.timers {
-                *timer += DT;
-            }
+            self.advance_slime_cooldowns(index);
             // The same loop runs the rope abilities' UpdateCooldowns, which
             // see the rope BeginRewind let go (SlimeController.cs:737-752).
             self.rope_ready_casts(index);
@@ -9949,16 +9995,7 @@ impl RolloutWorld {
             if !leaving_blink_wall && slot.freeze_form_exit_tick != self.tick {
                 slot.reported_position = slot.base.position;
             }
-            for s in 0..3 {
-                // A protected player otherwise receives an unscaled delta,
-                // but abilities opting into CooldownStoppedDuringTimeStop
-                // still keep their timer fixed (SlimeController.cs:727-731).
-                if self.player_time_scale >= Fix::from_f32(0.01)
-                    || !data.abilities[slot.abilities[s] as usize].stopped_during_time_stop
-                {
-                    slot.timers[s] += DT;
-                }
-            }
+            self.advance_slime_cooldowns(index);
         }
         // The rope abilities' UpdateCooldowns sits in the same !isInAbility
         // loop (SlimeController.cs:717-743).
@@ -10278,9 +10315,7 @@ impl RolloutWorld {
                                 slot.base.out_of_bounds = true;
                                 return;
                             }
-                            slot.base.position +=
-                                (slot.base.velocity + slot.base.external_velocity) * DT;
-                            slot.base.external_velocity *= Fix::from_f64(0.95);
+                            slot.base.integrate();
                             return;
                         }
                         // Rewind sets InstantAbility.ignoreNextCooldown when
@@ -28307,6 +28342,7 @@ impl RolloutWorld {
             grounded_speed: Fix::ZERO,
             previous_jump: false,
             skip_next_gravity: false,
+            fixed_delta_time: DT,
             instant_cast_this_pass: false,
             was_upside_down: false,
             pre_move_up: Vec2::UP,
@@ -30961,7 +30997,8 @@ impl RolloutWorld {
             slot.state_ticks = 0;
             return false;
         }
-        slot.ragdoll.time += DT;
+        // timeInRagdoll takes FixedDeltaTime (SlimeController.cs:1052).
+        slot.ragdoll.time += slot.base.fixed_delta_time;
         if slot.ragdoll.time > slot.ragdoll.duration {
             let held_on_ground = slot.ragdoll.hold_on_ground && slot.base.grounded;
             slot.ragdoll.active = false;
@@ -30982,9 +31019,7 @@ impl RolloutWorld {
         // OldUpdate runs its whole cooldown loop, the rope abilities'
         // UpdateCooldowns included, before its ragdoll-state early return
         // suppresses PlayerPhysics.Move.
-        for timer in &mut slot.timers {
-            *timer += DT;
-        }
+        self.advance_slime_cooldowns(index);
         self.rope_ready_casts(index);
         self.web_cooldowns_tick(index, action);
         self.grapple_cooldowns_tick(index);
@@ -37703,7 +37738,13 @@ impl RolloutWorld {
         // next one, so the destroyed slime's Player.Position stands.
         let stock_clone_spawned =
             self.players[index].stock_death.is_some_and(|(tick, _)| tick == self.tick);
-        if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
+        self.players[index].base.fixed_delta_time = self.fixed_delta_time(index, DT);
+        // SlimeController runs as ever, only its FixedDeltaTime steps are zero.
+        let slime_runs = self.playable(index)
+            && self.players[index].active == ActiveAbility::None
+            && !self.players[index].base.dash.active;
+        if self.is_time_stopped_for(index) && !slime_runs {
+            self.scratch.frozen_turns |= 1 << index;
             if self.players[index].active == ActiveAbility::Missile {
                 // SparkShot still runs while frozen. Its turn angle uses
                 // the owner's zero FixedDeltaTime, but it nevertheless
@@ -38679,6 +38720,7 @@ impl RolloutWorld {
                     &mut clone.prev_input_align,
                     movement,
                     false,
+                    !stopped,
                 );
             }
         }
@@ -41194,9 +41236,8 @@ impl RolloutWorld {
             // GameSessionHandler.SpawnPlayers instantiates the slime at its
             // team spawn on SLIME_AWAKE_TICK+1 and BeforeSpawnInit starts the
             // spawn animation with physics off (SlimeController.cs:516-533).
-            for timer in &mut slot.timers {
-                *timer += DT;
-            }
+            self.advance_slime_cooldowns(index);
+            let slot = &mut self.players[index];
             slot.unspawned -= 1;
             if slot.unspawned == 0 {
                 let spawns = &data.maps[self.map].team_spawns;
@@ -41246,9 +41287,7 @@ impl RolloutWorld {
                 slot.obs_state = STATE_FALL;
                 // The replacement slime runs later than its chooser in this
                 // Updater pass and advances its fresh cooldowns immediately.
-                for timer in &mut slot.timers {
-                    *timer += DT;
-                }
+                self.advance_slime_cooldowns(index);
             }
             return;
         }
@@ -41256,9 +41295,8 @@ impl RolloutWorld {
         if slot.respawn_spawn_ticks > 0 {
             // OldUpdate continues cooldowns during ReSpawnFast's suppressed
             // animation, but movement and ability input remain disabled.
-            for timer in &mut slot.timers {
-                *timer += DT;
-            }
+            self.advance_slime_cooldowns(index);
+            let slot = &mut self.players[index];
             slot.respawn_spawn_ticks -= 1;
             if slot.respawn_spawn_ticks == 0 {
                 // SlimeController.Spawn pops the clone upward at 1/4 jump

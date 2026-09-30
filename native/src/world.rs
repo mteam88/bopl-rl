@@ -51,6 +51,11 @@ pub struct MovementConstants {
     pub friction: Fix,
     pub ice_friction: Fix,
 }
+
+fn default_fixed_delta_time() -> Fix {
+    DT
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Player {
     pub alive: bool,
@@ -83,6 +88,11 @@ pub struct Player {
     /// later for the ordinary slime.
     #[serde(default)]
     pub(crate) skip_next_gravity: bool,
+    /// GameTime.FixedDeltaTime(playerIdHolder, simDeltaTime) for the body's
+    /// player, taken at its turn: zero while a Time Stop freezes that player.
+    /// PlayerPhysics and PlayerBody scale only these steps by it.
+    #[serde(default = "default_fixed_delta_time")]
+    pub(crate) fixed_delta_time: Fix,
     /// PlayerPhysics.jumpedThisFrame: set by Jump, cleared once the tick's
     /// state machine has seen it.
     #[serde(default)]
@@ -737,7 +747,7 @@ impl Player {
         self.attach_upside_down = Some(self.up.y < Fix::ZERO);
     }
     pub(crate) fn collision_rays(&mut self, terrain: Terrain) {
-        self.collision_rays_over(terrain, DT);
+        self.collision_rays_over(terrain, self.fixed_delta_time);
     }
     /// VelocityBasedRaycasts with the caller's time step, which scales the
     /// rays' length. Returns whether a ray hit and attached the body.
@@ -855,7 +865,7 @@ impl Player {
                 self.grounded_speed,
                 sign * self.constants.max_speed,
                 self.constants.accel,
-                DT,
+                self.fixed_delta_time,
             );
         }
         if !platform.active {
@@ -869,7 +879,8 @@ impl Player {
         // The own platform is excluded from the blocking test; with no other
         // platform near the rays `movement_limit` would return its unblocked
         // sentinel without any query, so skip building the rays.
-        let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, DT)
+        let dt = self.fixed_delta_time;
+        let candidates = ray_group_candidates(terrain, self.position, velocity, self.radius, dt)
             & !(1u64 << platform_index);
         let allowed = if candidates == 0 {
             crate::platform_motion::MOVEMENT_UNBLOCKED
@@ -878,7 +889,7 @@ impl Player {
                 self.position,
                 self.radius,
                 velocity,
-                DT,
+                dt,
                 &mut |origin, direction, distance| {
                     closest_among(
                         terrain,
@@ -896,7 +907,7 @@ impl Player {
         let allowed = allowed.min(speed.abs()) * Fix::from_int(speed.sign());
         self.local = platform
             .surface
-            .move_unblocked(self.local, self.radius, allowed, DT);
+            .move_unblocked(self.local, self.radius, allowed, dt);
     }
     pub(crate) fn gravity_step(&mut self, terrain: Terrain) {
         if std::mem::take(&mut self.skip_next_gravity) {
@@ -998,7 +1009,7 @@ impl Player {
     }
     /// PlayerBody.LateUpdateSim without a rope.
     pub(crate) fn integrate(&mut self) {
-        self.position += (self.velocity + self.external_velocity) * DT;
+        self.position += (self.velocity + self.external_velocity) * self.fixed_delta_time;
         self.external_velocity *= Fix::from_f64(0.95);
     }
     /// PlayerPhysics.Move (PlayerPhysics.cs:230-260) without PlayerBody's
