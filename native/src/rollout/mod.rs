@@ -48064,6 +48064,7 @@ mod tests {
         world.entities[second_entity].x = first_row.x;
         world.entities[second_entity].y = first_row.y;
         world.players[1].base.collider = world.players[0].base.collider;
+        world.players[1].base.synced = world.players[0].base.synced;
         world.spawn_ability_pickup(position, ABILITY_MINE, Vec2::ZERO, data::get());
         let pickup_index = world.ability_pickups.len() - 1;
         world.ability_pickups[pickup_index].enabled = true;
