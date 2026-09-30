@@ -23233,9 +23233,12 @@ impl RolloutWorld {
                         }
                         if self.players[target].active == ActiveAbility::Rock {
                             // PhysicsParent callback precedes the caster's
-                            // PlayerCollision callback.
+                            // PlayerCollision callback. Its normal is
+                            // NormalizedSafe(nearPos - body.position), with
+                            // nearPos = origin + nearDist * dir.
                             if self.players[target].rope.is_none() {
-                                self.players[target].rock.body.force += direction
+                                let normal = (direction * hit.distance).normalized_safe();
+                                self.players[target].rock.body.force += normal
                                     * data.rock.player_collision_bounce
                                     * Fix::from_int(60);
                             }
