@@ -7336,6 +7336,17 @@ impl RolloutWorld {
         // later hit them: a Gust wave or explosion spawned after the platform
         // pushes it after its AnimateVelocity spring has read the velocity.
         // Those older than a player object took their turn before it.
+        // Each spawned platform's prefab updates as one block at its own
+        // Updater turn, after everything instantiated before it: a spark node
+        // older than a Boulder draws its lightning before the Boulder's
+        // DestroyIfOutsideSceneBounds destroys the node with it.
+        let newest_spawned = (0..self.platforms.len())
+            .filter(|&i| self.platform_updates_in(i, PlatformPass::Spawned))
+            .map(|i| self.platform_turn_key(i))
+            .max();
+        if let Some(newest) = newest_spawned {
+            self.run_spawned_before(data, updater_dt, newest + 1);
+        }
         self.spawned_platforms_tick(data, updater_dt, 0..u32::MAX);
         if has(ABILITY_THROW) {
             self.macho_boulders_remove_drowned();
@@ -8041,6 +8052,11 @@ impl RolloutWorld {
                 push(100_000_000 + engine.hierarchy_base, 6, i);
             }
         }
+        for (i, node) in self.tesla_nodes.iter().enumerate() {
+            if node.updated_tick != Some(tick) {
+                push(100_000_000 + node.hierarchy_base, 16, i);
+            }
+        }
         // A rope newer than a live abilityless clone waits for the clone's
         // PlayerBody, which moves the rope end it holds, in the clone pass;
         // one waiting on an older platform ScaleChanger runs in that pass.
@@ -8097,7 +8113,7 @@ impl RolloutWorld {
                 && missile.updater_ran_tick != Some(tick)
                 && !self.blink_object_hidden(missile.entity)
             {
-                push(100_000_000 + missile.hierarchy_base, 16, i);
+                push(100_000_000 + missile.hierarchy_base, 19, i);
             }
         }
         queue.sort_unstable();
@@ -8148,7 +8164,8 @@ impl RolloutWorld {
                     clone.pass_start = (tick, clone.base.position);
                     self.abilityless_clone_update_tagged(index);
                 }
-                16 => {
+                16 => self.tesla_nodes_update(data, updater_dt, hierarchy - 99_999_999),
+                19 => {
                     let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
                     self.guided_missile_update_sim(index, DT * self.player_time_scale, being_held, data);
                 }
@@ -15956,8 +15973,6 @@ impl RolloutWorld {
                     }
                 }
             }
-
-            self.update_tesla_line_geometry(node_index, data);
         }
     }
 
@@ -16021,6 +16036,11 @@ impl RolloutWorld {
             }
             if !self.tesla_nodes[node_index].connected {
                 self.tesla_nodes[node_index].lethal = false;
+            } else if self.tesla_nodes[node_index].child.is_some() {
+                // UpdateLightningLine at the parent's turn, from the FixTransforms
+                // as the older updatables left them: a Portal younger than the
+                // node has not yet moved its child (SimpleSparkNode.cs:246-254).
+                self.update_tesla_line_geometry(node_index, data);
             }
             self.tesla_orb_step(node_index);
         }
@@ -20937,21 +20957,6 @@ impl RolloutWorld {
         for rope in &mut self.ropes {
             if rope.platform == Some(platform_index) {
                 rope.platform_destroyed_at = (self.tick, hierarchy);
-            }
-        }
-        // A spark node planted on it and older than the check has already
-        // redrawn its lightning in its own UpdateSim, which the line keeps
-        // when the drowning destroys it.
-        for node_index in 0..self.tesla_nodes.len() {
-            let node = self.tesla_nodes[node_index];
-            if node.active
-                && !node.macho_carried
-                && node.platform_index == platform_index
-                && node.connected
-                && node.child.is_some()
-                && node.hierarchy_base < hierarchy
-            {
-                self.update_tesla_line_geometry(node_index, data);
             }
         }
         // In space the floor exit instantiates UpEffect, which Boulder.prefab
@@ -30898,7 +30903,6 @@ impl RolloutWorld {
             // the older updatables have taken their turns: a pickup raycasts
             // for ground before the wall goes.
             let hierarchy = state.blink_tunnel_hierarchy;
-            self.tesla_nodes_update(data, updater_dt, hierarchy);
             self.run_spawned_before(data, updater_dt, 100_000_000 + hierarchy);
             let state = &mut self.platform_dynamics[platform_index];
             state.blink_tunnel_stepped_tick = Some(self.tick);
