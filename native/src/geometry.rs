@@ -36,15 +36,23 @@ impl OrientedBox {
             inverse_extents,
         }
     }
+    /// DPhysicsBox/DPhysicsRoundedRect.CalcExtents: the collider's current
+    /// half-extents, scale included, read back as `One / inverseExtents` per
+    /// axis (DPhysicsBox.cs:244-254, DPhysicsRoundedRect.cs:351-361). The round
+    /// trip is not the identity in Q32.32, so a stored extent is not a
+    /// substitute.
+    pub fn calc_extents(self) -> Vec2 {
+        Vec2::new(
+            Fix::ONE / self.inverse_extents.x,
+            Fix::ONE / self.inverse_extents.y,
+        )
+    }
     /// DPhysicsRoundedRect.CalcExtents fed back through SetExtents, as
     /// ResizablePlatform.UpdateSim does on every pass: Box.UpdateExtents
     /// (Box.cs:37-44) rescales the existing axes by `One / (One / e)`.
     /// Returns the box and the extents it was resized to.
     pub fn reset_extents(mut self) -> (Self, Vec2) {
-        let extents = Vec2::new(
-            Fix::ONE / self.inverse_extents.x,
-            Fix::ONE / self.inverse_extents.y,
-        );
+        let extents = self.calc_extents();
         self.right *= self.inverse_extents.x;
         self.up *= self.inverse_extents.y;
         self.inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
@@ -276,6 +284,10 @@ fn edge_hits(b: OrientedBox, radius: Fix, origin: Vec2, direction: Vec2) -> Edge
 }
 
 impl RoundedRect {
+    /// DPhysicsRoundedRect.CalcExtents (DPhysicsRoundedRect.cs:351-361).
+    pub fn calc_extents(self) -> Vec2 {
+        self.inner.calc_extents()
+    }
     /// Conservative axis-aligned bounds of the rounded rectangle: the box's
     /// projected half extents plus the corner radius on each axis.
     pub fn bounds(self) -> Bounds {

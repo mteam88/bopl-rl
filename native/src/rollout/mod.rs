@@ -19886,10 +19886,7 @@ impl RolloutWorld {
         };
         let dynamics = self.platform_dynamics[platform_index];
         let collider = self.platforms[platform_index].collider;
-        let extents = Vec2::new(
-            Fix::ONE / collider.inner.inverse_extents.x,
-            Fix::ONE / collider.inner.inverse_extents.y,
-        );
+        let extents = collider.calc_extents();
         let area = platform_area(extents.x, extents.y, collider.radius);
         let next =
             dynamics.scale - dynamics.scale * DT * data.macho_throw.platform_scale_reduction / area;
@@ -31874,10 +31871,7 @@ impl RolloutWorld {
             ));
             self.set_platform_scale(source, effect_scale, true);
             let collider = self.platforms[source].collider;
-            let extents = Vec2::new(
-                Fix::ONE / collider.inner.inverse_extents.x,
-                Fix::ONE / collider.inner.inverse_extents.y,
-            );
+            let extents = collider.calc_extents();
             let (mut right, mut up) = (snapshot.original_right, snapshot.original_up);
             let tiny = Fix::ONE / Fix::from_int(20);
             if extents.x < tiny && extents.y < tiny {
@@ -31910,8 +31904,7 @@ impl RolloutWorld {
             // collider's startRadius (DPhysicsRoundedRect.cs:426-447).
             let mut query = self.platforms[source].collider;
             let basis = self.platforms[source].surface.right;
-            let live = query.inner.inverse_extents;
-            let cast_extents = Vec2::new(Fix::ONE / live.x, Fix::ONE / live.y);
+            let cast_extents = query.calc_extents();
             let inverse = |extent: Fix| {
                 if extent == Fix::ZERO {
                     Fix::ZERO
@@ -32695,7 +32688,7 @@ impl RolloutWorld {
                     self.players[index].platform.sizing_right = up.perp_cw();
                 }
                 // During the enter animation only the bevel radius changes.
-                let extents = self.platform_calc_extents(platform_index);
+                let extents = self.platforms[platform_index].collider.calc_extents();
                 self.reshape_platform(platform_index, extents, radius);
                 let slot = &mut self.players[index];
                 slot.base.position = center;
@@ -32732,7 +32725,7 @@ impl RolloutWorld {
                 // UpdateSim reads CalcExtents and the live radius off the
                 // collider, not the bounds cached at the last UpdateBounds.
                 let span = self.platforms[platform_index].collider.radius
-                    + self.platform_calc_extents(platform_index).y;
+                    + self.platforms[platform_index].collider.calc_extents().y;
                 let (center, up) = {
                     let s = &self.platforms[platform_index].surface;
                     (s.center, s.up)
@@ -32834,7 +32827,7 @@ impl RolloutWorld {
     ) {
         let platform_index = self.players[index].platform.platform_index;
         let center = self.platforms[platform_index].surface.center;
-        let extents = self.platform_calc_extents(platform_index);
+        let extents = self.platforms[platform_index].collider.calc_extents();
         let radius = self.platforms[platform_index].collider.radius;
         let (x, y) = (extents.x, extents.y);
         // PlatformTransform.State.Size uses the transformed player's stable
@@ -33074,11 +33067,14 @@ impl RolloutWorld {
             .rposition(|s| s.active && !s.being_removed && s.buffer == Some(buffer))
         {
             let platform_index = self.spawned[i].platform_index;
-            let surface = &self.platforms[platform_index].surface;
+            // RemovePlatform shrinks from CalcExtents and the live radius
+            // (ResizablePlatform.cs:109-114), which already carry a scale set
+            // since the last UpdateBounds.
+            let collider = self.platforms[platform_index].collider;
             self.spawned[i].being_removed = true;
             self.spawned[i].removal_time = Fix::ZERO;
-            self.spawned[i].removal_extents = surface.extents;
-            self.spawned[i].removal_radius = surface.radius;
+            self.spawned[i].removal_extents = collider.calc_extents();
+            self.spawned[i].removal_radius = collider.radius;
         }
     }
 
@@ -33251,11 +33247,6 @@ impl RolloutWorld {
     /// It never moves the platform.
     /// DPhysicsRoundedRect.CalcExtents reads the extents back off the
     /// collider, `One / inverseExtents`, so a scale change shows up in them.
-    fn platform_calc_extents(&self, index: usize) -> Vec2 {
-        let inverse = self.platforms[index].collider.inner.inverse_extents;
-        Vec2::new(Fix::ONE / inverse.x, Fix::ONE / inverse.y)
-    }
-
     fn reshape_platform(&mut self, index: usize, extents: Vec2, radius: Fix) {
         let platform = &mut self.platforms[index];
         // ResizablePlatform.ResizePlatform ends with StickyRect.UpdateBounds
@@ -38511,11 +38502,7 @@ impl RolloutWorld {
     /// StickyRoundedRectangle.UpdateBounds: re-read the collider's current
     /// shape into the cached perimeter.
     fn update_surface_bounds(&mut self, i: usize) {
-        let inner = self.platforms[i].collider.inner;
-        let extents = Vec2::new(
-            Fix::ONE / inner.inverse_extents.x,
-            Fix::ONE / inner.inverse_extents.y,
-        );
+        let extents = self.platforms[i].collider.calc_extents();
         let radius = self.platforms[i].collider.radius;
         self.platforms[i].surface.extents = extents;
         self.platforms[i].surface.radius = radius;
@@ -38612,11 +38599,7 @@ impl RolloutWorld {
             self.set_platform_scale(i, value, false);
             // UpdateBounds closes StickyRoundedRectangle.UpdateSim, so a
             // slime walking this pass already sees the eased-back shape.
-            let inner = self.platforms[i].collider.inner;
-            self.platforms[i].surface.extents = Vec2::new(
-                Fix::ONE / inner.inverse_extents.x,
-                Fix::ONE / inner.inverse_extents.y,
-            );
+            self.platforms[i].surface.extents = self.platforms[i].collider.calc_extents();
             self.platforms[i].surface.radius = self.platforms[i].collider.radius;
             self.platforms[i].surface.bounds_radius = self.platforms[i].collider.radius;
         }
