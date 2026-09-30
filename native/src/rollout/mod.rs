@@ -7834,7 +7834,7 @@ impl RolloutWorld {
             if self.platform_dynamics[i].updater_ran_tick != Some(tick)
                 && self.platform_pass(i) != PlatformPass::Authored
             {
-                push(self.entities[self.platform_entities[i]].hierarchy, 0, i);
+                push(self.platform_turn_key(i), 0, i);
             }
         }
         for (i, hole) in self.black_holes.iter().enumerate() {
@@ -7926,7 +7926,8 @@ impl RolloutWorld {
                 0 => {
                     let pass = self.platform_pass(index);
                     if pass != PlatformPass::Authored {
-                        self.platform_updaters(data, updater_dt, pass, turn);
+                        let row = hierarchy + 1;
+                        self.platform_updaters(data, updater_dt, pass, row..row + 1);
                     }
                 }
                 1 => self.black_holes_update(data, updater_dt, turn),
@@ -38711,7 +38712,7 @@ impl RolloutWorld {
             if spawn.removal_time >= end {
                 spawn.destroy_pending = true;
                 // A newer RopeAttachment on it sees IsDestroyed this pass.
-                let hierarchy = self.entities[self.platform_entities[i]].hierarchy - 100_000_000;
+                let hierarchy = self.platform_turn_key(i) - 100_000_000;
                 for rope in &mut self.ropes {
                     if rope.platform == Some(i) {
                         rope.platform_destroyed_at = (self.tick, hierarchy);
@@ -39185,6 +39186,15 @@ impl RolloutWorld {
         self.scratch.platform_turns = turns;
         self.scratch.duplicates_window = None;
         self.scratch.spawned_window = None;
+    }
+
+    /// Platform `i`'s key among the spawned updatables'. Its row carries its
+    /// collider's own updatable number, which can be the prefab's last (a
+    /// Platform ability's DPhysicsRoundedRect is its sixth of six); every
+    /// other kind keys a prefab by its base, one before its first updatable,
+    /// so a rope registered right after the platform is still newer.
+    fn platform_turn_key(&self, i: usize) -> u32 {
+        self.entities[self.platform_entities[i]].hierarchy - 1
     }
 
     /// Whether platform `i` updates in this run of `pass`.
