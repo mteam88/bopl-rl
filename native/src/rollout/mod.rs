@@ -2647,6 +2647,13 @@ enum UngroundBody<'a> {
 }
 
 impl UngroundBody<'_> {
+    fn base(&mut self) -> &mut Player {
+        match self {
+            Self::Slime(slot) | Self::Form(slot) => &mut slot.base,
+            Self::Clone(clone) => &mut clone.base,
+        }
+    }
+
     /// PlayerPhysics.UnGround and its subscribers; returns the rotation they
     /// are handed.
     fn unground(&mut self, platforms: &[Platform], tick: u32, null_rotation: bool) -> Fix {
@@ -21910,9 +21917,7 @@ impl RolloutWorld {
                 if slot.active == ActiveAbility::None {
                     UngroundBody::Slime(slot).unground(&self.platforms, self.tick, true);
                 } else {
-                    // gap: a Beam form's OnNoLongerGrounded recomputes its staff.
-                    let lost = &mut slot.ground_destroyed;
-                    unground_physics(&mut slot.base, lost, &self.platforms, self.tick, true);
+                    UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
                     slot.obs_state = STATE_FALL;
                     slot.state_ticks = 0;
                 }

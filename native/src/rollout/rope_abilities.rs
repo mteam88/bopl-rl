@@ -358,30 +358,28 @@ fn hold_rope_end(
 }
 
 /// PlayerPhysics.LateUpdateSim's grounded rope pull: a slack end drags the
-/// body along, and the end is pinned to it. True when the pull throws the
-/// body off its ground, which UnGround does with a null rotation.
+/// body along, and the end is pinned to it. A pull that throws the body off
+/// its ground UnGrounds it with a null rotation (PlayerPhysics.cs:156-159).
 fn pin_grounded_rope_end(
-    body: &mut Player,
+    mut body: UngroundBody<'_>,
     rope: &mut RolloutRope,
     top: bool,
     platforms: &[Platform],
-) -> bool {
+    tick: u32,
+) {
     let endpoint = if top { 0 } else { rope.physics.count - 1 };
-    let delta = rope.physics.segment[endpoint] - body.position;
+    let base = body.base();
+    let delta = rope.physics.segment[endpoint] - base.position;
     if delta.length_squared() >= Fix::from_raw(300_647_711) {
-        body.external_velocity += delta * GROUNDED_ROPE_STRENGTH;
+        base.external_velocity += delta * GROUNDED_ROPE_STRENGTH;
     }
-    let mut ungrounded = false;
-    if let Some(platform) = body.platform(platforms)
-        && platform.surface.normal(body.position).dot(body.external_velocity)
-            > Fix::from_int(30)
-    {
-        // Gated on a live ground: nothing destroyed to fall back on.
-        body.unground(Some(&platform.surface), true);
-        ungrounded = true;
+    // Gated on a live ground: nothing destroyed to fall back on.
+    if base.platform(platforms).is_some_and(|platform| {
+        platform.surface.normal(base.position).dot(base.external_velocity) > Fix::from_int(30)
+    }) {
+        body.unground(platforms, tick, true);
     }
-    rope.physics.segment[endpoint] = body.position;
-    ungrounded
+    rope.physics.segment[endpoint] = body.base().position;
 }
 
 /// PlayerBody.LateUpdateSim: a rope stretched past maxStretchLength snaps
@@ -2047,10 +2045,9 @@ impl RolloutWorld {
                 && rope.physics.time_since_hook_arrived > Fix::ZERO
                 && rope.born_tick != self.tick
                 && clone.grip.attach_tick != self.tick
-                && pin_grounded_rope_end(&mut clone.base, rope, top, &self.platforms)
             {
-                clone.obs_state = STATE_FALL;
-                clone.state_ticks = 0;
+                let body = UngroundBody::Clone(clone);
+                pin_grounded_rope_end(body, rope, top, &self.platforms, self.tick);
             }
             if overstretched(rope) {
                 attach_grip(&clone.base, &mut clone.grip, &mut self.ropes, None, top, self.tick);
@@ -2096,13 +2093,14 @@ impl RolloutWorld {
             {
                 let slot = &mut self.players[player];
                 // PlayerPhysics.LateUpdateSim's UnGround nulls the rotation
-                // and raises the slime's OnNoLongerGrounded: State.fall.
-                if pin_grounded_rope_end(&mut slot.base, &mut self.ropes[rope_index], top, &self.platforms)
-                    && slot.active == ActiveAbility::None
-                {
-                    slot.obs_state = STATE_FALL;
-                    slot.state_ticks = 0;
-                }
+                // and raises the OnNoLongerGrounded of the slime or the form.
+                let body = if slot.active == ActiveAbility::None {
+                    UngroundBody::Slime(slot)
+                } else {
+                    UngroundBody::Form(slot)
+                };
+                let rope = &mut self.ropes[rope_index];
+                pin_grounded_rope_end(body, rope, top, &self.platforms, self.tick);
             }
             // Push.prefab's PlayerBody is authored with simulated off, so its
             // late update (stretch check, end force) never runs; the form's
