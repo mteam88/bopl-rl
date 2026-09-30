@@ -22587,7 +22587,10 @@ impl RolloutWorld {
             Fix::ONE / data.player.hurtbox_extents.x,
             Fix::ONE / data.player.hurtbox_extents.y,
         );
-        slot.set_ordinary_body_scale(slot.player_scale);
+        // The empty player prefab's box is unscaled until the clone's first
+        // SlimeController.UpdateSim assigns Player.Scale (`respawn_tick`).
+        slot.base.collider_inverse_extents = slot.body_inverse_extents;
+        slot.base.scale = Fix::ONE;
         slot.base.sync_collider();
         slot.reported_position = position;
         slot.reported_tick = self.tick;
@@ -23095,7 +23098,10 @@ impl RolloutWorld {
                 Fix::ONE / data.player.hurtbox_extents.x,
                 Fix::ONE / data.player.hurtbox_extents.y,
             );
-            slot.set_ordinary_body_scale(slot.player_scale);
+            // The empty player prefab's box is unscaled until the clone's
+            // first SlimeController.UpdateSim assigns Player.Scale.
+            slot.base.collider_inverse_extents = slot.body_inverse_extents;
+            slot.base.scale = Fix::ONE;
             slot.base.sync_collider();
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.ability_origin_scale = slot.player_scale;
@@ -42964,6 +42970,11 @@ impl RolloutWorld {
         // meanwhile restarts that slot's timer.
         if !slot.stock_clone_pending && !slot.revival_clone_pending {
             slot.slime_updated = true;
+            // It also assigns hurtBox.Scale = player.Scale every pass
+            // (SlimeController.cs:1078), which is not the identity at a
+            // Player.Scale other than one, so the hidden box keeps drifting.
+            slot.set_ordinary_body_scale(slot.player_scale);
+            slot.base.sync_collider();
         }
         // From the pass after SpawnClone, the revival clone's
         // DestroyIfOutsideSceneBounds runs at the marker position
