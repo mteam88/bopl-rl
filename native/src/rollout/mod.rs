@@ -422,6 +422,7 @@ const LAYER_PROJECTILE: u32 = 9;
 const LAYER_ITEM: u32 = 10;
 const LAYER_WEAPON: u32 = 13;
 const LAYER_WALL: u32 = 11;
+const LAYER_NON_LETHAL_TERRAIN: u32 = 21;
 const LAYER_WATER: u32 = 4;
 const LAYER_ROPE: u32 = 24;
 
@@ -19746,21 +19747,24 @@ impl RolloutWorld {
                         beam.direction * data.beam.platform_force * scale;
                     self.platforms_changed();
                 }
-            } else if let Some(spike) = self.spike_attacks.iter().find(|spike| {
-                spike.active
-                    && spike
-                        .entity
-                        .is_some_and(|entity| self.entities[entity].id == hit_id)
-            }) {
-                // A SpikeAttack is a LethalTerrain box inside its platform's
-                // composite, so DPhysicsBox.AddForce pushes the combined body
-                // (DetPhysics.cs:688-697, DPhysicsBox.cs:474-481).
-                let platform = spike.platform_index;
+            } else if let Some(part) = self
+                .entities
+                .iter()
+                .position(|row| row.id == hit_id)
+                .filter(|&entity| {
+                    matches!(
+                        self.entities[entity].layer,
+                        LAYER_WALL | LAYER_LETHAL_TERRAIN | LAYER_NON_LETHAL_TERRAIN
+                    )
+                })
+                .and_then(|entity| self.part_of_entity(entity))
+            {
+                // Any other collider on a wall or terrain layer takes the
+                // push through its own IPhysicsCollider.AddForce, a spark
+                // node's on its platform's CompositeBody (DetPhysics.cs:689-698).
                 let endpoint = beam.position + beam.direction * beam.distance;
                 if endpoint.y > Fix::from_f32(-10.22) && !stopped {
-                    self.platform_dynamics[platform].body.force +=
-                        beam.direction * data.beam.platform_force * scale;
-                    self.platforms_changed();
+                    self.part_add_force(part, beam.direction * data.beam.platform_force * scale);
                 }
             } else if let Some(hole_index) = self.black_holes.iter().position(|hole| {
                 hole.active

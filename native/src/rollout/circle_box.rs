@@ -332,6 +332,46 @@ impl RolloutWorld {
         }
     }
 
+    /// The live part whose GameObject an entity row is.
+    pub(super) fn part_of_entity(&self, entity: usize) -> Option<Part> {
+        (0..self.thrown_items.len())
+            .map(Part::Item)
+            .chain((0..self.portal_shots.len()).map(Part::Shot))
+            .chain((0..self.tesla_nodes.len()).map(Part::Node))
+            .chain((0..self.engines.len()).map(Part::Engine))
+            .chain((0..self.spike_attacks.len()).map(Part::Spike))
+            .chain((0..self.guided_missiles.len()).map(Part::Missile))
+            .chain((0..self.players.len()).map(Part::Rock))
+            .chain((0..self.ability_pickups.len()).map(Part::Pickup))
+            .chain((0..self.duplicated_rocks.len()).map(Part::DuplicatedRock))
+            .chain((0..self.ropes.len()).map(Part::Hook))
+            .chain((0..self.arrows.len()).map(Part::Arrow))
+            .find(|&part| !self.part_destroyed(part) && self.part_entity(part) == Some(entity))
+    }
+
+    /// DPhysicsCircle/DPhysicsBox.AddForce: a composite child's force goes to
+    /// its CompositeBody, any other to its own PhysicsBody
+    /// (DPhysicsCircle.cs:405-416, DPhysicsBox.cs:474-485).
+    pub(super) fn part_add_force(&mut self, part: Part, force: Vec2) {
+        if let Some(p) = self.part_composite(part) {
+            self.platform_dynamics[p].body.force += force;
+            self.platforms_changed();
+            return;
+        }
+        match part {
+            Part::Item(i) => self.thrown_items[i].body.force += force,
+            Part::Shot(i) => self.portal_shots[i].body.force += force,
+            Part::Missile(i) => self.guided_missiles[i].body.force += force,
+            Part::Rock(i) => self.players[i].rock.body.force += force,
+            Part::Pickup(i) => self.ability_pickups[i].body.force += force,
+            Part::DuplicatedRock(i) => self.duplicated_rocks[i].body.force += force,
+            Part::Arrow(i) => self.arrows[i].force += force,
+            // A RopeHook's circle has no BoplBody, so nothing integrates it.
+            Part::Hook(_) => {}
+            Part::Node(_) | Part::Engine(_) | Part::Spike(_) => unreachable!(),
+        }
+    }
+
     /// A platform child DetPhysics still simulates: not carried off by
     /// MachoThrow2, its platform and GameObject active.
     fn child_registered(&self, active: bool, carried: bool, platform: usize, entity: Option<usize>) -> bool {
