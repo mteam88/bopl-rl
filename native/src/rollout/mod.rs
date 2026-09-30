@@ -845,6 +845,11 @@ pub struct SpawnedSpike {
     /// (DetPhysics.cs:2467-2496), so updaters reading the transform keep it.
     pub transform_center: Vec2,
     pub surface_offset: Fix,
+    /// SpikeAttack.fixedOffset, the offset Initialize was handed: Spike's
+    /// 0.5 for a cast, ShootDuplicator's 0.75 for a copy, and MachoThrow2's
+    /// re-measured offset for a boulder re-attach. UpdatePosition adds it
+    /// to the DownThrust curve.
+    pub fixed_offset: Fix,
     pub scale: Fix,
     /// FixTransform.offset. SetScale_DPhysicsOnly compounds each rescale as
     /// `offset *= new / old`.
@@ -15216,6 +15221,7 @@ impl RolloutWorld {
             collider_center,
             transform_center,
             surface_offset,
+            fixed_offset: data.spike.surface_offset,
             scale,
             collider_offset,
             inverse_extents,
@@ -15418,8 +15424,7 @@ impl RolloutWorld {
         if attack.time > curve_end || attack.platform_index >= self.platforms.len() {
             return;
         }
-        attack.surface_offset =
-            data.spike.down_thrust.evaluate(attack.time) + data.spike.surface_offset;
+        attack.surface_offset = data.spike.down_thrust.evaluate(attack.time) + attack.fixed_offset;
         self.place_spike_attack(index);
     }
 
@@ -20170,6 +20175,7 @@ impl RolloutWorld {
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         spike.transform_center = spike.collider_center;
         spike.surface_offset = surface_offset;
+        spike.fixed_offset = fixed_offset;
         // Initialize's `hitbox.Scale = scale` divides by `(1 / scale) * scale`.
         spike.inverse_extents = spike.inverse_extents / ((Fix::ONE / spike.scale) * spike.scale);
         spike.body = child_body;
@@ -28544,7 +28550,11 @@ impl RolloutWorld {
         let right = up.perp_cw();
         let rotation = right.normalized_angle();
         let relative_right = right.complex_mul(inverse_basis);
-        let surface_offset = Fix::from_f32(0.75);
+        // ShootDuplicator hands Initialize a fixed 0.75. The copy's
+        // SpikeAttack.timePassed is not serialized, so its UpdatePosition
+        // starts the DownThrust curve from time zero.
+        let fixed_offset = Fix::from_f32(0.75);
+        let surface_offset = data.spike.down_thrust.evaluate(Fix::ZERO) + fixed_offset;
         // SpikeAttack.Initialize re-measures vec12 with LocalPlayerPosFromPos and places
         // the box from that local, which the lossy round trip moves.
         let surface = &self.platforms[platform_index].surface;
@@ -28594,6 +28604,7 @@ impl RolloutWorld {
             collider_center,
             transform_center: collider_center,
             surface_offset,
+            fixed_offset,
             scale: source.scale,
             collider_offset: source.collider_offset,
             inverse_extents,
