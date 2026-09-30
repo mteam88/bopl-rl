@@ -9459,14 +9459,15 @@ impl RolloutWorld {
                 let sideways = vin.dot(endpoint.tangent);
                 let exit = self.portals[linked];
                 let slot = &mut self.players[player_index];
-                // gap: SlimeController.OnNoLongerGrounded sets State.fall.
-                unground_physics(
-                    &mut slot.base,
-                    &mut slot.ground_destroyed,
-                    &self.platforms,
-                    self.tick,
-                    false,
-                );
+                if slot.obs_state == STATE_BITING {
+                    // gap: currentState turns to fall while the SpriteAnimator
+                    // still chews; the eating machine must follow its bite,
+                    // chew and swallow callbacks independently of obs_state.
+                    let lost = &mut slot.ground_destroyed;
+                    unground_physics(&mut slot.base, lost, &self.platforms, self.tick, false);
+                } else {
+                    UngroundBody::Slime(slot).unground(&self.platforms, self.tick, false);
+                }
                 slot.base.position = exit.position + exit.normal * data.portal_gun.exit_offset;
                 slot.base.velocity = exit.normal * inward_speed - exit.tangent * sideways;
                 slot.base.external_velocity = Vec2::ZERO;
@@ -9509,14 +9510,13 @@ impl RolloutWorld {
                 self.portals[linked].player_inside[player_id] = true;
                 // UnGround leaves the velocity the portal redirects untouched.
                 let clone = &mut self.abilityless_clones[clone_index];
-                // gap: its SlimeController.OnNoLongerGrounded sets State.fall.
-                unground_physics(
-                    &mut clone.base,
-                    &mut clone.ground_destroyed,
-                    &self.platforms,
-                    self.tick,
-                    false,
-                );
+                if clone.obs_state == STATE_BITING {
+                    // gap: as for a biting slime above.
+                    let lost = &mut clone.ground_destroyed;
+                    unground_physics(&mut clone.base, lost, &self.platforms, self.tick, false);
+                } else {
+                    UngroundBody::Clone(clone).unground(&self.platforms, self.tick, false);
+                }
                 let clone = &mut clone.base;
                 let vin = clone.velocity + clone.external_velocity;
                 let inward_speed = (-vin.dot(endpoint.normal)).max(Fix::from_int(2));
@@ -10437,16 +10437,7 @@ impl RolloutWorld {
                             // State.fall (PlayerPhysics.cs:377-380,
                             // SlimeController.cs:956), so a landing in the
                             // Move below starts the land animation afresh.
-                            // gap: it also ends the ragdoll.
-                            unground_physics(
-                                &mut slot.base,
-                                &mut slot.ground_destroyed,
-                                &self.platforms,
-                                self.tick,
-                                false,
-                            );
-                            slot.obs_state = STATE_FALL;
-                            slot.state_ticks = 0;
+                            UngroundBody::Slime(slot).unground(&self.platforms, self.tick, false);
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                             // The slime stays active and writes Player.Scale
@@ -21916,17 +21907,15 @@ impl RolloutWorld {
                 self.attach_player_rope(player_index, None, rope_top);
                 let slot = &mut self.players[player_index];
                 slot.base.velocity = Vec2::ZERO;
-                // gap: the slime's OnNoLongerGrounded also ends the ragdoll,
-                // and a Beam form's recomputes its staff.
-                unground_physics(
-                    &mut slot.base,
-                    &mut slot.ground_destroyed,
-                    &self.platforms,
-                    self.tick,
-                    true,
-                );
-                slot.obs_state = STATE_FALL;
-                slot.state_ticks = 0;
+                if slot.active == ActiveAbility::None {
+                    UngroundBody::Slime(slot).unground(&self.platforms, self.tick, true);
+                } else {
+                    // gap: a Beam form's OnNoLongerGrounded recomputes its staff.
+                    let lost = &mut slot.ground_destroyed;
+                    unground_physics(&mut slot.base, lost, &self.platforms, self.tick, true);
+                    slot.obs_state = STATE_FALL;
+                    slot.state_ticks = 0;
+                }
                 // UnGround(nullRotation) zeroes a ThrowItem or SparkShot
                 // form's body rotation too (PlayerPhysics.cs:372-376); its box
                 // takes it at the next sync.
@@ -21994,17 +21983,9 @@ impl RolloutWorld {
         {
             let clone = &mut self.abilityless_clones[clone_index];
             clone.base.velocity = Vec2::ZERO;
-            // gap: OnNoLongerGrounded also restarts the fall (state_ticks).
-            unground_physics(
-                &mut clone.base,
-                &mut clone.ground_destroyed,
-                &self.platforms,
-                self.tick,
-                true,
-            );
+            UngroundBody::Clone(clone).unground(&self.platforms, self.tick, true);
             clone.base.position += shift;
             clone.base.sync_collider();
-            clone.obs_state = STATE_FALL;
             // UnGround lifted it before the move, so its row follows the body.
             self.entities[entity].x = clone.base.collider.center.x.raw();
             self.entities[entity].y = clone.base.collider.center.y.raw();

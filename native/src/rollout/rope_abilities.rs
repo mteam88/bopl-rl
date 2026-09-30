@@ -1110,17 +1110,8 @@ impl RolloutWorld {
         if self.players[player].base.grounded {
             // UnGround raises OnNoLongerGrounded: State.fall.
             let slot = &mut self.players[player];
-            // gap: it also ends the ragdoll.
-            unground_physics(
-                &mut slot.base,
-                &mut slot.ground_destroyed,
-                &self.platforms,
-                self.tick,
-                true,
-            );
+            UngroundBody::Slime(slot).unground(&self.platforms, self.tick, true);
             slot.base.velocity += Vec2::UP * WEB_GROUNDED_POP;
-            slot.obs_state = STATE_FALL;
-            slot.state_ticks = 0;
         }
         self.players[player].web_swing[ability_slot] = WebSwingState {
             rope: Some(rope),
