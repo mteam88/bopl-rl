@@ -11645,8 +11645,10 @@ impl RolloutWorld {
                         if grounded {
                             slot.base.velocity = Vec2::ZERO;
                         } else {
-                            slot.base.rotation = Fix::ZERO;
-                            slot.base.up = Vec2::UP;
+                            // After syncing the unrotated box, OnEnterAbility
+                            // gives the body PlayerInfo's rotation back
+                            // (BlackHoleClap.cs), and the setter rebuilds up.
+                            slot.base.up = Vec2::angle(slot.base.rotation).perp();
                             slot.base.ground = None;
                             slot.base.grounded_speed = Fix::ZERO;
                             slot.base.velocity *= Fix::from_f32(0.05);
