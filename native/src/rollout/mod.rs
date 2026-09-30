@@ -6835,6 +6835,9 @@ impl RolloutWorld {
         self.scratch.hammers_ran_below = 0;
         self.scratch.engines_ran_below = 0;
         self.scratch.clones_positioned = [false; MAX_BODIES];
+        // Forms that ended earlier in the pass cleared the Player's form
+        // flags before any body's turn can set them again.
+        self.track_form_flags();
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
             if index >= self.player_count && !self.players[index].base.alive {
                 continue;
@@ -7098,6 +7101,8 @@ impl RolloutWorld {
             let casts_before = self.players[index].telemetry.ability_activations;
             self.player_tick(index, action, movement_input, jump_pressed, data);
             self.update_form_flags(index, casts_before);
+            // So did the other bodies' forms this turn ended.
+            self.track_form_flags();
             if index >= self.player_count {
                 self.publish_extra_body_position(index);
                 self.fold_extra_body_telemetry(index);
@@ -41850,7 +41855,8 @@ impl RolloutWorld {
     }
 
     /// A live body's form that ended outside its own turn (a freeze ray's
-    /// forced exit) went through SlimeController's exit too.
+    /// forced exit) went through SlimeController's exit too. Run at every
+    /// turn boundary, so an exit and another body's entry keep their order.
     fn track_form_flags(&mut self) {
         for body in 0..self.players.len() {
             let slot = &self.players[body];
