@@ -3298,6 +3298,9 @@ enum CallbackHit {
     ItemDetonate { item: usize, count: usize },
     /// A young SpikeAttack.OnCollide with a Player-layer box.
     SpikeKnock { spike: usize, player: usize, entity: usize, point: Vec2 },
+    /// SpikeAttack.OnCollide with another composite's Spike attack or
+    /// RocketEngine box.
+    SpikeShove { spike: usize, target: usize, target_is_spike: bool, point: Vec2 },
 }
 
 /// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
@@ -36286,9 +36289,10 @@ impl RolloutWorld {
         let half = |b: OrientedBox| {
             Vec2::new(b.right.x.abs() + b.up.x.abs(), b.right.y.abs() + b.up.y.abs())
         };
-        children.sort_by_key(|&(_, _, entity, _, b)| {
+        let rank = |b: OrientedBox, entity| {
             sweep_rank(&self.entities, axis(b.center) - axis(half(b)), entity)
-        });
+        };
+        children.sort_by_key(|&(_, _, entity, _, b)| rank(b, entity));
         let mut contacts = Vec::new();
         let mut window: Vec<usize> = Vec::new();
         for current in 0..children.len() {
@@ -36308,7 +36312,11 @@ impl RolloutWorld {
                     continue;
                 }
                 if let Some(contact) = crate::physics::contact::box_box(a_box, b_box) {
-                    contacts.push((children[prior].0, children[current].0, contact));
+                    let key = sweep_pair(
+                        rank(a_swept, children[prior].2),
+                        rank(b_swept, children[current].2),
+                    );
+                    contacts.push((children[prior].0, children[current].0, contact, key));
                 }
             }
             window.push(current);
@@ -36322,7 +36330,20 @@ impl RolloutWorld {
                 (engine.platform_index, engine.body.inverse_mass)
             }
         };
-        for (a, b, contact) in contacts {
+        for (a, b, contact, (later, earlier)) in contacts {
+            // PrepareCollisionCallBacks queues A's callback, then B's; only a
+            // SpikeAttack listens on its box.
+            for (child, other) in [(a, b), (b, a)] {
+                if child >= SPIKE {
+                    let hit = CallbackHit::SpikeShove {
+                        spike: child - SPIKE,
+                        target: other % SPIKE,
+                        target_is_spike: other >= SPIKE,
+                        point: contact.point,
+                    };
+                    self.scratch.callback_hits.push(((2, later, earlier), hit));
+                }
+            }
             let (a_platform, a_inverse_mass) = child(self, a);
             let (b_platform, b_inverse_mass) = child(self, b);
             let mut a_body = self.platform_dynamics[a_platform].body;
@@ -37500,6 +37521,31 @@ impl RolloutWorld {
                         + direction * data.spike.knock_player * Fix::from_raw(row.inverse_mass);
                     row.vx = velocity.x.raw();
                     row.vy = velocity.y.raw();
+                    self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
+                }
+                CallbackHit::SpikeShove { spike, target, target_is_spike, point } => {
+                    // Neither box is on the wall layer, so knockAwayStr. The
+                    // push arm starts at the target's synced FixTransform.
+                    let (active, platform, root) = if target_is_spike {
+                        let other = self.spike_attacks[target];
+                        (other.active, other.platform_index, self.spike_attack_root(target))
+                    } else {
+                        let other = self.engines[target];
+                        let right = Vec2::angle(other.collider_rotation);
+                        let root = other.collider_center - other.collider_offset.complex_mul(right);
+                        (other.active, other.platform_index, root)
+                    };
+                    if self.player_time_scale < Fix::from_f32(0.01)
+                        || self.spike_attacks[spike].time >= data.spike.push_time
+                        || !active
+                    {
+                        continue;
+                    }
+                    let direction = (point - self.spike_attack_root(spike)).normalized_safe();
+                    let arm = (point - root).normalized_safe();
+                    self.platform_dynamics[platform]
+                        .body
+                        .apply_impulse(direction * data.spike.knock_player, arm);
                     self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
                 }
                 CallbackHit::ItemDetonate { item, count } => {
