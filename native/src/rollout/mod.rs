@@ -9977,12 +9977,15 @@ impl RolloutWorld {
             return;
         }
         // RewindRecorder disables PlayerPhysics, whose UpdateSim is the one
-        // that picks up the new scale (PlayerPhysics.cs:106-123).
+        // that picks up the new scale (PlayerPhysics.cs:106-123), and a
+        // pending skipNextUpdate returns before it does, so a scale that moved
+        // meanwhile is taken in one ratio on the next pass.
         if self.players[index].active == ActiveAbility::None
             && !self.players[index].rewind.rewinding
         {
             let slot = &mut self.players[index];
-            if slot.base.scale != slot.physics_scale {
+            let skipped = slot.base.skip_next_gravity || slot.ragdoll.skip_physics;
+            if slot.base.scale != slot.physics_scale && !skipped {
                 slot.base.radius *= slot.base.scale / slot.physics_scale;
                 slot.physics_scale = slot.base.scale;
             }
