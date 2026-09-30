@@ -1547,6 +1547,10 @@ pub struct PlatformDynamics {
     /// a platform that translates without rotating (sudden death, a spring
     /// settling) keeps its basis instead of consulting the sine table twice.
     pub basis: Option<(Fix, Vec2)>,
+    /// A Duplicator copy's DetPhysics box as its Initialize stored it on the
+    /// spawn pass: InstantiateFixed zeroed the rotation, and the rotation the
+    /// effect writes afterwards reaches the box only in Simulate's sync.
+    pub unrotated_axes: Option<(u32, Vec2, Vec2)>,
 }
 
 /// PlatformTransform.State.
@@ -4660,6 +4664,7 @@ impl RolloutWorld {
                 blink_deactivated_tick: None,
                 blink_reactivated_tick: None,
                 basis: None,
+                unrotated_axes: None,
                 start_radius: p.start_radius,
             });
             self.platforms_changed();
@@ -19894,6 +19899,7 @@ impl RolloutWorld {
             blink_deactivated_tick: None,
             blink_reactivated_tick: None,
             basis: None,
+            unrotated_axes: None,
             start_radius: radius,
         });
         self.platform_defs.push(usize::MAX);
@@ -31164,12 +31170,17 @@ impl RolloutWorld {
                 Vec2::new(inverse(cast_extents.x), inverse(cast_extents.y));
             query.radius = self.platform_dynamics[source].start_radius + Fix::ONE;
             for platform_index in 0..self.platforms.len() {
+                // A copy an older effect spawned this pass is still the
+                // unrotated box its Initialize stored.
+                let mut collider = self.platforms[platform_index].collider;
+                if let Some((tick, right, up)) = self.platform_dynamics[platform_index].unrotated_axes
+                    && tick == self.tick
+                {
+                    collider.inner.right = right;
+                    collider.inner.up = up;
+                }
                 if !self.platforms[platform_index].active
-                    || crate::physics::contact::rounded_rounded(
-                        query,
-                        self.platforms[platform_index].collider,
-                    )
-                    .is_none()
+                    || crate::physics::contact::rounded_rounded(query, collider).is_none()
                 {
                     continue;
                 }
@@ -31350,6 +31361,7 @@ impl RolloutWorld {
         inner.inverse_extents = Vec2::new(inverse(start.x), inverse(start.y)) / copy_scale;
         inner.right = platform.surface.right * start.x * copy_scale;
         inner.up = platform.surface.right.perp() * start.y * copy_scale;
+        let unrotated = (self.tick, Vec2::RIGHT * start.x * copy_scale, Vec2::UP * start.y * copy_scale);
         platform.collider.radius = effect_radius / effect_scale * copy_scale;
         platform.surface.radius = platform.collider.radius;
 
@@ -31439,6 +31451,7 @@ impl RolloutWorld {
         dynamics.drop_force = Fix::ZERO;
         dynamics.duplicate_spawner_hierarchy = Some(spawner_hierarchy);
         dynamics.duplicate_lifespan = i32::MAX;
+        dynamics.unrotated_axes = Some(unrotated);
         dynamics.duplicate_shake_offset = Vec2::ZERO;
         // A QuantumTunnel restores only its own Victim (QuantumTunnel.cs:163-166):
         // the copy of a wall Blink hid is born as inactive as it and stays so,
@@ -32251,6 +32264,7 @@ impl RolloutWorld {
             blink_deactivated_tick: None,
             blink_reactivated_tick: None,
             basis: None,
+            unrotated_axes: None,
             start_radius: pd.spawn_radius * scale,
         });
         self.next_platform_id += 1;
