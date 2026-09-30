@@ -111,6 +111,10 @@ pub(crate) struct RolloutRope {
     pub platform_destroyed_at: (u32, u32),
     /// This pass's UpdateSim waits for an older ScaleChanger on the platform.
     pub after_changer: bool,
+    /// The Updater passes in which the hook's and the Rope's own UpdateSim
+    /// last took their turns.
+    pub grapple_ran_tick: Option<u32>,
+    pub rope_ran_tick: Option<u32>,
     /// Where the hook met a platform this pass. RopeHook.OnCollide takes the
     /// surface coordinate after DetPhysics synced the platform the contact
     /// passes pushed.
@@ -468,6 +472,8 @@ fn empty_rope() -> RolloutRope {
         platform_gone: false,
         platform_destroyed_at: (0, 0),
         after_changer: false,
+        grapple_ran_tick: None,
+        rope_ran_tick: None,
         hook_hit: None,
         black_hole: None,
         black_hole_reel_frames: 0,
@@ -534,6 +540,8 @@ pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
         rope.hook_remove_next = false;
         rope.hook_entity = None;
         rope.hook_end_player = usize::MAX;
+        rope.grapple_ran_tick = None;
+        rope.rope_ran_tick = None;
     }
 }
 
@@ -959,10 +967,11 @@ impl RolloutWorld {
                 || self.ropes[index].born_tick == self.tick
                 || self.ropes[index].hook_entity.is_none()
                 || !hierarchies.contains(&self.ropes[index].hierarchy)
-                || self.ropes[index].hierarchy < self.scratch.ropes_ran_below
+                || self.ropes[index].grapple_ran_tick == Some(self.tick)
             {
                 continue;
             }
+            self.ropes[index].grapple_ran_tick = Some(self.tick);
             if self.ropes[index].hook_remove_next {
                 if let Some(entity) = self.ropes[index].hook_entity.take() {
                     self.entities[entity].flags = E_REMOVED;
@@ -1288,11 +1297,12 @@ impl RolloutWorld {
             if !self.ropes[index].physics.enabled
                 || self.ropes[index].born_tick == self.tick
                 || !hierarchies.contains(&self.ropes[index].hierarchy)
-                || self.ropes[index].hierarchy < self.scratch.ropes_ran_below
+                || self.ropes[index].rope_ran_tick == Some(self.tick)
                 || self.ropes[index].after_changer != self.scratch.ropes_changer_pass
             {
                 continue;
             }
+            self.ropes[index].rope_ran_tick = Some(self.tick);
             // A wall QuantumTunnel registered before this rope (ShootQuantum
             // reuses a wall's tunnel) has already hidden or restored its wall
             // when the RopeAttachment asks activeInHierarchy.
