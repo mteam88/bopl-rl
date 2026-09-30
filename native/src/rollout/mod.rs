@@ -729,6 +729,10 @@ pub struct GuidedMissile {
     pub body: Body,
     pub up: Vec2,
     pub scale: Fix,
+    /// The Spark DPhysicsBox's stored inverse extents. Box.Rotate rebuilds
+    /// right and up from them, and each Scale write divides them by
+    /// `(1 / old) * new`.
+    pub inverse_extents: Vec2,
     pub instability_ticks: u32,
     /// `DetPhysics.duplicatedObjects` state for Missile copies. Keeping this
     /// on the pooled projectile avoids a side allocation in the hot path.
@@ -742,6 +746,18 @@ pub struct GuidedMissile {
     pub blast_hit: bool,
     /// Walls whose Box/RoundedRect manifold resolved this pass.
     pub wall_contacts: u8,
+}
+
+impl GuidedMissile {
+    fn collider(&self) -> OrientedBox {
+        let basis = Vec2::angle(self.body.orientation);
+        OrientedBox {
+            center: self.position,
+            right: (Vec2::RIGHT / self.inverse_extents.x).complex_mul(basis),
+            up: (Vec2::UP / self.inverse_extents.y).complex_mul(basis),
+            inverse_extents: self.inverse_extents,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -7676,7 +7692,7 @@ impl RolloutWorld {
         // one, so an item's wall correction moves it before an arrow's
         // manifold with it is built.
         if has(ABILITY_MISSILE) {
-            self.guided_missile_wall_contacts(data);
+            self.guided_missile_wall_contacts();
         }
         if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_ROCK) || has(ABILITY_PORTAL_GUN) || has(ABILITY_BOW) {
             for item in &mut self.thrown_items {
@@ -21653,11 +21669,7 @@ impl RolloutWorld {
                 if !missile.active || !missile.registered {
                     continue;
                 }
-                let collider = OrientedBox::from_basis(
-                    missile.position,
-                    Vec2::angle(missile.body.orientation),
-                    data::get().missile.spark_extents * missile.scale,
-                );
+                let collider = missile.collider();
                 if crate::physics::contact::circle_box(query, collider).is_none() {
                     continue;
                 }
@@ -24432,6 +24444,12 @@ impl RolloutWorld {
             body,
             up,
             scale: self.players[index].player_scale,
+            // SparkShot.Fire writes Scale before DPhysicsBox.Init, so it
+            // lands in startExtents.
+            inverse_extents: {
+                let extents = data.missile.spark_extents * self.players[index].player_scale;
+                Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
+            },
             ..GuidedMissile::default()
         };
         if let Some(free) = self
@@ -26534,11 +26552,7 @@ impl RolloutWorld {
             if !missile.active || !missile.registered || missile.magnet_holder.is_some() {
                 continue;
             }
-            let collider = OrientedBox::from_basis(
-                missile.position,
-                Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents * missile.scale,
-            );
+            let collider = missile.collider();
             if crate::physics::contact::box_box(query, collider).is_none() {
                 continue;
             }
@@ -26966,11 +26980,7 @@ impl RolloutWorld {
             if !missile.active || !missile.registered {
                 continue;
             }
-            let collider = OrientedBox::from_basis(
-                missile.position,
-                Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents * missile.scale,
-            );
+            let collider = missile.collider();
             consider(
                 MagnetHeld::Missile(missile_index),
                 missile.position,
@@ -27547,11 +27557,7 @@ impl RolloutWorld {
                 missile.magnet_holder = Some(index);
                 missile.magnet_hold_ticks = 2;
                 let shape = RoundedRect {
-                    inner: OrientedBox::from_basis(
-                        missile.position,
-                        Vec2::angle(missile.body.orientation),
-                        data.missile.spark_extents * missile.scale,
-                    ),
+                    inner: missile.collider(),
                     radius: Fix::ZERO,
                 };
                 if let Some(contact) = self.platforms.iter().find_map(|platform| {
@@ -29341,6 +29347,7 @@ impl RolloutWorld {
                 // duplicateBoplBody hands the copy the source's Scale
                 // (ShootDuplicator.cs:280, 694).
                 scale: source.scale,
+                inverse_extents: duplicated_inverse_extents(source.inverse_extents, source.scale, 0),
                 duplicated: true,
                 duplicate_lifespan: 1800,
                 ..GuidedMissile::default()
@@ -31888,8 +31895,10 @@ impl RolloutWorld {
         } else {
             ray.multiplier
         };
+        let previous = missile.scale;
         missile.scale = (missile.scale + ray.scale_curve.evaluate(time) * multiplier)
             .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+        missile.inverse_extents = missile.inverse_extents / ((Fix::ONE / previous) * missile.scale);
         self.scale_changers[index].time = time;
     }
 
@@ -33609,11 +33618,7 @@ impl RolloutWorld {
         let entity = self.pooled_row(missile.entity);
         self.guided_missiles[index].entity = Some(entity);
         let id = self.next_id();
-        let collider = OrientedBox::from_basis(
-            missile.position,
-            Vec2::angle(missile.body.orientation),
-            data.missile.spark_extents * missile.scale,
-        );
+        let collider = missile.collider();
         self.entities[entity] = CEntity {
             id,
             kind: 1,
@@ -33725,7 +33730,7 @@ impl RolloutWorld {
             // A hidden Spark takes neither its updaters nor DetPhysics, but
             // RlObservation still exports its body.
             if self.blink_object_hidden(self.guided_missiles[index].entity) {
-                self.sync_guided_missile_entity(index, data);
+                self.sync_guided_missile_entity(index);
                 continue;
             }
             let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
@@ -33783,7 +33788,7 @@ impl RolloutWorld {
                 }
             }
             missile.position += missile.body.integrate(physics_dt, Fix::from_int(-40));
-            self.sync_guided_missile_entity(index, data);
+            self.sync_guided_missile_entity(index);
             // DetPhysics writes PhysicsBody.orientation back through the
             // FixTransform rotation setter after simulation, rebuilding the
             // basis that SparkShot reads on the following updater pass.
@@ -33792,14 +33797,10 @@ impl RolloutWorld {
         }
     }
 
-    fn sync_guided_missile_entity(&mut self, index: usize, data: &data::RolloutData) {
+    fn sync_guided_missile_entity(&mut self, index: usize) {
         let missile = self.guided_missiles[index];
         let entity = missile.entity.expect("registered Missile collider");
-        let collider = OrientedBox::from_basis(
-            missile.position,
-            Vec2::angle(missile.body.orientation),
-            data.missile.spark_extents * missile.scale,
-        );
+        let collider = missile.collider();
         let row = &mut self.entities[entity];
         row.x = missile.position.x.raw();
         row.y = missile.position.y.raw();
@@ -35838,11 +35839,7 @@ impl RolloutWorld {
                 if !missile.active || !missile.registered || missile.magnet_hold_ticks >= 0 {
                     continue;
                 }
-                let missile_box = OrientedBox::from_basis(
-                    missile.position,
-                    Vec2::angle(missile.body.orientation),
-                    data.missile.spark_extents * missile.scale,
-                );
+                let missile_box = missile.collider();
                 if let Some(contact) = crate::physics::contact::circle_box(circle, missile_box) {
                     missile_contacts[missile_contact_count] = (missile_index, contact);
                     missile_contact_count += 1;
@@ -36229,11 +36226,7 @@ impl RolloutWorld {
         let missiles = &self.guided_missiles;
         let shape = |index: usize| {
             let missile = missiles[index];
-            OrientedBox::from_basis(
-                missile.position,
-                Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents * missile.scale,
-            )
+            missile.collider()
         };
         let half = |b: OrientedBox| {
             Vec2::new(b.right.x.abs() + b.up.x.abs(), b.right.y.abs() + b.up.y.abs())
@@ -36375,7 +36368,7 @@ impl RolloutWorld {
     /// whole group before the Circle/RoundedRect one, so an item resting on a
     /// wall the Missile struck meets the wall where the Missile pushed it
     /// (DetPhysics.cs:2973-3014). guided_missile_contacts runs the callbacks.
-    fn guided_missile_wall_contacts(&mut self, data: &data::RolloutData) {
+    fn guided_missile_wall_contacts(&mut self) {
         for missile_index in 0..self.guided_missiles.len() {
             self.guided_missiles[missile_index].wall_contacts = 0;
             if !self.guided_missiles[missile_index].active
@@ -36385,11 +36378,7 @@ impl RolloutWorld {
                 continue;
             }
             let missile = self.guided_missiles[missile_index];
-            let missile_box = OrientedBox::from_basis(
-                missile.position,
-                Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents * missile.scale,
-            );
+            let missile_box = missile.collider();
             let missile_shape = RoundedRect {
                 inner: missile_box,
                 radius: Fix::ZERO,
@@ -36450,7 +36439,6 @@ impl RolloutWorld {
     fn guided_missile_child_contacts(
         &mut self,
         missile_index: usize,
-        data: &data::RolloutData,
     ) -> (usize, [Option<(usize, Vec2)>; 4]) {
         #[derive(Clone, Copy)]
         enum Child {
@@ -36459,11 +36447,7 @@ impl RolloutWorld {
             Node(usize),
         }
         let missile = self.guided_missiles[missile_index];
-        let missile_box = OrientedBox::from_basis(
-            missile.position,
-            Vec2::angle(missile.body.orientation),
-            data.missile.spark_extents * missile.scale,
-        );
+        let missile_box = missile.collider();
         let missile_min = self.box_sweep_min(missile_box);
         let live = |entity: Option<usize>| {
             entity.is_some_and(|entity| self.entities[entity].flags & 3 == 3)
@@ -36574,13 +36558,9 @@ impl RolloutWorld {
                 continue;
             }
             let (child_contacts, spikes_first) =
-                self.guided_missile_child_contacts(missile_index, data);
+                self.guided_missile_child_contacts(missile_index);
             let missile = self.guided_missiles[missile_index];
-            let missile_box = OrientedBox::from_basis(
-                missile.position,
-                Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents * missile.scale,
-            );
+            let missile_box = missile.collider();
             // guided_missile_wall_contacts resolved the Box/RoundedRect group.
             let contact_count = missile.wall_contacts as usize + child_contacts;
             if contact_count > 0 {
@@ -38344,7 +38324,7 @@ impl RolloutWorld {
                     self.queue_callback_kill(player_index, false, hitbox_rank, killer, cause);
                 }
             }
-            self.queue_blast_hit_missiles(hitbox, explosion.entity, data);
+            self.queue_blast_hit_missiles(hitbox, explosion.entity);
         }
     }
 
@@ -38365,7 +38345,6 @@ impl RolloutWorld {
         &mut self,
         hitbox: OrientedBox,
         entity: Option<usize>,
-        data: &data::RolloutData,
     ) {
         let hitbox_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), entity);
         for index in 0..self.guided_missiles.len() {
@@ -38373,11 +38352,7 @@ impl RolloutWorld {
             if !missile.active || !missile.blast_hit {
                 continue;
             }
-            let missile_box = OrientedBox::from_basis(
-                missile.position,
-                Vec2::angle(missile.body.orientation),
-                data.missile.spark_extents * missile.scale,
-            );
+            let missile_box = missile.collider();
             if crate::physics::contact::box_box(missile_box, hitbox).is_none() {
                 continue;
             }
@@ -47274,6 +47249,11 @@ mod tests {
                 ..Body::default()
             },
             up: Vec2::UP,
+            scale: Fix::ONE,
+            inverse_extents: {
+                let extents = data::get().missile.spark_extents;
+                Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
+            },
             ..GuidedMissile::default()
         });
 
