@@ -3263,6 +3263,17 @@ impl PlayerSlot {
         if form.scale == Fix::ZERO { offset * self.base.scale } else { form.offset }
     }
 
+    /// FixTransform.Scale of the player's enabled collider: the slime's
+    /// hurtbox, or the active form prefab's box once Ability has scaled it.
+    fn collider_scale(&self) -> Fix {
+        let form = &self.forms[self.active_slot];
+        if self.active == ActiveAbility::None || form.scale == Fix::ZERO {
+            self.base.scale
+        } else {
+            form.scale
+        }
+    }
+
     /// The slot whose Rock prefab holds the form's row.
     fn rock_slot(&self) -> usize {
         (self.form_entities.iter())
@@ -26958,14 +26969,14 @@ impl RolloutWorld {
             }
             MagnetHeld::Arrow(i) => {
                 let arrow = self.arrows[i];
-                (arrow.position, arrow.velocity, Fix::ONE, false)
+                (arrow.position, arrow.velocity, arrow.scale, false)
             }
             MagnetHeld::Player(i) => {
                 let player = &self.players[i];
                 (
                     player.base.position,
                     player.base.velocity + player.base.external_velocity,
-                    player.base.scale,
+                    player.collider_scale(),
                     false,
                 )
             }
@@ -26974,7 +26985,7 @@ impl RolloutWorld {
                 (
                     player.base.position,
                     player.rock.body.velocity,
-                    player.base.scale,
+                    player.rock_circle().scale,
                     true,
                 )
             }
@@ -26993,11 +27004,11 @@ impl RolloutWorld {
             }
             MagnetHeld::AbilityPickup(i) => {
                 let pickup = self.ability_pickups[i];
-                (pickup.position, pickup.body.velocity, Fix::ONE, false)
+                (pickup.position, pickup.body.velocity, pickup.scale, false)
             }
             MagnetHeld::PortalShot(i) => {
                 let shot = self.portal_shots[i];
-                (shot.position, shot.body.velocity, Fix::ONE, false)
+                (shot.position, shot.body.velocity, shot.scale, false)
             }
             MagnetHeld::RevivalMarker(i) => {
                 let marker = self.revival_marker_pool[i];
@@ -27005,7 +27016,7 @@ impl RolloutWorld {
             }
             MagnetHeld::TeleportMarker(i) => {
                 let marker = self.teleport_marker_pool[i];
-                (marker.position, marker.body.velocity, Fix::ONE, false)
+                (marker.position, marker.body.velocity, marker.scale, false)
             }
             MagnetHeld::Nothing => return,
         };
