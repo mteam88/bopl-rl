@@ -3587,6 +3587,8 @@ struct PlatformScratch {
     /// The Updater hierarchy of the slime whose turn follows the current
     /// player's, or u32::MAX outside the player walk.
     next_turn_hierarchy: u32,
+    /// Ropes from this hierarchy up wait for the abilityless clone pass.
+    ropes_walk_limit: u32,
     /// Set while the ropes waiting on a platform's ScaleChanger run.
     ropes_changer_pass: bool,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
@@ -3893,6 +3895,7 @@ impl RolloutWorld {
                 duplicate_shake_offsets: Vec::with_capacity(64),
                 ropes_deferred_from: u32::MAX,
                 next_turn_hierarchy: u32::MAX,
+                ropes_walk_limit: u32::MAX,
                 ..PlatformScratch::default()
             },
             platform_dynamics: Vec::with_capacity(64),
@@ -6891,6 +6894,7 @@ impl RolloutWorld {
         // flags before any body's turn can set them again.
         self.track_form_flags();
         self.scratch.platform_resizes.clear();
+        self.scratch.ropes_walk_limit = u32::MAX;
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
             self.scratch.updater_hierarchy = player_hierarchy[index];
             if index >= self.player_count && !self.players[index].base.alive {
@@ -6903,19 +6907,6 @@ impl RolloutWorld {
             if has(ABILITY_REWIND) {
                 self.rewind_recorders_tick(&player_order[recorded..turn]);
                 recorded = turn;
-            }
-            if has(ABILITY_BLINK) {
-                // A wall QuantumTunnel registered before the object holding
-                // this player has already restored or hidden its wall when
-                // the player's turn comes. Prefab rows carry the Updater's
-                // 100000000 offset.
-                let slot = &self.players[index];
-                let entity = match Self::hurtbox_entity(slot) {
-                    usize::MAX => slot.body_entity,
-                    entity => entity,
-                };
-                let hierarchy = self.entities[entity].hierarchy.saturating_sub(100_000_000);
-                self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
             }
             self.run_spawned_before(data, updater_dt, player_hierarchy[index]);
             // A form entered in this turn takes its own Updater turn after
@@ -7230,6 +7221,7 @@ impl RolloutWorld {
             .map(|clone| clone.hierarchy_base)
             .min()
             .unwrap_or(u32::MAX);
+        self.scratch.ropes_walk_limit = first_clone;
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_ropes_update(0..first_clone);
         }
@@ -7323,9 +7315,8 @@ impl RolloutWorld {
         // portals_tick, but authored map spawners can create pickups without
         // any player owning Portal Gun. Keep that walk map/pickup-gated rather
         // than ability-gated so the pickup enables, rerolls, and moves.
-        let mut tacks_from = 0;
         if has(ABILITY_PORTAL_GUN) || !self.ability_pickups.is_empty() {
-            tacks_from = self.portals_tick(data, updater_dt, deferred_to);
+            self.portals_tick(data, updater_dt, deferred_to);
         } else if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
             // Portal endpoints interleave pickup updaters by hierarchy when
             // present. Without Portal Gun, the same global updater tail must
@@ -7355,38 +7346,6 @@ impl RolloutWorld {
         self.spawned_platforms_tick(data, updater_dt, 0..u32::MAX);
         if has_rope && first_platform < ropes_before_clones.min(first_teleport) {
             self.ropes_update(first_platform..ropes_before_clones.min(first_teleport));
-        }
-        // A Poke Ball older than every live Shockwave runs its UpdateSim (a
-        // capture hop sets the ball's velocity) before the wave pushes it. A
-        // Tack keeps its later turn: the wave defers its impulse to it.
-        let mut balls_from = 0;
-        if has(ABILITY_POKE_BALL) {
-            let first_wave = self
-                .gust_waves
-                .iter()
-                .chain(self.meteor_waves.iter())
-                .filter(|wave| wave.active && wave.registered)
-                .map(|wave| 100_000_000 + wave.hierarchy_base)
-                .min()
-                .unwrap_or(0);
-            if first_wave > balls_from {
-                self.poke_balls_and_tacks_tick(data, updater_dt, balls_from..first_wave, 0..0);
-                balls_from = first_wave;
-            }
-        }
-        // A DuplicatePlatformEffect older than every live Shockwave rescales
-        // its source first, so the wave reads the live radius of that shape.
-        if has(ABILITY_DUPLICATOR) && (has(ABILITY_GUST) || has(ABILITY_METEOR)) {
-            let first_wave = self
-                .gust_waves
-                .iter()
-                .chain(self.meteor_waves.iter())
-                .filter(|wave| wave.active && wave.registered)
-                .map(|wave| wave.hierarchy_base)
-                .min();
-            if let Some(first_wave) = first_wave.filter(|&first| first < deferred_to) {
-                self.duplicate_platform_effects_tick(data, updater_dt, Some(first_wave));
-            }
         }
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT, 0..deferred_to);
@@ -7449,7 +7408,7 @@ impl RolloutWorld {
             self.thrown_item_scale_mass_tick();
         }
         if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
-            self.poke_balls_and_tacks_tick(data, updater_dt, balls_from..u32::MAX, tacks_from..u32::MAX);
+            self.poke_balls_and_tacks_tick(data, updater_dt, 0..u32::MAX, 0..u32::MAX);
         }
         if has_rope && (has(ABILITY_TACK) || has(ABILITY_POKE_BALL)) {
             self.rope_parents_update(rope_abilities::RopeParentPass::OlderTackOrBall);
@@ -8119,8 +8078,9 @@ impl RolloutWorld {
     /// Ball or Mjolnir, a Portal, a DynamicAbilityPickup (one newer than a
     /// live ScaleChanger waits for it), a RocketEngine's push, a hook's Rope
     /// and RopeAttachment, a Smoke cloud's FlammableSmoke, a player
-    /// ScaleChanger, and a DuplicatePlatformEffect. The per-kind passes later
-    /// in the pass run the rest.
+    /// ScaleChanger, a DuplicatePlatformEffect, a TeleportIndicator and a
+    /// wall's QuantumTunnel. The per-kind passes later in the pass run the
+    /// rest, and each of their objects first runs this walk to its own turn.
     fn run_spawned_before(&mut self, data: &data::RolloutData, updater_dt: Fix, before: u32) {
         let tick = self.tick;
         let mut queue = std::mem::take(&mut self.scratch.spawned_queue);
@@ -8166,8 +8126,15 @@ impl RolloutWorld {
                 push(100_000_000 + engine.hierarchy_base, 6, i);
             }
         }
+        // A rope newer than a live abilityless clone waits for the clone's
+        // PlayerBody, which moves the rope end it holds, in the clone pass;
+        // one waiting on an older platform ScaleChanger runs in that pass.
         for (i, rope) in self.ropes.iter().enumerate() {
-            if rope.physics.enabled && rope.born_tick != tick {
+            if rope.physics.enabled
+                && rope.born_tick != tick
+                && rope.hierarchy < self.scratch.ropes_walk_limit
+                && rope.after_changer == self.scratch.ropes_changer_pass
+            {
                 if rope.grapple_ran_tick != Some(tick) && rope.hook_entity.is_some() {
                     push(100_000_000 + rope.hierarchy, 7, i);
                 }
@@ -8191,6 +8158,19 @@ impl RolloutWorld {
                 push(100_000_000 + effect.hierarchy_base, 11, i);
             }
         }
+        for (owner, slot) in self.players.iter().enumerate() {
+            if let Some(marker) = slot.teleport_pending_marker {
+                push(100_000_000 + self.teleport_marker_pool[marker].hierarchy_base, 12, owner);
+            }
+        }
+        for (i, state) in self.platform_dynamics.iter().enumerate() {
+            if state.blink_tunnel_active
+                && state.blink_tunnel_born_tick != tick
+                && state.blink_tunnel_stepped_tick != Some(tick)
+            {
+                push(100_000_000 + state.blink_tunnel_hierarchy, 13, i);
+            }
+        }
         queue.sort_unstable();
         for &(hierarchy, kind, index) in &queue {
             let turn = hierarchy..hierarchy + 1;
@@ -8204,9 +8184,7 @@ impl RolloutWorld {
                 1 => self.black_holes_update(data, updater_dt, turn),
                 2 => self.poke_balls_and_tacks_tick(data, updater_dt, turn.clone(), turn),
                 3 => self.mjolnirs_tick(data, updater_dt, turn),
-                4 => {
-                    self.portals_update(data, updater_dt, turn, None);
-                }
+                4 => self.portals_update(data, updater_dt, turn),
                 5 => {
                     let base = hierarchy - 100_000_000;
                     if self.first_live_scale_changer().is_none_or(|changer| base < changer) {
@@ -8218,7 +8196,13 @@ impl RolloutWorld {
                 8 => self.ropes_update(hierarchy - 100_000_000..hierarchy - 99_999_999),
                 9 => self.smoke_clouds_update_early(data, updater_dt, turn),
                 10 => self.player_scale_changers_update(data, turn),
-                _ => self.duplicate_platform_effects_tick(
+                11 => self.duplicate_platform_effects_tick(
+                    data,
+                    updater_dt,
+                    Some(hierarchy - 99_999_999),
+                ),
+                12 => self.teleport_pending_tick(data, updater_dt, hierarchy - 99_999_999),
+                _ => self.blink_platform_tunnels_tick(
                     data,
                     updater_dt,
                     Some(hierarchy - 99_999_999),
@@ -8238,6 +8222,8 @@ impl RolloutWorld {
                 9 => self.smoke_clouds[index].updater_ran_tick = tick,
                 10 => self.scale_changers[index].early_tick = tick,
                 11 => self.duplicate_platform_effects[index].stepped_tick = tick,
+                12 => {}
+                13 => self.platform_dynamics[index].blink_tunnel_stepped_tick = tick,
                 // A pickup newer than a live ScaleChanger keeps its turn
                 // behind it.
                 _ => {
@@ -8253,11 +8239,13 @@ impl RolloutWorld {
 
     fn portal_shots_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for shot_index in 0..self.portal_shots.len() {
-            // An older TeleportIndicator moves and disables the shots it
-            // catches before their turn (TeleportIndicator.cs:165-166).
+            // The older updatables have taken their turns: a TeleportIndicator
+            // has moved and disabled the shots it catches
+            // (TeleportIndicator.cs:165-166), and a Portal of the pair a
+            // landing closes has passed the slimes in its mouth through.
             if self.portal_shots[shot_index].active {
                 let hierarchy = self.portal_shots[shot_index].hierarchy_base;
-                self.teleport_pending_tick(data, updater_dt, hierarchy);
+                self.run_spawned_before(data, updater_dt, 100_000_000 + hierarchy);
             }
             if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
                 continue;
@@ -9459,29 +9447,19 @@ impl RolloutWorld {
 
     /// The endpoints that have not taken their turn this pass, then the
     /// pickups newer than all of them and older than `pickups_to`.
-    /// Returns where the remaining Tacks start: those older than an endpoint
-    /// have already run.
-    fn portals_tick(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        pickups_to: u32,
-    ) -> u32 {
-        let tacks_from = self.portals_update(data, updater_dt, 0..u32::MAX, Some(0));
+    fn portals_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, pickups_to: u32) {
+        self.portals_update(data, updater_dt, 0..u32::MAX);
         self.ability_pickups_tick_before(pickups_to, data, updater_dt);
-        tacks_from.unwrap_or(0)
     }
 
     /// Portal.UpdateSim for the endpoints whose updater hierarchy falls in
-    /// `hierarchy`, each after the pickups older than it and, from
-    /// `tacks_from`, the Tacks older than it.
+    /// `hierarchy`.
     fn portals_update(
         &mut self,
         data: &data::RolloutData,
         updater_dt: Fix,
         hierarchy: std::ops::Range<u32>,
-        mut tacks_from: Option<u32>,
-    ) -> Option<u32> {
+    ) {
         if self.portal_body_inside.len() < self.entities.len() {
             self.portal_body_inside.resize(self.entities.len(), 0);
             self.portal_body_ids.resize(self.entities.len(), 0);
@@ -9498,23 +9476,11 @@ impl RolloutWorld {
                 break;
             };
             self.portals[endpoint_index].updated_tick = Some(self.tick);
-            // An older Tack's BananaPeel.UpdateSim can impale a slime, whose
-            // DropAbilities pickup this endpoint then teleports.
+            // The older updatables have taken their turns: a Tack's
+            // BananaPeel.UpdateSim can impale a slime, whose DropAbilities
+            // pickup this endpoint then teleports.
             let endpoint_hierarchy = 100_000_000 + self.portals[endpoint_index].hierarchy_base;
-            if let Some(from) = tacks_from.filter(|&from| from < endpoint_hierarchy) {
-                self.poke_balls_and_tacks_tick(data, updater_dt, 0..0, from..endpoint_hierarchy);
-                tacks_from = Some(endpoint_hierarchy);
-            }
-            self.ability_pickups_tick_before(
-                self.portals[endpoint_index].hierarchy_base,
-                data,
-                updater_dt,
-            );
-            // An older RocketEngine's AddForceAtPosition is an impulse: the
-            // endpoint maps the platform velocity it already pushed.
-            if !self.engines.is_empty() {
-                self.engines_tick(data, updater_dt, 0..endpoint_hierarchy);
-            }
+            self.run_spawned_before(data, updater_dt, endpoint_hierarchy);
             self.portals[endpoint_index].time_alive += updater_dt;
             if self.portals[endpoint_index].time_alive > data.portal_gun.lifetime_seconds {
                 if let Some(linked) = self.portals[endpoint_index].linked
@@ -9621,7 +9587,6 @@ impl RolloutWorld {
             }
             self.portal_objects_tick(endpoint_index, data);
         }
-        tacks_from
     }
 
     /// Non-instant abilities disable the original slime box, but
@@ -15550,6 +15515,15 @@ impl RolloutWorld {
         if !attack.active || attack.macho_carried || attack.born_tick >= self.tick {
             return;
         }
+        // The older updatables have taken their turns: a
+        // DuplicatePlatformEffect has rescaled the platform, and so re-seated
+        // this spike, before its UpdatePosition.
+        let hierarchy = attack.hierarchy_base;
+        self.run_spawned_before(data, updater_dt, 100_000_000 + hierarchy);
+        let attack = &mut self.spike_attacks[index];
+        if !attack.active || attack.macho_carried {
+            return;
+        }
         attack.time += updater_dt;
         if attack.time > curve_end || attack.platform_index >= self.platforms.len() {
             return;
@@ -17009,35 +16983,14 @@ impl RolloutWorld {
             {
                 continue;
             }
-            // A wall QuantumTunnel registered before this hole has already
-            // restored or hidden its wall when the hole pulls.
-            self.blink_platform_tunnels_tick(
-                data,
-                dt,
-                Some(self.black_holes[hole_index].hierarchy_base),
-            );
-            // An older Portal has already passed the slimes in its mouth
-            // through before this hole pulls them.
-            if !self.portals.is_empty() {
-                self.portals_update(
-                    data,
-                    dt,
-                    0..100_000_000 + self.black_holes[hole_index].hierarchy_base,
-                    None,
-                );
-            }
-            // Likewise an older TeleportIndicator has already moved and
-            // disabled its slimes (TeleportIndicator.cs:165-166), so this hole
-            // no longer finds them (BlackHole.cs:388, DetPhysics.cs:1658-1664).
-            self.teleport_pending_tick(data, dt, self.black_holes[hole_index].hierarchy_base);
-            // So has an older runtime-spawned platform, such as a Macho
-            // boulder: its BoplBody has already rescaled the mass this hole
-            // pulls with.
-            self.spawned_platforms_tick(
-                data,
-                dt,
-                hierarchy.start..100_000_000 + self.black_holes[hole_index].hierarchy_base,
-            );
+            // The older updatables have taken their turns when the hole
+            // pulls: a wall QuantumTunnel has restored or hidden its wall, a
+            // Portal has passed the slimes in its mouth through, a
+            // TeleportIndicator has moved and disabled its slimes
+            // (TeleportIndicator.cs:165-166, BlackHole.cs:388), and a
+            // runtime-spawned platform's BoplBody, such as a Macho boulder's,
+            // has rescaled the mass this hole pulls with.
+            self.run_spawned_before(data, dt, 100_000_000 + self.black_holes[hole_index].hierarchy_base);
             // The older updaters above may spawn a Duplicator copy, which
             // this hole then pulls itself.
             self.black_holes[hole_index].updated_tick = Some(self.tick);
@@ -22230,21 +22183,9 @@ impl RolloutWorld {
             if !marker.active {
                 continue;
             }
-            // An older smoke cloud's updaters run before the marker's, so a
-            // burning cloud detonates, and instantiates its explosion, first.
-            let mut order = std::mem::take(&mut self.scratch.item_order);
-            hierarchy_order(&mut order, &self.smoke_clouds, |cloud| cloud.hierarchy_base);
-            for &cloud_index in &order {
-                let cloud = &self.smoke_clouds[cloud_index];
-                if cloud.hierarchy_base < marker.hierarchy_base
-                    && cloud.active
-                    && cloud.updater_ran_tick != Some(self.tick)
-                {
-                    self.smoke_clouds[cloud_index].updater_ran_tick = Some(self.tick);
-                    self.smoke_cloud_update(cloud_index, data, updater_dt);
-                }
-            }
-            self.scratch.item_order = order;
+            // The older updatables have taken their turns: a burning smoke
+            // cloud has detonated, and instantiated its explosion, first.
+            self.run_spawned_before(data, updater_dt, 100_000_000 + marker.hierarchy_base);
             let from = self.players[owner].teleport_pending_position;
             let diff = marker.position - from;
             let player_query = Circle {
@@ -23678,6 +23619,13 @@ impl RolloutWorld {
         for wave_index in 0..self.shockwaves(meteor).len() {
             let wave = self.shockwaves(meteor)[wave_index];
             if wave.active && wave.registered && hierarchy.contains(&wave.hierarchy_base) {
+                // The older updatables have taken their turns: a Poke Ball's
+                // capture hop has set its velocity, and a
+                // DuplicatePlatformEffect has rescaled its source, whose live
+                // radius the wave reads. A newer Tack or hammer takes the
+                // impulse at its own turn.
+                let dt = DT * self.player_time_scale;
+                self.run_spawned_before(data, dt, 100_000_000 + wave.hierarchy_base);
                 // Shockwave uses Updater's raw simDeltaTime for its curve
                 // clock; it never opts into GameTime.FixedDeltaTime.
                 self.shockwave_apply(meteor, wave_index, updater_dt, true, data);
@@ -30760,12 +30708,11 @@ impl RolloutWorld {
                 continue;
             }
             // A spark node older than the tunnel reads its partners first, and
-            // an older pickup raycasts for ground before the wall goes.
+            // the older updatables have taken their turns: a pickup raycasts
+            // for ground before the wall goes.
             let hierarchy = state.blink_tunnel_hierarchy;
             self.tesla_nodes_update(data, updater_dt, hierarchy);
-            if !self.ability_pickups.is_empty() {
-                self.ability_pickups_tick_before(hierarchy, data, updater_dt);
-            }
+            self.run_spawned_before(data, updater_dt, 100_000_000 + hierarchy);
             let state = &mut self.platform_dynamics[platform_index];
             state.blink_tunnel_stepped_tick = Some(self.tick);
             if !state.blink_tunnel_initialized {
