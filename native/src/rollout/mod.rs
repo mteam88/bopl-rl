@@ -426,6 +426,17 @@ const LAYER_NON_LETHAL_TERRAIN: u32 = 21;
 const LAYER_WATER: u32 = 4;
 const LAYER_RIGID_BODY_AFFECTOR: u32 = 23;
 const LAYER_ROPE: u32 = 24;
+const LAYER_EXPLOSION: u32 = 18;
+const LAYER_ORB: u32 = 26;
+/// What sets off a thrown Grenade or Smoke here: GrenadeExplode.OnCollide
+/// goes off on a Player-layer collider (IPlayerIdHolder), the Explosion
+/// layer, and a Projectile that ignites explosives, which no Projectile
+/// prefab does (IgnitesExplosives 0 on Arrow, MeteorSmear, PortalShot, ...).
+/// SmokeGrenadeExplode2 goes off on any layer but those Projectiles; its
+/// walls, water and other parts are called back from their own groups.
+const ITEM_DETONATORS: u32 = 1 << LAYER_PLAYER | 1 << LAYER_EXPLOSION;
+/// Mine.Igniters (Mine_0.prefab 262912: Player, Projectile, Explosion).
+const MINE_IGNITERS: u32 = 1 << LAYER_PLAYER | 1 << LAYER_PROJECTILE | 1 << LAYER_EXPLOSION;
 
 const CAUSE_OTHER: u32 = 0;
 /// Constants.MaxClones (Constants.cs:30).
@@ -1149,6 +1160,22 @@ impl DetCollider {
             Self::Box(collider) => crate::physics::contact::circle_box(query, collider).is_some(),
             Self::Circle(collider) => crate::physics::contact::circle_circle(query, collider).is_some(),
         }
+    }
+
+    /// Whether the narrow phase finds the two colliders touching.
+    fn touches(self, other: Self) -> bool {
+        use crate::physics::contact::{box_box, circle_box, circle_circle};
+        match (self, other) {
+            (Self::Circle(a), Self::Circle(b)) => circle_circle(a, b).is_some(),
+            (Self::Circle(a), Self::Box(b)) | (Self::Box(b), Self::Circle(a)) => circle_box(a, b).is_some(),
+            (Self::Box(a), Self::Box(b)) => box_box(a, b).is_some(),
+        }
+    }
+
+    /// The contact group DetPhysics calls the pair back in: Circle/Circle,
+    /// Circle/Box, then Box/Box.
+    fn pair_group(self, other: Self) -> u8 {
+        GROUP_CC + matches!(self, Self::Box(_)) as u8 + matches!(other, Self::Box(_)) as u8
     }
 }
 
@@ -3982,6 +4009,8 @@ enum CallbackHit {
     /// GrenadeExplode or SmokeGrenadeExplode2.OnCollide with a Tesla line or
     /// Meteor smear, once per pair.
     ItemDetonate { item: usize, count: usize },
+    /// Mine.OnCollide with an igniter: an armed mine starts its anticipation.
+    MineIgnite { item: usize },
     /// DynamicAbilityPickup.OnCollide with a slime's or an abilityless
     /// clone's box, whose hurtbox row was `body` when the pair was found.
     Pickup { pickup: usize, taker: PickupTaker, body: usize },
@@ -30487,8 +30516,127 @@ impl RolloutWorld {
                 DetCollider::Circle(Circle { center: pickup.synced_center, radius: pickup.radius }),
             );
         }
-        let index = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity)?;
-        self.hurtbox_collider(index)
+        // An arrow and a thrown item stand where this pass's physics put them.
+        if let Some(arrow) =
+            self.arrows.iter().find(|arrow| arrow.active && arrow.registered && arrow.entity == Some(entity))
+        {
+            return (!self.blink_object_hidden(Some(entity)))
+                .then_some(DetCollider::Circle(Circle { center: arrow.position, radius: arrow.collider_radius }));
+        }
+        if let Some(item) = self.thrown_items.iter().find(|item| item.active && item.entity == Some(entity)) {
+            let row = self.entities[entity];
+            return (row.flags & (E_ACTIVE | E_ENABLED) == (E_ACTIVE | E_ENABLED)
+                && !self.blink_object_hidden(Some(entity)))
+            .then_some(DetCollider::Circle(Circle { center: item.position, radius: item.collider_radius }));
+        }
+        // A Tesla line's box is on its node; its row carries only the centre.
+        // A node evicted this tick stays in DetPhysics until the pass ends.
+        let live_nodes = self.tesla_nodes.len();
+        if let Some((node_index, node)) = self
+            .tesla_nodes
+            .iter()
+            .chain(&self.retired_tesla_contacts)
+            .enumerate()
+            .find(|(_, node)| node.active && node.line_entity == Some(entity))
+        {
+            let on = node.lethal
+                && node.line_active
+                && node.line_collider_enabled
+                && !node.macho_carried
+                && !(node_index < live_nodes && self.attached_hidden(node.platform_index, node.entity));
+            return on.then_some(DetCollider::Box(OrientedBox {
+                center: node.line_center,
+                right: node.line_right,
+                up: node.line_up,
+                inverse_extents: node.line_inverse_extents,
+            }));
+        }
+        match self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity) {
+            Some(index) => self.hurtbox_collider(index),
+            None => self.row_collider(entity),
+        }
+    }
+
+    /// A collider nothing here tracks apart from its row: the row's shape
+    /// while it is active, enabled and not hidden in a Blink tunnel.
+    fn row_collider(&self, entity: usize) -> Option<DetCollider> {
+        let row = *self.entities.get(entity)?;
+        if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+            || row.flags & (E_DESTROYED | E_REMOVED) != 0
+            || self.blink_object_hidden(Some(entity))
+        {
+            return None;
+        }
+        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+        match row.kind {
+            0 => Some(DetCollider::Circle(Circle { center, radius: Fix::from_raw(row.radius) })),
+            1 => {
+                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+                if right == Vec2::ZERO || up == Vec2::ZERO {
+                    return None;
+                }
+                Some(DetCollider::Box(OrientedBox {
+                    center,
+                    right,
+                    up,
+                    inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+                }))
+            }
+            _ => None,
+        }
+    }
+
+    /// How SortAndSweep holds the entity's collider: a slime's registered
+    /// shape, a clone's, or its row.
+    fn entity_swept(&self, entity: usize) -> Swept {
+        if let Some(index) = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity) {
+            return Swept::Player(index);
+        }
+        if let Some(index) =
+            self.abilityless_clones.iter().position(|clone| clone.active && clone.entity == Some(entity))
+        {
+            return Swept::Clone(index);
+        }
+        if let Some(index) =
+            self.arrows.iter().position(|arrow| arrow.active && arrow.registered && arrow.entity == Some(entity))
+        {
+            return Swept::Arrow(index);
+        }
+        if let Some(index) = self.thrown_items.iter().position(|item| item.active && item.entity == Some(entity)) {
+            return Swept::Part(Part::Item(index));
+        }
+        Swept::Row(entity)
+    }
+
+    /// DetPhysics' pairs of one collider with every other collider on a layer
+    /// in `mask`, for a callback that reads the other collider's layer
+    /// against a LayerMask (GrenadeExplode.OnCollide, Mine.cs:229): the layer
+    /// matrix lets the layers meet, SortAndSweep paired the two, and the
+    /// narrow phase finds them touching, each at the shape
+    /// `detphysics_collider` gives, which is DetPhysics.IsActive. Yields the
+    /// other collider's entity, the pair's callback group and its sweep rank.
+    fn layer_contacts(
+        &self,
+        swept: Swept,
+        layer: u32,
+        collider: DetCollider,
+        mask: u32,
+    ) -> impl Iterator<Item = (usize, u8, SweepRank)> + '_ {
+        let data = data::get();
+        (0..self.entities.len()).filter_map(move |entity| {
+            let other_layer = self.entities[entity].layer;
+            if other_layer >= 32 || mask & (1 << other_layer) == 0 || !data.layers_collide(layer, other_layer) {
+                return None;
+            }
+            let other = self.detphysics_collider(entity)?;
+            let other_swept = self.entity_swept(entity);
+            if !self.swept_pair(swept, other_swept) || !other.touches(collider) {
+                return None;
+            }
+            let rank = sweep_rank(&self.entities, self.swept_min(other_swept), Some(entity));
+            Some((entity, collider.pair_group(other), rank))
+        })
     }
 
     /// Whether the entity is a slime's current hurtbox or an abilityless
@@ -34091,33 +34239,6 @@ impl RolloutWorld {
         None
     }
 
-    /// OnCollide accepts every Player-layer collider except the holding
-    /// MagnetGun's own hurtbox while the mine is held. A holder that has just
-    /// left the Magnet form is hit through its new form.
-    fn mine_hits_player_layer(&self, query: Circle, holder: Option<usize>) -> bool {
-        let ignored = holder.map(|index| self.players[index].magnet_entity);
-        for player in &self.players {
-            if !self.playable_slot(player) {
-                continue;
-            }
-            let entity = Self::hurtbox_entity(player);
-            if entity != usize::MAX
-                && Some(entity) != ignored
-                && self.entities[entity].layer == LAYER_PLAYER
-                && self.circle_overlaps_entity(query, entity)
-            {
-                return true;
-            }
-        }
-        self.abilityless_clones.iter().any(|clone| {
-            clone.active
-                && clone.entity.is_some_and(|entity| {
-                    self.entities[entity].layer == LAYER_PLAYER
-                        && self.circle_overlaps_entity(query, entity)
-                })
-        })
-    }
-
     fn mines_late_tick(&mut self, data: &data::RolloutData) {
         // Mine.LateUpdateSim runs in hierarchy order, not item slot order: an
         // older mine's scan purges destroyed colliders before a newer mine in
@@ -35987,45 +36108,22 @@ impl RolloutWorld {
         missile_box: OrientedBox,
     ) {
         let missile_entity = self.guided_missiles[missile_index].entity;
-        let swept = Swept::Part(Part::Missile(missile_index));
-        for entity in 0..self.entities.len() {
-            let row = self.entities[entity];
-            if Some(entity) == missile_entity
-                || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
-                || !matches!(row.layer, 18 | 26)
-                || self.blasting_missile_explosion(entity)
-                || !self.swept_pair(swept, Swept::Row(entity))
-            {
-                continue;
+        let layer = missile_entity.map_or(LAYER_ITEM, |entity| self.entities[entity].layer);
+        let mut blasts = [(0u8, SweepRank::default()); 16];
+        let mut count = 0;
+        for (entity, group, rank) in self.layer_contacts(
+            Swept::Part(Part::Missile(missile_index)),
+            layer,
+            DetCollider::Box(missile_box),
+            1 << LAYER_EXPLOSION | 1 << LAYER_ORB,
+        ) {
+            if Some(entity) != missile_entity && !self.blasting_missile_explosion(entity) && count < blasts.len() {
+                blasts[count] = (group, rank);
+                count += 1;
             }
-            let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-            match row.kind {
-                0 => {
-                    let circle = Circle { center, radius: Fix::from_raw(row.radius) };
-                    if crate::physics::contact::circle_box(circle, missile_box).is_none() {
-                        continue;
-                    }
-                }
-                1 => {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    if right == Vec2::ZERO || up == Vec2::ZERO {
-                        continue;
-                    }
-                    let trigger = OrientedBox {
-                        center,
-                        right,
-                        up,
-                        inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
-                    };
-                    if crate::physics::contact::box_box(trigger, missile_box).is_none() {
-                        continue;
-                    }
-                }
-                _ => continue,
-            }
-            let rank = sweep_rank(&self.entities, self.swept_min(Swept::Row(entity)), Some(entity));
-            self.queue_missile_blast(missile_index, GROUP_BB - (row.kind == 0) as u8, rank);
+        }
+        for &(group, rank) in &blasts[..count] {
+            self.queue_missile_blast(missile_index, group, rank);
         }
     }
 
@@ -36614,210 +36712,58 @@ impl RolloutWorld {
                 }
             }
             if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE) {
-                let mut boxes = [(OrientedBox::default(), None); 16];
-                let mut count = 0;
-                let grenade_boxes = self.grenade_explosions.iter().map(|explosion| {
-                    (explosion.active && explosion.registered && explosion.age == 1, explosion.entity,
-                        OrientedBox::from_basis(explosion.position, Vec2::RIGHT,
-                            data.grenade.explosion_extents * explosion.scale))
-                });
-                let missile_boxes = self.missile_explosions.iter().map(|explosion| {
-                    (explosion.active && explosion.registered && explosion.age == 1, explosion.entity,
-                        OrientedBox::from_basis(explosion.position, Vec2::RIGHT,
-                            data.missile.explosion_extents * explosion.scale))
-                });
-                let smoke_boxes = self.smoke_explosions.iter().map(|explosion| {
-                    (explosion.active && explosion.registered && explosion.age == 1, explosion.entity,
-                        OrientedBox::from_basis(
-                            explosion.position + data.smoke.explosion_collider_offset * explosion.scale,
-                            Vec2::RIGHT, data.smoke.explosion_extents * explosion.scale))
-                });
-                for (live, entity, hitbox) in grenade_boxes.chain(missile_boxes).chain(smoke_boxes) {
-                    if live && crate::physics::contact::circle_box(circle, hitbox).is_some() {
-                        if count < boxes.len() {
-                            boxes[count] = (hitbox, entity);
-                        }
-                        count += 1;
-                    }
-                }
-                for &(hitbox, entity) in &boxes[..count.min(boxes.len())] {
-                    let rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), entity);
-                    let (later, earlier) = sweep_pair(item_rank, rank);
-                    earliest_key(&mut first_key, (GROUP_CB, later, earlier));
-                }
-                detonations += count;
-                let (line_hits, line_key) = self.explosion_layer_item_hits(circle, item_rank);
-                detonations += line_hits;
-                if let Some(key) = line_key {
-                    earliest_key(&mut first_key, key);
-                }
-            }
-            if item.ability == ABILITY_MINE && matches!(self.thrown_items[item_index].phase, 1 | 2)
-            {
-                let mine_circle = Circle {
-                    center: self.thrown_items[item_index].position,
-                    radius: thrown_item_radius(data, self.thrown_items[item_index]),
-                };
-                let hit_player = self.mine_hits_player_layer(
-                    mine_circle,
-                    self.thrown_items[item_index].magnet_holder,
+                let owner_id = player_id(&self.players, item.owner);
+                // Only the holding MagnetGun's hurtbox is exempt, and only
+                // GrenadeExplode checks it.
+                let holder = item
+                    .magnet_holder
+                    .filter(|_| item.ability == ABILITY_GRENADE)
+                    .map(|holder| self.players[holder].magnet_entity);
+                let item_entity = item.entity.expect("registered item");
+                // The pair comes from the broadphase, swept before a wall or
+                // an arrow corrected the item this pass; the manifold then
+                // tests the corrected circle.
+                let contacts = self.layer_contacts(
+                    Swept::Part(Part::Item(item_index)),
+                    self.entities[item_entity].layer,
+                    DetCollider::Circle(circle),
+                    ITEM_DETONATORS,
                 );
-                let hit_arrow = self.arrows.iter().any(|arrow| {
-                    arrow.active
-                        && arrow.registered
-                        && crate::physics::contact::circle_circle(
-                            mine_circle,
-                            Circle {
-                                center: arrow.position,
-                                radius: arrow.collider_radius,
-                            },
-                        )
-                        .is_some()
-                });
-                let hit_tack = self
-                    .thrown_items
-                    .iter()
-                    .enumerate()
-                    .any(|(other_index, tack)| {
-                        other_index != item_index
-                            && tack.active
-                            && tack.ability == ABILITY_TACK
-                            && tack.entity.is_some()
-                            && crate::physics::contact::circle_circle(
-                                mine_circle,
-                                Circle {
-                                    center: tack.position,
-                                    radius: thrown_item_radius(data, *tack),
-                                },
-                            )
-                            .is_some()
-                    });
-                let hit_grenade_explosion = self.grenade_explosions.iter().any(|explosion| {
-                    explosion.active
-                        && explosion.registered
-                        && explosion.age == 1
-                        && crate::physics::contact::circle_box(
-                            mine_circle,
-                            OrientedBox::from_basis(
-                                explosion.position,
-                                Vec2::RIGHT,
-                                data.grenade.explosion_extents * explosion.scale,
-                            ),
-                        )
-                        .is_some()
-                });
-                let hit_mine_explosion = self.missile_explosions.iter().any(|explosion| {
-                    explosion.active
-                        && explosion.registered
-                        && explosion.age == 1
-                        && crate::physics::contact::circle_box(
-                            mine_circle,
-                            OrientedBox::from_basis(
-                                explosion.position,
-                                Vec2::RIGHT,
-                                data.mine.explosion_extents * explosion.scale,
-                            ),
-                        )
-                        .is_some()
-                });
-                if hit_player
-                    || hit_arrow
-                    || hit_tack
-                    || hit_grenade_explosion
-                    || hit_mine_explosion
-                    || self.smoke_explosion_hits(mine_circle, data) > 0
-                {
-                    let mine = &mut self.thrown_items[item_index];
-                    mine.time_since_anticipation =
-                        data.mine.anticipation_duration * Fix::from_f64(0.8);
-                    mine.phase = 3;
-                }
-            }
-
-            if matches!(
-                item.ability,
-                ABILITY_TACK | ABILITY_MJOLNIR | ABILITY_MINE | ABILITY_POKE_BALL
-            ) {
-                continue;
-            }
-
-            let owner_id = player_id(&self.players, item.owner);
-            // The pair comes from the broadphase, swept before a wall or an
-            // arrow corrected the item this pass; the manifold then tests the
-            // corrected circle.
-            let swept = Swept::Part(Part::Item(item_index));
-            for player_index in 0..self.players.len() {
-                if !self.hittable(player_index) || !self.swept_pair(swept, Swept::Player(player_index)) {
-                    continue;
-                }
-                let player = &self.players[player_index];
-                // Only the holding MagnetGun's hurtbox is exempt.
-                if item.magnet_holder == Some(player_index)
-                    && player.active == ActiveAbility::Magnet
-                {
-                    continue;
-                }
-                if player.base.id == owner_id && !item.detonates_on_owner {
-                    continue;
-                }
-                let hit = if player.active == ActiveAbility::Platform
-                    && player.platform.phase == PLATFORM_ANTICIPATION
-                {
-                    crate::physics::contact::circle_circle(
-                        circle,
-                        Circle {
-                            center: player.base.position,
-                            radius: player.forms[player.active_slot].circle_radius,
-                        },
-                    )
-                    .is_some()
-                } else if player.active == ActiveAbility::Rock {
-                    crate::physics::contact::circle_circle(
-                        circle,
-                        Circle {
-                            center: player.base.position,
-                            radius: player.rock_circle().circle_radius,
-                        },
-                    )
-                    .is_some()
-                } else if player.active == ActiveAbility::Platform {
-                    false
-                } else {
-                    'hit: {
-                        let hurtbox = match player.active {
-                            // The body turns to the aim only until the arrow
-                            // is away (BowTransform.cs:244-247).
-                            ActiveAbility::Bow => player.forms[player.active_slot].hurtbox(
-                                player.base.position,
-                                Vec2::angle(player.bow.form_rotation),
-                                data.bow.hurtbox_extents,
-                            ),
-                            ActiveAbility::Grenade
-                            | ActiveAbility::Smoke
-                            | ActiveAbility::Tack
-                            | ActiveAbility::Mjolnir
-                            // The form's box collider grows and shrinks with
-                            // the thrower, as the Smoke form does here.
-                            | ActiveAbility::PokeBall => player.forms[player.active_slot].hurtbox(
-                                player.base.position,
-                                Vec2::angle(player.base.rotation),
-                                throw_config(data, active_throw_ability(player.active)).hurtbox_extents,
-                            ),
-                            // Any other form is hit through the shape its prefab
-                            // registered, such as Growth Ray's box.
-                            _ => break 'hit self.player_hit_by_circle(player_index, circle),
-                        };
-                        crate::physics::contact::circle_box(circle, hurtbox).is_some()
+                for (entity, group, rank) in contacts {
+                    let row = self.entities[entity];
+                    if row.layer == LAYER_PLAYER
+                        && ((row.owner == owner_id && !item.detonates_on_owner) || Some(entity) == holder)
+                    {
+                        continue;
                     }
-                };
-                if hit {
-                    let rank = self.player_sweep_rank(player_index);
-                    let category = GROUP_CB - self.player_is_circle(player_index) as u8;
                     let (later, earlier) = sweep_pair(item_rank, rank);
-                    earliest_key(&mut first_key, (category, later, earlier));
+                    earliest_key(&mut first_key, (group, later, earlier));
                     detonations += 1;
                 }
             }
+            // Mine.OnCollide arms on its Igniters' layers unless the collider
+            // is the holding MagnetGun's hurtbox (Mine.cs:227-235).
+            if item.ability == ABILITY_MINE {
+                let holder = item.magnet_holder.map(|holder| self.players[holder].magnet_entity);
+                let item_entity = item.entity.expect("registered item");
+                let first = self
+                    .layer_contacts(
+                        Swept::Part(Part::Item(item_index)),
+                        self.entities[item_entity].layer,
+                        DetCollider::Circle(circle),
+                        MINE_IGNITERS,
+                    )
+                    .filter(|&(entity, ..)| Some(entity) != holder)
+                    .map(|(_, group, rank)| {
+                        let (later, earlier) = sweep_pair(item_rank, rank);
+                        (group, later, earlier)
+                    })
+                    .min();
+                if let Some(key) = first {
+                    self.scratch.callback_hits.push((key, CallbackHit::MineIgnite { item: item_index }));
+                }
+            }
+
             // SmokeGrenadeExplode2.OnCollide ignores every contact, not only
             // the owner's, until hurtOwnerDelay has run out.
             if let Some(key) = first_key
@@ -37268,6 +37214,13 @@ impl RolloutWorld {
                         .apply_impulse(direction * data.spike.knock_wall, wall_arm);
                     self.spike_attack_self_push(spike, point, data.spike.knock_wall, data);
                 }
+                CallbackHit::MineIgnite { item } => {
+                    let mine = &mut self.thrown_items[item];
+                    if mine.active && matches!(mine.phase, 1 | 2) {
+                        mine.time_since_anticipation = data.mine.anticipation_duration * Fix::from_f64(0.8);
+                        mine.phase = 3;
+                    }
+                }
                 CallbackHit::ItemDetonate { item, count } => {
                     let state = self.thrown_items[item];
                     if !state.active {
@@ -37360,95 +37313,6 @@ impl RolloutWorld {
     /// Player-layer shape.
     fn player_sweep_min(&self, player_index: usize) -> Fix {
         self.swept_min(Swept::Player(player_index))
-    }
-
-    /// How many burning smoke cloud Explosions overlap the circle. They hit on
-    /// their first registered pass, like a grenade's, so they set off grenades
-    /// and mines too.
-    fn smoke_explosion_hits(&self, circle: Circle, data: &data::RolloutData) -> usize {
-        self.smoke_explosions
-            .iter()
-            .filter(|explosion| {
-                explosion.active
-                    && explosion.registered
-                    && explosion.age == 1
-                    && crate::physics::contact::circle_box(
-                        circle,
-                        OrientedBox::from_basis(
-                            explosion.position
-                                + data.smoke.explosion_collider_offset * explosion.scale,
-                            Vec2::RIGHT,
-                            data.smoke.explosion_extents * explosion.scale,
-                        ),
-                    )
-                    .is_some()
-            })
-            .count()
-    }
-
-    /// The other Explosion-layer colliders an item callback treats as an
-    /// explosion: Tesla's lightning line and the Meteor smear, whose hitbox
-    /// lives as long as the smear (GrenadeExplode.cs:78-81).
-    /// Returns the pair count and the first pair's callback key: these are
-    /// Circle/Box pairs, called back among the kills in sweep order.
-    fn explosion_layer_item_hits(
-        &self,
-        circle: Circle,
-        item_rank: SweepRank,
-    ) -> (usize, Option<CallbackKey>) {
-        let live_nodes = self.tesla_nodes.len();
-        let mut boxes = [(OrientedBox::default(), None); 16];
-        let mut count = 0;
-        for (node_index, node) in
-            self.tesla_nodes.iter().chain(&self.retired_tesla_contacts).enumerate()
-        {
-            if !node.active
-                || node.macho_carried
-                || !node.lethal
-                || !node.line_active
-                || !node.line_collider_enabled
-                || (node_index < live_nodes
-                    && self.attached_hidden(node.platform_index, node.entity))
-            {
-                continue;
-            }
-            let line = OrientedBox {
-                center: node.line_center,
-                right: node.line_right,
-                up: node.line_up,
-                inverse_extents: node.line_inverse_extents,
-            };
-            if crate::physics::contact::circle_box(circle, line).is_some() && count < boxes.len() {
-                // The line has no row, as in tesla_contacts.
-                boxes[count] = (line, None);
-                count += 1;
-            }
-        }
-        for smear in &self.meteor_smears {
-            if !smear.active {
-                continue;
-            }
-            let hitbox = OrientedBox {
-                center: smear.center,
-                right: smear.right,
-                up: smear.up,
-                inverse_extents: Vec2::new(Fix::ONE / smear.right.x, Fix::ONE / smear.up.y),
-            };
-            if crate::physics::contact::circle_box(circle, hitbox).is_some() && count < boxes.len()
-            {
-                boxes[count] = (hitbox, smear.entity);
-                count += 1;
-            }
-        }
-        let key = boxes[..count]
-            .iter()
-            .map(|&(hitbox, hitbox_entity)| {
-                let rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), hitbox_entity);
-                let (later, earlier) = sweep_pair(item_rank, rank);
-                (GROUP_CB, later, earlier)
-            })
-            .min();
-        (count, key)
     }
 
     /// `player_hit_by_box` for a circle hitbox.
