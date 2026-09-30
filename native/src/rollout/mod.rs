@@ -3257,6 +3257,7 @@ struct PlatformScratch {
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
     engine_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
+    duplicated_rock_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_spike_hits: Vec<(usize, usize, Vec2)>,
     item_spike_hits: Vec<(usize, usize, Vec2)>,
     tesla_wall_contacts: Vec<(usize, usize, Contact)>,
@@ -7172,7 +7173,7 @@ impl RolloutWorld {
             self.rocks_integrate(physics_dt);
         }
         if has(ABILITY_DUPLICATOR) {
-            self.duplicated_rocks_integrate(physics_dt, data);
+            self.duplicated_rocks_integrate(physics_dt);
         }
         self.claim_queued_spawns(u32::MAX);
         // killPlayer from an updater (Mjolnir.TryHitPlayers) destroys the
@@ -7262,6 +7263,9 @@ impl RolloutWorld {
         }
         if has(ABILITY_ROCK) {
             self.rock_wall_manifolds();
+        }
+        if has(ABILITY_DUPLICATOR) {
+            self.duplicated_rock_wall_manifolds(data);
         }
         // DetPhysics corrects every Circle/RR pair before any Circle/Circle
         // one, so an item's wall correction moves it before an arrow's
@@ -35707,6 +35711,7 @@ impl RolloutWorld {
         // correction before the second's.
         let mut node_contacts = std::mem::take(&mut self.scratch.tesla_wall_contacts);
         let rock_contacts = std::mem::take(&mut self.scratch.rock_wall_contacts);
+        let mut duplicate_contacts = std::mem::take(&mut self.scratch.duplicated_rock_wall_contacts);
         let shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
         let arrow_contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
         let mut order = std::mem::take(&mut self.scratch.circle_wall_order);
@@ -35761,6 +35766,11 @@ impl RolloutWorld {
         const ROCK: u8 = 2;
         const SHOT: u8 = 3;
         const ARROW: u8 = 4;
+        const DUPLICATED_ROCK: u8 = 5;
+        let duplicate_min = |rock_index: usize| {
+            let rock = &self.duplicated_rocks[rock_index];
+            axis(rock.position) - data.rock.radius * rock.scale
+        };
         let arrow_min = |arrow_index: usize| {
             axis(self.arrows[arrow_index].position) - data.arrow.radius * self.arrows[arrow_index].scale
         };
@@ -35792,6 +35802,11 @@ impl RolloutWorld {
             let (later, earlier) = pair(arrow_min(arrow_index), entity, wall_index);
             (later, earlier, ARROW, k)
         }));
+        order.extend(duplicate_contacts.iter().enumerate().map(|(k, &(rock_index, wall_index, _))| {
+            let entity = self.duplicated_rocks[rock_index].entity;
+            let (later, earlier) = pair(duplicate_min(rock_index), entity, wall_index);
+            (later, earlier, DUPLICATED_ROCK, k)
+        }));
         order.sort_by_key(|&(high, low, _, _)| (high, low));
         for &(_, _, kind, k) in &order {
             if kind == NODE {
@@ -35814,6 +35829,11 @@ impl RolloutWorld {
                 self.resolve_arrow_wall_contact(arrow_index, wall_index, contact, data);
                 continue;
             }
+            if kind == DUPLICATED_ROCK {
+                let (rock_index, wall_index, contact) = duplicate_contacts[k];
+                self.resolve_duplicated_rock_wall_contact(rock_index, wall_index, contact);
+                continue;
+            }
             let (item_index, platform_index, contact) = all_contacts[k];
             let (platform_center, own_inverse_mass) = self.platform_contact_frame(platform_index);
             let item = &mut self.thrown_items[item_index];
@@ -35834,6 +35854,8 @@ impl RolloutWorld {
         let mut rock_contacts = rock_contacts;
         rock_contacts.clear();
         self.scratch.rock_wall_contacts = rock_contacts;
+        duplicate_contacts.clear();
+        self.scratch.duplicated_rock_wall_contacts = duplicate_contacts;
         self.scratch.circle_wall_order = order;
         // PortalShot.OnCollide lands the shot from the callback queue, after
         // the Circle/Circle and Circle/Box groups have resolved it too.
@@ -38815,7 +38837,7 @@ impl RolloutWorld {
         }
     }
 
-    fn duplicated_rocks_integrate(&mut self, physics_dt: Fix, data: &data::RolloutData) {
+    fn duplicated_rocks_integrate(&mut self, physics_dt: Fix) {
         for rock_index in 0..self.duplicated_rocks.len() {
             if !self.duplicated_rocks[rock_index].active
                 || self.blink_object_hidden(self.duplicated_rocks[rock_index].entity)
@@ -38833,52 +38855,72 @@ impl RolloutWorld {
                 .body
                 .integrate(physics_dt, Fix::from_int(-40));
             self.duplicated_rocks[rock_index].position += shift;
-            let mut circle = Circle {
-                center: self.duplicated_rocks[rock_index].position,
-                radius: data.rock.radius * self.duplicated_rocks[rock_index].scale,
+            self.sync_duplicated_rock_entity(rock_index);
+        }
+    }
+
+    fn sync_duplicated_rock_entity(&mut self, rock_index: usize) {
+        let rock = self.duplicated_rocks[rock_index];
+        if let Some(entity) = rock.entity {
+            let row = &mut self.entities[entity];
+            row.x = rock.position.x.raw();
+            row.y = rock.position.y.raw();
+            row.vx = rock.body.velocity.x.raw();
+            row.vy = rock.body.velocity.y.raw();
+            row.rotation = rock.body.orientation.raw();
+            row.angular_velocity = rock.body.angular_velocity.raw();
+            row.inverse_mass = rock.body.inverse_mass.raw();
+        }
+    }
+
+    /// Duplicated rocks' Circle/RoundedRectangle manifolds, built with the
+    /// Rock forms' and resolved in the same sweep order
+    /// (thrown_item_platform_contacts).
+    fn duplicated_rock_wall_manifolds(&mut self, data: &data::RolloutData) {
+        let mut scratch = std::mem::take(&mut self.scratch);
+        scratch.duplicated_rock_wall_contacts.clear();
+        for (rock_index, rock) in self.duplicated_rocks.iter().enumerate() {
+            if !rock.active || self.blink_object_hidden(rock.entity) {
+                continue;
+            }
+            let circle = Circle {
+                center: rock.position,
+                radius: data.rock.radius * rock.scale,
             };
-            for wall_index in 0..self.platforms.len() {
-                if !self.platforms[wall_index].active
-                    || !self.scratch.swept_pairs(self.tick, wall_index, circle)
-                {
+            for (wall_index, platform) in self.platforms.iter().enumerate() {
+                if !platform.active || !scratch.swept_pairs(self.tick, wall_index, circle) {
                     continue;
                 }
-                let Some(contact) = crate::physics::contact::circle_rounded(
+                let collider = scratch.circle_colliders.get(wall_index).copied();
+                if let Some(contact) = crate::physics::contact::circle_rounded(
                     circle,
-                    self.platforms[wall_index].collider,
-                ) else {
-                    continue;
-                };
-                let rock_position = self.duplicated_rocks[rock_index].position;
-                let (wall_position, own_inverse_mass) = self.platform_contact_frame(wall_index);
-                let (rock_body, wall_body) = (
-                    &mut self.duplicated_rocks[rock_index].body,
-                    &mut self.platform_dynamics[wall_index].body,
-                );
-                resolve(contact, rock_body, wall_body, rock_position, wall_position);
-                let correction = positional_correction(
-                    contact,
-                    rock_body.inverse_mass,
-                    own_inverse_mass,
-                    false,
-                );
-                self.duplicated_rocks[rock_index].position += correction[0];
-                self.shift_platform_collider(wall_index, correction[1]);
-                circle.center = self.duplicated_rocks[rock_index].position;
-                self.platforms_changed();
-            }
-            let rock = self.duplicated_rocks[rock_index];
-            if let Some(entity) = rock.entity {
-                let row = &mut self.entities[entity];
-                row.x = rock.position.x.raw();
-                row.y = rock.position.y.raw();
-                row.vx = rock.body.velocity.x.raw();
-                row.vy = rock.body.velocity.y.raw();
-                row.rotation = rock.body.orientation.raw();
-                row.angular_velocity = rock.body.angular_velocity.raw();
-                row.inverse_mass = rock.body.inverse_mass.raw();
+                    collider.unwrap_or(platform.collider),
+                ) {
+                    scratch
+                        .duplicated_rock_wall_contacts
+                        .push((rock_index, wall_index, contact));
+                }
             }
         }
+        self.scratch = scratch;
+    }
+
+    fn resolve_duplicated_rock_wall_contact(
+        &mut self,
+        rock_index: usize,
+        wall_index: usize,
+        contact: Contact,
+    ) {
+        let rock_position = self.duplicated_rocks[rock_index].position;
+        let (wall_position, own_inverse_mass) = self.platform_contact_frame(wall_index);
+        let rock_body = &mut self.duplicated_rocks[rock_index].body;
+        let wall_body = &mut self.platform_dynamics[wall_index].body;
+        resolve(contact, rock_body, wall_body, rock_position, wall_position);
+        let correction =
+            positional_correction(contact, rock_body.inverse_mass, own_inverse_mass, false);
+        self.duplicated_rocks[rock_index].position += correction[0];
+        self.shift_platform_collider(wall_index, correction[1]);
+        self.sync_duplicated_rock_entity(rock_index);
     }
 
     /// Rounded-platform rigid-body stage. The order matches DetPhysics after
