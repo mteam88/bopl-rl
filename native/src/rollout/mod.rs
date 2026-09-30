@@ -5801,9 +5801,7 @@ impl RolloutWorld {
             candidates &= candidates - 1;
             // RaycastToClosestRoundedRect skips inactive walls, such as one a
             // QuantumTunnel hid earlier this pass.
-            if !self.platforms[platform_index].active
-                || self.platform_removed_before(platform_index, hierarchy, data)
-            {
+            if !self.platforms[platform_index].active {
                 continue;
             }
             let platform = &self.platforms[platform_index];
@@ -5850,26 +5848,6 @@ impl RolloutWorld {
             row.vx = state.body.velocity.x.raw();
             row.vy = state.body.velocity.y.raw();
         }
-    }
-
-    /// Boulder's DestroyIfOutsideSceneBounds destroys it below the water in
-    /// updater order, and the next RaycastToClosestRoundedRect drops it
-    /// (RemoveDestroyedColliders), so a newer pickup raycasting in the same
-    /// pass must not see the boulder.
-    fn platform_removed_before(
-        &self,
-        platform_index: usize,
-        hierarchy: u32,
-        data: &data::RolloutData,
-    ) -> bool {
-        self.macho_boulders.iter().any(|boulder| {
-            boulder.active
-                && boulder.platform_index == platform_index
-                && boulder.hierarchy_base < hierarchy
-                && boulder.born_tick != self.tick
-                && self.platforms[platform_index].surface.center.y
-                    < data.maps[self.map].lower_boundary()
-        })
     }
 
     /// Whether `ResizablePlatform.UpdateSim` for platform `i` precedes the
