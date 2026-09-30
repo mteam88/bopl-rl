@@ -1135,13 +1135,10 @@ fn place_drill_hitbox_rows(entities: &mut [CEntity], slot: &PlayerSlot, data: &d
         let row = &mut entities[entity];
         let (offset, extents) = data.drill.hitboxes[hitbox_index];
         let basis = slot.drill.hitbox_up.perp_cw();
-        let scale = hurtbox_scale(slot.player_scale);
+        let form = slot.drill_hitbox_scales[slot.active_slot][hitbox_index];
+        let scale = if form.scale == Fix::ZERO { hurtbox_scale(slot.player_scale) } else { form.scale };
         let center = slot.drill.hitbox_position + (offset * scale).complex_mul(basis);
-        let collider = OrientedBox::from_basis(
-            center,
-            Vec2::angle(slot.drill.hitbox_rotation),
-            extents * scale,
-        );
+        let collider = form.hurtbox(center, Vec2::angle(slot.drill.hitbox_rotation), extents * scale);
         row.x = center.x.raw();
         row.y = center.y.raw();
         row.right_x = collider.right.x.raw();
@@ -2889,6 +2886,10 @@ pub struct PlayerSlot {
     /// HitboxCombo instantiates these on the first Drill cast for each live
     /// equipped prefab. Old stock instances leave their inactive rows behind.
     pub drill_hitbox_entities: [[usize; 3]; 3],
+    /// Each of those boxes' DPhysicsBox.Scale history. The setter divides the
+    /// inverse extents by `(One / old) * new` (DPhysicsBox.cs:204-218), and the
+    /// boxes outlive each use, so the drift carries over like `forms`.
+    pub drill_hitbox_scales: [[FormScale; 3]; 3],
     /// BlackHoleClap sets Ability.isCastable=false after firing. This belongs
     /// to the equipped prefab instance, so duplicate slots are independent.
     pub black_hole_castable: [bool; 3],
@@ -3067,6 +3068,22 @@ fn hurtbox_scale(scale: Fix) -> Fix {
 }
 
 impl PlayerSlot {
+    /// HitboxCombo.UpdateHitBoxPositionsAndScale: the boxes take the Drill's
+    /// pose, and its Scale only when it differs (HitboxCombo.cs:87-98).
+    fn update_drill_hitboxes(&mut self, data: &data::RolloutData) {
+        self.drill.hitbox_position = self.base.position;
+        self.drill.hitbox_up = self.base.up;
+        self.drill.hitbox_rotation = self.base.rotation;
+        let scale = hurtbox_scale(self.player_scale);
+        for (form, &(_, extents)) in
+            self.drill_hitbox_scales[self.active_slot].iter_mut().zip(&data.drill.hitboxes)
+        {
+            if form.scale != scale {
+                form.set_scale(scale, extents, Fix::ZERO);
+            }
+        }
+    }
+
     fn force_unground(&mut self, platforms: &[Platform], tick: u32) {
         force_unground(&mut self.base, &mut self.ground_destroyed, platforms, tick);
     }
@@ -3244,6 +3261,7 @@ impl PlayerSlot {
     /// Forgets the entity rows this body held.
     fn clear_entity_rows(&mut self) {
         self.drill_hitbox_entities = [[usize::MAX; 3]; 3];
+        self.drill_hitbox_scales = [[FormScale::default(); 3]; 3];
         self.form_entities = [usize::MAX; 3];
         self.circle_entity = usize::MAX;
         self.rock_entity = usize::MAX;
@@ -5073,6 +5091,7 @@ impl RolloutWorld {
                 beam: BeamState::default(),
                 beam_orb_slots: [None; 3],
                 drill_hitbox_entities: [[usize::MAX; 3]; 3],
+                drill_hitbox_scales: [[FormScale::default(); 3]; 3],
                 black_hole_castable: [true; 3],
                 revival_markers: [None; 3],
                 revival_clone_pending: false,
@@ -5961,6 +5980,7 @@ impl RolloutWorld {
         slot.rope_prev[ability_slot + 1] = (Vec2::ZERO, Vec2::ZERO);
         slot.forms[ability_slot] = FormScale::default();
         slot.drill_hitbox_entities[ability_slot] = [usize::MAX; 3];
+        slot.drill_hitbox_scales[ability_slot] = [FormScale::default(); 3];
         slot.black_hole_castable[ability_slot] = true;
         slot.platform_hurtbox_disabled[ability_slot] = false;
         slot.portal_blue[ability_slot] = None;
@@ -6998,15 +7018,20 @@ impl RolloutWorld {
                     // Drill updates the combo transforms and returns before
                     // querying walls, steering, gravity, or release.
                     let slot = &mut self.players[index];
+                    // Ability.UpdateSim still assigns Player.Scale to the box
+                    // (Ability.cs:135).
+                    slot.scale_form(
+                        data::surface_extents(data.drill.hurtbox_extents),
+                        Fix::ZERO,
+                        data.drill.collider_offset,
+                    );
                     slot.reported_position = slot.base.position;
                     slot.reported_tick = self.tick;
                     slot.base.external_velocity *= Fix::from_f64(0.95);
                     slot.drill.collider_position = slot.base.position;
                     slot.drill.collider_up = slot.base.up;
                     slot.drill.collider_rotation = slot.base.rotation;
-                    slot.drill.hitbox_position = slot.base.position;
-                    slot.drill.hitbox_up = slot.base.up;
-                    slot.drill.hitbox_rotation = slot.base.rotation;
+                    slot.update_drill_hitboxes(data);
                     continue;
                 }
                 if self.players[index].active == ActiveAbility::Meteor {
@@ -11941,10 +11966,15 @@ impl RolloutWorld {
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
-                        let collider = OrientedBox::from_basis(
-                            slot.base.position
-                                + (data.drill.collider_offset * scale)
-                                    .complex_mul(slot.base.up.perp_cw()),
+                        // EnterAbility assigns Player.Scale to the box
+                        // (Ability.cs:103-106) before OnEnterAbility syncs it.
+                        slot.scale_form(
+                            data::surface_extents(data.drill.hurtbox_extents),
+                            Fix::ZERO,
+                            data.drill.collider_offset,
+                        );
+                        let collider = slot.forms[s].hurtbox(
+                            slot.base.position + slot.forms[s].offset.complex_mul(slot.base.up.perp_cw()),
                             right,
                             data::surface_extents(data.drill.hurtbox_extents) * scale,
                         );
@@ -11952,9 +11982,7 @@ impl RolloutWorld {
                         // OnEnterAbility moves the hitbox combo to the entry
                         // pose and syncs it, so a form that dies this pass
                         // leaves its boxes there (Drill.cs:178-181).
-                        slot.drill.hitbox_position = slot.base.position;
-                        slot.drill.hitbox_up = slot.base.up;
-                        slot.drill.hitbox_rotation = slot.base.rotation;
+                        slot.update_drill_hitboxes(data);
                         place_drill_hitbox_rows(&mut self.entities, &self.players[index], data);
                         self.form_entry_turn(data, index);
                         self.drill_tick(index, action, jump_pressed, data, false);
@@ -18035,8 +18063,14 @@ impl RolloutWorld {
         data: &data::RolloutData,
         advance_animation: bool,
     ) {
-        // Ability.UpdateSim publishes the collider before SpriteAnimator,
-        // PlayerBody, and Drill advance this prefab for the current pass.
+        // Ability.UpdateSim assigns Player.Scale to the box and publishes the
+        // collider before SpriteAnimator, PlayerBody, and Drill advance this
+        // prefab for the current pass (Ability.cs:120-136).
+        self.players[index].scale_form(
+            data::surface_extents(data.drill.hurtbox_extents),
+            Fix::ZERO,
+            data.drill.collider_offset,
+        );
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
         if advance_animation {
@@ -18217,9 +18251,7 @@ impl RolloutWorld {
         self.players[index].drill.collider_position = self.players[index].base.position;
         self.players[index].drill.collider_up = self.players[index].base.up;
         self.players[index].drill.collider_rotation = self.players[index].base.rotation;
-        self.players[index].drill.hitbox_position = self.players[index].base.position;
-        self.players[index].drill.hitbox_up = self.players[index].base.up;
-        self.players[index].drill.hitbox_rotation = self.players[index].base.rotation;
+        self.players[index].update_drill_hitboxes(data);
     }
 
     fn exit_drill(&mut self, index: usize, use_offset: bool, data: &data::RolloutData) {
@@ -22692,6 +22724,7 @@ impl RolloutWorld {
         slot.beam = BeamState::default();
         slot.beam_orb_slots = [None; 3];
         slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
+        slot.drill_hitbox_scales = [[FormScale::default(); 3]; 3];
         slot.black_hole_castable = [true; 3];
         slot.spike_attacks = [None; 3];
         slot.platform_hurtbox_disabled = [false; 3];
@@ -23195,6 +23228,7 @@ impl RolloutWorld {
             slot.beam = BeamState::default();
             slot.beam_orb_slots = [None; 3];
             slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
+            slot.drill_hitbox_scales = [[FormScale::default(); 3]; 3];
             slot.black_hole_castable = [true; 3];
             slot.spike_attacks = [None; 3];
             slot.platform_hurtbox_disabled = [false; 3];
@@ -44833,9 +44867,15 @@ impl RolloutWorld {
                         )
                     };
                     let basis = up.perp_cw();
+                    let form = slot.forms[slot.entity_slot(drill_e)];
                     let scale = hurtbox_scale(slot.player_scale);
-                    let center = position + (data.drill.collider_offset * scale).complex_mul(basis);
-                    let collider = OrientedBox::from_basis(
+                    let offset = if form.scale == Fix::ZERO {
+                        data.drill.collider_offset * scale
+                    } else {
+                        form.offset
+                    };
+                    let center = position + offset.complex_mul(basis);
+                    let collider = form.hurtbox(
                         center,
                         Vec2::angle(rotation),
                         data::surface_extents(data.drill.hurtbox_extents) * scale,
