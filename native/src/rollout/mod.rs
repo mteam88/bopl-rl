@@ -11654,10 +11654,11 @@ impl RolloutWorld {
                         // the body with.
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
-                        form.set_scale(
+                        form.set_scale_offset(
                             scale,
                             data::surface_extents(data.magnet.hurtbox_extents),
                             data.magnet.radius,
+                            data.magnet.collider_offset,
                         );
                         slot.base.radius = form.physics_radius();
                         slot.base.constants = data.magnet.constants.clone();
@@ -11681,11 +11682,10 @@ impl RolloutWorld {
                         // that box is what later updaters see this pass.
                         if slot.magnet_entity != usize::MAX {
                             let right = if grounded { slot.base.up.perp_cw() } else { Vec2::RIGHT };
-                            let scale = slot.base.scale;
-                            let center = slot.base.position
-                                + right.complex_mul(data.magnet.collider_offset * scale);
-                            let extents = data::surface_extents(data.magnet.hurtbox_extents) * scale;
-                            let collider = slot.forms[s].hurtbox(center, right, extents);
+                            let form = &slot.forms[s];
+                            let center = slot.base.position + right.complex_mul(form.offset);
+                            let extents = data::surface_extents(data.magnet.hurtbox_extents);
+                            let collider = form.hurtbox(center, right, extents);
                             let row = &mut self.entities[slot.magnet_entity];
                             row.x = center.x.raw();
                             row.y = center.y.raw();
@@ -26100,10 +26100,11 @@ impl RolloutWorld {
         // the form's radius to it.
         let slot = &mut self.players[index];
         let form = &mut slot.forms[ability_slot];
-        form.set_scale(
+        form.set_scale_offset(
             scale,
             data::surface_extents(data.magnet.hurtbox_extents),
             data.magnet.radius,
+            data.magnet.collider_offset,
         );
         slot.base.radius = form.physics_radius();
     }
@@ -26356,12 +26357,11 @@ impl RolloutWorld {
                 // is where DetPhysics last put it: the published row, or the
                 // entry pose on the entry pass.
                 let row = &self.entities[target.magnet_entity];
-                let extents = data::surface_extents(magnet.hurtbox_extents) * target.base.scale;
                 let collider = OrientedBox {
                     center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
                     right: Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y)),
                     up: Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)),
-                    inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+                    inverse_extents: target.forms[target.active_slot].inverse_extents,
                 };
                 crate::physics::contact::box_box(query, collider).is_some()
             } else {
@@ -26643,7 +26643,8 @@ impl RolloutWorld {
             slot.gun_firepoint_offsets[slot.active_slot].x
                 + slot.magnet_extra_offsets[slot.active_slot].x;
         let root = firepoint - slot.magnet.body_right * offset_x;
-        let side = data.magnet.raycast_offset * slot.base.scale;
+        // body.fixtrans.Scale, as Ability (hierarchy 3) left it last pass.
+        let side = data.magnet.raycast_offset * slot.forms[slot.active_slot].scale;
         let distance = offset_x + Fix::from_int(1000);
         let excluded_platform = match slot.magnet.held {
             MagnetHeld::Boulder(boulder) => Some(self.macho_boulders[boulder].platform_index),
@@ -26676,7 +26677,8 @@ impl RolloutWorld {
 
     fn magnet_try_pickup_item(&mut self, index: usize, data: &data::RolloutData) {
         let firepoint = self.magnet_firepoint(index, data);
-        let radius = data.magnet.pickup_radius * self.players[index].base.scale;
+        let slot = &self.players[index];
+        let radius = data.magnet.pickup_radius * slot.forms[slot.active_slot].scale;
         let pickup_circle = Circle {
             center: firepoint,
             radius,
@@ -45048,23 +45050,22 @@ impl RolloutWorld {
                     row.owner = slot.base.id;
                 }
                 if (alive && magnetizing) || was_active {
-                    let (root, rotation, offset_basis, scale) = if magnetizing {
+                    let (root, rotation, offset_basis) = if magnetizing {
                         (
                             synced,
                             slot.magnet.body_right.normalized_angle(),
                             slot.magnet.body_right,
-                            slot.base.scale,
                         )
                     } else {
-                        (exit_position, Fix::ZERO, Vec2::RIGHT, slot.base.scale)
+                        (exit_position, Fix::ZERO, Vec2::RIGHT)
                     };
                     let basis = Vec2::angle(rotation);
-                    let center =
-                        root + offset_basis.complex_mul(data.magnet.collider_offset * scale);
-                    let collider = slot.forms[slot.active_slot].hurtbox(
+                    let form = &slot.forms[slot.entity_slot(magnet_e)];
+                    let center = root + offset_basis.complex_mul(form.offset);
+                    let collider = form.hurtbox(
                         center,
                         basis,
-                        data::surface_extents(data.magnet.hurtbox_extents) * scale,
+                        data::surface_extents(data.magnet.hurtbox_extents),
                     );
                     row.x = center.x.raw();
                     row.y = center.y.raw();
