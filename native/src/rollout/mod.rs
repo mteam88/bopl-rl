@@ -1559,6 +1559,8 @@ pub struct PlatformDynamics {
     /// AnimateVelocity.Init (Updater.cs:265-273): the spring homes on the
     /// position physics had already corrected on the spawn tick.
     pub init_tick: Option<u32>,
+    /// The prefab whose component order runs the platform's updaters.
+    pub prefab: PlatformPrefab,
     /// Pass that instantiated the platform mid-game. Its components wait in
     /// Updater's queue until the next pass's Init walk, so none of them
     /// updates on this one (Updater.cs:258-287).
@@ -2566,6 +2568,17 @@ impl Shockwave {
     fn reset(&mut self) {
         *self = Self::default();
     }
+}
+
+/// Which prefab a platform was instantiated from, for its updaters' order:
+/// a scene platform, ResizablePlatform.prefab (the Platform ability) or
+/// Boulder.prefab (Throw). A Duplicator copy keeps its source's.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum PlatformPrefab {
+    #[default]
+    Scene,
+    Resizable,
+    Boulder,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3838,8 +3851,6 @@ struct PlatformScratch {
     duplicates_window: Option<std::ops::Range<u32>>,
     /// Likewise for the Spawned platform pass.
     spawned_window: Option<std::ops::Range<u32>>,
-    /// The platforms the current Duplicated or Spawned pass runs.
-    platform_turns: Vec<usize>,
     /// `run_spawned_before`'s turns: (updater hierarchy, kind, index).
     spawned_queue: Vec<(u32, u8, usize)>,
     /// This pass's walk over the players: their order, each player's turn
@@ -5126,6 +5137,7 @@ impl RolloutWorld {
                 home_position: intro_surface.center,
                 transform_rotation: None,
                 init_tick: None,
+                prefab: PlatformPrefab::Scene,
                 born_tick: None,
                 float_next_frame: false,
                 spring_step: None,
@@ -5499,7 +5511,7 @@ impl RolloutWorld {
             // 104+). Its final callback enables all ground colliders before
             // AnimateVelocity/AntiLockPlatform and DetPhysics run.
             self.level_intro_tick(data);
-            self.platform_updaters_tick(data, DT);
+            self.platform_turns(data, DT, PlatformPass::Authored);
             if i < SLIME_AWAKE_TICK {
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT);
@@ -7085,7 +7097,7 @@ impl RolloutWorld {
         // player's window or ahead of a form's entry turn, is still newer than
         // a clone that reads Player.Scale later in the pass.
         self.scratch.player_scale_changes.clear();
-        self.platform_updaters_tick(data, updater_dt);
+        self.platform_turns(data, updater_dt, PlatformPass::Authored);
         self.ability_spawner_tick(data, updater_dt);
         self.beam_inputs.clear();
         for slot in &mut self.players {
@@ -20405,6 +20417,7 @@ impl RolloutWorld {
             composite_rebuild: false,
             transform_rotation: None,
             init_tick: None,
+            prefab: PlatformPrefab::Boulder,
             born_tick: Some(self.tick),
             float_next_frame: false,
             spring_step: None,
@@ -33001,6 +33014,7 @@ impl RolloutWorld {
             home_position: position,
             transform_rotation: None,
             init_tick: Some(self.tick + 1),
+            prefab: PlatformPrefab::Resizable,
             born_tick: Some(self.tick),
             float_next_frame: false,
             spring_step: None,
@@ -39109,10 +39123,7 @@ impl RolloutWorld {
 
     /// One run of the Duplicated or Spawned platform pass over the platforms
     /// whose row hierarchy is in `window` and whose updaters have not taken
-    /// their turn this pass. ResizablePlatform sits behind AnimateVelocity in
-    /// the clone's prefab, so its unconditional ResizePlatform follows the
-    /// spring. A spawned platform's ShakablePlatform also runs after them, so
-    /// a Beam or Meteor landing on it shakes it on the same pass.
+    /// their turn this pass.
     fn platform_updaters(
         &mut self,
         data: &data::RolloutData,
@@ -39128,19 +39139,7 @@ impl RolloutWorld {
             PlatformPass::Spawned => self.scratch.spawned_window = Some(window),
             PlatformPass::Authored => unreachable!("authored platforms update in their own pass"),
         }
-        let mut turns = std::mem::take(&mut self.scratch.platform_turns);
-        turns.clear();
-        turns.extend((0..self.platforms.len()).filter(|&i| self.platform_updates_in(i, pass)));
-        self.platform_sticky_tick(updater_dt, pass);
-        self.platform_bounds_tick(pass);
-        self.platform_motion_tick(data, updater_dt, pass);
-        self.platform_body_scale_tick(pass);
-        self.platform_orbits_tick(data, updater_dt, pass);
-        self.platform_vector_fields_tick(data, updater_dt, pass);
-        for &i in &turns {
-            self.platform_dynamics[i].updater_ran_tick = Some(self.tick);
-        }
-        self.scratch.platform_turns = turns;
+        self.platform_turns(data, updater_dt, pass);
         self.scratch.duplicates_window = None;
         self.scratch.spawned_window = None;
     }
@@ -39193,26 +39192,22 @@ impl RolloutWorld {
         }
     }
 
-    /// AnimateVelocity then ShakablePlatform for one half of the platform
-    /// list, one platform at a time in registration order (a spawned
-    /// platform's ResizablePlatform follows the two). Both draw from the
-    /// shared random stream - the sudden-death delay on the first pass that
-    /// sees the flag, the shake on every pass it shakes - so running all the
-    /// springs before all the shakes would deal the numbers out in the wrong
-    /// order.
-    fn platform_motion_tick(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        pass: PlatformPass,
-    ) {
+    /// One pass's platform updaters, a platform at a time in registration
+    /// order, and within a platform in its prefab's component order: Updater
+    /// runs a prefab's updatables as one contiguous block. The authored
+    /// platforms update in scene sibling order. AnimateVelocity and
+    /// ShakablePlatform draw from the shared random stream (the sudden-death
+    /// delay on the first pass that sees the flag, the shake on every pass it
+    /// shakes), so the numbers are dealt platform by platform.
+    fn platform_turns(&mut self, data: &data::RolloutData, updater_dt: Fix, pass: PlatformPass) {
+        use data::PlatformUpdater as U;
         let order = &data.maps[self.map].update_order;
         let count = if pass == PlatformPass::Authored { order.len() } else { self.platforms.len() };
         let mut shook = false;
         for k in 0..count {
-            // The authored platforms update in scene sibling order. A
-            // destroyed one leaves the Updater list and the platform list
-            // both, so each definition is looked up among the live platforms.
+            // A destroyed authored platform leaves the Updater list and the
+            // platform list both, so each definition is looked up among the
+            // live platforms.
             let i = if pass == PlatformPass::Authored {
                 let Some(i) = (0..self.platforms.len())
                     .find(|&i| self.platform_defs[i] == order[k] && self.platform_pass(i) == pass)
@@ -39226,24 +39221,50 @@ impl RolloutWorld {
             if !self.platform_updates_in(i, pass) {
                 continue;
             }
-            // A Throw boulder's DestroyIfOutsideSceneBounds sits between its
-            // StickyRR and its ShakablePlatform, and Boulder.UpdateSim follows
-            // the shake; a drowning ends the boulder's turn.
-            let boulder = self.turn_boulder(i);
-            if boulder.is_some_and(|b| self.macho_boulder_drowns(data, b)) {
-                continue;
+            for &updater in self.platform_updater_order(data, i) {
+                match updater {
+                    U::StickyRoundedRectangle => self.platform_sticky(updater_dt, i),
+                    U::AnimateVelocity => self.platform_spring(data, updater_dt, i),
+                    U::ShakablePlatform => shook |= self.platform_shake(data, updater_dt, i),
+                    U::ResizablePlatform => self.platform_resizable(data, i),
+                    U::BoplBody => self.platform_body_scale(i),
+                    U::AntiLockPlatform => self.platform_orbit(data, updater_dt, i),
+                    U::VectorFieldPlatform => self.platform_vector_field(data, updater_dt, i),
+                    // A drowning destroys the boulder and ends its turn.
+                    U::DestroyIfOutsideSceneBounds => {
+                        if self.turn_boulder(i).is_some_and(|b| self.macho_boulder_drowns(data, b)) {
+                            break;
+                        }
+                    }
+                    U::Boulder => {
+                        if let Some(b) = self.turn_boulder(i) {
+                            self.macho_boulder_update(data, b);
+                        }
+                    }
+                    U::Other => {}
+                }
             }
-            self.platform_spring(data, updater_dt, i);
-            shook |= self.platform_shake(data, updater_dt, i);
             if pass != PlatformPass::Authored {
-                self.platform_resizable(data, i);
-            }
-            if let Some(b) = boulder {
-                self.macho_boulder_update(data, b);
+                self.platform_dynamics[i].updater_ran_tick = Some(self.tick);
             }
         }
         if shook {
             self.platforms_changed();
+        }
+    }
+
+    /// The updaters of platform `i`'s prefab, in its component order: the
+    /// scene platform's own (a Duplicator copy keeps its source's),
+    /// ResizablePlatform.prefab's or Boulder.prefab's.
+    fn platform_updater_order<'a>(
+        &self,
+        data: &'a data::RolloutData,
+        i: usize,
+    ) -> &'a [data::PlatformUpdater] {
+        match self.platform_dynamics[i].prefab {
+            PlatformPrefab::Scene => &data.maps[self.map].platforms[self.platform_defs[i]].updaters,
+            PlatformPrefab::Resizable => &data.platform.spawn_updaters,
+            PlatformPrefab::Boulder => &data.macho_throw.boulder_updaters,
         }
     }
 
@@ -39284,21 +39305,6 @@ impl RolloutWorld {
         true
     }
 
-    /// StickyRoundedRectangle.UpdateSim closes with UpdateBounds, re-reading
-    /// a scale change into the cached extents and radius. A runtime-spawned
-    /// platform's StickyRR runs behind the ability that spawned it, so that
-    /// ability still reads the bounds from before the change.
-    fn platform_bounds_tick(&mut self, pass: PlatformPass) {
-        for i in 0..self.platforms.len() {
-            if !self.platforms[i].active
-                || !self.platform_dynamics[i].surface_shape_dirty
-                || !self.platform_updates_in(i, pass)
-            {
-                continue;
-            }
-            self.update_surface_bounds(i);
-        }
-    }
 
     /// StickyRoundedRectangle.UpdateBounds: re-read the collider's current
     /// shape into the cached perimeter.
@@ -39316,225 +39322,189 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
-    /// BoplBody.UpdateSim, the last updater on each platform: a
-    /// non-resizable body follows a DPhysics scale change with its mass and
-    /// inertia. A runtime-spawned platform updates behind the prefab that
-    /// spawned it, so it sees that pass's Macho excavation.
-    fn platform_body_scale_tick(&mut self, pass: PlatformPass) {
-        for i in 0..self.platforms.len() {
-            if !self.platforms[i].active
-                || !self.platform_updates_in(i, pass)
-            {
-                continue;
+    /// BoplBody.UpdateSim: a non-resizable body follows a DPhysics scale
+    /// change with its mass and inertia, at BoplBody's place in the prefab.
+    fn platform_body_scale(&mut self, i: usize) {
+        if !self.platforms[i].active {
+            return;
+        }
+        let dynamics = &mut self.platform_dynamics[i];
+        let previous = dynamics.body_scale;
+        let scale = dynamics.scale;
+        if !dynamics.body_resizable && previous != scale {
+            let ratio = previous / scale;
+            dynamics.unscaled_inverse_mass = Some((self.tick, dynamics.body.inverse_mass));
+            dynamics.body.inverse_mass *= ratio;
+            dynamics.body.inverse_inertia *= ratio;
+            // DPhysicsRoundedRect.inverseMass writes the combined body of
+            // a composite and leaves the rect's own body unscaled.
+            if dynamics.attached_children == 0 {
+                dynamics.root_body.inverse_mass *= ratio;
+                dynamics.root_body.inverse_inertia *= ratio;
             }
-            let dynamics = &mut self.platform_dynamics[i];
-            let previous = dynamics.body_scale;
-            let scale = dynamics.scale;
-            if !dynamics.body_resizable && previous != scale {
-                let ratio = previous / scale;
-                dynamics.unscaled_inverse_mass = Some((self.tick, dynamics.body.inverse_mass));
-                dynamics.body.inverse_mass *= ratio;
-                dynamics.body.inverse_inertia *= ratio;
-                // DPhysicsRoundedRect.inverseMass writes the combined body of
-                // a composite and leaves the rect's own body unscaled.
-                if dynamics.attached_children == 0 {
-                    dynamics.root_body.inverse_mass *= ratio;
-                    dynamics.root_body.inverse_inertia *= ratio;
-                }
-                dynamics.body_scale = scale;
-                self.platforms_changed();
-            } else if dynamics.body_resizable {
-                dynamics.body_scale = scale;
-            }
+            dynamics.body_scale = scale;
+            self.platforms_changed();
+        } else if dynamics.body_resizable {
+            dynamics.body_scale = scale;
         }
     }
 
     /// AntiLockPlatform runs after AnimateVelocity: add the ordinary force
     /// and re-home at the pre-integration position, preserving the existing
     /// one-tick-lagged home behavior.
-    fn platform_orbits_tick(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        pass: PlatformPass,
-    ) {
-        if self.sudden_death || updater_dt == Fix::ZERO {
+    fn platform_orbit(&mut self, data: &data::RolloutData, updater_dt: Fix, platform_index: usize) {
+        if self.sudden_death || updater_dt == Fix::ZERO || !self.platforms[platform_index].active {
+            return;
+        }
+        let Some(k) = self.orbits.iter().position(|&(p, _)| p == platform_index) else {
+            return;
+        };
+        let target = self.orbits[k].1;
+        let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+        let map = &data.maps[self.map];
+        let def = &map.platforms[self.platform_defs[platform_index]];
+        let Some(o) = def.orbit.as_ref() else {
+            return;
+        };
+        if sim_time < o.delay || o.path.is_empty() {
+            return;
+        }
+        let position = self.platforms[platform_index].surface.center;
+        let direction = (o.path[target] - position).normalized_safe();
+        let dynamics = &mut self.platform_dynamics[platform_index];
+        dynamics.body.force += direction * o.force;
+        dynamics.home_position = position;
+        // AntiLockPlatform computes this tick's force first, then
+        // advances the target from the same pre-physics position.
+        let current = o.path[target];
+        let previous = o.path[(target + o.path.len() - 1) % o.path.len()];
+        let passed = (current - previous).dot(position - current);
+        if passed > Fix::ZERO {
+            self.orbits[k].1 = (target + 1) % o.path.len();
+        }
+    }
+
+
+    /// StickyRoundedRectangle.UpdateSim: the player drop countdown, the ease
+    /// back of a grown platform, and the closing UpdateBounds that re-reads a
+    /// scale change into the cached extents and radius. A copy's or a spawned
+    /// platform's runs with its prefab, after the players, so a slime landing
+    /// this pass still sees it before the ease back, and the ability that
+    /// spawned it still reads the bounds from before the change.
+    fn platform_sticky(&mut self, updater_dt: Fix, i: usize) {
+        if !self.platforms[i].active {
+            return;
+        }
+        if self.platform_dynamics[i].drop_players_frames >= 0 {
+            self.platform_dynamics[i].drop_players_frames -= 1;
+        }
+        // StickyRoundedRectangle.UpdateSim eases a grown platform back.
+        let dynamics = &mut self.platform_dynamics[i];
+        dynamics.time_since_scaled_up += updater_dt * self.player_time_scale;
+        if (dynamics.time_since_scaled_up > Fix::from_int(10) || self.sudden_death)
+            && dynamics.scale > dynamics.base_scale
+            && self.player_time_scale >= Fix::from_f32(0.01)
+        {
+            let value = dynamics.scale * (Fix::ONE - updater_dt.clamp(Fix::ZERO, Fix::ONE))
+                + dynamics.base_scale * updater_dt;
+            self.set_platform_scale(i, value, false);
+            // UpdateBounds closes StickyRoundedRectangle.UpdateSim, so a
+            // slime walking this pass already sees the eased-back shape.
+            let inner = self.platforms[i].collider.inner;
+            self.platforms[i].surface.extents = Vec2::new(
+                Fix::ONE / inner.inverse_extents.x,
+                Fix::ONE / inner.inverse_extents.y,
+            );
+            self.platforms[i].surface.radius = self.platforms[i].collider.radius;
+            self.platforms[i].surface.bounds_radius = self.platforms[i].collider.radius;
+        }
+        if self.platform_dynamics[i].surface_shape_dirty {
+            self.update_surface_bounds(i);
+        }
+    }
+
+    /// VectorFieldPlatform.UpdateSim, after the platform's spring, shake and
+    /// collider updaters.
+    fn platform_vector_field(&mut self, data: &data::RolloutData, updater_dt: Fix, platform_index: usize) {
+        if self.sudden_death
+            || updater_dt <= Fix::ZERO
+            || !self.platforms[platform_index].active
+            || !self.vector_fields.contains(&platform_index)
+        {
             return;
         }
         let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
+        let fixed_time = DT * self.player_time_scale;
         let map = &data.maps[self.map];
-        for k in 0..self.orbits.len() {
-            let (platform_index, target) = self.orbits[k];
-            if !self.platforms[platform_index].active
-                || !self.platform_updates_in(platform_index, pass)
-            {
-                continue;
-            }
-            let def = &map.platforms[self.platform_defs[platform_index]];
-            let Some(o) = def.orbit.as_ref() else {
-                continue;
-            };
-            if sim_time < o.delay || o.path.is_empty() {
-                continue;
-            }
-            let position = self.platforms[platform_index].surface.center;
-            let direction = (o.path[target] - position).normalized_safe();
-            let dynamics = &mut self.platform_dynamics[platform_index];
-            dynamics.body.force += direction * o.force;
-            dynamics.home_position = position;
-            // AntiLockPlatform computes this tick's force first, then
-            // advances the target from the same pre-physics position.
-            let current = o.path[target];
-            let previous = o.path[(target + o.path.len() - 1) % o.path.len()];
-            let passed = (current - previous).dot(position - current);
-            if passed > Fix::ZERO {
-                self.orbits[k].1 = (target + 1) % o.path.len();
-            }
+        let Some(field) = map.platforms[self.platform_defs[platform_index]]
+            .vector_field
+            .as_ref()
+        else {
+            return;
+        };
+        if sim_time < field.delay {
+            return;
         }
-    }
+        let position = self.platforms[platform_index].surface.center;
+        let velocity = self.platform_dynamics[platform_index].body.velocity;
+        let radial = position - field.center;
+        let radial_unit = radial.normalized_safe();
+        let tangent = radial_unit.perp_cw();
+        let mut tangent_speed = tangent.dot(velocity);
+        let mut radial_speed = radial_unit.dot(velocity);
+        let wanted = radial_unit * field.target_radius + field.center - position;
+        radial_speed += radial_unit.dot(wanted) * fixed_time * field.expand_speed;
 
-    fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        // Each platform's updaters run in its component order (StickyRR,
-        // AnimateVelocity, ShakablePlatform, ..., BoplBody): the ease back
-        // and the UpdateBounds that closes it come before the spring, and
-        // BoplBody is last, so the spring still pushes with the mass from
-        // before this pass's rescale.
-        self.platform_sticky_tick(updater_dt, PlatformPass::Authored);
-        self.platform_bounds_tick(PlatformPass::Authored);
-        self.platform_motion_tick(data, updater_dt, PlatformPass::Authored);
-        self.platform_body_scale_tick(PlatformPass::Authored);
-        self.platform_orbits_tick(data, updater_dt, PlatformPass::Authored);
-        self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Authored);
-    }
-
-    /// StickyRoundedRectangle.UpdateSim for one pass's platforms. A copy's or
-    /// a spawned platform's runs with its prefab, after the players, so a
-    /// slime landing this pass still sees it before the ease back.
-    fn platform_sticky_tick(&mut self, updater_dt: Fix, pass: PlatformPass) {
-        for i in 0..self.platforms.len() {
-            if !self.platforms[i].active || !self.platform_updates_in(i, pass) {
-                continue;
-            }
-            if self.platform_dynamics[i].drop_players_frames >= 0 {
-                self.platform_dynamics[i].drop_players_frames -= 1;
-            }
-            // StickyRoundedRectangle.UpdateSim eases a grown platform back.
-            let dynamics = &mut self.platform_dynamics[i];
-            dynamics.time_since_scaled_up += updater_dt * self.player_time_scale;
-            if (dynamics.time_since_scaled_up > Fix::from_int(10) || self.sudden_death)
-                && dynamics.scale > dynamics.base_scale
-                && self.player_time_scale >= Fix::from_f32(0.01)
-            {
-                let value = dynamics.scale * (Fix::ONE - updater_dt.clamp(Fix::ZERO, Fix::ONE))
-                    + dynamics.base_scale * updater_dt;
-                self.set_platform_scale(i, value, false);
-                // UpdateBounds closes StickyRoundedRectangle.UpdateSim, so a
-                // slime walking this pass already sees the eased-back shape.
-                let inner = self.platforms[i].collider.inner;
-                self.platforms[i].surface.extents = Vec2::new(
-                    Fix::ONE / inner.inverse_extents.x,
-                    Fix::ONE / inner.inverse_extents.y,
-                );
-                self.platforms[i].surface.radius = self.platforms[i].collider.radius;
-                self.platforms[i].surface.bounds_radius = self.platforms[i].collider.radius;
-            }
-        }
-    }
-
-    fn platform_vector_fields_tick(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        pass: PlatformPass,
-    ) {
-        // VectorFieldPlatform runs after the platform's ordinary spring,
-        // ShakablePlatform and collider updater. Maps without one keep this
-        // list empty, so they pay no per-platform scan.
-        if !self.sudden_death && updater_dt > Fix::ZERO && !self.vector_fields.is_empty() {
-            let sim_time = Fix::from_int(i64::from(self.tick)) * DT;
-            let fixed_time = DT * self.player_time_scale;
-            let map = &data.maps[self.map];
-            let mut moved = false;
-            for &platform_index in &self.vector_fields {
-                if !self.platforms[platform_index].active
-                    || !self.platform_updates_in(platform_index, pass)
-                {
-                    continue;
-                }
-                let Some(field) = map.platforms[self.platform_defs[platform_index]]
-                    .vector_field
-                    .as_ref()
-                else {
-                    continue;
-                };
-                if sim_time < field.delay {
-                    continue;
-                }
-                let position = self.platforms[platform_index].surface.center;
-                let velocity = self.platform_dynamics[platform_index].body.velocity;
-                let radial = position - field.center;
-                let radial_unit = radial.normalized_safe();
-                let tangent = radial_unit.perp_cw();
-                let mut tangent_speed = tangent.dot(velocity);
-                let mut radial_speed = radial_unit.dot(velocity);
-                let wanted = radial_unit * field.target_radius + field.center - position;
-                radial_speed += radial_unit.dot(wanted) * fixed_time * field.expand_speed;
-
-                let (delta, new_velocity) = if radial.length_squared()
-                    < field.dead_zone_dist_squared
-                {
-                    (
-                        Vec2::ZERO,
-                        radial_unit * radial_speed + tangent * tangent_speed,
-                    )
+        let (delta, new_velocity) = if radial.length_squared()
+            < field.dead_zone_dist_squared
+        {
+            (
+                Vec2::ZERO,
+                radial_unit * radial_speed + tangent * tangent_speed,
+            )
+        } else {
+            // Fix.Lerp clamps only the coefficient of `a`; its `b*t`
+            // term deliberately uses the original, unclamped t.
+            let t = fixed_time * field.orbit_acceleration_multiplier;
+            let clamped = t.max(Fix::ZERO).min(Fix::ONE);
+            tangent_speed = tangent_speed * (Fix::ONE - clamped) + field.orbit_speed * t;
+            let overflow;
+            if tangent_speed.sign() == field.orbit_speed.sign() {
+                if tangent_speed.abs() >= field.orbit_speed.abs() {
+                    overflow = tangent_speed - field.orbit_speed;
+                    tangent_speed -= overflow;
                 } else {
-                    // Fix.Lerp clamps only the coefficient of `a`; its `b*t`
-                    // term deliberately uses the original, unclamped t.
-                    let t = fixed_time * field.orbit_acceleration_multiplier;
-                    let clamped = t.max(Fix::ZERO).min(Fix::ONE);
-                    tangent_speed = tangent_speed * (Fix::ONE - clamped) + field.orbit_speed * t;
-                    let overflow;
-                    if tangent_speed.sign() == field.orbit_speed.sign() {
-                        if tangent_speed.abs() >= field.orbit_speed.abs() {
-                            overflow = tangent_speed - field.orbit_speed;
-                            tangent_speed -= overflow;
-                        } else {
-                            overflow = Fix::ZERO;
-                        }
-                    } else {
-                        overflow = tangent_speed;
-                        tangent_speed = Fix::ZERO;
-                    }
-                    let tangent_step = tangent * tangent_speed * fixed_time;
-                    let next_radial_unit =
-                        (position + tangent_step - field.center).normalized_safe();
-                    let next_tangent = next_radial_unit.perp_cw();
-                    let radius = radial.length();
-                    let orbital_velocity = next_tangent * tangent_speed;
-                    (
-                        next_radial_unit * radius - orbital_velocity * DT - radial,
-                        orbital_velocity
-                            + next_radial_unit * radial_speed * field.normal_speed_friction
-                            + tangent * overflow,
-                    )
-                };
+                    overflow = Fix::ZERO;
+                }
+            } else {
+                overflow = tangent_speed;
+                tangent_speed = Fix::ZERO;
+            }
+            let tangent_step = tangent * tangent_speed * fixed_time;
+            let next_radial_unit =
+                (position + tangent_step - field.center).normalized_safe();
+            let next_tangent = next_radial_unit.perp_cw();
+            let radius = radial.length();
+            let orbital_velocity = next_tangent * tangent_speed;
+            (
+                next_radial_unit * radius - orbital_velocity * DT - radial,
+                orbital_velocity
+                    + next_radial_unit * radial_speed * field.normal_speed_friction
+                    + tangent * overflow,
+            )
+        };
 
-                let next_position = position + delta;
-                self.platforms[platform_index].surface.center = next_position;
-                // VectorFieldPlatform writes the FixTransform during the
-                // updatable phase. DetPhysics does not sync its registered
-                // rounded collider until the later physics pass, so player
-                // raycasts in between still see the prior collider center.
-                let dynamics = &mut self.platform_dynamics[platform_index];
-                dynamics.composite_position += delta;
-                dynamics.body.velocity = new_velocity;
-                dynamics.home_position = next_position;
-                moved = true;
-            }
-            if moved {
-                self.platforms_changed();
-            }
-        }
+        let next_position = position + delta;
+        self.platforms[platform_index].surface.center = next_position;
+        // VectorFieldPlatform writes the FixTransform during the
+        // updatable phase. DetPhysics does not sync its registered
+        // rounded collider until the later physics pass, so player
+        // raycasts in between still see the prior collider center.
+        let dynamics = &mut self.platform_dynamics[platform_index];
+        dynamics.composite_position += delta;
+        dynamics.body.velocity = new_velocity;
+        dynamics.home_position = next_position;
+        self.platforms_changed();
     }
 
     /// GameSessionHandler.StartAnimateInLevelRoutine. The level animation is

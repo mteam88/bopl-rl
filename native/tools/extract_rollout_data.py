@@ -132,6 +132,19 @@ def registering_count(prefab):
     return visit(prefab["data"])
 
 
+def updater_order(node):
+    # The node's own components that register with the Updater, in
+    # hierarchyNumber order: the order its UpdateSims run within the prefab's
+    # block of updatables.
+    return [
+        typ for _, typ in sorted(
+            (c["properties"]["hierarchyNumber"], c["type"])
+            for c in node.get("components", [])
+            if "hierarchyNumber" in c.get("properties", {}) and registers_with_updater(c["type"])
+        )
+    ]
+
+
 def node_component(node, type_name):
     for c in node.get("components", []):
         if c["type"] == type_name:
@@ -262,6 +275,7 @@ def extract_map(metadata):
                 "grow_scale": fix(grow, "scaleUp") if grow is not None else ONE,
                 "layer": node.get("layer"),
                 "hierarchy": rr["hierarchyNumber"],
+                "updaters": updater_order(node),
                 # What DuplicateObject instantiates: GrowOnStart.Init destroys
                 # itself before any Duplicator can copy the platform.
                 "updatable_count": sum(
@@ -543,6 +557,7 @@ def main():
         "body": physics_body(rp_body),
         "collider_hierarchy": rp_rr["hierarchyNumber"],
         "updatable_count": registering_count(rp),
+        "updaters": updater_order(rp["data"]),
         "mass_per_area": fix(rp_res, "MassPerArea"),
         "remove_curve": curve(rp_res, "RemoveAnimation"),
         "resizable_keys": sorted(k for k in rp_res if not k.startswith("m_")),
@@ -1016,6 +1031,7 @@ def main():
             "layer": boulder["data"].get("layer"),
             "updatable_count": updater_count(boulder),
             "collider_hierarchy": boulder_rr["hierarchyNumber"],
+            "updaters": updater_order(boulder["data"]),
             "extents": vec2(boulder_rr, "startExtents"),
             "radius": fix(boulder_rr, "startRadius"),
             "min_scale": fix(boulder_rr, "MinScale"),

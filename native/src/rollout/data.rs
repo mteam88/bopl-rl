@@ -62,6 +62,7 @@ struct RawPlatform {
     grow_scale: i64,
     hierarchy: u32,
     updatable_count: u32,
+    updaters: Vec<PlatformUpdater>,
     duplicate_collider_hierarchy: u32,
     animate_velocity: RawAnimateVelocity,
     body: RawBody,
@@ -230,6 +231,7 @@ struct RawResizable {
     max_scale: i64,
     collider_hierarchy: u32,
     updatable_count: u32,
+    updaters: Vec<PlatformUpdater>,
     mass_per_area: i64,
     remove_curve: Curve,
     animate_velocity: RawAnimateVelocity,
@@ -645,6 +647,7 @@ struct RawMachoAnimations {
 struct RawMachoBoulder {
     layer: u32,
     updatable_count: u32,
+    updaters: Vec<PlatformUpdater>,
     collider_hierarchy: u32,
     extents: RawVec2,
     radius: i64,
@@ -1262,6 +1265,30 @@ struct RawAbility {
     effect_updatable_count: Option<u32>,
 }
 
+/// A platform component whose UpdateSim the rollout runs, as the exporter
+/// names it. A platform prefab's list keeps its components' hierarchyNumber
+/// order, which is the order Updater runs them in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum PlatformUpdater {
+    StickyRoundedRectangle,
+    AnimateVelocity,
+    ShakablePlatform,
+    ResizablePlatform,
+    BoplBody,
+    AntiLockPlatform,
+    VectorFieldPlatform,
+    DestroyIfOutsideSceneBounds,
+    Boulder,
+    /// A registered component with no platform-side UpdateSim here.
+    #[serde(other)]
+    Other,
+}
+
+/// The modeled updaters of `names`, in their prefab order.
+fn platform_updaters(names: &[PlatformUpdater]) -> Vec<PlatformUpdater> {
+    names.iter().copied().filter(|&u| u != PlatformUpdater::Other).collect()
+}
+
 /// A platform's authored geometry plus the behaviours that move it.
 pub struct PlatformDef {
     pub intro_order: usize,
@@ -1281,6 +1308,8 @@ pub struct PlatformDef {
     pub collider_axis_extents: Vec2,
     pub hierarchy: u32,
     pub updatable_count: u32,
+    /// The platform's own updaters, in the scene's component order.
+    pub updaters: Vec<PlatformUpdater>,
     pub duplicate_collider_hierarchy: u32,
     pub min_scale: Fix,
     pub max_scale: Fix,
@@ -1489,6 +1518,8 @@ pub struct PlatformAbilityData {
     /// the number of its components that register with the Updater.
     pub spawn_collider_hierarchy: u32,
     pub spawn_updatable_count: u32,
+    /// ResizablePlatform.prefab's updaters, in its component order.
+    pub spawn_updaters: Vec<PlatformUpdater>,
     pub spawn_mass_per_area: Fix,
     pub remove_curve: Curve,
     pub spawn_speed: Fix,
@@ -1814,6 +1845,8 @@ pub struct MachoThrowData {
     pub quick_position_swap_frame: u32,
     pub boulder_layer: u32,
     pub boulder_updatable_count: u32,
+    /// Boulder.prefab's updaters, in its component order.
+    pub boulder_updaters: Vec<PlatformUpdater>,
     pub boulder_collider_hierarchy: u32,
     pub boulder_extents: Vec2,
     pub boulder_radius: Fix,
@@ -2512,6 +2545,7 @@ fn map_def(raw: &RawMap) -> MapDef {
                 collider_axis_extents,
                 hierarchy: p.hierarchy,
                 updatable_count: p.updatable_count,
+                updaters: platform_updaters(&p.updaters),
                 duplicate_collider_hierarchy: p.duplicate_collider_hierarchy,
                 min_scale: Fix::from_raw(p.min_scale),
                 max_scale: Fix::from_raw(p.max_scale),
@@ -2752,6 +2786,7 @@ pub fn get() -> &'static RolloutData {
                 spawn_max_scale: Fix::from_raw(raw.prefabs.resizable_platform.max_scale),
                 spawn_collider_hierarchy: raw.prefabs.resizable_platform.collider_hierarchy,
                 spawn_updatable_count: raw.prefabs.resizable_platform.updatable_count,
+                spawn_updaters: platform_updaters(&raw.prefabs.resizable_platform.updaters),
                 spawn_mass_per_area: Fix::from_raw(raw.prefabs.resizable_platform.mass_per_area),
                 remove_curve: raw.prefabs.resizable_platform.remove_curve.clone(),
                 spawn_speed: Fix::from_raw(raw.prefabs.resizable_platform.animate_velocity.speed),
@@ -3161,6 +3196,7 @@ pub fn get() -> &'static RolloutData {
                     quick_position_swap_frame: macho.quick_position_swap_frame,
                     boulder_layer: macho.boulder.layer,
                     boulder_updatable_count: macho.boulder.updatable_count,
+                    boulder_updaters: platform_updaters(&macho.boulder.updaters),
                     boulder_collider_hierarchy: macho.boulder.collider_hierarchy,
                     boulder_extents: macho.boulder.extents.get(),
                     boulder_radius: Fix::from_raw(macho.boulder.radius),
