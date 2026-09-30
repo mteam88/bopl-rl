@@ -12109,14 +12109,7 @@ impl RolloutWorld {
                         };
                         {
                             let slot = &mut self.players[index];
-                            let entry_offset = if slot.beam.started || slot.beam.in_air {
-                                data.beam.air_offset
-                            } else {
-                                data.beam.collider_offset
-                            };
                             let entry_up = if grounded { slot.base.up } else { Vec2::UP };
-                            let entry_center = form_position
-                                + (entry_offset * slot.player_scale).complex_mul(entry_up.perp_cw());
                             slot.timers[s] = Fix::ZERO;
                             slot.set_active_form(&mut self.entities, ActiveAbility::Beam);
                             slot.active_slot = s;
@@ -12130,9 +12123,24 @@ impl RolloutWorld {
                             };
                             let scale = slot.player_scale;
                             let form = &mut slot.forms[s];
-                            form.set_scale(scale, extents, data.beam.radius);
+                            form.set_scale_offset(
+                                scale,
+                                extents,
+                                data.beam.radius,
+                                data.beam.collider_offset,
+                            );
                             form.inverse_extents =
                                 Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+                            // The hurtbox syncs from the offset this slot's prefab
+                            // was left with (Beam.cs:206) before OnEnterAbility
+                            // sets this use's own (Beam.cs:221, 234).
+                            let entry_center =
+                                form_position + form.offset.complex_mul(entry_up.perp_cw());
+                            form.offset = if grounded {
+                                data.beam.collider_offset
+                            } else {
+                                data.beam.air_offset
+                            };
                             slot.ability_entry_action = action;
                             slot.telemetry.ability_activations[s] += 1;
                             slot.facing_right = local_facing_right;
@@ -18773,6 +18781,9 @@ impl RolloutWorld {
                 let handoff_tick = u32::from(!self.players[index].beam.in_air);
                 if self.players[index].beam.phase_ticks > enter_ticks + handoff_tick {
                     let right = self.players[index].base.up.perp_cw();
+                    // StartBeam moves the hurtbox to its air offset (Beam.cs:345).
+                    let s = self.players[index].active_slot;
+                    self.players[index].forms[s].offset = data.beam.air_offset;
                     let beam = &mut self.players[index].beam;
                     beam.phase = 1;
                     beam.started = true;
