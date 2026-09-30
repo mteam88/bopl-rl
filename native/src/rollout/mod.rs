@@ -5627,9 +5627,12 @@ impl RolloutWorld {
         );
         order.sort_unstable_by_key(|&index| (self.ability_pickups[index].hierarchy_base, index));
         for &index in &order {
-            // An older wall QuantumTunnel has already hidden or restored its
-            // wall for this pickup's ground raycast.
+            // The updatables instantiated before this pickup have taken their
+            // turns: an older wall QuantumTunnel has hidden or restored its
+            // wall for the pickup's ground raycast, and an older Duplicator
+            // copy has shaken.
             let before = self.ability_pickups[index].hierarchy_base;
+            self.run_spawned_before(data, updater_dt, 100_000_000 + before);
             self.blink_platform_tunnels_tick(data, updater_dt, Some(before));
             self.ability_pickup_tick(index, data, updater_dt, wobble);
         }
@@ -6961,7 +6964,17 @@ impl RolloutWorld {
         if has(ABILITY_REWIND) {
             self.rewind_recorders_tick(&player_order[recorded..player_count]);
         }
-        self.platform_updaters(data, updater_dt, PlatformPass::Duplicated, 0..u32::MAX);
+        // Each Duplicator copy's prefab updates as one block at its own
+        // Updater turn, after everything instantiated before it: an older
+        // pickup's vibration draws ahead of the copy's shake, and an older
+        // clone moves before the copy's spring reads it.
+        let newest_copy = (0..self.platforms.len())
+            .filter(|&i| self.platform_updates_in(i, PlatformPass::Duplicated))
+            .map(|i| self.platform_turn_key(i))
+            .max();
+        if let Some(newest) = newest_copy {
+            self.run_spawned_before(data, updater_dt, newest + 1);
+        }
         if has(ABILITY_MAGNET) {
             self.magnet_parries_tick(data);
         }
@@ -7165,6 +7178,19 @@ impl RolloutWorld {
             }
         }
         if has(ABILITY_DUPLICATOR) {
+            // Each DuplicatePlatformEffect takes its own Updater turn, in
+            // hierarchy order rather than the order of the slots they reuse,
+            // after everything instantiated before it: an older clone moves
+            // before the copy the effect spawns joins DetPhysics.
+            let newest_effect = (self.duplicate_platform_effects.iter())
+                .filter(|effect| {
+                    effect.active && effect.born_tick != self.tick && effect.stepped_tick != Some(self.tick)
+                })
+                .map(|effect| 100_000_000 + effect.hierarchy_base)
+                .max();
+            if let Some(newest) = newest_effect {
+                self.run_spawned_before(data, updater_dt, newest + 1);
+            }
             self.duplicate_platform_effects_tick(data, updater_dt, None);
         }
         if has(ABILITY_METEOR) {
