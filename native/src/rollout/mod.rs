@@ -1948,7 +1948,8 @@ pub struct ScaleChangerState {
     pub time: Fix,
     pub growth: bool,
     pub hierarchy_base: u32,
-    /// The pass a player changer already ran ahead of a newer player turn.
+    /// The pass the changer already took its Updater turn in, ahead of a
+    /// newer updatable's.
     pub early_tick: Option<u32>,
 }
 
@@ -7879,7 +7880,7 @@ impl RolloutWorld {
             }
         }
         for (i, effect) in self.scale_changers.iter().enumerate() {
-            if effect.active && effect.target_kind == 0 && effect.early_tick != Some(tick) {
+            if effect.active && effect.born_tick < tick && effect.early_tick != Some(tick) {
                 push(100_000_000 + effect.hierarchy_base, 10, i);
             }
         }
@@ -7930,7 +7931,7 @@ impl RolloutWorld {
                 7 => self.grapple_ropes_update(hierarchy - 100_000_000..hierarchy - 99_999_999),
                 8 => self.ropes_update(hierarchy - 100_000_000..hierarchy - 99_999_999),
                 9 => self.smoke_clouds_update_early(data, updater_dt, turn),
-                10 => self.player_scale_changers_update(data, turn),
+                10 => self.scale_changer_step(index, data, updater_dt),
                 11 => self.duplicate_platform_effects_tick(
                     data,
                     updater_dt,
@@ -15406,12 +15407,11 @@ impl RolloutWorld {
             {
                 continue;
             }
-            // A DuplicatePlatformEffect instantiated before this engine has
-            // already rescaled its source and spawned its copy.
-            if !self.duplicate_platform_effects.is_empty() {
-                let hierarchy = engine.hierarchy_base;
-                self.duplicate_platform_effects_tick(data, updater_dt, Some(hierarchy));
-            }
+            // The spawned updatables registered before this engine have taken
+            // their turns: a DuplicatePlatformEffect has rescaled its source
+            // and spawned its copy, and a ScaleChanger has rescaled its victim.
+            let hierarchy = 100_000_000 + engine.hierarchy_base;
+            self.run_spawned_before(data, updater_dt, hierarchy);
             let engine = &self.engines[engine_index];
             // A running engine's BlowUpSmokeTouchingTheFire casts through
             // DetPhysics.circleCastCircles, and every cast first runs
@@ -30946,33 +30946,6 @@ impl RolloutWorld {
         self.scratch.item_order = order;
     }
 
-    /// The player ScaleChangers in `hierarchy` that are due this pass: a
-    /// changer older than a player's turn object (a form instantiated at its
-    /// first cast, or a stock-respawned slime) changes Player.Scale before
-    /// that object's components read it.
-    fn player_scale_changers_update(
-        &mut self,
-        data: &data::RolloutData,
-        hierarchy: std::ops::Range<u32>,
-    ) {
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        order.clear();
-        order.extend((0..self.scale_changers.len()).filter(|&index| {
-            let effect = &self.scale_changers[index];
-            effect.active
-                && effect.target_kind == 0
-                && effect.born_tick < self.tick
-                && effect.early_tick != Some(self.tick)
-                && hierarchy.contains(&(100_000_000 + effect.hierarchy_base))
-        }));
-        order.sort_unstable_by_key(|&index| (self.scale_changers[index].hierarchy_base, index));
-        for &index in &order {
-            self.scale_changers[index].early_tick = Some(self.tick);
-            self.player_scale_changer_step(index, data);
-        }
-        self.scratch.item_order = order;
-    }
-
     /// One player ScaleChanger's UpdateSim.
     fn player_scale_changer_step(&mut self, index: usize, data: &data::RolloutData) {
         let effect = self.scale_changers[index];
@@ -31053,290 +31026,8 @@ impl RolloutWorld {
             {
                 continue;
             }
-            // A DuplicatePlatformEffect instantiated before this changer
-            // updates before it.
-            self.duplicate_platform_effects_tick(data, updater_dt, Some(effect.hierarchy_base));
-            let ray = if effect.growth {
-                &data.scale_rays.growth
-            } else {
-                &data.scale_rays.shrink
-            };
-            let duration = ray
-                .scale_curve
-                .keys
-                .last()
-                .expect("ScaleChanger curve has keys")
-                .time;
-            if effect.target_kind == 0 {
-                self.player_scale_changer_step(index, data);
-                continue;
-            }
-            if effect.time > duration {
-                self.scale_changers[index].active = false;
-                continue;
-            }
-            if effect.target_kind == 5 {
-                if effect.victim >= self.entities.len()
-                    || self.entities[effect.victim].id != effect.entity_id
-                    || self.entities[effect.victim].flags & (E_REMOVED | E_DESTROYED) != 0
-                {
-                    self.scale_changers[index].active = false;
-                    continue;
-                }
-                if self.player_time_scale < Fix::from_f32(0.01) {
-                    continue;
-                }
-                let time = effect.time + DT;
-                if let Some(marker_index) = self
-                    .teleport_marker_pool
-                    .iter()
-                    .position(|marker| marker.active && marker.entity == Some(effect.victim))
-                {
-                    // TeleportIndicator implements ISpell: ScaleChanger calls
-                    // AddScale on its private particle/teleport-area scale and
-                    // never assigns the DPhysicsCircle's Scale property.
-                    let inverse_mass = Fix::from_raw(self.entities[effect.victim].inverse_mass);
-                    let multiplier =
-                        if inverse_mass > Fix::ZERO && inverse_mass > ray.inverse_mass_before_big {
-                            ray.small_non_players_multiplier
-                        } else {
-                            ray.multiplier
-                        };
-                    let scale = (self.teleport_marker_pool[marker_index].scale
-                        + ray.scale_curve.evaluate(time) * multiplier)
-                        .clamp(Fix::from_f32(0.1), Fix::from_int(6));
-                    self.teleport_marker_pool[marker_index].scale = scale;
-                    self.scale_changers[index].time = time;
-                    for changer in &mut self.scale_changers {
-                        if changer.target_kind == 5 && changer.entity_id == effect.entity_id {
-                            changer.current_scale = scale;
-                        }
-                    }
-                    continue;
-                }
-                // victim.GetBody() answers a composite member with the
-                // combined body, so an attached child weighs as its platform.
-                let attached_platform = self
-                    .spike_attacks
-                    .iter()
-                    .find(|spike| {
-                        spike.active && !spike.macho_carried && spike.entity == Some(effect.victim)
-                    })
-                    .map(|spike| spike.platform_index)
-                    .or_else(|| {
-                        self.engines
-                            .iter()
-                            .find(|engine| {
-                                engine.active
-                                    && !engine.macho_carried
-                                    && engine.entity == Some(effect.victim)
-                            })
-                            .map(|engine| engine.platform_index)
-                    })
-                    .or_else(|| {
-                        self.tesla_nodes
-                            .iter()
-                            .find(|node| {
-                                node.active
-                                    && !node.macho_carried
-                                    && node.entity == Some(effect.victim)
-                            })
-                            .map(|node| node.platform_index)
-                    });
-                let attached_inverse_mass = attached_platform
-                    .filter(|&platform| platform < self.platform_dynamics.len())
-                    .map(|platform| self.platform_dynamics[platform].body.inverse_mass);
-                let row_inverse_mass = Fix::from_raw(self.entities[effect.victim].inverse_mass);
-                let inverse_mass = attached_inverse_mass.unwrap_or(row_inverse_mass);
-                let multiplier = if inverse_mass > Fix::ZERO
-                    && inverse_mass * effect.current_scale > ray.inverse_mass_before_big
-                {
-                    ray.small_non_players_multiplier
-                } else {
-                    ray.multiplier
-                };
-                let (min_scale, max_scale) = self.generic_scale_bounds(effect.victim);
-                let scale = (effect.current_scale + ray.scale_curve.evaluate(time) * multiplier)
-                    .clamp(min_scale, max_scale);
-                let ratio = (Fix::ONE / effect.current_scale) * scale;
-                if !self.scale_attached_entity(effect.victim, scale) {
-                    let row = &mut self.entities[effect.victim];
-                    row.radius = (Fix::from_raw(row.radius) * ratio).raw();
-                    row.right_x = (Fix::from_raw(row.right_x) * ratio).raw();
-                    row.right_y = (Fix::from_raw(row.right_y) * ratio).raw();
-                    row.up_x = (Fix::from_raw(row.up_x) * ratio).raw();
-                    row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
-                    if row.inverse_mass > 0 {
-                        row.inverse_mass = (Fix::from_raw(row.inverse_mass) / ratio).raw();
-                    }
-                }
-                for marker in &mut self.revival_marker_pool {
-                    if marker.active && marker.entity == Some(effect.victim) {
-                        // The collider resizes now; the mass waits for the
-                        // older BoplBody's next UpdateSim.
-                        marker.scale = scale;
-                        self.entities[effect.victim].inverse_mass = marker.body.inverse_mass.raw();
-                    }
-                }
-                for marker in &mut self.teleport_marker_pool {
-                    if marker.active && marker.entity == Some(effect.victim) {
-                        marker.scale = scale;
-                    }
-                }
-                for shot in &mut self.portal_shots {
-                    if shot.active && shot.entity == Some(effect.victim) {
-                        shot.scale = scale;
-                        self.entities[effect.victim].inverse_mass = shot.body.inverse_mass.raw();
-                    }
-                }
-                for rock in &mut self.duplicated_rocks {
-                    if rock.active && rock.entity == Some(effect.victim) {
-                        rock.scale = scale;
-                    }
-                }
-                for arrow in &mut self.arrows {
-                    if arrow.active && arrow.entity == Some(effect.victim) {
-                        // The arrow's older BoplBody already followed the
-                        // scale it saw this pass; the circle resizes now and
-                        // the mass waits for that BoplBody's next UpdateSim.
-                        if arrow.scaled_tick != self.tick {
-                            arrow.sync_mass();
-                        }
-                        arrow.scale = scale;
-                        arrow.scaled_tick = self.tick;
-                        self.entities[effect.victim].inverse_mass = arrow.inverse_mass.raw();
-                    }
-                }
-                // DPhysicsCircle.Scale (DPhysicsCircle.cs:208) runs
-                // FixTransform.SetScale_DPhysicsOnly, which scales the
-                // pickup's collider offset (FixTransform.cs:99). The prefab's
-                // BoplBody has momentOfInertia 0, so BoplBody.UpdateSim
-                // (BoplBody.cs:332) never rescales its mass.
-                for pickup in &mut self.ability_pickups {
-                    if pickup.active && pickup.entity == Some(effect.victim) {
-                        pickup.offset = pickup.offset * (scale / pickup.scale);
-                        pickup.radius = pickup.radius * ((Fix::ONE / pickup.scale) * scale);
-                        pickup.scale = scale;
-                        self.entities[effect.victim].inverse_mass = pickup.body.inverse_mass.raw();
-                    }
-                }
-                self.scale_changers[index].time = time;
-                // ScaleChanger writes victim.Scale directly. Every concurrent
-                // changer reads that same live property on its turn rather
-                // than advancing a private accumulator.
-                for changer in &mut self.scale_changers {
-                    if changer.target_kind == 5 && changer.entity_id == effect.entity_id {
-                        changer.current_scale = scale;
-                    }
-                }
-                continue;
-            }
-            if effect.target_kind == 1
-                && (effect.victim >= self.guided_missiles.len()
-                    || !self.guided_missiles[effect.victim].active)
-            {
-                self.scale_changers[index].active = false;
-                continue;
-            }
-            if effect.target_kind == 3
-                && (effect.victim >= self.thrown_items.len()
-                    || !self.thrown_items[effect.victim].active)
-            {
-                self.scale_changers[index].active = false;
-                continue;
-            }
-            if effect.target_kind == 4
-                && (effect.victim >= self.smoke_clouds.len()
-                    || !self.smoke_clouds[effect.victim].active)
-            {
-                self.scale_changers[index].active = false;
-                continue;
-            }
-            // Non-player ScaleChanger targets are unprotected and pause
-            // before advancing their curve while global time is stopped.
-            if self.player_time_scale < Fix::from_f32(0.01) {
-                continue;
-            }
-            let time = effect.time + DT;
-            if effect.target_kind == 3 {
-                let item = &mut self.thrown_items[effect.victim];
-                let multiplier = if item.body.inverse_mass > Fix::ZERO
-                    && item.body.inverse_mass * item.scale > ray.inverse_mass_before_big
-                {
-                    ray.small_non_players_multiplier
-                } else {
-                    ray.multiplier
-                };
-                let previous = item.scale;
-                item.scale = (item.scale + ray.scale_curve.evaluate(time) * multiplier)
-                    .clamp(Fix::from_f32(0.1), Fix::from_int(5));
-                let ratio = (Fix::ONE / previous) * item.scale;
-                item.collider_radius *= ratio;
-                if let Some(entity) = item.entity {
-                    self.entities[entity].radius = item.collider_radius.raw();
-                }
-                self.scale_changers[index].time = time;
-                continue;
-            }
-            if effect.target_kind == 4 {
-                let cloud = &mut self.smoke_clouds[effect.victim];
-                let multiplier = if data.smoke.cloud_body.inverse_mass > Fix::ZERO
-                    && data.smoke.cloud_body.inverse_mass * cloud.scale
-                        > ray.inverse_mass_before_big
-                {
-                    ray.small_non_players_multiplier
-                } else {
-                    ray.multiplier
-                };
-                let previous = cloud.scale;
-                cloud.scale = (cloud.scale + ray.scale_curve.evaluate(time) * multiplier)
-                    .clamp(Fix::from_f32(0.1), Fix::from_int(5));
-                if let Some(entity) = cloud.entity {
-                    let ratio = (Fix::ONE / previous) * cloud.scale;
-                    self.entities[entity].radius =
-                        (Fix::from_raw(self.entities[entity].radius) * ratio).raw();
-                }
-                self.scale_changers[index].time = time;
-                continue;
-            }
-            if effect.target_kind == 2 {
-                if effect.victim >= self.platforms.len() {
-                    self.scale_changers[index].active = false;
-                    continue;
-                }
-                let dynamics = &mut self.platform_dynamics[effect.victim];
-                let multiplier = if dynamics.body.inverse_mass > Fix::ZERO
-                    && dynamics.body.inverse_mass * dynamics.scale > ray.inverse_mass_before_big
-                {
-                    ray.small_non_players_multiplier
-                } else {
-                    ray.multiplier
-                };
-                let value = dynamics.scale + ray.scale_curve.evaluate(time) * multiplier;
-                self.scratch.platform_resizes.push((
-                    effect.victim,
-                    effect.hierarchy_base,
-                    self.platforms[effect.victim].clone(),
-                ));
-                self.set_platform_scale(effect.victim, value, true);
-                self.scale_changers[index].time = time;
-                continue;
-            }
-            let missile = &mut self.guided_missiles[effect.victim];
-            // Spark's authored momentOfInertia is zero. BoplBody gates its
-            // scale-driven mass update on both mass and inertia being nonzero,
-            // so the Missile keeps its original inverse mass as the box grows
-            // or shrinks.
-            let multiplier = if missile.body.inverse_mass > Fix::ZERO
-                && missile.body.inverse_mass * missile.scale > ray.inverse_mass_before_big
-            {
-                ray.small_non_players_multiplier
-            } else {
-                ray.multiplier
-            };
-            missile.scale = (missile.scale + ray.scale_curve.evaluate(time) * multiplier)
-                .clamp(Fix::from_f32(0.1), Fix::from_int(5));
-            self.scale_changers[index].time = time;
+            self.scale_changers[index].early_tick = Some(self.tick);
+            self.scale_changer_step(index, data, updater_dt);
         }
         if let Some(from) = spikes_from {
             self.spike_attacks_between(data, updater_dt, from, u32::MAX);
@@ -31347,6 +31038,294 @@ impl RolloutWorld {
             self.shockwaves_update(true, data, DT, from..u32::MAX);
         }
         self.scratch.item_order = order;
+    }
+
+    /// One ScaleChanger's Updater turn. The spawned updatables registered
+    /// before it, such as a DuplicatePlatformEffect, update before it.
+    fn scale_changer_step(&mut self, index: usize, data: &data::RolloutData, updater_dt: Fix) {
+        self.run_spawned_before(data, updater_dt, 100_000_000 + self.scale_changers[index].hierarchy_base);
+        let effect = self.scale_changers[index];
+        let ray = if effect.growth {
+            &data.scale_rays.growth
+        } else {
+            &data.scale_rays.shrink
+        };
+        let duration = ray
+            .scale_curve
+            .keys
+            .last()
+            .expect("ScaleChanger curve has keys")
+            .time;
+        if effect.target_kind == 0 {
+            self.player_scale_changer_step(index, data);
+            return;
+        }
+        if effect.time > duration {
+            self.scale_changers[index].active = false;
+            return;
+        }
+        if effect.target_kind == 5 {
+            if effect.victim >= self.entities.len()
+                || self.entities[effect.victim].id != effect.entity_id
+                || self.entities[effect.victim].flags & (E_REMOVED | E_DESTROYED) != 0
+            {
+                self.scale_changers[index].active = false;
+                return;
+            }
+            if self.player_time_scale < Fix::from_f32(0.01) {
+                return;
+            }
+            let time = effect.time + DT;
+            if let Some(marker_index) = self
+                .teleport_marker_pool
+                .iter()
+                .position(|marker| marker.active && marker.entity == Some(effect.victim))
+            {
+                // TeleportIndicator implements ISpell: ScaleChanger calls
+                // AddScale on its private particle/teleport-area scale and
+                // never assigns the DPhysicsCircle's Scale property.
+                let inverse_mass = Fix::from_raw(self.entities[effect.victim].inverse_mass);
+                let multiplier =
+                    if inverse_mass > Fix::ZERO && inverse_mass > ray.inverse_mass_before_big {
+                        ray.small_non_players_multiplier
+                    } else {
+                        ray.multiplier
+                    };
+                let scale = (self.teleport_marker_pool[marker_index].scale
+                    + ray.scale_curve.evaluate(time) * multiplier)
+                    .clamp(Fix::from_f32(0.1), Fix::from_int(6));
+                self.teleport_marker_pool[marker_index].scale = scale;
+                self.scale_changers[index].time = time;
+                for changer in &mut self.scale_changers {
+                    if changer.target_kind == 5 && changer.entity_id == effect.entity_id {
+                        changer.current_scale = scale;
+                    }
+                }
+                return;
+            }
+            // victim.GetBody() answers a composite member with the
+            // combined body, so an attached child weighs as its platform.
+            let attached_platform = self
+                .spike_attacks
+                .iter()
+                .find(|spike| {
+                    spike.active && !spike.macho_carried && spike.entity == Some(effect.victim)
+                })
+                .map(|spike| spike.platform_index)
+                .or_else(|| {
+                    self.engines
+                        .iter()
+                        .find(|engine| {
+                            engine.active
+                                && !engine.macho_carried
+                                && engine.entity == Some(effect.victim)
+                        })
+                        .map(|engine| engine.platform_index)
+                })
+                .or_else(|| {
+                    self.tesla_nodes
+                        .iter()
+                        .find(|node| {
+                            node.active
+                                && !node.macho_carried
+                                && node.entity == Some(effect.victim)
+                        })
+                        .map(|node| node.platform_index)
+                });
+            let attached_inverse_mass = attached_platform
+                .filter(|&platform| platform < self.platform_dynamics.len())
+                .map(|platform| self.platform_dynamics[platform].body.inverse_mass);
+            let row_inverse_mass = Fix::from_raw(self.entities[effect.victim].inverse_mass);
+            let inverse_mass = attached_inverse_mass.unwrap_or(row_inverse_mass);
+            let multiplier = if inverse_mass > Fix::ZERO
+                && inverse_mass * effect.current_scale > ray.inverse_mass_before_big
+            {
+                ray.small_non_players_multiplier
+            } else {
+                ray.multiplier
+            };
+            let (min_scale, max_scale) = self.generic_scale_bounds(effect.victim);
+            let scale = (effect.current_scale + ray.scale_curve.evaluate(time) * multiplier)
+                .clamp(min_scale, max_scale);
+            let ratio = (Fix::ONE / effect.current_scale) * scale;
+            if !self.scale_attached_entity(effect.victim, scale) {
+                let row = &mut self.entities[effect.victim];
+                row.radius = (Fix::from_raw(row.radius) * ratio).raw();
+                row.right_x = (Fix::from_raw(row.right_x) * ratio).raw();
+                row.right_y = (Fix::from_raw(row.right_y) * ratio).raw();
+                row.up_x = (Fix::from_raw(row.up_x) * ratio).raw();
+                row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
+                if row.inverse_mass > 0 {
+                    row.inverse_mass = (Fix::from_raw(row.inverse_mass) / ratio).raw();
+                }
+            }
+            for marker in &mut self.revival_marker_pool {
+                if marker.active && marker.entity == Some(effect.victim) {
+                    // The collider resizes now; the mass waits for the
+                    // older BoplBody's next UpdateSim.
+                    marker.scale = scale;
+                    self.entities[effect.victim].inverse_mass = marker.body.inverse_mass.raw();
+                }
+            }
+            for marker in &mut self.teleport_marker_pool {
+                if marker.active && marker.entity == Some(effect.victim) {
+                    marker.scale = scale;
+                }
+            }
+            for shot in &mut self.portal_shots {
+                if shot.active && shot.entity == Some(effect.victim) {
+                    shot.scale = scale;
+                    self.entities[effect.victim].inverse_mass = shot.body.inverse_mass.raw();
+                }
+            }
+            for rock in &mut self.duplicated_rocks {
+                if rock.active && rock.entity == Some(effect.victim) {
+                    rock.scale = scale;
+                }
+            }
+            for arrow in &mut self.arrows {
+                if arrow.active && arrow.entity == Some(effect.victim) {
+                    // The arrow's older BoplBody already followed the
+                    // scale it saw this pass; the circle resizes now and
+                    // the mass waits for that BoplBody's next UpdateSim.
+                    if arrow.scaled_tick != self.tick {
+                        arrow.sync_mass();
+                    }
+                    arrow.scale = scale;
+                    arrow.scaled_tick = self.tick;
+                    self.entities[effect.victim].inverse_mass = arrow.inverse_mass.raw();
+                }
+            }
+            // DPhysicsCircle.Scale (DPhysicsCircle.cs:208) runs
+            // FixTransform.SetScale_DPhysicsOnly, which scales the
+            // pickup's collider offset (FixTransform.cs:99). The prefab's
+            // BoplBody has momentOfInertia 0, so BoplBody.UpdateSim
+            // (BoplBody.cs:332) never rescales its mass.
+            for pickup in &mut self.ability_pickups {
+                if pickup.active && pickup.entity == Some(effect.victim) {
+                    pickup.offset = pickup.offset * (scale / pickup.scale);
+                    pickup.radius = pickup.radius * ((Fix::ONE / pickup.scale) * scale);
+                    pickup.scale = scale;
+                    self.entities[effect.victim].inverse_mass = pickup.body.inverse_mass.raw();
+                }
+            }
+            self.scale_changers[index].time = time;
+            // ScaleChanger writes victim.Scale directly. Every concurrent
+            // changer reads that same live property on its turn rather
+            // than advancing a private accumulator.
+            for changer in &mut self.scale_changers {
+                if changer.target_kind == 5 && changer.entity_id == effect.entity_id {
+                    changer.current_scale = scale;
+                }
+            }
+            return;
+        }
+        if effect.target_kind == 1
+            && (effect.victim >= self.guided_missiles.len()
+                || !self.guided_missiles[effect.victim].active)
+        {
+            self.scale_changers[index].active = false;
+            return;
+        }
+        if effect.target_kind == 3
+            && (effect.victim >= self.thrown_items.len()
+                || !self.thrown_items[effect.victim].active)
+        {
+            self.scale_changers[index].active = false;
+            return;
+        }
+        if effect.target_kind == 4
+            && (effect.victim >= self.smoke_clouds.len()
+                || !self.smoke_clouds[effect.victim].active)
+        {
+            self.scale_changers[index].active = false;
+            return;
+        }
+        // Non-player ScaleChanger targets are unprotected and pause
+        // before advancing their curve while global time is stopped.
+        if self.player_time_scale < Fix::from_f32(0.01) {
+            return;
+        }
+        let time = effect.time + DT;
+        if effect.target_kind == 3 {
+            let item = &mut self.thrown_items[effect.victim];
+            let multiplier = if item.body.inverse_mass > Fix::ZERO
+                && item.body.inverse_mass * item.scale > ray.inverse_mass_before_big
+            {
+                ray.small_non_players_multiplier
+            } else {
+                ray.multiplier
+            };
+            let previous = item.scale;
+            item.scale = (item.scale + ray.scale_curve.evaluate(time) * multiplier)
+                .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+            let ratio = (Fix::ONE / previous) * item.scale;
+            item.collider_radius *= ratio;
+            if let Some(entity) = item.entity {
+                self.entities[entity].radius = item.collider_radius.raw();
+            }
+            self.scale_changers[index].time = time;
+            return;
+        }
+        if effect.target_kind == 4 {
+            let cloud = &mut self.smoke_clouds[effect.victim];
+            let multiplier = if data.smoke.cloud_body.inverse_mass > Fix::ZERO
+                && data.smoke.cloud_body.inverse_mass * cloud.scale
+                    > ray.inverse_mass_before_big
+            {
+                ray.small_non_players_multiplier
+            } else {
+                ray.multiplier
+            };
+            let previous = cloud.scale;
+            cloud.scale = (cloud.scale + ray.scale_curve.evaluate(time) * multiplier)
+                .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+            if let Some(entity) = cloud.entity {
+                let ratio = (Fix::ONE / previous) * cloud.scale;
+                self.entities[entity].radius =
+                    (Fix::from_raw(self.entities[entity].radius) * ratio).raw();
+            }
+            self.scale_changers[index].time = time;
+            return;
+        }
+        if effect.target_kind == 2 {
+            if effect.victim >= self.platforms.len() {
+                self.scale_changers[index].active = false;
+                return;
+            }
+            let dynamics = &mut self.platform_dynamics[effect.victim];
+            let multiplier = if dynamics.body.inverse_mass > Fix::ZERO
+                && dynamics.body.inverse_mass * dynamics.scale > ray.inverse_mass_before_big
+            {
+                ray.small_non_players_multiplier
+            } else {
+                ray.multiplier
+            };
+            let value = dynamics.scale + ray.scale_curve.evaluate(time) * multiplier;
+            self.scratch.platform_resizes.push((
+                effect.victim,
+                effect.hierarchy_base,
+                self.platforms[effect.victim].clone(),
+            ));
+            self.set_platform_scale(effect.victim, value, true);
+            self.scale_changers[index].time = time;
+            return;
+        }
+        let missile = &mut self.guided_missiles[effect.victim];
+        // Spark's authored momentOfInertia is zero. BoplBody gates its
+        // scale-driven mass update on both mass and inertia being nonzero,
+        // so the Missile keeps its original inverse mass as the box grows
+        // or shrinks.
+        let multiplier = if missile.body.inverse_mass > Fix::ZERO
+            && missile.body.inverse_mass * missile.scale > ray.inverse_mass_before_big
+        {
+            ray.small_non_players_multiplier
+        } else {
+            ray.multiplier
+        };
+        missile.scale = (missile.scale + ray.scale_curve.evaluate(time) * multiplier)
+            .clamp(Fix::from_f32(0.1), Fix::from_int(5));
+        self.scale_changers[index].time = time;
     }
 
     fn begin_duplicate_platform(
