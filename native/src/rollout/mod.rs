@@ -27,7 +27,9 @@ macro_rules! terrain {
 pub mod abi;
 pub mod data;
 pub mod replay;
+mod circle_box;
 mod rope_abilities;
+use circle_box::Part;
 
 pub const ABI_VERSION: u32 = 3;
 /// The .NET catalog has 39 ability icons; index 0 is the menu placeholder.
@@ -3730,9 +3732,9 @@ enum CallbackHit {
     Pickup { pickup: usize, taker: PickupTaker, body: usize },
     /// A young SpikeAttack.OnCollide with a Player-layer box.
     SpikeKnock { spike: usize, player: usize, entity: usize, point: Vec2 },
-    /// SpikeAttack.OnCollide with another composite's Spike attack or
-    /// RocketEngine box.
-    SpikeShove { spike: usize, target: usize, target_is_spike: bool, point: Vec2 },
+    /// A young SpikeAttack.OnCollide with any other collider off the wall
+    /// layer: another composite's box, an item, a shot or a Tesla node.
+    SpikeShove { spike: usize, target: Part, point: Vec2 },
 }
 
 /// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
@@ -3787,7 +3789,9 @@ struct PlatformScratch {
     /// The Updater hierarchy of the SlimeController updating now: 0 before
     /// the slimes' turns, `u32::MAX` after them (DetPhysics' callbacks).
     updater_hierarchy: u32,
-    item_spike_hits: Vec<(usize, usize, Vec2)>,
+    /// The Circle/Box group's colliders, circles first, and its manifolds.
+    cb_parts: Vec<Part>,
+    cb_contacts: Vec<(CallbackKey, Part, Part, Contact)>,
     tesla_wall_contacts: Vec<(usize, usize, Contact)>,
     /// Portal shots' wall manifolds: (shot, wall, contact).
     portal_shot_wall_contacts: Vec<(usize, usize, Contact)>,
@@ -7761,7 +7765,6 @@ impl RolloutWorld {
         }
         if has(ABILITY_SPIKE) {
             self.spike_wall_callbacks(data);
-            self.spike_item_pushes(data);
         }
         if has(ABILITY_MJOLNIR) {
             self.mjolnir_wall_pushes(data);
@@ -16340,38 +16343,6 @@ impl RolloutWorld {
         }
         self.scratch.spike_wall_contacts = contacts;
         self.scratch.spike_wall_contacts.clear();
-    }
-
-    /// SpikeAttack.OnCollide for its Circle/Box manifolds with thrown items,
-    /// after the Box/RR wall callbacks: a young spike knocks the item's
-    /// circle away from its FixTransform with an immediate impulse at the
-    /// contact point and pushes back on its own platform once per pass.
-    fn spike_item_pushes(&mut self, data: &data::RolloutData) {
-        let hits = std::mem::take(&mut self.scratch.item_spike_hits);
-        if self.player_time_scale >= Fix::from_f32(0.01) {
-            for &(item_index, spike_index, point) in &hits {
-                if self.spike_attacks[spike_index].time >= data.spike.push_time
-                    || !self.thrown_items[item_index].active
-                {
-                    continue;
-                }
-                let direction =
-                    (point - self.spike_attack_root(spike_index)).normalized_safe();
-                let item = &mut self.thrown_items[item_index];
-                let arm = (point - item.position).normalized_safe();
-                item.body.apply_impulse(direction * data.spike.knock_player, arm);
-                if let Some(entity) = item.entity {
-                    let body = item.body;
-                    let row = &mut self.entities[entity];
-                    row.vx = body.velocity.x.raw();
-                    row.vy = body.velocity.y.raw();
-                    row.angular_velocity = body.angular_velocity.raw();
-                }
-                self.spike_attack_self_push(spike_index, point, data.spike.knock_player, data);
-            }
-        }
-        self.scratch.item_spike_hits = hits;
-        self.scratch.item_spike_hits.clear();
     }
 
     fn spike_contacts(&mut self, data: &data::RolloutData) {
@@ -37314,12 +37285,9 @@ impl RolloutWorld {
             // SpikeAttack listens on its box.
             for (child, other) in [(a, b), (b, a)] {
                 if child >= SPIKE {
-                    let hit = CallbackHit::SpikeShove {
-                        spike: child - SPIKE,
-                        target: other % SPIKE,
-                        target_is_spike: other >= SPIKE,
-                        point: contact.point,
-                    };
+                    let target =
+                        if other >= SPIKE { Part::Spike(other - SPIKE) } else { Part::Engine(other) };
+                    let hit = CallbackHit::SpikeShove { spike: child - SPIKE, target, point: contact.point };
                     self.scratch.callback_hits.push(((2, later, earlier), hit));
                 }
             }
@@ -37671,177 +37639,6 @@ impl RolloutWorld {
                 left[b_index].position += correction[1];
             }
         }
-        // The Circle/Box group follows, built from the corrected circles:
-        // items and Portal shots against the RocketEngine boxes of platform
-        // composites, and items and Tesla nodes against Spike attack boxes.
-        // ResolveCollision swaps a child for its combined body and position;
-        // PositionalCorrection takes the child's own inverse mass and moves
-        // its collider and CompositeBody.position. Box references from SPIKE
-        // up are spikes; the item callbacks ignore their LethalTerrain layer.
-        const SPIKE: usize = 1 << 16;
-        let mut engine_contacts = [(usize::MAX, usize::MAX, Contact::default()); 64];
-        let mut engine_contact_count = 0;
-        for &index in self.scratch.item_order.iter() {
-            // A node never meets the children of its own composite.
-            let own_platform =
-                (index >= NODE).then(|| self.tesla_nodes[index - NODE].platform_index);
-            let circle = if index >= NODE {
-                let node = self.tesla_nodes[index - NODE];
-                Circle { center: node.collider_center, radius: node.radius }
-            } else if index >= SHOT {
-                Circle {
-                    center: self.portal_shots[index - SHOT].position,
-                    radius: self.portal_shots[index - SHOT].collider_radius,
-                }
-            } else {
-                let item = self.thrown_items[index];
-                Circle { center: item.position, radius: thrown_item_radius(data, item) }
-            };
-            for (engine_index, engine) in self.engines.iter().enumerate() {
-                if !engine.active
-                    || engine.macho_carried
-                    || engine.platform_index >= self.platforms.len()
-                    || own_platform == Some(engine.platform_index)
-                    || engine_contact_count == engine_contacts.len()
-                {
-                    continue;
-                }
-                let rocket = engine.rocket_box();
-                if let Some(contact) = crate::physics::contact::circle_box(circle, rocket) {
-                    engine_contacts[engine_contact_count] = (index, engine_index, contact);
-                    engine_contact_count += 1;
-                }
-            }
-            if (SHOT..NODE).contains(&index) {
-                continue;
-            }
-            for (spike_index, spike) in self.spike_attacks.iter().copied().enumerate() {
-                if !spike.active
-                    || spike.macho_carried
-                    || spike.platform_index >= self.platforms.len()
-                    || own_platform == Some(spike.platform_index)
-                    || spike.body.inverse_mass <= Fix::ZERO
-                    || spike.entity.is_none_or(|entity| self.entities[entity].flags & 3 != 3)
-                    || engine_contact_count == engine_contacts.len()
-                {
-                    continue;
-                }
-                let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike);
-                if let Some(contact) = crate::physics::contact::circle_box(circle, attack_box) {
-                    engine_contacts[engine_contact_count] = (index, SPIKE + spike_index, contact);
-                    engine_contact_count += 1;
-                }
-            }
-        }
-        let engine_contacts = &mut engine_contacts[..engine_contact_count];
-        let circle_min = |index: usize| {
-            if index >= NODE {
-                let node = self.tesla_nodes[index - NODE];
-                axis(node.swept_center) - node.radius
-            } else if index >= SHOT {
-                axis(self.portal_shots[index - SHOT].position) - self.portal_shots[index - SHOT].collider_radius
-            } else {
-                let item = self.thrown_items[index];
-                axis(item.swept_position) - thrown_item_radius(data, item)
-            }
-        };
-        let engine_min = |engine_index: usize| {
-            if engine_index >= SPIKE {
-                let spike = self.spike_attacks[engine_index - SPIKE];
-                let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike);
-                return axis(attack_box.center) - axis(attack_box.right).abs() - axis(attack_box.up).abs();
-            }
-            let engine = self.engines[engine_index];
-            let rocket = engine.rocket_box();
-            axis(rocket.center) - axis(rocket.right).abs() - axis(rocket.up).abs()
-        };
-        engine_contacts.sort_by_key(|&(index, engine_index, _)| {
-            let circle = if index >= NODE {
-                self.tesla_nodes[index - NODE].entity
-            } else if index >= SHOT {
-                self.portal_shots[index - SHOT].entity
-            } else {
-                self.thrown_items[index].entity
-            };
-            let child = if engine_index >= SPIKE {
-                self.spike_attacks[engine_index - SPIKE].entity
-            } else {
-                self.engines[engine_index].entity
-            };
-            sweep_pair(
-                sweep_rank(&self.entities, circle_min(index), circle),
-                sweep_rank(&self.entities, engine_min(engine_index), child),
-            )
-        });
-        for &(index, engine_index, contact) in engine_contacts.iter() {
-            let (platform, child_inverse_mass) = if engine_index >= SPIKE {
-                let spike = self.spike_attacks[engine_index - SPIKE];
-                (spike.platform_index, spike.body.inverse_mass)
-            } else {
-                let engine = self.engines[engine_index];
-                (engine.platform_index, engine.body.inverse_mass)
-            };
-            let (mut circle_body, circle_position, circle_inverse_mass) = if index >= NODE {
-                let node = self.tesla_nodes[index - NODE];
-                let dynamics = &self.platform_dynamics[node.platform_index];
-                (dynamics.body, dynamics.composite_position, node.body.inverse_mass)
-            } else if index >= SHOT {
-                let shot = self.portal_shots[index - SHOT];
-                (shot.body, shot.position, shot.body.inverse_mass)
-            } else {
-                let item = self.thrown_items[index];
-                (item.body, item.position, item.body.inverse_mass)
-            };
-            let mut platform_body = self.platform_dynamics[platform].body;
-            resolve(
-                contact,
-                &mut circle_body,
-                &mut platform_body,
-                circle_position,
-                self.platform_dynamics[platform].composite_position,
-            );
-            let correction = positional_correction(
-                contact,
-                circle_inverse_mass,
-                child_inverse_mass,
-                false,
-            );
-            if index >= NODE {
-                let node_platform = self.tesla_nodes[index - NODE].platform_index;
-                self.platform_dynamics[node_platform].body = circle_body;
-                self.platform_dynamics[node_platform].composite_position += correction[0];
-                self.tesla_nodes[index - NODE].collider_center += correction[0];
-            } else if index >= SHOT {
-                let shot = &mut self.portal_shots[index - SHOT];
-                shot.body = circle_body;
-                shot.position += correction[0];
-                if let Some(entity) = shot.entity {
-                    let shot = *shot;
-                    let row = &mut self.entities[entity];
-                    row.x = shot.position.x.raw();
-                    row.y = shot.position.y.raw();
-                    row.vx = shot.body.velocity.x.raw();
-                    row.vy = shot.body.velocity.y.raw();
-                    row.rotation = shot.body.orientation.raw();
-                    row.angular_velocity = shot.body.angular_velocity.raw();
-                }
-            } else {
-                self.thrown_items[index].body = circle_body;
-                self.thrown_items[index].position += correction[0];
-                if engine_index >= SPIKE {
-                    self.scratch
-                        .item_spike_hits
-                        .push((index, engine_index - SPIKE, contact.point));
-                }
-            }
-            self.platform_dynamics[platform].body = platform_body;
-            self.platform_dynamics[platform].composite_position += correction[1];
-            if engine_index >= SPIKE {
-                self.spike_attacks[engine_index - SPIKE].collider_center += correction[1];
-            } else {
-                self.engines[engine_index].collider_center += correction[1];
-            }
-        }
         for item in &self.thrown_items {
             let Some(entity) = item.entity.filter(|_| item.active) else {
                 continue;
@@ -37854,6 +37651,8 @@ impl RolloutWorld {
             row.rotation = item.body.orientation.raw();
             row.angular_velocity = item.body.angular_velocity.raw();
         }
+        // The Circle/Box group follows, built from the corrected circles.
+        self.circle_box_group();
         // SmokeGrenadeExplode2 accepts every non-projectile collision once
         // its owner gate is open, a rounded wall included. Manifolds were all
         // constructed before this callback phase, so destroying one Smoke
@@ -37888,7 +37687,7 @@ impl RolloutWorld {
         }
         self.scratch.hook_smoke_hits = hook_smoke_hits;
         self.scratch.hook_smoke_hits.clear();
-        for &(a_index, b_index, _) in contacts.iter() {
+        for &(a_index, b_index, _) in self.scratch.item_contacts.iter() {
             // A portal shot's Projectile does not ignite explosives.
             if (SHOT..NODE).contains(&a_index) || (SHOT..NODE).contains(&b_index) {
                 continue;
@@ -37906,20 +37705,6 @@ impl RolloutWorld {
                     smoke_callbacks[smoke_callback_count] = item_index;
                     smoke_callback_count += 1;
                 }
-            }
-        }
-        for &(item_index, _, _) in engine_contacts.iter() {
-            if item_index >= SHOT {
-                continue;
-            }
-            let item = self.thrown_items[item_index];
-            if item.active
-                && item.ability == ABILITY_SMOKE
-                && item.detonates_on_owner
-                && smoke_callback_count < smoke_callbacks.len()
-            {
-                smoke_callbacks[smoke_callback_count] = item_index;
-                smoke_callback_count += 1;
             }
         }
         for &item_index in &smoke_callbacks[..smoke_callback_count] {
@@ -38500,29 +38285,17 @@ impl RolloutWorld {
                     row.vy = velocity.y.raw();
                     self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
                 }
-                CallbackHit::SpikeShove { spike, target, target_is_spike, point } => {
-                    // Neither box is on the wall layer, so knockAwayStr. The
-                    // push arm starts at the target's synced FixTransform.
-                    let (active, platform, root) = if target_is_spike {
-                        let other = self.spike_attacks[target];
-                        (other.active, other.platform_index, self.spike_attack_root(target))
-                    } else {
-                        let other = self.engines[target];
-                        let right = Vec2::angle(other.collider_rotation);
-                        let root = other.collider_center - other.collider_offset.complex_mul(right);
-                        (other.active, other.platform_index, root)
-                    };
+                CallbackHit::SpikeShove { spike, target, point } => {
+                    // Off the wall layer, so knockAwayStr, pushed from the
+                    // target's synced FixTransform (SpikeAttack.cs:116-141).
                     if self.player_time_scale < Fix::from_f32(0.01)
                         || self.spike_attacks[spike].time >= data.spike.push_time
-                        || !active
+                        || self.part_destroyed(target)
                     {
                         continue;
                     }
                     let direction = (point - self.spike_attack_root(spike)).normalized_safe();
-                    let arm = (point - root).normalized_safe();
-                    self.platform_dynamics[platform]
-                        .body
-                        .apply_impulse(direction * data.spike.knock_player, arm);
+                    self.part_add_force_at(target, direction * data.spike.knock_player, point);
                     self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
                 }
                 CallbackHit::ItemDetonate { item, count } => {
