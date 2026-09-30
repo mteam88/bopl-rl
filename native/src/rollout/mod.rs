@@ -8020,17 +8020,13 @@ impl RolloutWorld {
             if let Some(platform_index) = ground_index
                 && !self.platforms[platform_index].active
             {
-                // QuantumTunnel disables a wall after its updater phase, but
-                // the rider's already scheduled LateUpdate still follows the
-                // transform written by the final ShakablePlatform sample.
-                if self.platform_dynamics[platform_index].blink_deactivated_tick == Some(self.tick)
-                {
-                    let platform = &self.platforms[platform_index];
-                    let base = &mut self.players[index].base;
-                    base.position = platform.surface.position(base.local, base.radius);
-                    if !keeps_rotation {
-                        base.align(platform);
-                    }
+                // A wall QuantumTunnel hid is not destroyed, so the rider's
+                // LateUpdateSim still follows it (PlayerPhysics.cs:138-146).
+                let platform = &self.platforms[platform_index];
+                let base = &mut self.players[index].base;
+                base.position = platform.surface.position(base.local, base.radius);
+                if !keeps_rotation {
+                    base.align(platform);
                 }
                 continue;
             }
@@ -8063,14 +8059,9 @@ impl RolloutWorld {
                 let platform = &self.platforms[platform_index];
                 if platform.active {
                     clone.base.late_step(&self.platforms);
-                } else if self.platform_dynamics[platform_index].blink_deactivated_tick
-                    == Some(self.tick)
-                    && clone.base.alive
-                    && clone.base.grounded
-                    && !clone.base.dash.active
-                {
-                    // As for a player: the wall's QuantumTunnel hid it after
-                    // the clone's updaters, and LateUpdate still follows it.
+                } else if clone.base.alive && clone.base.grounded && !clone.base.dash.active {
+                    // As for a player: a wall QuantumTunnel hid is not
+                    // destroyed, and LateUpdateSim still follows it.
                     let base = &mut clone.base;
                     base.position = platform.surface.position(base.local, base.radius);
                     base.align(platform);
