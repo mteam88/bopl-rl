@@ -3131,9 +3131,6 @@ pub struct PlayerSlot {
     /// (pass, TeleportIndicator hierarchy, position before it moved the
     /// player): an older Mjolnir still finds the slime there, active.
     pub teleported_from: (u32, u32, Vec2),
-    /// The pass a Poke Ball's OnCollide caught the slime, after DetPhysics
-    /// had found its contacts from the box left where it was.
-    pub caught_after_contacts: u32,
     pub teleport_effect_released_tick: Option<u32>,
     /// A TeleportIndicator older than a Black Hole fires at the hole's turn,
     /// ahead of teleport_effects_tick; its new effect first updates next pass.
@@ -3755,6 +3752,10 @@ enum CallbackHit {
     /// A young SpikeAttack.OnCollide with any other collider off the wall
     /// layer: another composite's box, an item, a shot or a Tesla node.
     SpikeShove { spike: usize, target: Part, point: Vec2 },
+    /// SlimeController.OnCollide of a slime's or an abilityless clone's box
+    /// with another Player-layer collider; `lower` is whether the slime's
+    /// collider is the earlier in the hierarchy.
+    SlimeCollide { slime: Prey, other: Prey, lower: bool },
 }
 
 /// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
@@ -3836,7 +3837,6 @@ struct PlatformScratch {
     /// resolution order.
     arrow_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Slime-vs-slime shoves of one DetPhysics pass: (pushed, other, lower id).
-    slime_shoves: Vec<(usize, usize, bool)>,
     /// This pass's Player.Scale changes by a ScaleChanger, in hierarchy order:
     /// (player, changer hierarchy, scale before).
     player_scale_changes: Vec<(usize, u32, Fix)>,
@@ -3925,7 +3925,6 @@ impl PlatformScratch {
             missile_contacts: Vec::with_capacity(256),
             callback_hits: Vec::with_capacity(16),
             arrow_platform_contacts: Vec::with_capacity(64),
-            slime_shoves: Vec::with_capacity(8),
             ray_hits: Vec::with_capacity(192),
             duplicate_shake_order: Vec::with_capacity(64),
             duplicate_shake_offsets: Vec::with_capacity(64),
@@ -5419,7 +5418,6 @@ impl RolloutWorld {
                 teleport_effect_time: Fix::ZERO,
                 teleport_effect_hierarchy: 0,
                 teleported_from: (u32::MAX, 0, Vec2::ZERO),
-                caught_after_contacts: u32::MAX,
                 teleport_effect_released_tick: None,
                 teleport_effect_born_tick: 0,
                 blink_tunnel_active: false,
@@ -7482,39 +7480,6 @@ impl RolloutWorld {
         if has(ABILITY_DUPLICATOR) {
             self.register_pending_duplicated_items(data);
         }
-        // Slime-vs-slime shove (World::step parity). The overlap is found
-        // here, but SlimeController.OnCollide is a Box/Box callback, the last
-        // kind DetPhysics dispatches, and reads the other body's live
-        // transform then: a Bow killed by an arrow this pass shoves from
-        // where its ExitAbility left it.
-        self.scratch.slime_shoves.clear();
-        for a in 0..self.players.len() {
-            for b in a + 1..self.players.len() {
-                let (pa, pb) = (a, b);
-                if !self.shoves(pa) || !self.shoves(pb) {
-                    continue;
-                }
-                if !Self::slime_collider_enabled(&self.players[pa])
-                    || !Self::slime_collider_enabled(&self.players[pb])
-                {
-                    continue;
-                }
-                // OnCollide breaks an exact overlap by which collider is
-                // earlier in the hierarchy, not by player index.
-                let hierarchy = |i: usize| {
-                    self.entities
-                        .get(Self::hurtbox_entity(&self.players[i]))
-                        .map(|row| row.hierarchy)
-                };
-                let pa_first = hierarchy(pa) < hierarchy(pb);
-                if self.players[pa].active == ActiveAbility::None {
-                    self.scratch.slime_shoves.push((pa, pb, pa_first));
-                }
-                if self.players[pb].active == ActiveAbility::None {
-                    self.scratch.slime_shoves.push((pb, pa, !pa_first));
-                }
-            }
-        }
         // DetPhysics.Simulate syncs every collider from the body position the
         // updater pass left (Updater.cs:303-323); a grounded slime's body only
         // moves to its new surface local in PlayerPhysics.LateUpdateSim
@@ -7588,14 +7553,12 @@ impl RolloutWorld {
         if has_clones && has(ABILITY_BLINK) {
             self.blink_clone_tunnels_tick(data, updater_dt);
         }
-        // The clones' shoves are DetPhysics callbacks, after their update.
         if has_clones {
             // DetPhysics.Simulate syncs the clones' boxes to where their
             // updates left them.
             for clone in &mut self.abilityless_clones {
                 clone.base.synced = clone.base.collider;
             }
-            self.abilityless_clone_shoves();
         }
         let physics_dt = DT * self.player_time_scale;
         if has(ABILITY_BOW) {
@@ -7629,12 +7592,6 @@ impl RolloutWorld {
             self.duplicated_rocks_integrate(physics_dt, data);
         }
         self.claim_queued_spawns(u32::MAX);
-        // killPlayer from an updater (Mjolnir.TryHitPlayers) destroys the
-        // slime before Simulate, so its box meets no other slime this pass.
-        let players = &self.players;
-        self.scratch
-            .slime_shoves
-            .retain(|&(pushed, other, _)| players[pushed].base.alive && players[other].base.alive);
         // DetPhysics.Simulate drops last pass's callback casualties, then
         // syncs every registered collider; the sweep axis below reads them.
         for slot in &self.players {
@@ -7676,6 +7633,7 @@ impl RolloutWorld {
         if self.intro_phase == 3 {
             self.platforms_tick(data, physics_dt);
         }
+        self.slime_pairs();
         self.scratch.circle_colliders.clear();
         self.scratch.circle_colliders.extend(self.platforms.iter().map(|p| p.collider));
         for node in self.tesla_nodes.iter_mut().chain(&mut self.retired_tesla_contacts) {
@@ -7844,74 +7802,6 @@ impl RolloutWorld {
         self.run_callback_hits(data);
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_callbacks();
-        }
-        for i in 0..self.scratch.slime_shoves.len() {
-            let (pushed, other, lower_id) = self.scratch.slime_shoves[i];
-            // A slime killed by an earlier callback shoves its destroyed
-            // body, not the one a stock respawns.
-            if !self.players[pushed].base.alive
-                || self.players[pushed].callback_killed_tick == Some(self.tick)
-            {
-                continue;
-            }
-            // SlimeController.OnCollide only runs for a Box/Box contact, and
-            // the Throw form's hurtbox sits above its transform.
-            if self.players[other].active == ActiveAbility::Throw
-                && crate::physics::contact::box_box(
-                    self.players[pushed].base.collider,
-                    self.macho_throw_box(other, data),
-                )
-                .is_none()
-            {
-                continue;
-            }
-            // The TimeStop form's CastSpell circle sits offset above its
-            // transform; OnCollide needs that circle to touch the slime's box.
-            if self.players[other].active == ActiveAbility::TimeStop {
-                let caster = &self.players[other];
-                let (radius, offset) = caster.time_stop_circle(data);
-                let circle = Circle {
-                    center: caster.base.position + caster.base.up.perp_cw().complex_mul(offset),
-                    radius,
-                };
-                if crate::physics::contact::circle_box(circle, self.players[pushed].base.collider)
-                    .is_none()
-                {
-                    continue;
-                }
-            }
-            // A slime a Poke Ball caught in this contact pass met the other
-            // slime, if at all, with the box DetPhysics had synced before.
-            if self.players[pushed].caught_after_contacts == self.tick {
-                let slot = &self.players[other];
-                let other_box = match slot.active {
-                    ActiveAbility::None => Some(slot.base.collider),
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall => Some(OrientedBox::from_basis(
-                        slot.base.position,
-                        Vec2::angle(slot.base.rotation),
-                        throw_config(data, active_throw_ability(slot.active)).hurtbox_extents,
-                    )),
-                    _ => None,
-                };
-                if let Some(other_box) = other_box
-                    && crate::physics::contact::box_box(self.players[pushed].base.collider, other_box)
-                        .is_none()
-                {
-                    continue;
-                }
-            }
-            self.try_bite(pushed, Prey::Player(other), data);
-            // An earlier callback's stock death leaves the other slime's
-            // destroyed body where it died, and OnCollide still reads it.
-            let other_position = match self.players[other].stock_death {
-                Some((tick, position)) if tick == self.tick => position,
-                _ => self.players[other].base.position,
-            };
-            self.players[pushed].base.push_from(other_position, lower_id);
         }
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
         // StickyRoundedRectangle riders from their surface local after
@@ -34264,8 +34154,6 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             if sync_collider {
                 slot.base.sync_collider();
-            } else {
-                slot.caught_after_contacts = self.tick;
             }
             slot.late_obs_position = capture_position;
             slot.late_obs_state = STATE_FALL;
@@ -38007,6 +37895,144 @@ impl RolloutWorld {
         self.scratch.callback_hits.push(((category, later, earlier), hit));
     }
 
+    /// The Player-layer pairs DetPhysics finds for a SlimeController's box: a
+    /// slime's box with another slime's box or form collider, and an
+    /// abilityless clone's box with either. A killPlayer from an updater
+    /// (Mjolnir.TryHitPlayers) destroyed its slime before Simulate, so that
+    /// box meets nothing this pass.
+    fn slime_pairs(&mut self) {
+        let players = self.players.len();
+        for a in 0..players {
+            if !self.slime_box_registered(a) {
+                continue;
+            }
+            for b in a + 1..players {
+                if !self.slime_box_registered(b) {
+                    continue;
+                }
+                let a_slime = self.players[a].active == ActiveAbility::None;
+                let b_slime = self.players[b].active == ActiveAbility::None;
+                let touching = if a_slime {
+                    self.player_hit_by_box(b, self.players[a].base.collider)
+                } else {
+                    b_slime && self.player_hit_by_box(a, self.players[b].base.collider)
+                };
+                if touching {
+                    self.queue_slime_pair(Prey::Player(a), a_slime, Prey::Player(b), b_slime);
+                }
+            }
+        }
+        for clone in 0..self.abilityless_clones.len() {
+            if !self.clone_box_registered(clone) {
+                continue;
+            }
+            let clone_box = self.abilityless_clones[clone].base.collider;
+            for player in 0..players {
+                if self.playable(player)
+                    && Self::slime_collider_enabled(&self.players[player])
+                    && self.player_hit_by_box(player, clone_box)
+                {
+                    let slime = self.players[player].active == ActiveAbility::None;
+                    self.queue_slime_pair(Prey::Clone(clone), true, Prey::Player(player), slime);
+                }
+            }
+            for other in clone + 1..self.abilityless_clones.len() {
+                if self.clone_box_registered(other)
+                    && crate::physics::contact::box_box(
+                        clone_box,
+                        self.abilityless_clones[other].base.collider,
+                    )
+                    .is_some()
+                {
+                    self.queue_slime_pair(Prey::Clone(clone), true, Prey::Clone(other), true);
+                }
+            }
+        }
+    }
+
+    /// BeforeSpawnInit enables the hurtbox for the spawn animation while the
+    /// body is not simulated, so a spawning slime already meets other slimes.
+    fn slime_box_registered(&self, index: usize) -> bool {
+        self.shoves(index) && Self::slime_collider_enabled(&self.players[index])
+    }
+
+    fn clone_box_registered(&self, index: usize) -> bool {
+        let clone = &self.abilityless_clones[index];
+        clone.active
+            && clone.base.alive
+            && clone.entity.is_some()
+            && !self.abilityless_clone_hidden(clone)
+    }
+
+    /// Queues SlimeController.OnCollide for each side of the pair whose
+    /// SlimeController is live, at the pair's place in ToMakeCallBacks; the
+    /// collider earlier in the sweep has its callbacks first.
+    fn queue_slime_pair(&mut self, a: Prey, a_live: bool, b: Prey, b_live: bool) {
+        let rank = |prey: Prey| match prey {
+            Prey::Player(index) => self.player_sweep_rank(index),
+            Prey::Clone(index) => {
+                let clone = &self.abilityless_clones[index];
+                sweep_rank(&self.entities, self.box_sweep_min(clone.base.collider), clone.entity)
+            }
+        };
+        let entity = |prey: Prey| match prey {
+            Prey::Player(index) => Some(Self::hurtbox_entity(&self.players[index])),
+            Prey::Clone(index) => self.abilityless_clones[index].entity,
+        };
+        let hierarchy = |prey: Prey| entity(prey).and_then(|e| self.entities.get(e)).map(|row| row.hierarchy);
+        let circle = |prey: Prey| matches!(prey, Prey::Player(index) if self.player_is_circle(index));
+        let (a_rank, b_rank) = (rank(a), rank(b));
+        let (later, earlier) = sweep_pair(a_rank, b_rank);
+        let key = (GROUP_BB - circle(a) as u8 - circle(b) as u8, later, earlier);
+        let a_lower = hierarchy(a) < hierarchy(b);
+        let mut sides = [(a, b, a_lower, a_live), (b, a, !a_lower, b_live)];
+        if b_rank < a_rank {
+            sides.swap(0, 1);
+        }
+        for (slime, other, lower, live) in sides {
+            if live {
+                self.scratch.callback_hits.push((key, CallbackHit::SlimeCollide { slime, other, lower }));
+            }
+        }
+    }
+
+    /// SlimeController.OnCollide: bite a small enough enemy body, then push
+    /// away from the other collider's FixTransform (SlimeController.cs:1206-1244).
+    fn slime_collide(&mut self, slime: Prey, other: Prey, lower: bool, data: &data::RolloutData) {
+        match slime {
+            Prey::Player(index) => {
+                // A slime killed by an earlier callback shoves its destroyed
+                // body, not the one a stock respawns.
+                if !self.players[index].base.alive
+                    || self.players[index].callback_killed_tick == Some(self.tick)
+                {
+                    return;
+                }
+                self.try_bite(index, other, data);
+            }
+            Prey::Clone(index) => {
+                let clone = &self.abilityless_clones[index];
+                if !clone.active || !clone.base.alive {
+                    return;
+                }
+                self.try_clone_bite(index, other, data);
+            }
+        }
+        let position = match other {
+            // An earlier callback's stock death leaves the other slime's
+            // destroyed body where it died, and OnCollide still reads it.
+            Prey::Player(index) => match self.players[index].stock_death {
+                Some((tick, position)) if tick == self.tick => position,
+                _ => self.players[index].base.position,
+            },
+            Prey::Clone(index) => self.abilityless_clones[index].base.position,
+        };
+        match slime {
+            Prey::Player(index) => self.players[index].base.push_from(position, lower),
+            Prey::Clone(index) => self.abilityless_clones[index].base.push_from(position, lower),
+        }
+    }
+
     /// DetPhysics runs every OnCollide after all contact groups resolved, in
     /// ToMakeCallBacks order: the Circle/Circle pairs, then Circle/Box, then
     /// Box/Box. A slime inside a Tesla node's circle and a MineExplosion's box
@@ -38067,6 +38093,9 @@ impl RolloutWorld {
                     let direction = (point - self.spike_attack_root(spike)).normalized_safe();
                     self.part_add_force_at(target, direction * data.spike.knock_player, point);
                     self.spike_attack_self_push(spike, point, data.spike.knock_player, data);
+                }
+                CallbackHit::SlimeCollide { slime, other, lower } => {
+                    self.slime_collide(slime, other, lower, data);
                 }
                 CallbackHit::ItemDetonate { item, count } => {
                     let state = self.thrown_items[item];
@@ -40053,48 +40082,6 @@ impl RolloutWorld {
     /// SlimeController.OnCollide bite and shove (SlimeController.cs:1211-1242).
     /// Clones are spawned after every player, so a clone loses a zero-distance
     /// tie.
-    fn abilityless_clone_shoves(&mut self) {
-        let data = data::get();
-        for clone_index in 0..self.abilityless_clones.len() {
-            let clone = &self.abilityless_clones[clone_index];
-            if !clone.active
-                || !clone.base.alive
-                || clone.entity.is_none()
-                || self.abilityless_clone_hidden(clone)
-            {
-                continue;
-            }
-            let (clone_position, hierarchy_base) = (clone.base.position, clone.hierarchy_base);
-            for player in 0..self.players.len() {
-                if !self.playable(player) || !Self::slime_collider_enabled(&self.players[player]) {
-                    continue;
-                }
-                let position = self.players[player].base.position;
-                self.try_clone_bite(clone_index, Prey::Player(player), data);
-                self.abilityless_clones[clone_index].base.push_from(position, false);
-                if self.players[player].active == ActiveAbility::None {
-                    self.try_bite(player, Prey::Clone(clone_index), data);
-                    self.players[player].base.push_from(clone_position, true);
-                }
-            }
-            for other in 0..self.abilityless_clones.len() {
-                let other_clone = &self.abilityless_clones[other];
-                if other == clone_index
-                    || !other_clone.active
-                    || !other_clone.base.alive
-                    || other_clone.entity.is_none()
-                    || self.abilityless_clone_hidden(other_clone)
-                {
-                    continue;
-                }
-                let lower = hierarchy_base < other_clone.hierarchy_base;
-                let position = other_clone.base.position;
-                self.try_clone_bite(clone_index, Prey::Clone(other), data);
-                self.abilityless_clones[clone_index].base.push_from(position, lower);
-            }
-        }
-    }
-
     fn register_abilityless_clone(&mut self, clone_index: usize) {
         let clone = &self.abilityless_clones[clone_index];
         let hierarchy = 100_000_000 + clone.hierarchy_base + 6;
