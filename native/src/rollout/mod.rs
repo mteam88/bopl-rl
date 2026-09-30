@@ -3298,6 +3298,8 @@ struct PlatformScratch {
     /// manifold, before any of that group's corrections move them.
     circle_colliders: Vec<RoundedRect>,
     callback_tick: Option<u32>,
+    /// The sweep axis DetPhysics.Simulate chose with those colliders.
+    callback_sweep_x: bool,
     contacts: Vec<(usize, usize, Contact)>,
     spike_wall_contacts: Vec<(usize, usize, Contact)>,
     engine_wall_contacts: Vec<(usize, usize, Contact)>,
@@ -5417,6 +5419,11 @@ impl RolloutWorld {
     /// each broadphase pair lists the lower-minimum collider first. Beams are
     /// DetPhysics' own list and stay out of both (DetPhysics.cs:2827-2900).
     fn sweep_x(&self) -> bool {
+        // Simulate picks the axis once, from the colliders as integrated;
+        // the corrections that follow do not change it for the pass.
+        if self.scratch.callback_tick == Some(self.tick) {
+            return self.scratch.callback_sweep_x;
+        }
         let mut mean = Vec2::ZERO;
         let mut active_count = 0usize;
         for platform in &self.platforms {
@@ -40766,6 +40773,7 @@ impl RolloutWorld {
         let scratch = &mut self.scratch;
         scratch.callback_colliders.clear();
         scratch.callback_tick = Some(self.tick);
+        scratch.callback_sweep_x = sweep_x;
         scratch
             .callback_colliders
             .extend(self.platforms.iter().map(|p| p.collider));
