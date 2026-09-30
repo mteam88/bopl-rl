@@ -7033,6 +7033,18 @@ impl RolloutWorld {
         if has(ABILITY_TIME_STOP) {
             self.register_pending_time_stops();
         }
+        // Updater initializes every prefab queued during the prior pass
+        // before DetPhysics.UpdateDuplicatedObjects and before it invokes any
+        // existing MonoUpdatable (Updater.cs:264-287). A newly spawned Gust
+        // wave therefore applies its first time-zero impulse before a
+        // Duplicator copy advances and before map home springs, while its
+        // same-tick UpdateSim impulse runs after them.
+        if has(ABILITY_GUST) {
+            self.shockwaves_init(false, data);
+        }
+        if has(ABILITY_METEOR) {
+            self.shockwaves_init(true, data);
+        }
         if has(ABILITY_DUPLICATOR) {
             self.duplicated_objects_tick();
             // ShakablePlatform.Init reruns a new Duplicator copy's UpdateBounds
@@ -7051,16 +7063,6 @@ impl RolloutWorld {
         // effect later in this same pass.
         let updater_dt = DT * self.player_time_scale;
         let time_stop_protected_at_pass_start = self.time_stop_protected;
-        // Updater initializes every prefab queued during the prior pass
-        // before it invokes any existing MonoUpdatable. A newly spawned Gust
-        // wave therefore applies its first time-zero impulse before map home
-        // springs, while its same-tick UpdateSim impulse runs after them.
-        if has(ABILITY_GUST) {
-            self.shockwaves_init(false, data);
-        }
-        if has(ABILITY_METEOR) {
-            self.shockwaves_init(true, data);
-        }
         // GameSessionHandler (hierarchy 100) runs before every instantiated
         // player/ability prefab (100,000,000+). A death produced by a player
         // component or DetPhysics is therefore visible to the match result
