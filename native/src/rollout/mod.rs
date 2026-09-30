@@ -28393,7 +28393,11 @@ impl RolloutWorld {
         let rotation = right.normalized_angle();
         let relative_right = right.complex_mul(inverse_basis);
         let surface_offset = Fix::from_f32(0.75);
-        let root_position = surface_position + up * surface_offset;
+        // SpikeAttack.Initialize re-measures vec12 with LocalPlayerPosFromPos and places
+        // the box from that local, which the lossy round trip moves.
+        let surface = &self.platforms[platform_index].surface;
+        let local = surface.local_position(surface_position, Fix::ZERO).unwrap_or(local);
+        let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
@@ -28494,7 +28498,11 @@ impl RolloutWorld {
         let rotation = right.normalized_angle();
         let relative_right = right.complex_mul(inverse_basis);
         let surface_offset = Fix::from_f32(0.3) * source.scale;
-        let root_position = surface_position + up * surface_offset;
+        // RocketEngineInit re-measures vec12 with LocalPlayerPosFromPos and places
+        // the box from that local, which the lossy round trip moves.
+        let surface = &self.platforms[platform_index].surface;
+        let local = surface.local_position(surface_position, Fix::ZERO).unwrap_or(local);
+        let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
@@ -46649,7 +46657,7 @@ mod tests {
         let source_position = source.transform_center
             - source.collider_offset
                 .complex_mul(Vec2::angle(source.transform_rotation));
-        let expected = world.duplicate_attached_local(
+        let local = world.duplicate_attached_local(
             source.platform_index,
             source_position,
             source.relative_rotation,
@@ -46657,6 +46665,10 @@ mod tests {
             Fix::from_int(7),
             Vec2::RIGHT,
         );
+        // RocketEngineInit keeps LocalPlayerPosFromPos of the placed point.
+        let surface = &world.platforms[source.platform_index].surface;
+        let placed = surface.position(local, Fix::ZERO);
+        let expected = surface.local_position(placed, Fix::ZERO).unwrap();
 
         world.duplicate_attached_engine(0, Vec2::RIGHT, 0, data::get());
 
