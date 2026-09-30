@@ -16464,9 +16464,12 @@ impl RolloutWorld {
     }
 
     fn black_hole_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
+        let animates = self.animates(index);
         let slot = &mut self.players[index];
         let cast = &mut slot.black_hole_cast;
-        cast.ticks += 1;
+        if animates {
+            cast.ticks += 1;
+        }
         let animation_ticks = if cast.phase == 0 {
             if cast.grounded {
                 data.black_hole.enter_ticks
@@ -16478,7 +16481,7 @@ impl RolloutWorld {
         } else {
             data.black_hole.exit_air_ticks
         };
-        if cast.phase == 0 && cast.ticks == animation_ticks {
+        if animates && cast.phase == 0 && cast.ticks == animation_ticks {
             // FireCommon instantiates the hole from an animator callback that
             // runs before the form's PlayerBody moves it this pass
             // (BlackHoleClap.cs:85-91). The hole is created next pass, so a
@@ -16499,8 +16502,9 @@ impl RolloutWorld {
             self.next_spawn_hierarchy += data.black_hole.updatable_count;
         }
         let cast = &mut self.players[index].black_hole_cast;
-        if (cast.phase == 0 && cast.ticks > animation_ticks)
-            || (cast.phase == 1 && cast.ticks >= animation_ticks)
+        if animates
+            && ((cast.phase == 0 && cast.ticks > animation_ticks)
+                || (cast.phase == 1 && cast.ticks >= animation_ticks))
         {
             if cast.phase == 0 {
                 cast.phase = 1;
@@ -37796,6 +37800,7 @@ impl RolloutWorld {
                     | ActiveAbility::Tack
                     | ActiveAbility::Mjolnir
                     | ActiveAbility::PokeBall
+                    | ActiveAbility::BlackHole
             );
         if self.is_time_stopped_for(index) && !runs_frozen {
             self.scratch.frozen_turns |= 1 << index;
