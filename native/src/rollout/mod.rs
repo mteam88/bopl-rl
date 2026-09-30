@@ -12509,16 +12509,9 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 slot.roll.charging = false;
                 slot.roll.short_jumping = true;
-                // PlayerPhysics.Jump uses world up when already airborne.
-                // With no attached platform its tangential term is zero,
-                // then UnGround only clears rotation/state.
-                slot.base.velocity = Vec2::UP * data.roll.short_jump_strength;
-                slot.base.position += slot.base.velocity * slot.base.constants.jump_teleport;
-                slot.base.jumped_this_frame = true;
-                slot.base.ground = None;
-                slot.base.grounded_speed = Fix::ZERO;
-                slot.base.rotation = Fix::ZERO;
-                slot.base.up = Vec2::UP;
+                // Roll.ShortJump is PlayerPhysics.Jump at shortJumpStr, whose
+                // UnGround lifts off the attachedGround it keeps (Roll.cs:534-544).
+                slot.base.jump_with_strength(&self.platforms, data.roll.short_jump_strength);
             }
         }
         if self.players[index].roll.time_since_release > data.roll.dash_time {
