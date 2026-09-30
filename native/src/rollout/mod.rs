@@ -12902,12 +12902,10 @@ impl RolloutWorld {
                         * data.meteor.speed_curve.evaluate(slot.meteor.time)
                         * data.meteor.jump_speed;
                 }
-                // Meteor's PlayerBody is its own updater after MeteorSmash
-                // and holds the rope Ability.EnterAbility handed it, so it
-                // steps on every anticipation pass, the jump included.
-                if self.players[index].rope.is_some() || self.players[index].meteor.phase == 1 {
-                    self.form_body_step(index);
-                }
+                // Meteor's PlayerBody is its own updater after MeteorSmash, so
+                // it steps on every anticipation pass, the jump included: a
+                // hit while the form waits drifts it by external velocity.
+                self.form_body_step(index);
             }
             1 => {
                 let slot = &mut self.players[index];
