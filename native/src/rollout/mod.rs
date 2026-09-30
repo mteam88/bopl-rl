@@ -20485,7 +20485,7 @@ impl RolloutWorld {
         // movement for the following pass. The pooled form runs all of them
         // on its entry pass too; only its animator's entry frame is already
         // counted (`ticks: 1`), represented by `advance_animation == false`.
-        if advance_animation {
+        if advance_animation && self.animates(index) {
             self.players[index].macho_throw.ticks += 1;
             let phase = self.players[index].macho_throw.phase;
             let finished = match phase {
@@ -37801,6 +37801,7 @@ impl RolloutWorld {
                     | ActiveAbility::Mjolnir
                     | ActiveAbility::PokeBall
                     | ActiveAbility::BlackHole
+                    | ActiveAbility::Throw
             );
         if self.is_time_stopped_for(index) && !runs_frozen {
             self.scratch.frozen_turns |= 1 << index;
