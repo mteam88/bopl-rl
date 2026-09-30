@@ -2469,6 +2469,8 @@ pub struct BlinkObjectTunnel {
     pub duration: Fix,
     pub restore_flags: u32,
     pub released_tick: Option<u32>,
+    pub hierarchy: u32,
+    pub stepped_tick: Option<u32>,
 }
 
 /// One `TeleportedObjectEffect` retaining an inactive non-player GameObject.
@@ -7378,7 +7380,7 @@ impl RolloutWorld {
         if has(ABILITY_BLINK) {
             self.blink_tunnels_tick(data, updater_dt);
             self.blink_platform_tunnels_tick(data, updater_dt, None);
-            self.blink_object_tunnels_tick(updater_dt);
+            self.blink_object_tunnels_tick(data, updater_dt, None);
         }
         if has(ABILITY_GRENADE) {
             self.grenade_explosions_tick(data, updater_dt);
@@ -8102,6 +8104,11 @@ impl RolloutWorld {
                 push(100_000_000 + state.blink_tunnel_hierarchy, 13, i);
             }
         }
+        for (i, tunnel) in self.blink_object_tunnels.iter().enumerate() {
+            if tunnel.active && tunnel.born_tick != tick && tunnel.stepped_tick != Some(tick) {
+                push(100_000_000 + tunnel.hierarchy, 17, i);
+            }
+        }
         for (i, clone) in self.abilityless_clones.iter().enumerate() {
             if clone.active && clone.born_tick < tick && clone.updater_ran_tick != Some(tick) {
                 push(100_000_000 + clone.hierarchy_base, 14, i);
@@ -8165,6 +8172,7 @@ impl RolloutWorld {
                     self.abilityless_clone_update_tagged(index);
                 }
                 16 => self.tesla_nodes_update(data, updater_dt, hierarchy - 99_999_999),
+                17 => self.blink_object_tunnels_tick(data, updater_dt, Some(hierarchy - 99_999_999)),
                 19 => {
                     let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
                     self.guided_missile_update_sim(index, DT * self.player_time_scale, being_held, data);
@@ -30505,6 +30513,7 @@ impl RolloutWorld {
             tunnel.active && tunnel.entity == entity && tunnel.entity_id == entity_id
         }) {
             let restore_flags = self.blink_object_tunnels[index].restore_flags;
+            let hierarchy = self.blink_object_tunnels[index].hierarchy;
             self.blink_object_tunnels[index] = BlinkObjectTunnel {
                 active: true,
                 born_tick: self.tick,
@@ -30514,8 +30523,11 @@ impl RolloutWorld {
                 duration,
                 restore_flags,
                 released_tick: None,
+                hierarchy,
+                stepped_tick: None,
             };
         } else {
+            let hierarchy = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
             let tunnel = BlinkObjectTunnel {
                 active: true,
@@ -30526,6 +30538,8 @@ impl RolloutWorld {
                 duration,
                 restore_flags: self.entities[entity].flags,
                 released_tick: None,
+                hierarchy,
+                stepped_tick: None,
             };
             if let Some(index) = self
                 .blink_object_tunnels
@@ -30714,12 +30728,27 @@ impl RolloutWorld {
     /// Generic QuantumTunnel victims stay allocated but their GameObject is
     /// inactive. The pool prevents hidden objects from being mistaken for a
     /// free gameplay slot and avoids per-cast allocation in vectorized worlds.
-    fn blink_object_tunnels_tick(&mut self, updater_dt: Fix) {
+    /// Steps the object tunnels registered before `before` (every one when
+    /// None) that have not yet run this pass, each after the older spawned
+    /// updatables' turns: a younger Black Hole pulls the object the tunnel
+    /// lets go this pass (QuantumTunnel.cs:165).
+    fn blink_object_tunnels_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        before: Option<u32>,
+    ) {
         for index in 0..self.blink_object_tunnels.len() {
             let tunnel = self.blink_object_tunnels[index];
-            if !tunnel.active || tunnel.born_tick == self.tick {
+            if !tunnel.active
+                || tunnel.born_tick == self.tick
+                || tunnel.stepped_tick == Some(self.tick)
+                || before.is_some_and(|before| tunnel.hierarchy >= before)
+            {
                 continue;
             }
+            self.run_spawned_before(data, updater_dt, 100_000_000 + tunnel.hierarchy);
+            self.blink_object_tunnels[index].stepped_tick = Some(self.tick);
             if tunnel.entity >= self.entities.len()
                 || self.entities[tunnel.entity].id != tunnel.entity_id
             {
