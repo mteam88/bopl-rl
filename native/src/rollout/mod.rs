@@ -11756,11 +11756,19 @@ impl RolloutWorld {
                             let slot = &mut self.players[index];
                             slot.forms[s].physics_radius()
                         };
-                        let form_position = ground
+                        // SyncPhysicsTo aligns the rotation to the normal at
+                        // the re-placed position before the hurtbox sync.
+                        let (form_position, form_up) = ground
                             .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                            .map_or(self.players[index].base.position, |platform| {
-                                platform.surface.position(self.players[index].base.local, form_radius)
-                            });
+                            .map_or(
+                                (self.players[index].base.position, self.players[index].base.up),
+                                |platform| {
+                                    let position = platform
+                                        .surface
+                                        .position(self.players[index].base.local, form_radius);
+                                    (position, platform.surface.normal(position))
+                                },
+                            );
                         let mut facing_right = self.players[index].facing_right;
                         if let Some(platform) = ground
                             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
@@ -11799,9 +11807,9 @@ impl RolloutWorld {
                             facing_right,
                             // OnEnterAbility's hurtbox.UpdatePhysicsPositions.
                             collider_position: form_position,
-                            collider_right: slot.base.up.perp_cw(),
-                            collider_rotation: slot.base.rotation,
-                            collider_basis: Vec2::angle(slot.base.rotation),
+                            collider_right: form_up.perp_cw(),
+                            collider_rotation: form_up.perp_cw().normalized_angle(),
+                            collider_basis: Vec2::angle(form_up.perp_cw().normalized_angle()),
                             ..MachoThrowState::default()
                         };
                         slot.base.position = form_position;
