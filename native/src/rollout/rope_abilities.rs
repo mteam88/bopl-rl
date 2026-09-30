@@ -799,7 +799,7 @@ impl RolloutWorld {
                 && self.players[candidate].active != ActiveAbility::Rock
                 && crate::physics::contact::circle_box(
                     player_query,
-                    self.players[candidate].base.collider,
+                    self.players[candidate].base.synced,
                 )
                 .is_some()
             {
@@ -813,7 +813,7 @@ impl RolloutWorld {
         for candidate in self.player_layer_clones() {
             if crate::physics::contact::circle_box(
                 player_query,
-                self.clone_synced_box(candidate),
+                self.abilityless_clones[candidate].base.synced,
             )
             .is_some()
             {
@@ -1882,7 +1882,7 @@ impl RolloutWorld {
                     && parent.is_none()
                     && clone.owner != owner
                     && clone.owner != end_player
-                    && crate::physics::contact::circle_box(circle, self.clone_synced_box(index))
+                    && crate::physics::contact::circle_box(circle, self.abilityless_clones[index].base.synced)
                         .is_some()
             });
             if let Some(index) = clone_victim {

@@ -125,6 +125,11 @@ pub struct Player {
     /// orientation of the tick's UpdateSim phase; a grounded body moves again
     /// in LateUpdateSim, so this lags the live position by one phase).
     pub collider: OrientedBox,
+    /// The box as DetPhysics holds it for mid-pass queries: moved only by
+    /// its Simulate sync and by explicit syncs (UpdatePhysicsPositions,
+    /// SyncPhysicsTo), not by `move_collider`.
+    #[serde(default)]
+    pub synced: OrientedBox,
     #[serde(default)]
     pub collider_rotation: Fix,
     /// `Box.inverseExtents` of the Player-layer hurtbox as
@@ -1057,7 +1062,14 @@ impl Player {
         };
         self.external_velocity += direction * Fix::from_raw(21_474_836) * Fix::from_int(35);
     }
+    /// A DetPhysics sync of the hurtbox to the body.
     pub(crate) fn sync_collider(&mut self) {
+        self.move_collider();
+        self.synced = self.collider;
+    }
+    /// Moves the exported box onto the body without DetPhysics seeing it
+    /// until its next sync.
+    pub(crate) fn move_collider(&mut self) {
         // The Dash body is its own DPhysicsBox and its `OnScaleChanged` is
         // empty (Dash.cs:70-72), so only the slime hurtbox carries the
         // accumulated reciprocal.

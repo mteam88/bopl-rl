@@ -2129,9 +2129,6 @@ pub struct AbilitylessClone {
     /// The pass and the position before this clone's updaters ran on it: an
     /// Updater object older than the clone still sees it there.
     pub pass_start: (u32, Vec2),
-    /// The hurtbox centre DetPhysics last synced, from before this pass's
-    /// update moved the clone.
-    pub synced_center: Vec2,
     /// The pass this clone left the scene bounds in its own update: an
     /// older Updater on that pass still found it alive.
     pub drowned_tick: u32,
@@ -5067,6 +5064,12 @@ impl RolloutWorld {
                         up: Vec2::UP,
                         inverse_extents: Vec2::new(Fix::ONE, Fix::ONE),
                     },
+                    synced: OrientedBox {
+                        center: spawn,
+                        right: Vec2::RIGHT,
+                        up: Vec2::UP,
+                        inverse_extents: Vec2::new(Fix::ONE, Fix::ONE),
+                    },
                     collider_rotation: Fix::ZERO,
                     collider_inverse_extents: Vec2::ZERO,
                     collider_basis: Vec2::ZERO,
@@ -7367,6 +7370,11 @@ impl RolloutWorld {
         }
         // The clones' shoves are DetPhysics callbacks, after their update.
         if has_clones {
+            // DetPhysics.Simulate syncs the clones' boxes to where their
+            // updates left them.
+            for clone in &mut self.abilityless_clones {
+                clone.base.synced = clone.base.collider;
+            }
             self.abilityless_clone_shoves();
         }
         let physics_dt = DT * self.player_time_scale;
@@ -9493,10 +9501,6 @@ impl RolloutWorld {
         self.hittable(index) && self.players[index].respawn_spawn_ticks == 0
     }
 
-    /// Whether DetPhysics tests the slime's hurtbox. A respawned slime is
-    /// vulnerable through its spawn animation: BeforeSpawnInit enables the
-    /// hurtbox and ReSpawn clears invulnerability (SlimeController.cs:516-538,
-    /// 588-600).
     /// The slime GameObject's activeSelf, which its row carries live
     /// (`PlayerSlot::sync_slime_row`): FindObjectsOfType<SlimeController>
     /// finds only an active slime.
@@ -9506,6 +9510,10 @@ impl RolloutWorld {
             .is_some_and(|row| row.flags & E_ACTIVE != 0)
     }
 
+    /// Whether DetPhysics tests the slime's hurtbox. A respawned slime is
+    /// vulnerable through its spawn animation: BeforeSpawnInit enables the
+    /// hurtbox and ReSpawn clears invulnerability (SlimeController.cs:516-538,
+    /// 588-600).
     fn hittable(&self, index: usize) -> bool {
         let slot = &self.players[index];
         slot.base.alive
@@ -9587,10 +9595,10 @@ impl RolloutWorld {
             Prey::Player(victim) => {
                 let slot = &self.players[victim];
                 let (prey_scale, prey_box) = if slot.active == ActiveAbility::None {
-                    (slot.base.scale, slot.base.collider)
+                    (slot.base.scale, slot.base.synced)
                 } else {
                     // Ability.UpdateSim gives the form's collider Player.Scale.
-                    let form = self.synced_hurtbox(victim, data).unwrap_or(slot.base.collider);
+                    let form = self.synced_hurtbox(victim, data).unwrap_or(slot.base.synced);
                     (slot.player_scale, form)
                 };
                 let eating = EatingState {
@@ -9608,7 +9616,7 @@ impl RolloutWorld {
                     ..EatingState::default()
                 };
                 let team = self.players[clone.owner].team;
-                let prey_box = self.clone_synced_box(clone_index);
+                let prey_box = clone.base.synced;
                 (clone.base.scale, prey_box, team, clone.poke_invulnerable, eating)
             }
         };
@@ -10700,6 +10708,7 @@ impl RolloutWorld {
                         slot.base.sync_collider();
                         slot.base.collider.center = slot.base.position
                             + slot.base.up.perp_cw().complex_mul(slot.forms[s].offset);
+                        slot.base.synced = slot.base.collider;
                         let collider = slot.forms[s].hurtbox(
                             slot.base.collider.center,
                             Vec2::angle(slot.base.rotation),
@@ -16942,7 +16951,7 @@ impl RolloutWorld {
                 // and in DetPhysics' sync, so BlackHole reads the box where the
                 // last DetPhysics pass published it, or where a sync since put it.
                 let body_position = if let Some(collider) =
-                    (row.kind == 1).then(|| self.synced_row_box(entity, data)).flatten()
+                    (row.kind == 1).then(|| self.detphysics_box(entity, data)).flatten()
                 {
                     collider.center
                 } else if row.kind != 1 || row.flags & E_ACTIVE != 0 {
@@ -16995,7 +17004,7 @@ impl RolloutWorld {
                 let Some(_entity) = clone.entity else {
                     continue;
                 };
-                let vector = position - self.clone_synced_box(clone_index).center;
+                let vector = position - self.abilityless_clones[clone_index].base.synced.center;
                 let squared = vector.length_squared();
                 if squared == Fix::ZERO {
                     continue;
@@ -21779,7 +21788,7 @@ impl RolloutWorld {
                 // IsActive also asks the collider to be enabled
                 // (DetPhysics.cs:1658-1663): a burning Smoke cloud has
                 // disabled its circle.
-                let synced = (kind == 1).then(|| self.synced_row_box(entity, data::get())).flatten();
+                let synced = (kind == 1).then(|| self.detphysics_box(entity, data::get())).flatten();
                 if row.flags & E_ACTIVE == 0 && synced.is_none() || row.flags & E_ACTIVE != 0 && row.flags & E_ENABLED == 0 {
                     continue;
                 }
@@ -21874,7 +21883,7 @@ impl RolloutWorld {
             return;
         }
         let row_active = self.entities[entity].flags & E_ACTIVE != 0;
-        if !row_active && self.synced_row_box(entity, data).is_none() {
+        if !row_active && self.detphysics_box(entity, data).is_none() {
             return;
         }
 
@@ -23865,7 +23874,7 @@ impl RolloutWorld {
                 };
                 // A box synced mid-pass since (a slime that left or entered a
                 // form earlier this pass) is where that sync put it.
-                let synced = self.synced_row_box(entity, data::get());
+                let synced = self.detphysics_box(entity, data::get());
                 let hit = match synced {
                     Some(collider) => collider.raycast(origin, direction),
                     None => Self::raycast_entity_row(row, origin, direction),
@@ -27962,7 +27971,7 @@ impl RolloutWorld {
         // RaycastToClosest visits rounded rectangles, circles, then boxes.
         for kind in [2u32, 0, 1] {
             for (entity, row) in self.entities.iter().copied().enumerate() {
-                let synced_box = (row.kind == 1).then(|| self.synced_row_box(entity, data)).flatten();
+                let synced_box = (row.kind == 1).then(|| self.detphysics_box(entity, data)).flatten();
                 if row.kind != kind
                     || (row.flags & E_ACTIVE == 0 && synced_box.is_none())
                     || excluded == Some(entity)
@@ -28355,6 +28364,7 @@ impl RolloutWorld {
             cooldown: Fix::ZERO,
             dash: DashState::default(),
             collider,
+            synced: collider,
             collider_rotation: Fix::ZERO,
             collider_inverse_extents: Vec2::new(
                 Fix::ONE / data.player.hurtbox_extents.x,
@@ -28389,7 +28399,6 @@ impl RolloutWorld {
             physics_scale: Fix::ONE,
             eating: EatingState::default(),
             pass_start: (u32::MAX, Vec2::ZERO),
-            synced_center: Vec2::ZERO,
             drowned_tick: u32::MAX,
             updater_ran_tick: None,
         };
@@ -30114,7 +30123,7 @@ impl RolloutWorld {
             return None;
         }
         if slot.active == ActiveAbility::None {
-            return (!slot.base.dash.active && !slot.teleport_effect_active).then_some(slot.base.collider);
+            return (!slot.base.dash.active && !slot.teleport_effect_active).then_some(slot.base.synced);
         }
         if let Some(collider) = self.entry_synced_box(index) {
             return Some(collider);
@@ -30133,14 +30142,21 @@ impl RolloutWorld {
         })
     }
 
-    /// `synced_hurtbox` of the player whose current hurtbox is this row, where
-    /// a sync since the last export may have moved it: a row not yet published
-    /// active, or the slime's own row, whose flag follows SetActive at once
-    /// but whose pose is only written at export. Updaters that run before the
-    /// export read it in place of the row's pose.
-    fn synced_row_box(&self, entity: usize, data: &data::RolloutData) -> Option<OrientedBox> {
+    /// The box a mid-pass DetPhysics query sees for a slime's, form's or
+    /// clone's row: where DetPhysics last synced it, at its Simulate or an
+    /// explicit sync (OnEnterAbility, onExitAbility), and not where this pass's
+    /// updates have since moved the body. The row's pose is only written at
+    /// export, so an explicit sync since then is not in it, and a clone's row
+    /// already follows its update. None leaves the row's pose to the reader.
+    fn detphysics_box(&self, entity: usize, data: &data::RolloutData) -> Option<OrientedBox> {
+        let row_active = self.entities[entity].flags & E_ACTIVE != 0;
+        if let Some(clone) =
+            self.abilityless_clones.iter().find(|clone| clone.active && clone.entity == Some(entity))
+        {
+            return (row_active && !clone.blink_tunnel_active).then_some(clone.base.synced);
+        }
         let index = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity)?;
-        if self.entities[entity].flags & E_ACTIVE != 0 && self.players[index].active != ActiveAbility::None {
+        if row_active && self.players[index].active != ActiveAbility::None {
             return None;
         }
         self.synced_hurtbox(index, data)
@@ -34123,7 +34139,7 @@ impl RolloutWorld {
                 let clone = &mut self.abilityless_clones[victim];
                 clone.base.position = position;
                 clone.base.velocity = Vec2::ZERO;
-                clone.base.sync_collider();
+                clone.base.move_collider();
                 clone.obs_state = STATE_RAGDOLL;
             } else {
                 let tick = self.tick;
@@ -34134,7 +34150,7 @@ impl RolloutWorld {
                 }
                 slot.base.position = position;
                 slot.base.velocity = Vec2::ZERO;
-                slot.base.sync_collider();
+                slot.base.move_collider();
                 slot.obs_state = STATE_RAGDOLL;
                 // A victim that landed while BeginCapture had left it falling
                 // stays attached: this ragdoll keeps it on the ground, and
@@ -39864,8 +39880,6 @@ impl RolloutWorld {
             .and_then(|entity| self.entities.get(entity))
             .map_or(u32::MAX, |row| row.hierarchy);
         let outer = std::mem::replace(&mut self.scratch.updater_hierarchy, hierarchy);
-        let clone = &mut self.abilityless_clones[clone_index];
-        clone.synced_center = clone.base.collider.center;
         self.abilityless_clone_update(clone_index);
         self.scratch.updater_hierarchy = outer;
     }
@@ -39884,7 +39898,7 @@ impl RolloutWorld {
             .captured_by_ball
             .is_some()
         {
-            self.abilityless_clones[clone_index].base.sync_collider();
+            self.abilityless_clones[clone_index].base.move_collider();
             self.sync_abilityless_clone_entity(clone_index);
             return;
         }
@@ -40044,7 +40058,7 @@ impl RolloutWorld {
             self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT);
             return;
         }
-        self.abilityless_clones[clone_index].base.sync_collider();
+        self.abilityless_clones[clone_index].base.move_collider();
         self.sync_abilityless_clone_entity(clone_index);
     }
 
@@ -40147,18 +40161,6 @@ impl RolloutWorld {
         self.entities.push(CEntity { id, hierarchy, ..CEntity::default() });
         self.abilityless_clones[clone_index].entity = Some(entity);
         self.sync_abilityless_clone_entity(clone_index);
-    }
-
-    /// The clone's DPhysicsBox, which only DetPhysics' sync moves: a clone
-    /// whose Updater turn already came this pass is still, for every other
-    /// reader, where the pass began.
-    fn clone_synced_box(&self, clone_index: usize) -> OrientedBox {
-        let clone = &self.abilityless_clones[clone_index];
-        if clone.updater_ran_tick == Some(self.tick) {
-            OrientedBox { center: clone.synced_center, ..clone.base.collider }
-        } else {
-            clone.base.collider
-        }
     }
 
     fn sync_abilityless_clone_entity(&mut self, clone_index: usize) {
