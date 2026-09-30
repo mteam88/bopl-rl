@@ -654,6 +654,11 @@ impl Player {
         self.platform_indexed(platforms)
             .map(|(_, platform)| platform)
     }
+    /// PlayerPhysics.attachedGround, which only a destroyed ground clears: a
+    /// deactivated one is still named, and its surface still read.
+    pub(crate) fn attached_ground<'a>(&self, platforms: &'a [Platform]) -> Option<&'a Platform> {
+        platforms.iter().find(|p| Some(p.id) == self.ground)
+    }
     fn platform_indexed<'a>(&self, platforms: &'a [Platform]) -> Option<(usize, &'a Platform)> {
         platforms
             .iter()
@@ -1127,12 +1132,12 @@ impl Player {
         self.apply_ground_state(motion);
     }
     pub(crate) fn late_step(&mut self, platforms: &[Platform]) {
-        // A grounded body whose attachedGround is null or destroyed stays put
-        // (PlayerPhysics.LateUpdateSim).
+        // A grounded body whose attachedGround is null or destroyed stays put;
+        // a deactivated one is still followed (PlayerPhysics.LateUpdateSim).
         if self.alive
             && self.grounded
             && !self.dash.active
-            && let Some(platform) = self.platform(platforms)
+            && let Some(platform) = self.attached_ground(platforms)
         {
             self.position = platform.surface.position(self.local, self.radius);
             self.align(platform);

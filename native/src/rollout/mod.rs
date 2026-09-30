@@ -19652,7 +19652,7 @@ impl RolloutWorld {
     }
 
     fn macho_update_direction(&mut self, index: usize, direction: Vec2) {
-        let Some(platform) = self.players[index].base.platform(&self.platforms) else {
+        let Some(platform) = self.players[index].base.attached_ground(&self.platforms) else {
             return;
         };
         let forward = platform.surface.forward(self.players[index].base.position);
@@ -20619,7 +20619,7 @@ impl RolloutWorld {
         // direction, and idle only starts walking past DEADZONE (0.4).
         let forwards = self.players[index]
             .base
-            .platform(&self.platforms)
+            .attached_ground(&self.platforms)
             .map_or(Vec2::RIGHT, |platform| {
                 platform.surface.normal(self.players[index].base.position).perp_cw()
             });
@@ -20676,7 +20676,7 @@ impl RolloutWorld {
         let roundedness =
             self.players[index]
                 .base
-                .platform(&self.platforms)
+                .attached_ground(&self.platforms)
                 .map_or(Fix::ONE, |platform| {
                     let (_, zone) = platform
                         .surface
