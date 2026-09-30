@@ -45232,9 +45232,11 @@ impl RolloutWorld {
                     circle.x = center.x.raw();
                     circle.y = center.y.raw();
                     circle.rotation = rotation.raw();
-                }
-                if transforming {
-                    circle.radius = slot.forms[slot.active_slot].circle_radius.raw();
+                    // Ability assigns Player.Scale to the hurtbox on the exit
+                    // pass too, ahead of PlatformTransform's ExitAbility.
+                    let (radius, _) =
+                        slot.form_circle(circle_e, data.platform.hurtbox_radius, Vec2::ZERO);
+                    circle.radius = radius.raw();
                 }
             }
             // Gust's QuickSpell body is a circle with the FixTransform's
