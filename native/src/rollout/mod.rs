@@ -747,8 +747,10 @@ pub struct MissileExplosion {
     pub entity: Option<usize>,
     pub position: Vec2,
     /// Live collider scale for the shared MineExplosion prefab. Mine copies
-    /// its IPhysicsCollider scale; Missile reads its separate FixTransform
-    /// scale (normally one). The sibling Shockwave keeps its own scale one.
+    /// its IPhysicsCollider scale; Missile.OnCollide its FixTransform scale,
+    /// which a Growth or Shrink Ray's DPhysicsBox.Scale setter moves with the
+    /// Spark's box (Missile.cs:185). The sibling Shockwave keeps its own
+    /// scale one.
     pub scale: Fix,
     pub owner: usize,
     pub credited_owner: bool,
@@ -13249,7 +13251,7 @@ impl RolloutWorld {
             .position(|missile| missile.active && missile.entity == Some(entity))
         {
             let missile = self.guided_missiles[missile_index];
-            self.spawn_missile_explosion(missile.position, missile.owner, false, Fix::ONE, data);
+            self.spawn_missile_explosion(missile.position, missile.owner, false, missile.scale, data);
             self.destroy_guided_missile(missile_index, true);
             return;
         }
@@ -35544,7 +35546,7 @@ impl RolloutWorld {
                         missile.position,
                         missile.owner,
                         false,
-                        Fix::ONE,
+                        missile.scale,
                         data,
                     );
                     self.destroy_guided_missile(missile_index, true);
@@ -35961,7 +35963,7 @@ impl RolloutWorld {
                 continue;
             }
             let missile = self.guided_missiles[index];
-            self.spawn_missile_explosion(missile.position, missile.owner, false, Fix::ONE, data);
+            self.spawn_missile_explosion(missile.position, missile.owner, false, missile.scale, data);
             self.destroy_guided_missile(index, true);
         }
 
@@ -36278,7 +36280,7 @@ impl RolloutWorld {
                 let hits =
                     contact_count + self.guided_missile_player_hits(missile, corrected_box);
                 for _ in 0..hits {
-                    self.spawn_missile_explosion(center, owner, false, Fix::ONE, data);
+                    self.spawn_missile_explosion(center, owner, false, missile.scale, data);
                 }
                 self.destroy_guided_missile(missile_index, true);
                 if let Some(entity) = missile.entity {
@@ -36309,7 +36311,7 @@ impl RolloutWorld {
                         missile.position,
                         missile.owner,
                         false,
-                        Fix::ONE,
+                        missile.scale,
                         data,
                     );
                     self.destroy_guided_missile(missile_index, true);
@@ -36412,7 +36414,7 @@ impl RolloutWorld {
                 let hits =
                     item_contact_count + self.guided_missile_player_hits(missile, corrected_box);
                 for _ in 0..hits {
-                    self.spawn_missile_explosion(missile_center, missile.owner, false, Fix::ONE, data);
+                    self.spawn_missile_explosion(missile_center, missile.owner, false, missile.scale, data);
                 }
                 self.destroy_guided_missile(missile_index, true);
                 if let Some(entity) = missile.entity {
@@ -36440,7 +36442,7 @@ impl RolloutWorld {
                     missile.position,
                     missile.owner,
                     false,
-                    Fix::ONE,
+                    missile.scale,
                     data,
                 );
                 self.destroy_guided_missile(missile_index, true);
@@ -36460,7 +36462,7 @@ impl RolloutWorld {
                         missile.position,
                         missile.owner,
                         false,
-                        Fix::ONE,
+                        missile.scale,
                         data,
                     );
                 }
@@ -38105,7 +38107,7 @@ impl RolloutWorld {
                             missile_state.position,
                             missile_state.owner,
                             false,
-                            Fix::ONE,
+                            missile_state.scale,
                             data,
                         );
                         self.destroy_guided_missile(missile, true);
