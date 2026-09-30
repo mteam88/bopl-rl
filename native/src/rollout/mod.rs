@@ -14554,7 +14554,9 @@ impl RolloutWorld {
             slot.obs_state = STATE_IDLE;
             slot.state_ticks = 0;
         } else {
-            // The slime's own PlayerPhysics radius, UpdateScaled on the way out.
+            // onExitAbility assigns Player.Scale to the slime's hurtbox, and
+            // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
+            slot.set_ordinary_body_scale(slot.player_scale);
             slot.restore_slime_radius();
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
@@ -14736,8 +14738,9 @@ impl RolloutWorld {
             slot.obs_state_held_this_tick = true;
         } else {
             slot.base.up = Vec2::UP;
-            // SyncPhysicsTo's UpdateScale brings the kept slime radius up to
-            // Player.Scale.
+            // onExitAbility assigns Player.Scale to the slime's hurtbox, and
+            // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
+            slot.set_ordinary_body_scale(slot.player_scale);
             slot.restore_slime_radius();
             slot.exit_to_fall(terrain!(self));
         }
