@@ -5102,8 +5102,15 @@ impl RolloutWorld {
         let hierarchy = self.ability_pickups[index].hierarchy_base;
         self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
         // A DuplicatePlatformEffect registered before this pickup has already
-        // spawned its copy, which the ground raycast may meet.
-        self.duplicate_platform_effects_tick(data, updater_dt, Some(hierarchy));
+        // spawned its copy, which the ground raycast may meet. Runtime-spawned
+        // platforms take their updaters after every pickup, so an effect
+        // registered after one of them keeps its place behind it.
+        let first_spawned = (0..self.platforms.len())
+            .filter(|&i| self.platforms[i].active && self.platform_pass(i) == PlatformPass::Spawned)
+            .map(|i| self.entities[self.platform_entities[i]].hierarchy.saturating_sub(100_000_000))
+            .min()
+            .unwrap_or(u32::MAX);
+        self.duplicate_platform_effects_tick(data, updater_dt, Some(hierarchy.min(first_spawned)));
         if self.blink_object_hidden(self.ability_pickups[index].entity) {
             return;
         }
