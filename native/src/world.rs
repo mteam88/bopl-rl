@@ -923,13 +923,19 @@ impl Player {
     /// uses the same vector for both; keyboard players use W/A/S/D for motion
     /// and the joystick byte independently for ability aim.
     pub(crate) fn step_with_input(&mut self, action: Action, input: Vec2, terrain: Terrain) {
+        if self.step_unintegrated(action, input, terrain) {
+            self.integrate();
+        }
+    }
+    /// `step_with_input` short of PlayerBody's integration.
+    pub(crate) fn step_unintegrated(&mut self, action: Action, input: Vec2, terrain: Terrain) -> bool {
         self.begin_pass();
         if !self.dash.active {
             self.gravity_step(terrain);
             self.dash.radius = self.radius;
         }
         self.capture_pre_move(terrain.platforms);
-        self.move_step(action, input, terrain);
+        self.move_unintegrated(action, input, terrain)
     }
     /// Start of this body's updater pass, before PlayerPhysics.UpdateSim.
     /// `attach_upside_down` records whichever of this pass's two raycast

@@ -9799,39 +9799,26 @@ impl RolloutWorld {
         }
     }
 
-    /// SlimeController.OldUpdate: cooldowns, ability entry, then movement.
-    fn apply_platform_drop(&mut self, index: usize, data: &data::RolloutData) {
-        // DropPlatformTest reads the attachedGround an airborne slime keeps,
-        // but only grounded movement and Roll reach it.
-        if !self.players[index].base.grounded && self.players[index].active != ActiveAbility::Roll {
-            return;
-        }
-        // BounceBall, Drill, PlatformTransform, Dash, CastSpell and QuickSpell
-        // never run PlayerPhysics.Move or DropPlatformTest.
-        if matches!(
-            self.players[index].active,
-            ActiveAbility::Rock
-                | ActiveAbility::Drill
-                | ActiveAbility::Platform
-                | ActiveAbility::Dash
-                | ActiveAbility::TimeStop
-                | ActiveAbility::Gust
-                | ActiveAbility::Revival
-        ) {
-            return;
+    /// PlayerPhysics.DropPlatformTest, where Move's grounded branch ends
+    /// (PlayerPhysics.cs:227, 281) or Roll.Move calls it (Roll.cs:299), on a
+    /// body that went into that Move grounded. True when it dropped the body.
+    fn apply_platform_drop(&mut self, index: usize, data: &data::RolloutData) -> bool {
+        // A Move that ungrounded the body returned before the test.
+        if !self.players[index].base.grounded {
+            return false;
         }
         let Some(platform_index) = self.players[index].base.ground.and_then(|ground| {
             self.platforms
                 .iter()
                 .position(|platform| platform.id == ground && platform.active)
         }) else {
-            return;
+            return false;
         };
         let dynamics = self.platform_dynamics[platform_index];
         if dynamics.drop_players_frames <= 0
             || dynamics.dont_drop_player_id == self.players[index].base.id
         {
-            return;
+            return false;
         }
         let normal = self.platforms[platform_index]
             .surface
@@ -9857,9 +9844,6 @@ impl RolloutWorld {
             && let Some(orb) = self.players[index].beam.orb
         {
             self.beam_orbs[orb].holder_destroyed = Some(self.tick);
-        }
-        if active == ActiveAbility::Drill {
-            self.deactivate_drill_hitboxes(index);
         }
 
         let tick = self.tick;
@@ -9942,6 +9926,7 @@ impl RolloutWorld {
             // and it already published its position before Move.
             slot.state_ticks = 1;
         }
+        true
     }
 
     /// PlayerInfo.selfImposedVelocity on ability entry (SlimeController.cs:659):
@@ -10738,15 +10723,19 @@ impl RolloutWorld {
                             self.players[index]
                                 .base
                                 .move_only(Vec2::ZERO, terrain!(self));
-                            // Ability.EnterAbility handed that PlayerBody the
-                            // slime's rope.
-                            let held = self.form_rope_release(index);
-                            let slot = &mut self.players[index];
-                            slot.base.position += slot.base.external_velocity * DT;
-                            if held {
-                                self.rope_body_hold(index);
+                            // Move ends in DropPlatformTest, whose exit
+                            // disables that PlayerBody.
+                            if !self.apply_platform_drop(index, data) {
+                                // Ability.EnterAbility handed that PlayerBody
+                                // the slime's rope.
+                                let held = self.form_rope_release(index);
+                                let slot = &mut self.players[index];
+                                slot.base.position += slot.base.external_velocity * DT;
+                                if held {
+                                    self.rope_body_hold(index);
+                                }
+                                self.players[index].base.external_velocity *= Fix::from_f64(0.95);
                             }
-                            self.players[index].base.external_velocity *= Fix::from_f64(0.95);
                         } else {
                             // The form's own PlayerPhysics is later than the
                             // entering SlimeController. It applies a second
@@ -10772,13 +10761,15 @@ impl RolloutWorld {
                                 self.players[index]
                                     .base
                                     .move_only(Vec2::ZERO, terrain!(self));
-                                let held = self.form_rope_release(index);
-                                let slot = &mut self.players[index];
-                                slot.base.position += slot.base.external_velocity * DT;
-                                if held {
-                                    self.rope_body_hold(index);
+                                if !self.apply_platform_drop(index, data) {
+                                    let held = self.form_rope_release(index);
+                                    let slot = &mut self.players[index];
+                                    slot.base.position += slot.base.external_velocity * DT;
+                                    if held {
+                                        self.rope_body_hold(index);
+                                    }
+                                    self.players[index].base.external_velocity *= Fix::from_f64(0.95);
                                 }
-                                self.players[index].base.external_velocity *= Fix::from_f64(0.95);
                             } else {
                                 // SparkShot performs its own landing query
                                 // before calling PlayerPhysics.Move. Only a
@@ -11288,14 +11279,16 @@ impl RolloutWorld {
                         if self.form_bounds_kill(index, data) {
                             return;
                         }
-                        let slot = &mut self.players[index];
                         // Spike follows Ability in the prefab updater list:
                         // its grounded Move(zero) already runs on the entry
                         // pass, carrying the slime's grounded speed.
-                        if slot.base.grounded {
-                            slot.base.move_only(Vec2::ZERO, terrain!(self));
+                        if self.players[index].base.grounded {
+                            self.players[index].base.move_only(Vec2::ZERO, terrain!(self));
+                            if self.apply_platform_drop(index, data) {
+                                return;
+                            }
                         }
-                        let published = slot.base.position;
+                        let published = self.players[index].base.position;
                         self.spike_form_move(index, published, jump_pressed);
                         return;
                     }
@@ -11328,14 +11321,16 @@ impl RolloutWorld {
                         if self.form_bounds_kill(index, data) {
                             return;
                         }
-                        let slot = &mut self.players[index];
                         // PlantObjectOnPlatform follows Ability in the prefab
                         // updater list: its grounded Move(zero) and
                         // PlayerBody's step already run on the entry pass.
-                        if slot.base.grounded {
-                            slot.base.move_only(Vec2::ZERO, terrain!(self));
+                        if self.players[index].base.grounded {
+                            self.players[index].base.move_only(Vec2::ZERO, terrain!(self));
+                            if self.apply_platform_drop(index, data) {
+                                return;
+                            }
                         }
-                        let published = slot.base.position;
+                        let published = self.players[index].base.position;
                         self.plant_cast_form_move(index, published, jump_pressed);
                         return;
                     }
@@ -11365,12 +11360,14 @@ impl RolloutWorld {
                         if self.form_bounds_kill(index, data) {
                             return;
                         }
-                        let slot = &mut self.players[index];
                         // As for Engine: the entry pass already moves.
-                        if slot.base.grounded {
-                            slot.base.move_only(Vec2::ZERO, terrain!(self));
+                        if self.players[index].base.grounded {
+                            self.players[index].base.move_only(Vec2::ZERO, terrain!(self));
+                            if self.apply_platform_drop(index, data) {
+                                return;
+                            }
                         }
-                        let published = slot.base.position;
+                        let published = self.players[index].base.position;
                         self.plant_cast_form_move(index, published, jump_pressed);
                         return;
                     }
@@ -11921,7 +11918,7 @@ impl RolloutWorld {
                         // BlackHoleClap follows the animator. Its first active
                         // UpdateSim runs now, while the enter animation begins
                         // advancing on the next updater pass.
-                        self.black_hole_form_motion(index);
+                        self.black_hole_form_motion(index, data);
                         return;
                     }
                     ABILITY_THROW => {
@@ -12573,8 +12570,10 @@ impl RolloutWorld {
             st.lethal = true;
             st.top_speed = data.roll.max_speed;
         }
-        if self.players[index].base.grounded {
-            self.roll_move_grounded(index, data);
+        // A dropped Roll is disabled, so UpdateSim's IsEnabled check
+        // returns (Roll.cs:366).
+        if self.players[index].base.grounded && self.roll_move_grounded(index, data) {
+            return;
         }
 
         // UpdateSim continues after OldUpdate and prepares the speed used by
@@ -12633,7 +12632,8 @@ impl RolloutWorld {
         }
     }
 
-    fn roll_move_grounded(&mut self, index: usize, data: &data::RolloutData) {
+    /// Roll.Move; true when its DropPlatformTest dropped the form.
+    fn roll_move_grounded(&mut self, index: usize, data: &data::RolloutData) -> bool {
         let speed = self.players[index].roll.grounded_speed;
         if self.players[index].roll.charging {
             // Roll.Move still delegates to PlayerPhysics.Move(zero) while
@@ -12645,12 +12645,15 @@ impl RolloutWorld {
                     .base
                     .move_only(Vec2::ZERO, terrain!(self));
             }
-            return;
+            return self.apply_platform_drop(index, data);
         }
         // On a destroyed ground Roll.Move's DropPlatformTest does nothing and
         // it returns, still grounded (Roll.cs:263-266, PlayerPhysics.cs:287).
-        if speed == Fix::ZERO || self.players[index].dead_ground(self.tick).is_some() {
-            return;
+        if self.players[index].dead_ground(self.tick).is_some() {
+            return false;
+        }
+        if speed == Fix::ZERO {
+            return self.apply_platform_drop(index, data);
         }
         let hurtbox_radius = data.roll.radius * hurtbox_scale(self.players[index].player_scale);
         let count = (speed.abs() * DT * data.roll.move_collision_density / hurtbox_radius)
@@ -12684,6 +12687,7 @@ impl RolloutWorld {
                 .base
                 .align(&self.platforms[platform_index]);
         }
+        self.apply_platform_drop(index, data)
     }
 
     /// PlayerPhysics.MoveAlongCurrentPlatFormSwapIfBlocked. The source passes
@@ -12940,6 +12944,11 @@ impl RolloutWorld {
                     && !self.players[index].move_off_destroyed(self.tick)
                 {
                     self.players[index].base.move_only(Vec2::ZERO, terrain!(self));
+                    // gap: MeteorSmash.cs:292 still raycasts the dropped form's
+                    // body, and a landing there exits it again, grounded.
+                    if self.apply_platform_drop(index, data) {
+                        return;
+                    }
                 }
                 // The animator's Jump callback runs after Ability.UpdateSim.
                 published = Some(self.players[index].base.position);
@@ -13609,6 +13618,16 @@ impl RolloutWorld {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            // After DropPlatformTest's exit, the `!IsGrounded` exit below
+            // hands the slime the same packet again, and releases the ground
+            // the form still names (ControlPlatform.cs:120-130).
+            let ground = self.players[index].base.ground;
+            if self.apply_platform_drop(index, data) {
+                if let Some(platform) = self.platforms.iter().position(|p| Some(p.id) == ground) {
+                    self.platform_dynamics[platform].being_controlled = false;
+                }
+                return;
+            }
         }
         // UnGround (a grounded rope's pull, PlayerPhysics.cs:156) keeps
         // attachedGround; ControlPlatform exits on IsGrounded alone.
@@ -14308,6 +14327,10 @@ impl RolloutWorld {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            // Move ends in DropPlatformTest, whose exit disables the form.
+            if self.apply_platform_drop(index, data) {
+                return;
+            }
         }
         // PlayerBody carries a grapple rope into the form.
         self.spike_form_move(index, published_position, jump_pressed);
@@ -14409,6 +14432,10 @@ impl RolloutWorld {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            // Move ends in DropPlatformTest, whose exit disables the form.
+            if self.apply_platform_drop(index, data) {
+                return;
+            }
         }
         self.plant_cast_form_move(index, published_position, jump_pressed);
     }
@@ -14566,6 +14593,10 @@ impl RolloutWorld {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            // Move ends in DropPlatformTest, whose exit disables the form.
+            if self.apply_platform_drop(index, data) {
+                return;
+            }
         }
         self.plant_cast_form_move(index, published_position, jump_pressed);
     }
@@ -16553,7 +16584,7 @@ impl RolloutWorld {
         self.players[index].reported_tick = self.tick;
     }
 
-    fn black_hole_form_motion(&mut self, index: usize) {
+    fn black_hole_form_motion(&mut self, index: usize, data: &data::RolloutData) {
         {
             let slot = &mut self.players[index];
             // Ability.UpdateSim publishes Player.Position from the form's
@@ -16599,6 +16630,10 @@ impl RolloutWorld {
                 self.players[index]
                     .base
                     .move_only(Vec2::ZERO, terrain!(self));
+                // Move ends in DropPlatformTest, whose exit disables the form.
+                if self.apply_platform_drop(index, data) {
+                    return;
+                }
             } else {
                 // BlackHoleClap's lost-ground exit zeroes the form body's
                 // rotation and hands over isFacingRight true.
@@ -16710,7 +16745,7 @@ impl RolloutWorld {
         if self.ability_boundary_kill(index, false) {
             return;
         }
-        self.black_hole_form_motion(index);
+        self.black_hole_form_motion(index, data);
     }
 
     fn exit_black_hole_form(&mut self, index: usize, grounded: bool) {
@@ -18888,6 +18923,11 @@ impl RolloutWorld {
             if !self.players[index].base.grounded {
                 self.players[index].beam_on_ungrounded();
             }
+            // gap: after DropPlatformTest's exit, Beam.UpdateSim still runs
+            // its loop state's UpdateBeam and jump exit (Beam.cs:805-829).
+            if self.apply_platform_drop(index, data) {
+                return;
+            }
         } else {
             // A ground form off its ground: AddGravityFactor, then Move's air
             // branch, whose raycasts may attach it again (Beam.OnGrounded).
@@ -20833,9 +20873,13 @@ impl RolloutWorld {
         if self.players[index].move_off_destroyed(self.tick) {
             return;
         }
+        let grounded = self.players[index].base.grounded;
         self.players[index]
             .base
             .macho_move(move_input, roundedness, terrain!(self));
+        if grounded {
+            self.apply_platform_drop(index, data);
+        }
     }
 
     fn macho_late_tick(&mut self, data: &data::RolloutData) {
@@ -24439,6 +24483,11 @@ impl RolloutWorld {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            // Move ends in DropPlatformTest, whose exit disables the form; the
+            // steering above is SparkShot's after its Move.
+            if self.apply_platform_drop(index, data) {
+                return;
+            }
             let slot = &mut self.players[index];
             // Move aligned the transform to the surface where the body stands;
             // DetPhysics publishes that rotation.
@@ -24633,6 +24682,10 @@ impl RolloutWorld {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            // Move ends in DropPlatformTest, whose exit disables the form.
+            if self.apply_platform_drop(index, data) {
+                return;
+            }
             let slot = &mut self.players[index];
             // ThrowItem's PlayerPhysics.Move advances the surface local and
             // rotation, but PlayerBody owns the later world-position move.
@@ -25021,6 +25074,10 @@ impl RolloutWorld {
                 self.players[index]
                     .base
                     .move_only(Vec2::ZERO, terrain!(self));
+                // Move ends in DropPlatformTest, whose exit disables the form.
+                if self.apply_platform_drop(index, data) {
+                    return;
+                }
             }
             let slot = &mut self.players[index];
             slot.throw_item.collider_rotation = slot.base.rotation;
@@ -25359,10 +25416,14 @@ impl RolloutWorld {
         let slot_button = 2u8 << self.players[index].active_slot;
 
         // PlayerPhysics.Move(zero) runs before the release test.
+        // Move ends in DropPlatformTest; the disabled GunTransform still takes
+        // its release test, then returns (GunTransform.cs:147-156).
+        let mut dropped = false;
         if self.players[index].base.grounded {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            dropped = self.apply_platform_drop(index, data);
         }
         if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
             self.fire_freeze(index, data);
@@ -25374,7 +25435,9 @@ impl RolloutWorld {
             }
         }
 
-
+        if dropped {
+            return;
+        }
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -25475,14 +25538,17 @@ impl RolloutWorld {
             slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = data.freeze.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback.
-            slot.base.up = slot.gun.aim.perp();
-            slot.base.rotation = slot.gun.aim.normalized_angle();
+            // it again for the shot and knockback. Fired after DropPlatformTest's
+            // exit (GunTransform.cs:147-151), both land on the disabled form.
+            if slot.active != ActiveAbility::None {
+                slot.base.up = slot.gun.aim.perp();
+                slot.base.rotation = slot.gun.aim.normalized_angle();
+            }
         }
         let firepoint = {
             let slot = &self.players[index];
             let offset = slot.gun_firepoint_offsets[slot.active_slot];
-            slot.base.position + slot.base.up * offset.y + aim * offset.x
+            slot.base.position + slot.gun.aim.perp() * offset.y + aim * offset.x
         };
         self.shoot_freeze_ray(firepoint, aim, data);
         if self.players[index].active != ActiveAbility::Freeze {
@@ -25520,10 +25586,14 @@ impl RolloutWorld {
         let slot_button = 2u8 << self.players[index].active_slot;
 
         // PlayerPhysics.Move(zero) runs before the release test.
+        // Move ends in DropPlatformTest; the disabled GunTransform still takes
+        // its release test, then returns (GunTransform.cs:147-156).
+        let mut dropped = false;
         if self.players[index].base.grounded {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            dropped = self.apply_platform_drop(index, data);
         }
         if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
             self.fire_blink(index, data);
@@ -25538,6 +25608,9 @@ impl RolloutWorld {
             }
         }
 
+        if dropped {
+            return;
+        }
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -25638,14 +25711,17 @@ impl RolloutWorld {
             slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = data.blink.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback.
-            slot.base.up = slot.gun.aim.perp();
-            slot.base.rotation = slot.gun.aim.normalized_angle();
+            // it again for the shot and knockback. Fired after DropPlatformTest's
+            // exit (GunTransform.cs:147-151), both land on the disabled form.
+            if slot.active != ActiveAbility::None {
+                slot.base.up = slot.gun.aim.perp();
+                slot.base.rotation = slot.gun.aim.normalized_angle();
+            }
         }
         let firepoint = {
             let slot = &self.players[index];
             let offset = slot.gun_firepoint_offsets[slot.active_slot];
-            slot.base.position + slot.base.up * offset.y + aim * offset.x
+            slot.base.position + slot.gun.aim.perp() * offset.y + aim * offset.x
         };
         self.shoot_blink_ray(firepoint, aim, index, data);
         if self.players[index].active != ActiveAbility::Blink {
@@ -25684,15 +25760,22 @@ impl RolloutWorld {
             self.players[index].gun.aim = direction.normalized();
         }
         let slot_button = 2u8 << self.players[index].active_slot;
+        // Move ends in DropPlatformTest; the disabled GunTransform still takes
+        // its release test, then returns (GunTransform.cs:147-156).
+        let mut dropped = false;
         if self.players[index].base.grounded {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            dropped = self.apply_platform_drop(index, data);
         }
         if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
             self.fire_scale_ray(index, growth, data);
         }
 
+        if dropped {
+            return;
+        }
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -25798,16 +25881,22 @@ impl RolloutWorld {
             slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = ray.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback.
-            slot.base.up = slot.gun.aim.perp();
-            slot.base.rotation = slot.gun.aim.normalized_angle();
+            // it again for the shot and knockback. Fired after DropPlatformTest's
+            // exit (GunTransform.cs:147-151), both land on the disabled form.
+            if slot.active != ActiveAbility::None {
+                slot.base.up = slot.gun.aim.perp();
+                slot.base.rotation = slot.gun.aim.normalized_angle();
+            }
         }
         let firepoint = {
             let slot = &self.players[index];
             let offset = slot.gun_firepoint_offsets[slot.active_slot];
-            slot.base.position + slot.base.up * offset.y + aim * offset.x
+            slot.base.position + slot.gun.aim.perp() * offset.y + aim * offset.x
         };
         self.shoot_scale_ray(firepoint, aim, index, growth, data);
+        if self.players[index].active == ActiveAbility::None {
+            return;
+        }
 
         let slot = &mut self.players[index];
         if grounded {
@@ -25836,15 +25925,22 @@ impl RolloutWorld {
             self.players[index].gun.aim = direction.normalized();
         }
         let slot_button = 2u8 << self.players[index].active_slot;
+        // Move ends in DropPlatformTest; the disabled GunTransform still takes
+        // its release test, then returns (GunTransform.cs:147-156).
+        let mut dropped = false;
         if self.players[index].base.grounded {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            dropped = self.apply_platform_drop(index, data);
         }
         if action.buttons & slot_button == 0 && !self.players[index].gun.has_fired {
             self.fire_duplicator(index, data);
         }
 
+        if dropped {
+            return;
+        }
         let invalid_ground = self.players[index].base.grounded
             && (self.players[index].base.velocity.length_squared() > Fix::from_f32(1e-6)
                 || self.players[index].base.ground.is_none()
@@ -26102,6 +26198,11 @@ impl RolloutWorld {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
+            // Move ends in DropPlatformTest; the rest of MagnetGun.UpdateSim
+            // only writes the disabled form's body.
+            if self.apply_platform_drop(index, data) {
+                return;
+            }
         }
 
         let slot = &mut self.players[index];
@@ -27767,16 +27868,22 @@ impl RolloutWorld {
             slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = gun.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback.
-            slot.base.up = slot.gun.aim.perp();
-            slot.base.rotation = slot.gun.aim.normalized_angle();
+            // it again for the shot and knockback. Fired after DropPlatformTest's
+            // exit (GunTransform.cs:147-151), both land on the disabled form.
+            if slot.active != ActiveAbility::None {
+                slot.base.up = slot.gun.aim.perp();
+                slot.base.rotation = slot.gun.aim.normalized_angle();
+            }
         }
         let firepoint = {
             let slot = &self.players[index];
             let offset = slot.gun_firepoint_offsets[slot.active_slot];
-            slot.base.position + slot.base.up * offset.y + aim * offset.x
+            slot.base.position + slot.gun.aim.perp() * offset.y + aim * offset.x
         };
         self.shoot_duplicator_ray(firepoint, aim, index, data, false);
+        if self.players[index].active == ActiveAbility::None {
+            return;
+        }
 
         let slot = &mut self.players[index];
         if grounded {
@@ -32280,6 +32387,8 @@ impl RolloutWorld {
         // Movement (UpdateSim). PlayerBody integrates after BowTransform.
         let mut exit = false;
         let mut integrate = false;
+        let mut step_integrate = false;
+        let mut drop_test = false;
         let this = &mut *self;
         let slot = &mut this.players[index];
         let terrain = this.platforms.terrain();
@@ -32319,7 +32428,9 @@ impl RolloutWorld {
                 exit = true;
             } else {
                 // Grounded aiming: physics.Move(zero) = friction, stay attached.
-                slot.base.step(Action::default(), terrain);
+                let action = Action::default();
+                step_integrate = slot.base.step_unintegrated(action, action.direction(), terrain);
+                drop_test = true;
             }
         } else if !slot.bow.has_fired {
             // Airborne aiming: near-frozen fall (gravity_modifier 0.03 unless
@@ -32340,6 +32451,7 @@ impl RolloutWorld {
                 // Landed while aiming: physics.Move(zero) in the same pass
                 // (BowTransform.cs:240-243); the shot later exits on landing.
                 slot.base.move_only(Vec2::ZERO, terrain);
+                drop_test = true;
             } else if slot.base.velocity.length() > bow.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * bow.max_slow_mo_speed;
             }
@@ -32396,6 +32508,14 @@ impl RolloutWorld {
             if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == tick) {
                 slot.tie_position = Some((tick, ability_publish));
             }
+        }
+        // Move ends in DropPlatformTest, whose exit disables the form and its
+        // PlayerBody.
+        if drop_test && self.apply_platform_drop(index, data) {
+            return;
+        }
+        if step_integrate {
+            self.players[index].base.integrate();
         }
         if integrate {
             self.form_body_step(index);
@@ -39078,11 +39198,6 @@ impl RolloutWorld {
         let hierarchy = self.scratch.turn_hierarchy[index];
         self.run_spawned_before(data, self.scratch.turn_dt, hierarchy);
         let packet = self.scratch.clone_actions[self.players[index].owner];
-        // An ordinary slime's drop test closes its grounded Move instead
-        // (`player_tick`).
-        if self.playable(index) && self.players[index].active != ActiveAbility::None {
-            self.apply_platform_drop(index, data);
-        }
         // A stock clone spawned earlier in this pass first updates on the
         // next one, so the destroyed slime's Player.Position stands.
         let stock_clone_spawned =
