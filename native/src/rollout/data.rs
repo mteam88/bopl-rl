@@ -1363,7 +1363,9 @@ pub struct AbilitySpawnerDef {
 }
 pub struct MapDef {
     pub platforms: Vec<PlatformDef>,
-    /// Platform indices in Updater registration (scene sibling) order.
+    /// Platform indices in Updater order: the level's updatables register
+    /// together and Updater sorts them by HierarchyNumber (Updater.cs:12-19,
+    /// 270), not by their order in the scene file.
     pub update_order: Vec<usize>,
     pub water: Option<(Vec2, Vec2, u32)>,
     pub level_type: u32,
@@ -2614,7 +2616,7 @@ fn map_def(raw: &RawMap) -> MapDef {
         Vec2::new(middle + half_span, respawn_y),
     ];
     let mut update_order: Vec<usize> = (0..platforms.len()).collect();
-    update_order.sort_by_key(|&i| platforms[i].intro_order);
+    update_order.sort_by_key(|&i| platforms[i].hierarchy);
     MapDef {
         platforms,
         update_order,
