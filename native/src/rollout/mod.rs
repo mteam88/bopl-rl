@@ -14945,13 +14945,34 @@ impl RolloutWorld {
         }
     }
 
-    /// The engines older than `below` that have not updated this pass.
+    /// The engines older than `below` that have not updated this pass. A
+    /// Smoke cloud older than an engine takes its FlammableSmoke turn before
+    /// that engine's flame can light it.
     fn engines_tick_below(&mut self, data: &data::RolloutData, updater_dt: Fix, below: u32) {
         let from = self.scratch.engines_ran_below;
-        if from < below {
-            self.engines_tick(data, updater_dt, from..below);
-            self.scratch.engines_ran_below = below;
+        if from >= below {
+            return;
         }
+        let mut start = from;
+        while !self.smoke_clouds.is_empty() {
+            let Some(next) = self
+                .engines
+                .iter()
+                .filter(|engine| engine.active)
+                .map(|engine| 100_000_000 + engine.hierarchy_base)
+                .filter(|hierarchy| (start..below).contains(hierarchy))
+                .min()
+            else {
+                break;
+            };
+            self.smoke_clouds_update_early(data, updater_dt, 0..next);
+            self.engines_tick(data, updater_dt, start..next + 1);
+            start = next + 1;
+        }
+        if start < below {
+            self.engines_tick(data, updater_dt, start..below);
+        }
+        self.scratch.engines_ran_below = below;
     }
 
     fn engines_tick(
@@ -15090,8 +15111,9 @@ impl RolloutWorld {
                         let cloud = &mut self.smoke_clouds[cloud_index];
                         cloud.ignition_time = Fix::ZERO;
                         // A cloud whose FlammableSmoke updater comes after this
-                        // engine's in the pass counts its first tick lit now.
-                        if engine_hierarchy < cloud.hierarchy_base {
+                        // engine's in the pass, but which has already run,
+                        // counts its first tick lit now.
+                        if engine_hierarchy < cloud.hierarchy_base && cloud.radius_tick == self.tick {
                             cloud.ignition_time += updater_dt;
                         }
                         let entity = cloud.entity.expect("registered smoke cloud");
