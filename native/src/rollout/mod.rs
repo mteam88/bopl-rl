@@ -42833,17 +42833,9 @@ impl RolloutWorld {
                 }
             }
             // The stock branch of killPlayer starts with UnGround, which
-            // steps the body off even a stale attachedGround.
-            // gap: UnGround() nulls the rotation and raises OnNoLongerGrounded;
-            // begin_stock_respawn overwrites the rotation and state, not the
-            // ragdoll.
-            unground_physics(
-                &mut slot.base,
-                &mut slot.ground_destroyed,
-                &self.platforms,
-                self.tick,
-                false,
-            );
+            // steps the body off even a stale attachedGround and ends a
+            // ragdoll through OnNoLongerGrounded (PlayerCollision.cs:177).
+            UngroundBody::Slime(slot).unground(&self.platforms, self.tick, true);
             // Player.Position keeps the destroyed slime's last SetPosition
             // until the clone's first OldUpdate on the next pass: this pass's
             // publish if it already ran, else the last pass's.
