@@ -3818,7 +3818,6 @@ struct PlatformScratch {
     sweep: sweep::SweepBounds,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
     duplicated_rock_wall_contacts: Vec<(usize, usize, Contact)>,
-    rock_spike_hits: Vec<(usize, usize, Vec2)>,
     /// Each slime's position before PlayerPhysics.LateUpdateSim follows its
     /// ground, where an older Mine's LateUpdateSim still finds it.
     before_ground_follow: [Vec2; MAX_BODIES],
@@ -7598,9 +7597,9 @@ impl RolloutWorld {
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_pairs();
         }
-        // The global circle/circle pass: items, Portal shots, and Tesla
-        // nodes of different platforms, then the Circle/Box group.
-        if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_PORTAL_GUN) {
+        // The Circle/Box group, after the corrections of every Circle/Circle
+        // pair.
+        if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_PORTAL_GUN) || has(ABILITY_ROCK) {
             self.thrown_item_pair_contacts(data);
         }
         if has(ABILITY_MISSILE) {
@@ -36132,7 +36131,9 @@ impl RolloutWorld {
             | ActiveAbility::PokeBall
             | ActiveAbility::Missile => player.throw_entity,
             ActiveAbility::Mine => player.mine_entity,
-            ActiveAbility::Rock => player.rock_entity,
+            // A Rock form's circle meets the box in circle_box_group, which
+            // resolves the pair.
+            ActiveAbility::Rock => return false,
             ActiveAbility::Roll => player.roll_entity,
             ActiveAbility::Meteor => player.meteor_entity,
             ActiveAbility::Push => player.push_entity,
@@ -36585,7 +36586,7 @@ impl RolloutWorld {
             row.angular_velocity = item.body.angular_velocity.raw();
         }
         // The Circle/Box group follows, built from the corrected circles.
-        self.circle_box_group();
+        self.circle_box_group(data);
         // SmokeGrenadeExplode2 accepts every non-projectile collision once
         // its owner gate is open, a rounded wall included. Manifolds were all
         // constructed before this callback phase, so destroying one Smoke
@@ -39814,89 +39815,10 @@ impl RolloutWorld {
         self.players[rock_index].base.velocity = rock_velocity;
     }
 
-    /// DetPhysics' Circle/Box group runs after every Circle/Circle pair has
-    /// resolved (DetPhysics.cs:3052-3129), so a Rock's Circle/Box manifolds
-    /// see the corrections of its Circle/Circle pairs with items and rocks,
-    /// and all of them are built before the first one resolves.
+    /// A Rock form's Circle/Box pairs with slimes, forms and clones, which
+    /// only call back; its pairs with spikes and missiles resolve in
+    /// circle_box_group.
     fn rocks_box_contacts(&mut self, data: &data::RolloutData) {
-        let mut centers = [Vec2::ZERO; MAX_BODIES];
-        for (center, slot) in centers.iter_mut().zip(&self.players) {
-            *center = slot.base.position;
-        }
-
-        // Circle/Box: a Spike attack is a solid box child of its platform's
-        // CompositeBody, so a Rock bounces off it. ResolveCollision takes the
-        // combined body at CompositeBody.position; PositionalCorrection the
-        // box's own inverse mass, moving the box and CompositeBody.position.
-        // BounceBall adds no bounce for the LethalTerrain layer.
-        let mut rock_spike_hits = std::mem::take(&mut self.scratch.rock_spike_hits);
-        for rock_index in 0..self.players.len() {
-            if self.players[rock_index].active != ActiveAbility::Rock || !self.playable(rock_index)
-            {
-                continue;
-            }
-            for spike_index in 0..self.spike_attacks.len() {
-                let spike = self.spike_attacks[spike_index];
-                if !spike.active
-                    || spike.macho_carried
-                    || spike.platform_index >= self.platforms.len()
-                    || spike.body.inverse_mass <= Fix::ZERO
-                    || spike.entity.is_none_or(|entity| self.entities[entity].flags & 3 != 3)
-                {
-                    continue;
-                }
-                if !self.swept_pair(Swept::Player(rock_index), Swept::Part(Part::Spike(spike_index))) {
-                    continue;
-                }
-                let attack_box = self.spike_attack_box(spike);
-                let circle = Circle {
-                    center: self.players[rock_index].base.position,
-                    radius: self.players[rock_index].rock_circle().circle_radius,
-                };
-                let Some(contact) = crate::physics::contact::circle_box(circle, attack_box) else {
-                    continue;
-                };
-                let platform = spike.platform_index;
-                let rock_position = self.players[rock_index].base.position;
-                let composite_position = self.platform_dynamics[platform].composite_position;
-                let rock_body = &mut self.players[rock_index].rock.body;
-                let platform_body = &mut self.platform_dynamics[platform].body;
-                resolve(contact, rock_body, platform_body, rock_position, composite_position);
-                let correction = positional_correction(
-                    contact,
-                    rock_body.inverse_mass,
-                    spike.body.inverse_mass,
-                    false,
-                );
-                let rock_velocity = rock_body.velocity;
-                self.players[rock_index].base.position += correction[0];
-                self.players[rock_index].base.velocity = rock_velocity;
-                self.platform_dynamics[platform].composite_position += correction[1];
-                self.spike_attacks[spike_index].collider_center += correction[1];
-                rock_spike_hits.push((rock_index, spike_index, contact.point));
-            }
-        }
-        // SpikeAttack.OnCollide runs after every group has resolved: while
-        // young, it knocks the Rock's circle away from the spike's
-        // FixTransform, which the physics sync already left at the corrected
-        // pose.
-        if self.player_time_scale >= Fix::from_f32(0.01) {
-            for &(rock_index, spike_index, point) in &rock_spike_hits {
-                if self.spike_attacks[spike_index].time >= data.spike.push_time {
-                    continue;
-                }
-                let direction =
-                    (point - self.spike_attack_root(spike_index)).normalized_safe();
-                let rock = &mut self.players[rock_index];
-                let arm = (point - rock.base.position).normalized_safe();
-                rock.rock.body.apply_impulse(direction * data.spike.knock_player, arm);
-                rock.base.velocity = rock.rock.body.velocity;
-                self.spike_attack_self_push(spike_index, point, data.spike.knock_player, data);
-            }
-        }
-        rock_spike_hits.clear();
-        self.scratch.rock_spike_hits = rock_spike_hits;
-
         // Every live Player-layer slime/form callback sees Rock's Ability and
         // credits its owner. BounceBall independently queues its bounce force.
         let mut victims = [usize::MAX; MAX_BODIES * MAX_BODIES];
@@ -39912,7 +39834,7 @@ impl RolloutWorld {
                 continue;
             }
             let rock = Circle {
-                center: centers[rock_index],
+                center: self.players[rock_index].base.position,
                 radius: self.players[rock_index].rock_circle().circle_radius,
             };
             for victim in 0..self.players.len() {

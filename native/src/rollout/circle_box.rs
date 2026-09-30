@@ -297,7 +297,7 @@ impl RolloutWorld {
     /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
     /// PositionalCorrection on each side's own inverse mass; every pair
     /// queues both sides' OnCollide, which run after the last group.
-    pub(super) fn circle_box_group(&mut self) {
+    pub(super) fn circle_box_group(&mut self, data: &data::RolloutData) {
         let mut parts = std::mem::take(&mut self.scratch.cb_parts);
         parts.clear();
         for (i, item) in self.thrown_items.iter().enumerate() {
@@ -316,6 +316,11 @@ impl RolloutWorld {
         for (i, node) in self.tesla_nodes.iter().enumerate() {
             if self.child_registered(node.active, node.macho_carried, node.platform_index, node.entity) {
                 parts.push(Part::Node(i));
+            }
+        }
+        for i in 0..self.players.len() {
+            if self.players[i].active == ActiveAbility::Rock && self.playable(i) {
+                parts.push(Part::Rock(i));
             }
         }
         let circles = parts.len();
@@ -342,6 +347,7 @@ impl RolloutWorld {
                 // SameCompositeAs: a node never meets its own platform's
                 // children; an item, shot or missile has no composite.
                 if self.part_composite(circle).is_some_and(|c| Some(c) == self.part_composite(part))
+                    || !data.layers_collide(self.part_layer(circle, data), self.part_layer(part, data))
                     || !self.swept_pair(Swept::Part(circle), Swept::Part(part))
                 {
                     continue;
