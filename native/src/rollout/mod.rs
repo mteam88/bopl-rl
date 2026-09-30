@@ -36259,6 +36259,15 @@ impl RolloutWorld {
                 row.angular_velocity = body.angular_velocity.raw();
             }
         }
+        // SmokeGrenadeExplode2 goes off on a wall too: its callback waits in
+        // DetPhysics' queue at the pair's place (SmokeGrenadeExplode2.cs:63-78).
+        for &(item, platform, _) in &all_contacts {
+            if self.thrown_items[item].ability == ABILITY_SMOKE {
+                let (later, earlier) = sweep_pair(self.part_rank(Part::Item(item)), self.wall_rank(platform));
+                let hit = CallbackHit::ItemDetonate { item, count: 1 };
+                self.scratch.callback_hits.push(((GROUP_CIRCLE_RR, later, earlier), hit));
+            }
+        }
         self.scratch.item_platform_contacts = all_contacts;
     }
 
@@ -36439,50 +36448,6 @@ impl RolloutWorld {
         }
         // The Circle/Box group follows, built from the corrected circles.
         self.circle_box_group(data);
-        // SmokeGrenadeExplode2 accepts every non-projectile collision once
-        // its owner gate is open, a rounded wall included. Manifolds were all
-        // constructed before this callback phase, so destroying one Smoke
-        // does not erase later pairs, and a Smoke on a wall still takes its
-        // Circle/Circle contacts; the wall callbacks were queued first.
-        let mut smoke_callbacks = [usize::MAX; 64];
-        let mut smoke_callback_count = 0;
-        for &(item_index, _, _) in &self.scratch.item_platform_contacts {
-            let item = self.thrown_items[item_index];
-            if item.active
-                && item.ability == ABILITY_SMOKE
-                && item.detonates_on_owner
-                && smoke_callback_count < smoke_callbacks.len()
-            {
-                smoke_callbacks[smoke_callback_count] = item_index;
-                smoke_callback_count += 1;
-            }
-        }
-        // The hook is on the Rope layer, not a Projectile, so a Smoke it
-        // touches goes off whatever the hook attaches to.
-        for &(a, b, _) in &self.scratch.cc_contacts {
-            // A portal shot's or an arrow's Projectile does not ignite
-            // explosives (Arrow.prefab IgnitesExplosives 0).
-            if matches!(a, Part::Shot(_) | Part::Arrow(_)) || matches!(b, Part::Shot(_) | Part::Arrow(_)) {
-                continue;
-            }
-            for part in [a, b] {
-                let Part::Item(item_index) = part else {
-                    continue;
-                };
-                let item = self.thrown_items[item_index];
-                if item.active
-                    && item.ability == ABILITY_SMOKE
-                    && item.detonates_on_owner
-                    && smoke_callback_count < smoke_callbacks.len()
-                {
-                    smoke_callbacks[smoke_callback_count] = item_index;
-                    smoke_callback_count += 1;
-                }
-            }
-        }
-        for &item_index in &smoke_callbacks[..smoke_callback_count] {
-            self.detonate_smoke(item_index, true, data);
-        }
     }
 
     fn thrown_items_contacts(&mut self, data: &data::RolloutData) {

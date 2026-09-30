@@ -599,34 +599,49 @@ impl RolloutWorld {
             }
         }
         // PrepareCollisionCallBacks queues every pair's callbacks before the
-        // first ResolveCollision (DetPhysics.cs:3068-3071).
+        // first ResolveCollision (DetPhysics.cs:3068-3071), the
+        // earlier-sorted side's first.
         for &(a, b, _) in &contacts {
-            let (rope, other) = match (a, b) {
-                (Part::Hook(rope), other) | (other, Part::Hook(rope)) => (rope, other),
-                _ => continue,
-            };
-            let target = match other {
-                Part::Item(i) => HookTarget::Item(i),
-                Part::Shot(i) => HookTarget::Shot(i),
-                Part::Node(i) => HookTarget::Node(i),
-                Part::Pickup(_) => HookTarget::Pickup,
-                // RopeHook ignores every body of the caster's and the end's
-                // player (RopeHook.cs:108-115).
-                Part::Rock(player) => {
-                    let body_player = self.players[player].owner;
-                    if body_player == self.players[self.ropes[rope].owner].owner
-                        || body_player == self.ropes[rope].hook_end_player
-                    {
-                        continue;
-                    }
-                    HookTarget::Player(player)
+            for (side, other) in [(a, b), (b, a)] {
+                // SmokeGrenadeExplode2 goes off on any collider but a
+                // Projectile that does not ignite explosives, as a portal
+                // shot's or an arrow's (SmokeGrenadeExplode2.cs:63-78,
+                // Arrow.prefab IgnitesExplosives 0). The hook is on the Rope
+                // layer, so a Smoke it touches goes off.
+                if let Part::Item(item) = side
+                    && self.thrown_items[item].ability == ABILITY_SMOKE
+                    && !matches!(other, Part::Shot(_) | Part::Arrow(_))
+                {
+                    let (later, earlier) = sweep_pair(self.part_rank(a), self.part_rank(b));
+                    let hit = CallbackHit::ItemDetonate { item, count: 1 };
+                    self.scratch.callback_hits.push(((GROUP_CC, later, earlier), hit));
                 }
-                Part::Arrow(i) => HookTarget::Arrow(i),
-                // A hook on a Duplicator copy has no rope parent here yet.
-                Part::DuplicatedRock(_) => continue,
-                Part::Engine(_) | Part::Spike(_) | Part::Missile(_) | Part::Hook(_) => unreachable!(),
-            };
-            self.queue_hook_hit(rope, GROUP_CC, self.part_rank(other), target);
+                let Part::Hook(rope) = side else {
+                    continue;
+                };
+                let target = match other {
+                    Part::Item(i) => HookTarget::Item(i),
+                    Part::Shot(i) => HookTarget::Shot(i),
+                    Part::Node(i) => HookTarget::Node(i),
+                    Part::Pickup(_) => HookTarget::Pickup,
+                    // RopeHook ignores every body of the caster's and the end's
+                    // player (RopeHook.cs:108-115).
+                    Part::Rock(player) => {
+                        let body_player = self.players[player].owner;
+                        if body_player == self.players[self.ropes[rope].owner].owner
+                            || body_player == self.ropes[rope].hook_end_player
+                        {
+                            continue;
+                        }
+                        HookTarget::Player(player)
+                    }
+                    Part::Arrow(i) => HookTarget::Arrow(i),
+                    // A hook on a Duplicator copy has no rope parent here yet.
+                    Part::DuplicatedRock(_) => continue,
+                    Part::Engine(_) | Part::Spike(_) | Part::Missile(_) | Part::Hook(_) => unreachable!(),
+                };
+                self.queue_hook_hit(rope, GROUP_CC, self.part_rank(other), target);
+            }
         }
         for &(a, b, contact) in &contacts {
             self.resolve_parts(a, b, contact);
