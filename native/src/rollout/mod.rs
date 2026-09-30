@@ -42694,6 +42694,13 @@ impl RolloutWorld {
         if !already_won && killer >= 1 && killer <= players as u32 {
             self.players[killer as usize - 1].kills += 1;
         }
+        let lift = {
+            let slot = &self.players[index];
+            let live = self.platforms.iter().find(|p| Some(p.id) == slot.base.ground);
+            live.map(|p| &p.surface)
+                .or(slot.dead_ground(self.tick))
+                .map_or(Vec2::ZERO, |surface| surface.normal(drop_position) * Fix::from_f32(0.05))
+        };
         let slot = &mut self.players[index];
         if let Some(marker_index) = revival_marker {
             // Collision callbacks instantiate the ordinary death effect
@@ -42738,7 +42745,10 @@ impl RolloutWorld {
             slot.revival_target_marker = Some(marker_index);
             slot.revival_clone_position = self.revival_marker_pool[marker_index].position;
             slot.revival_effect_ticks = data::get().revival.effect_wisp_ticks + 1;
-            slot.revival_effect_position = drop_position;
+            // killPlayer UnGrounds the slime before it instantiates ReviveEffect
+            // at the body, so a still-named attachedGround lifts it 0.05 off
+            // along the normal (PlayerCollision.cs:140, PlayerPhysics.cs:366-370).
+            slot.revival_effect_position = drop_position + lift;
             slot.revival_particle = None;
             slot.respawn_ticks = 0;
             slot.respawn_spawn_ticks = 0;
