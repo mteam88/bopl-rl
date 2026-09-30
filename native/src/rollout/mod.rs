@@ -14116,8 +14116,8 @@ impl RolloutWorld {
                 active: true,
                 hierarchy_base,
                 born_tick: self.tick,
-                position: slot.base.position + data.gust.shockwave_offset * slot.base.scale,
-                scale: slot.base.scale,
+                position: slot.base.position + data.gust.shockwave_offset * slot.player_scale,
+                scale: slot.player_scale,
                 owner: index,
                 ..Shockwave::default()
             };
@@ -16565,7 +16565,7 @@ impl RolloutWorld {
         if slot.revival.phase == 0 && slot.revival.ticks > data.revival.cast_ticks {
             let ability_slot = slot.active_slot;
             let spawn = clamp_revival_position(
-                slot.base.position + data.revival.shockwave_offset * slot.base.scale,
+                slot.base.position + data.revival.shockwave_offset * slot.player_scale,
             );
             if let Some(old) = slot.revival_markers[ability_slot].take() {
                 self.end_revival_marker(old);
