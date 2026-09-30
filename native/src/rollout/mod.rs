@@ -1066,6 +1066,12 @@ pub struct SpawnedTeslaNode {
     pub orb_enter_left: u32,
     /// The pass whose SimpleSparkNode.UpdateSim this node last ran.
     pub updated_tick: Option<u32>,
+    /// The pass an Updater.DestroyFix took this node mid-pass: IsDestroyed.
+    /// DetPhysics drops its circle and the Updater skips its UpdateSim, so it
+    /// is no longer `active`, but its GameObject stays in the hierarchy until
+    /// the frame's DestroyImmediate, and its OnDestroyUpdatable runs at the end
+    /// of the pass (Updater.cs:89-110).
+    pub destroyed_tick: Option<u32>,
     pub line_hierarchy_base: u32,
     pub line_born_tick: u32,
     pub line_entity: Option<usize>,
@@ -7882,6 +7888,7 @@ impl RolloutWorld {
             self.exited_ability(index, data);
         }
 
+        self.tesla_nodes_destroyed_drain();
         for line in &mut self.destroyed_tesla_lines {
             if std::mem::take(&mut line.pending) {
                 let row = &mut self.entities[line.entity];
@@ -14676,7 +14683,11 @@ impl RolloutWorld {
             child,
             ..SpawnedTeslaNode::default()
         };
-        let node_index = if let Some(free) = self.tesla_nodes.iter().position(|node| !node.active) {
+        let node_index = if let Some(free) = self
+            .tesla_nodes
+            .iter()
+            .position(|node| !node.active && node.destroyed_tick != Some(self.tick))
+        {
             self.tesla_nodes[free] = node;
             free
         } else {
@@ -14697,10 +14708,6 @@ impl RolloutWorld {
         // RemoveCircleFromComposite then rebuilds root + the surviving pair
         // while preserving that temporary composite's velocity.
         if let Some(oldest) = evicted {
-            if let Some(parent) = self.tesla_nodes[oldest].parent {
-                self.update_tesla_line_geometry(parent, data);
-                self.retired_tesla_contacts.push(self.tesla_nodes[parent]);
-            }
             self.retired_tesla_contacts.push(self.tesla_nodes[oldest]);
             self.remove_tesla_node(oldest, true);
         }
@@ -14791,6 +14798,43 @@ impl RolloutWorld {
         if !self.tesla_nodes[node_index].active {
             return;
         }
+        if deferred {
+            self.mark_tesla_node_destroyed(node_index);
+        } else {
+            self.tesla_node_destroyed(node_index, false);
+        }
+        let platform_index = self.tesla_nodes[node_index].platform_index;
+        self.tesla_nodes[node_index].active = false;
+        self.tesla_nodes[node_index].macho_carried = false;
+        if let Some(entity) = self.tesla_nodes[node_index].entity {
+            self.entities[entity].flags = E_REMOVED;
+        }
+        if platform_index < self.platforms.len() {
+            self.platform_dynamics[platform_index].composite_rebuild = true;
+        }
+        self.platforms_changed();
+    }
+
+    /// Updater.DestroyFix mid-pass: from here the node is IsDestroyed.
+    fn mark_tesla_node_destroyed(&mut self, node_index: usize) {
+        self.tesla_nodes[node_index].destroyed_tick = Some(self.tick);
+    }
+
+    /// Updater.DestroyFix on a wall marks every component in its children
+    /// IsDestroyed too, the spark nodes planted on it included (Updater.cs:89-100).
+    fn mark_wall_nodes_destroyed(&mut self, platform_index: usize) {
+        for node_index in 0..self.tesla_nodes.len() {
+            let node = self.tesla_nodes[node_index];
+            if node.active && !node.macho_carried && node.platform_index == platform_index {
+                self.mark_tesla_node_destroyed(node_index);
+            }
+        }
+    }
+
+    /// SimpleSparkNode.OnDestroyUpdatable: it deactivates its own connection
+    /// and a connected parent's, and the partners lose their reference to
+    /// it (SimpleSparkNode.cs:140-150).
+    fn tesla_node_destroyed(&mut self, node_index: usize, deferred: bool) {
         if self.tesla_nodes[node_index].connected {
             self.disconnect_tesla_node(node_index, deferred);
         }
@@ -14812,16 +14856,20 @@ impl RolloutWorld {
         {
             self.tesla_nodes[parent].child = None;
         }
-        let platform_index = self.tesla_nodes[node_index].platform_index;
-        self.tesla_nodes[node_index].active = false;
-        self.tesla_nodes[node_index].macho_carried = false;
-        if let Some(entity) = self.tesla_nodes[node_index].entity {
-            self.entities[entity].flags = E_REMOVED;
+    }
+
+    /// The frame's closing OnDestroyUpdatable loop, newest updatable first,
+    /// for the nodes DestroyFix took mid-pass (Updater.cs:329-337).
+    fn tesla_nodes_destroyed_drain(&mut self) {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.tesla_nodes, |node| node.hierarchy_base);
+        for &node_index in order.iter().rev() {
+            if self.tesla_nodes[node_index].destroyed_tick == Some(self.tick) {
+                self.tesla_nodes[node_index].destroyed_tick = None;
+                self.tesla_node_destroyed(node_index, true);
+            }
         }
-        if platform_index < self.platforms.len() {
-            self.platform_dynamics[platform_index].composite_rebuild = true;
-        }
-        self.platforms_changed();
+        self.scratch.item_order = order;
     }
 
     fn spawn_engine(&mut self, index: usize, data: &data::RolloutData) -> bool {
@@ -15796,7 +15844,8 @@ impl RolloutWorld {
         self.tesla_nodes_update(data, updater_dt, u32::MAX);
 
         for node_index in 0..self.tesla_nodes.len() {
-            if !self.tesla_nodes[node_index].active
+            let destroyed = self.tesla_nodes[node_index].destroyed_tick == Some(self.tick);
+            if !(self.tesla_nodes[node_index].active || destroyed)
                 || self.tesla_nodes[node_index].macho_carried
                 || !self.tesla_nodes[node_index].connected
                 || self.tesla_nodes[node_index].child.is_none()
@@ -15809,7 +15858,12 @@ impl RolloutWorld {
             let child = self.tesla_nodes[node_index]
                 .child
                 .expect("connected Tesla parent has child");
-            if !self.tesla_nodes[node_index].lethal
+            // IsDestroyed skips the node's own orb SpriteAnimator, whose
+            // EnterOrb ends in ActivateLightning, but not its child's, whose
+            // EnterOrb still ends in ActivatePartnerLightning
+            // (SimpleSparkNode.cs:112-131, 199-200).
+            if !destroyed
+                && !self.tesla_nodes[node_index].lethal
                 && self.tesla_nodes[node_index].enter_ticks > data.tesla.enter_ticks
             {
                 self.tesla_nodes[node_index].lethal = true;
@@ -15817,6 +15871,9 @@ impl RolloutWorld {
             }
             if self.tesla_nodes[node_index].enter_ticks > data.tesla.enter_ticks + 1 {
                 self.tesla_nodes[child].lethal = true;
+            }
+            if destroyed {
+                continue;
             }
             if !self.tesla_nodes[node_index].lethal {
                 // The line still follows its endpoints during the load-in.
@@ -15878,6 +15935,10 @@ impl RolloutWorld {
             node.updated_tick = Some(self.tick);
             let before = node.hierarchy_base;
             self.blink_platform_tunnels_tick(data, updater_dt, Some(before));
+            // IsDestroyed skips its UpdateSim and its orb's.
+            if self.tesla_nodes[node_index].destroyed_tick == Some(self.tick) {
+                continue;
+            }
             if !self.tesla_nodes[node_index].active
                 || self.tesla_nodes[node_index].macho_carried
                 || self.tesla_nodes[node_index].spawn_tick >= self.tick
@@ -15947,7 +16008,12 @@ impl RolloutWorld {
         let Some(node) = self.tesla_nodes.get(node_index) else {
             return false;
         };
-        node.active && !node.macho_carried && !self.attached_hidden(node.platform_index, node.entity)
+        // A node DestroyFix took this pass is still in the hierarchy.
+        let present = node.active || node.destroyed_tick == Some(self.tick);
+        present
+            && !node.macho_carried
+            && !self.wall_deactivated(node.platform_index)
+            && !self.blink_object_hidden(node.entity)
     }
 
     fn update_tesla_line_geometry(&mut self, node_index: usize, data: &data::RolloutData) {
@@ -17319,6 +17385,7 @@ impl RolloutWorld {
                     let composite = if children != 0 { E_COMPOSITE } else { 0 };
                     let row = &mut self.entities[platform_entity];
                     row.flags = destroyed_flags(row.flags) | composite;
+                    self.mark_wall_nodes_destroyed(platform_index);
                 }
                 platform_index += 1;
             }
@@ -20828,6 +20895,7 @@ impl RolloutWorld {
             return false;
         }
         self.macho_boulders[boulder_index].drowning = true;
+        self.mark_wall_nodes_destroyed(platform_index);
         self.platforms[platform_index].active = false;
         self.platforms_changed();
         // A newer RopeAttachment on it sees IsDestroyed this pass.
@@ -30522,6 +30590,17 @@ impl RolloutWorld {
         platform_index < self.platforms.len() && !self.platforms[platform_index].active
     }
 
+    /// Whether a platform child's wall is out of the hierarchy. A boulder that
+    /// drowned this pass is only DestroyFix'd, so it stays in the hierarchy
+    /// until the frame ends, and a wall already dropped this pass is not
+    /// registered (`usize::MAX`).
+    fn wall_deactivated(&self, platform_index: usize) -> bool {
+        self.platform_hidden(platform_index)
+            && !self.macho_boulders.iter().any(|boulder| {
+                boulder.active && boulder.drowning && boulder.platform_index == platform_index
+            })
+    }
+
     /// Such a child is also a Blink target in its own right: ShootQuantum
     /// tunnels the GameObject of the collider it hit, so a spike, engine or
     /// spark node hit directly goes inactive the same way.
@@ -33016,32 +33095,24 @@ impl RolloutWorld {
             }
         }
         for node_index in 0..self.tesla_nodes.len() {
-            if self.tesla_nodes[node_index].active
-                && !self.tesla_nodes[node_index].macho_carried
-                && self.tesla_nodes[node_index].platform_index == index
+            let node = self.tesla_nodes[node_index];
+            if (node.active || node.destroyed_tick == Some(self.tick))
+                && !node.macho_carried
+                && node.platform_index == index
             {
-                // Spark nodes are Unity children of their planted platform.
-                // Destroying the parent invokes each node's OnDestroyUpdatable,
-                // including the partner/lightning disconnect cascade. A
-                // DestroyFix from an UpdateSim (`deferred`) runs it at the end
-                // of the pass (Updater.cs:329-337), so the lightning line is
-                // still exported as destroyed. Until then CanConnect, which
-                // only asks activeInHierarchy, lets a surviving parent's
-                // UpdateSim redraw its line to the node (SimpleSparkNode.cs:
-                // 62-69, 224-262).
-                if deferred
-                    && let Some(parent) = self.tesla_nodes[node_index].parent
-                    && parent < self.tesla_nodes.len()
-                    && self.tesla_nodes[parent].connected
-                    && self.tesla_nodes[parent].platform_index != index
-                {
-                    self.update_tesla_line_geometry(parent, data::get());
-                }
+                // Spark nodes are Unity children of their planted platform,
+                // so destroying it destroys them.
                 self.remove_tesla_node(node_index, deferred);
+                self.tesla_nodes[node_index].platform_index = usize::MAX;
             }
         }
+        let tick = self.tick;
         for node in &mut self.tesla_nodes {
-            if node.active && !node.macho_carried && node.platform_index > index {
+            if (node.active || node.destroyed_tick == Some(tick))
+                && !node.macho_carried
+                && node.platform_index != usize::MAX
+                && node.platform_index > index
+            {
                 node.platform_index -= 1;
             }
         }
