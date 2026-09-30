@@ -1997,6 +1997,9 @@ pub struct BlackHoleCastState {
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
+    /// The form's rotation and up when a grounded exit re-placed the slime:
+    /// its frozen FixTransform keeps them.
+    pub exit_pose: Option<(Fix, Vec2)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -16602,6 +16605,7 @@ impl RolloutWorld {
             slot.obs_state = STATE_IDLE;
             slot.state_ticks = 0;
             let position = slot.base.position;
+            slot.black_hole_cast.exit_pose = Some((slot.base.rotation, slot.base.up));
             self.sync_exit_to_ground(index);
             let slot = &mut self.players[index];
             slot.reported_position = position;
@@ -44476,6 +44480,8 @@ impl RolloutWorld {
                             slot.black_hole_cast.collider_rotation,
                             slot.black_hole_cast.collider_up.perp_cw(),
                         )
+                    } else if let Some((rotation, up)) = slot.black_hole_cast.exit_pose {
+                        (exit_position, rotation, up.perp_cw())
                     } else {
                         (exit_position, slot.base.rotation, slot.base.up.perp_cw())
                     };
