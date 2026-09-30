@@ -1456,7 +1456,10 @@ pub struct PlatformDynamics {
     /// GameSessionHandler keeps authored grounds active but disables their
     /// colliders/AnimateVelocity until the shared level-intro routine ends.
     pub intro_disabled: bool,
+    /// DPhysicsRoundedRect.MinScale and MaxScale, the bounds its Scale setter
+    /// clamps to: serialized per platform (MaxScale 3 on some space maps).
     pub min_scale: Fix,
+    pub max_scale: Fix,
     /// StickyRoundedRectangle.baseScaleForPlatform (GrowOnStart.scaleUp) and
     /// DPhysicsRoundedRect.timeSinceLastScaledUp: a platform grown past its
     /// base shrinks back ten seconds after its last growth.
@@ -4775,6 +4778,7 @@ impl RolloutWorld {
                 body_resizable: false,
                 intro_disabled: true,
                 min_scale: p.min_scale,
+                max_scale: p.max_scale,
                 base_scale: p.base_scale,
                 time_since_scaled_up: Fix::ZERO,
                 stuck_arrows: 0,
@@ -19101,12 +19105,7 @@ impl RolloutWorld {
         if previous > dynamics.base_scale && previous < value {
             dynamics.time_since_scaled_up = Fix::ZERO;
         }
-        let max_scale = if dynamics.body_resizable {
-            Fix::from_int(6)
-        } else {
-            Fix::from_int(5)
-        };
-        let scale = value.clamp(dynamics.min_scale, max_scale);
+        let scale = value.clamp(dynamics.min_scale, dynamics.max_scale);
         let ratio = (Fix::ONE / previous) * scale;
         dynamics.scale = scale;
         dynamics.surface_shape_dirty = true;
@@ -20272,6 +20271,7 @@ impl RolloutWorld {
             body_resizable: false,
             intro_disabled: false,
             min_scale: data.macho_throw.boulder_min_scale,
+            max_scale: data.macho_throw.boulder_max_scale,
             base_scale: Fix::ONE,
             time_since_scaled_up: Fix::ZERO,
             stuck_arrows: 0,
@@ -31881,12 +31881,8 @@ impl RolloutWorld {
         // (DuplicatePlatformEffect.cs:327-332, DPhysicsRoundedRect.cs:86-135, 404-424).
         let (effect_extents, effect_radius, effect_scale) = shape;
         let start = effect_extents / effect_scale;
-        let max_scale = if self.platform_dynamics[source].body_resizable {
-            Fix::from_int(6)
-        } else {
-            Fix::from_int(5)
-        };
-        let copy_scale = effect_scale.clamp(self.platform_dynamics[source].min_scale, max_scale);
+        let dynamics = &self.platform_dynamics[source];
+        let copy_scale = effect_scale.clamp(dynamics.min_scale, dynamics.max_scale);
         let inverse = |extent: Fix| {
             if extent == Fix::ZERO {
                 Fix::ZERO
@@ -32748,6 +32744,7 @@ impl RolloutWorld {
             body_resizable: true,
             intro_disabled: false,
             min_scale: pd.spawn_min_scale,
+            max_scale: pd.spawn_max_scale,
             base_scale: Fix::ONE,
             time_since_scaled_up: Fix::ZERO,
             stuck_arrows: 0,

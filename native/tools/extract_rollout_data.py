@@ -257,6 +257,7 @@ def extract_map(metadata):
                 "extents": vec2(rr, "startExtents"),
                 "radius": fix(rr, "startRadius") if "startRadius.m_rawValue" in rr else fix(rr, "radius"),
                 "min_scale": fix(rr, "MinScale"),
+                "max_scale": fix(rr, "MaxScale"),
                 "platform_type": srr["platformType"],
                 "grow_scale": fix(grow, "scaleUp") if grow is not None else ONE,
                 "layer": node.get("layer"),
@@ -527,6 +528,7 @@ def main():
         "extents": vec2(rp_rr, "startExtents"),
         "radius": fix(rp_rr, "startRadius") if "startRadius.m_rawValue" in rp_rr else fix(rp_rr, "radius"),
         "min_scale": fix(rp_rr, "MinScale"),
+        "max_scale": fix(rp_rr, "MaxScale"),
         "animate_velocity": {
             "speed": fix(rp_av, "speed"),
             "mu": fix(rp_av, "mu"),

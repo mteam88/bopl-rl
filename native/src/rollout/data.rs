@@ -57,6 +57,7 @@ struct RawPlatform {
     extents: RawVec2,
     radius: i64,
     min_scale: i64,
+    max_scale: i64,
     platform_type: u32,
     grow_scale: i64,
     hierarchy: u32,
@@ -226,6 +227,7 @@ struct RawResizable {
     extents: RawVec2,
     radius: i64,
     min_scale: i64,
+    max_scale: i64,
     collider_hierarchy: u32,
     updatable_count: u32,
     mass_per_area: i64,
@@ -1281,6 +1283,7 @@ pub struct PlatformDef {
     pub updatable_count: u32,
     pub duplicate_collider_hierarchy: u32,
     pub min_scale: Fix,
+    pub max_scale: Fix,
     pub base_scale: Fix,
     pub ice: bool,
     /// AnimateVelocity home spring (speed * (home - position)) and damping
@@ -1478,8 +1481,10 @@ pub struct PlatformAbilityData {
     pub exit_ticks: u32,
     pub spawn_extents: Vec2,
     pub spawn_radius: Fix,
-    /// ResizablePlatform.prefab's DPhysicsRoundedRect.MinScale, 0.3.
+    /// ResizablePlatform.prefab's DPhysicsRoundedRect.MinScale and MaxScale,
+    /// 0.3 and 6.
     pub spawn_min_scale: Fix,
+    pub spawn_max_scale: Fix,
     /// DPhysicsRoundedRect's hierarchyNumber on ResizablePlatform.prefab, and
     /// the number of its components that register with the Updater.
     pub spawn_collider_hierarchy: u32,
@@ -2509,6 +2514,7 @@ fn map_def(raw: &RawMap) -> MapDef {
                 updatable_count: p.updatable_count,
                 duplicate_collider_hierarchy: p.duplicate_collider_hierarchy,
                 min_scale: Fix::from_raw(p.min_scale),
+                max_scale: Fix::from_raw(p.max_scale),
                 base_scale,
                 ice: p.platform_type == 2,
                 speed: Fix::from_raw(p.animate_velocity.speed),
@@ -2743,6 +2749,7 @@ pub fn get() -> &'static RolloutData {
                 spawn_extents: raw.prefabs.resizable_platform.extents.get(),
                 spawn_radius: Fix::from_raw(raw.prefabs.resizable_platform.radius),
                 spawn_min_scale: Fix::from_raw(raw.prefabs.resizable_platform.min_scale),
+                spawn_max_scale: Fix::from_raw(raw.prefabs.resizable_platform.max_scale),
                 spawn_collider_hierarchy: raw.prefabs.resizable_platform.collider_hierarchy,
                 spawn_updatable_count: raw.prefabs.resizable_platform.updatable_count,
                 spawn_mass_per_area: Fix::from_raw(raw.prefabs.resizable_platform.mass_per_area),
