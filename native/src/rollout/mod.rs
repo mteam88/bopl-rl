@@ -2203,7 +2203,6 @@ pub struct BeamState {
     pub current_ground: Option<u32>,
     pub orb: Option<usize>,
     pub entry_facing_right: bool,
-    pub started: bool,
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
@@ -12086,6 +12085,26 @@ impl RolloutWorld {
                                     p.surface.normal(base.position).perp_cw() * base.grounded_speed
                                 })
                         };
+                        // Ability.EnterAbility scales the box (Ability.cs:105), then
+                        // SyncPhysicsTo's UpdateScale carries this slot's PlayerPhysics
+                        // radius to it before placing the body (PlayerPhysics.cs:528-534).
+                        let extents = if grounded {
+                            data.beam.hurtbox_extents
+                        } else {
+                            data.beam.air_extents
+                        };
+                        let physics_radius = {
+                            let slot = &mut self.players[index];
+                            let scale = slot.player_scale;
+                            let form = &mut slot.forms[s];
+                            form.set_scale_offset(
+                                scale,
+                                extents,
+                                data.beam.radius,
+                                data.beam.collider_offset,
+                            );
+                            form.physics_radius()
+                        };
                         let form_position = if grounded {
                             let base = &self.players[index].base;
                             base.ground
@@ -12093,7 +12112,7 @@ impl RolloutWorld {
                                     self.platforms.iter().find(|platform| platform.id == ground)
                                 })
                                 .map_or(base.position, |platform| {
-                                    platform.surface.position(base.local, data.beam.radius)
+                                    platform.surface.position(base.local, physics_radius)
                                 })
                         } else {
                             self.players[index].base.position
@@ -12120,22 +12139,9 @@ impl RolloutWorld {
                             slot.timers[s] = Fix::ZERO;
                             slot.set_active_form(&mut self.entities, ActiveAbility::Beam);
                             slot.active_slot = s;
-                            // Ability.EnterAbility scales the box (Ability.cs:105), then
                             // Beam.OnEnterAbility's SetExtents stores One / extents outright
                             // (Beam.cs:222, 235; Box.cs:41).
-                            let extents = if grounded {
-                                data.beam.hurtbox_extents
-                            } else {
-                                data.beam.air_extents
-                            };
-                            let scale = slot.player_scale;
                             let form = &mut slot.forms[s];
-                            form.set_scale_offset(
-                                scale,
-                                extents,
-                                data.beam.radius,
-                                data.beam.collider_offset,
-                            );
                             form.inverse_extents =
                                 Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
                             // The hurtbox syncs from the offset this slot's prefab
@@ -12173,7 +12179,7 @@ impl RolloutWorld {
                             );
                             slot.entry_sync = Some((self.tick, slot.beam_entity, collider));
                             slot.base.position = form_position;
-                            slot.base.radius = data.beam.radius;
+                            slot.base.radius = physics_radius;
                             slot.base.constants = data.beam.constants.clone();
                             if grounded {
                                 slot.base.velocity = self_imposed;
@@ -18662,7 +18668,8 @@ impl RolloutWorld {
                 1 => slot.beam.glow = false,
                 _ => {}
             }
-            let fire = slot.base.position + slot.beam.staff_dir * Fix::from_f64(2.8) * slot.base.scale;
+            let fire = slot.base.position
+                + slot.beam.staff_dir * Fix::from_f64(2.8) * slot.forms[slot.active_slot].scale;
             purge |= slot.beam.glow && (space || fire.y >= Fix::from_f32(-11.22));
         }
         if purge {
@@ -18704,7 +18711,7 @@ impl RolloutWorld {
                     // point back onto the ordinary slime's smaller perimeter.
                     let position = platform
                         .surface
-                        .position(self.players[index].base.local, data.beam.radius);
+                        .position(self.players[index].base.local, self.players[index].base.radius);
                     let local = platform
                         .surface
                         .local_position(position, self.players[index].exit_slime_radius())
@@ -18767,6 +18774,13 @@ impl RolloutWorld {
         advance_animation: bool,
         data: &data::RolloutData,
     ) {
+        // Ability.UpdateSim assigns Player.Scale to the box (Ability.cs:135),
+        // and this prefab's PlayerPhysics.UpdateScale carries its radius along.
+        {
+            let slot = &mut self.players[index];
+            slot.scale_form(data.beam.hurtbox_extents, data.beam.radius, data.beam.collider_offset);
+            slot.base.radius = slot.forms[slot.active_slot].physics_radius();
+        }
         // The orb row is its DetPhysics collider, synchronized from the pose
         // Beam.LateUpdateSim gave it last pass: the body's orientation and
         // staff before this pass moves or aims them.
@@ -18793,7 +18807,6 @@ impl RolloutWorld {
                     self.players[index].forms[s].offset = data.beam.air_offset;
                     let beam = &mut self.players[index].beam;
                     beam.phase = 1;
-                    beam.started = true;
                     beam.phase_ticks = 0;
                     beam.time_since_beam = Fix::ZERO;
                     if !beam.in_air {
@@ -45482,46 +45495,23 @@ impl RolloutWorld {
                 }
                 if beaming || was_active {
                     let state = slot.beam;
-                    let (position, up, rotation, extents, offset) = if beaming {
-                        (
-                            state.collider_position,
-                            state.collider_up,
-                            state.collider_rotation,
-                            if state.in_air {
-                                data.beam.air_extents
-                            } else {
-                                data.beam.hurtbox_extents
-                            },
-                            if state.started || state.in_air {
-                                data.beam.air_offset
-                            } else {
-                                data.beam.collider_offset
-                            },
-                        )
+                    let (position, up, rotation) = if beaming {
+                        (state.collider_position, state.collider_up, state.collider_rotation)
                     } else {
-                        (
-                            exit_position,
-                            Vec2::UP,
-                            Fix::ZERO,
-                            if state.in_air {
-                                data.beam.air_extents
-                            } else {
-                                data.beam.hurtbox_extents
-                            },
-                            if state.started || state.in_air {
-                                data.beam.air_offset
-                            } else {
-                                data.beam.collider_offset
-                            },
-                        )
+                        (exit_position, Vec2::UP, Fix::ZERO)
                     };
+                    let extents = if state.in_air {
+                        data.beam.air_extents
+                    } else {
+                        data.beam.hurtbox_extents
+                    };
+                    // OnEnterAbility and StartBeam write the authored offset and
+                    // extents after Ability scaled the box, so they stay unscaled
+                    // until Player.Scale itself changes (Beam.cs:221-235, 345).
+                    let form = &slot.forms[slot.entity_slot(slot.beam_entity)];
                     let basis = up.perp_cw();
-                    let center = position + (offset * slot.player_scale).complex_mul(basis);
-                    let collider = OrientedBox::from_basis(
-                        center,
-                        Vec2::angle(rotation),
-                        extents * slot.player_scale,
-                    );
+                    let center = position + form.offset.complex_mul(basis);
+                    let collider = form.hurtbox(center, Vec2::angle(rotation), extents);
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
                     box_row.vx = 0;
