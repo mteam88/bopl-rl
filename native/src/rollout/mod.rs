@@ -6920,6 +6920,20 @@ impl RolloutWorld {
                 balls_from = first_wave;
             }
         }
+        // A DuplicatePlatformEffect older than every live Shockwave rescales
+        // its source first, so the wave reads the live radius of that shape.
+        if has(ABILITY_DUPLICATOR) && (has(ABILITY_GUST) || has(ABILITY_METEOR)) {
+            let first_wave = self
+                .gust_waves
+                .iter()
+                .chain(self.meteor_waves.iter())
+                .filter(|wave| wave.active && wave.registered)
+                .map(|wave| wave.hierarchy_base)
+                .min();
+            if let Some(first_wave) = first_wave.filter(|&first| first < deferred_to) {
+                self.duplicate_platform_effects_tick(data, updater_dt, Some(first_wave));
+            }
+        }
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT, 0..deferred_to);
         }
