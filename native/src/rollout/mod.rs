@@ -3316,6 +3316,9 @@ struct PlatformScratch {
     /// The row hierarchies of the Duplicator copies the current Duplicated
     /// platform pass runs; None runs them all.
     duplicates_window: Option<std::ops::Range<u32>>,
+    /// Rocket engines below this hierarchy ran ahead of a later-instantiated
+    /// player object this pass.
+    engines_ran_below: u32,
     /// Set while the ropes waiting on a platform's ScaleChanger run.
     ropes_changer_pass: bool,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
@@ -6426,6 +6429,7 @@ impl RolloutWorld {
         let mut recorded = 0;
         self.scratch.ropes_ran_below = 0;
         self.scratch.tacks_ran_below = 0;
+        self.scratch.engines_ran_below = 0;
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
             // SlimeController.Awake adds the RewindRecorder to the slime itself
             // (RewindRecorder.cs:93), so each slime already updated took its
@@ -6475,6 +6479,10 @@ impl RolloutWorld {
                         below = below.min(self.first_live_scale_changer().unwrap_or(u32::MAX));
                     }
                     self.ability_pickups_tick_before(below, data, updater_dt);
+                }
+                // So does a RocketEngine's push on the platform it sits on.
+                if has(ABILITY_ENGINE) {
+                    self.engines_tick_below(data, updater_dt, spawned.end);
                 }
                 // So does a hook's Rope, whose RopeAttachment pulls the
                 // platform it hangs from before a Drill reads its velocity.
@@ -6995,7 +7003,8 @@ impl RolloutWorld {
             deferred_spikes = self.spike_attacks_tick(data, updater_dt);
         }
         if has(ABILITY_ENGINE) {
-            self.engines_tick(data, updater_dt);
+            let from = self.scratch.engines_ran_below;
+            self.engines_tick(data, updater_dt, from..u32::MAX);
         }
         if has(ABILITY_TESLA) {
             self.tesla_nodes_tick(data, updater_dt);
@@ -11393,6 +11402,18 @@ impl RolloutWorld {
                         slot.drill.hitbox_up = slot.base.up;
                         slot.drill.hitbox_rotation = slot.base.rotation;
                         place_drill_hitbox_rows(&mut self.entities, &self.players[index], data);
+                        // Drill.UpdateSim runs at the form's own turn this
+                        // pass, after any RocketEngine spawned between the
+                        // slime and a form instantiated at its first cast.
+                        let slime = self.entities[self.players[index].body_entity].hierarchy;
+                        let form = self.players[index].drill_entity;
+                        if !self.engines.is_empty()
+                            && form != usize::MAX
+                            && slime < self.entities[form].hierarchy
+                        {
+                            let form = self.entities[form].hierarchy;
+                            self.engines_tick_below(data, DT * self.player_time_scale, form);
+                        }
                         self.drill_tick(index, action, jump_pressed, data, false);
                         return;
                     }
@@ -14904,7 +14925,21 @@ impl RolloutWorld {
         }
     }
 
-    fn engines_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+    /// The engines older than `below` that have not updated this pass.
+    fn engines_tick_below(&mut self, data: &data::RolloutData, updater_dt: Fix, below: u32) {
+        let from = self.scratch.engines_ran_below;
+        if from < below {
+            self.engines_tick(data, updater_dt, from..below);
+            self.scratch.engines_ran_below = below;
+        }
+    }
+
+    fn engines_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        hierarchy: std::ops::Range<u32>,
+    ) {
         let end_time = data
             .engine
             .force
@@ -14919,6 +14954,7 @@ impl RolloutWorld {
         for &engine_index in &order {
             let engine = &self.engines[engine_index];
             if !engine.active
+                || !hierarchy.contains(&(100_000_000 + engine.hierarchy_base))
                 || engine.macho_carried
                 || engine.born_tick == self.tick
                 || self.attached_hidden(engine.platform_index, engine.entity)
@@ -45796,10 +45832,10 @@ mod tests {
             ..SpawnedEngine::default()
         });
 
-        world.engines_tick(data::get(), Fix::ZERO);
+        world.engines_tick(data::get(), Fix::ZERO, 0..u32::MAX);
         assert_eq!(world.engines[0].ticks, 3);
         world.engines[0].phase = 2;
-        world.engines_tick(data::get(), Fix::ZERO);
+        world.engines_tick(data::get(), Fix::ZERO, 0..u32::MAX);
         assert_eq!(world.engines[0].ticks, 3);
     }
 
@@ -45817,7 +45853,7 @@ mod tests {
             ..SpawnedEngine::default()
         });
 
-        world.engines_tick(data::get(), Fix::ZERO);
+        world.engines_tick(data::get(), Fix::ZERO, 0..u32::MAX);
 
         assert_eq!(world.engines[0].phase, 2);
     }
@@ -45877,7 +45913,7 @@ mod tests {
             ..SpawnedEngine::default()
         });
 
-        world.engines_tick(data, DT);
+        world.engines_tick(data, DT, 0..u32::MAX);
 
         assert_eq!(world.smoke_clouds[0].ignition_time, Fix::ONE);
         assert_eq!(world.smoke_clouds[1].ignition_time, Fix::ZERO);
