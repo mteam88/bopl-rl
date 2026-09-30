@@ -3325,6 +3325,10 @@ struct PlatformScratch {
     /// Rocket engines below this hierarchy ran ahead of a later-instantiated
     /// player object this pass.
     engines_ran_below: u32,
+    /// Likewise for the Spawned platform pass, and the hierarchy below which
+    /// its platforms have already updated this pass.
+    spawned_window: Option<std::ops::Range<u32>>,
+    spawned_platforms_below: u32,
     /// Set while the ropes waiting on a platform's ScaleChanger run.
     ropes_changer_pass: bool,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
@@ -5287,6 +5291,9 @@ impl RolloutWorld {
     fn platform_resized_before(&self, i: usize, hierarchy: u32) -> bool {
         self.platform_dynamics[i].body_resizable
             && self.platform_pass(i) == PlatformPass::Spawned
+            // Not when its Spawned pass already ran this pass, in a player's
+            // window: the collider holds that resize.
+            && self.entities[self.platform_entities[i]].hierarchy >= self.scratch.spawned_platforms_below
             && !self.spawned.iter().any(|s| s.active && s.being_removed && s.platform_index == i)
             && self
                 .spawned
@@ -6370,6 +6377,7 @@ impl RolloutWorld {
         if self.intro_phase != 3 {
             self.level_intro_tick(data);
         }
+        self.scratch.spawned_platforms_below = 0;
         self.platform_updaters_tick(data, updater_dt);
         self.ability_spawner_tick(data, updater_dt);
         self.beam_inputs.clear();
@@ -6466,6 +6474,9 @@ impl RolloutWorld {
                 if has(ABILITY_DUPLICATOR) {
                     self.duplicated_platforms_tick(data, updater_dt, spawned.clone());
                 }
+                // And a runtime-spawned platform's: a form picked up after
+                // it was spawned sits behind its AnimateVelocity.
+                self.spawned_platforms_tick(data, updater_dt, spawned.clone());
                 if has(ABILITY_BLACK_HOLE) {
                     self.black_holes_update(data, updater_dt, spawned.clone());
                 }
@@ -6918,16 +6929,8 @@ impl RolloutWorld {
         // prefab that created and steers them, but ahead of the effects that
         // later hit them: a Gust wave or explosion spawned after the platform
         // pushes it after its AnimateVelocity spring has read the velocity.
-        self.platform_bounds_tick(PlatformPass::Spawned);
-        // ResizablePlatform sits behind AnimateVelocity in the clone's
-        // prefab, so its unconditional ResizePlatform follows the spring. A
-        // spawned platform's ShakablePlatform also runs after them, so a
-        // Beam or Meteor landing on it shakes it on the same pass.
-        self.platform_motion_tick(data, updater_dt, PlatformPass::Spawned);
-        self.platform_sticky_tick(updater_dt, PlatformPass::Spawned);
-        self.platform_body_scale_tick(PlatformPass::Spawned);
-        self.platform_orbits_tick(data, updater_dt, PlatformPass::Spawned);
-        self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Spawned);
+        // Those older than a player object updated in its window above.
+        self.spawned_platforms_tick(data, updater_dt, spawned_from..u32::MAX);
         if has_rope && first_platform < ropes_before_clones.min(first_teleport) {
             self.ropes_update(first_platform..ropes_before_clones.min(first_teleport));
         }
@@ -10268,6 +10271,11 @@ impl RolloutWorld {
                             self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
                             return;
                         }
+                        // ControlPlatform's first UpdateSim takes the form's
+                        // own turn, behind a platform spawned before the form
+                        // was picked up (ControlPlatform.cs:163-169).
+                        let form = self.entities[self.players[index].push_entity].hierarchy;
+                        self.spawned_platforms_tick(data, DT * self.player_time_scale, 0..form);
                         self.push_tick(index, action, data);
                         return;
                     }
@@ -38162,13 +38170,78 @@ impl RolloutWorld {
         self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Duplicated);
     }
 
+    /// The Spawned platform pass for the platforms whose row hierarchy is in
+    /// `window` and that have not updated yet this pass.
+    fn spawned_platforms_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        window: std::ops::Range<u32>,
+    ) {
+        let window = window.start.max(self.scratch.spawned_platforms_below)..window.end;
+        if window.is_empty() {
+            return;
+        }
+        // A DynamicAbilityPickup older than one of these platforms raycasts
+        // for ground at its own turn, before that platform's updaters move
+        // it. One newer than a live ScaleChanger keeps waiting for it.
+        let newest = (0..self.platforms.len())
+            .filter(|&i| self.platform_pass(i) == PlatformPass::Spawned)
+            .map(|i| self.entities[self.platform_entities[i]].hierarchy)
+            .filter(|hierarchy| window.contains(hierarchy))
+            .max();
+        let changer = self.first_live_scale_changer().unwrap_or(u32::MAX);
+        let mut pickups: Vec<u32> = self
+            .ability_pickups
+            .iter()
+            .map(|pickup| pickup.hierarchy_base)
+            .filter(|&base| newest.is_some_and(|newest| 100_000_000 + base < newest) && base < changer)
+            .collect();
+        pickups.sort_unstable();
+        let mut from = window.start;
+        for base in pickups {
+            self.spawned_platform_updaters(data, updater_dt, from..100_000_000 + base);
+            self.ability_pickups_tick_before(base + 1, data, updater_dt);
+            from = from.max(100_000_000 + base);
+        }
+        self.spawned_platform_updaters(data, updater_dt, from..window.end);
+    }
+
+    fn spawned_platform_updaters(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        window: std::ops::Range<u32>,
+    ) {
+        if window.is_empty() {
+            return;
+        }
+        self.scratch.spawned_platforms_below = window.end;
+        self.scratch.spawned_window = Some(window);
+        self.platform_bounds_tick(PlatformPass::Spawned);
+        // ResizablePlatform sits behind AnimateVelocity in the clone's
+        // prefab, so its unconditional ResizePlatform follows the spring. A
+        // spawned platform's ShakablePlatform also runs after them, so a
+        // Beam or Meteor landing on it shakes it on the same pass.
+        self.platform_motion_tick(data, updater_dt, PlatformPass::Spawned);
+        self.platform_sticky_tick(updater_dt, PlatformPass::Spawned);
+        self.platform_body_scale_tick(PlatformPass::Spawned);
+        self.platform_orbits_tick(data, updater_dt, PlatformPass::Spawned);
+        self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Spawned);
+        self.scratch.spawned_window = None;
+    }
+
     /// Whether platform `i` updates in this run of `pass`.
     fn platform_updates_in(&self, i: usize, pass: PlatformPass) -> bool {
+        let window = match pass {
+            PlatformPass::Authored => &None,
+            PlatformPass::Duplicated => &self.scratch.duplicates_window,
+            PlatformPass::Spawned => &self.scratch.spawned_window,
+        };
         self.platform_pass(i) == pass
-            && (pass != PlatformPass::Duplicated
-                || self.scratch.duplicates_window.as_ref().is_none_or(|window| {
-                    window.contains(&self.entities[self.platform_entities[i]].hierarchy)
-                }))
+            && window.as_ref().is_none_or(|window| {
+                window.contains(&self.entities[self.platform_entities[i]].hierarchy)
+            })
     }
 
     fn platform_pass(&self, i: usize) -> PlatformPass {
