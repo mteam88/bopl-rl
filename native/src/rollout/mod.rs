@@ -19123,8 +19123,10 @@ impl RolloutWorld {
         // DetPhysics resynchronizes the collider from FixTransform at
         // the end of this pass even though the body did not rotate.
         // Force the quiet-platform path to rebuild the scaled axes
-        // from the retained body orientation as the source does.
-        dynamics.transform_rotation = Some(dynamics.body.orientation);
+        // from the retained body orientation as the source does. The setter
+        // leaves FixTransform.rotation alone, so a rotation written earlier
+        // in the pass still reaches the body.
+        dynamics.transform_rotation.get_or_insert(dynamics.body.orientation);
         // The setter re-seats every attached child before it rescales the
         // collider, so each reads the pre-resize shape.
         self.reposition_platform_children(platform, fresh);
