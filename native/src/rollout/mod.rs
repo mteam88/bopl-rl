@@ -15066,6 +15066,9 @@ impl RolloutWorld {
             dynamics.root_body.velocity = dynamics.body.velocity;
             dynamics.root_body.angular_velocity = dynamics.body.angular_velocity;
             dynamics.root_body.force = dynamics.body.force;
+            // RlObservation publishes that body's orientation until the next
+            // Simulate copies the combined one over it (DetPhysics.cs:2805).
+            dynamics.root_body.orientation = dynamics.body.orientation;
         }
         let parent_mass = Fix::ONE / dynamics.body.inverse_mass;
         let child_mass = Fix::ONE / child.inverse_mass;
