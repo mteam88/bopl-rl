@@ -2035,9 +2035,6 @@ pub struct BlackHoleCastState {
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
-    /// The form's rotation and up at its exit: its frozen FixTransform keeps
-    /// them while the exit re-places or levels the slime.
-    pub exit_pose: Option<(Fix, Vec2)>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2596,6 +2593,18 @@ pub struct DestroyedGround {
     pub pass: Option<u32>,
 }
 
+/// A form's FixTransform as its GameObject went inactive on `tick`'s pass. DetPhysics
+/// still syncs an inactive transform, so the form's row shows this pose: through the
+/// exit pass, or for as long as a teleport keeps the form hidden. `pose` (rotation,
+/// up) is None where the form's own exit rotation applies.
+#[derive(Clone, Copy)]
+pub struct FrozenForm {
+    pub tick: u32,
+    pub entity: usize,
+    pub position: Vec2,
+    pub pose: Option<(Fix, Vec2)>,
+}
+
 impl DestroyedGround {
     /// attachedGround as a rider's updater sees it on `tick`'s pass: the dead
     /// body before the drain, null after.
@@ -2800,10 +2809,9 @@ pub struct PlayerSlot {
     /// pass's Simulate, so everything reading the collider in between
     /// (BlackHole, overlap casts) sees it rather than the form's first move.
     pub entry_sync: Option<(u32, usize, OrientedBox)>,
-    /// The tick and body position of a form exit the slime has already moved
-    /// on from in the same pass (a Magnet Gun steal). The deactivated form
-    /// collider stays where the exit published it.
-    pub form_exit: Option<(u32, Vec2)>,
+    /// Where the form's FixTransform stopped when its GameObject went
+    /// inactive: an exit, or a teleport hiding the form.
+    pub form_frozen: Option<FrozenForm>,
     /// The ground it stood on was destroyed. Unity keeps the rider grounded
     /// until its own next update, then ungrounds it.
     pub ground_destroyed: Option<DestroyedGround>,
@@ -5078,7 +5086,7 @@ impl RolloutWorld {
                 reported_position: spawn,
                 reported_tick: u32::MAX,
                 entry_sync: None,
-                form_exit: None,
+                form_frozen: None,
                 ground_destroyed: None,
                 bow: BowState::default(),
                 rock: RockState::default(),
@@ -16563,21 +16571,24 @@ impl RolloutWorld {
     }
 
     fn exit_black_hole_form(&mut self, index: usize, grounded: bool) {
+        let tick = self.tick;
         let slot = &mut self.players[index];
         slot.active = ActiveAbility::None;
         slot.base.constants = data::get().player.constants.clone();
+        // The exit re-places or levels only the slime; the form's frozen
+        // FixTransform keeps its rotation and up.
+        let (entity, pose) = (slot.black_hole_entity, Some((slot.base.rotation, slot.base.up)));
         if grounded && slot.base.ground.is_some() {
             slot.obs_state = STATE_IDLE;
             slot.state_ticks = 0;
             let position = slot.base.position;
-            slot.black_hole_cast.exit_pose = Some((slot.base.rotation, slot.base.up));
+            slot.form_frozen = Some(FrozenForm { tick, entity, position, pose });
             self.sync_exit_to_ground(index);
             let slot = &mut self.players[index];
             slot.reported_position = position;
             slot.reported_tick = self.tick;
             return;
         } else {
-            slot.black_hole_cast.exit_pose = Some((slot.base.rotation, slot.base.up));
             slot.restore_slime_radius();
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
@@ -16588,6 +16599,8 @@ impl RolloutWorld {
             slot.base.collision_rays(terrain!(self));
             // SlimeController.ExitAbility assigns Player.Scale to the hurtbox.
             slot.set_ordinary_body_scale(slot.player_scale);
+            let position = slot.base.position;
+            slot.form_frozen = Some(FrozenForm { tick, entity, position, pose });
         }
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
@@ -21861,18 +21874,19 @@ impl RolloutWorld {
                 (self.tick, marker_hierarchy, self.players[player_index].base.position);
             self.players[player_index].base.position += shift;
             self.players[player_index].base.sync_collider();
-            // A planting form hidden mid-cast keeps its FixTransform, which
-            // DetPhysics syncs to its box: the moved, unrotated body.
+            // teleportObject hides a form but keeps its FixTransform, which
+            // DetPhysics syncs to its box: the moved body, which UnGround
+            // unrotated unless the form has no PlayerPhysics
+            // (TeleportIndicator.cs:122-166).
+            let tick = self.tick;
             let slot = &mut self.players[player_index];
-            let (position, up) = (slot.base.position, slot.base.up);
-            if slot.active == ActiveAbility::Spike {
-                slot.spike_cast.collider_position = position;
-                slot.spike_cast.collider_up = up;
-                slot.spike_cast.collider_rotation = Fix::ZERO;
-            } else if matches!(slot.active, ActiveAbility::Engine | ActiveAbility::Tesla) {
-                slot.plant_cast.collider_position = position;
-                slot.plant_cast.collider_up = up;
-                slot.plant_cast.collider_rotation = Fix::ZERO;
+            if slot.active != ActiveAbility::None {
+                slot.form_frozen = Some(FrozenForm {
+                    tick,
+                    entity,
+                    position: slot.base.position,
+                    pose: Some((slot.base.rotation, slot.base.up)),
+                });
             }
             self.players[player_index].teleport_effect_active = true;
             self.players[player_index].teleport_effect_time = Fix::ZERO;
@@ -26769,6 +26783,9 @@ impl RolloutWorld {
                 arrow.magnet_hold_ticks = 3;
             }
             MagnetHeld::Player(i) => {
+                let entity = Self::hurtbox_entity(&self.players[i]);
+                let tick = self.tick;
+                let frozen = move |position| Some(FrozenForm { tick, entity, position, pose: None });
                 if self.players[i].active == ActiveAbility::Throw {
                     // MachoThrow2.ExitAbility overwrites the packet with the
                     // form's own grounding, so SyncPhysicsTo sets the slime
@@ -26776,7 +26793,7 @@ impl RolloutWorld {
                     // the slime after that, before UnGround lifts it.
                     let grounded = self.players[i].base.grounded;
                     self.exit_macho_throw(i, grounded, data);
-                    self.players[i].form_exit = Some((self.tick, position));
+                    self.players[i].form_frozen = frozen(position);
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active == ActiveAbility::Drill {
                     // Drill.ExitAbility hands the packet its body's velocities,
@@ -26791,7 +26808,7 @@ impl RolloutWorld {
                     let slot = &mut self.players[i];
                     slot.facing_right = (velocity + external).x >= Fix::ZERO;
                     slot.base.velocity = Vec2::ZERO;
-                    slot.form_exit = Some((self.tick, position));
+                    slot.form_frozen = frozen(position);
                     // Ability.ExitAbility publishes the drill body's position.
                     // A slime updating after its holder publishes its own.
                     if i < index {
@@ -26806,13 +26823,13 @@ impl RolloutWorld {
                     self.exit_magnet(i, false, data);
                     let slot = &mut self.players[i];
                     slot.base.velocity = Vec2::ZERO;
-                    slot.form_exit = Some((self.tick, slot.base.position));
+                    slot.form_frozen = frozen(slot.base.position);
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active != ActiveAbility::None {
                     self.exit_form_for_freeze(i, data);
                     self.players[i].base.position = position;
                     self.players[i].reported_position = position;
-                    self.players[i].form_exit = Some((self.tick, position));
+                    self.players[i].form_frozen = frozen(position);
                 }
                 let slot = &mut self.players[i];
                 // MagnetGun.cs:687 calls UnGround() with nullRotation.
@@ -44002,9 +44019,17 @@ impl RolloutWorld {
             // frozen FixTransform every pass (DetPhysics.cs:2498-2530), so
             // the exit pass writes the published exit position.
             let exit_position = slot
-                .form_exit
-                .filter(|&(tick, _)| tick == self.tick)
-                .map_or(slot.reported_position, |(_, position)| position);
+                .form_frozen
+                .filter(|frozen| frozen.tick == self.tick)
+                .map_or(slot.reported_position, |frozen| frozen.position);
+            let frozen = slot.form_frozen.filter(|frozen| {
+                frozen.tick == self.tick || (slot.teleport_effect_active && in_ability)
+            });
+            let frozen_pose = |entity: usize| {
+                frozen
+                    .filter(|frozen| frozen.entity == entity)
+                    .and_then(|frozen| frozen.pose.map(|(rotation, up)| (frozen.position, rotation, up)))
+            };
             // A gun form a freeze ray forced out this pass. The bypass's
             // Ability.ExitAbility skips GunTransform.ExitAbility's rotation
             // reset (FreezeRayGun.cs:128, GunTransform.cs:84-98), so the form
@@ -44351,7 +44376,10 @@ impl RolloutWorld {
                     box_row.owner = slot.base.id;
                 }
                 if (alive && meteoring) || was_active {
-                    let root = synced;
+                    // Ability.ExitAbility leaves the hidden form box where the
+                    // form stood (Ability.cs:139-153); the slime may already
+                    // have moved on, through a portal say.
+                    let root = if meteoring { synced } else { exit_position };
                     let basis = Vec2::angle(rotation);
                     // DPhysicsBox: position + ComplexMul(fixTrans.right, offset),
                     // with right kept exactly as the surface normal turned.
@@ -44796,7 +44824,14 @@ impl RolloutWorld {
                     box_row.owner = slot.base.id;
                 }
                 if spiking || was_active {
-                    let (position, rotation, center_basis, collider_basis) = if spiking {
+                    let (position, rotation, center_basis, collider_basis) = if let Some((
+                        position,
+                        rotation,
+                        up,
+                    )) = frozen_pose(spike_e)
+                    {
+                        (position, rotation, up.perp_cw(), Vec2::angle(rotation))
+                    } else if spiking {
                         (
                             slot.spike_cast.collider_position,
                             slot.spike_cast.collider_rotation,
@@ -44839,7 +44874,14 @@ impl RolloutWorld {
                     box_row.owner = slot.base.id;
                 }
                 if planting_engine || was_active {
-                    let (position, rotation, center_basis, collider_basis) = if planting_engine {
+                    let (position, rotation, center_basis, collider_basis) = if let Some((
+                        position,
+                        rotation,
+                        up,
+                    )) = frozen_pose(engine_e)
+                    {
+                        (position, rotation, up.perp_cw(), Vec2::angle(rotation))
+                    } else if planting_engine {
                         (
                             slot.plant_cast.collider_position,
                             slot.plant_cast.collider_rotation,
@@ -44882,7 +44924,14 @@ impl RolloutWorld {
                     box_row.owner = slot.base.id;
                 }
                 if planting_tesla || was_active {
-                    let (position, rotation, center_basis, collider_basis) = if planting_tesla {
+                    let (position, rotation, center_basis, collider_basis) = if let Some((
+                        position,
+                        rotation,
+                        up,
+                    )) = frozen_pose(tesla_e)
+                    {
+                        (position, rotation, up.perp_cw(), Vec2::angle(rotation))
+                    } else if planting_tesla {
                         (
                             slot.plant_cast.collider_position,
                             slot.plant_cast.collider_rotation,
@@ -44925,14 +44974,16 @@ impl RolloutWorld {
                     box_row.owner = slot.base.id;
                 }
                 if casting_black_hole || was_active {
-                    let (position, rotation, basis) = if casting_black_hole {
+                    let (position, rotation, basis) = if let Some((position, rotation, up)) =
+                        frozen_pose(black_hole_e)
+                    {
+                        (position, rotation, up.perp_cw())
+                    } else if casting_black_hole {
                         (
                             slot.black_hole_cast.collider_position,
                             slot.black_hole_cast.collider_rotation,
                             slot.black_hole_cast.collider_up.perp_cw(),
                         )
-                    } else if let Some((rotation, up)) = slot.black_hole_cast.exit_pose {
-                        (exit_position, rotation, up.perp_cw())
                     } else {
                         (exit_position, slot.base.rotation, slot.base.up.perp_cw())
                     };
@@ -44974,9 +45025,14 @@ impl RolloutWorld {
                 }
                 let forced_exit = slot.macho_throw.forced_exit_tick == Some(self.tick);
                 if macho_throwing || was_active {
-                    let (position, center_basis, rotation, collider_basis) = if macho_throwing
-                        || forced_exit
+                    let (position, center_basis, rotation, collider_basis) = if let Some((
+                        position,
+                        rotation,
+                        up,
+                    )) = frozen_pose(macho_throw_e)
                     {
+                        (position, up.perp_cw(), rotation, Vec2::angle(rotation))
+                    } else if macho_throwing || forced_exit {
                         (
                             slot.macho_throw.collider_position,
                             slot.macho_throw.collider_right,
@@ -45236,9 +45292,9 @@ impl RolloutWorld {
             let synced = slot.base.collider.center;
             let rotation = slot.base.collider_rotation;
             let exit_position = slot
-                .form_exit
-                .filter(|&(tick, _)| tick == self.tick)
-                .map_or(slot.reported_position, |(_, position)| position);
+                .form_frozen
+                .filter(|frozen| frozen.tick == self.tick)
+                .map_or(slot.reported_position, |frozen| frozen.position);
 
             let body = &mut self.entities[slot.body_entity];
             let body_was_active = body.flags & E_ACTIVE != 0;
