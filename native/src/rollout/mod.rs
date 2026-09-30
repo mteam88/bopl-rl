@@ -30,6 +30,7 @@ pub mod replay;
 mod circle_box;
 mod rope_abilities;
 use circle_box::Part;
+use rope_abilities::HookTarget;
 
 pub const ABI_VERSION: u32 = 3;
 /// The .NET catalog has 39 ability icons; index 0 is the menu placeholder.
@@ -3717,7 +3718,11 @@ type CallbackKey = (u8, SweepRank, SweepRank);
 
 /// DetPhysics.Simulate's contact groups in the order it runs them, each
 /// queueing its callbacks after the previous group's (DetPhysics.cs:2940-3168).
+/// Circle/Circle, Circle/Box and Box/Box run back to back, so a pair's group
+/// is GROUP_BB less one for each circle side.
 const GROUP_BOX_RR: u8 = 1;
+const GROUP_CIRCLE_RR: u8 = 2;
+const GROUP_CC: u8 = 3;
 const GROUP_CB: u8 = 4;
 const GROUP_BB: u8 = 5;
 
@@ -3731,6 +3736,8 @@ enum PickupTaker {
 
 #[derive(Clone, Copy)]
 enum CallbackHit {
+    /// RopeHook.OnCollide with the collider the hook met.
+    RopeHook { rope: usize, target: HookTarget },
     /// PlayerCollision.OnCollide with a lethal hitbox.
     Kill { player: usize, killer: u32, cause: u32 },
     /// Missile.OnCollide with anything but a RigidBodyAffector or Rope.
@@ -7686,7 +7693,7 @@ impl RolloutWorld {
             self.ropes_physics(physics_dt);
         }
         if has(ABILITY_GRAPPLING_HOOK) {
-            self.grapple_hook_contacts();
+            self.grapple_hook_wall_pairs();
         }
         if has(ABILITY_BEAM) {
             let beam_contact_count = self
@@ -7759,6 +7766,9 @@ impl RolloutWorld {
         self.kill_squished();
         if has(ABILITY_BOW) {
             self.arrows_contacts(data);
+        }
+        if has(ABILITY_GRAPPLING_HOOK) {
+            self.grapple_hook_pairs(data);
         }
         // The global circle/circle pass: items, Portal shots, and Tesla
         // nodes of different platforms, then the Circle/Box group.
@@ -16613,7 +16623,7 @@ impl RolloutWorld {
                         radius: Fix::from_raw(row.radius),
                     };
                     (
-                        GROUP_CB - 1,
+                        GROUP_CC,
                         axis(player.center) - player.radius,
                         swept_node.bounds_overlap(player)
                             && crate::physics::contact::circle_circle(node_circle, player).is_some(),
@@ -38014,6 +38024,7 @@ impl RolloutWorld {
                 CallbackHit::Pickup { pickup, taker, body } => {
                     self.grant_ability_pickup(pickup, taker, body, data);
                 }
+                CallbackHit::RopeHook { rope, target } => self.rope_hook_collide(rope, target),
                 CallbackHit::MissileBlast { missile } => {
                     // Every pair explodes, a destroyed missile included, but
                     // not while a Magnet holds it (Missile.cs:181-192).

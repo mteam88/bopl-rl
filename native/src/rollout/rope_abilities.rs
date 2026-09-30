@@ -141,6 +141,21 @@ pub(crate) struct RolloutRope {
     pub hook_arrived: bool,
 }
 
+/// What a RopeHook's circle met in one DetPhysics pair.
+#[derive(Clone, Copy)]
+pub(super) enum HookTarget {
+    Platform(usize),
+    BlackHole(usize),
+    Item(usize),
+    Shot(usize),
+    Arrow(usize),
+    Node(usize),
+    Pickup,
+    Player(usize),
+    Clone(usize),
+    Spike(usize),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RopeParent {
     /// A Rock-form player: it has no PlayerBody for the rope to join.
@@ -1644,65 +1659,193 @@ impl RolloutWorld {
         }
     }
 
-    pub(super) fn grapple_hook_contacts(&mut self) {
-        let source = &data::get().ropes;
-        self.scratch.hook_smoke_hits.clear();
-        for rope_index in 0..self.ropes.len() {
-            if !self.ropes[rope_index].physics.enabled || !self.ropes[rope_index].hook_active {
+    fn hook_live(&self, rope: usize) -> bool {
+        self.ropes[rope].physics.enabled && self.ropes[rope].hook_active
+    }
+
+    fn hook_circle(&self, rope: usize) -> Circle {
+        Circle { center: self.ropes[rope].hook_position, radius: data::get().ropes.hook_radius }
+    }
+
+    /// Queues RopeHook.OnCollide for one of the hook's pairs at its place in
+    /// DetPhysics' callback queue.
+    fn queue_hook_hit(&mut self, rope: usize, group: u8, other: SweepRank, target: HookTarget) {
+        let circle = self.hook_circle(rope);
+        let min = if self.sweep_x() { circle.center.x } else { circle.center.y } - circle.radius;
+        let rank = sweep_rank(&self.entities, min, self.ropes[rope].hook_entity);
+        let (later, earlier) = sweep_pair(rank, other);
+        self.scratch
+            .callback_hits
+            .push(((group, later, earlier), CallbackHit::RopeHook { rope, target }));
+    }
+
+    /// The hooks' Circle/RoundedRect pairs.
+    pub(super) fn grapple_hook_wall_pairs(&mut self) {
+        for rope in 0..self.ropes.len() {
+            if !self.hook_live(rope) {
                 continue;
             }
-            let position = self.ropes[rope_index].hook_position;
-            let circle = Circle {
-                center: position,
-                radius: source.hook_radius,
-            };
+            let circle = self.hook_circle(rope);
+            for platform in 0..self.platforms.len() {
+                if self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
+                    || crate::physics::contact::circle_rounded(circle, self.platforms[platform].collider)
+                        .is_none()
+                {
+                    continue;
+                }
+                let rank = self.wall_rank(platform);
+                self.queue_hook_hit(rope, GROUP_CIRCLE_RR, rank, HookTarget::Platform(platform));
+            }
+        }
+    }
+
+    /// The hooks' Circle/Circle and Circle/Box pairs, on the colliders the
+    /// Circle/RoundedRect corrections left.
+    pub(super) fn grapple_hook_pairs(&mut self, data: &data::RolloutData) {
+        self.scratch.hook_smoke_hits.clear();
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let circle_circle = GROUP_CC;
+        let mut hits = Vec::new();
+        for rope in 0..self.ropes.len() {
+            if !self.hook_live(rope) {
+                continue;
+            }
+            let circle = self.hook_circle(rope);
+            let touches = |other: Circle| crate::physics::contact::circle_circle(circle, other).is_some();
             // SmokeGrenadeExplode2 takes the hook's contact on its own
-            // callback, whichever body the hook's callback picks.
+            // callback, whatever the hook does with it.
             for (index, item) in self.thrown_items.iter().enumerate() {
                 if item.active
                     && item.entity.is_some()
                     && item.ability == ABILITY_SMOKE
-                    && crate::physics::contact::circle_circle(
-                        circle,
-                        Circle { center: item.position, radius: item.collider_radius },
-                    )
-                    .is_some()
+                    && touches(Circle { center: item.position, radius: item.collider_radius })
                     && !self.scratch.hook_smoke_hits.contains(&index)
                 {
                     self.scratch.hook_smoke_hits.push(index);
                 }
             }
-            // RopeHook.OnCollide marks the hook arrived before it looks at the
-            // layer, so an AbilityPickup on the weapon layer, which it does not
-            // attach to, still ends the reel-out (RopeHook.cs:115-120).
-            if self.ability_pickups.iter().any(|pickup| {
-                pickup.active
-                    && pickup.enabled
-                    && crate::physics::contact::circle_circle(
-                        circle,
-                        Circle { center: pickup.position + pickup.offset, radius: pickup.radius },
-                    )
-                    .is_some()
-            }) {
-                self.ropes[rope_index].reel_in = true;
-                self.ropes[rope_index].hook_arrived = true;
-            }
-            let mut attached = None;
-            for platform in 0..self.platforms.len() {
-                if self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
-                    || crate::physics::contact::circle_rounded(
-                        circle,
-                        self.platforms[platform].collider,
-                    )
-                    .is_none()
-                    || !self.platforms[platform].collider.overlaps(position)
+            for (index, hole) in self.black_holes.iter().enumerate() {
+                if hole.active
+                    && !self.blink_object_hidden(hole.entity)
+                    && touches(Circle { center: hole.position, radius: hole.radius })
                 {
+                    let rank = sweep_rank(&self.entities, axis(hole.position) - hole.radius, hole.entity);
+                    hits.push((rope, circle_circle, rank, HookTarget::BlackHole(index)));
+                }
+            }
+            for (index, item) in self.thrown_items.iter().enumerate() {
+                if item.active
+                    && item.entity.is_some()
+                    && touches(Circle { center: item.position, radius: item.collider_radius })
+                {
+                    let rank = self.part_rank(Part::Item(index), data);
+                    hits.push((rope, circle_circle, rank, HookTarget::Item(index)));
+                }
+            }
+            for (index, shot) in self.portal_shots.iter().enumerate() {
+                if shot.active
+                    && shot.registered
+                    && touches(Circle { center: shot.position, radius: shot.collider_radius })
+                {
+                    let rank = self.part_rank(Part::Shot(index), data);
+                    hits.push((rope, circle_circle, rank, HookTarget::Shot(index)));
+                }
+            }
+            for (index, arrow) in self.arrows.iter().enumerate() {
+                let radius = arrow.collider_radius;
+                if arrow.active
+                    && arrow.registered
+                    && touches(Circle { center: arrow.position, radius })
+                {
+                    let rank = sweep_rank(&self.entities, axis(arrow.position) - radius, arrow.entity);
+                    hits.push((rope, circle_circle, rank, HookTarget::Arrow(index)));
+                }
+            }
+            for (index, node) in self.tesla_nodes.iter().enumerate() {
+                if node.active
+                    && !node.macho_carried
+                    && node.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                    && touches(Circle { center: node.collider_center, radius: node.radius })
+                {
+                    let rank = self.part_rank(Part::Node(index), data);
+                    hits.push((rope, circle_circle, rank, HookTarget::Node(index)));
+                }
+            }
+            for pickup in &self.ability_pickups {
+                let center = pickup.position + pickup.offset;
+                if pickup.active && pickup.enabled && touches(Circle { center, radius: pickup.radius }) {
+                    let rank = sweep_rank(&self.entities, axis(center) - pickup.radius, pickup.entity);
+                    hits.push((rope, circle_circle, rank, HookTarget::Pickup));
+                }
+            }
+            // RopeHook ignores every body of the caster's and the end's
+            // player (RopeHook.cs:122-129).
+            let owner = self.players[self.ropes[rope].owner].owner;
+            let end_player = self.ropes[rope].hook_end_player;
+            for player in 0..self.players.len() {
+                let body_player = self.players[player].owner;
+                if body_player == owner || body_player == end_player || !self.playable(player) {
                     continue;
                 }
-                attached = Some(platform);
-                break;
+                let slot = &self.players[player];
+                let hit = if slot.active == ActiveAbility::Rock {
+                    touches(Circle { center: slot.base.position, radius: slot.rock_circle().circle_radius })
+                } else {
+                    // A form's own Player-layer collider carries its
+                    // PlayerBody, so the hook meets the form's box.
+                    self.player_hit_by_circle(player, circle)
+                };
+                if hit {
+                    let group = GROUP_CB - self.player_is_circle(player) as u8;
+                    hits.push((rope, group, self.player_sweep_rank(player), HookTarget::Player(player)));
+                }
             }
-            if let Some(platform) = attached {
+            for index in self.player_layer_clones() {
+                let clone = &self.abilityless_clones[index];
+                if clone.owner != owner
+                    && clone.owner != end_player
+                    && crate::physics::contact::circle_box(circle, clone.base.synced).is_some()
+                {
+                    let collider = clone.base.synced;
+                    let min = axis(collider.center) - axis(collider.right).abs() - axis(collider.up).abs();
+                    let rank = sweep_rank(&self.entities, min, clone.entity);
+                    hits.push((rope, GROUP_CB, rank, HookTarget::Clone(index)));
+                }
+            }
+            for index in 0..self.spike_attacks.len() {
+                let spike = self.spike_attacks[index];
+                if spike.active
+                    && !spike.macho_carried
+                    && spike.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                    && crate::physics::contact::circle_box(circle, self.spike_attack_box(spike)).is_some()
+                {
+                    let rank = self.part_rank(Part::Spike(index), data);
+                    hits.push((rope, GROUP_CB, rank, HookTarget::Spike(index)));
+                }
+            }
+        }
+        for (rope, group, rank, target) in hits {
+            self.queue_hook_hit(rope, group, rank, target);
+        }
+    }
+
+    /// RopeHook.OnCollide for one pair, in DetPhysics' callback order. The
+    /// first pair that attaches destroys the hook, and every later one
+    /// returns (RopeHook.cs:88-190).
+    pub(super) fn rope_hook_collide(&mut self, rope_index: usize, target: HookTarget) {
+        if !self.hook_live(rope_index) {
+            return;
+        }
+        let source = &data::get().ropes;
+        let position = self.ropes[rope_index].hook_position;
+        let mut offset = Vec2::ZERO;
+        let parent = match target {
+            HookTarget::Platform(platform) => {
+                // A wall takes the hook only when its centre is inside it.
+                if !self.platforms[platform].collider.overlaps(position) {
+                    return;
+                }
                 let local = self.platforms[platform]
                     .surface
                     .local_position(position, Fix::ZERO)
@@ -1730,34 +1873,22 @@ impl RolloutWorld {
                     self.entities[entity].flags =
                         (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
                 }
-                continue;
+                return;
             }
-            let mut attached_hole = None;
-            for hole_index in 0..self.black_holes.len() {
-                let hole = self.black_holes[hole_index];
-                if !hole.active
-                    || self.blink_object_hidden(hole.entity)
-                    || crate::physics::contact::circle_circle(
-                        circle,
-                        Circle {
-                            center: hole.position,
-                            radius: hole.radius,
-                        },
-                    )
-                    .is_none()
-                {
-                    continue;
-                }
-                attached_hole = Some(hole_index);
-                break;
+            HookTarget::Pickup => {
+                // RopeHook.OnCollide marks the hook arrived before it looks at
+                // the layer, so an AbilityPickup on the weapon layer, which it
+                // does not attach to, still ends the reel-out (RopeHook.cs:115-120).
+                self.ropes[rope_index].reel_in = true;
+                self.ropes[rope_index].hook_arrived = true;
+                return;
             }
-            if let Some(hole_index) = attached_hole {
+            HookTarget::BlackHole(hole_index) => {
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.mass_start = Fix::ONE;
                 rope.physics.force_start = Vec2::ZERO;
                 rope.physics.time_since_hook_arrived = Fix::ZERO;
-                rope.physics
-                    .set_mass(data::get().ropes.non_platform_mass, true, Fix::ONE);
+                rope.physics.set_mass(source.non_platform_mass, true, Fix::ONE);
                 rope.time_air_start = Fix::ONE;
                 rope.platform = None;
                 rope.black_hole = Some(hole_index);
@@ -1767,136 +1898,13 @@ impl RolloutWorld {
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
-                    // RopeHook.OnCollide destroys the hitbox and the component
-                    // and leaves the GameObject alone (RopeHook.cs:182-189), so
-                    // RlObservation's activeInHierarchy bit stays set while the
-                    // enabled bit clears (RlObservation.cs:115-117).
+                    // Hitbox-only teardown, as for a wall (RopeHook.cs:182-189).
                     self.entities[entity].flags =
                         (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
                 }
-                continue;
+                return;
             }
-            // Every body of the caster's or the end's player is ignored.
-            let owner = self.players[self.ropes[rope_index].owner].owner;
-            let end_player = self.ropes[rope_index].hook_end_player;
-            // DetPhysics calls back every circle-circle pair (a Rock, an
-            // item, a shot, a node) before any circle-box pair (a form's
-            // box, a clone, a spike), and the hook takes the first.
-            let mut rock_victim = None;
-            let mut box_victim = None;
-            for player in 0..self.players.len() {
-                let body_player = self.players[player].owner;
-                if (body_player == owner || body_player == end_player) || !self.playable(player) {
-                    continue;
-                }
-                let slot = &self.players[player];
-                if slot.active == ActiveAbility::Rock {
-                    let rock = Circle {
-                        center: slot.base.position,
-                        radius: slot.rock_circle().circle_radius,
-                    };
-                    if rock_victim.is_none()
-                        && crate::physics::contact::circle_circle(circle, rock).is_some()
-                    {
-                        rock_victim = Some(player);
-                    }
-                } else if box_victim.is_none() && self.player_hit_by_circle(player, circle) {
-                    // A form's own Player-layer collider carries its
-                    // PlayerBody, so the hook meets the form's box.
-                    box_victim = Some(player);
-                }
-            }
-            let mut victim = rock_victim;
-            let mut parent = victim.map(RopeParent::Rock);
-            let mut offset = Vec2::ZERO;
-            if victim.is_none() && parent.is_none() {
-                // Thrown items sit on the item layer, which the hook's Rope
-                // layer collides with.
-                parent = self.thrown_items.iter().enumerate().find_map(|(index, item)| {
-                    let body = Circle {
-                        center: item.position,
-                        radius: item.collider_radius,
-                    };
-                    (item.active
-                        && item.entity.is_some()
-                        && crate::physics::contact::circle_circle(circle, body).is_some())
-                    .then_some(RopeParent::Item(index, item.id))
-                });
-            }
-            if victim.is_none() && parent.is_none() {
-                // Portal Gun shots share the item layer.
-                parent = self.portal_shots.iter().enumerate().find_map(|(index, shot)| {
-                    let body = Circle {
-                        center: shot.position,
-                        radius: shot.collider_radius,
-                    };
-                    (shot.active
-                        && shot.registered
-                        && crate::physics::contact::circle_circle(circle, body).is_some())
-                    .then_some(RopeParent::Shot(index, shot.born_tick))
-                });
-            }
-            if victim.is_none() && parent.is_none() {
-                // A Bow arrow's circle is on Projectile, which RopeHook
-                // attaches to with no offset (RopeHook.cs:160-172).
-                parent = self.arrows.iter().enumerate().find_map(|(index, arrow)| {
-                    let body = Circle {
-                        center: arrow.position,
-                        radius: arrow.collider_radius,
-                    };
-                    (arrow.active
-                        && arrow.registered
-                        && crate::physics::contact::circle_circle(circle, body).is_some())
-                    .then_some(RopeParent::Arrow(index, arrow.id))
-                });
-            }
-            if victim.is_none() && parent.is_none() {
-                // A placed spark node's circle sits on NonLethalTerrain, which
-                // the hook takes only when its centre is inside it.
-                for index in 0..self.tesla_nodes.len() {
-                    let node = self.tesla_nodes[index];
-                    if !node.active
-                        || node.macho_carried
-                        || !node
-                            .entity
-                            .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
-                    {
-                        continue;
-                    }
-                    let body = Circle { center: node.collider_center, radius: node.radius };
-                    if crate::physics::contact::circle_circle(circle, body).is_none()
-                        || (position - node.collider_center).length_squared()
-                            > node.radius * node.radius
-                    {
-                        continue;
-                    }
-                    // The contact pass runs before SyncGameObject copies the
-                    // collider's pose into the node's FixTransform here, and
-                    // RopeHook reads the transform after it.
-                    let root = node.collider_center
-                        - node.collider_offset.complex_mul(Vec2::angle(node.collider_rotation));
-                    offset = (position - root)
-                        .complex_mul(Vec2::angle(-node.collider_rotation))
-                        / node.scale;
-                    parent = Some(RopeParent::Node(index, node.born_tick));
-                    break;
-                }
-            }
-            if parent.is_none() {
-                victim = box_victim;
-            }
-            // RopeHook ignores bodies by player id, so another player's
-            // clone takes the hook just as that player's slime would.
-            let clone_victim = self.player_layer_clones().into_iter().find(|&index| {
-                let clone = &self.abilityless_clones[index];
-                victim.is_none()
-                    && parent.is_none()
-                    && clone.owner != owner
-                    && clone.owner != end_player
-                    && crate::physics::contact::circle_box(circle, self.abilityless_clones[index].base.synced)
-                        .is_some()
-            });
-            if let Some(index) = clone_victim {
+            HookTarget::Clone(index) => {
                 let tick = self.tick;
                 let clone = &mut self.abilityless_clones[index];
                 if let Some(old) = clone.grip.rope
@@ -1914,73 +1922,11 @@ impl RolloutWorld {
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
-                    self.entities[entity].flags =
-                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                    self.entities[entity].flags = (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
                 }
-                continue;
+                return;
             }
-            if victim.is_none() && parent.is_none() {
-                // A SpikeAttack box sits on LethalTerrain, which the hook
-                // takes only when its centre is inside the collider. The end
-                // then keeps the hook's place on the spike (RopeHook.cs:91-98,
-                // 158-171).
-                for index in 0..self.spike_attacks.len() {
-                    let spike = self.spike_attacks[index];
-                    if !spike.active
-                        || spike.macho_carried
-                        || !spike
-                            .entity
-                            .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
-                    {
-                        continue;
-                    }
-                    let collider = self.spike_attack_box(spike);
-                    if crate::physics::contact::circle_box(circle, collider).is_none()
-                        || !collider.overlaps(position)
-                    {
-                        continue;
-                    }
-                    let (root, _) = spike_transform(&spike, &self.platform_dynamics);
-                    let rotation = self.platform_dynamics[spike.platform_index].body.orientation
-                        + spike.relative_rotation;
-                    offset = (position - root).complex_mul(Vec2::angle(-rotation)) / spike.scale;
-                    parent = Some(RopeParent::Spike(index, spike.born_tick));
-                    break;
-                }
-            }
-            if let Some(parent) = parent {
-                let scale = match parent {
-                    RopeParent::Rock(player) => self.players[player].rock_circle().scale,
-                    RopeParent::Item(item, _) => self.thrown_items[item].scale,
-                    RopeParent::Shot(..) => Fix::ONE,
-                    RopeParent::Spike(spike, _) => self.spike_attacks[spike].scale,
-                    RopeParent::Node(node, _) => self.tesla_nodes[node].scale,
-                    RopeParent::Arrow(arrow, _) => self.arrows[arrow].scale,
-                };
-                let rope = &mut self.ropes[rope_index];
-                rope.physics.mass_start = Fix::ONE;
-                rope.physics.force_start = Vec2::ZERO;
-                rope.physics.time_since_hook_arrived = Fix::ZERO;
-                rope.physics.set_mass(source.non_platform_mass, true, scale);
-                rope.time_air_start = Fix::ONE;
-                rope.platform = None;
-                // The attachment shares the hook's GameObject, so its
-                // transform stays on the hook until a pass re-places it.
-                rope.platform_anchor = rope.hook_position;
-                rope.parent = Some(parent);
-                rope.parent_offset = offset;
-                rope.reel_in = true;
-                rope.hook_arrived = true;
-                rope.hook_active = false;
-                rope.hook_remove_next = true;
-                if let Some(entity) = rope.hook_entity {
-                    // Hitbox-only teardown, as for a wall (RopeHook.cs:182-189).
-                    self.entities[entity].flags =
-                        (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
-                }
-                continue;
-            }
-            if let Some(victim) = victim {
+            HookTarget::Player(victim) if self.players[victim].active != ActiveAbility::Rock => {
                 if let Some(old) = self.players[victim].rope
                     && old != rope_index
                 {
@@ -2000,10 +1946,72 @@ impl RolloutWorld {
                     // PlayerBody destroys the whole hook GameObject and returns
                     // before the hitbox-only teardown (RopeHook.cs:144-150), so
                     // activeInHierarchy goes with it.
-                    self.entities[entity].flags =
-                        (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
+                    self.entities[entity].flags = (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
                 }
+                return;
             }
+            // A BounceBall has no PlayerBody, so the hook attaches to it as to
+            // any other body.
+            HookTarget::Player(player) => RopeParent::Rock(player),
+            HookTarget::Item(index) => RopeParent::Item(index, self.thrown_items[index].id),
+            HookTarget::Shot(index) => RopeParent::Shot(index, self.portal_shots[index].born_tick),
+            // A Bow arrow's circle is on Projectile, which RopeHook attaches
+            // to with no offset (RopeHook.cs:160-172).
+            HookTarget::Arrow(index) => RopeParent::Arrow(index, self.arrows[index].id),
+            HookTarget::Node(index) => {
+                // A spark node's circle sits on NonLethalTerrain, which the
+                // hook takes only when its centre is inside it.
+                let node = self.tesla_nodes[index];
+                if (position - node.collider_center).length_squared() > node.radius * node.radius {
+                    return;
+                }
+                let root = node.collider_center
+                    - node.collider_offset.complex_mul(Vec2::angle(node.collider_rotation));
+                offset = (position - root).complex_mul(Vec2::angle(-node.collider_rotation)) / node.scale;
+                RopeParent::Node(index, node.born_tick)
+            }
+            HookTarget::Spike(index) => {
+                // A SpikeAttack box sits on LethalTerrain, which the hook takes
+                // only when its centre is inside the collider. The end then
+                // keeps the hook's place on the spike (RopeHook.cs:91-98, 158-171).
+                let spike = self.spike_attacks[index];
+                if !self.spike_attack_box(spike).overlaps(position) {
+                    return;
+                }
+                let (root, _) = spike_transform(&spike, &self.platform_dynamics);
+                let rotation =
+                    self.platform_dynamics[spike.platform_index].body.orientation + spike.relative_rotation;
+                offset = (position - root).complex_mul(Vec2::angle(-rotation)) / spike.scale;
+                RopeParent::Spike(index, spike.born_tick)
+            }
+        };
+        let scale = match parent {
+            RopeParent::Rock(player) => self.players[player].rock_circle().scale,
+            RopeParent::Item(item, _) => self.thrown_items[item].scale,
+            RopeParent::Shot(..) => Fix::ONE,
+            RopeParent::Spike(spike, _) => self.spike_attacks[spike].scale,
+            RopeParent::Node(node, _) => self.tesla_nodes[node].scale,
+            RopeParent::Arrow(arrow, _) => self.arrows[arrow].scale,
+        };
+        let rope = &mut self.ropes[rope_index];
+        rope.physics.mass_start = Fix::ONE;
+        rope.physics.force_start = Vec2::ZERO;
+        rope.physics.time_since_hook_arrived = Fix::ZERO;
+        rope.physics.set_mass(source.non_platform_mass, true, scale);
+        rope.time_air_start = Fix::ONE;
+        rope.platform = None;
+        // The attachment shares the hook's GameObject, so its transform stays
+        // on the hook until a pass re-places it.
+        rope.platform_anchor = rope.hook_position;
+        rope.parent = Some(parent);
+        rope.parent_offset = offset;
+        rope.reel_in = true;
+        rope.hook_arrived = true;
+        rope.hook_active = false;
+        rope.hook_remove_next = true;
+        if let Some(entity) = rope.hook_entity {
+            // Hitbox-only teardown, as for a wall (RopeHook.cs:182-189).
+            self.entities[entity].flags = (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
         }
     }
 
