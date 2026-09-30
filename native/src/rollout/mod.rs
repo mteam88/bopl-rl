@@ -6761,7 +6761,8 @@ impl RolloutWorld {
         // Updater runs Player.UpdatePlayer for the full player list before
         // any MonoUpdatable. Invisibility therefore expires before the owning
         // SlimeController gets its cooldown/cast pass.
-        for (index, slot) in self.players.iter_mut().enumerate() {
+        let player_count = self.player_count;
+        for (index, slot) in self.players[..player_count].iter_mut().enumerate() {
             if slot.invisible {
                 // Time-stop protection is added with the Time Stop port. In
                 // the ordinary clock state FixedDeltaTime is exactly DT.
@@ -7106,11 +7107,11 @@ impl RolloutWorld {
             // player invisible and postpones restoration, permitting chained
             // Invisibility slots (SlimeController.cs:1073-1077).
             if std::mem::take(&mut self.players[index].slime_updated) {
-                let slot = &self.players[index];
-                if !slot.invisible && slot.was_invisible {
+                let invisible = self.players[self.players[index].owner].invisible;
+                if !invisible && self.players[index].was_invisible {
                     self.invisibility_ended(index, data);
                 }
-                self.players[index].was_invisible = self.players[index].invisible;
+                self.players[index].was_invisible = invisible;
             }
             let exited = {
                 let slot = &self.players[index];
@@ -10091,9 +10092,17 @@ impl RolloutWorld {
                 if (ability_data.ground_only && !slot.base.grounded)
                     || !ability_data.castable
                     || (ability == ABILITY_BLACK_HOLE && !slot.black_hole_castable[s])
-                    || (ability == ABILITY_INVISIBILITY && slot.invisible)
+                    || (ability == ABILITY_INVISIBILITY && self.players[slot.owner].invisible)
                 {
                     continue;
+                }
+                // onEnterAbility restarts Player.timeSinceEnteredAbility and
+                // notes whether the player is invisible (SlimeController.cs:
+                // 185-189), after this pass's UpdatePlayer counted it on.
+                let owner = slot.owner;
+                let owner_invisible = self.players[owner].invisible;
+                if !data.abilities[ability as usize].instant {
+                    self.players[owner].ability_time = Fix::ZERO;
                 }
                 let entry_obs_state;
                 {
@@ -10171,12 +10180,7 @@ impl RolloutWorld {
                     // EnterAbilityClearRope leaves the slime's PlayerBody
                     // this post-gravity history for the form's exit.
                     if !data.abilities[ability as usize].instant {
-                        // onEnterAbility restarts Player.timeSinceEnteredAbility
-                        // and notes whether the player is invisible
-                        // (SlimeController.cs:185-189), after this pass's
-                        // UpdatePlayer counted it on.
-                        slot.ability_time = Fix::ZERO;
-                        slot.invisible_at_form_entry = slot.invisible;
+                        slot.invisible_at_form_entry = owner_invisible;
                         slot.ability_entered = true;
                         slot.rope_prev[0] = (slot.base.velocity, slot.base.external_velocity);
                         // onExitAbility always sets a fresh state
@@ -10227,10 +10231,11 @@ impl RolloutWorld {
                         break;
                     }
                     ABILITY_INVISIBILITY => {
+                        let player = &mut self.players[owner];
+                        player.invisible = true;
+                        player.invisible_time = Fix::ZERO;
+                        player.ability_time = Fix::ZERO;
                         let slot = &mut self.players[index];
-                        slot.invisible = true;
-                        slot.invisible_time = Fix::ZERO;
-                        slot.ability_time = Fix::ZERO;
                         // Invisibility.CastInvisibility changes the live
                         // InstantAbility cooldown until SlimeController sees a
                         // visible frame and calls OnInvisibiltyEnded.
@@ -33668,8 +33673,11 @@ impl RolloutWorld {
                 continue;
             }
             written += 1;
-            let player = &self.players[player_index];
-            if player_index != mine.owner && !player.invisible && player.team != owner_team {
+            let player = &self.players[self.players[player_index].owner];
+            if player.owner != self.players[mine.owner].owner
+                && !player.invisible
+                && player.team != owner_team
+            {
                 return Some(position);
             }
             if written == 4 {
@@ -33839,7 +33847,6 @@ impl RolloutWorld {
             slot.late_obs_state = slot.obs_state;
             slot.captured_by_ball = Some(item_index);
             slot.poke_invulnerable = true;
-            slot.invisible = true;
             slot.force_unground(&self.platforms, self.tick);
             slot.base.position = capture_position;
             slot.base.velocity = Vec2::ZERO;
@@ -33860,6 +33867,9 @@ impl RolloutWorld {
             slot.ragdoll = RagdollState::default();
             slot.base.skip_next_gravity = true;
         }
+        // victimPlayer.isInvisible (PokeBall.cs:190) is the Player's.
+        let owner = self.players[victim].owner;
+        self.players[owner].invisible = true;
         let item = &mut self.thrown_items[item_index];
         item.capture_victim = Some(victim);
         item.capture_victim_is_clone = false;
@@ -34789,12 +34799,13 @@ impl RolloutWorld {
                     && other.capture_victim == Some(victim)
             })
             .map(|(index, _)| index);
+        let owner = self.players[victim].owner;
+        self.players[owner].invisible = false;
         let slot = &mut self.players[victim];
         slot.captured_by_ball = remaining_captor;
         // PlayerCollision.SetInvulnerable(false, 16) clears the bit rather
         // than decrementing a captor count.
         slot.poke_invulnerable = false;
-        slot.invisible = false;
         slot.base.position = item.position + Vec2::UP * Fix::from_f32(0.4);
         // PokeBall.cs:228 passes x / 3 to ApplyRagDoll, which divides it by
         // 3/2 again (SlimeController.cs:1027); each division rounds.
@@ -42369,8 +42380,9 @@ impl RolloutWorld {
     /// onExitAbility restarts Player.timeSinceEnteredAbility and ends an
     /// invisibility that ran out during the form (SlimeController.cs:200-204).
     fn exit_ability_callback(&mut self, index: usize, data: &data::RolloutData) {
-        self.players[index].ability_time = Fix::ZERO;
-        if self.players[index].invisible_at_form_entry && !self.players[index].invisible {
+        let owner = self.players[index].owner;
+        self.players[owner].ability_time = Fix::ZERO;
+        if self.players[index].invisible_at_form_entry && !self.players[owner].invisible {
             self.invisibility_ended(index, data);
         }
     }
