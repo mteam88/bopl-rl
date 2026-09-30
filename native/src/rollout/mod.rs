@@ -1872,6 +1872,8 @@ pub struct MeteorState {
     pub dash_updates: u32,
     /// FixTransform.up as DetPhysics last synced the hurtbox.
     pub collider_up: Vec2,
+    /// The hurtbox's rotation at that sync.
+    pub collider_rotation: Fix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -7394,8 +7396,13 @@ impl RolloutWorld {
             let swallowed =
                 self.players[index].base.alive && self.players[index].blink_tunnel_active;
             if (self.playable(index) || swallowed) && !frozen {
-                // Meteor's row reads this in the form and on its exit pass.
-                self.players[index].meteor.collider_up = self.players[index].base.up;
+                // Meteor's row reads this in the form; its exits leave the
+                // hidden form box on the up it last had.
+                if self.players[index].active == ActiveAbility::Meteor {
+                    let slot = &mut self.players[index];
+                    slot.meteor.collider_up = slot.base.up;
+                    slot.meteor.collider_rotation = slot.base.rotation;
+                }
                 if self.players[index].active == ActiveAbility::Push {
                     self.players[index].push.collider_up = self.players[index].base.up;
                 } else if matches!(
@@ -13299,6 +13306,9 @@ impl RolloutWorld {
         slot.reported_position = landing;
         slot.reported_tick = self.tick;
         self.sync_exit_to_ground(index);
+        let slot = &mut self.players[index];
+        slot.meteor.collider_up = slot.base.up;
+        slot.meteor.collider_rotation = slot.base.collider_rotation;
     }
 
     /// MeteorSmash.ExitAbilityGrounded: the slime returns attached where the
@@ -13316,6 +13326,9 @@ impl RolloutWorld {
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
         self.sync_exit_to_ground(index);
+        let slot = &mut self.players[index];
+        slot.meteor.collider_up = slot.base.up;
+        slot.meteor.collider_rotation = slot.base.collider_rotation;
     }
 
     fn exit_meteor_air(&mut self, index: usize, data: &data::RolloutData) {
@@ -13335,6 +13348,12 @@ impl RolloutWorld {
         slot.exit_to_fall();
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
+        slot.meteor.collider_up = Vec2::UP;
+        slot.meteor.collider_rotation = Fix::ZERO;
+        // EnterFall's VelocityBasedRaycasts (SlimeController.cs:271). The
+        // dash left no velocity, so each ray is a point query at the slime,
+        // which attaches it to a wall it came to rest inside.
+        slot.base.collision_rays(terrain!(self));
     }
 
     fn spawn_meteor_smear(&mut self, from: Vec2, to: Vec2, owner: usize, data: &data::RolloutData) {
@@ -42796,6 +42815,7 @@ impl RolloutWorld {
                     // form stood (Ability.cs:139-153); the slime may already
                     // have moved on, through a portal say.
                     let root = if meteoring { synced } else { exit_position };
+                    let rotation = if meteoring { rotation } else { slot.meteor.collider_rotation };
                     let basis = Vec2::angle(rotation);
                     // DPhysicsBox: position + ComplexMul(fixTrans.right, offset),
                     // with right kept exactly as the surface normal turned.
