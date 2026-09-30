@@ -3413,6 +3413,13 @@ fn hierarchy_order<T>(order: &mut Vec<usize>, pool: &[T], hierarchy: impl Fn(&T)
 type CallbackKey = (u8, SweepRank, SweepRank);
 
 /// A hitbox's collision callback, run at its place in DetPhysics' queue.
+/// Who takes a DynamicAbilityPickup: a slime body, or an abilityless clone.
+#[derive(Clone, Copy)]
+enum PickupTaker {
+    Body(usize),
+    Clone(usize),
+}
+
 #[derive(Clone, Copy)]
 enum CallbackHit {
     /// PlayerCollision.OnCollide with a lethal hitbox.
@@ -3424,6 +3431,9 @@ enum CallbackHit {
     /// GrenadeExplode or SmokeGrenadeExplode2.OnCollide with a Tesla line or
     /// Meteor smear, once per pair.
     ItemDetonate { item: usize, count: usize },
+    /// DynamicAbilityPickup.OnCollide with a slime's or an abilityless
+    /// clone's box, whose hurtbox row was `body` when the pair was found.
+    Pickup { pickup: usize, taker: PickupTaker, body: usize },
     /// A young SpikeAttack.OnCollide with a Player-layer box.
     SpikeKnock { spike: usize, player: usize, entity: usize, point: Vec2 },
     /// SpikeAttack.OnCollide with another composite's Spike attack or
@@ -3560,6 +3570,7 @@ enum PendingObject {
     DuplicatedRock,
     ClappedBlackHole,
     PickedAbility,
+    OrphanAbility,
     Mine,
     GuidedMissile,
     MissileExplosion,
@@ -3657,6 +3668,9 @@ pub struct RolloutWorld {
     pub duplicated_rocks: Vec<DuplicatedRock>,
     /// Duplicated rocks whose circles register on the next pass.
     pub pending_duplicated_rocks: Vec<DuplicatedRock>,
+    /// (hierarchy base, ability) of prefabs a pickup instantiated for a slime
+    /// already killed this pass; their colliders register on the next pass.
+    pub pending_orphan_abilities: Vec<(u32, u32)>,
     pub abilityless_clones: Vec<AbilitylessClone>,
     pub macho_boulders: Vec<MachoBoulder>,
     pub thrown_items: Vec<ThrownItem>,
@@ -3853,6 +3867,7 @@ impl RolloutWorld {
             pending_black_holes: Vec::new(),
             duplicated_rocks: Vec::with_capacity(MAX_PLAYERS * 8),
             pending_duplicated_rocks: Vec::new(),
+            pending_orphan_abilities: Vec::new(),
             abilityless_clones: Vec::with_capacity(MAX_PLAYERS * 16),
             macho_boulders: Vec::with_capacity(16),
             thrown_items: Vec::with_capacity(64),
@@ -3964,6 +3979,7 @@ impl RolloutWorld {
         self.duplicated_rocks.clone_from(&src.duplicated_rocks);
         self.pending_duplicated_rocks
             .clone_from(&src.pending_duplicated_rocks);
+        self.pending_orphan_abilities.clone_from(&src.pending_orphan_abilities);
         self.abilityless_clones.clone_from(&src.abilityless_clones);
         self.macho_boulders.clone_from(&src.macho_boulders);
         self.thrown_items.clone_from(&src.thrown_items);
@@ -4075,6 +4091,7 @@ impl RolloutWorld {
             pending_black_holes: _,
             duplicated_rocks: _,
             pending_duplicated_rocks: _,
+            pending_orphan_abilities: _,
             abilityless_clones: _,
             macho_boulders: _,
             thrown_items: _,
@@ -4210,6 +4227,7 @@ impl RolloutWorld {
         self.pending_black_holes.clear();
         self.duplicated_rocks.clear();
         self.pending_duplicated_rocks.clear();
+        self.pending_orphan_abilities.clear();
         self.abilityless_clones.clear();
         self.macho_boulders.clear();
         self.thrown_items.clear();
@@ -5756,12 +5774,7 @@ impl RolloutWorld {
     /// DynamicAbilityPickup.OnCollide only accepts the FixTransform carrying
     /// SlimeController itself. Ability-form hurtboxes are also on the player
     /// layer, but do not have that component and therefore cannot collect.
-    fn ability_pickups_contacts(&mut self, data: &data::RolloutData) {
-        #[derive(Clone, Copy)]
-        enum PickupTaker {
-            Body(usize),
-            Clone(usize),
-        }
+    fn ability_pickups_contacts(&mut self) {
         if !self
             .ability_pickups
             .iter()
@@ -5835,92 +5848,124 @@ impl RolloutWorld {
                 }
             }
         }
-        if hits.is_empty() {
-            return;
-        }
-        hits.sort_unstable_by_key(|&(later, earlier, ..)| (later, earlier));
-
         // PrepareCollisionCallBacks queues every overlapping Circle/Box
         // callback before any of them run. DestroyFix in the first pickup
         // callback therefore does not prevent the same pickup from being
-        // granted to another overlapping slime later in that queue.
-        let mut promoted: Vec<(usize, usize)> = Vec::new();
-        for &(_, _, pickup_index, taker) in &hits {
-            let ability = self.ability_pickups[pickup_index].ability;
-            let player_index = match taker {
-                PickupTaker::Body(body) => body,
-                PickupTaker::Clone(clone_index) => {
-                    if let Some(&(_, body)) =
-                        promoted.iter().find(|&&(clone, _)| clone == clone_index)
-                    {
-                        body
-                    } else if let Some(body) = self.promote_abilityless_clone(clone_index) {
-                        promoted.push((clone_index, body));
-                        body
-                    } else {
-                        continue;
-                    }
+        // granted to another overlapping slime later in that queue, and a
+        // lethal Circle/Box pair ahead of it kills the slime first.
+        for (later, earlier, pickup, taker) in hits {
+            let body = match taker {
+                PickupTaker::Body(player) => self.players[player].body_entity,
+                PickupTaker::Clone(clone) => {
+                    self.abilityless_clones[clone].entity.expect("player-layer clone has a row")
                 }
             };
-            self.active_subsystems |= ability_bit(ability);
-            // AddAdditionalAbility (SlimeController.cs:332-394): a full
-            // list replaces the third reference, a shorter one appends, and
-            // an empty one starts a new list on a second, inactive instance
-            // of the prefab, leaving OnCollide's instance behind.
-            let count = self.players[player_index].ability_count;
-            let (ability_slot, timer) = if count >= 3 {
-                if self.players[player_index].abilities[2] == ABILITY_PORTAL_GUN {
-                    self.orphan_portal_gun(player_index);
-                }
-                (2, Fix::from_int(100_000))
-            } else if count > 0 {
-                (count, Fix::from_int(100_000))
-            } else {
-                self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
-                (0, Fix::from_int(100))
-            };
-            // The new slot is ready at once, and the future-clone loadout
-            // follows it.
-            let slot = &mut self.players[player_index];
-            slot.ability_count = slot.ability_count.max(ability_slot + 1);
-            slot.abilityless = false;
-            slot.abilities[ability_slot] = ability;
-            slot.cooldowns[ability_slot] = data.abilities[ability as usize].cooldown;
-            slot.timers[ability_slot] = timer;
-            slot.ability_instantiated[ability_slot] = false;
-            slot.form_entities[ability_slot] = usize::MAX;
-            // The new Beam component has no orbEffect yet (Beam.cs:261).
-            slot.beam_orb_slots[ability_slot] = None;
-            slot.rope_prev[ability_slot + 1] = (Vec2::ZERO, Vec2::ZERO);
-            slot.forms[ability_slot] = FormScale::default();
-            slot.drill_hitbox_entities[ability_slot] = [usize::MAX; 3];
-            slot.black_hole_castable[ability_slot] = true;
-            slot.platform_hurtbox_disabled[ability_slot] = false;
-            slot.portal_blue[ability_slot] = None;
-            slot.teleport_ignore_cooldown[ability_slot] = false;
-            slot.portal_orange[ability_slot] = None;
-            slot.teleport_markers[ability_slot] = None;
-            // The new Spike's currentSpike is null, so its first cast leaves
-            // the replaced instance's SpikeAttack in place (Spike.cs:96-99).
-            slot.spike_attacks[ability_slot] = None;
-            // Engines, spark nodes, smoke clouds and thrown items stay with
-            // the replaced instance: the new one's buffers start empty.
-            slot.ability_generation[ability_slot] =
-                slot.ability_generation[ability_slot].wrapping_add(1);
-            for spawn in &mut self.spawned {
-                if spawn.buffer == Some((player_index, ability_slot)) {
-                    spawn.buffer = None;
-                }
-            }
-            slot.pending_ability_hierarchy[ability_slot] = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+            let hit = CallbackHit::Pickup { pickup, taker, body };
+            self.scratch.callback_hits.push(((1, later, earlier), hit));
+        }
+    }
 
+    /// DynamicAbilityPickup.OnCollide: instantiate the ability prefab, hand it
+    /// to AddAdditionalAbility and destroy the pickup. `body` is the taker's
+    /// hurtbox row when the pair was found.
+    fn grant_ability_pickup(
+        &mut self,
+        pickup_index: usize,
+        taker: PickupTaker,
+        body: usize,
+        data: &data::RolloutData,
+    ) {
+        let ability = self.ability_pickups[pickup_index].ability;
+        // A killPlayer earlier in this queue cleared the slime's abilities,
+        // so AddAdditionalAbility's empty-list branch instantiates the prefab
+        // again (SlimeController.cs:376-394). Both instances stay behind at
+        // the origin.
+        if self.entities[body].flags & E_DESTROYED != 0 {
+            for _ in 0..2 {
+                self.pending_orphan_abilities.push((self.next_spawn_hierarchy, ability));
+                self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+            }
             let state = &mut self.ability_pickups[pickup_index];
             if state.active {
                 state.active = false;
                 if let Some(entity) = state.entity {
                     self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
                 }
+            }
+            return;
+        }
+        let player_index = match taker {
+            PickupTaker::Body(body) => body,
+            // A later pickup this pass finds the clone already promoted to the
+            // extra body that kept its hurtbox row.
+            PickupTaker::Clone(clone_index) => {
+                if let Some(player) = self.players.iter().position(|slot| slot.body_entity == body)
+                {
+                    player
+                } else if let Some(player) = self.promote_abilityless_clone(clone_index) {
+                    player
+                } else {
+                    return;
+                }
+            }
+        };
+        self.active_subsystems |= ability_bit(ability);
+        // AddAdditionalAbility (SlimeController.cs:332-394): a full
+        // list replaces the third reference, a shorter one appends, and
+        // an empty one starts a new list on a second, inactive instance
+        // of the prefab, leaving OnCollide's instance behind.
+        let count = self.players[player_index].ability_count;
+        let (ability_slot, timer) = if count >= 3 {
+            if self.players[player_index].abilities[2] == ABILITY_PORTAL_GUN {
+                self.orphan_portal_gun(player_index);
+            }
+            (2, Fix::from_int(100_000))
+        } else if count > 0 {
+            (count, Fix::from_int(100_000))
+        } else {
+            self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+            (0, Fix::from_int(100))
+        };
+        // The new slot is ready at once, and the future-clone loadout
+        // follows it.
+        let slot = &mut self.players[player_index];
+        slot.ability_count = slot.ability_count.max(ability_slot + 1);
+        slot.abilityless = false;
+        slot.abilities[ability_slot] = ability;
+        slot.cooldowns[ability_slot] = data.abilities[ability as usize].cooldown;
+        slot.timers[ability_slot] = timer;
+        slot.ability_instantiated[ability_slot] = false;
+        slot.form_entities[ability_slot] = usize::MAX;
+        // The new Beam component has no orbEffect yet (Beam.cs:261).
+        slot.beam_orb_slots[ability_slot] = None;
+        slot.rope_prev[ability_slot + 1] = (Vec2::ZERO, Vec2::ZERO);
+        slot.forms[ability_slot] = FormScale::default();
+        slot.drill_hitbox_entities[ability_slot] = [usize::MAX; 3];
+        slot.black_hole_castable[ability_slot] = true;
+        slot.platform_hurtbox_disabled[ability_slot] = false;
+        slot.portal_blue[ability_slot] = None;
+        slot.teleport_ignore_cooldown[ability_slot] = false;
+        slot.portal_orange[ability_slot] = None;
+        slot.teleport_markers[ability_slot] = None;
+        // The new Spike's currentSpike is null, so its first cast leaves
+        // the replaced instance's SpikeAttack in place (Spike.cs:96-99).
+        slot.spike_attacks[ability_slot] = None;
+        // Engines, spark nodes, smoke clouds and thrown items stay with
+        // the replaced instance: the new one's buffers start empty.
+        slot.ability_generation[ability_slot] =
+            slot.ability_generation[ability_slot].wrapping_add(1);
+        for spawn in &mut self.spawned {
+            if spawn.buffer == Some((player_index, ability_slot)) {
+                spawn.buffer = None;
+            }
+        }
+        slot.pending_ability_hierarchy[ability_slot] = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+        let state = &mut self.ability_pickups[pickup_index];
+        if state.active {
+            state.active = false;
+            if let Some(entity) = state.entity {
+                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
         }
     }
@@ -6016,6 +6061,63 @@ impl RolloutWorld {
             return;
         }
 
+        let Some((entity, circle, target)) = self.push_ability_collider(ability, hierarchy_base, data)
+        else {
+            return;
+        };
+        let slot = &mut self.players[player_index];
+        slot.form_entities[ability_slot] = entity;
+        if circle {
+            match target {
+                0 => slot.roll_entity = entity,
+                1 => slot.gust_entity = entity,
+                2 => slot.revival_entity = entity,
+                3 => slot.circle_entity = entity,
+                _ => slot.time_stop_entity = entity,
+            }
+            return;
+        }
+        match target {
+            0 => {
+                slot.dash_entities[ability_slot] = entity;
+                slot.dash_entity = entity;
+            }
+            1 => slot.bow_entity = entity,
+            2 => {
+                slot.throw_entities[ability_slot] = entity;
+                slot.throw_entity = entity;
+            }
+            3 => slot.mine_entity = entity,
+            4 => slot.push_entity = entity,
+            5 => {
+                slot.freeze_entities[ability_slot] = entity;
+                slot.freeze_entity = entity;
+            }
+            6 => slot.blink_entity = entity,
+            7 => slot.growth_ray_entity = entity,
+            8 => slot.shrink_ray_entity = entity,
+            9 => slot.spike_entity = entity,
+            10 => slot.engine_entity = entity,
+            11 => slot.tesla_entity = entity,
+            12 => slot.meteor_entity = entity,
+            13 => slot.black_hole_entity = entity,
+            14 => slot.macho_throw_entity = entity,
+            15 => slot.drill_entity = entity,
+            16 => slot.beam_entity = entity,
+            17 => slot.duplicator_entity = entity,
+            _ => slot.magnet_entity = entity,
+        }
+    }
+
+    /// The Player-layer collider row of an ability prefab instantiated at the
+    /// origin: its entity, whether it is a circle, and which slot field
+    /// tracks it.
+    fn push_ability_collider(
+        &mut self,
+        ability: u32,
+        hierarchy_base: u32,
+        data: &data::RolloutData,
+    ) -> Option<(usize, bool, u8)> {
         let circle = match ability {
             ABILITY_ROLL => Some((
                 data.roll.radius,
@@ -6055,16 +6157,7 @@ impl RolloutWorld {
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
             });
-            let slot = &mut self.players[player_index];
-            slot.form_entities[ability_slot] = entity;
-            match target {
-                0 => slot.roll_entity = entity,
-                1 => slot.gust_entity = entity,
-                2 => slot.revival_entity = entity,
-                3 => slot.circle_entity = entity,
-                _ => slot.time_stop_entity = entity,
-            }
-            return;
+            return Some((entity, true, target));
         }
 
         let box_data = match ability {
@@ -6188,9 +6281,7 @@ impl RolloutWorld {
             )),
             _ => None,
         };
-        let Some((extents, offset, relative_hierarchy, target)) = box_data else {
-            return;
-        };
+        let (extents, offset, relative_hierarchy, target) = box_data?;
         let id = self.next_id();
         let entity = self.entities.len();
         self.entities.push(CEntity {
@@ -6207,38 +6298,7 @@ impl RolloutWorld {
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
         });
-        let slot = &mut self.players[player_index];
-        slot.form_entities[ability_slot] = entity;
-        match target {
-            0 => {
-                slot.dash_entities[ability_slot] = entity;
-                slot.dash_entity = entity;
-            }
-            1 => slot.bow_entity = entity,
-            2 => {
-                slot.throw_entities[ability_slot] = entity;
-                slot.throw_entity = entity;
-            }
-            3 => slot.mine_entity = entity,
-            4 => slot.push_entity = entity,
-            5 => {
-                slot.freeze_entities[ability_slot] = entity;
-                slot.freeze_entity = entity;
-            }
-            6 => slot.blink_entity = entity,
-            7 => slot.growth_ray_entity = entity,
-            8 => slot.shrink_ray_entity = entity,
-            9 => slot.spike_entity = entity,
-            10 => slot.engine_entity = entity,
-            11 => slot.tesla_entity = entity,
-            12 => slot.meteor_entity = entity,
-            13 => slot.black_hole_entity = entity,
-            14 => slot.macho_throw_entity = entity,
-            15 => slot.drill_entity = entity,
-            16 => slot.beam_entity = entity,
-            17 => slot.duplicator_entity = entity,
-            _ => slot.magnet_entity = entity,
-        }
+        Some((entity, false, target))
     }
 
     fn record_warmup_rewind(&mut self, warmup_tick: u32) {
@@ -7682,7 +7742,7 @@ impl RolloutWorld {
         // DynamicAbilityPickup.OnCollide is a callback: a pickup a slime
         // collects this pass still resolved its Circle/Circle pairs first.
         if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
-            self.ability_pickups_contacts(data);
+            self.ability_pickups_contacts();
         }
         // That was the last correction that moves a wall. The squish callback
         // queued in the Box/RR group runs only after every group's corrections
@@ -20901,6 +20961,9 @@ impl RolloutWorld {
         for (index, rock) in self.pending_duplicated_rocks.iter().enumerate() {
             pending.push((rock.hierarchy_base, PendingObject::DuplicatedRock, index));
         }
+        for (index, &(hierarchy_base, _)) in self.pending_orphan_abilities.iter().enumerate() {
+            pending.push((hierarchy_base, PendingObject::OrphanAbility, index));
+        }
         // A clapped hole's Init registers its circle with the other objects
         // queued in the prior pass, ahead of every player's updaters.
         for (index, player) in self.players.iter().enumerate() {
@@ -20989,6 +21052,10 @@ impl RolloutWorld {
                 PendingObject::PickedAbility => {
                     self.ensure_equipped_ability_registered(index / 3, index % 3, data)
                 }
+                PendingObject::OrphanAbility => {
+                    let (hierarchy_base, ability) = self.pending_orphan_abilities[index];
+                    self.push_ability_collider(ability, hierarchy_base, data);
+                }
                 PendingObject::Mine => self.register_mine(index, data),
                 PendingObject::GuidedMissile => self.register_guided_missile(index, data),
                 PendingObject::MissileExplosion => self.register_missile_explosion(index, data),
@@ -21006,6 +21073,7 @@ impl RolloutWorld {
         }
         self.pending_black_holes.clear();
         self.pending_duplicated_rocks.clear();
+        self.pending_orphan_abilities.clear();
         self.scratch.pending_objects = pending;
         drowned
     }
@@ -37890,6 +37958,9 @@ impl RolloutWorld {
                         self.kill(player, killer, cause, true, true);
                     }
                 }
+                CallbackHit::Pickup { pickup, taker, body } => {
+                    self.grant_ability_pickup(pickup, taker, body, data);
+                }
                 CallbackHit::MissileBlast { missile } => {
                     let missile_state = self.guided_missiles[missile];
                     if missile_state.active {
@@ -47669,7 +47740,8 @@ mod tests {
         world.entities[pickup_entity].flags |= E_ENABLED;
         let hierarchy = world.next_spawn_hierarchy;
 
-        world.ability_pickups_contacts(data::get());
+        world.ability_pickups_contacts();
+        world.run_callback_hits(data::get());
 
         for player in &world.players {
             assert_eq!(player.abilities[2], ABILITY_MINE);
