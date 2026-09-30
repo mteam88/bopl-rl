@@ -628,6 +628,12 @@ pub struct ThrownItem {
     /// while Shockwave.Init runs before the updater pass. Retain only the
     /// regular-pass impulse until Mjolnir has updated its recall velocity.
     pub pending_gust_impulse: Vec2,
+    /// The pass whose Updater turn this item's UpdateSim (a Tack's
+    /// BananaPeel, a Poke Ball's or a Mjolnir's) has taken. An older item runs
+    /// ahead of a newer object that acts on it, and never twice in one pass;
+    /// a Shockwave pushes an item that has run directly and holds its
+    /// impulse for one still to run.
+    pub updater_ran_tick: Option<u32>,
     /// Mine.Init/LateUpdateSim state. Keeping it in the pooled item avoids a
     /// side allocation for every autonomous mine.
     pub random_offset: Fix,
@@ -3568,12 +3574,6 @@ struct PlatformScratch {
     /// The oldest hammer's hierarchy: ropes from here up update in the hammer
     /// loop, and their attachments pull after them.
     ropes_deferred_from: u32,
-    /// Tacks below this hierarchy ran their UpdateSim ahead of a
-    /// later-instantiated player object this pass.
-    tacks_ran_below: u32,
-    /// Mjolnir hammers below this hierarchy ran their UpdateSim ahead of a
-    /// later-instantiated player object this pass.
-    hammers_ran_below: u32,
     /// The row hierarchies of the Duplicator copies the current Duplicated
     /// platform pass runs; None runs them all.
     duplicates_window: Option<std::ops::Range<u32>>,
@@ -6884,8 +6884,6 @@ impl RolloutWorld {
         let mut spawned_from = 0;
         let mut recorded = 0;
         self.scratch.ropes_ran_below = 0;
-        self.scratch.tacks_ran_below = 0;
-        self.scratch.hammers_ran_below = 0;
         self.scratch.engines_ran_below = 0;
         self.scratch.clones_positioned = [false; MAX_BODIES];
         self.scratch.clone_publisher = [None; MAX_BODIES];
@@ -6921,66 +6919,7 @@ impl RolloutWorld {
                 self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
             }
             if spawned_from < player_hierarchy[index] {
-                let spawned = spawned_from..player_hierarchy[index];
-                // So do a Duplicator copy's platform updaters: a Blink shot
-                // at the copy by a stock-respawned slime starts its shake
-                // on the next pass.
-                if has(ABILITY_DUPLICATOR) {
-                    self.duplicated_platforms_tick(data, updater_dt, spawned.clone());
-                }
-                // And a runtime-spawned platform's: a form picked up after
-                // it was spawned sits behind its AnimateVelocity.
-                self.spawned_platforms_tick(data, updater_dt, spawned.clone());
-                if has(ABILITY_BLACK_HOLE) {
-                    self.black_holes_update(data, updater_dt, spawned.clone());
-                }
-                if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
-                    self.poke_balls_and_tacks_tick(data, updater_dt, spawned.clone(), spawned.clone());
-                    self.scratch.tacks_ran_below = spawned.end;
-                }
-                // So does a Mjolnir: one thrown before its owner's or a
-                // victim's stock death destroys the respawned slime before
-                // that slime moves or pushes anyone.
-                if has(ABILITY_MJOLNIR) {
-                    self.mjolnirs_tick(data, updater_dt, spawned.clone());
-                    self.scratch.hammers_ran_below = spawned.end;
-                }
-                if has(ABILITY_PORTAL_GUN) {
-                    self.portals_update(data, updater_dt, spawned.clone(), None);
-                }
-                // So does a DynamicAbilityPickup, whose vibration draws from
-                // the shared RNG before a Meteor form picked up after it
-                // vibrates. One newer than a live ScaleChanger waits for it.
-                if !self.ability_pickups.is_empty() {
-                    let mut below = spawned.end.saturating_sub(100_000_000);
-                    if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
-                        below = below.min(self.first_live_scale_changer().unwrap_or(u32::MAX));
-                    }
-                    self.ability_pickups_tick_before(below, data, updater_dt);
-                }
-                // So does a RocketEngine's push on the platform it sits on.
-                if has(ABILITY_ENGINE) {
-                    self.engines_tick_below(data, updater_dt, spawned.end);
-                }
-                // So does a hook's Rope, whose RopeAttachment pulls the
-                // platform it hangs from before a Drill reads its velocity.
-                if has_rope {
-                    let ropes = spawned.start.saturating_sub(100_000_000)
-                        ..spawned.end.saturating_sub(100_000_000);
-                    if has(ABILITY_GRAPPLING_HOOK) {
-                        self.grapple_ropes_update(ropes.clone());
-                    }
-                    self.ropes_update(ropes.clone());
-                    self.scratch.ropes_ran_below = ropes.end;
-                }
-                // So does a Smoke cloud's FlammableSmoke, whose detonation
-                // takes the explosion's hierarchy before a Meteor lands.
-                if has(ABILITY_SMOKE) {
-                    self.smoke_clouds_update_early(data, updater_dt, spawned.clone());
-                }
-                if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
-                    self.player_scale_changers_update(data, spawned);
-                }
+                self.spawned_updatables_tick(data, updater_dt, spawned_from..player_hierarchy[index]);
                 spawned_from = player_hierarchy[index];
             }
             let packet = &actions[self.players[index].owner];
@@ -7367,7 +7306,7 @@ impl RolloutWorld {
             self.rope_parents_update(rope_abilities::RopeParentPass::NewerShot);
         }
         if has(ABILITY_PORTAL_GUN) {
-            self.portal_shots_tick(data, updater_dt, spawned_from);
+            self.portal_shots_tick(data, updater_dt);
         }
         if has_rope {
             self.rope_parents_update(rope_abilities::RopeParentPass::Other);
@@ -7468,7 +7407,7 @@ impl RolloutWorld {
                 u32::MAX
             };
             self.teleport_effects_tick(data, updater_dt, 0..first_tunnel);
-            self.teleport_pending_tick(data, updater_dt, spawned_from, u32::MAX);
+            self.teleport_pending_tick(data, updater_dt, u32::MAX);
         }
         if has_rope && first_teleport < ropes_before_clones {
             self.ropes_update(first_teleport..ropes_before_clones);
@@ -8171,13 +8110,84 @@ impl RolloutWorld {
         }
     }
 
-    fn portal_shots_tick(&mut self, data: &data::RolloutData, updater_dt: Fix, spawned_from: u32) {
+    /// The spawned updatables whose row hierarchy lies in `spawned`, ahead
+    /// of a younger slime or form. A slime respawned from a stock, or an
+    /// ability form instantiated at its first cast, is newer than every object
+    /// spawned before it, so those objects' UpdateSim calls precede its own.
+    fn spawned_updatables_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        spawned: std::ops::Range<u32>,
+    ) {
+        let active_subsystems = self.active_subsystems;
+        let has = |ability| active_subsystems & ability_bit(ability) != 0;
+        let has_rope = has(ABILITY_GRAPPLING_HOOK) || has(ABILITY_WEB_SWING);
+        // A Duplicator copy's platform updaters: a Blink shot at the copy by
+        // a stock-respawned slime starts its shake on the next pass.
+        if has(ABILITY_DUPLICATOR) {
+            self.duplicated_platforms_tick(data, updater_dt, spawned.clone());
+        }
+        // A runtime-spawned platform's: a form picked up after it was spawned
+        // sits behind its AnimateVelocity.
+        self.spawned_platforms_tick(data, updater_dt, spawned.clone());
+        if has(ABILITY_BLACK_HOLE) {
+            self.black_holes_update(data, updater_dt, spawned.clone());
+        }
+        if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
+            self.poke_balls_and_tacks_tick(data, updater_dt, spawned.clone(), spawned.clone());
+        }
+        // So does a Mjolnir: one thrown before its owner's or a
+        // victim's stock death destroys the respawned slime before
+        // that slime moves or pushes anyone.
+        if has(ABILITY_MJOLNIR) {
+            self.mjolnirs_tick(data, updater_dt, spawned.clone());
+        }
+        if has(ABILITY_PORTAL_GUN) {
+            self.portals_update(data, updater_dt, spawned.clone(), None);
+        }
+        // So does a DynamicAbilityPickup, whose vibration draws from
+        // the shared RNG before a Meteor form picked up after it
+        // vibrates. One newer than a live ScaleChanger waits for it.
+        if !self.ability_pickups.is_empty() {
+            let mut below = spawned.end.saturating_sub(100_000_000);
+            if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
+                below = below.min(self.first_live_scale_changer().unwrap_or(u32::MAX));
+            }
+            self.ability_pickups_tick_before(below, data, updater_dt);
+        }
+        // So does a RocketEngine's push on the platform it sits on.
+        if has(ABILITY_ENGINE) {
+            self.engines_tick_below(data, updater_dt, spawned.end);
+        }
+        // So does a hook's Rope, whose RopeAttachment pulls the
+        // platform it hangs from before a Drill reads its velocity.
+        if has_rope {
+            let ropes = spawned.start.saturating_sub(100_000_000)
+                ..spawned.end.saturating_sub(100_000_000);
+            if has(ABILITY_GRAPPLING_HOOK) {
+                self.grapple_ropes_update(ropes.clone());
+            }
+            self.ropes_update(ropes.clone());
+            self.scratch.ropes_ran_below = ropes.end;
+        }
+        // So does a Smoke cloud's FlammableSmoke, whose detonation
+        // takes the explosion's hierarchy before a Meteor lands.
+        if has(ABILITY_SMOKE) {
+            self.smoke_clouds_update_early(data, updater_dt, spawned.clone());
+        }
+        if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
+            self.player_scale_changers_update(data, spawned);
+        }
+    }
+
+    fn portal_shots_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for shot_index in 0..self.portal_shots.len() {
             // An older TeleportIndicator moves and disables the shots it
             // catches before their turn (TeleportIndicator.cs:165-166).
             if self.portal_shots[shot_index].active {
                 let hierarchy = self.portal_shots[shot_index].hierarchy_base;
-                self.teleport_pending_tick(data, updater_dt, spawned_from, hierarchy);
+                self.teleport_pending_tick(data, updater_dt, hierarchy);
             }
             if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
                 continue;
@@ -9425,9 +9435,6 @@ impl RolloutWorld {
             if let Some(from) = tacks_from.filter(|&from| from < endpoint_hierarchy) {
                 self.poke_balls_and_tacks_tick(data, updater_dt, 0..0, from..endpoint_hierarchy);
                 tacks_from = Some(endpoint_hierarchy);
-                // Those Tacks have pinned, so a newer Shockwave's impulse
-                // lands on them directly (Shockwave.cs:213).
-                self.scratch.tacks_ran_below = self.scratch.tacks_ran_below.max(endpoint_hierarchy);
             }
             self.ability_pickups_tick_before(
                 self.portals[endpoint_index].hierarchy_base,
@@ -16972,12 +16979,7 @@ impl RolloutWorld {
             // Likewise an older TeleportIndicator has already moved and
             // disabled its slimes (TeleportIndicator.cs:165-166), so this hole
             // no longer finds them (BlackHole.cs:388, DetPhysics.cs:1658-1664).
-            self.teleport_pending_tick(
-                data,
-                dt,
-                hierarchy.start,
-                self.black_holes[hole_index].hierarchy_base,
-            );
+            self.teleport_pending_tick(data, dt, self.black_holes[hole_index].hierarchy_base);
             // So has an older runtime-spawned platform, such as a Macho
             // boulder: its BoplBody has already rescaled the mass this hole
             // pulls with.
@@ -22160,13 +22162,10 @@ impl RolloutWorld {
     }
 
     /// Fires the pending TeleportIndicators registered below `older_than`.
-    /// `poke_balls_ran_below`: the player loop already ran the Poke Balls
-    /// under this hierarchy, ahead of a younger slime.
     fn teleport_pending_tick(
         &mut self,
         data: &data::RolloutData,
         updater_dt: Fix,
-        poke_balls_ran_below: u32,
         older_than: u32,
     ) {
         for owner in 0..self.players.len() {
@@ -22236,16 +22235,13 @@ impl RolloutWorld {
                     && !self.teleport_skips_entity(entity)
                     && !self.blink_object_hidden(Some(entity))
                 {
-                    match self.thrown_items[item_index].ability {
-                        ABILITY_TACK => self.tack_tick(item_index, data, updater_dt),
-                        ABILITY_POKE_BALL
-                            if 100_000_000 + self.thrown_items[item_index].hierarchy_base
-                                >= poke_balls_ran_below =>
-                        {
-                            self.poke_ball_tick(item_index, data, updater_dt)
+                    if self.take_updater_turn(item_index) {
+                        match self.thrown_items[item_index].ability {
+                            ABILITY_TACK => self.tack_tick(item_index, data, updater_dt),
+                            ABILITY_POKE_BALL => self.poke_ball_tick(item_index, data, updater_dt),
+                            ABILITY_MJOLNIR => self.mjolnir_tick(item_index, data, updater_dt),
+                            _ => {}
                         }
-                        ABILITY_MJOLNIR => self.mjolnir_tick(item_index, data, updater_dt),
-                        _ => {}
                     }
                     let item = &mut self.thrown_items[item_index];
                     if item.active && item.pending_gust_impulse != Vec2::ZERO {
@@ -23689,8 +23685,7 @@ impl RolloutWorld {
                 .apply_impulse(impulse, arm);
             applied = true;
         }
-        let tacks_ran_below = self.scratch.tacks_ran_below;
-        let hammers_ran_below = self.scratch.hammers_ran_below;
+        let tick = self.tick;
         for target in 0..wave.item_count {
             let item_index = wave.item_indices[target];
             let Some(item) = self.thrown_items.get_mut(item_index) else {
@@ -23699,15 +23694,9 @@ impl RolloutWorld {
             if !item.active || item.entity.is_none() {
                 continue;
             }
-            // A tack or hammer that ran ahead of a stock-respawned slime
-            // already updated this pass, so the wave's impulse lands on it
-            // directly.
-            let ran_below = match item.ability {
-                ABILITY_TACK => tacks_ran_below,
-                ABILITY_MJOLNIR => hammers_ran_below,
-                _ => 0,
-            };
-            let defer = defer_mjolnir && 100_000_000 + item.hierarchy_base >= ran_below;
+            // A tack or hammer that has already taken its Updater turn this
+            // pass takes the wave's impulse directly.
+            let defer = defer_mjolnir && item.updater_ran_tick != Some(tick);
             // The regular pass reads the FixTransform after BananaPeel.UpdateSim
             // pinned a settled tack back to its settle point.
             let position = if defer && item.ability == ABILITY_TACK && item.settled {
@@ -24798,6 +24787,7 @@ impl RolloutWorld {
             phase: 0,
             killed_players: 0,
             pending_gust_impulse: Vec2::ZERO,
+            updater_ran_tick: None,
             random_offset: Fix::ZERO,
             time_since_anticipation: Fix::ZERO,
             prev_chase_dir: Vec2::RIGHT,
@@ -25181,6 +25171,7 @@ impl RolloutWorld {
             phase: 0,
             killed_players: 0,
             pending_gust_impulse: Vec2::ZERO,
+            updater_ran_tick: None,
             random_offset: Fix::ZERO,
             time_since_anticipation: Fix::ZERO,
             prev_chase_dir: Vec2::RIGHT,
@@ -31318,12 +31309,6 @@ impl RolloutWorld {
         order.sort_unstable_by_key(|&index| (self.scale_changers[index].hierarchy_base, index));
         let mut spikes_from = deferred_spikes;
         let mut updaters_from = deferred_updaters;
-        // Every Tack has taken its turn by now, so a wave stepped among the
-        // changers pushes a tack directly instead of leaving the impulse for
-        // a turn that already passed.
-        if updaters_from.is_some() {
-            self.scratch.tacks_ran_below = u32::MAX;
-        }
         for &index in &order {
             let effect = self.scale_changers[index];
             if let Some(from) = spikes_from.filter(|&from| from < effect.hierarchy_base) {
@@ -34120,6 +34105,16 @@ impl RolloutWorld {
     /// a stock-respawned slime go ahead of it: a ball's hold moves it before
     /// its SlimeController publishes Player.Position, and a tack tests it
     /// before it moves.
+    /// Claims item `item_index`'s Updater turn this pass; false once taken.
+    fn take_updater_turn(&mut self, item_index: usize) -> bool {
+        let item = &mut self.thrown_items[item_index];
+        if item.updater_ran_tick == Some(self.tick) {
+            return false;
+        }
+        item.updater_ran_tick = Some(self.tick);
+        true
+    }
+
     fn poke_balls_and_tacks_tick(
         &mut self,
         data: &data::RolloutData,
@@ -34142,7 +34137,9 @@ impl RolloutWorld {
         for &item_index in &order {
             // The TeleportedObjectEffect that reactivates an item is newer, so
             // the item's own UpdateSim was skipped this pass.
-            if self.teleport_revealed_this_pass(self.thrown_items[item_index].entity) {
+            if !self.take_updater_turn(item_index)
+                || self.teleport_revealed_this_pass(self.thrown_items[item_index].entity)
+            {
                 continue;
             }
             if self.thrown_items[item_index].ability == ABILITY_POKE_BALL {
@@ -34482,7 +34479,9 @@ impl RolloutWorld {
         }));
         order.sort_unstable_by_key(|&index| (self.thrown_items[index].hierarchy_base, index));
         for &item_index in &order {
-            if !self.teleport_revealed_this_pass(self.thrown_items[item_index].entity) {
+            if self.take_updater_turn(item_index)
+                && !self.teleport_revealed_this_pass(self.thrown_items[item_index].entity)
+            {
                 self.mjolnir_hammer_update(item_index, data, updater_dt);
             }
         }
@@ -34532,7 +34531,7 @@ impl RolloutWorld {
                 self.scratch.ropes_updated_below = hierarchy;
             }
             if self.thrown_items[item_index].ability == ABILITY_MJOLNIR
-                && 100_000_000 + hierarchy >= self.scratch.hammers_ran_below
+                && self.take_updater_turn(item_index)
             {
                 self.mjolnir_hammer_update(item_index, data, updater_dt);
             }
@@ -46685,7 +46684,7 @@ mod tests {
         world.portal_shots[0].body.velocity = Vec2::UP;
         world.tick += 1;
 
-        world.portal_shots_tick(data::get(), DT, 0);
+        world.portal_shots_tick(data::get(), DT);
 
         assert_eq!(world.portal_shots[0].body.velocity, expected);
         assert!(world.portal_shots[0].fire_applied);
@@ -46699,7 +46698,7 @@ mod tests {
         world.tick += 1;
         let dt = DT * Fix::from_f32(0.5);
 
-        world.portal_shots_tick(data::get(), dt, 0);
+        world.portal_shots_tick(data::get(), dt);
 
         assert_eq!(world.portal_shots[0].time_alive, dt);
         world.portals.push(PortalEndpoint {
