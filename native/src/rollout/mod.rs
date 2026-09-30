@@ -9806,6 +9806,20 @@ impl RolloutWorld {
         if !self.players[index].base.grounded && self.players[index].active != ActiveAbility::Roll {
             return;
         }
+        // BounceBall, Drill, PlatformTransform, Dash, CastSpell and QuickSpell
+        // never run PlayerPhysics.Move or DropPlatformTest.
+        if matches!(
+            self.players[index].active,
+            ActiveAbility::Rock
+                | ActiveAbility::Drill
+                | ActiveAbility::Platform
+                | ActiveAbility::Dash
+                | ActiveAbility::TimeStop
+                | ActiveAbility::Gust
+                | ActiveAbility::Revival
+        ) {
+            return;
+        }
         let Some(platform_index) = self.players[index].base.ground.and_then(|ground| {
             self.platforms
                 .iter()
