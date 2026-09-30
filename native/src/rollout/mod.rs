@@ -18799,6 +18799,9 @@ impl RolloutWorld {
         advance_animation: bool,
         data: &data::RolloutData,
     ) {
+        // The orb's LateUpdateSim pose scales by hurtbox.Scale, which this
+        // pass's Ability.UpdateSim is about to reassign (Beam.cs:641-689).
+        let late_scale = self.players[index].forms[self.players[index].active_slot].scale;
         // Ability.UpdateSim assigns Player.Scale to the box (Ability.cs:135),
         // and this prefab's PlayerPhysics.UpdateScale carries its radius along.
         {
@@ -18876,7 +18879,7 @@ impl RolloutWorld {
             && self.beam_zero_time_pass(
                 index,
                 action,
-                (undrifted, late_up, late_staff, late_facing),
+                (undrifted, late_up, late_staff, late_facing, late_scale),
                 data,
             )
         {
@@ -18904,7 +18907,7 @@ impl RolloutWorld {
         // unheld on the pass it fires, keeping the pose DetPhysics synced it
         // to. Beam.ExitAbility does not UnGround.
         if advance_animation && self.ability_boundary_kill(index, false) {
-            self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
+            self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
             return;
         }
         if let Some(orb) = self.players[index].beam.orb {
@@ -18930,7 +18933,7 @@ impl RolloutWorld {
         if self.players[index].beam.phase != 2 && action.buttons & button == 0 {
             // DetPhysics has synchronized the orb transform from the prior
             // late phase before Beam starts whiteExit on this pass.
-            self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
+            self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
             self.stop_beam(index);
         }
 
@@ -18967,7 +18970,7 @@ impl RolloutWorld {
             }
             if self.players[index].base.grounded {
                 // The orb collider still syncs to the prior late pose this pass.
-                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
+                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
                 self.stop_beam(index);
                 self.exit_beam(index, false, data);
                 // The landing exits `justlanded`, so attachToGround sets
@@ -18989,7 +18992,7 @@ impl RolloutWorld {
             if self.apply_platform_drop(index, data) {
                 // The drop exits the form before Beam.LateUpdateSim runs, but
                 // DetPhysics already synced the orb to last pass's late pose.
-                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
+                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
                 return;
             }
         } else {
@@ -19055,7 +19058,7 @@ impl RolloutWorld {
             }
             self.players[index].beam.time_since_beam += DT;
             if action.buttons & 1 != 0 && !self.players[index].base.previous_jump {
-                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
+                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
                 self.stop_beam(index);
                 self.exit_beam(index, true, data);
                 return;
@@ -19069,7 +19072,7 @@ impl RolloutWorld {
                 // The maximum-duration check follows the final loop
                 // LateUpdate pose in the native scheduler. Preserve that
                 // tick's FirePos before whiteExit disables the orb hitbox.
-                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
+                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
                 self.stop_beam(index);
             }
         } else if self.players[index].beam.phase == 2
@@ -19084,7 +19087,7 @@ impl RolloutWorld {
         self.players[index].beam.collider_position = self.players[index].base.position;
         self.players[index].beam.collider_up = self.players[index].base.up;
         self.players[index].beam.collider_rotation = self.players[index].base.rotation;
-        self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
+        self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
     }
 
     /// Beam.OnLeftFirstFrame: SetFacingDirection, then UpdateSim(Fix.Zero)
@@ -19096,7 +19099,7 @@ impl RolloutWorld {
         &mut self,
         index: usize,
         action: Action,
-        late_pose: (Vec2, Vec2, Vec2, bool),
+        late_pose: (Vec2, Vec2, Vec2, bool, Fix),
         data: &data::RolloutData,
     ) -> bool {
         // UpdateSim(0) holds the orb first like any other pass.
@@ -19120,8 +19123,8 @@ impl RolloutWorld {
         if self.players[index].beam.phase != 2 && action.buttons & button == 0 {
             // The orb collider still holds last pass's late pose, as in the
             // ordinary pass's stop.
-            let (position, up, staff, facing) = late_pose;
-            self.update_beam_orb_position(index, position, up, staff, facing);
+            let (position, up, staff, facing, scale) = late_pose;
+            self.update_beam_orb_position(index, position, up, staff, facing, scale);
             self.stop_beam(index);
         }
         let input = if self.players[index].beam.phase == 2 {
@@ -19193,6 +19196,7 @@ impl RolloutWorld {
         up: Vec2,
         staff_dir: Vec2,
         facing_right: bool,
+        scale: Fix,
     ) {
         let Some(orb) = self.players[index].beam.orb else {
             return;
@@ -19204,7 +19208,7 @@ impl RolloutWorld {
         let position = if state.phase == 1 && state.phase_ticks == 0 && state.in_air {
             // StartBeam switches the clip during UpdateSim; the air orb keeps
             // the last enter frame's pose.
-            body_position + staff_dir * Fix::from_f64(3.1) * self.players[index].player_scale
+            body_position + staff_dir * Fix::from_f64(3.1) * scale
         } else if state.phase == 1 && state.phase_ticks == 0 {
             let facing = if facing_right {
                 Fix::ONE
@@ -19221,9 +19225,9 @@ impl RolloutWorld {
                     },
                 )
                 .complex_mul(up.perp_cw())
-                    * self.players[index].player_scale
+                    * scale
         } else if state.phase == 1 {
-            body_position + staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
+            body_position + staff_dir * Fix::from_f64(2.8) * scale
         } else if state.phase == 0 && !state.in_air {
             let facing = if facing_right {
                 Fix::ONE
@@ -19242,7 +19246,7 @@ impl RolloutWorld {
             } else {
                 Vec2::new(Fix::from_int(2) * facing, Fix::from_f64(-0.05))
             };
-            body_position + local.complex_mul(up.perp_cw()) * self.players[index].player_scale
+            body_position + local.complex_mul(up.perp_cw()) * scale
         } else if state.phase == 0 {
             let facing = if facing_right {
                 Fix::ONE
@@ -19251,20 +19255,20 @@ impl RolloutWorld {
             };
             if state.phase_ticks >= data::get().beam.air_orb_frame10_ticks {
                 body_position
-                    + staff_dir * Fix::from_f64(3.1) * self.players[index].player_scale
+                    + staff_dir * Fix::from_f64(3.1) * scale
             } else if state.phase_ticks >= data::get().beam.air_orb_frame9_ticks {
                 body_position
                     + Vec2::new(Fix::from_f64(0.1) * facing, Fix::from_int(-2))
                         .complex_mul(up.perp_cw())
-                        * self.players[index].player_scale
+                        * scale
             } else if state.phase_ticks >= data::get().beam.air_orb_frame8_ticks {
                 body_position
                     + Vec2::new(Fix::from_f64(0.1) * facing, Fix::from_f64(-2.3))
                         .complex_mul(up.perp_cw())
-                        * self.players[index].player_scale
+                        * scale
             } else {
                 body_position
-                    + staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale
+                    + staff_dir * Fix::from_f64(2.8) * scale
             }
         } else {
             self.beam_orbs[orb].position
