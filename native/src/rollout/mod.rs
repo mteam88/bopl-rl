@@ -18802,12 +18802,12 @@ impl RolloutWorld {
         // The orb's LateUpdateSim pose scales by hurtbox.Scale, which this
         // pass's Ability.UpdateSim is about to reassign (Beam.cs:641-689).
         let late_scale = self.players[index].forms[self.players[index].active_slot].scale;
-        // Ability.UpdateSim assigns Player.Scale to the box (Ability.cs:135),
-        // and this prefab's PlayerPhysics.UpdateScale carries its radius along.
+        // Ability.UpdateSim assigns Player.Scale to the box (Ability.cs:135).
+        // This prefab's PlayerPhysics.UpdateScale only carries the radius along
+        // after SpriteAnimator's callbacks (Beam.prefab component order).
         {
             let slot = &mut self.players[index];
             slot.scale_form(data.beam.hurtbox_extents, data.beam.radius, data.beam.collider_offset);
-            slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         }
         // The orb row is its DetPhysics collider, synchronized from the pose
         // Beam.LateUpdateSim gave it last pass: the body's orientation and
@@ -18901,6 +18901,10 @@ impl RolloutWorld {
                 self.entities[entity].flags = E_TRIGGER;
             }
             return;
+        }
+        {
+            let slot = &mut self.players[index];
+            slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         }
         // Beam.prefab's DestroyIfOutsideSceneBounds (hierarchy 4) runs after
         // SpriteAnimator and before PlayerBody and Beam, so the orb goes
