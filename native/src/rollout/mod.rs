@@ -3529,6 +3529,9 @@ struct PlatformScratch {
     /// Tacks below this hierarchy ran their UpdateSim ahead of a
     /// later-instantiated player object this pass.
     tacks_ran_below: u32,
+    /// Mjolnir hammers below this hierarchy ran their UpdateSim ahead of a
+    /// later-instantiated player object this pass.
+    hammers_ran_below: u32,
     /// The row hierarchies of the Duplicator copies the current Duplicated
     /// platform pass runs; None runs them all.
     duplicates_window: Option<std::ops::Range<u32>>,
@@ -6797,6 +6800,7 @@ impl RolloutWorld {
         let mut recorded = 0;
         self.scratch.ropes_ran_below = 0;
         self.scratch.tacks_ran_below = 0;
+        self.scratch.hammers_ran_below = 0;
         self.scratch.engines_ran_below = 0;
         self.scratch.clones_positioned = [false; MAX_BODIES];
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
@@ -6841,6 +6845,13 @@ impl RolloutWorld {
                 if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
                     self.poke_balls_and_tacks_tick(data, updater_dt, spawned.clone(), spawned.clone());
                     self.scratch.tacks_ran_below = spawned.end;
+                }
+                // So does a Mjolnir: one thrown before its owner's or a
+                // victim's stock death destroys the respawned slime before
+                // that slime moves or pushes anyone.
+                if has(ABILITY_MJOLNIR) {
+                    self.mjolnirs_tick(data, updater_dt, spawned.clone());
+                    self.scratch.hammers_ran_below = spawned.end;
                 }
                 if has(ABILITY_PORTAL_GUN) {
                     self.portals_update(data, updater_dt, spawned.clone(), None);
@@ -23476,6 +23487,7 @@ impl RolloutWorld {
             applied = true;
         }
         let tacks_ran_below = self.scratch.tacks_ran_below;
+        let hammers_ran_below = self.scratch.hammers_ran_below;
         for target in 0..wave.item_count {
             let item_index = wave.item_indices[target];
             let Some(item) = self.thrown_items.get_mut(item_index) else {
@@ -23484,11 +23496,15 @@ impl RolloutWorld {
             if !item.active || item.entity.is_none() {
                 continue;
             }
-            // A tack that ran ahead of a stock-respawned slime already pinned
-            // itself this pass, so the wave's impulse lands on it directly.
-            let defer = defer_mjolnir
-                && !(item.ability == ABILITY_TACK
-                    && 100_000_000 + item.hierarchy_base < tacks_ran_below);
+            // A tack or hammer that ran ahead of a stock-respawned slime
+            // already updated this pass, so the wave's impulse lands on it
+            // directly.
+            let ran_below = match item.ability {
+                ABILITY_TACK => tacks_ran_below,
+                ABILITY_MJOLNIR => hammers_ran_below,
+                _ => 0,
+            };
+            let defer = defer_mjolnir && 100_000_000 + item.hierarchy_base >= ran_below;
             // The regular pass reads the FixTransform after BananaPeel.UpdateSim
             // pinned a settled tack back to its settle point.
             let position = if defer && item.ability == ABILITY_TACK && item.settled {
@@ -33863,16 +33879,6 @@ impl RolloutWorld {
             if teleported_later {
                 return Some(before);
             }
-            // A clone newer than the hammer, such as the stock clone a hammer
-            // thrown before the death homes to, takes its updaters after the
-            // hammer's: the chooser's last pass still finds it at the hold
-            // point, and the spawn pop has not moved it yet.
-            if slot.pass_start.0 == self.tick
-                && slot.pinned_from.0 != self.tick
-                && self.entities[slot.body_entity].hierarchy > 100_000_000 + hierarchy
-            {
-                return Some(slot.pass_start.1);
-            }
             return Some(self.mjolnir_view(owner, hierarchy));
         }
         if let Some(clone) = self
@@ -34241,6 +34247,44 @@ impl RolloutWorld {
         }
     }
 
+    /// Mjolnir.UpdateSim, then the Gust Shockwave impulse queued on it.
+    fn mjolnir_hammer_update(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
+        self.mjolnir_tick(item_index, data, updater_dt);
+        // Mjolnir has a lower runtime hierarchy than a subsequently
+        // spawned Gust Shockwave. Its recall update therefore observes
+        // the Init impulse, while the regular Shockwave impulse lands
+        // afterward and before DetPhysics integration.
+        let hidden = self.blink_object_hidden(self.thrown_items[item_index].entity);
+        let item = &mut self.thrown_items[item_index];
+        if !hidden && item.active && item.pending_gust_impulse != Vec2::ZERO {
+            item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
+            item.pending_gust_impulse = Vec2::ZERO;
+        }
+    }
+
+    /// The Mjolnir hammers whose row hierarchy lies in `window`, in hierarchy
+    /// order.
+    fn mjolnirs_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        window: std::ops::Range<u32>,
+    ) {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        order.clear();
+        order.extend((0..self.thrown_items.len()).filter(|&index| {
+            let item = &self.thrown_items[index];
+            item.ability == ABILITY_MJOLNIR && window.contains(&(100_000_000 + item.hierarchy_base))
+        }));
+        order.sort_unstable_by_key(|&index| (self.thrown_items[index].hierarchy_base, index));
+        for &item_index in &order {
+            if !self.teleport_revealed_this_pass(self.thrown_items[item_index].entity) {
+                self.mjolnir_hammer_update(item_index, data, updater_dt);
+            }
+        }
+        self.scratch.item_order = order;
+    }
+
     fn thrown_items_integrate(
         &mut self,
         data: &data::RolloutData,
@@ -34286,18 +34330,10 @@ impl RolloutWorld {
                 self.ropes_update(self.scratch.ropes_updated_below..hierarchy);
                 self.scratch.ropes_updated_below = hierarchy;
             }
-            if self.thrown_items[item_index].ability == ABILITY_MJOLNIR {
-                self.mjolnir_tick(item_index, data, updater_dt);
-                // Mjolnir has a lower runtime hierarchy than a subsequently
-                // spawned Gust Shockwave. Its recall update therefore observes
-                // the Init impulse, while the regular Shockwave impulse lands
-                // afterward and before DetPhysics integration.
-                let hidden = self.blink_object_hidden(self.thrown_items[item_index].entity);
-                let item = &mut self.thrown_items[item_index];
-                if !hidden && item.active && item.pending_gust_impulse != Vec2::ZERO {
-                    item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
-                    item.pending_gust_impulse = Vec2::ZERO;
-                }
+            if self.thrown_items[item_index].ability == ABILITY_MJOLNIR
+                && 100_000_000 + hierarchy >= self.scratch.hammers_ran_below
+            {
+                self.mjolnir_hammer_update(item_index, data, updater_dt);
             }
             self.thrown_item_update(item_index, data, updater_dt);
         }
