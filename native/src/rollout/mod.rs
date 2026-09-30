@@ -16537,7 +16537,14 @@ impl RolloutWorld {
                     _ if composite => dynamics.root_body.inverse_mass,
                     _ => dynamics.body.inverse_mass,
                 };
-                if inverse_mass == Fix::ZERO || !self.platforms[platform_index].active {
+                // A wall QuantumTunnel registered after this hole hides or
+                // restores its wall only after the hole has pulled
+                // (QuantumTunnel.cs:136, 163-166), while the Blink tunnel
+                // step ahead of this window has already toggled it.
+                let toggled_later = (dynamics.blink_deactivated_tick == Some(self.tick)
+                    || dynamics.blink_reactivated_tick == Some(self.tick))
+                    && dynamics.blink_tunnel_hierarchy > self.black_holes[hole_index].hierarchy_base;
+                if inverse_mass == Fix::ZERO || self.platforms[platform_index].active == toggled_later {
                     continue;
                 }
                 // The DetPhysics collider copy, which a ShakablePlatform
