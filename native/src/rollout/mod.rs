@@ -671,13 +671,16 @@ pub struct GrenadeExplosion {
     pub age: u32,
 }
 
-/// The player id of a body index, which objects store as their owner.
 /// A SlimeController's Player.SetPosition this pass: a body's turn, or an
-/// abilityless clone's OldUpdate and the position it set.
+/// abilityless clone's OldUpdate and the position it set; or the destruction
+/// of the SlimeController with that row id, after which it loses any
+/// comparison (Player.comparePriority). A dying body's slot can be refilled
+/// by a promoted clone, so its Gone keeps the position it set.
 #[derive(Clone, Copy, PartialEq)]
 enum PositionCall {
     Body(usize),
     Clone(usize, Vec2),
+    Gone(Option<Vec2>),
 }
 
 /// A SlimeController or form a Mjolnir hit: a body, or an abilityless clone.
@@ -687,6 +690,7 @@ enum MjolnirVictim {
     Clone(usize),
 }
 
+/// The player id of a body index, which objects store as their owner.
 fn player_id(players: &[PlayerSlot], body: usize) -> u32 {
     players[body].base.id
 }
@@ -3487,10 +3491,14 @@ struct PlatformScratch {
     /// The SlimeController that took Player.Position that way, as a
     /// `PositionCall`.
     clone_publisher: [Option<PositionCall>; MAX_BODIES],
-    /// Every SlimeController's SetPosition this pass, in update order, with
-    /// its row id and ability count at the call: a body's (whose value is its
-    /// published one) or a clone's OldUpdate with the position it set.
-    position_calls: Vec<(PositionCall, u32, usize)>,
+    /// Every SlimeController's SetPosition this pass, with the Updater
+    /// hierarchy it ran at and its row id and ability count at the call: a
+    /// body's (whose value is its published one) or a clone's OldUpdate with
+    /// the position it set.
+    position_calls: Vec<(u32, PositionCall, u32, usize)>,
+    /// The Updater hierarchy of the SlimeController updating now: 0 before
+    /// the slimes' turns, `u32::MAX` after them (DetPhysics' callbacks).
+    updater_hierarchy: u32,
     /// Clones whose updaters already ran this pass, ahead of a newer
     /// TeleportIndicator.
     clones_updated_early: Vec<usize>,
@@ -6862,10 +6870,12 @@ impl RolloutWorld {
         self.scratch.clones_positioned = [false; MAX_BODIES];
         self.scratch.clone_publisher = [None; MAX_BODIES];
         self.scratch.position_calls.clear();
+        self.scratch.updater_hierarchy = 0;
         // Forms that ended earlier in the pass cleared the Player's form
         // flags before any body's turn can set them again.
         self.track_form_flags();
         for (turn, &index) in player_order[..player_count].iter().enumerate() {
+            self.scratch.updater_hierarchy = player_hierarchy[index];
             if index >= self.player_count && !self.players[index].base.alive {
                 continue;
             }
@@ -7228,6 +7238,7 @@ impl RolloutWorld {
                 self.kill_with(index, ENVIRONMENT, cause, false, false, false, ignore_invulnerability);
             }
         }
+        self.scratch.updater_hierarchy = u32::MAX;
         // SlimeController.Awake adds the RewindRecorder to the slime itself,
         // so it updates with the player prefab, ahead of every spawned
         // updater: a Portal or a Black Hole acting this pass sees the
@@ -39508,7 +39519,7 @@ impl RolloutWorld {
         }
         for &clone_index in &order {
             if !self.scratch.clones_updated_early.contains(&clone_index) {
-                self.abilityless_clone_update(clone_index);
+                self.abilityless_clone_update_tagged(clone_index);
             }
         }
         self.scratch.item_order = order;
@@ -39531,9 +39542,22 @@ impl RolloutWorld {
             self.scratch.clones_updated_early.push(clone_index);
             let clone = &mut self.abilityless_clones[clone_index];
             clone.pass_start = (self.tick, clone.base.position);
-            self.abilityless_clone_update(clone_index);
+            self.abilityless_clone_update_tagged(clone_index);
         }
         self.scratch.item_order = order;
+    }
+
+    /// A clone's update, with Player.SetPosition's calls and destructions
+    /// in it tagged by the clone's place in the Updater, on the bodies'
+    /// scale: its row's hierarchy.
+    fn abilityless_clone_update_tagged(&mut self, clone_index: usize) {
+        let hierarchy = self.abilityless_clones[clone_index]
+            .entity
+            .and_then(|entity| self.entities.get(entity))
+            .map_or(u32::MAX, |row| row.hierarchy);
+        let outer = std::mem::replace(&mut self.scratch.updater_hierarchy, hierarchy);
+        self.abilityless_clone_update(clone_index);
+        self.scratch.updater_hierarchy = outer;
     }
 
     fn abilityless_clone_update(&mut self, clone_index: usize) {
@@ -39630,7 +39654,8 @@ impl RolloutWorld {
             .entity
             .and_then(|entity| self.entities.get(entity))
             .map_or(u32::MAX, |row| row.id);
-        self.scratch.position_calls.push((call, key, 0));
+        let tag = self.scratch.updater_hierarchy;
+        self.scratch.position_calls.push((tag, call, key, 0));
         if (self.players[owner].slime_gone
             || self.players[owner].unpublished_tick == Some(self.tick))
             && !self.scratch.clones_positioned[owner]
@@ -39843,6 +39868,10 @@ impl RolloutWorld {
             return;
         }
         let owner = self.abilityless_clones[clone_index].owner;
+        if let Some(row) = self.abilityless_clones[clone_index].entity.and_then(|entity| self.entities.get(entity)) {
+            let tag = self.scratch.updater_hierarchy;
+            self.scratch.position_calls.push((tag, PositionCall::Gone(None), row.id, 0));
+        }
         // The clone's own PlayerCollision.killPlayer takes the Revival branch
         // while the player has markers: SpawnClone copies its empty ability
         // list to a clone at every marker (PlayerCollision.cs:138-160), as a
@@ -41873,27 +41902,43 @@ impl RolloutWorld {
     /// ever; this corrects the pass when the rule hands it to another of the
     /// player's SlimeControllers than they did.
     fn arbitrate_player_positions(&mut self) {
+        // The Rust runs the clones as a batch; the Updater interleaves them
+        // with the bodies by hierarchy.
+        self.scratch.position_calls.sort_by_key(|&(tag, _, _, _)| tag);
         for owner in 0..self.player_count {
-            let owner_called = self.scratch.position_calls.iter().any(|&(call, _, _)| call == PositionCall::Body(owner));
+            let owner_called = self.scratch.position_calls.iter().any(|&(_, call, _, _)| call == PositionCall::Body(owner));
             let published = self.scratch.clone_publisher[owner]
                 .or(owner_called.then_some(PositionCall::Body(owner)));
             let last = self.players[owner].position_setter_last;
             let mut setter: Option<(PositionCall, u32, usize)> = None;
-            for &(call, key, count) in &self.scratch.position_calls {
+            let mut setter_gone = false;
+            let mut gone_position = None;
+            for &(_, call, key, count) in &self.scratch.position_calls {
                 let caller_owner = match call {
                     PositionCall::Body(body) => self.players[body].owner,
                     PositionCall::Clone(clone, _) => self.abilityless_clones[clone].owner,
+                    PositionCall::Gone(position) => {
+                        if setter.is_some_and(|(_, setter_key, _)| setter_key == key) {
+                            setter_gone = true;
+                            gone_position = position;
+                        }
+                        continue;
+                    }
                 };
                 if caller_owner != owner {
                     continue;
                 }
-                let takes = setter.is_none_or(|(_, _, setter_count)| {
-                    count > setter_count || (count == setter_count && key == last && key != u32::MAX)
-                });
+                let takes = setter_gone
+                    || setter.is_none_or(|(_, _, setter_count)| {
+                        count > setter_count || (count == setter_count && key == last && key != u32::MAX)
+                    });
                 if takes {
                     setter = Some((call, key, count));
+                    setter_gone = false;
+                    gone_position = None;
                 }
             }
+            // UpdatePlayer keeps the reference even to a destroyed setter.
             self.players[owner].position_setter_last = setter.map_or(u32::MAX, |(_, key, _)| key);
             let Some((winner, _, _)) = setter else {
                 continue;
@@ -41902,14 +41947,18 @@ impl RolloutWorld {
                 continue;
             }
             let position = match winner {
-                PositionCall::Body(body) => {
-                    let slot = &self.players[body];
-                    if slot.reported_tick == self.tick { slot.reported_position } else { slot.base.position }
-                }
+                PositionCall::Body(body) => gone_position.unwrap_or_else(|| self.body_set_position(body)),
                 PositionCall::Clone(_, position) => position,
+                PositionCall::Gone(_) => continue,
             };
             self.players[owner].position_override = Some((self.tick, position));
         }
+    }
+
+    /// Where a body's SlimeController (or its form) set Player.Position.
+    fn body_set_position(&self, body: usize) -> Vec2 {
+        let slot = &self.players[body];
+        if slot.reported_tick == self.tick { slot.reported_position } else { slot.base.position }
     }
 
     /// A body's SlimeController (or its form, for it) sets Player.Position at
@@ -41925,7 +41974,8 @@ impl RolloutWorld {
         {
             let key = self.entities.get(slot.body_entity).map_or(u32::MAX, |row| row.id);
             let count = slot.ability_count;
-            self.scratch.position_calls.push((PositionCall::Body(body), key, count));
+            let tag = self.scratch.updater_hierarchy;
+            self.scratch.position_calls.push((tag, PositionCall::Body(body), key, count));
         }
     }
 
@@ -42079,6 +42129,11 @@ impl RolloutWorld {
                 return false;
             }
             self.players[index].callback_killed_tick = Some(self.tick);
+        }
+        if let Some(row) = self.entities.get(self.players[index].body_entity) {
+            let tag = self.scratch.updater_hierarchy;
+            let position = self.body_set_position(index);
+            self.scratch.position_calls.push((tag, PositionCall::Gone(Some(position)), row.id, 0));
         }
         // A form's ExitAbility with isDead still calls back onExitAbility
         // (PlayerCollision.cs:121-132, SlimeController.cs:193-219), which
