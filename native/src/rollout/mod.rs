@@ -10020,10 +10020,15 @@ impl RolloutWorld {
         // BowTransform finds it after OldUpdate, which may still fire off it.
         // ThrowItem2 finds it inside its own Move, after the grounded-throw
         // exit test, so it leaves the form one pass later. MachoThrow2 finds
-        // it in MachoMove, after the rest of its UpdateSim.
+        // it in MachoMove, after the rest of its UpdateSim. The animators of
+        // ThrowItem and PlantObjectOnPlatform exit them before their
+        // UpdateSim's Move(zero) finds it.
         let finds_it_later = matches!(
             self.players[index].active,
-            ActiveAbility::Grenade
+            ActiveAbility::Mine
+                | ActiveAbility::Engine
+                | ActiveAbility::Tesla
+                | ActiveAbility::Grenade
                 | ActiveAbility::Smoke
                 | ActiveAbility::Tack
                 | ActiveAbility::Mjolnir
@@ -10035,8 +10040,9 @@ impl RolloutWorld {
         // ControlPlatform and MeteorSmash's anticipation have only that Move
         // (ControlPlatform.cs:137, MeteorSmash.cs:254), and Roll's check asks
         // null or inactive before its own Move (Roll.cs:245-266, 406).
-        // ThrowItem2 and MachoThrow2 keep a grounded body's record for their
-        // own Move, which lifts off a ground not yet drained.
+        // ThrowItem, ThrowItem2, PlantObjectOnPlatform and MachoThrow2 keep a
+        // grounded body's record for their own Move, which lifts off a ground
+        // not yet drained.
         let lost = if matches!(
             self.players[index].active,
             ActiveAbility::Beam
@@ -14414,7 +14420,7 @@ impl RolloutWorld {
         if self.form_bounds_kill(index, data) {
             return;
         }
-        if self.players[index].base.grounded {
+        if self.players[index].base.grounded && !self.players[index].move_off_destroyed(self.tick) {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
@@ -14504,17 +14510,27 @@ impl RolloutWorld {
             .filter(|_| self.players[index].base.grounded)
             .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
             .map(|platform| platform.surface.normal(self.players[index].base.position).perp_cw());
+        // A form whose ground was destroyed still exits grounded, and its
+        // InputGroundAlignment reads the dead ground's forwards, or Vec2.right
+        // once it has drained (PlayerPhysics.cs:392-396).
+        let dead_up = {
+            let slot = &self.players[index];
+            slot.dead_ground(self.tick)
+                .map_or(Vec2::UP, |surface| surface.normal(slot.base.position))
+        };
         // PlantObjectOnPlatform.ExitAbility hands over its surface local like
-        // Spike; the slime's SyncPhysicsTo re-places it from there.
-        if self.players[index].base.grounded {
-            self.sync_exit_to_ground(index);
+        // Spike; the slime's SyncPhysicsTo re-places it from there. Off a
+        // destroyed ground it takes the airborne arm but stays grounded.
+        let mut alignment_up = dead_up;
+        if self.players[index].base.grounded && self.sync_exit_to_ground(index) {
+            let slot = &self.players[index];
+            if let Some(platform) =
+                slot.base.ground.and_then(|ground| self.platforms.iter().find(|p| p.id == ground))
+            {
+                alignment_up = platform.surface.normal(slot.base.position);
+            }
         }
-        let grounded_pose = self.players[index].base.ground.and_then(|ground| {
-            self.platforms
-                .iter()
-                .find(|platform| platform.id == ground)
-                .map(|platform| platform.surface.normal(self.players[index].base.position))
-        });
+        let live_ground = self.players[index].base.ground.is_some();
         let slot = &mut self.players[index];
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         // ExitAbility hands over groundedSpeed and both velocities zero.
@@ -14522,11 +14538,12 @@ impl RolloutWorld {
         slot.base.velocity = Vec2::ZERO;
         slot.base.external_velocity = Vec2::ZERO;
         slot.base.rotation = Fix::ZERO;
-        if slot.base.grounded
-            && let Some(up) = grounded_pose
-        {
-            slot.base.up = up;
-            slot.base.rotation = up.perp_cw().normalized_angle();
+        if slot.base.grounded {
+            let up = alignment_up;
+            if live_ground {
+                slot.base.up = up;
+                slot.base.rotation = up.perp_cw().normalized_angle();
+            }
             let forwards = form_forwards.unwrap_or(up.perp_cw());
             let alignment = slot.last_movement_input.normalized_safe().dot(forwards);
             // PlantObjectOnPlatform.ExitAbility: enterTurn (SlimeController
@@ -14584,7 +14601,7 @@ impl RolloutWorld {
         if self.form_bounds_kill(index, data) {
             return;
         }
-        if self.players[index].base.grounded {
+        if self.players[index].base.grounded && !self.players[index].move_off_destroyed(self.tick) {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
@@ -24622,14 +24639,16 @@ impl RolloutWorld {
         let button = 2u8 << self.players[index].active_slot;
         let released = action.buttons & button == 0;
         let aim = action.direction();
+        // LocalUp reads attachedGround's normal, even one destroyed earlier
+        // in this pass (ThrowItem.cs:284-291).
         let local_up = if self.players[index].base.grounded {
-            self.players[index]
-                .base
+            let slot = &self.players[index];
+            slot.base
                 .ground
                 .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
-                .map_or(self.players[index].base.up, |platform| {
-                    platform.surface.normal(self.players[index].base.position)
-                })
+                .map(|platform| &platform.surface)
+                .or(slot.dead_ground(self.tick))
+                .map_or(slot.base.up, |surface| surface.normal(slot.base.position))
         } else {
             Vec2::UP
         };
@@ -24687,17 +24706,23 @@ impl RolloutWorld {
 
         if self.players[index].base.grounded {
             let before_player_physics = self.players[index].base.position;
-            self.players[index]
-                .base
-                .move_only(Vec2::ZERO, terrain!(self));
-            // Move ends in DropPlatformTest, whose exit disables the form.
-            if self.apply_platform_drop(index, data) {
-                return;
+            // Move's UnGround off a destroyed ground lifts the body itself.
+            let lifted = self.players[index].move_off_destroyed(self.tick);
+            if !lifted {
+                self.players[index]
+                    .base
+                    .move_only(Vec2::ZERO, terrain!(self));
+                // Move ends in DropPlatformTest, whose exit disables the form.
+                if self.apply_platform_drop(index, data) {
+                    return;
+                }
             }
             let slot = &mut self.players[index];
             // ThrowItem's PlayerPhysics.Move advances the surface local and
             // rotation, but PlayerBody owns the later world-position move.
-            slot.base.position = before_player_physics;
+            if !lifted {
+                slot.base.position = before_player_physics;
+            }
             slot.base.velocity = Vec2::ZERO;
             slot.base.position += slot.base.external_velocity * slot.base.fixed_delta_time;
             slot.base.external_velocity *= Fix::from_f64(0.95);
@@ -24761,13 +24786,13 @@ impl RolloutWorld {
         }
         let grounded = self.players[index].base.grounded;
         let up = if grounded {
-            self.players[index]
-                .base
+            let slot = &self.players[index];
+            slot.base
                 .ground
                 .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
-                .map_or(self.players[index].base.up, |platform| {
-                    platform.surface.normal(self.players[index].base.position)
-                })
+                .map(|platform| &platform.surface)
+                .or(slot.dead_ground(self.tick))
+                .map_or(slot.base.up, |surface| surface.normal(slot.base.position))
         } else {
             Vec2::UP
         };
