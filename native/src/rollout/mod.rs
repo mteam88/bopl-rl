@@ -28164,8 +28164,10 @@ impl RolloutWorld {
                 {
                     continue;
                 }
+                // DetPhysics.IsActive also asks the collider to be enabled, so
+                // the ray passes through an ignited FlammableSmoke (FlammableSmoke.cs:86-88).
                 let body = self.is_body_collider(entity).then(|| self.detphysics_collider(entity));
-                if matches!(body, Some(None)) || body.is_none() && row.flags & E_ACTIVE == 0 {
+                if matches!(body, Some(None)) || body.is_none() && !self.collides(entity) {
                     continue;
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
