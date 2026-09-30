@@ -2310,6 +2310,10 @@ pub struct DrillState {
     /// The pass whose OnEnterAbility or UpdateSim last moved the Drill's
     /// FixTransform, which SyncAll then syncs its box to.
     pub updated_tick: Option<u32>,
+    /// A Black Hole ended the form with its hitboxes on. Their Hitbox
+    /// updaters already ran, so they stay on until the next pass, where they
+    /// find the form gone and destroy themselves (Hitbox.cs:19-24).
+    pub hitboxes_kept: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -7041,6 +7045,20 @@ impl RolloutWorld {
             let entity = self.platform_entities[platform_index];
             if self.entities[entity].flags & E_DESTROYED != 0 {
                 self.remove_platform(platform_index, false);
+            }
+        }
+        // Hitboxes a collision kill left on run their updater once more, find
+        // their Drill destroyed with the slime and destroy themselves
+        // (Hitbox.cs:19-24). DetPhysics drops updatable-phase casualties
+        // before publishing. Inactive ones never update and stay.
+        for slot in &mut self.players {
+            if std::mem::take(&mut slot.drill.hitboxes_kept) {
+                for entity in slot.drill_hitbox_entities.iter_mut().flatten() {
+                    if *entity != usize::MAX && self.entities[*entity].flags & E_ACTIVE != 0 {
+                        self.entities[*entity].flags = E_REMOVED;
+                        *entity = usize::MAX;
+                    }
+                }
             }
         }
         let drowned_clouds = self.register_pending_objects(data);
@@ -41138,7 +41156,17 @@ impl RolloutWorld {
                 drop_inset = normal * difference;
             }
         }
-        self.deactivate_drill_hitboxes(index);
+        // BlackHole hands the form's Ability its exit, skipping
+        // Drill.ExitAbility, so nothing turns the hitboxes off this pass.
+        if by_callback
+            && !form_exit
+            && self.players[index].active == ActiveAbility::Drill
+            && self.players[index].drill.phase != 0
+        {
+            self.players[index].drill.hitboxes_kept = true;
+        } else {
+            self.deactivate_drill_hitboxes(index);
+        }
         // Player.RespawnPositions: the marker of every Revive on the player's
         // bodies, in the order they were set (Revive.SetReviveFlag).
         let owner = self.players[index].owner;
