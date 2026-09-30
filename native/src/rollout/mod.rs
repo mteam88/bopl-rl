@@ -3584,9 +3584,21 @@ struct PlatformScratch {
     platform_turns: Vec<usize>,
     /// `run_spawned_before`'s turns: (updater hierarchy, kind, index).
     spawned_queue: Vec<(u32, u8, usize)>,
-    /// The Updater hierarchy of the slime whose turn follows the current
-    /// player's, or u32::MAX outside the player walk.
-    next_turn_hierarchy: u32,
+    /// This pass's walk over the players: their order, each player's turn
+    /// hierarchy, the walk's length (zero outside it), the next turn to
+    /// take, and the turns whose RewindRecorders have sampled.
+    turn_order: [usize; MAX_BODIES],
+    turn_hierarchy: [u32; MAX_BODIES],
+    turn_count: usize,
+    next_turn: usize,
+    turns_recorded: usize,
+    /// The walk's actions, Updater delta, and whether a Rewind is in play.
+    turn_actions: [CAction; MAX_BODIES],
+    turn_dt: Fix,
+    turn_rewind: bool,
+    /// Bodies whose form entry recorded the Player's form flags before the
+    /// turns ahead of the form's own.
+    form_flags_taken: u16,
     /// Ropes from this hierarchy up wait for the abilityless clone pass.
     ropes_walk_limit: u32,
     /// Set while the ropes waiting on a platform's ScaleChanger run.
@@ -3894,7 +3906,6 @@ impl RolloutWorld {
                 duplicate_shake_order: Vec::with_capacity(64),
                 duplicate_shake_offsets: Vec::with_capacity(64),
                 ropes_deferred_from: u32::MAX,
-                next_turn_hierarchy: u32::MAX,
                 ropes_walk_limit: u32::MAX,
                 ..PlatformScratch::default()
             },
@@ -6851,7 +6862,6 @@ impl RolloutWorld {
                 slot.ability_time = Fix::ZERO;
             }
         }
-        let mut jump_pressed_by_player = [false; MAX_BODIES];
         // The Updater walks objects in hierarchy order, so each player runs
         // at the turn of whichever object holds it this pass: the slime, or
         // the ability form it is in. A stock respawn in kill order or a form
@@ -6885,7 +6895,6 @@ impl RolloutWorld {
         // Player.Position, a tack's proximity test sees it before it moves,
         // and a portal tests the slime where the last pass
         // left it, so the slime's own update skips gravity after the jump.
-        let mut recorded = 0;
         self.scratch.clones_positioned = [false; MAX_BODIES];
         self.scratch.clone_publisher = [None; MAX_BODIES];
         self.scratch.position_calls.clear();
@@ -6895,307 +6904,27 @@ impl RolloutWorld {
         self.track_form_flags();
         self.scratch.platform_resizes.clear();
         self.scratch.ropes_walk_limit = u32::MAX;
-        for (turn, &index) in player_order[..player_count].iter().enumerate() {
-            self.scratch.updater_hierarchy = player_hierarchy[index];
-            if index >= self.player_count && !self.players[index].base.alive {
-                continue;
-            }
-            // SlimeController.Awake adds the RewindRecorder to the slime itself
-            // (RewindRecorder.cs:93), so each slime already updated took its
-            // sample before anything later acts: spawned updaters, and another
-            // player's Magnet pull, which that recorder sees only next pass.
-            if has(ABILITY_REWIND) {
-                self.rewind_recorders_tick(&player_order[recorded..turn]);
-                recorded = turn;
-            }
-            self.run_spawned_before(data, updater_dt, player_hierarchy[index]);
-            // A form entered in this turn takes its own Updater turn after
-            // the slimes between it and this one.
-            self.scratch.next_turn_hierarchy = player_order[turn + 1..player_count]
-                .first()
-                .map_or(u32::MAX, |&next| player_hierarchy[next]);
-            let packet = &actions[self.players[index].owner];
-            // An ordinary slime's drop test closes its grounded Move instead
-            // (`player_tick`).
-            if self.playable(index) && self.players[index].active != ActiveAbility::None {
-                self.apply_platform_drop(index, data);
-            }
-            // A stock clone spawned earlier in this pass first updates on the
-            // next one, so the destroyed slime's Player.Position stands.
-            let stock_clone_spawned =
-                self.players[index].stock_death.is_some_and(|(tick, _)| tick == self.tick);
-            if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
-                if self.players[index].active == ActiveAbility::Missile {
-                    // SparkShot still runs while frozen. Its turn angle uses
-                    // the owner's zero FixedDeltaTime, but it nevertheless
-                    // calls Stabilize and rewrites velocity along the current
-                    // missile up vector. This matters on the pass where the
-                    // later TimeStop effect restores time before DetPhysics.
-                    self.steer_active_missile(index, packet.aim_action(), Fix::ZERO, data);
-                }
-                if self.players[index].active == ActiveAbility::Magnet {
-                    // Player's frozen input keeps MagnetGun's retained aim,
-                    // while its locked branch still pins and refreshes Hold.
-                    // Pull, pickup, release, animation and PlayerPhysics stop.
-                    self.players[index].base.external_velocity *= Fix::from_f64(0.95);
-                    if self.players[index].magnet.phase == 3 {
-                        self.magnet_update_held_item(index, data);
-                    }
-                    continue;
-                }
-                if self.players[index].active == ActiveAbility::Drill {
-                    // This prefab has PlayerBody but no PlayerPhysics. With a
-                    // zero fixed delta PlayerBody only damps external motion;
-                    // Drill updates the combo transforms and returns before
-                    // querying walls, steering, gravity, or release.
-                    let slot = &mut self.players[index];
-                    // Ability.UpdateSim still assigns Player.Scale to the box
-                    // (Ability.cs:135).
-                    slot.scale_form(
-                        data::surface_extents(data.drill.hurtbox_extents),
-                        Fix::ZERO,
-                        data.drill.collider_offset,
-                    );
-                    slot.reported_position = slot.base.position;
-                    slot.reported_tick = self.tick;
-                    slot.base.external_velocity *= Fix::from_f64(0.95);
-                    slot.drill.collider_position = slot.base.position;
-                    slot.drill.collider_up = slot.base.up;
-                    slot.drill.collider_rotation = slot.base.rotation;
-                    slot.update_drill_hitboxes(data);
-                    continue;
-                }
-                if self.players[index].active == ActiveAbility::Meteor {
-                    // MeteorSmash itself does not return during Time Stop.
-                    // Its clock and animator freeze, but the airborne jump
-                    // velocity assignment and the vibration branch still run
-                    // from the retained Player input. In particular,
-                    // vibration consumes both RandomInsideUnitCircle draws
-                    // and moves the FixTransform directly while DetPhysics'
-                    // integration delta is zero.
-                    self.players[index].reported_position = self.players[index].base.position;
-                    self.players[index].reported_tick = self.tick;
-                    self.meteor_time_stop_tick(index, data);
-                    continue;
-                }
-                if self.players[index].active == ActiveAbility::Platform {
-                    // PlatformTransform keeps receiving Updater's raw 60 Hz
-                    // simDeltaTime while the owner's FixedDeltaTime is zero.
-                    // Rotation and cursor motion therefore still use the
-                    // retained input, while animations, sizing, ejection and
-                    // the ability clock remain frozen.
-                    let retained = self.players[index].last_action;
-                    self.platform_ability_tick(index, retained, data, Fix::ZERO);
-                    self.players[index].base.external_velocity *= Fix::from_f64(0.95);
-                    if self.players[index].base.alive && self.players[index].base.outside_bounds() {
-                        self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
-                        self.players[index].reported_position = self.players[index].base.position;
-                        self.players[index].reported_tick = self.tick;
-                        self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
-                    }
-                    continue;
-                }
-                if matches!(
-                    self.players[index].active,
-                    ActiveAbility::Gust | ActiveAbility::TimeStop
-                ) && !self.players[index].base.grounded
-                {
-                    // QuickSpell/CastSpell return at their airborne
-                    // time-stop gate before gravity, aerial movement, or
-                    // external-velocity damping.
-                    self.players[index].reported_position = self.players[index].base.position;
-                    self.players[index].reported_tick = self.tick;
-                    continue;
-                }
-                // PlayerPhysics and SlimeController still run. Their motion
-                // helpers apply unscaled gravity and air damping, but every
-                // position/raycast delta receives GameTime.FixedDeltaTime=0.
-                let input = self.players[index].last_movement_input;
-                let pushing = self.players[index].active == ActiveAbility::Push;
-                let base = &mut self.players[index].base;
-                if !base.grounded {
-                    let space = base.space;
-                    crate::player_physics::apply_gravity(
-                        &mut base.velocity,
-                        base.constants.gravity_accel,
-                        base.constants.gravity_modifier,
-                        base.constants.gravity_max_fall_speed,
-                        space,
-                    )
-                    .expect("valid movement gravity constants");
-                    crate::player_physics::air_movement(
-                        &mut base.velocity,
-                        input.x,
-                        base.constants.air_accel,
-                        base.constants.max_speed,
-                    )
-                    .expect("valid movement air constants");
-                } else if input == Vec2::ZERO {
-                    base.grounded_speed *= base.constants.friction;
-                }
-                base.external_velocity *= if pushing {
-                    // ControlPlatform performs this damping before its
-                    // time-stop early return.
-                    Fix::from_f64(0.8)
-                } else {
-                    Fix::from_f64(0.95)
-                };
-                if !stock_clone_spawned {
-                    self.players[index].reported_position = self.players[index].base.position;
-                    self.players[index].reported_tick = self.tick;
-                    self.record_position_call(index);
-                }
-                continue;
-            }
-            // SlimeController is absent after destruction and disabled during
-            // TeleportedObjectEffect, so neither state may publish a new
-            // Player.Position through Player.SetPosition. A shown gun form's
-            // Ability.UpdateSim follows its GunTransform, which may hide the
-            // form first (a self-Blink), so the gun ticks publish themselves.
-            let slot = &self.players[index];
-            let shown_gun_form = matches!(
-                slot.active,
-                ActiveAbility::Freeze
-                    | ActiveAbility::Blink
-                    | ActiveAbility::GrowthRay
-                    | ActiveAbility::ShrinkRay
-                    | ActiveAbility::Duplicator
-            ) && !slot.teleport_effect_active
-                && !slot.blink_tunnel_active
-                && slot.freeze_form_exit_tick != self.tick;
-            if slot.base.alive && !stock_clone_spawned && !shown_gun_form {
-                self.publish_ability_position(index);
-            }
-            if !stock_clone_spawned {
-                self.record_position_call(index);
-            }
-            let action = packet.aim_action();
-            self.players[index].last_action = action;
-            // Updater updates Player's frame-dependent button edges before
-            // any MonoUpdatable, including while its slime is parked for a
-            // stock choice.
-            let movement_input = packet.input_direction(self.players[index].keyboard);
-            self.players[index].last_movement_input = movement_input;
-            let jump_down = action.buttons & 1 != 0;
-            let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
-            jump_pressed_by_player[index] = jump_pressed;
-            // SlimeController.Jump reads that same edge
-            // (jumpButton_PressedThisFrame, SlimeController.cs:796); the
-            // movement slice's copy must not go stale while an ability runs.
-            self.players[index].base.previous_jump = self.players[index].input_jump_was_down;
-            self.players[index].input_jump_was_down = jump_down;
-            // An older updater's stock kill (a Tack's slip) destroyed the
-            // slime before its turn, so none of its updatables run.
-            if stock_clone_spawned {
-                continue;
-            }
-            let (in_form, in_ability) = {
-                let slot = &self.players[index];
-                let in_ability = slot.active != ActiveAbility::None;
-                (in_ability || slot.base.dash.active, in_ability)
-            };
-            self.exited_ability(index, data);
-            let casts_before = self.players[index].telemetry.ability_activations;
-            self.player_tick(index, action, movement_input, jump_pressed, data);
-            self.update_form_flags(index, casts_before);
-            // So did the other bodies' forms this turn ended.
-            self.track_form_flags();
-            if index >= self.player_count {
-                self.publish_extra_body_position(index);
-                self.fold_extra_body_telemetry(index);
-            }
-            // The slime's movement raycasts (PlayerPhysics.Move through
-            // StickyRoundedRectangle.maxMovementAllowed) drop the colliders
-            // DestroyFix marked, such as the node a placement just evicted
-            // (DetPhysics.cs:1724-1727).
-            if self.players[index].base.alive {
-                self.drop_destroyed_children();
-            }
-            // After OldUpdate, cast or not, UpdateSim compares isInvisible
-            // with its last look. A new cast on the expiry frame keeps the
-            // player invisible and postpones restoration, permitting chained
-            // Invisibility slots (SlimeController.cs:1073-1077).
-            if std::mem::take(&mut self.players[index].slime_updated) {
-                let invisible = self.players[self.players[index].owner].invisible;
-                if !invisible && self.players[index].was_invisible {
-                    self.invisibility_ended(index, data);
-                }
-                self.players[index].was_invisible = invisible;
-            }
-            let exited = {
-                let slot = &self.players[index];
-                in_form
-                    && slot.base.alive
-                    && slot.active == ActiveAbility::None
-                    && !slot.base.dash.active
-            };
-            // An ability exit marked `justlanded` runs attachToGround, which
-            // flips a slime that came out on a ceiling
-            // (SlimeController.cs:238-240, 1131-1134).
-            if exited && in_ability && self.players[index].obs_state == STATE_LAND {
-                let slot = &self.players[index];
-                let upside_down = slot
-                    .base
-                    .ground
-                    .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
-                    .is_some_and(|platform| {
-                        platform.surface.normal(slot.base.position).y < Fix::ZERO
-                    });
-                if upside_down {
-                    self.players[index].facing_right = !self.players[index].facing_right;
-                }
-            }
-            // SlimeController.onExitAbility ends by syncing the hurtbox
-            // (SlimeController.cs:251), so later updaters this pass (Black
-            // Hole's pull, another Magnet) find the slime where it came out.
-            // Its airborne SyncPhysicsTo also drops attachedGround.
-            self.exited_ability(index, data);
-            if exited {
-                let base = &mut self.players[index].base;
-                base.sync_collider();
-                if !base.grounded {
-                    base.ground = None;
-                }
-            }
-            if self.players[index].active == ActiveAbility::Roll {
-                self.roll_contacts_for(index, false, data);
-            }
-            // The shared movement slice marks a body dead when its previous
-            // position is beyond a blast boundary. Convert that marker into
-            // the match-level death exactly once; otherwise the later
-            // `!alive` guard would skip stocks, telemetry, and `out` forever.
-            let boundary_death = {
-                let slot = &self.players[index];
-                !slot.out
-                    && slot.respawn_ticks == 0
-                    && slot.respawn_spawn_ticks == 0
-                    && !slot.base.alive
-                    && slot.base.out_of_bounds
-            };
-            if boundary_death {
-                self.players[index].base.out_of_bounds = false;
-                // DestroyIfOutsideSceneBounds instantiates the water/bounds
-                // effect before it calls killPlayer with spawnEffect=false.
-                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
-                // The ordinary slime's boundary component kills with
-                // Accident (DestroyIfOutsideSceneBounds.cs:148); an ability
-                // body's exits through Ability.ExitAbility with a default
-                // AbilityExitInfo, whose causeOfDeath is Other
-                // (DestroyIfOutsideSceneBounds.cs:135-141, SlimeController.cs:219).
-                let cause = if self.players[index].active == ActiveAbility::None {
-                    CAUSE_ACCIDENT
-                } else {
-                    CAUSE_OTHER
-                };
-                // The boundary component already ran the form's ExitAbility.
-                // The slime's boundary kill ignores invulnerability; a form's
-                // ExitAbility kills through the slime's killPlayer, which does not.
-                let ignore_invulnerability = cause == CAUSE_ACCIDENT;
-                self.kill_with(index, ENVIRONMENT, cause, false, false, false, ignore_invulnerability);
-            }
+        self.scratch.turn_order = player_order;
+        self.scratch.turn_hierarchy = player_hierarchy;
+        self.scratch.turn_count = player_count;
+        self.scratch.next_turn = 0;
+        self.scratch.turns_recorded = 0;
+        let action_count = actions.len().min(MAX_BODIES);
+        self.scratch.turn_actions[..action_count].copy_from_slice(&actions[..action_count]);
+        self.scratch.turn_dt = updater_dt;
+        self.scratch.turn_rewind = has(ABILITY_REWIND);
+        self.scratch.clone_jump_pressed = [false; MAX_BODIES];
+        // A form's entry takes the turns of the slimes between it and the
+        // form's own turn first (`form_entry_turn`).
+        while self.scratch.next_turn < player_count {
+            let turn = self.scratch.next_turn;
+            self.scratch.next_turn += 1;
+            self.player_turn(data, turn);
         }
+        self.scratch.turn_count = 0;
+        let recorded = self.scratch.turns_recorded;
+        let jump_pressed_by_player = self.scratch.clone_jump_pressed;
         self.scratch.updater_hierarchy = u32::MAX;
-        self.scratch.next_turn_hierarchy = u32::MAX;
         // SlimeController.Awake adds the RewindRecorder to the slime itself,
         // so it updates with the player prefab, ahead of every spawned
         // updater: a Portal or a Black Hole acting this pass sees the
@@ -7206,7 +6935,6 @@ impl RolloutWorld {
         let action_count = actions.len().min(self.player_count);
         self.scratch.clone_action_count = action_count;
         self.scratch.clone_actions[..action_count].copy_from_slice(&actions[..action_count]);
-        self.scratch.clone_jump_pressed = jump_pressed_by_player;
         self.scratch.clones_updated_early.clear();
         self.platform_updaters(data, updater_dt, PlatformPass::Duplicated, 0..u32::MAX);
         if has(ABILITY_MAGNET) {
@@ -39002,19 +38730,337 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
+    /// One player's turn in the pass's walk over the players in Updater
+    /// order (`game_tick`).
+    fn player_turn(&mut self, data: &data::RolloutData, turn: usize) {
+        let index = self.scratch.turn_order[turn];
+        self.scratch.updater_hierarchy = self.scratch.turn_hierarchy[index];
+        if index >= self.player_count && !self.players[index].base.alive {
+            return;
+        }
+        // SlimeController.Awake adds the RewindRecorder to the slime itself
+        // (RewindRecorder.cs:93), so each slime already updated took its
+        // sample before anything later acts: spawned updaters, and another
+        // player's Magnet pull, which that recorder sees only next pass.
+        if self.scratch.turn_rewind {
+            let order = self.scratch.turn_order;
+            self.rewind_recorders_tick(&order[self.scratch.turns_recorded..turn]);
+            self.scratch.turns_recorded = turn;
+        }
+        let hierarchy = self.scratch.turn_hierarchy[index];
+        self.run_spawned_before(data, self.scratch.turn_dt, hierarchy);
+        let packet = self.scratch.turn_actions[self.players[index].owner];
+        // An ordinary slime's drop test closes its grounded Move instead
+        // (`player_tick`).
+        if self.playable(index) && self.players[index].active != ActiveAbility::None {
+            self.apply_platform_drop(index, data);
+        }
+        // A stock clone spawned earlier in this pass first updates on the
+        // next one, so the destroyed slime's Player.Position stands.
+        let stock_clone_spawned =
+            self.players[index].stock_death.is_some_and(|(tick, _)| tick == self.tick);
+        if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[index] {
+            if self.players[index].active == ActiveAbility::Missile {
+                // SparkShot still runs while frozen. Its turn angle uses
+                // the owner's zero FixedDeltaTime, but it nevertheless
+                // calls Stabilize and rewrites velocity along the current
+                // missile up vector. This matters on the pass where the
+                // later TimeStop effect restores time before DetPhysics.
+                self.steer_active_missile(index, packet.aim_action(), Fix::ZERO, data);
+            }
+            if self.players[index].active == ActiveAbility::Magnet {
+                // Player's frozen input keeps MagnetGun's retained aim,
+                // while its locked branch still pins and refreshes Hold.
+                // Pull, pickup, release, animation and PlayerPhysics stop.
+                self.players[index].base.external_velocity *= Fix::from_f64(0.95);
+                if self.players[index].magnet.phase == 3 {
+                    self.magnet_update_held_item(index, data);
+                }
+                return;
+            }
+            if self.players[index].active == ActiveAbility::Drill {
+                // This prefab has PlayerBody but no PlayerPhysics. With a
+                // zero fixed delta PlayerBody only damps external motion;
+                // Drill updates the combo transforms and returns before
+                // querying walls, steering, gravity, or release.
+                let slot = &mut self.players[index];
+                // Ability.UpdateSim still assigns Player.Scale to the box
+                // (Ability.cs:135).
+                slot.scale_form(
+                    data::surface_extents(data.drill.hurtbox_extents),
+                    Fix::ZERO,
+                    data.drill.collider_offset,
+                );
+                slot.reported_position = slot.base.position;
+                slot.reported_tick = self.tick;
+                slot.base.external_velocity *= Fix::from_f64(0.95);
+                slot.drill.collider_position = slot.base.position;
+                slot.drill.collider_up = slot.base.up;
+                slot.drill.collider_rotation = slot.base.rotation;
+                slot.update_drill_hitboxes(data);
+                return;
+            }
+            if self.players[index].active == ActiveAbility::Meteor {
+                // MeteorSmash itself does not return during Time Stop.
+                // Its clock and animator freeze, but the airborne jump
+                // velocity assignment and the vibration branch still run
+                // from the retained Player input. In particular,
+                // vibration consumes both RandomInsideUnitCircle draws
+                // and moves the FixTransform directly while DetPhysics'
+                // integration delta is zero.
+                self.players[index].reported_position = self.players[index].base.position;
+                self.players[index].reported_tick = self.tick;
+                self.meteor_time_stop_tick(index, data);
+                return;
+            }
+            if self.players[index].active == ActiveAbility::Platform {
+                // PlatformTransform keeps receiving Updater's raw 60 Hz
+                // simDeltaTime while the owner's FixedDeltaTime is zero.
+                // Rotation and cursor motion therefore still use the
+                // retained input, while animations, sizing, ejection and
+                // the ability clock remain frozen.
+                let retained = self.players[index].last_action;
+                self.platform_ability_tick(index, retained, data, Fix::ZERO);
+                self.players[index].base.external_velocity *= Fix::from_f64(0.95);
+                if self.players[index].base.alive && self.players[index].base.outside_bounds() {
+                    self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                    self.players[index].reported_position = self.players[index].base.position;
+                    self.players[index].reported_tick = self.tick;
+                    self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+                }
+                return;
+            }
+            if matches!(
+                self.players[index].active,
+                ActiveAbility::Gust | ActiveAbility::TimeStop
+            ) && !self.players[index].base.grounded
+            {
+                // QuickSpell/CastSpell return at their airborne
+                // time-stop gate before gravity, aerial movement, or
+                // external-velocity damping.
+                self.players[index].reported_position = self.players[index].base.position;
+                self.players[index].reported_tick = self.tick;
+                return;
+            }
+            // PlayerPhysics and SlimeController still run. Their motion
+            // helpers apply unscaled gravity and air damping, but every
+            // position/raycast delta receives GameTime.FixedDeltaTime=0.
+            let input = self.players[index].last_movement_input;
+            let pushing = self.players[index].active == ActiveAbility::Push;
+            let base = &mut self.players[index].base;
+            if !base.grounded {
+                let space = base.space;
+                crate::player_physics::apply_gravity(
+                    &mut base.velocity,
+                    base.constants.gravity_accel,
+                    base.constants.gravity_modifier,
+                    base.constants.gravity_max_fall_speed,
+                    space,
+                )
+                .expect("valid movement gravity constants");
+                crate::player_physics::air_movement(
+                    &mut base.velocity,
+                    input.x,
+                    base.constants.air_accel,
+                    base.constants.max_speed,
+                )
+                .expect("valid movement air constants");
+            } else if input == Vec2::ZERO {
+                base.grounded_speed *= base.constants.friction;
+            }
+            base.external_velocity *= if pushing {
+                // ControlPlatform performs this damping before its
+                // time-stop early return.
+                Fix::from_f64(0.8)
+            } else {
+                Fix::from_f64(0.95)
+            };
+            if !stock_clone_spawned {
+                self.players[index].reported_position = self.players[index].base.position;
+                self.players[index].reported_tick = self.tick;
+                self.record_position_call(index);
+            }
+            return;
+        }
+        // SlimeController is absent after destruction and disabled during
+        // TeleportedObjectEffect, so neither state may publish a new
+        // Player.Position through Player.SetPosition. A shown gun form's
+        // Ability.UpdateSim follows its GunTransform, which may hide the
+        // form first (a self-Blink), so the gun ticks publish themselves.
+        let slot = &self.players[index];
+        let shown_gun_form = matches!(
+            slot.active,
+            ActiveAbility::Freeze
+                | ActiveAbility::Blink
+                | ActiveAbility::GrowthRay
+                | ActiveAbility::ShrinkRay
+                | ActiveAbility::Duplicator
+        ) && !slot.teleport_effect_active
+            && !slot.blink_tunnel_active
+            && slot.freeze_form_exit_tick != self.tick;
+        if slot.base.alive && !stock_clone_spawned && !shown_gun_form {
+            self.publish_ability_position(index);
+        }
+        if !stock_clone_spawned {
+            self.record_position_call(index);
+        }
+        let action = packet.aim_action();
+        self.players[index].last_action = action;
+        // Updater updates Player's frame-dependent button edges before
+        // any MonoUpdatable, including while its slime is parked for a
+        // stock choice.
+        let movement_input = packet.input_direction(self.players[index].keyboard);
+        self.players[index].last_movement_input = movement_input;
+        let jump_down = action.buttons & 1 != 0;
+        let jump_pressed = jump_down && !self.players[index].input_jump_was_down;
+        self.scratch.clone_jump_pressed[index] = jump_pressed;
+        // SlimeController.Jump reads that same edge
+        // (jumpButton_PressedThisFrame, SlimeController.cs:796); the
+        // movement slice's copy must not go stale while an ability runs.
+        self.players[index].base.previous_jump = self.players[index].input_jump_was_down;
+        self.players[index].input_jump_was_down = jump_down;
+        // An older updater's stock kill (a Tack's slip) destroyed the
+        // slime before its turn, so none of its updatables run.
+        if stock_clone_spawned {
+            return;
+        }
+        let (in_form, in_ability) = {
+            let slot = &self.players[index];
+            let in_ability = slot.active != ActiveAbility::None;
+            (in_ability || slot.base.dash.active, in_ability)
+        };
+        self.exited_ability(index, data);
+        let casts_before = self.players[index].telemetry.ability_activations;
+        self.player_tick(index, action, movement_input, jump_pressed, data);
+        let taken = self.scratch.form_flags_taken & (1 << index) != 0;
+        self.scratch.form_flags_taken &= !(1 << index);
+        if !taken || self.players[index].active != self.players[index].form_seen {
+            self.update_form_flags(index, casts_before);
+        }
+        // So did the other bodies' forms this turn ended.
+        self.track_form_flags();
+        if index >= self.player_count {
+            self.publish_extra_body_position(index);
+            self.fold_extra_body_telemetry(index);
+        }
+        // The slime's movement raycasts (PlayerPhysics.Move through
+        // StickyRoundedRectangle.maxMovementAllowed) drop the colliders
+        // DestroyFix marked, such as the node a placement just evicted
+        // (DetPhysics.cs:1724-1727).
+        if self.players[index].base.alive {
+            self.drop_destroyed_children();
+        }
+        // After OldUpdate, cast or not, UpdateSim compares isInvisible
+        // with its last look. A new cast on the expiry frame keeps the
+        // player invisible and postpones restoration, permitting chained
+        // Invisibility slots (SlimeController.cs:1073-1077).
+        if std::mem::take(&mut self.players[index].slime_updated) {
+            let invisible = self.players[self.players[index].owner].invisible;
+            if !invisible && self.players[index].was_invisible {
+                self.invisibility_ended(index, data);
+            }
+            self.players[index].was_invisible = invisible;
+        }
+        let exited = {
+            let slot = &self.players[index];
+            in_form
+                && slot.base.alive
+                && slot.active == ActiveAbility::None
+                && !slot.base.dash.active
+        };
+        // An ability exit marked `justlanded` runs attachToGround, which
+        // flips a slime that came out on a ceiling
+        // (SlimeController.cs:238-240, 1131-1134).
+        if exited && in_ability && self.players[index].obs_state == STATE_LAND {
+            let slot = &self.players[index];
+            let upside_down = slot
+                .base
+                .ground
+                .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
+                .is_some_and(|platform| {
+                    platform.surface.normal(slot.base.position).y < Fix::ZERO
+                });
+            if upside_down {
+                self.players[index].facing_right = !self.players[index].facing_right;
+            }
+        }
+        // SlimeController.onExitAbility ends by syncing the hurtbox
+        // (SlimeController.cs:251), so later updaters this pass (Black
+        // Hole's pull, another Magnet) find the slime where it came out.
+        // Its airborne SyncPhysicsTo also drops attachedGround.
+        self.exited_ability(index, data);
+        if exited {
+            let base = &mut self.players[index].base;
+            base.sync_collider();
+            if !base.grounded {
+                base.ground = None;
+            }
+        }
+        if self.players[index].active == ActiveAbility::Roll {
+            self.roll_contacts_for(index, false, data);
+        }
+        // The shared movement slice marks a body dead when its previous
+        // position is beyond a blast boundary. Convert that marker into
+        // the match-level death exactly once; otherwise the later
+        // `!alive` guard would skip stocks, telemetry, and `out` forever.
+        let boundary_death = {
+            let slot = &self.players[index];
+            !slot.out
+                && slot.respawn_ticks == 0
+                && slot.respawn_spawn_ticks == 0
+                && !slot.base.alive
+                && slot.base.out_of_bounds
+        };
+        if boundary_death {
+            self.players[index].base.out_of_bounds = false;
+            // DestroyIfOutsideSceneBounds instantiates the water/bounds
+            // effect before it calls killPlayer with spawnEffect=false.
+            self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+            // The ordinary slime's boundary component kills with
+            // Accident (DestroyIfOutsideSceneBounds.cs:148); an ability
+            // body's exits through Ability.ExitAbility with a default
+            // AbilityExitInfo, whose causeOfDeath is Other
+            // (DestroyIfOutsideSceneBounds.cs:135-141, SlimeController.cs:219).
+            let cause = if self.players[index].active == ActiveAbility::None {
+                CAUSE_ACCIDENT
+            } else {
+                CAUSE_OTHER
+            };
+            // The boundary component already ran the form's ExitAbility.
+            // The slime's boundary kill ignores invulnerability; a form's
+            // ExitAbility kills through the slime's killPlayer, which does not.
+            let ignore_invulnerability = cause == CAUSE_ACCIDENT;
+            self.kill_with(index, ENVIRONMENT, cause, false, false, false, ignore_invulnerability);
+        }
+    }
+
     /// A form's first UpdateSim on its entry pass takes the form's own
     /// Updater turn. The form prefab was instantiated at pickup, so the
-    /// objects spawned after the slime but before the form, which the slime's
-    /// turn did not reach, update first; those newer than the next slime
-    /// wait for its turn.
+    /// slimes and spawned objects after this slime but before the form,
+    /// which the slime's turn did not reach, update first.
     fn form_entry_turn(&mut self, data: &data::RolloutData, index: usize) {
         let entity = Self::hurtbox_entity(&self.players[index]);
         if entity == usize::MAX {
             return;
         }
         let form = self.entities[entity].hierarchy;
-        let before = form.min(self.scratch.next_turn_hierarchy);
-        self.run_spawned_before(data, DT * self.player_time_scale, before);
+        let outer = self.scratch.updater_hierarchy;
+        while self.scratch.next_turn < self.scratch.turn_count {
+            let turn = self.scratch.next_turn;
+            if self.scratch.turn_hierarchy[self.scratch.turn_order[turn]] >= form {
+                break;
+            }
+            // OnEnterAbility set the Player's form flags before those turns.
+            if self.scratch.form_flags_taken & (1 << index) == 0 {
+                let casts = self.players[index].telemetry.ability_activations;
+                self.update_form_flags(index, casts);
+                self.scratch.form_flags_taken |= 1 << index;
+            }
+            self.scratch.next_turn += 1;
+            self.player_turn(data, turn);
+        }
+        self.scratch.updater_hierarchy = outer;
+        self.run_spawned_before(data, DT * self.player_time_scale, form);
     }
 
     /// The Spawned platform pass for the platforms whose row hierarchy is in
