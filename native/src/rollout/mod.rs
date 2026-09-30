@@ -31764,7 +31764,10 @@ impl RolloutWorld {
             }
         }
         let surface = &self.platforms[source].surface;
-        let extents = surface.extents;
+        // PlatformSpawnPos and ApplyDuplicationEffect read CalcExtents and the
+        // live radius (ShootDuplicator.cs:116, 370, 383, 388).
+        let collider = self.platforms[source].collider;
+        let extents = collider.calc_extents();
         let scale = self.platform_dynamics[source].scale;
         let (right, up) = if extents.x < Fix::from_f32(0.05) && extents.y < Fix::from_f32(0.05) {
             (Vec2::RIGHT, Vec2::UP)
@@ -31777,13 +31780,13 @@ impl RolloutWorld {
             surface.center
                 + up * Fix::from_int(vertical.sign())
                     * Fix::from_int(2)
-                    * (surface.radius + extents.y + scale)
+                    * (collider.radius + extents.y + scale)
         } else {
             surface.center
                 + right
                     * Fix::from_int(horizontal.sign())
                     * Fix::from_int(2)
-                    * (surface.radius + extents.x + scale)
+                    * (collider.radius + extents.x + scale)
         };
         let entity = self.players[caster].duplicator_entity;
         let spawner_hierarchy = if entity == usize::MAX {
