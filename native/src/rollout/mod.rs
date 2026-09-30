@@ -28454,7 +28454,8 @@ impl RolloutWorld {
                 scale: source.scale,
                 offset: source.offset,
                 radius: source.radius,
-                synced_center: position + source.offset,
+                synced_center: position
+                    + Vec2::angle(source.body.orientation).complex_mul(source.offset),
                 body,
                 enabled: false,
                 time_passed: Fix::ZERO,
