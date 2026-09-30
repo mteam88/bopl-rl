@@ -3259,6 +3259,9 @@ struct PlatformScratch {
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
     duplicated_rock_wall_contacts: Vec<(usize, usize, Contact)>,
     rock_spike_hits: Vec<(usize, usize, Vec2)>,
+    /// Each slime's position before PlayerPhysics.LateUpdateSim follows its
+    /// ground, where an older Mine's LateUpdateSim still finds it.
+    before_ground_follow: [Vec2; MAX_PLAYERS],
     item_spike_hits: Vec<(usize, usize, Vec2)>,
     tesla_wall_contacts: Vec<(usize, usize, Contact)>,
     /// Portal shots' wall manifolds: (shot, wall, contact).
@@ -7460,6 +7463,9 @@ impl RolloutWorld {
                 slot.cast_spell.collider_right = slot.base.up.perp_cw();
                 slot.cast_spell.collider_rotation = slot.base.rotation;
             }
+        }
+        for (position, slot) in self.scratch.before_ground_follow.iter_mut().zip(&self.players) {
+            *position = slot.base.position;
         }
         for index in 0..self.players.len() {
             let slot = &self.players[index];
@@ -32869,7 +32875,14 @@ impl RolloutWorld {
             }
             if count < candidates.len() {
                 let row = self.entities[entity];
-                candidates[count] = (row.kind, row.id, entity, player_index, player.base.position);
+                // Mine.LateUpdateSim runs before a newer slime's
+                // PlayerPhysics.LateUpdateSim moves it with its ground.
+                let position = if 100_000_000 + mine.hierarchy_base < row.hierarchy {
+                    self.scratch.before_ground_follow[player_index]
+                } else {
+                    player.base.position
+                };
+                candidates[count] = (row.kind, row.id, entity, player_index, position);
                 count += 1;
             }
         }
