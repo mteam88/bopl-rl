@@ -9240,8 +9240,11 @@ impl RolloutWorld {
                 self.platform_dynamics[platform_index].composite_position = position;
                 self.platform_dynamics[platform_index].body.velocity =
                     Self::portal_velocity(entry, exit, velocity);
+                // Portal.TeleportBody sets body.position, the FixTransform;
+                // the DetPhysics collider a Black Hole reads follows at the
+                // next Simulate.
                 self.platforms[platform_index].surface.center += delta;
-                self.platforms[platform_index].collider.inner.center += delta;
+                self.platform_dynamics[platform_index].shake_unsynced += delta;
                 platforms_changed = true;
             }
         }
