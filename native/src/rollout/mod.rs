@@ -9883,6 +9883,11 @@ impl RolloutWorld {
                     _ => slot.gun.aim,
                 };
                 slot.facing_right = aim.x >= Fix::ZERO;
+            } else if active == ActiveAbility::Beam {
+                // Beam.ExitAbility pops the body up and hands on the entry
+                // facing and the body's externalVelocity (Beam.cs:511-522).
+                slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
+                slot.facing_right = slot.beam.entry_facing_right;
             } else {
                 slot.base.external_velocity = Vec2::ZERO;
             }
