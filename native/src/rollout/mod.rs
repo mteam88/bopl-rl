@@ -41103,6 +41103,20 @@ impl RolloutWorld {
         if self.players[index].active == ActiveAbility::Beam
             && let Some(orb) = self.players[index].beam.orb
         {
+            // A form killed before its own update this pass never reaches
+            // Beam.LateUpdateSim, but DetPhysics has already synced the orb
+            // to the pose the last one gave it.
+            if self.beam_orbs[orb].held_tick != Some(self.tick) {
+                let slot = &self.players[index];
+                let late = (
+                    slot.base.position,
+                    slot.base.up,
+                    slot.beam.staff_dir,
+                    slot.facing_right,
+                    slot.forms[slot.active_slot].scale,
+                );
+                self.update_beam_orb_position(index, late.0, late.1, late.2, late.3, late.4);
+            }
             self.beam_orbs[orb].holder_destroyed = Some(self.tick);
         }
         if by_callback
