@@ -41121,6 +41121,11 @@ impl RolloutWorld {
                 );
                 self.update_beam_orb_position(index, late.0, late.1, late.2, late.3, late.4);
             }
+        }
+        // killPlayer destroys every ability object the slime holds, active or
+        // not (PlayerCollision.cs:159-167, 184-192, 203-211), so each Beam's
+        // orb loses its holder.
+        for orb in self.players[index].beam_orb_slots.into_iter().flatten() {
             self.beam_orbs[orb].holder_destroyed = Some(self.tick);
         }
         if by_callback
