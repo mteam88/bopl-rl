@@ -2704,7 +2704,12 @@ impl AbilitylessClone {
     /// PlayerPhysics.DropPlatformTest closing a grounded Move: a platform
     /// dropping its riders ungrounds the clone and pushes it off along the
     /// normal (PlayerPhysics.cs:285-301).
-    fn drop_platform_test(&mut self, platforms: &[Platform], dynamics: &[PlatformDynamics]) {
+    fn drop_platform_test(
+        &mut self,
+        platforms: &[Platform],
+        dynamics: &[PlatformDynamics],
+        tick: u32,
+    ) {
         let Some(index) = self.base.ground.and_then(|ground| {
             platforms.iter().position(|platform| platform.id == ground && platform.active)
         }) else {
@@ -2715,17 +2720,10 @@ impl AbilitylessClone {
             return;
         }
         let normal = platforms[index].surface.normal(self.base.position);
-        let base = &mut self.base;
-        // UnGround lifts the body off the surface before the push.
-        base.position += normal * Fix::from_f32(0.05);
-        base.velocity += normal * dynamics.drop_force;
-        base.position += base.velocity / Fix::from_int(100);
-        base.grounded = false;
-        base.ground = None;
-        base.grounded_speed = Fix::ZERO;
-        base.rotation = Fix::ZERO;
-        base.up = Vec2::UP;
-        self.obs_state = STATE_FALL;
+        // UnGround(nullRotation: true) keeps attachedGround (PlayerPhysics.cs:291).
+        UngroundBody::Clone(self).unground(platforms, tick, true);
+        self.base.velocity += normal * dynamics.drop_force;
+        self.base.position += self.base.velocity / Fix::from_int(100);
         self.state_ticks = 1;
     }
 }
@@ -9850,20 +9848,36 @@ impl RolloutWorld {
             self.deactivate_drill_hitboxes(index);
         }
 
+        let tick = self.tick;
         let slot = &mut self.players[index];
-        // UnGround lifts the body off the surface before the push.
-        slot.base.position += normal * Fix::from_f32(0.05);
+        // UnGround(nullRotation: true) keeps attachedGround (PlayerPhysics.cs:291).
+        if active == ActiveAbility::None {
+            UngroundBody::Slime(slot).unground(&self.platforms, tick, true);
+        } else {
+            UngroundBody::Form(slot).unground(&self.platforms, tick, true);
+        }
         slot.base.velocity += normal * dynamics.drop_force;
         slot.base.position += slot.base.velocity / Fix::from_int(100);
-        slot.base.grounded = false;
-        slot.base.ground = None;
-        slot.base.grounded_speed = Fix::ZERO;
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
         if active != ActiveAbility::None {
             // PlayerPhysics.DropPlatformTest calls the form's IAbilityComponent
             // with an ungrounded packet containing only self-imposed velocity
             // and position. Restore the ordinary slime from that packet.
+            if matches!(
+                active,
+                ActiveAbility::Bow
+                    | ActiveAbility::Freeze
+                    | ActiveAbility::Blink
+                    | ActiveAbility::GrowthRay
+                    | ActiveAbility::ShrinkRay
+                    | ActiveAbility::Duplicator
+                    | ActiveAbility::Magnet
+            ) {
+                // Their ExitAbility UnGrounds again before it reads the position
+                // (BowTransform.cs:120, GunTransform.cs:87, MagnetGun.cs:359).
+                UngroundBody::Form(slot).unground(&self.platforms, tick, true);
+            }
+            // The slime's SyncPhysicsTo airborne arm (PlayerPhysics.cs:577).
+            slot.base.ground = None;
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.base.radius = data.player.radius;
             slot.base.constants = data.player.constants.clone();
@@ -9874,7 +9888,6 @@ impl RolloutWorld {
         } else {
             // An ordinary slime has no IAbilityComponent, so no EnterFall,
             // and it already published its position before Move.
-            slot.obs_state = STATE_FALL;
             slot.state_ticks = 1;
         }
     }
@@ -40049,7 +40062,7 @@ impl RolloutWorld {
             let grounded = clone.base.grounded;
             let integrate = clone.base.move_unintegrated(action, movement, terrain);
             if grounded && integrate {
-                clone.drop_platform_test(terrain.platforms, &self.platform_dynamics);
+                clone.drop_platform_test(terrain.platforms, &self.platform_dynamics, self.tick);
             }
             if integrate && clone.grip.rope.is_none() {
                 clone.base.integrate();
