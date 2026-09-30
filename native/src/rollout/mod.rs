@@ -20174,6 +20174,21 @@ impl RolloutWorld {
                         rope.platform_destroyed_at = (self.tick, hierarchy);
                     }
                 }
+                // A spark node planted on it and older than the check has
+                // already redrawn its lightning in its own UpdateSim, which
+                // the line keeps when the drowning destroys it.
+                for node_index in 0..self.tesla_nodes.len() {
+                    let node = self.tesla_nodes[node_index];
+                    if node.active
+                        && !node.macho_carried
+                        && node.platform_index == boulder.platform_index
+                        && node.connected
+                        && node.child.is_some()
+                        && node.hierarchy_base < hierarchy
+                    {
+                        self.update_tesla_line_geometry(node_index, data);
+                    }
+                }
                 self.remove_platform(boulder.platform_index, true);
                 // In space the floor exit instantiates UpEffect, which
                 // Boulder.prefab leaves empty; only the water exit splashes.
