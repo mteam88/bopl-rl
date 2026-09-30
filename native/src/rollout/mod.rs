@@ -6100,12 +6100,10 @@ impl RolloutWorld {
         let clones = self.player_layer_clones();
         let mut hits = Vec::new();
         for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
-            if !pickup.active || !pickup.enabled {
+            let Some(DetCollider::Circle(circle)) =
+                pickup.entity.and_then(|entity| self.detphysics_collider(entity))
+            else {
                 continue;
-            }
-            let circle = Circle {
-                center: pickup.position + pickup.offset,
-                radius: pickup.radius,
             };
             let swept = Swept::Pickup(pickup_index);
             let pickup_rank = sweep_rank(&self.entities, self.swept_min(swept), pickup.entity);
@@ -17214,9 +17212,7 @@ impl RolloutWorld {
             // Remaining registered circle bodies, in source registry groups.
             for pickup_index in 0..self.ability_pickups.len() {
                 let pickup = self.ability_pickups[pickup_index];
-                // DetPhysics.IsActive: a pickup's hitbox stays disabled for its
-                // first disabledSeconds, and the hole passes it by until then.
-                if !pickup.active || !pickup.enabled || self.blink_object_hidden(pickup.entity) {
+                if pickup.entity.and_then(|entity| self.detphysics_collider(entity)).is_none() {
                     continue;
                 }
                 let center = pickup.position + pickup.offset;
@@ -17567,9 +17563,7 @@ impl RolloutWorld {
                 let Some(entity) = pickup.entity else {
                     continue;
                 };
-                if !pickup.active
-                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED)
-                        != (E_ACTIVE | E_ENABLED)
+                if self.detphysics_collider(entity).is_none()
                     || pickup.body.inverse_mass <= Fix::ZERO
                     || !self.circle_overlaps_entity(query, entity)
                 {
@@ -26490,14 +26484,10 @@ impl RolloutWorld {
         }
         for pickup_index in 0..self.ability_pickups.len() {
             let pickup = self.ability_pickups[pickup_index];
-            // CollideBox tests DetPhysics.IsActive, which a pickup's still
-            // disabled hitbox fails.
-            if !pickup.active || !pickup.enabled || self.blink_object_hidden(pickup.entity) {
+            let Some(DetCollider::Circle(collider)) =
+                pickup.entity.and_then(|entity| self.detphysics_collider(entity))
+            else {
                 continue;
-            }
-            let collider = Circle {
-                center: pickup.synced_center,
-                radius: pickup.radius,
             };
             if crate::physics::contact::circle_box(collider, query).is_none() {
                 continue;
@@ -26799,23 +26789,15 @@ impl RolloutWorld {
             );
         }
         for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
-            // CircleCastAll tests DetPhysics.IsActive, which a pickup's still
-            // disabled hitbox fails.
-            if !pickup.active || !pickup.enabled || self.blink_object_hidden(pickup.entity) {
+            let Some(DetCollider::Circle(collider)) =
+                pickup.entity.and_then(|entity| self.detphysics_collider(entity))
+            else {
                 continue;
-            }
-            let center = pickup.synced_center;
+            };
             consider(
                 MagnetHeld::AbilityPickup(pickup_index),
                 pickup.position,
-                crate::physics::contact::circle_circle(
-                    pickup_circle,
-                    Circle {
-                        center,
-                        radius: pickup.radius,
-                    },
-                )
-                .is_some(),
+                crate::physics::contact::circle_circle(pickup_circle, collider).is_some(),
             );
         }
         for (shot_index, shot) in self.portal_shots.iter().enumerate() {
@@ -30410,18 +30392,28 @@ impl RolloutWorld {
         }
     }
 
-    /// The collider a mid-pass DetPhysics query sees for a slime's, form's or
-    /// clone's entity: where DetPhysics last synced it, at its Simulate or an
-    /// explicit sync (OnEnterAbility, onExitAbility), and not where this pass's
-    /// updates have since moved the body. A clone's row already follows its
-    /// update. None: not in DetPhysics now; `is_body_collider` says whether the
-    /// entity is a slime's, form's or clone's at all.
+    /// The collider a mid-pass DetPhysics query sees for a slime's, form's,
+    /// clone's or ability pickup's entity: where DetPhysics last synced it, at
+    /// its Simulate or an explicit sync (OnEnterAbility, onExitAbility), and
+    /// not where this pass's updates have since moved the body. A clone's row
+    /// already follows its update. None: not in DetPhysics now, which is
+    /// DetPhysics.IsActive failing (DetPhysics.cs:1658); `is_body_collider`
+    /// says whether the entity is a slime's, form's or clone's at all.
     fn detphysics_collider(&self, entity: usize) -> Option<DetCollider> {
         if let Some(clone) =
             self.abilityless_clones.iter().find(|clone| clone.active && clone.entity == Some(entity))
         {
             let row_active = self.entities[entity].flags & E_ACTIVE != 0;
             return (row_active && !clone.blink_tunnel_active).then_some(DetCollider::Box(clone.base.synced));
+        }
+        // A pickup's hitbox stays disabled for its first disabledSeconds, and
+        // a Blink tunnel holding it deactivates its GameObject.
+        if let Some(pickup) =
+            self.ability_pickups.iter().find(|pickup| pickup.active && pickup.entity == Some(entity))
+        {
+            return (pickup.enabled && !self.blink_object_hidden(Some(entity))).then_some(
+                DetCollider::Circle(Circle { center: pickup.synced_center, radius: pickup.radius }),
+            );
         }
         let index = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity)?;
         self.hurtbox_collider(index)
