@@ -39118,6 +39118,11 @@ impl RolloutWorld {
             }) {
                 continue;
             }
+            // So does the BoplBody of a Duplicator copy or ability platform
+            // instantiated earlier this pass.
+            if self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick) {
+                continue;
+            }
             let dynamics = &mut self.platform_dynamics[i];
             let previous = dynamics.body_scale;
             let scale = dynamics.scale;
