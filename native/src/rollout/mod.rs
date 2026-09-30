@@ -9791,11 +9791,6 @@ impl RolloutWorld {
         if active == ActiveAbility::Magnet {
             self.drop_magnet_held_item(index);
         }
-        if active == ActiveAbility::Beam
-            && let Some(orb) = self.players[index].beam.orb
-        {
-            self.beam_orbs[orb].holder_destroyed = Some(self.tick);
-        }
 
         let tick = self.tick;
         let slot = &mut self.players[index];
