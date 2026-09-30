@@ -25514,7 +25514,8 @@ impl RolloutWorld {
                     .base
                     .ground
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                    .is_none());
+                    .is_none()
+                || self.ground_inactive(index));
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
@@ -25687,7 +25688,8 @@ impl RolloutWorld {
                     .base
                     .ground
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                    .is_none());
+                    .is_none()
+                || self.ground_inactive(index));
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
@@ -25852,7 +25854,8 @@ impl RolloutWorld {
                     .base
                     .ground
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                    .is_none());
+                    .is_none()
+                || self.ground_inactive(index));
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
@@ -26017,7 +26020,8 @@ impl RolloutWorld {
                     .base
                     .ground
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-                    .is_none());
+                    .is_none()
+                || self.ground_inactive(index));
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
