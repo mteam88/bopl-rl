@@ -9873,37 +9873,58 @@ impl RolloutWorld {
         slot.base.velocity += normal * dynamics.drop_force;
         slot.base.position += slot.base.velocity / Fix::from_int(100);
         if active != ActiveAbility::None {
-            // PlayerPhysics.DropPlatformTest calls the form's IAbilityComponent
-            // with an ungrounded packet containing only self-imposed velocity
-            // and position. Restore the ordinary slime from that packet.
-            if matches!(
-                active,
+            // PlayerPhysics.DropPlatformTest hands the form's IAbilityComponent
+            // a default packet but for self-imposed velocity and position, and
+            // each ExitAbility writes its own fields over it before the slime
+            // restores from it.
+            match active {
                 ActiveAbility::Bow
-                    | ActiveAbility::Freeze
-                    | ActiveAbility::Blink
-                    | ActiveAbility::GrowthRay
-                    | ActiveAbility::ShrinkRay
-                    | ActiveAbility::Duplicator
-                    | ActiveAbility::Magnet
-            ) {
-                // Their ExitAbility UnGrounds again before it reads the position
-                // (BowTransform.cs:120, GunTransform.cs:87, MagnetGun.cs:359).
-                UngroundBody::Form(slot).unground(&self.platforms, tick, true);
-                // and hand on `isFacingRight = inputVector.x >= 0` and the body's
-                // externalVelocity (BowTransform.cs:123-125, GunTransform.cs:90-93).
-                let aim = match active {
-                    ActiveAbility::Bow => slot.bow.aim,
-                    ActiveAbility::Magnet => slot.magnet.aim,
-                    _ => slot.gun.aim,
-                };
-                slot.facing_right = aim.x >= Fix::ZERO;
-            } else if active == ActiveAbility::Beam {
-                // Beam.ExitAbility pops the body up and hands on the entry
-                // facing and the body's externalVelocity (Beam.cs:511-522).
-                slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
-                slot.facing_right = slot.beam.entry_facing_right;
-            } else {
-                slot.base.external_velocity = Vec2::ZERO;
+                | ActiveAbility::Freeze
+                | ActiveAbility::Blink
+                | ActiveAbility::GrowthRay
+                | ActiveAbility::ShrinkRay
+                | ActiveAbility::Duplicator
+                | ActiveAbility::Magnet => {
+                    // They UnGround again before they read the position
+                    // (BowTransform.cs:120, GunTransform.cs:87, MagnetGun.cs:359),
+                    // and hand on `inputVector.x >= 0` and the body's
+                    // externalVelocity (BowTransform.cs:123-125, GunTransform.cs:90-93).
+                    UngroundBody::Form(slot).unground(&self.platforms, tick, true);
+                    let aim = match active {
+                        ActiveAbility::Bow => slot.bow.aim,
+                        ActiveAbility::Magnet => slot.magnet.aim,
+                        _ => slot.gun.aim,
+                    };
+                    slot.facing_right = aim.x >= Fix::ZERO;
+                }
+                ActiveAbility::Beam => {
+                    // Beam.ExitAbility pops the body up and hands on the entry
+                    // facing and the body's externalVelocity (Beam.cs:511-522).
+                    slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
+                    slot.facing_right = slot.beam.entry_facing_right;
+                }
+                ActiveAbility::Meteor => {
+                    // MeteorSmash.ExitAbility passes the packet on untouched
+                    // (MeteorSmash.cs:196-205): isFacingRight false.
+                    slot.facing_right = false;
+                    slot.base.external_velocity = Vec2::ZERO;
+                }
+                ActiveAbility::Engine | ActiveAbility::Tesla => {
+                    // PlantObjectOnPlatform.cs:136-137 zeroes both velocities.
+                    slot.base.velocity = Vec2::ZERO;
+                    slot.base.external_velocity = Vec2::ZERO;
+                }
+                ActiveAbility::Throw => {
+                    // MachoThrow2.cs:785; it leaves externalVelocity default.
+                    slot.facing_right = slot.macho_throw.facing_right;
+                    slot.base.external_velocity = Vec2::ZERO;
+                }
+                // ThrowItem leaves externalVelocity default (ThrowItem.cs:158-174).
+                ActiveAbility::Mine => slot.base.external_velocity = Vec2::ZERO,
+                // The rest hand on the body's velocities and the facing the slot
+                // already holds: PlayerInfo.isFacingRight, or a localScale.x that
+                // follows it (Roll.cs:214, BlackHoleClap.cs:157, ThrowItem2.cs:198).
+                _ => {}
             }
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.base.constants = data.player.constants.clone();
