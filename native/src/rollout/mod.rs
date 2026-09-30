@@ -501,6 +501,9 @@ pub struct Arrow {
     /// Live FixTransform scale. Ordinary Bow arrows start at one; Duplicator
     /// copies the source transform scale exactly.
     pub scale: Fix,
+    /// DPhysicsCircle.radius, which the Scale setter multiplies by
+    /// `(1 / old) * new` (DPhysicsCircle.cs:214-221).
+    pub collider_radius: Fix,
     /// BoplBody.prevScale: the scale the DetPhysics mass last followed.
     /// BoplBody.UpdateSim divides the inverse mass and inertia by each
     /// scale change, so a grown arrow hits harder.
@@ -17598,7 +17601,7 @@ impl RolloutWorld {
                     },
                     Circle {
                         center: arrow.position,
-                        radius: data.arrow.radius * arrow.scale,
+                        radius: arrow.collider_radius,
                     },
                 )
                 .is_none()
@@ -21611,7 +21614,6 @@ impl RolloutWorld {
             }
         }
         if wave.collision_mask & (1 << LAYER_PROJECTILE) != 0 {
-            let arrow_radius = data::get().arrow.radius;
             for arrow in &mut self.arrows {
                 if !arrow.active
                     || !arrow.registered
@@ -21619,7 +21621,7 @@ impl RolloutWorld {
                         query,
                         Circle {
                             center: arrow.position,
-                            radius: arrow_radius * arrow.scale,
+                            radius: arrow.collider_radius,
                         },
                     )
                     .is_none()
@@ -26545,7 +26547,7 @@ impl RolloutWorld {
             let contact = crate::physics::contact::circle_box(
                 Circle {
                     center: arrow.position,
-                    radius: data.arrow.radius * arrow.scale,
+                    radius: arrow.collider_radius,
                 },
                 query,
             );
@@ -26869,7 +26871,7 @@ impl RolloutWorld {
                     pickup_circle,
                     Circle {
                         center: arrow.position,
-                        radius: data.arrow.radius * arrow.scale,
+                        radius: arrow.collider_radius,
                     },
                 )
                 .is_some(),
@@ -27549,11 +27551,11 @@ impl RolloutWorld {
             }
             MagnetHeld::Arrow(i) => {
                 let velocity = self.arrows[i].velocity;
-                let scale = self.arrows[i].scale;
+                let radius = self.arrows[i].collider_radius;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
                 let correction = self.magnet_circle_out_of_walls(Circle {
                     center: position,
-                    radius: data.arrow.radius * scale,
+                    radius,
                 });
                 let arrow = &mut self.arrows[i];
                 arrow.position = position + correction;
@@ -28424,6 +28426,7 @@ impl RolloutWorld {
                 entity: None,
                 position,
                 scale: source.scale,
+                collider_radius: data.arrow.radius * source.scale,
                 mass_scale: Fix::ONE,
                 scaled_tick: u32::MAX,
                 inverse_mass: data.arrow.body.inverse_mass,
@@ -31736,6 +31739,7 @@ impl RolloutWorld {
                         arrow.sync_mass();
                     }
                     arrow.scale = scale;
+                    arrow.collider_radius *= ratio;
                     arrow.scaled_tick = self.tick;
                     self.entities[effect.victim].inverse_mass = arrow.inverse_mass.raw();
                 }
@@ -33460,6 +33464,7 @@ impl RolloutWorld {
             entity: None,
             position,
             scale,
+            collider_radius: data::get().arrow.radius * scale,
             mass_scale: Fix::ONE,
             scaled_tick: u32::MAX,
             inverse_mass: data::get().arrow.body.inverse_mass,
@@ -33552,7 +33557,6 @@ impl RolloutWorld {
     }
 
     fn register_arrow(&mut self, i: usize) {
-        let radius = data::get().arrow.radius;
         let entity = self.pooled_row(self.arrows[i].entity);
         self.arrows[i].entity = Some(entity);
         let arrow = &mut self.arrows[i];
@@ -33572,7 +33576,7 @@ impl RolloutWorld {
             y: arrow.position.y.raw(),
             vx: arrow.velocity.x.raw(),
             vy: arrow.velocity.y.raw(),
-            radius: (radius * arrow.scale).raw(),
+            radius: arrow.collider_radius.raw(),
             inverse_mass: arrow.inverse_mass.raw(),
             ..CEntity::default()
         };
@@ -35485,8 +35489,7 @@ impl RolloutWorld {
     /// Arrows' Circle/RoundedRectangle manifolds. They resolve in sweep order
     /// with the items', Tesla nodes', rocks' and portal shots'
     /// (thrown_item_platform_contacts).
-    fn arrow_wall_manifolds(&mut self, data: &data::RolloutData) {
-        let radius = data.arrow.radius;
+    fn arrow_wall_manifolds(&mut self) {
         let mut contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
         contacts.clear();
         for (i, arrow) in self.arrows.iter().enumerate() {
@@ -35495,7 +35498,7 @@ impl RolloutWorld {
             }
             let circle = Circle {
                 center: arrow.position,
-                radius: radius * arrow.scale,
+                radius: arrow.collider_radius,
             };
             for (p, platform) in self.platforms.iter().enumerate() {
                 if !platform.active || !self.scratch.swept_pairs(self.tick, p, circle) {
@@ -35530,7 +35533,6 @@ impl RolloutWorld {
     /// hurtboxes; PlayerCollision can therefore kill one or more slimes while
     /// the arrow continues flying.
     fn arrows_contacts(&mut self, data: &data::RolloutData) {
-        let radius = data.arrow.radius;
         // Circle/Box player hits, killed in SortAndSweep callback order:
         // (sweep key, arrow owner, victim).
         let mut player_hits: Vec<((SweepRank, SweepRank), u32, usize)> = Vec::new();
@@ -35544,7 +35546,7 @@ impl RolloutWorld {
             let arrow = self.arrows[i];
             let circle = Circle {
                 center: arrow.position,
-                radius: radius * arrow.scale,
+                radius: arrow.collider_radius,
             };
 
             // Arrow.OnCollide destroys the components from the callback
@@ -36882,7 +36884,7 @@ impl RolloutWorld {
         // DetPhysics constructs every Circle/RoundedRectangle manifold before
         // it resolves the first pair. A correction from an earlier item must
         // therefore not change the manifold already queued for a later item.
-        self.arrow_wall_manifolds(data);
+        self.arrow_wall_manifolds();
         let mut all_contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
         all_contacts.clear();
         for (item_index, item) in self.thrown_items.iter().copied().enumerate() {
@@ -36980,7 +36982,7 @@ impl RolloutWorld {
             axis(rock.position) - data.rock.radius * rock.scale
         };
         let arrow_min = |arrow_index: usize| {
-            axis(self.arrows[arrow_index].position) - data.arrow.radius * self.arrows[arrow_index].scale
+            axis(self.arrows[arrow_index].position) - self.arrows[arrow_index].collider_radius
         };
         let pair = |min: Fix, entity: Option<usize>, wall_index: usize| {
             sweep_pair(sweep_rank(&self.entities, min, entity), wall_rank(wall_index))
@@ -38039,7 +38041,7 @@ impl RolloutWorld {
                             mine_circle,
                             Circle {
                                 center: arrow.position,
-                                radius: data.arrow.radius * arrow.scale,
+                                radius: arrow.collider_radius,
                             },
                         )
                         .is_some()

@@ -1839,11 +1839,10 @@ impl RolloutWorld {
             if victim.is_none() && parent.is_none() {
                 // A Bow arrow's circle is on Projectile, which RopeHook
                 // attaches to with no offset (RopeHook.cs:160-172).
-                let radius = data::get().arrow.radius;
                 parent = self.arrows.iter().enumerate().find_map(|(index, arrow)| {
                     let body = Circle {
                         center: arrow.position,
-                        radius: radius * arrow.scale,
+                        radius: arrow.collider_radius,
                     };
                     (arrow.active
                         && arrow.registered
