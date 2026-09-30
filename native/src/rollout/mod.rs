@@ -672,6 +672,14 @@ pub struct GrenadeExplosion {
 }
 
 /// The player id of a body index, which objects store as their owner.
+/// A SlimeController's Player.SetPosition this pass: a body's turn, or an
+/// abilityless clone's OldUpdate and the position it set.
+#[derive(Clone, Copy, PartialEq)]
+enum PositionCall {
+    Body(usize),
+    Clone(usize, Vec2),
+}
+
 /// A SlimeController or form a Mjolnir hit: a body, or an abilityless clone.
 #[derive(Clone, Copy)]
 enum MjolnirVictim {
@@ -2953,6 +2961,12 @@ pub struct PlayerSlot {
     /// A pass the disabled SlimeController left Player.Position unset, so a
     /// body clone's SetPosition wins it.
     pub unpublished_tick: Option<u32>,
+    /// Player.positionSetterLastFrame: the row id of the SlimeController
+    /// whose SetPosition won the last pass, or `u32::MAX` for none.
+    pub position_setter_last: u32,
+    /// Player.Position when SetPosition's priority gave the pass to another
+    /// of the player's SlimeControllers than the one publishing it here.
+    pub position_override: Option<(u32, Vec2)>,
     pub gold_mushroom: [GoldMushroomState; 3],
     pub rewind: RewindState,
     /// SlimeController.currentState as the policy observes it. The .NET enum
@@ -3204,6 +3218,8 @@ impl PlayerSlot {
         self.reported_tick = player.reported_tick;
         self.tie_position = player.tie_position;
         self.unpublished_tick = player.unpublished_tick;
+        self.position_setter_last = player.position_setter_last;
+        self.position_override = player.position_override;
         self.player_scale = player.player_scale;
         self.invisible = player.invisible;
         self.invisible_time = player.invisible_time;
@@ -3468,6 +3484,13 @@ struct PlatformScratch {
     clone_jump_pressed: [bool; MAX_BODIES],
     /// Players whose first clone to update this pass took Player.Position.
     clones_positioned: [bool; MAX_BODIES],
+    /// The SlimeController that took Player.Position that way, as a
+    /// `PositionCall`.
+    clone_publisher: [Option<PositionCall>; MAX_BODIES],
+    /// Every SlimeController's SetPosition this pass, in update order, with
+    /// its row id and ability count at the call: a body's (whose value is its
+    /// published one) or a clone's OldUpdate with the position it set.
+    position_calls: Vec<(PositionCall, u32, usize)>,
     /// Clones whose updaters already ran this pass, ahead of a newer
     /// TeleportIndicator.
     clones_updated_early: Vec<usize>,
@@ -5074,6 +5097,8 @@ impl RolloutWorld {
                 blink_tunnel_released: false,
                 blink_tunnel_end_tick: None,
                 tie_position: None,
+                position_setter_last: u32::MAX,
+                position_override: None,
                 unpublished_tick: None,
                 gold_mushroom: [GoldMushroomState::default(); 3],
                 rewind: RewindState::default(),
@@ -6835,6 +6860,8 @@ impl RolloutWorld {
         self.scratch.hammers_ran_below = 0;
         self.scratch.engines_ran_below = 0;
         self.scratch.clones_positioned = [false; MAX_BODIES];
+        self.scratch.clone_publisher = [None; MAX_BODIES];
+        self.scratch.position_calls.clear();
         // Forms that ended earlier in the pass cleared the Player's form
         // flags before any body's turn can set them again.
         self.track_form_flags();
@@ -7050,6 +7077,7 @@ impl RolloutWorld {
                 if !stock_clone_spawned {
                     self.players[index].reported_position = self.players[index].base.position;
                     self.players[index].reported_tick = self.tick;
+                    self.record_position_call(index);
                 }
                 continue;
             }
@@ -7071,6 +7099,9 @@ impl RolloutWorld {
                 && slot.freeze_form_exit_tick != self.tick;
             if slot.base.alive && !stock_clone_spawned && !shown_gun_form {
                 self.publish_ability_position(index);
+            }
+            if !stock_clone_spawned {
+                self.record_position_call(index);
             }
             let action = packet.aim_action();
             self.players[index].last_action = action;
@@ -8038,6 +8069,7 @@ impl RolloutWorld {
                 row.flags = destroyed_flags(row.flags);
             }
         }
+        self.arbitrate_player_positions();
         self.tick += 1;
         self.episode_ticks += 1;
         self.session_tick();
@@ -39593,11 +39625,18 @@ impl RolloutWorld {
         }
         // OldUpdate's Player.SetPosition: with the slime destroyed or
         // disabled, the first clone to update takes the player's position.
+        let call = PositionCall::Clone(clone_index, self.abilityless_clones[clone_index].base.position);
+        let key = self.abilityless_clones[clone_index]
+            .entity
+            .and_then(|entity| self.entities.get(entity))
+            .map_or(u32::MAX, |row| row.id);
+        self.scratch.position_calls.push((call, key, 0));
         if (self.players[owner].slime_gone
             || self.players[owner].unpublished_tick == Some(self.tick))
             && !self.scratch.clones_positioned[owner]
         {
             self.scratch.clones_positioned[owner] = true;
+            self.scratch.clone_publisher[owner] = Some(call);
             self.players[owner].reported_position =
                 self.abilityless_clones[clone_index].base.position;
             self.players[owner].reported_tick = self.tick;
@@ -41819,11 +41858,75 @@ impl RolloutWorld {
             return;
         }
         self.scratch.clones_positioned[owner] = true;
+        self.scratch.clone_publisher[owner] = Some(PositionCall::Body(body));
         let slot = &self.players[body];
         let position =
             if slot.reported_tick == self.tick { slot.reported_position } else { slot.base.position };
         self.players[owner].reported_position = position;
         self.players[owner].reported_tick = self.tick;
+    }
+
+    /// Player.SetPosition (Player.cs:311-337) over this pass's calls: a
+    /// SlimeController takes Player.Position from the pass's setter so far
+    /// when it holds more abilities, or as many and it was the last pass's
+    /// setter; the first call of a pass always does. The bodies publish as
+    /// ever; this corrects the pass when the rule hands it to another of the
+    /// player's SlimeControllers than they did.
+    fn arbitrate_player_positions(&mut self) {
+        for owner in 0..self.player_count {
+            let owner_called = self.scratch.position_calls.iter().any(|&(call, _, _)| call == PositionCall::Body(owner));
+            let published = self.scratch.clone_publisher[owner]
+                .or(owner_called.then_some(PositionCall::Body(owner)));
+            let last = self.players[owner].position_setter_last;
+            let mut setter: Option<(PositionCall, u32, usize)> = None;
+            for &(call, key, count) in &self.scratch.position_calls {
+                let caller_owner = match call {
+                    PositionCall::Body(body) => self.players[body].owner,
+                    PositionCall::Clone(clone, _) => self.abilityless_clones[clone].owner,
+                };
+                if caller_owner != owner {
+                    continue;
+                }
+                let takes = setter.is_none_or(|(_, _, setter_count)| {
+                    count > setter_count || (count == setter_count && key == last && key != u32::MAX)
+                });
+                if takes {
+                    setter = Some((call, key, count));
+                }
+            }
+            self.players[owner].position_setter_last = setter.map_or(u32::MAX, |(_, key, _)| key);
+            let Some((winner, _, _)) = setter else {
+                continue;
+            };
+            if Some(winner) == published {
+                continue;
+            }
+            let position = match winner {
+                PositionCall::Body(body) => {
+                    let slot = &self.players[body];
+                    if slot.reported_tick == self.tick { slot.reported_position } else { slot.base.position }
+                }
+                PositionCall::Clone(_, position) => position,
+            };
+            self.players[owner].position_override = Some((self.tick, position));
+        }
+    }
+
+    /// A body's SlimeController (or its form, for it) sets Player.Position at
+    /// the start of its turn, unless it is gone or disabled.
+    fn record_position_call(&mut self, body: usize) {
+        let slot = &self.players[body];
+        if slot.base.alive
+            && !slot.slime_gone
+            && !slot.revival_clone_pending
+            && !slot.stock_clone_pending
+            && slot.unspawned == 0
+            && slot.unpublished_tick != Some(self.tick)
+        {
+            let key = self.entities.get(slot.body_entity).map_or(u32::MAX, |row| row.id);
+            let count = slot.ability_count;
+            self.scratch.position_calls.push((PositionCall::Body(body), key, count));
+        }
     }
 
     /// SparkShot, MachoThrow2 and PlatformTransform set Player.InSparkShot,
@@ -45289,6 +45392,10 @@ impl RolloutWorld {
             // retains its last published position indefinitely; later body
             // corrections in the callback pass are not observable there.
             let position = if let Some((_, position)) =
+                slot.position_override.filter(|(set, _)| set.checked_add(1) == Some(tick))
+            {
+                position
+            } else if let Some((_, position)) =
                 slot.tie_position.filter(|(set, _)| set.checked_add(1) == Some(tick))
             {
                 position
