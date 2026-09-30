@@ -26980,9 +26980,7 @@ impl RolloutWorld {
                 }
                 let slot = &mut self.players[i];
                 // MagnetGun.cs:687 calls UnGround() with nullRotation.
-                // gap: it lifts off an inactive attachedGround too.
-                let surface = slot.base.platform(&self.platforms).map(|p| &p.surface);
-                slot.base.unground(surface, true);
+                UngroundBody::Slime(slot).unground(&self.platforms, self.tick, true);
                 slot.base.skip_next_gravity = true;
                 slot.ragdoll = RagdollState {
                     active: true,
@@ -27006,9 +27004,7 @@ impl RolloutWorld {
                 // (1,0) for the rest of the pass.
                 let slot = &mut self.players[index];
                 if slot.base.grounded && slot.base.ground == Some(self.platforms[platform].id) {
-                    // gap: it lifts off an inactive attachedGround too.
-                    let surface = slot.base.platform(&self.platforms).map(|p| &p.surface);
-                    slot.base.unground(surface, true);
+                    UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
                     slot.magnet.body_right = Vec2::RIGHT;
                 }
             }
