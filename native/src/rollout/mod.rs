@@ -3255,6 +3255,53 @@ impl PlayerSlot {
         self.out || self.slime_gone || (self.won && !self.base.alive && self.respawn_ticks == 0)
     }
 
+    /// The only writer of `active`. Entering a form hides the slime
+    /// (SlimeController.cs:190) and leaving it shows the slime again.
+    fn set_active_form(&mut self, entities: &mut [CEntity], form: ActiveAbility) {
+        self.active = form;
+        self.sync_slime_row(entities);
+    }
+
+    /// The only writer of `teleport_effect_active`: teleportObject hides the
+    /// slime until the TeleportedObjectEffect shows it again.
+    fn set_teleport_hidden(&mut self, entities: &mut [CEntity], hidden: bool) {
+        self.teleport_effect_active = hidden;
+        self.sync_slime_row(entities);
+    }
+
+    /// The only writer of `blink_tunnel_active`: a QuantumTunnel hides the
+    /// slime until it ends.
+    fn set_blink_tunnel(&mut self, entities: &mut [CEntity], tunnelled: bool) {
+        self.blink_tunnel_active = tunnelled;
+        self.sync_slime_row(entities);
+    }
+
+    /// SetActive on the slime GameObject takes effect at once, so a DetPhysics
+    /// query or FindObjectsOfType<SlimeController> later in the pass already
+    /// skips a hidden slime. The row's pose and other flags wait for the refresh.
+    fn sync_slime_row(&self, entities: &mut [CEntity]) {
+        let Some(row) = entities.get_mut(self.body_entity) else {
+            return;
+        };
+        if !self.base.alive
+            || self.slime_destroyed()
+            || self.revival_clone_pending
+            || self.stock_clone_pending
+            || row.flags & (E_DESTROYED | E_REMOVED) != 0
+        {
+            return;
+        }
+        let shown = self.active == ActiveAbility::None
+            && !self.base.dash.active
+            && !self.teleport_effect_active
+            && !self.blink_tunnel_active;
+        if shown {
+            row.flags |= E_ACTIVE;
+        } else {
+            row.flags &= !E_ACTIVE;
+        }
+    }
+
     /// Copies the per-player state (the C# Player object's, and the port's
     /// bookkeeping for it) from the player's own slot onto this body.
     fn take_player_state(&mut self, player: &PlayerSlot) {
@@ -6091,7 +6138,7 @@ impl RolloutWorld {
         slot.prev_input_align = clone.prev_input_align;
         slot.captured_by_ball = clone.captured_by_ball;
         slot.poke_invulnerable = clone.poke_invulnerable;
-        slot.blink_tunnel_active = clone.blink_tunnel_active;
+        slot.set_blink_tunnel(&mut self.entities, clone.blink_tunnel_active);
         slot.blink_tunnel_born_tick = clone.blink_tunnel_born_tick;
         slot.blink_tunnel_hierarchy = clone.blink_tunnel_hierarchy;
         slot.blink_tunnel_age = clone.blink_tunnel_age;
@@ -8648,7 +8695,9 @@ impl RolloutWorld {
     fn mark_portal_occupants(&mut self, endpoint_index: usize, data: &data::RolloutData) {
         let endpoint = self.portals[endpoint_index];
         for player_index in 0..self.players.len() {
+            // Link finds the active slimes (Portal.cs:99-105).
             if self.players[player_index].base.alive
+                && self.slime_active(player_index)
                 && Self::portal_inside(endpoint, self.players[player_index].base.position, data)
             {
                 let player_id = self.players[player_index].base.id as usize;
@@ -9294,13 +9343,11 @@ impl RolloutWorld {
             let endpoint = self.portals[endpoint_index];
             for player_index in 0..self.players.len() {
                 if !self.players[player_index].base.alive
-                    || self.players[player_index].active != ActiveAbility::None
+                    || !self.slime_active(player_index)
                     || self.players[player_index].respawn_ticks != 0
                     || self.players[player_index].respawn_spawn_ticks != 0
                     || self.players[player_index].revival_clone_pending
                     || self.players[player_index].stock_clone_pending
-                    || self.players[player_index].teleport_effect_active
-                    || self.players[player_index].blink_tunnel_active
                 {
                     continue;
                 }
@@ -9450,6 +9497,15 @@ impl RolloutWorld {
     /// vulnerable through its spawn animation: BeforeSpawnInit enables the
     /// hurtbox and ReSpawn clears invulnerability (SlimeController.cs:516-538,
     /// 588-600).
+    /// The slime GameObject's activeSelf, which its row carries live
+    /// (`PlayerSlot::sync_slime_row`): FindObjectsOfType<SlimeController>
+    /// finds only an active slime.
+    fn slime_active(&self, index: usize) -> bool {
+        self.entities
+            .get(self.players[index].body_entity)
+            .is_some_and(|row| row.flags & E_ACTIVE != 0)
+    }
+
     fn hittable(&self, index: usize) -> bool {
         let slot = &self.players[index];
         slot.base.alive
@@ -9702,7 +9758,7 @@ impl RolloutWorld {
             // PlayerPhysics.DropPlatformTest calls the form's IAbilityComponent
             // with an ungrounded packet containing only self-imposed velocity
             // and position. Restore the ordinary slime from that packet.
-            slot.active = ActiveAbility::None;
+            slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.base.radius = data.player.radius;
             slot.base.constants = data.player.constants.clone();
             slot.base.external_velocity = Vec2::ZERO;
@@ -10328,7 +10384,7 @@ impl RolloutWorld {
                         // internal cooldown gate and let base.step enter it.
                         self.players[index].base.cooldown = Fix::from_int(100);
                         self.players[index].timers[s] = Fix::ZERO;
-                        self.players[index].active = ActiveAbility::Dash;
+                        self.players[index].set_active_form(&mut self.entities, ActiveAbility::Dash);
                         self.players[index].active_slot = s;
                         self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
@@ -10391,13 +10447,13 @@ impl RolloutWorld {
                         slot.base.rotation = form_rotation;
                         slot.base.radius = form_radius;
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = match ability {
+                        slot.set_active_form(&mut self.entities, match ability {
                             ABILITY_TACK => ActiveAbility::Tack,
                             ABILITY_MJOLNIR => ActiveAbility::Mjolnir,
                             ABILITY_POKE_BALL => ActiveAbility::PokeBall,
                             ABILITY_SMOKE => ActiveAbility::Smoke,
                             _ => ActiveAbility::Grenade,
-                        };
+                        });
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -10455,7 +10511,7 @@ impl RolloutWorld {
                         {
                             let slot = &mut self.players[index];
                             slot.timers[s] = Fix::ZERO;
-                            slot.active = ActiveAbility::Missile;
+                            slot.set_active_form(&mut self.entities, ActiveAbility::Missile);
                             slot.active_slot = s;
                             slot.ability_entry_action = action;
                             slot.telemetry.ability_activations[s] += 1;
@@ -10563,7 +10619,7 @@ impl RolloutWorld {
                                 self.players[index].base.collision_rays(terrain!(self));
                                 if self.players[index].base.grounded {
                                     let slot = &mut self.players[index];
-                                    slot.active = ActiveAbility::None;
+                                    slot.set_active_form(&mut self.entities, ActiveAbility::None);
                                     slot.obs_state = STATE_LAND;
                                     slot.state_ticks = LAND_TICKS + 2;
                                     slot.reported_position = slot.base.position;
@@ -10614,7 +10670,7 @@ impl RolloutWorld {
                             .expect("Push ground is live");
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Push;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Push);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -10728,7 +10784,7 @@ impl RolloutWorld {
                             body.angular_velocity = Fix::ZERO;
                         }
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Rock;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Rock);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -10797,7 +10853,7 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Roll;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Roll);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -10864,7 +10920,7 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Meteor;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Meteor);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -10937,7 +10993,7 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Mine;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Mine);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -10967,7 +11023,7 @@ impl RolloutWorld {
                         let grounded = self.players[index].base.grounded;
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::TimeStop;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::TimeStop);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11017,7 +11073,7 @@ impl RolloutWorld {
                             slot.base.velocity = Vec2::ZERO;
                         }
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Spike;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Spike);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11076,7 +11132,7 @@ impl RolloutWorld {
                     ABILITY_ENGINE => {
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Engine;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Engine);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11116,7 +11172,7 @@ impl RolloutWorld {
                     ABILITY_TESLA => {
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Tesla;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Tesla);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11166,7 +11222,7 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Freeze;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Freeze);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11221,7 +11277,7 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Blink;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Blink);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11277,11 +11333,11 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = if ability == ABILITY_GROWTH_RAY {
+                        slot.set_active_form(&mut self.entities, if ability == ABILITY_GROWTH_RAY {
                             ActiveAbility::GrowthRay
                         } else {
                             ActiveAbility::ShrinkRay
-                        };
+                        });
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11332,7 +11388,7 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Duplicator;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Duplicator);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11393,7 +11449,7 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Magnet;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Magnet);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11467,7 +11523,7 @@ impl RolloutWorld {
                     }
                     ABILITY_BOW => {
                         self.players[index].timers[s] = Fix::ZERO;
-                        self.players[index].active = ActiveAbility::Bow;
+                        self.players[index].set_active_form(&mut self.entities, ActiveAbility::Bow);
                         self.players[index].active_slot = s;
                         self.players[index].ability_entry_action = action;
                         self.players[index].telemetry.ability_activations[s] += 1;
@@ -11549,7 +11605,7 @@ impl RolloutWorld {
                             });
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Gust;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Gust);
                         slot.active_slot = s;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.gust = GustState {
@@ -11595,7 +11651,7 @@ impl RolloutWorld {
                             });
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Revival;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Revival);
                         slot.active_slot = s;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.revival = RevivalState {
@@ -11654,7 +11710,7 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::BlackHole;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::BlackHole);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11768,7 +11824,7 @@ impl RolloutWorld {
                         self.enter_form_flags(index);
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Throw;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Throw);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11809,7 +11865,7 @@ impl RolloutWorld {
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
-                        slot.active = ActiveAbility::Drill;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Drill);
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
@@ -11906,7 +11962,7 @@ impl RolloutWorld {
                             let entry_center = form_position
                                 + (entry_offset * slot.player_scale).complex_mul(entry_up.perp_cw());
                             slot.timers[s] = Fix::ZERO;
-                            slot.active = ActiveAbility::Beam;
+                            slot.set_active_form(&mut self.entities, ActiveAbility::Beam);
                             slot.active_slot = s;
                             // Ability.EnterAbility scales the box (Ability.cs:105), then
                             // Beam.OnEnterAbility's SetExtents stores One / extents outright
@@ -11981,7 +12037,7 @@ impl RolloutWorld {
                     }
                     ABILITY_PLATFORM => {
                         self.players[index].timers[s] = Fix::ZERO;
-                        self.players[index].active = ActiveAbility::Platform;
+                        self.players[index].set_active_form(&mut self.entities, ActiveAbility::Platform);
                         self.enter_form_flags(index);
                         self.players[index].active_slot = s;
                         self.players[index].ability_entry_action = action;
@@ -12232,7 +12288,7 @@ impl RolloutWorld {
             }
             if !self.players[index].base.dash.active {
                 // Dash finished this tick.
-                self.players[index].active = ActiveAbility::None;
+                self.players[index].set_active_form(&mut self.entities, ActiveAbility::None);
             }
             return;
         }
@@ -12599,7 +12655,7 @@ impl RolloutWorld {
             exit_position = platform.surface.position(base.local, base.radius);
         }
         let slot = &mut self.players[index];
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         // Roll.ExitAbility leaves Ability.KillPlayersOnContact unchanged on
         // the now-inactive prefab; the next OnEnterAbility clears it.
         slot.base.constants = data.player.constants.clone();
@@ -13255,7 +13311,7 @@ impl RolloutWorld {
         slot.meteor.dash_updates = 0;
         // The smash exits through ExitAbilityGrounded, isFacingRight true.
         slot.facing_right = true;
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.position = landing;
         slot.base.constants = data.player.constants.clone();
         slot.base.external_velocity = Vec2::ZERO;
@@ -13276,7 +13332,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         // MeteorSmash exits hand over isFacingRight true.
         slot.facing_right = true;
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.constants = data.player.constants.clone();
         slot.base.grounded_speed = Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
@@ -13290,7 +13346,7 @@ impl RolloutWorld {
     fn exit_meteor_air(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
         slot.facing_right = true;
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         // onExitAbility assigns Player.Scale to the slime's hurtbox, and
         // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
         slot.set_ordinary_body_scale(slot.player_scale);
@@ -13512,7 +13568,7 @@ impl RolloutWorld {
         // Player.SetPosition before the slime is re-placed.
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.obs_state = STATE_IDLE;
@@ -13913,7 +13969,7 @@ impl RolloutWorld {
             // SlimeController installs the returned body and immediately
             // raycasts it (Ability.cs:151, SlimeController.cs:217-272).
             let ability_position = slot.base.position;
-            slot.active = ActiveAbility::None;
+            slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.base.rotation = Fix::ZERO;
             // QuickSpell exits with a default AbilityExitInfo, whose isFacingRight
             // is false; SlimeController flips to match.
@@ -14193,7 +14249,7 @@ impl RolloutWorld {
                 .map(|platform| platform.surface.normal(self.players[index].base.position))
         });
         let slot = &mut self.players[index];
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         if slot.base.grounded
             && let Some(up) = grounded_pose
         {
@@ -14334,7 +14390,7 @@ impl RolloutWorld {
                 .map(|platform| platform.surface.normal(self.players[index].base.position))
         });
         let slot = &mut self.players[index];
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         // ExitAbility hands over groundedSpeed and both velocities zero.
         slot.base.grounded_speed = Fix::ZERO;
         slot.base.velocity = Vec2::ZERO;
@@ -15228,7 +15284,7 @@ impl RolloutWorld {
         slot.base.grounded_speed = Fix::ZERO;
         // CastSpell exits with a default AbilityExitInfo: facing left.
         slot.facing_right = false;
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         // onExitAbility assigns Player.Scale to the slime's hurtbox, and
         // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
         slot.set_ordinary_body_scale(slot.player_scale);
@@ -16400,7 +16456,7 @@ impl RolloutWorld {
             // is false; SlimeController flips to match.
             slot.facing_right = false;
             slot.exit_to_fall();
-            slot.active = ActiveAbility::None;
+            slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.base.collision_rays(terrain!(self));
@@ -16573,7 +16629,7 @@ impl RolloutWorld {
     fn exit_black_hole_form(&mut self, index: usize, grounded: bool) {
         let tick = self.tick;
         let slot = &mut self.players[index];
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.constants = data::get().player.constants.clone();
         // The exit re-places or levels only the slime; the form's frozen
         // FixTransform keeps its rotation and up.
@@ -16885,10 +16941,12 @@ impl RolloutWorld {
                 // A form's DPhysicsBox centre moves only in its OnEnterAbility
                 // and in DetPhysics' sync, so BlackHole reads the box where the
                 // last DetPhysics pass published it, or where a sync since put it.
-                let body_position = if row.kind != 1 || row.flags & E_ACTIVE != 0 {
-                    Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y))
-                } else if let Some(collider) = self.synced_hurtbox(player_index, data) {
+                let body_position = if let Some(collider) =
+                    (row.kind == 1).then(|| self.synced_row_box(entity, data)).flatten()
+                {
                     collider.center
+                } else if row.kind != 1 || row.flags & E_ACTIVE != 0 {
+                    Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y))
                 } else {
                     continue;
                 };
@@ -18114,7 +18172,7 @@ impl RolloutWorld {
                 .complex_mul(self.players[index].base.up.perp_cw());
         }
         let slot = &mut self.players[index];
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.position = position;
         slot.base.radius = data.player.radius;
         slot.base.constants = data.player.constants.clone();
@@ -18517,7 +18575,7 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
-            slot.active = ActiveAbility::None;
+            slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.base.radius = data.player.radius;
             slot.base.constants = data.player.constants.clone();
             slot.facing_right = slot.beam.entry_facing_right;
@@ -20442,7 +20500,7 @@ impl RolloutWorld {
         // SyncPhysicsTo moves the slime.
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.facing_right = slot.macho_throw.facing_right;
         // onExitAbility assigns Player.Scale to the slime's hurtbox, and
         // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
@@ -21658,7 +21716,7 @@ impl RolloutWorld {
             }
             self.players[index].teleport_effect_time += updater_dt;
             if self.players[index].teleport_effect_time > data.teleport.effect_duration {
-                self.players[index].teleport_effect_active = false;
+                self.players[index].set_teleport_hidden(&mut self.entities, false);
                 self.players[index].teleport_effect_time = Fix::ZERO;
                 self.players[index].teleport_effect_released_tick = Some(self.tick);
             }
@@ -21718,22 +21776,21 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                if row.flags & E_ACTIVE == 0 {
-                    if let Some(collider) = self.synced_row_box(entity, data::get())
-                        && crate::physics::contact::circle_box(query, collider).is_some()
-                    {
+                // IsActive also asks the collider to be enabled
+                // (DetPhysics.cs:1658-1663): a burning Smoke cloud has
+                // disabled its circle.
+                let synced = (kind == 1).then(|| self.synced_row_box(entity, data::get())).flatten();
+                if row.flags & E_ACTIVE == 0 && synced.is_none() || row.flags & E_ACTIVE != 0 && row.flags & E_ENABLED == 0 {
+                    continue;
+                }
+                if let Some(collider) = synced {
+                    if crate::physics::contact::circle_box(query, collider).is_some() {
                         hits[count] = entity;
                         count += 1;
                         if count == hits.len() {
                             return count;
                         }
                     }
-                    continue;
-                }
-                // IsActive also asks the collider to be enabled
-                // (DetPhysics.cs:1658-1663): a burning Smoke cloud has
-                // disabled its circle.
-                if row.flags & E_ENABLED == 0 {
                     continue;
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
@@ -21888,7 +21945,7 @@ impl RolloutWorld {
                     pose: Some((slot.base.rotation, slot.base.up)),
                 });
             }
-            self.players[player_index].teleport_effect_active = true;
+            self.players[player_index].set_teleport_hidden(&mut self.entities, true);
             self.players[player_index].teleport_effect_time = Fix::ZERO;
             self.players[player_index].teleport_effect_hierarchy = self.next_spawn_hierarchy;
             self.players[player_index].teleport_effect_born_tick = self.tick;
@@ -22521,7 +22578,7 @@ impl RolloutWorld {
         slot.reported_tick = self.tick;
         slot.obs_state = STATE_NOTHING;
         slot.timers.fill(Fix::from_f32(-1.5));
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.ability_origin_scale = slot.player_scale;
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
@@ -22539,7 +22596,7 @@ impl RolloutWorld {
         slot.magnet_extra_offsets = [Vec2::ZERO; 3];
         slot.gun_prev_scales = [Fix::ONE; 3];
         slot.form_gravity = [Fix::ONE; 3];
-        slot.blink_tunnel_active = false;
+        slot.set_blink_tunnel(&mut self.entities, false);
         slot.blink_tunnel_age = Fix::ZERO;
         slot.blink_tunnel_released = false;
         slot.ragdoll = RagdollState::default();
@@ -23025,7 +23082,7 @@ impl RolloutWorld {
             );
             slot.set_ordinary_body_scale(slot.player_scale);
             slot.base.sync_collider();
-            slot.active = ActiveAbility::None;
+            slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.ability_origin_scale = slot.player_scale;
             slot.rock = RockState::default();
             // The clone's WebSwing and HookshotInstant are new instances: a
@@ -23043,7 +23100,7 @@ impl RolloutWorld {
             slot.magnet_extra_offsets = [Vec2::ZERO; 3];
             slot.gun_prev_scales = [Fix::ONE; 3];
             slot.form_gravity = [Fix::ONE; 3];
-            slot.blink_tunnel_active = false;
+            slot.set_blink_tunnel(&mut self.entities, false);
             slot.blink_tunnel_age = Fix::ZERO;
             slot.blink_tunnel_released = false;
             slot.ragdoll = RagdollState::default();
@@ -23808,9 +23865,7 @@ impl RolloutWorld {
                 };
                 // A box synced mid-pass since (a slime that left or entered a
                 // form earlier this pass) is where that sync put it.
-                let synced = (row.flags & E_ACTIVE == 0)
-                    .then(|| self.synced_hurtbox(target, data::get()))
-                    .flatten();
+                let synced = self.synced_row_box(entity, data::get());
                 let hit = match synced {
                     Some(collider) => collider.raycast(origin, direction),
                     None => Self::raycast_entity_row(row, origin, direction),
@@ -24038,7 +24093,7 @@ impl RolloutWorld {
             }
         }
         if !self.players[index].base.dash.active {
-            self.players[index].active = ActiveAbility::None;
+            self.players[index].set_active_form(&mut self.entities, ActiveAbility::None);
         }
     }
 
@@ -24173,7 +24228,7 @@ impl RolloutWorld {
             }
             3 if state.ticks > data.missile.idle_ticks => {
                 let slot = &mut self.players[index];
-                slot.active = ActiveAbility::None;
+                slot.set_active_form(&mut self.entities, ActiveAbility::None);
                 // Ability.ExitAbility publishes the collider DetPhysics last
                 // synced, before the slime's own raycasts can land it.
                 slot.reported_position = slot.base.position;
@@ -24254,7 +24309,7 @@ impl RolloutWorld {
         let grounded = self.players[index].base.grounded;
         if grounded && ((lost.is_some() && dead.is_none()) || ground_inactive) {
             let slot = &mut self.players[index];
-            slot.active = ActiveAbility::None;
+            slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
             slot.facing_right = true;
@@ -24317,7 +24372,7 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 // SparkShot's landing exit hands over isFacingRight true.
                 slot.facing_right = true;
-                slot.active = ActiveAbility::None;
+                slot.set_active_form(&mut self.entities, ActiveAbility::None);
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks = LAND_TICKS + 2;
                 slot.set_ordinary_body_scale(slot.player_scale);
@@ -24452,7 +24507,7 @@ impl RolloutWorld {
             if self.players[index].throw_item.ticks > exit_ticks {
                 let grounded = self.players[index].base.grounded;
                 let slot = &mut self.players[index];
-                slot.active = ActiveAbility::None;
+                slot.set_active_form(&mut self.entities, ActiveAbility::None);
                 // A form fired from the ground exits with the Fire's
                 // knockback; SyncPhysicsTo drops it again if the slime is
                 // restored onto a live ground (ThrowItem.cs:194,
@@ -24535,7 +24590,7 @@ impl RolloutWorld {
                     return;
                 }
                 let slot = &mut self.players[index];
-                slot.active = ActiveAbility::None;
+                slot.set_active_form(&mut self.entities, ActiveAbility::None);
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks = LAND_TICKS + 2;
                 slot.reported_position = slot.base.position;
@@ -24736,7 +24791,7 @@ impl RolloutWorld {
             };
             if self.players[index].throw_item.ticks >= exit_ticks {
                 let slot = &mut self.players[index];
-                slot.active = ActiveAbility::None;
+                slot.set_active_form(&mut self.entities, ActiveAbility::None);
                 let grounded = slot.base.grounded;
                 if grounded {
                     // ThrowItem2 marks a grounded exit as `justlanded`.
@@ -24815,7 +24870,7 @@ impl RolloutWorld {
         }
         if self.players[index].throw_item.grounded && !self.players[index].base.grounded {
             let slot = &mut self.players[index];
-            slot.active = ActiveAbility::None;
+            slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.exit_to_fall();
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
@@ -24927,7 +24982,7 @@ impl RolloutWorld {
                 // and ExitAbility tosses a still-held item straight up.
                 self.release_held_throw_item_on_exit(index, false, data);
                 let slot = &mut self.players[index];
-                slot.active = ActiveAbility::None;
+                slot.set_active_form(&mut self.entities, ActiveAbility::None);
                 slot.obs_state = STATE_LAND;
                 slot.state_ticks = LAND_TICKS + 2;
                 // The form's own body attached, so its box turns with it.
@@ -25262,7 +25317,7 @@ impl RolloutWorld {
             .expect("valid freeze-ray gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, terrain!(self), self.tick);
+                bow_exit(slot, &mut self.entities, terrain!(self), self.tick);
                 return;
             }
         }
@@ -25425,7 +25480,7 @@ impl RolloutWorld {
             .expect("valid Blink gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, terrain!(self), self.tick);
+                bow_exit(slot, &mut self.entities, terrain!(self), self.tick);
                 return;
             }
         }
@@ -25580,7 +25635,7 @@ impl RolloutWorld {
             .expect("valid scale-ray gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, terrain!(self), self.tick);
+                bow_exit(slot, &mut self.entities, terrain!(self), self.tick);
                 return;
             }
         }
@@ -27551,7 +27606,7 @@ impl RolloutWorld {
         if !landed {
             slot.force_unground(terrain.platforms, self.tick);
         }
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.exit_to_fall();
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
@@ -27627,7 +27682,7 @@ impl RolloutWorld {
             .expect("Duplicator exit lies on the platform");
         let slot = &mut self.players[index];
         slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.exit_to_fall();
         slot.base.local = local;
         slot.base.position = position;
@@ -27734,17 +27789,6 @@ impl RolloutWorld {
             self.playable_slot(slot) && Self::hurtbox_entity(slot) == hit.entity
         }) {
             self.duplicate_player_target(victim, hit.position, direction, data);
-            return;
-        }
-        // A form entered this pass has no row until the export, but its
-        // collider already stands where the slime's stale row does.
-        if let Some(victim) = self
-            .players
-            .iter()
-            .position(|slot| self.playable_slot(slot) && slot.body_entity == hit.entity)
-        {
-            let position = self.players[victim].base.position;
-            self.duplicate_player_clone(victim, position, direction, None, data);
             return;
         }
         // A clone's SlimeController spawns another abilityless clone for its
@@ -27887,9 +27931,7 @@ impl RolloutWorld {
         // RaycastToClosest visits rounded rectangles, circles, then boxes.
         for kind in [2u32, 0, 1] {
             for (entity, row) in self.entities.iter().copied().enumerate() {
-                let synced_box = (row.flags & E_ACTIVE == 0)
-                    .then(|| self.synced_row_box(entity, data))
-                    .flatten();
+                let synced_box = (row.kind == 1).then(|| self.synced_row_box(entity, data)).flatten();
                 if row.kind != kind
                     || (row.flags & E_ACTIVE == 0 && synced_box.is_none())
                     || excluded == Some(entity)
@@ -29970,9 +30012,9 @@ impl RolloutWorld {
             && self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
     }
 
-    /// A form row whose GameObject ExitAbility deactivated earlier this pass,
-    /// or the slime row onEnterAbility deactivated (SlimeController.cs:190);
-    /// its row is only marked inactive at the next refresh.
+    /// A form row whose GameObject ExitAbility deactivated earlier this pass;
+    /// its row is only marked inactive at the next refresh. The slime's own
+    /// row follows SetActive live (`PlayerSlot::sync_slime_row`).
     fn left_form_row(&self, entity: usize) -> bool {
         self.players.iter().any(|slot| {
             entity != slot.body_entity
@@ -30060,12 +30102,17 @@ impl RolloutWorld {
         })
     }
 
-    /// `synced_hurtbox` of the player whose current hurtbox is this row.
+    /// `synced_hurtbox` of the player whose current hurtbox is this row, where
+    /// a sync since the last export may have moved it: a row not yet published
+    /// active, or the slime's own row, whose flag follows SetActive at once
+    /// but whose pose is only written at export. Updaters that run before the
+    /// export read it in place of the row's pose.
     fn synced_row_box(&self, entity: usize, data: &data::RolloutData) -> Option<OrientedBox> {
-        self.players
-            .iter()
-            .position(|slot| Self::hurtbox_entity(slot) == entity)
-            .and_then(|index| self.synced_hurtbox(index, data))
+        let index = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity)?;
+        if self.entities[entity].flags & E_ACTIVE != 0 && self.players[index].active != ActiveAbility::None {
+            return None;
+        }
+        self.synced_hurtbox(index, data)
     }
 
     fn row_box(row: CEntity) -> OrientedBox {
@@ -30138,7 +30185,7 @@ impl RolloutWorld {
             slot.black_hole_cast.collider_up = slot.base.up;
             slot.black_hole_cast.collider_rotation = slot.base.rotation;
         }
-        slot.blink_tunnel_active = true;
+        slot.set_blink_tunnel(&mut self.entities, true);
         slot.blink_tunnel_born_tick = self.tick;
         slot.blink_tunnel_age = Fix::ZERO;
         slot.blink_tunnel_released = false;
@@ -30436,7 +30483,7 @@ impl RolloutWorld {
             effects_from = effects_from.max(hierarchy);
             if self.players[victim].blink_tunnel_age > data.blink.player_duration {
                 let slot = &mut self.players[victim];
-                slot.blink_tunnel_active = false;
+                slot.set_blink_tunnel(&mut self.entities, false);
                 slot.blink_tunnel_end_tick = Some(self.tick);
             }
             self.players[victim].blink_tunnel_age += updater_dt;
@@ -30835,7 +30882,7 @@ impl RolloutWorld {
                 throw.collider_basis = Vec2::angle(slot.base.rotation);
             }
         }
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.dash.active = false;
         slot.base.radius = data.player.radius;
         // The slime's own PlayerPhysics never took the form's movement
@@ -31987,7 +32034,7 @@ impl RolloutWorld {
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.force_unground(terrain.platforms, self.tick);
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.exit_to_fall();
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
@@ -32005,7 +32052,7 @@ impl RolloutWorld {
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.force_unground(terrain.platforms, self.tick);
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.exit_to_fall();
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
@@ -32027,7 +32074,7 @@ impl RolloutWorld {
         let b = &mut self.players[index].bow;
         if b.has_fired {
             if b.fire_ticks_left == 0 {
-                bow_exit(&mut self.players[index], terrain!(self), self.tick);
+                bow_exit(&mut self.players[index], &mut self.entities, terrain!(self), self.tick);
                 return;
             }
             b.fire_ticks_left -= 1;
@@ -32221,7 +32268,7 @@ impl RolloutWorld {
             slot.bow.form_rotation = slot.bow.aim.perp_cw().normalized_angle();
         }
         if exit {
-            bow_exit(slot, terrain, this.tick);
+            bow_exit(slot, &mut this.entities, terrain, this.tick);
             // The first pass after a tunnel: Ability.UpdateSim's publish wins
             // the tie against ExitAbility's (Player.cs:311-322).
             if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == tick) {
@@ -32435,7 +32482,7 @@ impl RolloutWorld {
                     slot.base.grounded = false;
                     slot.base.ground = None;
                     slot.base.grounded_speed = Fix::ZERO;
-                    slot.active = ActiveAbility::None;
+                    slot.set_active_form(&mut self.entities, ActiveAbility::None);
                     slot.exit_to_fall();
                     // Ability.ExitAbility republishes potentialCollider.position
                     // after PlatformTransform has applied the final ejection.
@@ -34477,7 +34524,7 @@ impl RolloutWorld {
         let mut slime_count = 0;
         for body in 0..self.players.len() {
             let entity = Self::hurtbox_entity(&self.players[body]);
-            if self.players[body].active == ActiveAbility::None
+            if self.slime_active(body)
                 && let Some(row) = self.entities.get(entity)
             {
                 slimes[slime_count] = (row.hierarchy, MjolnirVictim::Body(body));
@@ -41202,7 +41249,7 @@ impl RolloutWorld {
                     let slot = &mut self.players[index];
                     slot.rock.scale = exit_scale;
                     slot.rock.collider_radius *= exit_scale;
-                    slot.active = ActiveAbility::None;
+                    slot.set_active_form(&mut self.entities, ActiveAbility::None);
                     slot.base.velocity = velocity;
                     slot.base.external_velocity = Vec2::ZERO;
                     slot.base.rotation = Fix::ZERO;
@@ -42282,7 +42329,7 @@ impl RolloutWorld {
         slot.base.alive = false;
         // Nothing of it is left in the scene.
         slot.slime_gone = true;
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.revival_clone_pending = false;
         slot.stock_clone_pending = false;
         slot.revival_target_marker = None;
@@ -42522,7 +42569,7 @@ impl RolloutWorld {
             index
         };
         self.players[index].base.alive = false;
-        self.players[index].blink_tunnel_active = false;
+        self.players[index].set_blink_tunnel(&mut self.entities, false);
         if !already_won {
             let player = &mut self.players[owner];
             player.deaths += 1;
@@ -42555,7 +42602,7 @@ impl RolloutWorld {
             slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
         }
-        slot.active = ActiveAbility::None;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.dash.active = false;
         // Teleport's marker reference belongs to the destroyed ability
         // instance. The independent indicator survives, but a replacement
@@ -46080,13 +46127,13 @@ fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radi
 
 /// Leaves the bow ability: a landing exit (BowTransform.cs:225-239) or the
 /// fire animation's end (BowTransform.cs:116-130).
-fn bow_exit(slot: &mut PlayerSlot, terrain: Terrain, tick: u32) {
+fn bow_exit(slot: &mut PlayerSlot, entities: &mut [CEntity], terrain: Terrain, tick: u32) {
     let platforms = terrain.platforms;
     // BowTransform and GunTransform exit facing their aim's side
     // (`isFacingRight = inputVector.x >= 0`).
     let aim = if slot.active == ActiveAbility::Bow { slot.bow.aim } else { slot.gun.aim };
     slot.facing_right = aim.x >= Fix::ZERO;
-    slot.active = ActiveAbility::None;
+    slot.set_active_form(entities, ActiveAbility::None);
     slot.exit_to_fall();
     if slot.base.grounded {
         // Landing exit (BowTransform.cs:225-239): the slime's
@@ -46402,7 +46449,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         assert!(world.players[0].base.grounded);
-        world.players[0].active = ActiveAbility::Roll;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Roll);
         world.players[0].base.velocity = Vec2::new(Fix::from_int(3), Fix::from_int(4));
         world.players[0].base.external_velocity = Vec2::ZERO;
         world.players[0].base.grounded_speed = Fix::from_int(99);
@@ -46486,7 +46533,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         assert!(world.players[0].base.grounded);
-        world.players[0].active = ActiveAbility::Push;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Push);
         world.players[0].base.grounded_speed = Fix::from_int(12);
         let expected =
             world.players[0].base.grounded_speed * world.players[0].base.constants.friction;
@@ -46794,7 +46841,7 @@ mod tests {
             .surface
             .position(Fix::ZERO, world.players[0].base.radius);
         let normal = platform.surface.normal(landing);
-        world.players[0].active = ActiveAbility::Missile;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Missile);
         world.players[0].missile.phase = 2;
         world.players[0].missile.projectile = Some(0);
         world.players[0].base.position = landing + normal * Fix::from_f64(0.01);
@@ -46832,7 +46879,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let target_entity = world.players[1].body_entity;
-        world.players[0].active = ActiveAbility::Rock;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Rock);
         world.players[0].rope = Some(0);
         world.players[0].rock.collider_radius = data::get().rock.radius;
         world.players[0].rock.body.force = Vec2::ZERO;
@@ -46921,7 +46968,7 @@ mod tests {
         world.reset(&test_config()).unwrap();
         let platform = world.spawn_ability_platform(0, Vec2::ZERO, Fix::ONE);
         world.platforms[platform].active = false;
-        world.players[0].active = ActiveAbility::Platform;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Platform);
         world.players[0].platform.phase = PLATFORM_ROTATION;
         world.players[0].platform.platform_index = platform;
         world.players[0].platform.ticks =
@@ -47087,7 +47134,7 @@ mod tests {
         config.player[0].abilities[0] = ABILITY_BLINK;
         world.reset(&config).unwrap();
         let entity = world.players[0].blink_entity;
-        world.players[0].active = ActiveAbility::Blink;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Blink);
         world.entities[entity].flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
 
         world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT, false, false);
@@ -47178,7 +47225,7 @@ mod tests {
         world.players[0].magnet.aim = Vec2::RIGHT;
         world.players[0].magnet.body_right = Vec2::RIGHT;
         world.players[0].base.position = Vec2::new(Fix::from_int(2), Fix::from_int(20));
-        world.players[1].active = ActiveAbility::Drill;
+        world.players[1].set_active_form(&mut world.entities, ActiveAbility::Drill);
         world.players[1].base.position = Vec2::new(Fix::from_int(30), Fix::from_int(30));
         let firepoint = world.magnet_firepoint(0, data::get());
 
@@ -47221,7 +47268,7 @@ mod tests {
         config.player[0].abilities[0] = ABILITY_MAGNET;
         world.reset(&config).unwrap();
         let data = data::get();
-        world.players[0].active = ActiveAbility::Magnet;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Magnet);
         world.players[0].magnet.phase = 2;
         world.players[0].magnet.aim = Vec2::RIGHT;
         world.players[0].magnet.body_right = Vec2::RIGHT;
@@ -47433,7 +47480,7 @@ mod tests {
     fn grounded_throw_exits_after_losing_ground() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].active = ActiveAbility::Grenade;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Grenade);
         world.players[0].throw_item.grounded = true;
         world.players[0].base.grounded = false;
         world.players[0].base.ground = None;
@@ -47448,7 +47495,7 @@ mod tests {
     fn airborne_mine_entry_uses_live_ground_on_landing_fire() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].active = ActiveAbility::Mine;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Mine);
         world.players[0].throw_item.grounded = false;
         world.players[0].throw_item.direction = Vec2::UP;
 
@@ -47615,7 +47662,7 @@ mod tests {
     fn grounded_time_stop_can_cancel_during_entry_animation() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].active = ActiveAbility::TimeStop;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::TimeStop);
         world.players[0].active_slot = 0;
         world.players[0].cast_spell.phase = 0;
         world.players[0].cast_spell.time = DT;
@@ -47629,7 +47676,7 @@ mod tests {
     fn frozen_airborne_quick_spell_does_not_gain_gravity() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].active = ActiveAbility::Gust;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Gust);
         world.players[0].base.grounded = false;
         world.players[0].base.velocity = Vec2::ZERO;
         world.players[0].base.external_velocity = Vec2::ZERO;
@@ -47758,7 +47805,7 @@ mod tests {
             scale: Fix::ONE,
             ..Shockwave::default()
         };
-        world.players[1].active = ActiveAbility::Drill;
+        world.players[1].set_active_form(&mut world.entities, ActiveAbility::Drill);
         world.players[1].base.grounded = true;
         world.players[1].base.position = origin + Vec2::RIGHT;
         world.players[1].base.external_velocity = Vec2::ZERO;
@@ -47779,7 +47826,7 @@ mod tests {
         world.players[0].base.grounded = false;
         world.players[0].base.ground = None;
         let start = world.players[0].base.position;
-        world.players[0].active = ActiveAbility::TimeStop;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::TimeStop);
         world.players[0].player_scale = Fix::from_int(2);
         let self_imposed = Vec2::new(Fix::from_int(3), Fix::from_int(-2));
         world.players[0].base.velocity = self_imposed;
@@ -47828,7 +47875,7 @@ mod tests {
             caster: 0,
             ..TimeStopEffect::default()
         });
-        world.players[1].active = ActiveAbility::TimeStop;
+        world.players[1].set_active_form(&mut world.entities, ActiveAbility::TimeStop);
         world.players[1].cast_spell.phase = 2;
         world.players[1].cast_spell.ticks = data::get().time_stop.cast_spell_ticks;
 
@@ -48012,7 +48059,7 @@ mod tests {
     fn planted_object_exit_enters_stop_for_reversed_ground_input() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].active = ActiveAbility::Engine;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Engine);
         world.players[0].facing_right = true;
         world.players[0].last_movement_input = -Vec2::RIGHT;
 
@@ -48021,7 +48068,7 @@ mod tests {
         assert_eq!(world.players[0].obs_state, STATE_STOP);
         assert_eq!(world.players[0].state_ticks, STOP_TICKS + 2);
 
-        world.players[0].active = ActiveAbility::Tesla;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Tesla);
         world.players[0].last_movement_input = Vec2::RIGHT;
         world.exit_engine_cast(0);
         assert_eq!(world.players[0].obs_state, STATE_IDLE);
@@ -48069,7 +48116,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let data = data::get();
-        world.players[0].active = ActiveAbility::Engine;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Engine);
         world.players[0].active_slot = 0;
 
         for tick in 1..=data.engine.buffer_size {
@@ -48111,7 +48158,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let start = world.players[0].base.position;
-        world.players[0].active = ActiveAbility::Grenade;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Grenade);
         world.players[0].active_slot = 0;
         world.players[0].player_scale = Fix::from_int(2);
         world.players[0].facing_right = false;
@@ -48143,7 +48190,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let start = world.players[0].base.position;
-        world.players[0].active = ActiveAbility::Mine;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Mine);
         world.players[0].active_slot = 0;
         world.players[0].player_scale = Fix::from_int(2);
         world.players[0].facing_right = false;
@@ -48231,7 +48278,7 @@ mod tests {
     fn freeze_exit_restores_scaled_slime_radius() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].active = ActiveAbility::Freeze;
+        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Freeze);
         world.players[0].player_scale = Fix::from_int(2);
         world.players[0].ability_origin_scale = Fix::from_int(2);
         world.players[0].base.grounded = false;
