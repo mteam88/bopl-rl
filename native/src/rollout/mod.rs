@@ -3302,6 +3302,9 @@ struct PlatformScratch {
     /// Tacks below this hierarchy ran their UpdateSim ahead of a
     /// later-instantiated player object this pass.
     tacks_ran_below: u32,
+    /// The row hierarchies of the Duplicator copies the current Duplicated
+    /// platform pass runs; None runs them all.
+    duplicates_window: Option<std::ops::Range<u32>>,
     /// Set while the ropes waiting on a platform's ScaleChanger run.
     ropes_changer_pass: bool,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
@@ -6421,6 +6424,12 @@ impl RolloutWorld {
             }
             if spawned_from < player_hierarchy[index] {
                 let spawned = spawned_from..player_hierarchy[index];
+                // So do a Duplicator copy's platform updaters: a Blink shot
+                // at the copy by a stock-respawned slime starts its shake
+                // on the next pass.
+                if has(ABILITY_DUPLICATOR) {
+                    self.duplicated_platforms_tick(data, updater_dt, spawned.clone());
+                }
                 if has(ABILITY_BLACK_HOLE) {
                     self.black_holes_update(data, updater_dt, spawned.clone());
                 }
@@ -6724,12 +6733,8 @@ impl RolloutWorld {
         }
         self.scratch.player_scale_changes.clear();
         self.scratch.platform_resizes.clear();
-        self.platform_bounds_tick(PlatformPass::Duplicated);
-        self.platform_motion_tick(data, updater_dt, PlatformPass::Duplicated);
-        self.platform_sticky_tick(updater_dt, PlatformPass::Duplicated);
-        self.platform_body_scale_tick(PlatformPass::Duplicated);
-        self.platform_orbits_tick(data, updater_dt, PlatformPass::Duplicated);
-        self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Duplicated);
+        self.duplicated_platforms_tick(data, updater_dt, spawned_from..u32::MAX);
+        self.scratch.duplicates_window = None;
         if has(ABILITY_MAGNET) {
             self.magnet_parries_tick(data);
         }
@@ -37760,6 +37765,33 @@ impl RolloutWorld {
     /// instantiated before all of them (a hole only adds force, in any order).
     /// A rope let go during this pass still holds its place in the Updater
     /// list, so the copy keeps the same pass on both walks.
+    /// The Duplicated platform pass for the copies whose row hierarchy is in
+    /// `window`: each copy's updaters sit where DuplicateObject instantiated
+    /// it, behind the players then alive but ahead of a later stock respawn.
+    fn duplicated_platforms_tick(
+        &mut self,
+        data: &data::RolloutData,
+        updater_dt: Fix,
+        window: std::ops::Range<u32>,
+    ) {
+        self.scratch.duplicates_window = Some(window);
+        self.platform_bounds_tick(PlatformPass::Duplicated);
+        self.platform_motion_tick(data, updater_dt, PlatformPass::Duplicated);
+        self.platform_sticky_tick(updater_dt, PlatformPass::Duplicated);
+        self.platform_body_scale_tick(PlatformPass::Duplicated);
+        self.platform_orbits_tick(data, updater_dt, PlatformPass::Duplicated);
+        self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Duplicated);
+    }
+
+    /// Whether platform `i` updates in this run of `pass`.
+    fn platform_updates_in(&self, i: usize, pass: PlatformPass) -> bool {
+        self.platform_pass(i) == pass
+            && (pass != PlatformPass::Duplicated
+                || self.scratch.duplicates_window.as_ref().is_none_or(|window| {
+                    window.contains(&self.entities[self.platform_entities[i]].hierarchy)
+                }))
+    }
+
     fn platform_pass(&self, i: usize) -> PlatformPass {
         if self.platform_dynamics[i].duplicate_spawner_hierarchy.is_some() {
             let id = self.entities[self.platform_entities[i]].id;
@@ -37807,7 +37839,7 @@ impl RolloutWorld {
             } else {
                 k
             };
-            if self.platform_pass(i) != pass {
+            if !self.platform_updates_in(i, pass) {
                 continue;
             }
             self.platform_spring(data, updater_dt, i);
@@ -37867,7 +37899,7 @@ impl RolloutWorld {
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active
                 || !self.platform_dynamics[i].surface_shape_dirty
-                || self.platform_pass(i) != pass
+                || !self.platform_updates_in(i, pass)
             {
                 continue;
             }
@@ -37898,7 +37930,7 @@ impl RolloutWorld {
     fn platform_body_scale_tick(&mut self, pass: PlatformPass) {
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active
-                || self.platform_pass(i) != pass
+                || !self.platform_updates_in(i, pass)
             {
                 continue;
             }
@@ -37948,7 +37980,7 @@ impl RolloutWorld {
         for k in 0..self.orbits.len() {
             let (platform_index, target) = self.orbits[k];
             if !self.platforms[platform_index].active
-                || self.platform_pass(platform_index) != pass
+                || !self.platform_updates_in(platform_index, pass)
                 || self.platform_dynamics[platform_index].init_tick.is_some_and(|t| t > self.tick)
             {
                 continue;
@@ -37995,7 +38027,7 @@ impl RolloutWorld {
     fn platform_sticky_tick(&mut self, updater_dt: Fix, pass: PlatformPass) {
         for i in 0..self.platforms.len() {
             if !self.platforms[i].active
-                || self.platform_pass(i) != pass
+                || !self.platform_updates_in(i, pass)
                 || self.platform_dynamics[i].init_tick.is_some_and(|t| t > self.tick)
             {
                 continue;
@@ -38042,7 +38074,7 @@ impl RolloutWorld {
             let mut moved = false;
             for &platform_index in &self.vector_fields {
                 if !self.platforms[platform_index].active
-                    || self.platform_pass(platform_index) != pass
+                    || !self.platform_updates_in(platform_index, pass)
                     || self.platform_dynamics[platform_index]
                         .init_tick
                         .is_some_and(|t| t > self.tick)
