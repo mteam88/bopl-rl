@@ -16602,9 +16602,16 @@ impl RolloutWorld {
                 if !item.active || item.entity.is_none() || self.blink_object_hidden(item.entity) {
                     continue;
                 }
-                // The DetPhysics collider: a Mine's shake moves only its
+                // The DetPhysics collider, where the last Simulate left it: a
+                // Mine's shake or a settled peel's UpdateSim moves only the
                 // FixTransform, which the collider takes at the next Simulate.
-                let center = item.position - item.pending_shake;
+                // An item spawned this pass has its collider at the spawn.
+                let center = if item.born_tick == self.tick {
+                    item.position - item.pending_shake
+                } else {
+                    let row = self.entities[item.entity.unwrap()];
+                    Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y))
+                };
                 if let Some(force) = Self::black_hole_force(
                     position,
                     center,
