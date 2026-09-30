@@ -6790,6 +6790,7 @@ impl RolloutWorld {
         // can re-attach it on the same pass (PlayerPhysics.cs:236-238), which
         // then lands it again through attachToGround.
         let jumped = std::mem::take(&mut base.jumped_this_frame);
+        let entry_state = *obs_state;
         if jumped || !base.grounded {
             *obs_state = STATE_FALL;
             *state_ticks = 0;
@@ -6814,8 +6815,14 @@ impl RolloutWorld {
                 *facing_right = true;
             }
         }
-        if !base.grounded {
-            return;
+        // A pass that Move carries off the ground (a ledge, a portal) still
+        // ran OldUpdate's `switch (currentState)` on the ground state
+        // PlayerPhysics.UpdateSim left, and attachToGround still flipped a
+        // sprite it attached upside down; OnNoLongerGrounded only replaces the
+        // state that switch set with State.fall.
+        let carried_off = !base.grounded;
+        if carried_off && base.pre_move_grounded && !jumped {
+            *obs_state = entry_state;
         }
         // SlimeController flag5: stick magnitude past DEADZONE 0.4 (the
         // direction table only emits unit vectors) and the tangential ground
@@ -6924,6 +6931,10 @@ impl RolloutWorld {
                     *obs_state = STATE_IDLE;
                 }
             }
+        }
+        if carried_off {
+            *obs_state = STATE_FALL;
+            *state_ticks = 0;
         }
     }
 
