@@ -39853,10 +39853,11 @@ impl RolloutWorld {
                     victim_count += 1;
                 }
             }
+            // The Rock form is a KillPlayersOnContact Ability, which
+            // PlayerCollision lets hurt its owner: a clone of the rock's own
+            // slime dies too, as an accident.
             for clone_index in 0..self.abilityless_clones.len() {
-                if !self.abilityless_clones[clone_index].active
-                    || self.abilityless_clones[clone_index].owner == rock_index
-                {
+                if !self.abilityless_clones[clone_index].active {
                     continue;
                 }
                 let Some(entity) = self.abilityless_clones[clone_index].entity else {
@@ -39892,8 +39893,20 @@ impl RolloutWorld {
         for clone_offset in 0..clone_victim_count {
             let clone = clone_victims[clone_offset];
             if self.abilityless_clones[clone].active {
+                let killer = clone_killers[clone_offset];
+                let cause = if self.abilityless_clones[clone].base.id == killer {
+                    CAUSE_ACCIDENT
+                } else {
+                    CAUSE_OTHER
+                };
                 self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-                self.kill_abilityless_clone(clone, clone_killers[clone_offset], CAUSE_OTHER);
+                self.kill_abilityless_clone(clone, killer, cause);
+                // A callback casualty stays visible as destroyed until the
+                // next pass's DetPhysics.Simulate drops it.
+                if let Some(entity) = self.abilityless_clones[clone].entity {
+                    self.entities[entity].flags = E_DESTROYED | E_TRIGGER;
+                    self.entities[entity].owner = 0;
+                }
             }
         }
     }
