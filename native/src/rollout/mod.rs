@@ -14738,7 +14738,7 @@ impl RolloutWorld {
             self.tesla_nodes[child].orb_enter_left = enter + 2 - elapsed;
         }
         self.tesla_nodes[node_index].connected = false;
-        self.tesla_nodes[node_index].lethal = false;
+        self.tesla_node_unlit(node_index);
         self.tesla_nodes[node_index].enter_ticks = 0;
         self.destroy_tesla_line(node_index, deferred);
         if let Some(child) = child
@@ -14751,9 +14751,17 @@ impl RolloutWorld {
     /// Deactivate's half for its child: the child's own line goes too.
     fn deactivate_tesla_child(&mut self, child: usize, deferred: bool) {
         self.tesla_nodes[child].connected = false;
-        self.tesla_nodes[child].lethal = false;
+        self.tesla_node_unlit(child);
         self.tesla_nodes[child].enter_ticks = 0;
         self.destroy_tesla_line(child, deferred);
+    }
+
+    /// Deactivate's return to NonLethalTerrain, which it skips for a node
+    /// DestroyFix took this pass (SimpleSparkNode.cs:159-167, 177-185).
+    fn tesla_node_unlit(&mut self, node_index: usize) {
+        if self.tesla_nodes[node_index].destroyed_tick != Some(self.tick) {
+            self.tesla_nodes[node_index].lethal = false;
+        }
     }
 
     /// A node's UpdateSim calls Deactivate on a hidden parent whether or not
@@ -14762,7 +14770,7 @@ impl RolloutWorld {
         if self.tesla_nodes[parent].connected {
             self.disconnect_tesla_node(parent, false);
         } else {
-            self.tesla_nodes[parent].lethal = false;
+            self.tesla_node_unlit(parent);
             self.deactivate_tesla_child(node_index, false);
         }
     }
@@ -14865,9 +14873,11 @@ impl RolloutWorld {
         hierarchy_order(&mut order, &self.tesla_nodes, |node| node.hierarchy_base);
         for &node_index in order.iter().rev() {
             if self.tesla_nodes[node_index].destroyed_tick == Some(self.tick) {
-                self.tesla_nodes[node_index].destroyed_tick = None;
                 self.tesla_node_destroyed(node_index, true);
             }
+        }
+        for node in &mut self.tesla_nodes {
+            node.destroyed_tick = None;
         }
         self.scratch.item_order = order;
     }
@@ -17740,7 +17750,8 @@ impl RolloutWorld {
                     data,
                 );
                 self.remove_tesla_node(node_index, true);
-                self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
+                // As an engine: the circle stays in its CompositeBody for the pass.
+                self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
             }
         }
 
@@ -42291,11 +42302,22 @@ impl RolloutWorld {
         let data = data::get();
         for node_index in 0..self.tesla_nodes.len() {
             let node = self.tesla_nodes[node_index];
-            if !node.active || node.macho_carried || node.platform_index >= self.platforms.len() {
+            // A circle a Black Hole ate this pass still follows its composite.
+            let eaten = node
+                .entity
+                .is_some_and(|entity| self.entities[entity].flags == E_DESTROYED | E_COMPOSITE);
+            if (!node.active && !eaten)
+                || node.macho_carried
+                || node.platform_index >= self.platforms.len()
+            {
                 continue;
             }
             if let Some(entity) = node.entity {
-                let flags = self.attached_flags(node.platform_index, node.entity);
+                let flags = if eaten {
+                    E_DESTROYED | E_COMPOSITE
+                } else {
+                    self.attached_flags(node.platform_index, node.entity)
+                };
                 self.entities[entity] = CEntity {
                     id: self.entities[entity].id,
                     kind: 0,
