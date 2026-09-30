@@ -1044,7 +1044,8 @@ pub struct SpawnedTeslaNode {
     /// FixTransform.up as PlaceSparkNode set it, until the first physics
     /// sync replaces it with the body rotation's.
     pub placed_up: Option<Vec2>,
-    /// Raw FixTransform scale drives authored attachment offsets.
+    /// FixTransform.Scale, which the circle's Scale setter clamps to the
+    /// prefab's MinScale 0.6 and MaxScale 5 (SetScale_DPhysicsOnly).
     pub scale: Fix,
     /// FixTransform.offset, the collider's authored offset. SetScale_DPhysicsOnly
     /// compounds each rescale as `offset *= new / old`.
@@ -1053,10 +1054,10 @@ pub struct SpawnedTeslaNode {
     /// `radius *= One / old * new`, so it drifts from the prefab radius
     /// times the scale.
     pub radius: Fix,
-    /// DPhysicsCircle clamps that raw scale to its prefab limits.
-    pub collider_scale: Fix,
     /// SimpleSparkNode.prevScale, separate from the live circle scale for the
     /// source's one-updater-late SurfaceOffset/_hitBoxOffsetY update.
+    /// Initialize sets it from the unclamped startScale parameter, so a node
+    /// planted below MinScale rescales its offsets on its first UpdateSim.
     pub offset_scale: Fix,
     pub body: Body,
     pub child: Option<usize>,
@@ -14889,10 +14890,9 @@ impl RolloutWorld {
             surface_offset,
             hitbox_offset: data.tesla.hitbox_offset_y * scale,
             placed_up: Some(normal),
-            scale,
+            scale: collider_scale,
             radius: data.tesla.node_radius * collider_scale,
             collider_offset,
-            collider_scale,
             offset_scale: scale,
             body: data.tesla.node_body,
             child,
@@ -29127,7 +29127,7 @@ impl RolloutWorld {
             owner: player_id(&self.players, caster),
             flags: E_ACTIVE | E_ENABLED | E_COMPOSITE,
             hierarchy: 100_000_000 + hierarchy_base + data.tesla.node_collider_hierarchy,
-            radius: (data.tesla.node_radius * source.collider_scale).raw(),
+            radius: (data.tesla.node_radius * source.scale).raw(),
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
             ..CEntity::default()
         });
@@ -29156,8 +29156,7 @@ impl RolloutWorld {
             surface_offset,
             hitbox_offset: data.tesla.hitbox_offset_y * source.scale,
             scale: source.scale,
-            collider_scale: source.collider_scale,
-            radius: data.tesla.node_radius * source.collider_scale,
+            radius: data.tesla.node_radius * source.scale,
             // The copy takes the source's FixTransform.offset
             // (ShootDuplicator.cs:471).
             collider_offset: source.collider_offset,
@@ -30213,14 +30212,13 @@ impl RolloutWorld {
                 + right.perp() * node.surface_offset;
             let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
             let relative_right = right.complex_mul(inverse_basis);
-            let old = self.tesla_nodes[index].collider_scale;
+            let old = self.tesla_nodes[index].scale;
             let new = scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
             let collider_offset = node.collider_offset * (new / old);
             self.tesla_nodes[index].collider_offset = collider_offset;
             let relative_center = (root - parent_position).complex_mul(inverse_basis)
                 + collider_offset.complex_mul(relative_right);
-            self.tesla_nodes[index].scale = scale;
-            self.tesla_nodes[index].collider_scale = new;
+            self.tesla_nodes[index].scale = new;
             self.tesla_nodes[index].radius *= (Fix::ONE / old) * new;
             self.tesla_nodes[index].relative_center = relative_center;
             let center =
@@ -47441,7 +47439,7 @@ mod tests {
             lethal: true,
             collider_center: position,
             swept_center: position,
-            collider_scale: Fix::ONE,
+            scale: Fix::ONE,
             radius: data::get().tesla.node_radius,
             ..SpawnedTeslaNode::default()
         });
@@ -48700,8 +48698,8 @@ mod tests {
         assert!(world.spawn_tesla_node(0, data::get()));
 
         let node = world.tesla_nodes[0];
-        assert_eq!(node.scale, Fix::from_f32(0.3));
-        assert_eq!(node.collider_scale, Fix::from_f32(0.6));
+        assert_eq!(node.scale, Fix::from_f32(0.6));
+        assert_eq!(node.offset_scale, Fix::from_f32(0.3));
         assert_eq!(
             node.surface_offset,
             data::get().tesla.plant_offset.y * Fix::from_f32(0.3)
