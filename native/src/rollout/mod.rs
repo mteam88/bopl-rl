@@ -13616,7 +13616,6 @@ impl RolloutWorld {
         // The smash exits through ExitAbilityGrounded, isFacingRight true.
         slot.facing_right = true;
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.restore_slime_radius();
         slot.base.position = landing;
         slot.base.constants = data.player.constants.clone();
         slot.base.external_velocity = Vec2::ZERO;
@@ -13638,7 +13637,6 @@ impl RolloutWorld {
         // MeteorSmash exits hand over isFacingRight true.
         slot.facing_right = true;
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.restore_slime_radius();
         slot.base.constants = data.player.constants.clone();
         slot.base.grounded_speed = Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
@@ -13885,7 +13883,6 @@ impl RolloutWorld {
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.restore_slime_radius();
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         slot.obs_state = STATE_IDLE;
