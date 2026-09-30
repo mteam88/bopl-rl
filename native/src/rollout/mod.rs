@@ -26222,7 +26222,8 @@ impl RolloutWorld {
                     .ground
                     .and_then(|id| self.platforms.iter().find(|p| p.id == id))
                     .is_none()
-                    && self.players[index].dead_ground(self.tick).is_none());
+                    && self.players[index].dead_ground(self.tick).is_none()
+                || self.ground_inactive(index));
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
@@ -34174,6 +34175,18 @@ impl RolloutWorld {
     #[inline]
     fn circle_overlaps_entity(&self, query: Circle, entity: usize) -> bool {
         self.circle_entity_contact(query, entity).is_some()
+    }
+
+    /// `!attachedGround.isActiveAndEnabled` on a ground still stored: a Blink
+    /// tunnel or a teleport SetActive(false)s it, while DestroyFix only flags
+    /// it destroyed and leaves it active (Updater.cs:89-110).
+    fn ground_inactive(&self, index: usize) -> bool {
+        let ground = self.players[index].base.ground;
+        self.platforms.iter().zip(&self.platform_entities).any(|(platform, &entity)| {
+            Some(platform.id) == ground
+                && !platform.active
+                && self.entities[entity].flags & E_DESTROYED == 0
+        })
     }
 
     /// DetPhysics.RemoveDestroyedColliders (DetPhysics.cs:2439-2466), which
