@@ -1325,7 +1325,6 @@ impl RolloutWorld {
                     continue;
                 }
                 let hole = self.black_holes[hole_index];
-                let anchor = hole.position;
                 if self.ropes[index].physics.time_since_hook_arrived > Fix::ZERO
                     && !self.ropes[index].physics.detached
                     && !stopped
@@ -1341,7 +1340,9 @@ impl RolloutWorld {
                         self.ropes[index].physics.segment[far] = hole.position;
                     }
                 }
-                self.ropes[index].physics.segment[0] = anchor;
+                // The attached end stays where the last LateUpdateSim put it
+                // (RopeAttachment.cs:166-178): DetPhysics simulates the rope
+                // from there, not from where the older hole moved this pass.
                 continue;
             }
             // RopeAttachment on an object runs in rope_parents_update.
