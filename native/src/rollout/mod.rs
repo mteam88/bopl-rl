@@ -27749,8 +27749,9 @@ impl RolloutWorld {
         let source = self.duplicated_rocks[source_index];
         let position = source.position + direction * Fix::from_int(4) * source.scale;
         let mut body = data.rock.body;
-        body.velocity =
-            direction.normalized_safe() * (source.body.velocity.length() + Fix::from_int(15));
+        // ShootDuplicator normalizes the offset it just added, not the ray.
+        body.velocity = (position - source.position).normalized_safe()
+            * (source.body.velocity.length() + Fix::from_int(15));
         body.orientation = source.body.orientation;
         self.pending_duplicated_rocks.push(DuplicatedRock {
             active: true,
