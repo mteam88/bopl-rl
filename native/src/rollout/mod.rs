@@ -39799,6 +39799,20 @@ impl RolloutWorld {
             return;
         }
         let owner = self.abilityless_clones[clone_index].owner;
+        // The clone's own PlayerCollision.killPlayer takes the Revival branch
+        // while the player has markers: SpawnClone copies its empty ability
+        // list to a clone at every marker (PlayerCollision.cs:138-160), as a
+        // body's death does.
+        if !self.abilityless_clones[clone_index].poke_invulnerable
+            && self
+                .players
+                .iter()
+                .any(|body| body.owner == owner && body.revival_markers.iter().any(Option::is_some))
+            && let Some(body) = self.promote_abilityless_clone(clone_index)
+        {
+            self.kill(body, killer, cause, false, false);
+            return;
+        }
         // PlayerCollision.killPlayer lets go of the body's rope first.
         let clone = &mut self.abilityless_clones[clone_index];
         if clone.grip.rope.is_some() {
