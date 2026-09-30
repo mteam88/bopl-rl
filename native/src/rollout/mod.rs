@@ -36792,18 +36792,13 @@ impl RolloutWorld {
                 } else {
                     'hit: {
                         let hurtbox = match player.active {
-                            ActiveAbility::Bow => {
-                                let up = if player.bow.aim == Vec2::ZERO {
-                                    Vec2::UP
-                                } else {
-                                    player.bow.aim
-                                };
-                                player.forms[player.active_slot].hurtbox(
-                                    player.base.position,
-                                    up.perp_cw(),
-                                    data.bow.hurtbox_extents,
-                                )
-                            }
+                            // The body turns to the aim only until the arrow
+                            // is away (BowTransform.cs:244-247).
+                            ActiveAbility::Bow => player.forms[player.active_slot].hurtbox(
+                                player.base.position,
+                                Vec2::angle(player.bow.form_rotation),
+                                data.bow.hurtbox_extents,
+                            ),
                             ActiveAbility::Grenade
                             | ActiveAbility::Smoke
                             | ActiveAbility::Tack
