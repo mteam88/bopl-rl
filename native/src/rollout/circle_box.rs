@@ -13,11 +13,12 @@ pub(super) enum Part {
     Node(usize),
     Engine(usize),
     Spike(usize),
+    Missile(usize),
 }
 
 impl RolloutWorld {
     /// Its collider now, after the corrections of earlier groups.
-    fn part_collider(&self, part: Part) -> Collider {
+    fn part_collider(&self, part: Part, data: &data::RolloutData) -> Collider {
         match part {
             Part::Item(i) => Collider::Circle(Circle {
                 center: self.thrown_items[i].position,
@@ -35,23 +36,46 @@ impl RolloutWorld {
             Part::Spike(i) => {
                 Collider::Box(Self::spike_attack_box_in(&self.platform_dynamics, self.spike_attacks[i]))
             }
+            Part::Missile(i) => Collider::Box(self.guided_missiles[i].collider()),
         }
     }
 
     /// Its collider where the broadphase took its bounding box.
-    fn part_swept(&self, part: Part) -> Collider {
-        let mut collider = self.part_collider(part);
+    pub(super) fn part_swept(&self, part: Part, data: &data::RolloutData) -> Collider {
+        let mut collider = self.part_collider(part, data);
         let swept = match part {
             Part::Item(i) => Some(self.thrown_items[i].swept_position),
             Part::Node(i) => Some(self.tesla_nodes[i].swept_center),
             Part::Engine(i) => self.scratch.engine_swept.get(i).copied(),
             Part::Spike(i) => self.scratch.spike_swept.get(i).copied(),
+            Part::Missile(i) => Some(self.guided_missiles[i].swept_position),
             Part::Shot(_) => None,
         };
         if let Some(center) = swept {
             collider.set_center(center);
         }
         collider
+    }
+
+    /// Its place in SortAndSweep's order.
+    pub(super) fn part_rank(&self, part: Part, data: &data::RolloutData) -> SweepRank {
+        let min = self.part_swept(part, data).bounds()[0];
+        sweep_rank(&self.entities, if self.sweep_x() { min.x } else { min.y }, self.part_entity(part))
+    }
+
+    /// A wall's place in SortAndSweep's order, from the collider the
+    /// broadphase bounded.
+    pub(super) fn wall_rank(&self, platform: usize) -> SweepRank {
+        let swept = self
+            .scratch
+            .callback_colliders
+            .get(platform)
+            .filter(|_| self.scratch.callback_tick == Some(self.tick))
+            .copied()
+            .unwrap_or_else(|| self.circle_collider(platform));
+        let min = Collider::RoundedRect(swept).bounds()[0];
+        let entity = Some(self.platform_entities[platform]);
+        sweep_rank(&self.entities, if self.sweep_x() { min.x } else { min.y }, entity)
     }
 
     fn part_entity(&self, part: Part) -> Option<usize> {
@@ -61,6 +85,7 @@ impl RolloutWorld {
             Part::Node(i) => self.tesla_nodes[i].entity,
             Part::Engine(i) => self.engines[i].entity,
             Part::Spike(i) => self.spike_attacks[i].entity,
+            Part::Missile(i) => self.guided_missiles[i].entity,
         }
     }
 
@@ -70,7 +95,7 @@ impl RolloutWorld {
             Part::Node(i) => Some(self.tesla_nodes[i].platform_index),
             Part::Engine(i) => Some(self.engines[i].platform_index),
             Part::Spike(i) => Some(self.spike_attacks[i].platform_index),
-            Part::Item(_) | Part::Shot(_) => None,
+            Part::Item(_) | Part::Shot(_) | Part::Missile(_) => None,
         }
     }
 
@@ -83,6 +108,7 @@ impl RolloutWorld {
             Part::Node(i) => self.tesla_nodes[i].body,
             Part::Engine(i) => self.engines[i].body,
             Part::Spike(i) => self.spike_attacks[i].body,
+            Part::Missile(i) => self.guided_missiles[i].body,
         }
     }
 
@@ -93,6 +119,7 @@ impl RolloutWorld {
             Part::Node(i) => self.tesla_nodes[i].active,
             Part::Engine(i) => self.engines[i].active,
             Part::Spike(i) => self.spike_attacks[i].active,
+            Part::Missile(i) => self.guided_missiles[i].active,
         }
     }
 
@@ -103,6 +130,7 @@ impl RolloutWorld {
             (_, Some(p)) => (self.platform_dynamics[p].body, self.platform_dynamics[p].composite_position),
             (Part::Item(i), None) => (self.thrown_items[i].body, self.thrown_items[i].position),
             (Part::Shot(i), None) => (self.portal_shots[i].body, self.portal_shots[i].position),
+            (Part::Missile(i), None) => (self.guided_missiles[i].body, self.guided_missiles[i].position),
             _ => unreachable!(),
         }
     }
@@ -126,8 +154,12 @@ impl RolloutWorld {
             Part::Node(i) => self.tesla_nodes[i].collider_center += delta,
             Part::Engine(i) => self.engines[i].collider_center += delta,
             Part::Spike(i) => self.spike_attacks[i].collider_center += delta,
+            Part::Missile(i) => {
+                self.guided_missiles[i].body = body;
+                self.guided_missiles[i].position += delta;
+            }
         }
-        if let (Part::Item(_) | Part::Shot(_), Some(entity)) = (part, self.part_entity(part)) {
+        if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_), Some(entity)) = (part, self.part_entity(part)) {
             let (body, position) = self.part_resolve_body(part);
             let row = &mut self.entities[entity];
             row.x = position.x.raw();
@@ -153,6 +185,7 @@ impl RolloutWorld {
                 engine.collider_center - engine.collider_offset.complex_mul(Vec2::angle(engine.collider_rotation))
             }
             Part::Spike(i) => self.spike_attack_root(i),
+            Part::Missile(i) => self.guided_missiles[i].position,
         }
     }
 
@@ -165,11 +198,12 @@ impl RolloutWorld {
             (_, Some(p)) => &mut self.platform_dynamics[p].body,
             (Part::Item(i), None) => &mut self.thrown_items[i].body,
             (Part::Shot(i), None) => &mut self.portal_shots[i].body,
+            (Part::Missile(i), None) => &mut self.guided_missiles[i].body,
             _ => unreachable!(),
         };
         body.apply_impulse(force, arm);
         let body = *body;
-        if let (Part::Item(_) | Part::Shot(_), Some(entity)) = (part, self.part_entity(part)) {
+        if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_), Some(entity)) = (part, self.part_entity(part)) {
             let row = &mut self.entities[entity];
             row.vx = body.velocity.x.raw();
             row.vy = body.velocity.y.raw();
@@ -190,7 +224,7 @@ impl RolloutWorld {
     /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
     /// PositionalCorrection on each side's own inverse mass; every pair
     /// queues both sides' OnCollide, which run after the last group.
-    pub(super) fn circle_box_group(&mut self) {
+    pub(super) fn circle_box_group(&mut self, data: &data::RolloutData) {
         let mut parts = std::mem::take(&mut self.scratch.cb_parts);
         parts.clear();
         for (i, item) in self.thrown_items.iter().enumerate() {
@@ -228,14 +262,14 @@ impl RolloutWorld {
         let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
         contacts.clear();
         for &circle in &parts[..circles] {
-            let circle_bounds = self.part_swept(circle).bounds();
+            let circle_bounds = self.part_swept(circle, data).bounds();
             let circle_rank = sweep_rank(&self.entities, axis(circle_bounds[0]), self.part_entity(circle));
             for &part in &parts[circles..] {
                 // SameCompositeAs: a node never meets its own platform's children.
                 if self.part_composite(circle) == self.part_composite(part) {
                     continue;
                 }
-                let bounds = self.part_swept(part).bounds();
+                let bounds = self.part_swept(part, data).bounds();
                 let rank = sweep_rank(&self.entities, axis(bounds[0]), self.part_entity(part));
                 // SortAndSweep pairs the later collider with each earlier one
                 // whose bounds still reach it (DetPhysics.cs:2169-2231).
@@ -247,9 +281,9 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                if let Some(contact) = self.part_collider(circle).contact(self.part_collider(part)) {
+                if let Some(contact) = self.part_collider(circle, data).contact(self.part_collider(part, data)) {
                     let (later, earlier) = sweep_pair(circle_rank, rank);
-                    contacts.push(((1, later, earlier), circle, part, contact));
+                    contacts.push(((GROUP_CB, later, earlier), circle, part, contact));
                 }
             }
         }
