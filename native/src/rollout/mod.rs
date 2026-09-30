@@ -39933,6 +39933,17 @@ impl RolloutWorld {
             .captured_by_ball
             .is_some()
         {
+            // PlayerBody still moves a captured clone by the shoves it takes
+            // and decays them (PlayerBody.cs:244-246); the Poke Ball pins it.
+            let owner = self.abilityless_clones[clone_index].owner;
+            let stopped =
+                self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner];
+            let base = &mut self.abilityless_clones[clone_index].base;
+            if stopped {
+                base.external_velocity *= Fix::from_f64(0.95);
+            } else {
+                base.integrate();
+            }
             self.abilityless_clones[clone_index].base.move_collider();
             self.sync_abilityless_clone_entity(clone_index);
             return;
@@ -40151,7 +40162,6 @@ impl RolloutWorld {
             if !clone.active
                 || !clone.base.alive
                 || clone.entity.is_none()
-                || clone.captured_by_ball.is_some()
                 || self.abilityless_clone_hidden(clone)
             {
                 continue;
@@ -40175,7 +40185,6 @@ impl RolloutWorld {
                     || !other_clone.active
                     || !other_clone.base.alive
                     || other_clone.entity.is_none()
-                    || other_clone.captured_by_ball.is_some()
                     || self.abilityless_clone_hidden(other_clone)
                 {
                     continue;
