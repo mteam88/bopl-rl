@@ -9443,6 +9443,11 @@ impl RolloutWorld {
                 data,
                 updater_dt,
             );
+            // An older RocketEngine's AddForceAtPosition is an impulse: the
+            // endpoint maps the platform velocity it already pushed.
+            if !self.engines.is_empty() {
+                self.engines_tick_below(data, updater_dt, endpoint_hierarchy);
+            }
             self.portals[endpoint_index].time_alive += updater_dt;
             if self.portals[endpoint_index].time_alive > data.portal_gun.lifetime_seconds {
                 if let Some(linked) = self.portals[endpoint_index].linked
