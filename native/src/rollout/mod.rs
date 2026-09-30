@@ -12818,7 +12818,7 @@ impl RolloutWorld {
         // Roll.ExitAbility leaves Ability.KillPlayersOnContact unchanged on
         // the now-inactive prefab; the next OnEnterAbility clears it.
         slot.base.constants = data.player.constants.clone();
-        slot.base.radius = data.player.radius * slot.player_scale;
+        slot.restore_slime_radius();
         slot.base.rotation = Fix::ZERO;
         if grounded {
             // Roll.ExitAbility publishes |PlayerBody.Velocity|, not the
@@ -12830,7 +12830,7 @@ impl RolloutWorld {
             {
                 if let Ok(local) = platform
                     .surface
-                    .local_position(exit_position, data.player.radius)
+                    .local_position(exit_position, slot.base.radius)
                 {
                     slot.base.local = local;
                 }
@@ -18316,7 +18316,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.position = position;
-        slot.base.radius = data.player.radius;
+        slot.restore_slime_radius();
         slot.base.constants = data.player.constants.clone();
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
@@ -18707,7 +18707,7 @@ impl RolloutWorld {
                         .position(self.players[index].base.local, data.beam.radius);
                     let local = platform
                         .surface
-                        .local_position(position, data.player.radius)
+                        .local_position(position, self.players[index].exit_slime_radius())
                         .ok();
                     (position, local)
                 })
@@ -18718,7 +18718,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            slot.base.radius = data.player.radius;
+            slot.restore_slime_radius();
             slot.base.constants = data.player.constants.clone();
             slot.facing_right = slot.beam.entry_facing_right;
             if grounded {
@@ -24400,7 +24400,7 @@ impl RolloutWorld {
                     slot.state_ticks = 0;
                     self.sync_exit_to_ground(index);
                 } else {
-                    slot.base.radius = data.player.radius;
+                    slot.restore_slime_radius();
                     slot.exit_to_fall();
                     slot.base.collision_rays(terrain!(self));
                     // SlimeController.ExitAbility: hurtBox.Scale = player.Scale.
@@ -24474,7 +24474,7 @@ impl RolloutWorld {
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
             slot.missile.collider_rotation = Fix::ZERO;
-            slot.base.radius = data.player.radius;
+            slot.restore_slime_radius();
             slot.exit_to_fall();
             slot.base.collision_rays(terrain!(self));
             slot.set_ordinary_body_scale(slot.player_scale);
@@ -31150,7 +31150,7 @@ impl RolloutWorld {
         }
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.dash.active = false;
-        slot.base.radius = data.player.radius;
+        slot.restore_slime_radius();
         // The slime's own PlayerPhysics never took the form's movement
         // constants (MachoThrow2 has its own).
         slot.base.constants = data.player.constants.clone();
