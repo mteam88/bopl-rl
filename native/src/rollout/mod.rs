@@ -10386,6 +10386,8 @@ impl RolloutWorld {
                         form.set_scale(scale, data.dash.hurtbox_extents, data.player.radius);
                         slot.base.dash.radius = form.physics_radius();
                         slot.base.dash.inverse_extents = form.inverse_extents;
+                        let position = slot.base.position;
+                        self.sync_form_entry(index, position, Vec2::ZERO, data.dash.hurtbox_extents);
                         // Dash is registered after SlimeController in this
                         // prefab, so its freshly enabled UpdateSim runs later
                         // in the same pass. That performs anticipation setup
@@ -10929,6 +10931,14 @@ impl RolloutWorld {
                             grounded_entry: grounded,
                             ..MeteorState::default()
                         };
+                        let form = self.players[index].forms[s];
+                        let offset = if form.scale == Fix::ZERO { data.meteor.collider_offset } else { form.offset };
+                        self.sync_form_entry(
+                            index,
+                            form_position,
+                            offset,
+                            data::surface_extents(data.meteor.hurtbox_extents),
+                        );
                         self.form_entry_turn(data, index);
                         self.meteor_tick(index, action, data);
                         // OnEnterAbility places the hitbox at the synced
@@ -10985,6 +10995,14 @@ impl RolloutWorld {
                         };
                         slot.base.position = form_position;
                         slot.base.radius = form_radius;
+                        let form = slot.forms[s];
+                        let offset = if form.scale == Fix::ZERO { data.mine.collider_offset } else { form.offset };
+                        self.sync_form_entry(
+                            index,
+                            form_position,
+                            offset,
+                            data::surface_extents(data.mine.hurtbox_extents),
+                        );
                         self.form_entry_turn(data, index);
                         self.mine_throw_tick(index, action, data);
                         return;
@@ -11224,6 +11242,7 @@ impl RolloutWorld {
                         }
                         self.players[index]
                             .sync_gun_hurtbox(data.freeze.collider_offset, &self.platforms);
+                        self.sync_gun_entry(index, data.freeze.hurtbox_extents);
                         self.form_entry_turn(data, index);
                         self.freeze_tick(index, action, data);
                         return;
@@ -11278,6 +11297,7 @@ impl RolloutWorld {
                         }
                         self.players[index]
                             .sync_gun_hurtbox(data.blink.collider_offset, &self.platforms);
+                        self.sync_gun_entry(index, data.blink.hurtbox_extents);
                         self.form_entry_turn(data, index);
                         self.blink_tick(index, action, data);
                         return;
@@ -11333,6 +11353,7 @@ impl RolloutWorld {
                         }
                         self.players[index]
                             .sync_gun_hurtbox(ray.collider_offset, &self.platforms);
+                        self.sync_gun_entry(index, ray.hurtbox_extents);
                         self.form_entry_turn(data, index);
                         self.scale_ray_tick(index, action, data);
                         return;
@@ -11393,6 +11414,7 @@ impl RolloutWorld {
                         }
                         self.players[index]
                             .sync_gun_hurtbox(data.duplicator.collider_offset, &self.platforms);
+                        self.sync_gun_entry(index, data.duplicator.hurtbox_extents);
                         self.form_entry_turn(data, index);
                         self.duplicator_tick(index, action, data);
                         return;
@@ -11481,6 +11503,7 @@ impl RolloutWorld {
                             row.right_y = collider.right.y.raw();
                             row.up_x = collider.up.x.raw();
                             row.up_y = collider.up.y.raw();
+                            self.sync_form_box(index, collider);
                         }
                         self.form_entry_turn(data, index);
                         self.magnet_tick(index, action, movement_input, data, false);
@@ -11543,6 +11566,8 @@ impl RolloutWorld {
                         // list, so a newly enabled Bow updates later in this
                         // same pass (like Dash, unlike a newly instantiated
                         // projectile which is deferred).
+                        let position = self.players[index].base.position;
+                        self.sync_form_entry(index, position, Vec2::ZERO, data.bow.hurtbox_extents);
                         self.form_entry_turn(data, index);
                         self.bow_tick(index, action, data);
                         return;
@@ -16899,16 +16924,12 @@ impl RolloutWorld {
                 // A form's DPhysicsBox centre moves only in its OnEnterAbility
                 // and in DetPhysics' sync, so BlackHole reads the box where the
                 // last DetPhysics pass published it, or where a sync since put it.
-                let player = &self.players[player_index];
                 let body_position = if row.kind != 1 || row.flags & E_ACTIVE != 0 {
                     Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y))
                 } else if let Some(collider) = self.synced_hurtbox(player_index, data) {
                     collider.center
-                } else if player.active == ActiveAbility::Mine {
-                    player.base.collider.center
-                        + player.throw_item.collider_right.complex_mul(player.forms[player.active_slot].offset)
                 } else {
-                    player.base.collider.center
+                    continue;
                 };
                 if self.players[player_index].active == ActiveAbility::Rock {
                     if let Some(force) = Self::black_hole_force(
@@ -30004,6 +30025,39 @@ impl RolloutWorld {
         self.players[index].entry_sync = Some((self.tick, entity, collider));
     }
 
+    /// OnEnterAbility's PlayerPhysics.SyncPhysicsTo pose, which the entry arm
+    /// has already placed the body at: a grounded form aligned to the normal
+    /// there, an airborne one unrotated. hurtbox.UpdatePhysicsPositions then
+    /// puts the box at `position + right * offset`.
+    fn sync_form_entry(&mut self, index: usize, position: Vec2, offset: Vec2, extents: Vec2) {
+        let slot = &self.players[index];
+        let up = slot
+            .base
+            .platform(&self.platforms)
+            .filter(|_| slot.base.grounded)
+            .map_or(Vec2::UP, |platform| platform.surface.normal(position));
+        let right = up.perp_cw();
+        let rotation = if up == Vec2::UP { Fix::ZERO } else { right.normalized_angle() };
+        let collider = slot.forms[slot.active_slot].hurtbox(
+            position + right.complex_mul(offset),
+            Vec2::angle(rotation),
+            extents,
+        );
+        self.sync_form_box(index, collider);
+    }
+
+    /// GunTransform.OnEnterAbility's sync, from `sync_gun_hurtbox`.
+    fn sync_gun_entry(&mut self, index: usize, extents: Vec2) {
+        let slot = &self.players[index];
+        let basis = Vec2::angle(slot.gun.collider_up.perp_cw().normalized_angle());
+        let collider = slot.forms[slot.active_slot].hurtbox(
+            slot.gun.hurtbox_center,
+            basis,
+            data::surface_extents(extents) * slot.base.scale,
+        );
+        self.sync_form_box(index, collider);
+    }
+
     /// The box the current form's OnEnterAbility synced this pass.
     fn entry_synced_box(&self, index: usize) -> Option<OrientedBox> {
         let slot = &self.players[index];
@@ -30012,43 +30066,31 @@ impl RolloutWorld {
             .map(|(_, _, collider)| collider)
     }
 
-    fn synced_hurtbox(&self, index: usize, data: &data::RolloutData) -> Option<OrientedBox> {
+    /// The current hurtbox's DetPhysics box: where the form's OnEnterAbility
+    /// synced it this pass, else where the last Simulate published it.
+    fn synced_hurtbox(&self, index: usize, _data: &data::RolloutData) -> Option<OrientedBox> {
         let slot = &self.players[index];
         if !slot.base.alive || slot.blink_tunnel_active {
             return None;
         }
-        if slot.active != ActiveAbility::None
-            && let Some(collider) = self.entry_synced_box(index)
-        {
+        if slot.active == ActiveAbility::None {
+            return (!slot.base.dash.active && !slot.teleport_effect_active).then_some(slot.base.collider);
+        }
+        if let Some(collider) = self.entry_synced_box(index) {
             return Some(collider);
         }
-        let extents = match slot.active {
-            ActiveAbility::None if !slot.base.dash.active && !slot.teleport_effect_active => {
-                return Some(slot.base.collider);
-            }
-            ActiveAbility::Throw => return Some(self.macho_throw_box(index, data)),
-            ActiveAbility::Magnet => return Some(Self::row_box(self.entities[slot.magnet_entity])),
-            ActiveAbility::Missile => {
-                return Some(slot.forms[slot.active_slot].hurtbox(
-                    slot.base.collider.center,
-                    Vec2::angle(slot.missile.collider_rotation),
-                    data.missile.hurtbox_extents,
-                ));
-            }
-            ActiveAbility::Freeze => data.freeze.hurtbox_extents,
-            ActiveAbility::Blink => data.blink.hurtbox_extents,
-            ActiveAbility::GrowthRay => data.scale_rays.growth.hurtbox_extents,
-            ActiveAbility::ShrinkRay => data.scale_rays.shrink.hurtbox_extents,
-            ActiveAbility::Duplicator => data.duplicator.hurtbox_extents,
-            _ => return None,
-        };
-        // DPhysicsBox rebuilds its axes from the aligned scalar rotation.
-        let basis = Vec2::angle(slot.gun.collider_up.perp_cw().normalized_angle());
-        Some(slot.forms[slot.active_slot].hurtbox(
-            slot.gun.hurtbox_center,
-            basis,
-            data::surface_extents(extents) * slot.base.scale,
-        ))
+        let entity = Self::hurtbox_entity(slot);
+        let row = *self.entities.get(entity)?;
+        if row.kind != 1 || row.flags & E_ACTIVE == 0 {
+            return None;
+        }
+        let form = slot.forms[slot.active_slot];
+        let published = Self::row_box(row);
+        Some(if form.scale == Fix::ZERO {
+            published
+        } else {
+            OrientedBox { inverse_extents: form.inverse_extents, ..published }
+        })
     }
 
     /// `synced_hurtbox` of the player whose current hurtbox is this row.
