@@ -9891,14 +9891,17 @@ impl RolloutWorld {
             } else {
                 slot.base.external_velocity = Vec2::ZERO;
             }
-            // The slime's SyncPhysicsTo airborne arm (PlayerPhysics.cs:577).
-            slot.base.ground = None;
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            slot.base.radius = data.player.radius;
             slot.base.constants = data.player.constants.clone();
             slot.exit_to_fall();
-            slot.reported_position = slot.base.position;
+            slot.reported_position = slot.base.position; // Ability.cs:151
+            // The slime's SyncPhysicsTo airborne arm (PlayerPhysics.cs:577),
+            // then EnterFall's VelocityBasedRaycasts (SlimeController.cs:271).
+            slot.base.ground = None;
+            slot.restore_slime_radius();
+            slot.base.collision_rays(terrain!(self));
             slot.reported_tick = self.tick;
+            slot.set_ordinary_body_scale(slot.player_scale);
         } else {
             // An ordinary slime has no IAbilityComponent, so no EnterFall,
             // and it already published its position before Move.
