@@ -1634,6 +1634,11 @@ pub struct FormScale {
     /// A circle form's DPhysicsCircle.radius, which its Scale setter
     /// multiplies by `(1 / old) * new` (DPhysicsCircle.cs:214-221).
     pub circle_radius: Fix,
+    /// A form BoplBody's DetPhysics inverse mass and inertia, and the
+    /// prevScale it last divided them by; zero until the body first runs.
+    pub inverse_mass: Fix,
+    pub inverse_inertia: Fix,
+    pub mass_scale: Fix,
 }
 
 impl FormScale {
@@ -1703,6 +1708,25 @@ impl FormScale {
         let value = value.clamp(min, max);
         self.circle_radius *= (Fix::ONE / self.scale) * value;
         self.scale = value;
+    }
+
+    /// BoplBody.UpdateSim: a body's DetPhysics mass follows its collider's
+    /// Scale, multiplied by prevScale / Scale on each change (BoplBody.cs:332-343).
+    /// The collider keeps it between uses of the form.
+    fn follow_body_mass(&mut self, body: &mut crate::physics::Body) {
+        if self.mass_scale == Fix::ZERO {
+            self.inverse_mass = body.inverse_mass;
+            self.inverse_inertia = body.inverse_inertia;
+            self.mass_scale = Fix::ONE;
+        }
+        if self.mass_scale != self.scale {
+            let ratio = self.mass_scale / self.scale;
+            self.inverse_mass *= ratio;
+            self.inverse_inertia *= ratio;
+            self.mass_scale = self.scale;
+        }
+        body.inverse_mass = self.inverse_mass;
+        body.inverse_inertia = self.inverse_inertia;
     }
 
     /// PlayerPhysics.UpdateScale.
@@ -3290,6 +3314,12 @@ impl PlayerSlot {
         (self.form_entities.iter())
             .position(|&e| e != usize::MAX && e == self.rock_entity)
             .unwrap_or(self.active_slot)
+    }
+
+    /// The Rock's BoplBody.UpdateSim, which runs after BounceBall's.
+    fn rock_body_mass(&mut self) {
+        let s = self.rock_slot();
+        self.forms[s].follow_body_mass(&mut self.rock.body);
     }
 
     /// BounceBall's DPhysicsCircle: its radius and Scale, kept by its slot's
@@ -11028,6 +11058,7 @@ impl RolloutWorld {
                         if self.ability_boundary_kill(index, false) {
                             return;
                         }
+                        self.players[index].rock_body_mass();
                         return;
                     }
                     ABILITY_ROLL => {
@@ -12308,6 +12339,8 @@ impl RolloutWorld {
                 self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
                 self.players[index].reported_position = self.players[index].base.position;
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
+            } else {
+                self.players[index].rock_body_mass();
             }
             return;
         }
@@ -44713,7 +44746,7 @@ impl RolloutWorld {
                     circle.radius = slot.rock_circle().circle_radius.raw();
                     circle.rotation = slot.rock.body.orientation.raw();
                     circle.angular_velocity = slot.rock.body.angular_velocity.raw();
-                    circle.inverse_mass = data.rock.body.inverse_mass.raw();
+                    circle.inverse_mass = slot.rock.body.inverse_mass.raw();
                 } else {
                     circle.rotation = 0;
                 }
