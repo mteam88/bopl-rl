@@ -14453,6 +14453,15 @@ impl RolloutWorld {
     }
 
     fn exit_engine_cast(&mut self, index: usize) {
+        // PlantObjectOnPlatform.ExitAbility reads the held input's ground
+        // alignment off the form's own body, before the slime's
+        // SyncPhysicsTo re-places it on a corner's differing normal.
+        let form_forwards = self.players[index]
+            .base
+            .ground
+            .filter(|_| self.players[index].base.grounded)
+            .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
+            .map(|platform| platform.surface.normal(self.players[index].base.position).perp_cw());
         // PlantObjectOnPlatform.ExitAbility hands over its surface local like
         // Spike; the slime's SyncPhysicsTo re-places it from there.
         if self.players[index].base.grounded {
@@ -14476,7 +14485,8 @@ impl RolloutWorld {
         {
             slot.base.up = up;
             slot.base.rotation = up.perp_cw().normalized_angle();
-            let alignment = slot.last_movement_input.normalized_safe().dot(up.perp_cw());
+            let forwards = form_forwards.unwrap_or(up.perp_cw());
+            let alignment = slot.last_movement_input.normalized_safe().dot(forwards);
             // PlantObjectOnPlatform.ExitAbility: enterTurn (SlimeController
             // EnterStop) needs `Sign2(alignment) * transform.localScale.x >= 0`
             // and OnEnterAbility set localScale.x to -1 while facing right, so
