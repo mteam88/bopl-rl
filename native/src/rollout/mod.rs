@@ -5679,6 +5679,9 @@ impl RolloutWorld {
             slot.teleport_ignore_cooldown[2] = false;
             slot.portal_orange[2] = None;
             slot.teleport_markers[2] = None;
+            // The new Spike's currentSpike is null, so its first cast leaves
+            // the replaced instance's SpikeAttack in place (Spike.cs:96-99).
+            slot.spike_attacks[2] = None;
             for spawn in &mut self.spawned {
                 if spawn.buffer == Some((player_index, 2)) {
                     spawn.buffer = None;
