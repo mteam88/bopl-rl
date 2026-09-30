@@ -634,6 +634,10 @@ pub struct ThrownItem {
     pub body_scale: Fix,
     /// The pass whose Updater turn this item's BoplBody.UpdateSim has taken.
     pub body_ran_tick: Option<u32>,
+    /// Last pass Grenade.UpdateSim and DestroyIfOutsideSceneBounds ran: once
+    /// a pass, from whichever of the hierarchy walk, the item pass or a
+    /// TeleportMarker's early turn reaches them first.
+    pub update_ran_tick: Option<u32>,
     /// DPhysicsCircle's live radius. Scale mutates this incrementally through
     /// `(1 / old_scale) * new_scale`, retaining its fixed-point history.
     pub collider_radius: Fix,
@@ -8191,6 +8195,9 @@ impl RolloutWorld {
                 match item.ability {
                     ABILITY_POKE_BALL | ABILITY_TACK => push(100_000_000 + item.hierarchy_base, 2, i),
                     ABILITY_MJOLNIR => push(100_000_000 + item.hierarchy_base, 3, i),
+                    ABILITY_GRENADE | ABILITY_SMOKE if item.active => {
+                        push(100_000_000 + item.hierarchy_base, 18, i)
+                    }
                     _ if item.active && item.body_ran_tick != Some(tick) => {
                         push(100_000_000 + item.hierarchy_base, 15, i)
                     }
@@ -8332,6 +8339,15 @@ impl RolloutWorld {
                 }
                 16 => self.tesla_nodes_update(data, updater_dt, hierarchy - 99_999_999),
                 17 => self.blink_object_tunnels_tick(data, updater_dt, Some(hierarchy - 99_999_999)),
+                // Grenade.UpdateSim: a fuse that runs out detonates at the
+                // item's own turn, before a younger cloud's FlammableSmoke
+                // detonates.
+                18 => {
+                    self.thrown_item_body_step(index);
+                    if !self.teleport_revealed_this_pass(self.thrown_items[index].entity) {
+                        self.thrown_item_update(index, data, updater_dt);
+                    }
+                }
                 19 => {
                     let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
                     self.guided_missile_update_sim(index, DT * self.player_time_scale, being_held, data);
@@ -8344,7 +8360,7 @@ impl RolloutWorld {
             match kind {
                 0 => self.platform_dynamics[index].updater_ran_tick = tick,
                 1 => self.black_holes[index].updated_tick = tick,
-                2 | 3 => self.thrown_items[index].updater_ran_tick = tick,
+                2 | 3 | 18 => self.thrown_items[index].updater_ran_tick = tick,
                 4 => self.portals[index].updated_tick = tick,
                 6 => self.engines[index].updater_ran_tick = tick,
                 7 => self.ropes[index].grapple_ran_tick = tick,
@@ -21846,6 +21862,11 @@ impl RolloutWorld {
         hierarchy_order(&mut order, &self.smoke_clouds, |cloud| cloud.hierarchy_base);
         for &cloud_index in &order {
             if self.smoke_clouds[cloud_index].updater_ran_tick != Some(self.tick) {
+                let hierarchy = self.smoke_clouds[cloud_index].hierarchy_base;
+                self.run_spawned_before(data, updater_dt, 100_000_000 + hierarchy);
+                if self.smoke_clouds[cloud_index].updater_ran_tick == Some(self.tick) {
+                    continue;
+                }
                 self.smoke_clouds[cloud_index].updater_ran_tick = Some(self.tick);
                 self.smoke_cloud_update(cloud_index, data, updater_dt);
             }
@@ -24865,6 +24886,7 @@ impl RolloutWorld {
             scale: self.players[index].player_scale,
             body_scale: Fix::ONE,
             body_ran_tick: None,
+            update_ran_tick: None,
             collider_radius: data.mine.item_radius * self.players[index].player_scale,
             fuse: Fix::MAX,
             hurt_owner_delay: Fix::ZERO,
@@ -25252,6 +25274,7 @@ impl RolloutWorld {
             scale: self.players[index].player_scale,
             body_scale: Fix::ONE,
             body_ran_tick: None,
+            update_ran_tick: None,
             collider_radius: config.item_radius * self.players[index].player_scale,
             // Grenade.selfDestructDelay holds its authored -1 until
             // Grenade.Init (Grenade.cs:27; init_pending_grenade_fuses).
@@ -34846,9 +34869,8 @@ impl RolloutWorld {
                 self.ropes_update(self.scratch.ropes_updated_below..hierarchy);
                 self.scratch.ropes_updated_below = hierarchy;
             }
-            if self.thrown_items[item_index].ability == ABILITY_MJOLNIR
-                && self.take_updater_turn(item_index)
-            {
+            let ability = self.thrown_items[item_index].ability;
+            if ability == ABILITY_MJOLNIR && self.take_updater_turn(item_index) {
                 self.mjolnir_hammer_update(item_index, data, updater_dt);
             }
             self.thrown_item_update(item_index, data, updater_dt);
@@ -35102,9 +35124,12 @@ impl RolloutWorld {
         if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
             return;
         }
-        if !self.thrown_items[item_index].active {
+        if !self.thrown_items[item_index].active
+            || self.thrown_items[item_index].update_ran_tick == Some(self.tick)
+        {
             return;
         }
+        self.thrown_items[item_index].update_ran_tick = Some(self.tick);
         let ability = self.thrown_items[item_index].ability;
         // Grenade.UpdateSim lets go of a payload whose ThrowItem2 form was
         // deactivated without its ExitAbility, as a freeze ray does: the
