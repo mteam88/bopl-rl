@@ -31069,8 +31069,15 @@ impl RolloutWorld {
         // A dead player's slime and ability colliders are destroyed, and
         // the changer destroys itself on seeing its victim gone.
         let victim_gone = if effect.entity_id != 0 {
+            // A clone AddAdditionalAbility promotes keeps its hurtbox on the
+            // extra body, and that collider stays the victim.
             !self.abilityless_clones.iter().any(|clone| {
                 clone.active && clone.entity.is_some_and(|e| self.entities[e].id == effect.entity_id)
+            }) && !(self.player_count..self.players.len()).any(|body| {
+                let slot = &self.players[body];
+                slot.base.alive
+                    && slot.body_entity != usize::MAX
+                    && self.entities[slot.body_entity].id == effect.entity_id
             })
         } else {
             !self.players[effect.victim].base.alive
