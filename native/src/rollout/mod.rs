@@ -18992,6 +18992,9 @@ impl RolloutWorld {
             // gap: after DropPlatformTest's exit, Beam.UpdateSim still runs
             // its loop state's UpdateBeam and jump exit (Beam.cs:805-829).
             if self.apply_platform_drop(index, data) {
+                // The drop exits the form before Beam.LateUpdateSim runs, but
+                // DetPhysics already synced the orb to last pass's late pose.
+                self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing);
                 return;
             }
         } else {
