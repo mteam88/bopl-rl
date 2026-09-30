@@ -7760,13 +7760,13 @@ impl RolloutWorld {
         if has(ABILITY_BOW) {
             self.arrows_contacts(data);
         }
-        if has(ABILITY_MISSILE) {
-            self.guided_missile_contacts(data);
-        }
         // The global circle/circle pass: items, Portal shots, and Tesla
-        // nodes of different platforms.
+        // nodes of different platforms, then the Circle/Box group.
         if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_PORTAL_GUN) {
             self.thrown_item_pair_contacts(data);
+        }
+        if has(ABILITY_MISSILE) {
+            self.guided_missile_contacts(data);
         }
         if has(ABILITY_ENGINE) || has(ABILITY_SPIKE) {
             self.composite_child_box_contacts();
@@ -36361,8 +36361,8 @@ impl RolloutWorld {
         }
     }
 
-    /// The Guided Missile's box against the Spike, rocket engine and Tesla node
-    /// children of attached platforms: the item layer collides with
+    /// The Guided Missile's box against the Spike and rocket engine boxes of
+    /// attached platforms: the item layer collides with
     /// LethalTerrain and NonLethalTerrain. ResolveCollision uses the
     /// CompositeBody; PositionalCorrection takes the child's own inverse mass
     /// and moves the child and CompositeBody.position. Each pair queues its
@@ -36410,44 +36410,28 @@ impl RolloutWorld {
                 count += 1;
             }
         }
-        for (index, node) in self.tesla_nodes.iter().enumerate() {
-            if count == contacts.len() || !node.active || node.macho_carried || !live(node.entity) {
-                continue;
-            }
-            // Circle/Box pairs list the circle first.
-            let circle = Circle {
-                center: node.collider_center,
-                radius: Fix::from_raw(self.entities[node.entity.unwrap()].radius),
-            };
-            if let Some(contact) = crate::physics::contact::circle_box(circle, missile_box) {
-                contacts[count] = (Part::Node(index), contact, true);
-                count += 1;
-            }
-        }
         if count == 0 {
             return;
         }
         let mut body = missile.body;
         let mut center = missile.position;
         for &(child, contact, child_first) in &contacts[..count] {
-            let group = if matches!(child, Part::Node(_)) { GROUP_CB } else { GROUP_BB };
             let child_rank = self.part_rank(child, data);
             if !child_first {
-                self.queue_missile_blast(missile_index, group, child_rank, data);
+                self.queue_missile_blast(missile_index, GROUP_BB, child_rank, data);
             }
             if let Part::Spike(spike) = child {
                 let (later, earlier) = sweep_pair(child_rank, missile_rank);
                 let target = Part::Missile(missile_index);
                 let hit = CallbackHit::SpikeShove { spike, target, point: contact.point };
-                self.scratch.callback_hits.push(((group, later, earlier), hit));
+                self.scratch.callback_hits.push(((GROUP_BB, later, earlier), hit));
             }
             if child_first {
-                self.queue_missile_blast(missile_index, group, child_rank, data);
+                self.queue_missile_blast(missile_index, GROUP_BB, child_rank, data);
             }
             let (platform_index, child_inverse_mass) = match child {
                 Part::Spike(i) => (self.spike_attacks[i].platform_index, self.spike_attacks[i].body.inverse_mass),
                 Part::Engine(i) => (self.engines[i].platform_index, self.engines[i].body.inverse_mass),
-                Part::Node(i) => (self.tesla_nodes[i].platform_index, self.tesla_nodes[i].body.inverse_mass),
                 _ => unreachable!(),
             };
             let platform_center = self.platform_dynamics[platform_index].composite_position;
@@ -36468,7 +36452,6 @@ impl RolloutWorld {
             match child {
                 Part::Spike(i) => self.spike_attacks[i].collider_center += platform_delta,
                 Part::Engine(i) => self.engines[i].collider_center += platform_delta,
-                Part::Node(i) => self.tesla_nodes[i].collider_center += platform_delta,
                 _ => unreachable!(),
             }
             center += missile_delta;
@@ -36479,75 +36462,12 @@ impl RolloutWorld {
         live.body = body;
     }
 
-    /// Circle/Box item contacts with the missile's box, all built before any
-    /// resolves. Ordinary Grenade's callback ignores the item layer; a Smoke
-    /// goes off.
-    fn guided_missile_item_contacts(&mut self, missile_index: usize, data: &data::RolloutData) {
-        let missile = self.guided_missiles[missile_index];
-        let missile_box = missile.collider();
-        let mut item_contacts = [(usize::MAX, Contact::default()); 64];
-        let mut item_contact_count = 0;
-        for (item_index, item) in self.thrown_items.iter().copied().enumerate() {
-            if item_contact_count == item_contacts.len() {
-                break;
-            }
-            if !item.active || item.entity.is_none() || item.callback_registered_tick == self.tick {
-                continue;
-            }
-            let circle = Circle { center: item.position, radius: thrown_item_radius(data, item) };
-            if let Some(contact) = crate::physics::contact::circle_box(circle, missile_box) {
-                item_contacts[item_contact_count] = (item_index, contact);
-                item_contact_count += 1;
-            }
-        }
-        let sweep_x = self.sweep_x();
-        let missile_rank = self.part_rank(Part::Missile(missile_index), data);
-        for &(item_index, contact) in &item_contacts[..item_contact_count] {
-            let item = self.thrown_items[item_index];
-            let swept = if sweep_x { item.swept_position.x } else { item.swept_position.y };
-            let rank = sweep_rank(&self.entities, swept - item.collider_radius, item.entity);
-            if item.ability == ABILITY_SMOKE {
-                let (later, earlier) = sweep_pair(rank, missile_rank);
-                let hit = CallbackHit::ItemDetonate { item: item_index, count: 1 };
-                self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
-            }
-            self.queue_missile_blast(missile_index, GROUP_CB, rank, data);
-            let mut item_body = item.body;
-            let mut missile_body = self.guided_missiles[missile_index].body;
-            let missile_center = self.guided_missiles[missile_index].position;
-            resolve(contact, &mut item_body, &mut missile_body, item.position, missile_center);
-            let correction =
-                positional_correction(contact, item_body.inverse_mass, missile_body.inverse_mass, false);
-            let live = &mut self.thrown_items[item_index];
-            live.position += correction[0];
-            live.body = item_body;
-            let item_center = live.position;
-            if let Some(entity) = live.entity {
-                let row = &mut self.entities[entity];
-                row.x = item_center.x.raw();
-                row.y = item_center.y.raw();
-                row.vx = item_body.velocity.x.raw();
-                row.vy = item_body.velocity.y.raw();
-                row.rotation = item_body.orientation.raw();
-                row.angular_velocity = item_body.angular_velocity.raw();
-            }
-            let live = &mut self.guided_missiles[missile_index];
-            live.position += correction[1];
-            live.body = missile_body;
-        }
-    }
-
-    /// The Guided Missile's box after the Box/RoundedRect group: its
-    /// Circle/Box pairs with items, then its Box/Box pairs with other
-    /// missiles and platform children, and the trigger pairs that only call
-    /// back: water, explosions and slimes. Each pair queues Missile.OnCollide;
-    /// a held missile suppresses it after DetPhysics resolved the pair.
+    /// The Guided Missile's box in the Box/Box group, after the Circle/Box
+    /// one: its pairs with other missiles and platform children, and the
+    /// trigger pairs that only call back: water, explosions and slimes. Each
+    /// pair queues Missile.OnCollide; a held missile suppresses it after
+    /// DetPhysics resolved the pair.
     fn guided_missile_contacts(&mut self, data: &data::RolloutData) {
-        for missile_index in 0..self.guided_missiles.len() {
-            if self.guided_missile_live(missile_index) {
-                self.guided_missile_item_contacts(missile_index, data);
-            }
-        }
         self.guided_missile_pair_contacts(data);
         for missile_index in 0..self.guided_missiles.len() {
             if !self.guided_missile_live(missile_index) {

@@ -256,6 +256,11 @@ impl RolloutWorld {
                 parts.push(Part::Spike(i));
             }
         }
+        for i in 0..self.guided_missiles.len() {
+            if self.guided_missile_live(i) {
+                parts.push(Part::Missile(i));
+            }
+        }
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let other = |v: Vec2| if sweep_x { v.y } else { v.x };
@@ -265,8 +270,9 @@ impl RolloutWorld {
             let circle_bounds = self.part_swept(circle, data).bounds();
             let circle_rank = sweep_rank(&self.entities, axis(circle_bounds[0]), self.part_entity(circle));
             for &part in &parts[circles..] {
-                // SameCompositeAs: a node never meets its own platform's children.
-                if self.part_composite(circle) == self.part_composite(part) {
+                // SameCompositeAs: a node never meets its own platform's
+                // children; an item, shot or missile has no composite.
+                if self.part_composite(circle).is_some_and(|c| Some(c) == self.part_composite(part)) {
                     continue;
                 }
                 let bounds = self.part_swept(part, data).bounds();
@@ -297,9 +303,15 @@ impl RolloutWorld {
                 // Projectile that does not ignite explosives.
                 self.scratch.callback_hits.push((key, CallbackHit::ItemDetonate { item, count: 1 }));
             }
-            if let Part::Spike(spike) = part {
-                let hit = CallbackHit::SpikeShove { spike, target: circle, point: contact.point };
-                self.scratch.callback_hits.push((key, hit));
+            match part {
+                Part::Spike(spike) => {
+                    let hit = CallbackHit::SpikeShove { spike, target: circle, point: contact.point };
+                    self.scratch.callback_hits.push((key, hit));
+                }
+                Part::Missile(missile) => {
+                    self.scratch.callback_hits.push((key, CallbackHit::MissileBlast { missile }));
+                }
+                _ => {}
             }
         }
         for &(_, circle, part, contact) in &contacts {
