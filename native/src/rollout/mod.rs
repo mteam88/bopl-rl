@@ -33554,7 +33554,7 @@ impl RolloutWorld {
             y: item.position.y.raw(),
             vx: item.body.velocity.x.raw(),
             vy: item.body.velocity.y.raw(),
-            radius: (data.mine.item_radius * item.scale).raw(),
+            radius: item.collider_radius.raw(),
             rotation: item.body.orientation.raw(),
             angular_velocity: item.body.angular_velocity.raw(),
             inverse_mass: item.body.inverse_mass.raw(),
