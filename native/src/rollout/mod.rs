@@ -44383,37 +44383,18 @@ fn slerp(from: Vec2, to: Vec2, t: Fix) -> Vec2 {
     from * ((Fix::ONE - t) * angle).sin() * inverse + to * (t * angle).sin() * inverse
 }
 
-/// Convex box against the Minkowski-rounded box used by DetPhysics. Once the
-/// two inner boxes are separated, their minimum distance is attained by a
-/// vertex against an edge, so eight fixed vertex tests reproduce the rounded
-/// cap without the false-positive square corners of an expanded OBB.
+/// DetPhysics.CollideBox against a rounded rect: PhysTools.CollisionTest(Box,
+/// RoundedRect) wraps the box as a zero-radius rounded rect and runs the
+/// rounded-rect SAT, touching counting as overlap (PhysTools.cs:113, 272-374).
 fn box_rounded_overlaps(query: OrientedBox, rounded: RoundedRect) -> bool {
-    if crate::physics::contact::box_box(query, rounded.inner).is_some() {
-        return true;
-    }
-    let corners = |shape: OrientedBox| {
-        [
-            shape.center + shape.right + shape.up,
-            shape.center + shape.right - shape.up,
-            shape.center - shape.right + shape.up,
-            shape.center - shape.right - shape.up,
-        ]
-    };
-    let distance_squared = |point: Vec2, shape: OrientedBox| {
-        let delta = point - shape.center;
-        let right = shape.right.normalized_safe();
-        let up = shape.up.normalized_safe();
-        let dx = (delta.dot(right).abs() - shape.right.length()).max(Fix::ZERO);
-        let dy = (delta.dot(up).abs() - shape.up.length()).max(Fix::ZERO);
-        dx * dx + dy * dy
-    };
-    let radius_squared = rounded.radius * rounded.radius;
-    corners(query)
-        .into_iter()
-        .any(|point| distance_squared(point, rounded.inner) <= radius_squared)
-        || corners(rounded.inner)
-            .into_iter()
-            .any(|point| distance_squared(point, query) <= radius_squared)
+    crate::physics::contact::rounded_rounded(
+        RoundedRect {
+            inner: query,
+            radius: Fix::ZERO,
+        },
+        rounded,
+    )
+    .is_some()
 }
 
 /// DPhysicsRoundedRect.PlatformArea(width, height, radius) with half-extent
