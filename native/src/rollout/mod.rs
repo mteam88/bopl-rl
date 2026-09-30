@@ -42180,11 +42180,23 @@ impl RolloutWorld {
         }
         // A form's ExitAbility with isDead still calls back onExitAbility
         // (PlayerCollision.cs:121-132, SlimeController.cs:193-219), which
-        // restarts the ability clock and ends a lapsed invisibility before the
-        // slime's own killPlayer.
+        // restarts the ability clock, ends a lapsed invisibility and assigns
+        // Player.Scale to the hurtbox before the slime's own killPlayer. The
+        // Scale setter multiplies the box's right and up by `(One / old) * new`
+        // (DPhysicsBox.cs:204-218), and no later sync rebuilds a dead box.
         if self.players[index].ability_entered {
             self.players[index].ability_entered = false;
             self.exit_ability_callback(index, data::get());
+            let slot = &mut self.players[index];
+            let old = slot.body_collider_scale;
+            slot.set_ordinary_body_scale(slot.player_scale);
+            let ratio = (Fix::ONE / old) * slot.body_collider_scale;
+            if let Some(row) = self.entities.get_mut(slot.body_entity) {
+                row.right_x = (Fix::from_raw(row.right_x) * ratio).raw();
+                row.right_y = (Fix::from_raw(row.right_y) * ratio).raw();
+                row.up_x = (Fix::from_raw(row.up_x) * ratio).raw();
+                row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
+            }
         }
         let players = self.player_count;
         if matches!(
