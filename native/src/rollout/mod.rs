@@ -352,6 +352,19 @@ const E_COMPONENT_METADATA: u32 = E_TIMER_KNOWN
     | E_CONTACT_DAMAGE_KNOWN;
 
 #[inline]
+/// ShootDuplicator's box clone: SetExtents(CalcExtents() / scale) on the
+/// uninitialized copy, its BoplBody.Scale write (`startExtents *= scale`),
+/// ManualInit's |1 / startExtents|, then `writes` Initialize writes of
+/// `hitbox.Scale = scale`, each dividing by `(1 / scale) * scale`.
+fn duplicated_inverse_extents(source: Vec2, scale: Fix, writes: u32) -> Vec2 {
+    let unit = (Fix::ONE / scale) * scale;
+    let axis = |inverse: Fix| {
+        let start = (Fix::ONE / inverse) / scale * scale;
+        (0..writes).fold((Fix::ONE / start).abs(), |inverse, _| inverse / unit)
+    };
+    Vec2::new(axis(source.x), axis(source.y))
+}
+
 fn remaining_ticks(seconds: Fix) -> u32 {
     if seconds <= Fix::ZERO {
         return 0;
@@ -28022,7 +28035,9 @@ impl RolloutWorld {
         let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
-        let collider_extents = data::surface_extents(data.spike.attack_extents * source.scale);
+        let inverse_extents = duplicated_inverse_extents(source.inverse_extents, source.scale, 1);
+        let collider_extents =
+            Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -28059,10 +28074,7 @@ impl RolloutWorld {
             surface_offset,
             scale: source.scale,
             collider_offset: source.collider_offset,
-            inverse_extents: Vec2::new(
-                Fix::ONE / (data.spike.attack_extents.x * source.scale),
-                Fix::ONE / (data.spike.attack_extents.y * source.scale),
-            ),
+            inverse_extents,
             time: Fix::ZERO,
             body: data.spike.attack_body,
             pushed_this_frame: false,
@@ -28124,7 +28136,10 @@ impl RolloutWorld {
         let attach_order = self.attach_child_body(platform_index, data.engine.rocket_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
-        let collider_extents = data::surface_extents(data.engine.rocket_extents * source.scale);
+        // RocketEngineInit writes the scale twice.
+        let inverse_extents = duplicated_inverse_extents(source.inverse_extents, source.scale, 2);
+        let collider_extents =
+            Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -28164,10 +28179,7 @@ impl RolloutWorld {
             surface_offset,
             scale: source.scale,
             collider_offset: source.collider_offset,
-            inverse_extents: Vec2::new(
-                Fix::ONE / (data.engine.rocket_extents.x * source.scale),
-                Fix::ONE / (data.engine.rocket_extents.y * source.scale),
-            ),
+            inverse_extents,
             offset_scale: source.scale,
             time: Fix::ZERO,
             phase: 0,
