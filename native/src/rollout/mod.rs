@@ -3640,6 +3640,31 @@ enum PendingObject {
 }
 
 impl PlatformScratch {
+    fn new() -> Self {
+        PlatformScratch {
+            item_order: Vec::with_capacity(192),
+            item_window: Vec::with_capacity(192),
+            item_contacts: Vec::with_capacity(256),
+            item_platform_contacts: Vec::with_capacity(256),
+            hook_smoke_hits: Vec::with_capacity(4),
+            circle_wall_order: Vec::with_capacity(256),
+            pickup_order: Vec::with_capacity(16),
+            pickup_window: Vec::with_capacity(16),
+            pickup_contacts: Vec::with_capacity(32),
+            missile_contacts: Vec::with_capacity(256),
+            callback_hits: Vec::with_capacity(16),
+            missile_detonations: Vec::with_capacity(128),
+            arrow_platform_contacts: Vec::with_capacity(64),
+            slime_shoves: Vec::with_capacity(8),
+            ray_hits: Vec::with_capacity(192),
+            duplicate_shake_order: Vec::with_capacity(64),
+            duplicate_shake_offsets: Vec::with_capacity(64),
+            ropes_deferred_from: u32::MAX,
+            ropes_walk_limit: u32::MAX,
+            ..PlatformScratch::default()
+        }
+    }
+
     /// Whether DetPhysics' broadphase pairs the circle with the platform. The
     /// sweep takes its bounding boxes before this pass's platform/platform
     /// corrections move the wall, so a correction toward the circle does not
@@ -3892,28 +3917,7 @@ impl RolloutWorld {
             platform_epoch: 1,
             platform_rows_epoch: 0,
             quiet_epoch: 0,
-            scratch: PlatformScratch {
-                item_order: Vec::with_capacity(192),
-                item_window: Vec::with_capacity(192),
-                item_contacts: Vec::with_capacity(256),
-                item_platform_contacts: Vec::with_capacity(256),
-                hook_smoke_hits: Vec::with_capacity(4),
-                circle_wall_order: Vec::with_capacity(256),
-                pickup_order: Vec::with_capacity(16),
-                pickup_window: Vec::with_capacity(16),
-                pickup_contacts: Vec::with_capacity(32),
-                missile_contacts: Vec::with_capacity(256),
-                callback_hits: Vec::with_capacity(16),
-                missile_detonations: Vec::with_capacity(128),
-                arrow_platform_contacts: Vec::with_capacity(64),
-                slime_shoves: Vec::with_capacity(8),
-                ray_hits: Vec::with_capacity(192),
-                duplicate_shake_order: Vec::with_capacity(64),
-                duplicate_shake_offsets: Vec::with_capacity(64),
-                ropes_deferred_from: u32::MAX,
-                ropes_walk_limit: u32::MAX,
-                ..PlatformScratch::default()
-            },
+            scratch: PlatformScratch::new(),
             platform_dynamics: Vec::with_capacity(64),
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
@@ -4396,6 +4400,9 @@ impl RolloutWorld {
         // walk all 128 entries filtering on `rope.enabled` alone
         // (RlObservation.cs:57, :89), which published them as phantom rows.
         rope_abilities::reset_rope_pool(&mut self.ropes);
+        // Scheduler and per-pass scratch keyed on tick numbers or holding
+        // pending turns must not carry into the next episode.
+        self.scratch = PlatformScratch::new();
         // Entity table, in the .NET DetPhysics shape-group order. Within a
         // group registration follows player then equipped-slot order.
         // Dynamic entities (arrows, spawned platforms) append after.

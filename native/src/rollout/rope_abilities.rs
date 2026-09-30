@@ -522,26 +522,7 @@ pub(super) fn rope_pool() -> Vec<RolloutRope> {
 
 pub(super) fn reset_rope_pool(ropes: &mut [RolloutRope]) {
     for rope in ropes {
-        rope.physics.enabled = false;
-        rope.physics.count = 0;
-        rope.disabled_this_frame = false;
-        rope.number = 0;
-        rope.segment_ids = [0; MAX_SEGMENTS - 1];
-        rope.platform = None;
-        rope.platform_pull = PLATFORM_PULL;
-        rope.platform_top = true;
-        rope.platform_attach_tick = 0;
-        rope.platform_gone = false;
-        rope.hook_hit = None;
-        rope.black_hole = None;
-        rope.black_hole_reel_frames = 0;
-        rope.parent = None;
-        rope.hook_active = false;
-        rope.hook_remove_next = false;
-        rope.hook_entity = None;
-        rope.hook_end_player = usize::MAX;
-        rope.grapple_ran_tick = None;
-        rope.rope_ran_tick = None;
+        *rope = empty_rope();
     }
 }
 
