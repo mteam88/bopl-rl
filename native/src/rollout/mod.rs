@@ -672,6 +672,13 @@ pub struct GrenadeExplosion {
 }
 
 /// The player id of a body index, which objects store as their owner.
+/// A SlimeController or form a Mjolnir hit: a body, or an abilityless clone.
+#[derive(Clone, Copy)]
+enum MjolnirVictim {
+    Body(usize),
+    Clone(usize),
+}
+
 fn player_id(players: &[PlayerSlot], body: usize) -> u32 {
     players[body].base.id
 }
@@ -34524,58 +34531,85 @@ impl RolloutWorld {
         let item_position = item.position;
         let owner = item.owner;
         let hammer_radius = data.mjolnir.item_radius * item.scale;
+        let thrower = self.players[owner].owner;
+        // alreadyKilled holds player ids: one body per player.
         let mut victims = 0u8;
-        let mut clone_victims = [usize::MAX; MAX_BODIES];
-        let mut clone_victim_count = 0;
+        let mut killed = [MjolnirVictim::Body(0); MAX_BODIES * 2];
+        let mut killed_count = 0;
 
-        // FindObjectsOfType<SlimeController> visits the live ordinary
-        // slime objects before the subsequently spawned empty clones.
-        for player_index in 0..self.players.len() {
-            if player_index == owner
-                || !self.hittable(player_index)
-                || self.players[player_index].active != ActiveAbility::None
-                || self.players[player_index].poke_invulnerable
-                || item.killed_players & (1 << player_index) != 0
+        // FindObjectsOfType<SlimeController> (the shim's InstanceID order,
+        // newest runtime object first) covers the ordinary slimes of every
+        // body and the abilityless clones alike.
+        let mut slimes = [(0u32, MjolnirVictim::Body(0)); MAX_BODIES * 2];
+        let mut slime_count = 0;
+        for body in 0..self.players.len() {
+            let entity = Self::hurtbox_entity(&self.players[body]);
+            if self.players[body].active == ActiveAbility::None
+                && let Some(row) = self.entities.get(entity)
             {
-                continue;
-            }
-            let hit_radius =
-                hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
-            // SlimeController.body.position: the slime's own transform,
-            // which the synced collider row trails by this pass's move. A
-            // form that ended this pass has already reactivated it.
-            let position = self.mjolnir_view(player_index, item.hierarchy_base);
-            if self.slime_present(player_index)
-                && (position - item_position).length_squared() < hit_radius * hit_radius
-            {
-                victims |= 1 << player_index;
+                slimes[slime_count] = (row.hierarchy, MjolnirVictim::Body(body));
+                slime_count += 1;
             }
         }
         for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
-            let player_index = clone.owner;
-            if !clone.active
-                || player_index == owner
-                || !self.playable(player_index)
-                || (item.killed_players | victims) & (1 << player_index) != 0
-            {
+            if let Some(row) = clone.entity.filter(|_| clone.active).and_then(|e| self.entities.get(e)) {
+                slimes[slime_count] = (row.hierarchy, MjolnirVictim::Clone(clone_index));
+                slime_count += 1;
+            }
+        }
+        slimes[..slime_count].sort_by_key(|&(hierarchy, _)| std::cmp::Reverse(hierarchy));
+        for &(_, victim) in &slimes[..slime_count] {
+            let (player_index, position) = match victim {
+                MjolnirVictim::Body(body) => {
+                    if !self.hittable(body)
+                        || self.players[body].poke_invulnerable
+                        || !self.slime_present(body)
+                    {
+                        continue;
+                    }
+                    // SlimeController.body.position: the slime's own
+                    // transform, which the synced collider row trails by
+                    // this pass's move. A form that ended this pass has
+                    // already reactivated it.
+                    (self.players[body].owner, self.mjolnir_view(body, item.hierarchy_base))
+                }
+                MjolnirVictim::Clone(clone_index) => {
+                    let clone = &self.abilityless_clones[clone_index];
+                    if !self.playable(clone.owner) {
+                        continue;
+                    }
+                    (clone.owner, clone.base.position)
+                }
+            };
+            if player_index == thrower || (item.killed_players | victims) & (1 << player_index) != 0 {
                 continue;
             }
             let hit_radius =
                 hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
-            if (clone.base.position - item_position).length_squared() < hit_radius * hit_radius
-            {
+            if (position - item_position).length_squared() < hit_radius * hit_radius {
                 victims |= 1 << player_index;
-                clone_victims[clone_victim_count] = clone_index;
-                clone_victim_count += 1;
+                killed[killed_count] = victim;
+                killed_count += 1;
             }
         }
-        // Ability objects are enumerated after SlimeControllers. A clone
-        // sharing the player's id can consume alreadyKilled first.
-        for player_index in 0..self.players.len() {
-            if player_index == owner
-                || !self.playable(player_index)
-                || self.players[player_index].active == ActiveAbility::None
-                || self.players[player_index].poke_invulnerable
+        // Then FindObjectsOfType<Ability>: the forms, newest first too.
+        let mut forms = [(0u32, 0usize); MAX_BODIES];
+        let mut form_count = 0;
+        for body in 0..self.players.len() {
+            let entity = Self::hurtbox_entity(&self.players[body]);
+            if self.players[body].active != ActiveAbility::None
+                && let Some(row) = self.entities.get(entity)
+            {
+                forms[form_count] = (row.hierarchy, body);
+                form_count += 1;
+            }
+        }
+        forms[..form_count].sort_by_key(|&(hierarchy, _)| std::cmp::Reverse(hierarchy));
+        for &(_, body) in &forms[..form_count] {
+            let player_index = self.players[body].owner;
+            if player_index == thrower
+                || !self.playable(body)
+                || self.players[body].poke_invulnerable
                 || (item.killed_players | victims) & (1 << player_index) != 0
             {
                 continue;
@@ -34584,31 +34618,28 @@ impl RolloutWorld {
                 hammer_radius + Fix::from_f32(0.8) * self.players[player_index].player_scale;
             // The form's own transform, live even on the pass it was
             // entered, before its collider row is synced.
-            let position = self.players[player_index].base.position;
+            let position = self.players[body].base.position;
             if (position - item_position).length_squared() < hit_radius * hit_radius {
                 victims |= 1 << player_index;
+                killed[killed_count] = MjolnirVictim::Body(body);
+                killed_count += 1;
             }
         }
         self.thrown_items[item_index].killed_players |= victims;
-        for player_index in 0..self.players.len() {
-            if victims & (1 << player_index) == 0 {
-                continue;
-            }
-            if clone_victims[..clone_victim_count]
-                .iter()
-                .any(|&clone_index| self.abilityless_clones[clone_index].owner == player_index)
-            {
-                continue;
-            }
+        // killPlayer runs as each is found.
+        for &victim in &killed[..killed_count] {
             self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-            // DropAbilities reads the body before the later ice pins it.
-            self.players[player_index].base.position =
-                self.mjolnir_view(player_index, item.hierarchy_base);
-            self.kill(player_index, player_id(&self.players, owner), CAUSE_OTHER, false, false);
-        }
-        for &clone_index in &clone_victims[..clone_victim_count] {
-            self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-            self.kill_abilityless_clone(clone_index, player_id(&self.players, owner), CAUSE_OTHER);
+            match victim {
+                MjolnirVictim::Body(body) => {
+                    // DropAbilities reads the body before the later ice pins it.
+                    self.players[body].base.position =
+                        self.mjolnir_view(body, item.hierarchy_base);
+                    self.kill(body, player_id(&self.players, owner), CAUSE_OTHER, false, false);
+                }
+                MjolnirVictim::Clone(clone_index) => {
+                    self.kill_abilityless_clone(clone_index, player_id(&self.players, owner), CAUSE_OTHER);
+                }
+            }
         }
 
         if self.thrown_items[item_index].phase == 0 {
