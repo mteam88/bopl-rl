@@ -13,17 +13,14 @@ use crate::{
     random::Random,
     surface::Surface,
     vector::Vec2,
-    world::{Action, DT, DashState, Platform, PlatformBounds, Player, Terrain},
+    world::{Action, DT, DashState, Platform, PlatformBounds, Platforms, Player, Terrain},
 };
 
 /// `Terrain` over this world's platforms, as a field-level borrow so a
 /// player can be stepped (`&mut self.players[i]`) against it.
 macro_rules! terrain {
     ($world:expr) => {
-        Terrain {
-            platforms: &$world.platforms,
-            bounds: &$world.bounds,
-        }
+        $world.platforms.terrain()
     };
 }
 
@@ -3627,16 +3624,12 @@ pub struct RolloutWorld {
     /// A player slot as the episode built it, before any pass: the fresh
     /// body a promoted abilityless clone starts from.
     pub body_template: Option<Box<PlayerSlot>>,
-    pub platforms: Vec<Platform>,
-    /// Raycast broad phase over `platforms` (`rebuild_bounds`).
-    pub bounds: PlatformBounds,
+    pub platforms: Platforms,
     /// Incremented by every mutation of `platforms`/`platform_dynamics`
     /// (`platforms_changed`). The derived data below is refreshed only when
     /// its recorded epoch differs, so an undisturbed level costs nothing per
     /// tick.
     platform_epoch: u64,
-    /// `platform_epoch` the broad phase was built for.
-    bounds_epoch: u64,
     /// `platform_epoch` the platform entity rows were written for.
     platform_rows_epoch: u64,
     /// `platform_epoch` at which `platforms_tick` last found every body at
@@ -3824,10 +3817,8 @@ impl RolloutWorld {
             players: Vec::with_capacity(MAX_BODIES),
             player_count: 0,
             body_template: None,
-            platforms: Vec::with_capacity(64),
-            bounds: PlatformBounds::default(),
+            platforms: Platforms::with_capacity(64),
             platform_epoch: 1,
-            bounds_epoch: 0,
             platform_rows_epoch: 0,
             quiet_epoch: 0,
             scratch: PlatformScratch {
@@ -3960,9 +3951,7 @@ impl RolloutWorld {
         self.player_count = src.player_count;
         self.body_template.clone_from(&src.body_template);
         self.platforms.clone_from(&src.platforms);
-        self.bounds.clone_from(&src.bounds);
         self.platform_epoch = src.platform_epoch;
-        self.bounds_epoch = src.bounds_epoch;
         self.platform_rows_epoch = src.platform_rows_epoch;
         self.quiet_epoch = src.quiet_epoch;
         self.platform_dynamics.clone_from(&src.platform_dynamics);
@@ -4072,9 +4061,7 @@ impl RolloutWorld {
             player_count: _,
             body_template: _,
             platforms: _,
-            bounds: _,
             platform_epoch: _,
-            bounds_epoch: _,
             platform_rows_epoch: _,
             quiet_epoch: _,
             scratch: _,
@@ -5164,7 +5151,6 @@ impl RolloutWorld {
         let mut spawn_anim = 0u32;
         for i in 0..self.warmup {
             self.tick = i;
-            self.rebuild_bounds();
             // Authored map components run throughout the level warmup too.
             // This is observable on VectorFieldPlatform maps whose one- to
             // three-second delays expire before the standard 240-tick reset.
@@ -5439,7 +5425,7 @@ impl RolloutWorld {
         let bottom = center - Vec2::UP * Fix::from_int(10_000_000);
         let lo = Vec2::new(center.x, center.y.min(bottom.y));
         let hi = Vec2::new(center.x, center.y.max(bottom.y));
-        let mut candidates = self.bounds.candidates(lo, hi);
+        let mut candidates = self.platforms.terrain().candidates(lo, hi);
         let hierarchy = self.ability_pickups[index].hierarchy_base;
         while candidates != 0 {
             let platform_index = candidates.trailing_zeros() as usize;
@@ -6708,8 +6694,6 @@ impl RolloutWorld {
         if has(ABILITY_METEOR) {
             self.shockwaves_init(true, data);
         }
-        // Platforms moved in the previous tick's physics stage.
-        self.rebuild_bounds();
         // GameSessionHandler (hierarchy 100) runs before every instantiated
         // player/ability prefab (100,000,000+). A death produced by a player
         // component or DetPhysics is therefore visible to the match result
@@ -20246,7 +20230,6 @@ impl RolloutWorld {
         self.platform_defs.push(usize::MAX);
         self.platform_entities.push(entity);
         self.platforms_changed();
-        self.rebuild_bounds();
         let state = MachoBoulder {
             active: true,
             owner,
@@ -24500,10 +24483,7 @@ impl RolloutWorld {
                 )
                 .expect("valid Mine air constants");
             }
-            slot.base.collision_rays(Terrain {
-                platforms: &this.platforms,
-                bounds: &this.bounds,
-            });
+            slot.base.collision_rays(this.platforms.terrain());
             if slot.base.grounded {
                 if !slot.throw_item.has_fired {
                     // A landing before the throw fires it from the ground
@@ -24874,10 +24854,7 @@ impl RolloutWorld {
             // updater pass and damps only external velocity.
             let this = &mut *self;
             let slot = &mut this.players[index];
-            let terrain = Terrain {
-                platforms: &this.platforms,
-                bounds: &this.bounds,
-            };
+            let terrain = this.platforms.terrain();
             let modifier = if slot.throw_item.has_fired {
                 Fix::ONE
             } else {
@@ -27242,7 +27219,6 @@ impl RolloutWorld {
                 // The Magnet's own surface move and raycasts later this pass
                 // query the collider where it now stands.
                 self.platforms_changed();
-                self.rebuild_bounds();
             }
             MagnetHeld::AbilityPickup(i) => {
                 let velocity = self.ability_pickups[i].body.velocity;
@@ -31961,10 +31937,6 @@ impl RolloutWorld {
             self.vector_fields.push(self.platforms.len() - 1);
         }
         self.platforms_changed();
-        // The duplicate is instantiated during the updater pass and joins the
-        // same pass's DetPhysics simulation. Later collision rays therefore
-        // need a broad phase containing the newly registered platform.
-        self.rebuild_bounds();
     }
 
     fn exit_freeze_animation(&mut self, index: usize) {
@@ -32101,10 +32073,7 @@ impl RolloutWorld {
         let mut integrate = false;
         let this = &mut *self;
         let slot = &mut this.players[index];
-        let terrain = Terrain {
-            platforms: &this.platforms,
-            bounds: &this.bounds,
-        };
+        let terrain = this.platforms.terrain();
         let platforms: &[Platform] = terrain.platforms;
         // BowTransform.UpdateSim ungrounds a Bow whose ground is null or went
         // inactive, sets gravity_modifier 0.03 and lets it fall in the same
@@ -32920,23 +32889,12 @@ impl RolloutWorld {
                 p.platform.platform_index -= 1;
             }
         }
-        self.rebuild_bounds();
     }
 
     /// Record a mutation of `platforms`/`platform_dynamics` (positions,
     /// shapes, bodies, membership) so the derived caches refresh.
     fn platforms_changed(&mut self) {
         self.platform_epoch += 1;
-    }
-
-    /// Refresh the raycast broad phase after platforms moved, changed shape
-    /// or were added/removed (`world::PlatformBounds`); a no-op while the
-    /// platforms are unchanged since the last build.
-    fn rebuild_bounds(&mut self) {
-        if self.bounds_epoch != self.platform_epoch {
-            self.bounds.rebuild(&self.platforms);
-            self.bounds_epoch = self.platform_epoch;
-        }
     }
 
     /// ResizablePlatform.ResizePlatform: geometry, mass and inertia only.
@@ -32985,7 +32943,6 @@ impl RolloutWorld {
             dynamics.root_body.inverse_inertia = dynamics.body.inverse_inertia;
         }
         self.platforms_changed();
-        self.rebuild_bounds();
     }
 
     fn spawn_arrow(
@@ -38791,7 +38748,6 @@ impl RolloutWorld {
             }
         }
         self.platforms_changed();
-        self.rebuild_bounds();
     }
 
     /// Which updater pass a platform's components run in. Platforms
@@ -39436,7 +39392,8 @@ impl RolloutWorld {
                 .map(|(_, _, before)| before)
         };
         let untoggled: Vec<Platform>;
-        let platforms: &[Platform] = if (0..self.platforms.len())
+        let untoggled_bounds: PlatformBounds;
+        let terrain = if (0..self.platforms.len())
             .any(|index| toggled_later(index) || resized_later(index).is_some())
         {
             untoggled = (self.platforms.iter().enumerate())
@@ -39445,11 +39402,12 @@ impl RolloutWorld {
                     ..resized_later(index).unwrap_or(platform).clone()
                 })
                 .collect();
-            &untoggled
+            // The shared broad phase covers the resized colliders, not these.
+            untoggled_bounds = PlatformBounds::default();
+            Terrain::new(&untoggled, &untoggled_bounds)
         } else {
-            &self.platforms
+            terrain!(self)
         };
-        let terrain = Terrain { platforms, bounds: &self.bounds };
         {
             // PlayerPhysics.UpdateScale.
             let clone = &mut self.abilityless_clones[clone_index];

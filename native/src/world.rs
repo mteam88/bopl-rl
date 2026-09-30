@@ -7,6 +7,7 @@ use crate::{
     vector::Vec2,
 };
 use serde::{Deserialize, Serialize};
+use std::cell::{Cell, RefCell};
 
 mod dash;
 
@@ -214,11 +215,8 @@ impl Action {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct World {
     pub tick: u64,
-    pub platforms: Vec<Platform>,
+    pub platforms: Platforms,
     pub players: Vec<Player>,
-    /// Raycast broad phase over `platforms`, rebuilt at every step.
-    #[serde(skip)]
-    pub bounds: PlatformBounds,
 }
 
 impl World {
@@ -251,14 +249,7 @@ impl World {
         if actions.iter().any(|a| a.buttons & !3 != 0) {
             return Err("this slice supports jump and dash only".into());
         }
-        // The platforms of this slice never move; the cache only has to exist.
-        if self.bounds.len() != self.platforms.len() {
-            self.bounds.rebuild(&self.platforms);
-        }
-        let terrain = Terrain {
-            platforms: &self.platforms,
-            bounds: &self.bounds,
-        };
+        let terrain = self.platforms.terrain();
         for (index, action) in actions.iter().enumerate() {
             self.players[index].step(*action, terrain);
             let caster = &self.players[index];
@@ -314,13 +305,38 @@ impl World {
 /// The raycast broad phase: every platform's axis-aligned bounds
 /// (`RoundedRect::bounds`, already widened by `Bounds::may_reach`'s 1e-6
 /// margin) in lanes of eight, so a query is a few vector compares instead of
-/// re-deriving the bounds from each 150-byte `Platform`. Platforms move only
-/// in the physics stage, so the owner rebuilds this once per change
-/// (`RolloutWorld::rebuild_bounds`).
-#[derive(Clone, Debug, Default)]
+/// re-deriving the bounds from each 150-byte `Platform`. Marked stale by
+/// `invalidate`, it rebuilds itself from the platforms of the next query.
+#[derive(Debug)]
 pub struct PlatformBounds {
-    chunks: Vec<BoundsChunk>,
-    len: usize,
+    chunks: RefCell<Vec<BoundsChunk>>,
+    len: Cell<usize>,
+    stale: Cell<bool>,
+}
+
+impl Default for PlatformBounds {
+    fn default() -> Self {
+        Self {
+            chunks: RefCell::new(Vec::new()),
+            len: Cell::new(0),
+            stale: Cell::new(true),
+        }
+    }
+}
+
+impl Clone for PlatformBounds {
+    fn clone(&self) -> Self {
+        Self {
+            chunks: RefCell::new(self.chunks.borrow().clone()),
+            len: self.len.clone(),
+            stale: self.stale.clone(),
+        }
+    }
+    fn clone_from(&mut self, source: &Self) {
+        self.chunks.get_mut().clone_from(&source.chunks.borrow());
+        self.len.set(source.len.get());
+        self.stale.set(source.stale.get());
+    }
 }
 
 const BOUNDS_LANES: usize = 8;
@@ -385,20 +401,100 @@ impl BoundsChunk {
     }
 }
 
+/// The platforms and their raycast broad phase. DetPhysics' casts read every
+/// collider where it stands, so reads go through `Deref` while any mutable
+/// access marks the broad phase stale; the next query rebuilds it. No query
+/// can see a collider's old bounds.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(from = "Vec<Platform>", into = "Vec<Platform>")]
+pub struct Platforms {
+    list: Vec<Platform>,
+    bounds: PlatformBounds,
+}
+
+impl Clone for Platforms {
+    fn clone(&self) -> Self {
+        Self {
+            list: self.list.clone(),
+            bounds: self.bounds.clone(),
+        }
+    }
+    fn clone_from(&mut self, source: &Self) {
+        self.list.clone_from(&source.list);
+        self.bounds.clone_from(&source.bounds);
+    }
+}
+
+impl From<Vec<Platform>> for Platforms {
+    fn from(list: Vec<Platform>) -> Self {
+        Self {
+            list,
+            bounds: PlatformBounds::default(),
+        }
+    }
+}
+
+impl From<Platforms> for Vec<Platform> {
+    fn from(platforms: Platforms) -> Self {
+        platforms.list
+    }
+}
+
+impl std::ops::Deref for Platforms {
+    type Target = Vec<Platform>;
+    fn deref(&self) -> &Vec<Platform> {
+        &self.list
+    }
+}
+
+impl<'a> IntoIterator for &'a Platforms {
+    type Item = &'a Platform;
+    type IntoIter = std::slice::Iter<'a, Platform>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.list.iter()
+    }
+}
+
+impl std::ops::DerefMut for Platforms {
+    fn deref_mut(&mut self) -> &mut Vec<Platform> {
+        self.bounds.invalidate();
+        &mut self.list
+    }
+}
+
+impl Platforms {
+    pub fn with_capacity(capacity: usize) -> Self {
+        Vec::with_capacity(capacity).into()
+    }
+    pub fn terrain(&self) -> Terrain<'_> {
+        Terrain {
+            platforms: &self.list,
+            bounds: &self.bounds,
+        }
+    }
+}
+
 impl PlatformBounds {
-    pub fn rebuild(&mut self, platforms: &[Platform]) {
+    fn invalidate(&mut self) {
+        *self.stale.get_mut() = true;
+    }
+    fn refresh(&self, platforms: &[Platform]) {
+        if !self.stale.get() && self.len.get() == platforms.len() {
+            return;
+        }
         assert!(
             platforms.len() <= 64,
             "platform count exceeds the candidate mask"
         );
         let margin = Fix::from_f64(1e-6);
-        self.len = platforms.len();
-        self.chunks.clear();
-        self.chunks
-            .resize(platforms.len().div_ceil(BOUNDS_LANES), BoundsChunk::EMPTY);
+        self.len.set(platforms.len());
+        self.stale.set(false);
+        let mut chunks = self.chunks.borrow_mut();
+        chunks.clear();
+        chunks.resize(platforms.len().div_ceil(BOUNDS_LANES), BoundsChunk::EMPTY);
         for (index, platform) in platforms.iter().enumerate() {
             let bounds = platform.collider.bounds();
-            let chunk = &mut self.chunks[index / BOUNDS_LANES];
+            let chunk = &mut chunks[index / BOUNDS_LANES];
             let lane = index % BOUNDS_LANES;
             chunk.max_x[lane] = (bounds.max.x + margin).to_f64();
             chunk.min_x[lane] = (bounds.min.x - margin).to_f64();
@@ -406,18 +502,13 @@ impl PlatformBounds {
             chunk.min_y[lane] = (bounds.min.y - margin).to_f64();
         }
     }
-    pub fn len(&self) -> usize {
-        self.len
-    }
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-    /// Bit `i` set when platform `i`'s bounds meet the axis-aligned box
+    /// Bit `i` set when `platforms[i]`'s bounds meet the axis-aligned box
     /// `[lo, hi]` (`Bounds::may_reach` for a segment with those extents).
-    pub fn candidates(&self, lo: Vec2, hi: Vec2) -> u64 {
+    fn candidates(&self, platforms: &[Platform], lo: Vec2, hi: Vec2) -> u64 {
+        self.refresh(platforms);
         let (lo_x, hi_x, lo_y, hi_y) = (lo.x.to_f64(), hi.x.to_f64(), lo.y.to_f64(), hi.y.to_f64());
         let mut mask = 0u64;
-        for (index, chunk) in self.chunks.iter().enumerate() {
+        for (index, chunk) in self.chunks.borrow().iter().enumerate() {
             mask |= chunk.candidates(lo_x, hi_x, lo_y, hi_y) << (index * BOUNDS_LANES);
         }
         mask
@@ -445,8 +536,8 @@ impl SegmentBox {
         self.add(origin);
         self.add(end);
     }
-    pub(crate) fn candidates(self, bounds: &PlatformBounds) -> u64 {
-        bounds.candidates(self.lo, self.hi)
+    pub(crate) fn candidates(self, terrain: Terrain) -> u64 {
+        terrain.candidates(self.lo, self.hi)
     }
 }
 
@@ -455,7 +546,20 @@ impl SegmentBox {
 #[derive(Clone, Copy)]
 pub struct Terrain<'a> {
     pub platforms: &'a [Platform],
-    pub bounds: &'a PlatformBounds,
+    bounds: &'a PlatformBounds,
+}
+
+impl<'a> Terrain<'a> {
+    /// Terrain over platforms other than a `Platforms` list's own, with a
+    /// broad phase of their own.
+    pub fn new(platforms: &'a [Platform], bounds: &'a PlatformBounds) -> Self {
+        Self { platforms, bounds }
+    }
+    /// Bit `i` set when `platforms[i]`'s bounds meet the axis-aligned box
+    /// `[lo, hi]`.
+    pub fn candidates(self, lo: Vec2, hi: Vec2) -> u64 {
+        self.bounds.candidates(self.platforms, lo, hi)
+    }
 }
 
 pub(crate) fn closest(
@@ -470,7 +574,7 @@ pub(crate) fn closest(
     segment.add_segment(origin, end);
     closest_among(
         terrain,
-        segment.candidates(terrain.bounds),
+        segment.candidates(terrain),
         origin,
         direction,
         distance,
@@ -492,11 +596,6 @@ pub(crate) fn closest_among(
     exclude: Option<u32>,
 ) -> Option<(usize, Fix, Vec2)> {
     let platforms = terrain.platforms;
-    assert_eq!(
-        terrain.bounds.len(),
-        platforms.len(),
-        "stale platform bounds"
-    );
     let mut nearest = Fix::MAX;
     let mut result = None;
     while candidates != 0 {
@@ -547,7 +646,7 @@ fn ray_group_candidates(
     segment.add(position + grow);
     segment.add(end - grow);
     segment.add(end + grow);
-    segment.candidates(terrain.bounds)
+    segment.candidates(terrain)
 }
 
 impl Player {

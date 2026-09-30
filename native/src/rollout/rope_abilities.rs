@@ -1084,10 +1084,7 @@ impl RolloutWorld {
         };
         let direction = Vec2::new(x, Fix::from_raw(3_517_578_240)).normalized_safe();
         let position = self.players[player].base.position;
-        let terrain = Terrain {
-            platforms: &self.platforms,
-            bounds: &self.bounds,
-        };
+        let terrain = self.platforms.terrain();
         let hit = crate::world::closest(
             terrain,
             position + direction * Fix::from_raw(4_724_464_128),
@@ -1156,10 +1153,7 @@ impl RolloutWorld {
         self.players[player].base.previous_jump = action.buttons & 1 != 0;
         self.players[player].base.move_only(
             input,
-            Terrain {
-                platforms: &self.platforms,
-                bounds: &self.bounds,
-            },
+            self.platforms.terrain(),
         );
         if self.players[player].base.outside_bounds() {
             self.players[player].base.alive = false;
