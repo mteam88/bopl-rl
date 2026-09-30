@@ -25876,7 +25876,7 @@ impl RolloutWorld {
         advance_animation: bool,
     ) {
         let magnet = &data.magnet;
-        if advance_animation {
+        if advance_animation && self.animates(index) {
             let state = &mut self.players[index].magnet;
             state.animation_ticks += 1;
             match state.animation {
@@ -25903,7 +25903,8 @@ impl RolloutWorld {
         if direction != Vec2::ZERO {
             self.players[index].magnet.aim = direction.normalized();
         }
-        self.players[index].magnet.time_spent_pulling += DT;
+        let dt = self.fixed_delta_time(index, DT);
+        self.players[index].magnet.time_spent_pulling += dt;
         if matches!(self.players[index].magnet.phase, 1..=3)
             && self.players[index].magnet.time_spent_pulling > magnet.max_pull_duration
         {
@@ -25916,7 +25917,8 @@ impl RolloutWorld {
             state.held = MagnetHeld::Nothing;
         }
 
-        if matches!(self.players[index].magnet.phase, 1 | 2) {
+        let frozen = self.is_time_stopped_for(index);
+        if !frozen && matches!(self.players[index].magnet.phase, 1 | 2) {
             self.magnet_pull(index, data);
             self.magnet_try_pickup_item(index, data);
         }
@@ -25925,8 +25927,12 @@ impl RolloutWorld {
         }
 
         let button = 2u8 << self.players[index].active_slot;
-        if action.buttons & button == 0 && !self.players[index].magnet.has_fired {
+        if !frozen && action.buttons & button == 0 && !self.players[index].magnet.has_fired {
             self.fire_magnet(index, data);
+        }
+        // MagnetGun.cs:1181-1184.
+        if frozen {
+            return;
         }
 
         // The check sees null or inactive, not IsDestroyed: a ground an
@@ -27260,13 +27266,7 @@ impl RolloutWorld {
             MagnetHeld::Rock(i) => {
                 let velocity = self.players[i].rock.body.velocity;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
-                let holder_dt = if self.player_time_scale < Fix::from_f32(0.01)
-                    && !self.time_stop_protected[index]
-                {
-                    Fix::ZERO
-                } else {
-                    DT
-                };
+                let holder_dt = self.fixed_delta_time(index, DT);
                 // The item branch compensates BounceBall.LateUpdateSim's
                 // activation clock so a held player Rock does not expire.
                 self.players[i].rock.time -= holder_dt;
@@ -37781,6 +37781,7 @@ impl RolloutWorld {
                     | ActiveAbility::GrowthRay
                     | ActiveAbility::ShrinkRay
                     | ActiveAbility::Duplicator
+                    | ActiveAbility::Magnet
             );
         if self.is_time_stopped_for(index) && !runs_frozen {
             self.scratch.frozen_turns |= 1 << index;
@@ -37791,16 +37792,6 @@ impl RolloutWorld {
                 // missile up vector. This matters on the pass where the
                 // later TimeStop effect restores time before DetPhysics.
                 self.steer_active_missile(index, packet.aim_action(), Fix::ZERO, data);
-            }
-            if self.players[index].active == ActiveAbility::Magnet {
-                // Player's frozen input keeps MagnetGun's retained aim,
-                // while its locked branch still pins and refreshes Hold.
-                // Pull, pickup, release, animation and PlayerPhysics stop.
-                self.players[index].base.external_velocity *= Fix::from_f64(0.95);
-                if self.players[index].magnet.phase == 3 {
-                    self.magnet_update_held_item(index, data);
-                }
-                return;
             }
             if self.players[index].active == ActiveAbility::Drill {
                 // This prefab has PlayerBody but no PlayerPhysics. With a
