@@ -1724,12 +1724,12 @@ impl FormScale {
         self.set_circle_scale(value, radius);
     }
 
-    /// `set_circle_scale` for a circle whose FixTransform carries an offset,
-    /// which SetScale_DPhysicsOnly multiplies by `new / old`.
-    fn set_circle_scale_offset(&mut self, value: Fix, radius: Fix, offset: Vec2) {
+    /// `set_circle_scale_physics` for a circle whose FixTransform carries an
+    /// offset, which SetScale_DPhysicsOnly multiplies by `new / old`.
+    fn set_circle_scale_offset(&mut self, value: Fix, radius: Fix, physics_radius: Fix, offset: Vec2) {
         let fresh = self.scale == Fix::ZERO;
         let old = if fresh { Fix::ONE } else { self.scale };
-        self.set_circle_scale(value, radius);
+        self.set_circle_scale_physics(value, radius, physics_radius);
         if fresh {
             self.offset = offset;
         }
@@ -3615,10 +3615,12 @@ impl PlayerSlot {
     }
 
     /// `potentialCollider.Scale = Player.Scale` on the active circle form
-    /// (Ability.cs:105, 135).
+    /// (Ability.cs:105, 135). The spell prefabs' own PlayerPhysics radius is
+    /// the slime's 0.76.
     fn scale_form_circle(&mut self, radius: Fix, offset: Vec2) {
         let scale = self.player_scale;
-        self.forms[self.active_slot].set_circle_scale_offset(scale, radius, offset);
+        let physics_radius = data::get().player.radius;
+        self.forms[self.active_slot].set_circle_scale_offset(scale, radius, physics_radius, offset);
     }
 
     /// The Time Stop form's CastSpell circle radius and FixTransform offset.
@@ -11190,6 +11192,10 @@ impl RolloutWorld {
                         // Ability.UpdateSim scales it again this pass, in
                         // `time_stop_cast_tick`.
                         slot.scale_time_stop_circle(data);
+                        // SyncPhysicsTo's UpdateScale brings the form's own
+                        // PlayerPhysics radius to the new scale, and seats a
+                        // grounded form with it.
+                        slot.base.radius = slot.forms[s].physics_radius();
                         if !grounded {
                             slot.base.rotation = Fix::ZERO;
                             slot.base.up = Vec2::UP;
