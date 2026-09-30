@@ -10107,17 +10107,22 @@ impl RolloutWorld {
                         // PlayerPhysics radius to Player.Scale before placing it.
                         let form_radius =
                             data.missile.physics_radius * self.players[index].player_scale;
-                        let form_position = if grounded {
+                        // SparkShot.OnEnterAbility syncs the hurtbox after
+                        // SyncPhysicsTo aligned (grounded) or zeroed (airborne)
+                        // the rotation, and only then restores PlayerInfo's.
+                        let (form_position, entry_rotation) = if grounded {
                             let base = &self.players[index].base;
                             base.ground
                                 .and_then(|ground| {
                                     self.platforms.iter().find(|platform| platform.id == ground)
                                 })
-                                .map_or(base.position, |platform| {
-                                    platform.surface.position(base.local, form_radius)
+                                .map_or((base.position, base.rotation), |platform| {
+                                    let position = platform.surface.position(base.local, form_radius);
+                                    let right = platform.surface.normal(position).perp_cw();
+                                    (position, right.normalized_angle())
                                 })
                         } else {
-                            self.players[index].base.position
+                            (self.players[index].base.position, Fix::ZERO)
                         };
                         {
                             let slot = &mut self.players[index];
@@ -10128,7 +10133,7 @@ impl RolloutWorld {
                             slot.ability_entry_action = action;
                             slot.telemetry.ability_activations[s] += 1;
                             slot.missile = MissileFormState {
-                                collider_rotation: slot.base.rotation,
+                                collider_rotation: entry_rotation,
                                 ..MissileFormState::default()
                             };
                             // Ability.EnterAbility assigns Player.Scale to
