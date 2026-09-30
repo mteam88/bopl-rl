@@ -579,6 +579,10 @@ pub struct AbilityPickup {
     /// compounds them (FixTransform.cs:102, DPhysicsCircle.cs:216-220).
     pub offset: Vec2,
     pub radius: Fix,
+    /// The DetPhysics circle centre, synced from the FixTransform only when
+    /// Simulate runs: UpdateSim's vibration moves the transform while the
+    /// casts of an earlier updater still meet the circle where it was.
+    pub collider_center: Vec2,
     pub body: Body,
     pub enabled: bool,
     pub time_passed: Fix,
@@ -7037,6 +7041,14 @@ impl RolloutWorld {
             if self.entities[entity].flags & E_DESTROYED != 0 {
                 self.remove_platform(platform_index, false);
             }
+        }
+        for pickup in &mut self.ability_pickups {
+            pickup.collider_center = match pickup.entity {
+                Some(entity) => {
+                    Vec2::new(Fix::from_raw(self.entities[entity].x), Fix::from_raw(self.entities[entity].y))
+                }
+                None => pickup.position + pickup.offset,
+            };
         }
         let drowned_clouds = self.register_pending_objects(data);
         if has(ABILITY_REVIVAL) {
@@ -26597,7 +26609,7 @@ impl RolloutWorld {
                 continue;
             }
             let collider = Circle {
-                center: pickup.position + pickup.offset,
+                center: pickup.collider_center,
                 radius: pickup.radius,
             };
             if crate::physics::contact::circle_box(collider, query).is_none() {
@@ -26928,7 +26940,7 @@ impl RolloutWorld {
             if !pickup.active || self.blink_object_hidden(pickup.entity) {
                 continue;
             }
-            let center = pickup.position + pickup.offset;
+            let center = pickup.collider_center;
             consider(
                 MagnetHeld::AbilityPickup(pickup_index),
                 pickup.position,
@@ -28507,6 +28519,7 @@ impl RolloutWorld {
                 scale: source.scale,
                 offset: source.offset,
                 radius: source.radius,
+                collider_center: position + source.offset,
                 body,
                 enabled: false,
                 time_passed: Fix::ZERO,
