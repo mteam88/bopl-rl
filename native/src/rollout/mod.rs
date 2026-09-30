@@ -17245,9 +17245,16 @@ impl RolloutWorld {
                                 .abs()
                     };
                     victims.push((key(row.kind != 0, min, Some(entity)), false, player_index, killer));
+                    // Grow reads the collider's inverseMass: -1 unless a
+                    // BoplBody owns it, as the Rock form's BounceBall does.
+                    let inverse_mass = if player.active == ActiveAbility::Rock {
+                        player.rock.body.inverse_mass
+                    } else {
+                        -Fix::ONE
+                    };
                     Self::black_hole_grow(
                         &mut self.black_holes[hole_index],
-                        -Fix::ONE,
+                        inverse_mass,
                         Fix::ZERO,
                         data,
                     );
