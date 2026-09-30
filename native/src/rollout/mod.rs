@@ -2865,7 +2865,9 @@ pub struct PlayerSlot {
     /// own pass, so the grounded EnterStop/EnterIdle it installs survives the
     /// exit tick untouched and the state machine resumes on the next one.
     pub obs_state_held_this_tick: bool,
-    /// The slime GameObject was disabled when its updater slot came round.
+    /// OldUpdate did not reach the state switch this pass: the slime
+    /// GameObject was disabled when its updater slot came round, or it was
+    /// still biting then and the eating animation finished after it.
     pub obs_state_disabled_this_tick: bool,
     /// A rewind suppressed the slime's input when its updater slot came round.
     pub obs_input_suppressed_this_tick: bool,
@@ -9697,9 +9699,12 @@ impl RolloutWorld {
                 slot.eating.swallowing = true;
             }
             EatingPhase::Swallow => {
+                // FinishEating is the SpriteAnimator's callback, after an
+                // OldUpdate that returned while biting (SlimeController.cs:787).
                 slot.eating.swallowing = false;
                 slot.obs_state = STATE_IDLE;
                 slot.state_ticks = 0;
+                slot.obs_state_disabled_this_tick = true;
             }
         }
     }
