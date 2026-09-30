@@ -11969,6 +11969,12 @@ impl RolloutWorld {
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Throw);
                         slot.active_slot = s;
+                        // A box never scaled still holds the inverseExtents of its
+                        // authored size; a scaled one keeps what its last Scale left.
+                        if slot.forms[s].scale == Fix::ZERO {
+                            let extents = data::surface_extents(data.macho_throw.hurtbox_extents);
+                            slot.forms[s].inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+                        }
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.macho_throw = MachoThrowState {
@@ -30470,13 +30476,11 @@ impl RolloutWorld {
                 radius: Fix::from_raw(row.radius),
             })),
             1 => {
+                // Box.SetRotation rebuilds the axes from the inverseExtents the
+                // box stores, set from its authored size and every Scale since,
+                // never read back from its axes (Box.cs:30-41).
                 let form = slot.forms[slot.active_slot];
-                let published = Self::row_box(row);
-                Some(DetCollider::Box(if form.scale == Fix::ZERO {
-                    published
-                } else {
-                    OrientedBox { inverse_extents: form.inverse_extents, ..published }
-                }))
+                Some(DetCollider::Box(OrientedBox { inverse_extents: form.inverse_extents, ..Self::row_box(row) }))
             }
             _ => None,
         }
