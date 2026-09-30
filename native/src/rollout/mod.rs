@@ -34222,6 +34222,9 @@ impl RolloutWorld {
                 clone.base.velocity = Vec2::ZERO;
                 clone.base.move_collider();
                 clone.obs_state = STATE_RAGDOLL;
+                // The pin writes the transform (PokeBall.cs:196), so the row reads
+                // it, not the body its PlayerBody integrated earlier.
+                self.sync_abilityless_clone_entity(victim);
             } else {
                 let tick = self.tick;
                 let hierarchy = self.thrown_items[item_index].hierarchy_base;
