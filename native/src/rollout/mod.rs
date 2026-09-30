@@ -847,6 +847,10 @@ pub struct PlantCastState {
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
+    pub entry_tick: Option<u32>,
+    /// Where OnEnterAbility's hitBox.UpdatePhysicsPositions put the box, as
+    /// for Spike (PlantObjectOnPlatform.cs:80-82).
+    pub entry_box: OrientedBox,
 }
 
 /// One RocketEngine collider attached to a rounded-platform composite.
@@ -10737,6 +10741,7 @@ impl RolloutWorld {
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
                         self.plant_form_radius(index);
+                        self.plant_entry_box(index, data);
                         self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds takes its
                         // turn on the entry pass, ahead of the Move below.
@@ -10775,6 +10780,7 @@ impl RolloutWorld {
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
                         self.plant_form_radius(index);
+                        self.plant_entry_box(index, data);
                         self.form_entry_turn(data, index);
                         if self.form_bounds_kill(index, data) {
                             return;
@@ -13867,6 +13873,36 @@ impl RolloutWorld {
             data::surface_extents(extents),
             data.player.radius,
             offset,
+        );
+    }
+
+    /// PlantObjectOnPlatform.OnEnterAbility syncs its box at the pose
+    /// PlayerPhysics.SyncPhysicsTo gave the body and then puts the body back
+    /// at the slime's position; the box stays there until DetPhysics syncs it.
+    fn plant_entry_box(&mut self, index: usize, data: &data::RolloutData) {
+        let extents = if self.players[index].active == ActiveAbility::Engine {
+            data.engine.hurtbox_extents
+        } else {
+            data.tesla.hurtbox_extents
+        };
+        let slot = &mut self.players[index];
+        let mut synced = slot.base.clone();
+        match synced.platform(&self.platforms).filter(|_| synced.grounded) {
+            Some(platform) => {
+                synced.position = platform.surface.position(synced.local, synced.radius);
+                synced.align(platform);
+            }
+            None => {
+                synced.up = Vec2::UP;
+                synced.rotation = Fix::ZERO;
+            }
+        }
+        let form = slot.forms[slot.active_slot];
+        slot.plant_cast.entry_tick = Some(self.tick);
+        slot.plant_cast.entry_box = form.hurtbox(
+            synced.position + synced.up.perp_cw().complex_mul(form.offset),
+            Vec2::angle(synced.rotation),
+            data::surface_extents(extents),
         );
     }
 
@@ -29495,6 +29531,11 @@ impl RolloutWorld {
             }
             ActiveAbility::Spike if slot.spike_cast.entry_tick == Some(self.tick) => {
                 return Some(slot.spike_cast.entry_box);
+            }
+            ActiveAbility::Engine | ActiveAbility::Tesla
+                if slot.plant_cast.entry_tick == Some(self.tick) =>
+            {
+                return Some(slot.plant_cast.entry_box);
             }
             // QuickSpell.OnEnterAbility too (QuickSpell.cs:79-80).
             ActiveAbility::Push if slot.push.entry_tick == Some(self.tick) => {
