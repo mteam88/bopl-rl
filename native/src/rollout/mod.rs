@@ -493,6 +493,9 @@ pub struct Arrow {
     pub id: u32,
     /// Owning player id (1-based).
     pub owner: u32,
+    /// The BowTransform whose Arrows ring holds it: its slot and that slot's
+    /// ability generation. A Duplicator copy is in no ring.
+    pub bow: Option<(usize, u32)>,
     pub entity: Option<usize>,
     pub position: Vec2,
     /// Live FixTransform scale. Ordinary Bow arrows start at one; Duplicator
@@ -28302,6 +28305,7 @@ impl RolloutWorld {
                 // Projectile.playerOwnerId is private and not serialized;
                 // Instantiate therefore creates an environmental copy.
                 owner: 0,
+                bow: None,
                 entity: None,
                 position,
                 scale: source.scale,
@@ -32566,8 +32570,11 @@ impl RolloutWorld {
         } else {
             Fix::ZERO
         };
+        let slot = &self.players[index];
+        let ring = (slot.active_slot, slot.ability_generation[slot.active_slot]);
         self.spawn_arrow(
             owner,
+            ring,
             position,
             start_velocity,
             hurt_owner_after,
@@ -33294,27 +33301,26 @@ impl RolloutWorld {
     fn spawn_arrow(
         &mut self,
         owner: u32,
+        ring: (usize, u32),
         position: Vec2,
         velocity: Vec2,
         hurt_owner_after: Fix,
         max_arrows: u32,
         scale: Fix,
     ) {
-        // BowTransform uses a per-owner RingBuffer and destroys its oldest
-        // arrow when the authored capacity is reached. Native arrow slots are
-        // reused, so age (not vector position) identifies the oldest one.
-        let owner_count = self
-            .arrows
-            .iter()
-            .filter(|arrow| arrow.active && arrow.owner == owner)
-            .count() as u32;
+        // Each BowTransform keeps its own RingBuffer and destroys its oldest
+        // arrow when the authored capacity is reached, so two Bow slots, or a
+        // Bow and its replacement's, fill separate rings. Native arrow slots
+        // are reused, so age (not vector position) identifies the oldest one.
+        let in_ring = |arrow: &Arrow| arrow.active && arrow.owner == owner && arrow.bow == Some(ring);
+        let ring_count = self.arrows.iter().filter(|arrow| in_ring(arrow)).count() as u32;
         if max_arrows > 0
-            && owner_count >= max_arrows
+            && ring_count >= max_arrows
             && let Some((oldest, _)) = self
                 .arrows
                 .iter()
                 .enumerate()
-                .filter(|(_, arrow)| arrow.active && arrow.owner == owner)
+                .filter(|(_, arrow)| in_ring(arrow))
                 .max_by_key(|(_, arrow)| arrow.time_passed)
         {
             self.destroy_arrow(oldest);
@@ -33331,6 +33337,7 @@ impl RolloutWorld {
             hierarchy_base,
             id,
             owner,
+            bow: Some(ring),
             entity: None,
             position,
             scale,
