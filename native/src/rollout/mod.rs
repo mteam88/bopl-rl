@@ -33261,6 +33261,16 @@ impl RolloutWorld {
             if teleported_later {
                 return Some(before);
             }
+            // A clone newer than the hammer, such as the stock clone a hammer
+            // thrown before the death homes to, takes its updaters after the
+            // hammer's: the chooser's last pass still finds it at the hold
+            // point, and the spawn pop has not moved it yet.
+            if slot.pass_start.0 == self.tick
+                && slot.pinned_from.0 != self.tick
+                && self.entities[slot.body_entity].hierarchy > 100_000_000 + hierarchy
+            {
+                return Some(slot.pass_start.1);
+            }
             return Some(self.mjolnir_view(owner, hierarchy));
         }
         if let Some(clone) = self
