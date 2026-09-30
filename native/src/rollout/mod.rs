@@ -3337,6 +3337,16 @@ struct PlatformScratch {
     /// Each slime's position before PlayerPhysics.LateUpdateSim follows its
     /// ground, where an older Mine's LateUpdateSim still finds it.
     before_ground_follow: [Vec2; MAX_PLAYERS],
+    /// The owners' inputs as the clones' SlimeControllers read them this pass,
+    /// held for a clone that updates ahead of the clone batch.
+    clone_actions: [CAction; MAX_PLAYERS],
+    clone_action_count: usize,
+    clone_jump_pressed: [bool; MAX_PLAYERS],
+    /// Players whose first clone to update this pass took Player.Position.
+    clones_positioned: [bool; MAX_PLAYERS],
+    /// Clones whose updaters already ran this pass, ahead of a newer
+    /// TeleportIndicator.
+    clones_updated_early: Vec<usize>,
     item_spike_hits: Vec<(usize, usize, Vec2)>,
     tesla_wall_contacts: Vec<(usize, usize, Contact)>,
     /// Portal shots' wall manifolds: (shot, wall, contact).
@@ -6876,6 +6886,11 @@ impl RolloutWorld {
         }
         self.scratch.player_scale_changes.clear();
         self.scratch.platform_resizes.clear();
+        self.scratch.clone_action_count = player_count;
+        self.scratch.clone_actions[..player_count].copy_from_slice(&actions[..player_count]);
+        self.scratch.clone_jump_pressed = jump_pressed_by_player;
+        self.scratch.clones_positioned = [false; MAX_PLAYERS];
+        self.scratch.clones_updated_early.clear();
         self.duplicated_platforms_tick(data, updater_dt, spawned_from..u32::MAX);
         self.scratch.duplicates_window = None;
         if has(ABILITY_MAGNET) {
@@ -7232,7 +7247,7 @@ impl RolloutWorld {
             }
         }
         if has_clones {
-            self.abilityless_clones_tick(actions, &jump_pressed_by_player);
+            self.abilityless_clones_tick();
         }
         if has(ABILITY_GRAPPLING_HOOK) && first_clone < u32::MAX {
             self.grapple_ropes_update(first_clone..u32::MAX);
@@ -21542,8 +21557,9 @@ impl RolloutWorld {
             clone.base.position += shift;
             clone.base.sync_collider();
             clone.obs_state = STATE_FALL;
-            self.entities[entity].x += shift.x.raw();
-            self.entities[entity].y += shift.y.raw();
+            // UnGround lifted it before the move, so its row follows the body.
+            self.entities[entity].x = clone.base.collider.center.x.raw();
+            self.entities[entity].y = clone.base.collider.center.y.raw();
             self.begin_teleport_object_effect(entity, marker_hierarchy, data);
             return;
         }
@@ -21747,6 +21763,21 @@ impl RolloutWorld {
                     }
                     self.thrown_item_update(item_index, data, updater_dt);
                 }
+            }
+            // So have an older abilityless clone's PlayerPhysics and
+            // SlimeController: the teleport moves it from where they left it.
+            let older_clone_hit = player_hits[..player_count]
+                .iter()
+                .chain(&marker_hits[..marker_count])
+                .any(|&entity| {
+                    self.abilityless_clones.iter().any(|clone| {
+                        clone.active
+                            && clone.entity == Some(entity)
+                            && clone.hierarchy_base < marker.hierarchy_base
+                    })
+                });
+            if older_clone_hit {
+                self.abilityless_clones_update_below(marker.hierarchy_base);
             }
             for &entity in &player_hits[..player_count] {
                 self.teleport_entity(entity, diff, marker.hierarchy_base, data);
@@ -38905,188 +38936,213 @@ impl RolloutWorld {
         }
     }
 
-    fn abilityless_clones_tick(
-        &mut self,
-        actions: &[CAction],
-        jump_pressed: &[bool; MAX_PLAYERS],
-    ) {
-        let mut positioned = [false; MAX_PLAYERS];
-        // PlayerPhysics and SlimeController.UpdateSim in hierarchy order: the
-        // first clone to update reports the player's position, and a clone may
-        // fill a slot freed below an older one.
+    /// The clones' PlayerPhysics and SlimeController.UpdateSim in hierarchy
+    /// order: the first clone to update reports the player's position, and a
+    /// clone may fill a slot freed below an older one.
+    fn abilityless_clones_tick(&mut self) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         hierarchy_order(&mut order, &self.abilityless_clones, |clone| clone.hierarchy_base);
         for clone in &mut self.abilityless_clones {
-            clone.pass_start = (self.tick, clone.base.position);
+            if clone.pass_start.0 != self.tick {
+                clone.pass_start = (self.tick, clone.base.position);
+            }
         }
         for &clone_index in &order {
-            if !self.abilityless_clones[clone_index].active
-                || self.abilityless_clones[clone_index].born_tick >= self.tick
-                || self.abilityless_clones[clone_index].blink_tunnel_active
-                || self.abilityless_clones[clone_index].blink_reactivated_tick == Some(self.tick)
-                || self.blink_object_hidden(self.abilityless_clones[clone_index].entity)
-            {
-                continue;
+            if !self.scratch.clones_updated_early.contains(&clone_index) {
+                self.abilityless_clone_update(clone_index);
             }
-            if self.abilityless_clones[clone_index]
-                .captured_by_ball
-                .is_some()
-            {
-                self.abilityless_clones[clone_index].base.sync_collider();
-                self.sync_abilityless_clone_entity(clone_index);
-                continue;
-            }
-            let owner = self.abilityless_clones[clone_index].owner;
-            if owner >= actions.len() {
-                continue;
-            }
-            let clone = &mut self.abilityless_clones[clone_index];
-            if let Some(lost) = std::mem::take(&mut clone.ground_destroyed) {
-                // PlayerPhysics skipped gravity while still grounded. The
-                // clone's SlimeController zeros its rotation and UnGrounds like
-                // a slime's, lifting off a ground destroyed earlier this pass
-                // (SlimeController.cs:1061-1065).
-                clone.base.rotation = Fix::ZERO;
-                clone.base.up = Vec2::UP;
-                clone.base.skip_next_gravity = true;
-                clone.base.unground_off(lost.attached(self.tick), false);
-                clone.base.ground = None;
-            }
-            let stopped =
-                self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner];
-            // A wall QuantumTunnel registered after this clone hides its wall
-            // (QuantumTunnel.cs:136) or restores it (QuantumTunnel.cs:163-166)
-            // only after the clone's updaters, while the Blink tunnel step or a
-            // later BlackHole has already toggled it here.
-            let hierarchy = self.abilityless_clones[clone_index].hierarchy_base;
-            let toggled_later = |index: usize| {
-                let state = &self.platform_dynamics[index];
-                (state.blink_deactivated_tick == Some(self.tick)
-                    || state.blink_reactivated_tick == Some(self.tick))
-                    && state.blink_tunnel_hierarchy > hierarchy
-            };
-            // A resizer after the clone has not resized its platform yet.
-            let resized_later = |index: usize| {
-                (self.scratch.platform_resizes.iter())
-                    .find(|&&(platform, changer, _)| platform == index && changer > hierarchy)
-                    .map(|(_, _, before)| before)
-            };
-            let untoggled: Vec<Platform>;
-            let platforms: &[Platform] = if (0..self.platforms.len())
-                .any(|index| toggled_later(index) || resized_later(index).is_some())
-            {
-                untoggled = (self.platforms.iter().enumerate())
-                    .map(|(index, platform)| Platform {
-                        active: platform.active != toggled_later(index),
-                        ..resized_later(index).unwrap_or(platform).clone()
-                    })
-                    .collect();
-                &untoggled
-            } else {
-                &self.platforms
-            };
-            let terrain = Terrain { platforms, bounds: &self.bounds };
-            {
-                // PlayerPhysics.UpdateScale.
-                let clone = &mut self.abilityless_clones[clone_index];
-                if clone.base.scale != clone.physics_scale {
-                    clone.base.radius *= clone.base.scale / clone.physics_scale;
-                    clone.physics_scale = clone.base.scale;
-                }
-            }
-            if !stopped {
-                // A clone's PlayerPhysics.UpdateSim also runs before its
-                // SlimeController: gravity and the landing raycasts come first.
-                let clone = &mut self.abilityless_clones[clone_index].base;
-                clone.begin_pass();
-                clone.gravity_step(terrain);
-            }
-            // OldUpdate's Player.SetPosition: with the slime destroyed or
-            // disabled, the first clone to update takes the player's position.
-            if (self.players[owner].slime_gone
-                || self.players[owner].unpublished_tick == Some(self.tick))
-                && !positioned[owner]
-            {
-                positioned[owner] = true;
-                self.players[owner].reported_position =
-                    self.abilityless_clones[clone_index].base.position;
-                self.players[owner].reported_tick = self.tick;
-            }
-            if stopped {
-                self.abilityless_clones[clone_index].base.external_velocity *= Fix::from_f64(0.95);
-            } else if self.abilityless_clones[clone_index].obs_state == STATE_BITING {
-                self.clone_biting_tick(clone_index);
-            } else {
-                // A clone has no abilities, so of the owner's buttons only jump
-                // reaches it; the ability buttons would otherwise start a Dash.
-                let action = Action {
-                    buttons: actions[owner].aim_action().buttons & 1,
-                    ..actions[owner].aim_action()
-                };
-                let movement = actions[owner].input_direction(self.players[owner].keyboard);
-                let clone = &mut self.abilityless_clones[clone_index];
-                // SlimeController jumps on the owner's jumpButton_PressedThisFrame.
-                clone.base.previous_jump = !jump_pressed[owner];
-                clone.base.capture_pre_move(terrain.platforms);
-                let grounded = clone.base.grounded;
-                let integrate = clone.base.move_unintegrated(action, movement, terrain);
-                if grounded && integrate {
-                    clone.drop_platform_test(terrain.platforms, &self.platform_dynamics);
-                }
-                if integrate && clone.grip.rope.is_none() {
-                    clone.base.integrate();
-                } else if integrate {
-                    // SlimeController.cs:1086-1089, then PlayerBody.UpdateSim.
-                    if !clone.base.grounded
-                        && clone.grip.rope.is_some_and(|rope| self.ropes[rope].physics.enabled)
-                    {
-                        clone.grip.swing_force =
-                            Vec2::new(movement.x * data::get().ropes.extra_swing_force, Fix::ZERO);
-                    }
-                    let owner_jumps = jump_pressed[owner]
-                        && clone.grip.rope.is_some_and(|rope| self.ropes[rope].owner == owner);
-                    rope_abilities::carry_rope(&mut clone.base, &mut clone.grip, &mut self.ropes, owner_jumps);
-                }
-                if clone.obs_state != STATE_RAGDOLL {
-                    Self::slime_state_switch(
-                        &mut clone.base,
-                        &mut clone.obs_state,
-                        &mut clone.state_ticks,
-                        &mut clone.facing_right,
-                        &mut clone.prev_input_align,
-                        movement,
-                        false,
-                    );
-                }
-            }
-            {
-                // SlimeController.UpdateSim: `hurtBox.Scale = player.Scale`
-                // after OldUpdate, every pass (SlimeController.cs:1078). A
-                // ScaleChanger after the clone in the hierarchy has not run yet.
-                let scale = (self.scratch.player_scale_changes.iter())
-                    .find(|&&(player, changer, _)| player == owner && changer > hierarchy)
-                    .map_or(self.players[owner].player_scale, |&(_, _, before)| before);
-                let scale = hurtbox_scale(scale);
-                let clone = &mut self.abilityless_clones[clone_index].base;
-                let ratio = (Fix::ONE / clone.scale) * scale;
-                clone.collider_inverse_extents = clone.collider_inverse_extents / ratio;
-                clone.scale = scale;
-            }
-            if !self.abilityless_clones[clone_index].base.alive {
-                // The clone's DestroyIfOutsideSceneBounds instantiates the
-                // water/bounds effect too.
-                self.next_spawn_hierarchy += data::get().player.boundary_effect_updatable_count;
-                self.abilityless_clones[clone_index].drowned_tick = self.tick;
-                self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT);
-                continue;
-            }
-            self.abilityless_clones[clone_index].base.sync_collider();
-            self.sync_abilityless_clone_entity(clone_index);
         }
         self.scratch.item_order = order;
         for clone in &mut self.abilityless_clones {
             clone.base.external_velocity += std::mem::take(&mut clone.late_pull);
         }
+    }
+
+    /// Runs the updaters of every clone older than `hierarchy` that has not
+    /// updated this pass, ahead of the clone batch.
+    fn abilityless_clones_update_below(&mut self, hierarchy: u32) {
+        let mut order = std::mem::take(&mut self.scratch.item_order);
+        hierarchy_order(&mut order, &self.abilityless_clones, |clone| clone.hierarchy_base);
+        for &clone_index in &order {
+            if self.abilityless_clones[clone_index].hierarchy_base >= hierarchy
+                || self.scratch.clones_updated_early.contains(&clone_index)
+            {
+                continue;
+            }
+            self.scratch.clones_updated_early.push(clone_index);
+            let clone = &mut self.abilityless_clones[clone_index];
+            clone.pass_start = (self.tick, clone.base.position);
+            self.abilityless_clone_update(clone_index);
+        }
+        self.scratch.item_order = order;
+    }
+
+    fn abilityless_clone_update(&mut self, clone_index: usize) {
+        if !self.abilityless_clones[clone_index].active
+            || self.abilityless_clones[clone_index].born_tick >= self.tick
+            || self.abilityless_clones[clone_index].blink_tunnel_active
+            || self.abilityless_clones[clone_index].blink_reactivated_tick == Some(self.tick)
+            || self.blink_object_hidden(self.abilityless_clones[clone_index].entity)
+            || self.teleport_revealed_this_pass(self.abilityless_clones[clone_index].entity)
+        {
+            return;
+        }
+        if self.abilityless_clones[clone_index]
+            .captured_by_ball
+            .is_some()
+        {
+            self.abilityless_clones[clone_index].base.sync_collider();
+            self.sync_abilityless_clone_entity(clone_index);
+            return;
+        }
+        let owner = self.abilityless_clones[clone_index].owner;
+        if owner >= self.scratch.clone_action_count {
+            return;
+        }
+        let packet = self.scratch.clone_actions[owner];
+        let jump_pressed = self.scratch.clone_jump_pressed[owner];
+        let clone = &mut self.abilityless_clones[clone_index];
+        if let Some(lost) = std::mem::take(&mut clone.ground_destroyed) {
+            // PlayerPhysics skipped gravity while still grounded. The
+            // clone's SlimeController zeros its rotation and UnGrounds like
+            // a slime's, lifting off a ground destroyed earlier this pass
+            // (SlimeController.cs:1061-1065).
+            clone.base.rotation = Fix::ZERO;
+            clone.base.up = Vec2::UP;
+            clone.base.skip_next_gravity = true;
+            clone.base.unground_off(lost.attached(self.tick), false);
+            clone.base.ground = None;
+        }
+        let stopped =
+            self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[owner];
+        // A wall QuantumTunnel registered after this clone hides its wall
+        // (QuantumTunnel.cs:136) or restores it (QuantumTunnel.cs:163-166)
+        // only after the clone's updaters, while the Blink tunnel step or a
+        // later BlackHole has already toggled it here.
+        let hierarchy = self.abilityless_clones[clone_index].hierarchy_base;
+        let toggled_later = |index: usize| {
+            let state = &self.platform_dynamics[index];
+            (state.blink_deactivated_tick == Some(self.tick)
+                || state.blink_reactivated_tick == Some(self.tick))
+                && state.blink_tunnel_hierarchy > hierarchy
+        };
+        // A resizer after the clone has not resized its platform yet.
+        let resized_later = |index: usize| {
+            (self.scratch.platform_resizes.iter())
+                .find(|&&(platform, changer, _)| platform == index && changer > hierarchy)
+                .map(|(_, _, before)| before)
+        };
+        let untoggled: Vec<Platform>;
+        let platforms: &[Platform] = if (0..self.platforms.len())
+            .any(|index| toggled_later(index) || resized_later(index).is_some())
+        {
+            untoggled = (self.platforms.iter().enumerate())
+                .map(|(index, platform)| Platform {
+                    active: platform.active != toggled_later(index),
+                    ..resized_later(index).unwrap_or(platform).clone()
+                })
+                .collect();
+            &untoggled
+        } else {
+            &self.platforms
+        };
+        let terrain = Terrain { platforms, bounds: &self.bounds };
+        {
+            // PlayerPhysics.UpdateScale.
+            let clone = &mut self.abilityless_clones[clone_index];
+            if clone.base.scale != clone.physics_scale {
+                clone.base.radius *= clone.base.scale / clone.physics_scale;
+                clone.physics_scale = clone.base.scale;
+            }
+        }
+        if !stopped {
+            // A clone's PlayerPhysics.UpdateSim also runs before its
+            // SlimeController: gravity and the landing raycasts come first.
+            let clone = &mut self.abilityless_clones[clone_index].base;
+            clone.begin_pass();
+            clone.gravity_step(terrain);
+        }
+        // OldUpdate's Player.SetPosition: with the slime destroyed or
+        // disabled, the first clone to update takes the player's position.
+        if (self.players[owner].slime_gone
+            || self.players[owner].unpublished_tick == Some(self.tick))
+            && !self.scratch.clones_positioned[owner]
+        {
+            self.scratch.clones_positioned[owner] = true;
+            self.players[owner].reported_position =
+                self.abilityless_clones[clone_index].base.position;
+            self.players[owner].reported_tick = self.tick;
+        }
+        if stopped {
+            self.abilityless_clones[clone_index].base.external_velocity *= Fix::from_f64(0.95);
+        } else if self.abilityless_clones[clone_index].obs_state == STATE_BITING {
+            self.clone_biting_tick(clone_index);
+        } else {
+            // A clone has no abilities, so of the owner's buttons only jump
+            // reaches it; the ability buttons would otherwise start a Dash.
+            let action = Action {
+                buttons: packet.aim_action().buttons & 1,
+                ..packet.aim_action()
+            };
+            let movement = packet.input_direction(self.players[owner].keyboard);
+            let clone = &mut self.abilityless_clones[clone_index];
+            // SlimeController jumps on the owner's jumpButton_PressedThisFrame.
+            clone.base.previous_jump = !jump_pressed;
+            clone.base.capture_pre_move(terrain.platforms);
+            let grounded = clone.base.grounded;
+            let integrate = clone.base.move_unintegrated(action, movement, terrain);
+            if grounded && integrate {
+                clone.drop_platform_test(terrain.platforms, &self.platform_dynamics);
+            }
+            if integrate && clone.grip.rope.is_none() {
+                clone.base.integrate();
+            } else if integrate {
+                // SlimeController.cs:1086-1089, then PlayerBody.UpdateSim.
+                if !clone.base.grounded
+                    && clone.grip.rope.is_some_and(|rope| self.ropes[rope].physics.enabled)
+                {
+                    clone.grip.swing_force =
+                        Vec2::new(movement.x * data::get().ropes.extra_swing_force, Fix::ZERO);
+                }
+                let owner_jumps = jump_pressed
+                    && clone.grip.rope.is_some_and(|rope| self.ropes[rope].owner == owner);
+                rope_abilities::carry_rope(&mut clone.base, &mut clone.grip, &mut self.ropes, owner_jumps);
+            }
+            if clone.obs_state != STATE_RAGDOLL {
+                Self::slime_state_switch(
+                    &mut clone.base,
+                    &mut clone.obs_state,
+                    &mut clone.state_ticks,
+                    &mut clone.facing_right,
+                    &mut clone.prev_input_align,
+                    movement,
+                    false,
+                );
+            }
+        }
+        {
+            // SlimeController.UpdateSim: `hurtBox.Scale = player.Scale`
+            // after OldUpdate, every pass (SlimeController.cs:1078). A
+            // ScaleChanger after the clone in the hierarchy has not run yet.
+            let scale = (self.scratch.player_scale_changes.iter())
+                .find(|&&(player, changer, _)| player == owner && changer > hierarchy)
+                .map_or(self.players[owner].player_scale, |&(_, _, before)| before);
+            let scale = hurtbox_scale(scale);
+            let clone = &mut self.abilityless_clones[clone_index].base;
+            let ratio = (Fix::ONE / clone.scale) * scale;
+            clone.collider_inverse_extents = clone.collider_inverse_extents / ratio;
+            clone.scale = scale;
+        }
+        if !self.abilityless_clones[clone_index].base.alive {
+            // The clone's DestroyIfOutsideSceneBounds instantiates the
+            // water/bounds effect too.
+            self.next_spawn_hierarchy += data::get().player.boundary_effect_updatable_count;
+            self.abilityless_clones[clone_index].drowned_tick = self.tick;
+            self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT);
+            return;
+        }
+        self.abilityless_clones[clone_index].base.sync_collider();
+        self.sync_abilityless_clone_entity(clone_index);
     }
 
     /// `biting_tick` for a clone: a swallowing clone grows its Player, the body
@@ -44241,7 +44297,9 @@ impl RolloutWorld {
         // the slimes that registered after them, like a stock clone.
         let clone_row = |index: usize| {
             let clone = &self.abilityless_clones[index];
-            let active = if clone.blink_tunnel_active { 0 } else { S_ACTIVE };
+            // A TeleportedObjectEffect disables the clone's GameObject too.
+            let hidden = clone.blink_tunnel_active || self.blink_object_hidden(clone.entity);
+            let active = if hidden { 0 } else { S_ACTIVE };
             CSlime {
                 id: clone.entity.map_or(0, |entity| self.entities[entity].id),
                 owner: clone.base.id,
