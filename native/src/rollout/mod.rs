@@ -3954,6 +3954,7 @@ struct PlatformScratch {
     /// Guided-Missile Box/Box manifolds. Every manifold is captured before
     /// either Missile callback destroys a participant.
     missile_contacts: Vec<(usize, usize, Contact)>,
+    missile_wall_contacts: Vec<(usize, usize, Contact)>,
     /// This pass's hitbox callbacks, run together by `run_callback_hits`.
     callback_hits: Vec<(CallbackKey, CallbackHit)>,
     /// Arrow Circle/RoundedRectangle manifolds of one DetPhysics pass, in
@@ -4043,6 +4044,7 @@ impl PlatformScratch {
             circle_wall_order: Vec::with_capacity(256),
             pickup_order: Vec::with_capacity(16),
             missile_contacts: Vec::with_capacity(256),
+            missile_wall_contacts: Vec::with_capacity(16),
             callback_hits: Vec::with_capacity(16),
             arrow_platform_contacts: Vec::with_capacity(64),
             ray_hits: Vec::with_capacity(192),
@@ -7687,9 +7689,6 @@ impl RolloutWorld {
         // DetPhysics corrects every Circle/RR pair before any Circle/Circle
         // one, so an item's wall correction moves it before an arrow's
         // manifold with it is built.
-        if has(ABILITY_MISSILE) {
-            self.guided_missile_wall_contacts();
-        }
         if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_ROCK) || has(ABILITY_PORTAL_GUN) || has(ABILITY_BOW) {
             self.thrown_item_platform_contacts(data);
         }
@@ -35802,73 +35801,6 @@ impl RolloutWorld {
         self.scratch.missile_contacts = contacts;
     }
 
-    /// The Missile's Box/RoundedRect manifolds. DetPhysics resolves that
-    /// whole group before the Circle/RoundedRect one, so an item resting on a
-    /// wall the Missile struck meets the wall where the Missile pushed it
-    /// (DetPhysics.cs:2973-3014). Each pair queues Missile.OnCollide.
-    fn guided_missile_wall_contacts(&mut self) {
-        for missile_index in 0..self.guided_missiles.len() {
-            if !self.guided_missiles[missile_index].active
-                || !self.guided_missiles[missile_index].registered
-                || self.blink_object_hidden(self.guided_missiles[missile_index].entity)
-            {
-                continue;
-            }
-            let missile = self.guided_missiles[missile_index];
-            let missile_box = missile.collider();
-            let missile_shape = RoundedRect {
-                inner: missile_box,
-                radius: Fix::ZERO,
-            };
-            let mut contacts = [(0usize, Contact::default()); 64];
-            let mut contact_count = 0;
-            for (platform_index, platform) in self.platforms.iter().enumerate() {
-                if contact_count == contacts.len() {
-                    break;
-                }
-                if !platform.active {
-                    continue;
-                }
-                if let Some(contact) =
-                    crate::physics::contact::rounded_rounded(missile_shape, platform.collider)
-                {
-                    contacts[contact_count] = (platform_index, contact);
-                    contact_count += 1;
-                }
-            }
-            if contact_count > 0 {
-                let mut body = missile.body;
-                let mut center = missile.position;
-                for &(platform_index, contact) in &contacts[..contact_count] {
-                    let (platform_center, own_inverse_mass) = self.platform_contact_frame(platform_index);
-                    let platform_body = &mut self.platform_dynamics[platform_index].body;
-                    resolve(contact, &mut body, platform_body, center, platform_center);
-                    let correction = positional_correction(
-                        contact,
-                        body.inverse_mass,
-                        own_inverse_mass,
-                        false,
-                    );
-                    center += correction[0];
-                    self.shift_platform_collider(platform_index, correction[1]);
-                    // The Circle/RoundedRectangle manifolds are built after
-                    // this group's corrections.
-                    if let Some(collider) = self.scratch.circle_colliders.get_mut(platform_index) {
-                        collider.inner.center += correction[1];
-                    }
-                }
-                self.platforms_changed();
-                let live = &mut self.guided_missiles[missile_index];
-                live.position = center;
-                live.body = body;
-                for &(platform_index, _) in &contacts[..contact_count] {
-                    let rank = self.wall_rank(platform_index);
-                    self.queue_missile_blast(missile_index, GROUP_BOX_RR, rank);
-                }
-            }
-        }
-    }
-
     /// The Guided Missile's box against the Spike and rocket engine boxes of
     /// attached platforms: the item layer collides with
     /// LethalTerrain and NonLethalTerrain. ResolveCollision uses the
@@ -40493,6 +40425,8 @@ impl RolloutWorld {
         // children's colliders.
         let mut sweep = std::mem::take(&mut scratch.sweep);
         self.take_sweep(&mut sweep, data);
+        let missiles_hidden: Vec<bool> =
+            self.guided_missiles.iter().map(|missile| self.blink_object_hidden(missile.entity)).collect();
         let scratch = &mut self.scratch;
         scratch.sweep = sweep;
 
@@ -40507,6 +40441,7 @@ impl RolloutWorld {
         // Box/RoundedRect manifolds share the circle batch's sort buffer.
         const SPIKE: u8 = 0;
         const ENGINE: u8 = 1;
+        const MISSILE: u8 = 2;
         scratch.circle_wall_order.clear();
         scratch.spike_wall_contacts.clear();
         for (spike_index, spike) in self.spike_attacks.iter().enumerate() {
@@ -40626,9 +40561,63 @@ impl RolloutWorld {
                 }
             }
         }
+        // A Guided Missile's box is a free body on the item layer, which
+        // collides with walls.
+        scratch.missile_wall_contacts.clear();
+        for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
+            if !missile.active || !missile.registered || missiles_hidden[missile_index] {
+                continue;
+            }
+            let missile_rr = RoundedRect {
+                inner: missile.collider(),
+                radius: Fix::ZERO,
+            };
+            for (wall_index, platform) in self.platforms.iter().enumerate() {
+                if !platform.active || !Self::box_swept_with_wall(missile_rr, scratch.callback_colliders[wall_index]) {
+                    continue;
+                }
+                if let Some(contact) = crate::physics::contact::rounded_rounded(missile_rr, platform.collider) {
+                    let box_min = axis(missile_rr.inner.center)
+                        - axis(missile_rr.inner.right).abs()
+                        - axis(missile_rr.inner.up).abs();
+                    let wall_min = axis(scratch.bounds[wall_index][0]);
+                    let wall = Some(self.platform_entities[wall_index]);
+                    let (later, earlier) = sweep_pair(
+                        sweep_rank(&self.entities, box_min, missile.entity),
+                        sweep_rank(&self.entities, wall_min, wall),
+                    );
+                    let k = scratch.missile_wall_contacts.len();
+                    scratch.circle_wall_order.push((later, earlier, MISSILE, k));
+                    scratch.missile_wall_contacts.push((missile_index, wall_index, contact));
+                }
+            }
+        }
         let mut order = std::mem::take(&mut scratch.circle_wall_order);
         order.sort_by_key(|&(high, low, _, _)| (high, low));
-        for &(_, _, kind, k) in &order {
+        for &(later, earlier, kind, k) in &order {
+            if kind == MISSILE {
+                let (missile_index, wall_index, contact) = scratch.missile_wall_contacts[k];
+                let dynamics = &mut self.platform_dynamics[wall_index];
+                let (wall_center, wall_inverse_mass) = if dynamics.attached_children != 0 {
+                    (dynamics.composite_position, dynamics.root_body.inverse_mass)
+                } else {
+                    (self.platforms[wall_index].surface.center, dynamics.body.inverse_mass)
+                };
+                let missile = &mut self.guided_missiles[missile_index];
+                resolve(contact, &mut missile.body, &mut dynamics.body, missile.position, wall_center);
+                let correction =
+                    positional_correction(contact, missile.body.inverse_mass, wall_inverse_mass, false);
+                missile.position += correction[0];
+                self.platforms[wall_index].surface.center += correction[1];
+                self.platforms[wall_index].collider.inner.center += correction[1];
+                if dynamics.attached_children != 0 {
+                    dynamics.composite_position += correction[1];
+                }
+                // Missile.OnCollide, queued in the same pair order.
+                let hit = CallbackHit::MissileBlast { missile: missile_index };
+                scratch.callback_hits.push(((GROUP_BOX_RR, later, earlier), hit));
+                continue;
+            }
             if kind == SPIKE {
                 let (spike_index, wall_index, contact) = scratch.spike_wall_contacts[k];
                 let parent_index = self.spike_attacks[spike_index].platform_index;
@@ -40716,8 +40705,11 @@ impl RolloutWorld {
             .filter(|&&(_, _, kind, _)| kind == SPIKE)
             .map(|&(_, _, _, k)| scratch.spike_wall_contacts[k])
             .collect();
+        if !scratch.missile_wall_contacts.is_empty() {
+            self.platform_epoch += 1;
+        }
         order.clear();
-        scratch.circle_wall_order = order;
+        self.scratch.circle_wall_order = order;
 
         // The Box/RR group runs after the RR/RR corrections, so its copy of
         // the wall already carries them.
