@@ -10458,7 +10458,10 @@ impl RolloutWorld {
                         slot.base.constants = data.meteor.constants.clone();
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
+                        // OnEnterAbility zeroes body.rotation, which resets
+                        // the FixTransform basis the hurtbox offset turns by.
                         slot.base.rotation = Fix::ZERO;
+                        slot.base.up = Vec2::UP;
                         slot.meteor = MeteorState {
                             phase: if grounded { 0 } else { 2 },
                             true_min_hold_time: if grounded {
