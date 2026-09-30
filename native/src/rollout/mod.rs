@@ -33939,7 +33939,10 @@ impl RolloutWorld {
         clone.base.position = capture_position;
         clone.base.velocity = Vec2::ZERO;
         clone.base.sync_collider();
-        clone.obs_state = STATE_RAGDOLL;
+        // UnGround's OnNoLongerGrounded overwrites BeginCapture's ragdoll
+        // with fall, as for a player victim.
+        clone.obs_state = STATE_FALL;
+        clone.state_ticks = 0;
         self.players[owner].invisible = true;
         let item = &mut self.thrown_items[item_index];
         item.capture_victim = Some(clone_index);
