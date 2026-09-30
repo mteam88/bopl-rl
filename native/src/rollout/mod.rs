@@ -6442,6 +6442,16 @@ impl RolloutWorld {
                 if has(ABILITY_PORTAL_GUN) {
                     self.portals_update(data, updater_dt, spawned.clone(), None);
                 }
+                // So does a DynamicAbilityPickup, whose vibration draws from
+                // the shared RNG before a Meteor form picked up after it
+                // vibrates. One newer than a live ScaleChanger waits for it.
+                if !self.ability_pickups.is_empty() {
+                    let mut below = spawned.end.saturating_sub(100_000_000);
+                    if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
+                        below = below.min(self.first_live_scale_changer().unwrap_or(u32::MAX));
+                    }
+                    self.ability_pickups_tick_before(below, data, updater_dt);
+                }
                 // So does a hook's Rope, whose RopeAttachment pulls the
                 // platform it hangs from before a Drill reads its velocity.
                 if has_rope {
@@ -10407,6 +10417,18 @@ impl RolloutWorld {
                             grounded_entry: grounded,
                             ..MeteorState::default()
                         };
+                        // MeteorSmash.UpdateSim takes its first turn at the
+                        // form's own hierarchy, after the pickups older than
+                        // it, whose vibration draws from the shared RNG.
+                        if !self.ability_pickups.is_empty() {
+                            let entity = self.players[index].meteor_entity;
+                            let below = self.entities[entity]
+                                .hierarchy
+                                .saturating_sub(100_000_000)
+                                .min(self.first_live_scale_changer().unwrap_or(u32::MAX));
+                            let updater_dt = DT * self.player_time_scale;
+                            self.ability_pickups_tick_before(below, data, updater_dt);
+                        }
                         self.meteor_tick(index, action, data);
                         // OnEnterAbility places the hitbox at the synced
                         // form position before this pass's UpdateSim moves it.
