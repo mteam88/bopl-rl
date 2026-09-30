@@ -9983,6 +9983,7 @@ impl RolloutWorld {
                         // prefab, so its freshly enabled UpdateSim runs later
                         // in the same pass. That performs anticipation setup
                         // now; platform and bow begin updating next tick.
+                        self.form_entry_turn(data, index);
                         self.dash_move(index, masked, movement_input);
                         // PlayerBody follows Dash in the prefab and is
                         // enabled by the same ability-entry pass.
@@ -10052,6 +10053,7 @@ impl RolloutWorld {
                             // Teleport's UnGround has nothing to push off from.
                             slot.base.ground = None;
                         }
+                        self.form_entry_turn(data, index);
                         self.throw_item_tick(index, action, data);
                         return;
                     }
@@ -10110,6 +10112,7 @@ impl RolloutWorld {
                                 slot.base.velocity = Vec2::ZERO;
                             }
                         }
+                        self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
                         // before PlayerPhysics.Move (SlimeController.cs:1067,
@@ -10268,19 +10271,15 @@ impl RolloutWorld {
                         slot.reported_position = slot.base.position;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
+                        self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on the
                         // entry pass too, and sees the placement above: a slime
                         // casting Push on a platform sunk below the water drowns.
-                        if slot.base.outside_bounds() {
+                        if self.players[index].base.outside_bounds() {
                             self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
                             self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
                             return;
                         }
-                        // ControlPlatform's first UpdateSim takes the form's
-                        // own turn, behind a platform spawned before the form
-                        // was picked up (ControlPlatform.cs:163-169).
-                        let form = self.entities[self.players[index].push_entity].hierarchy;
-                        self.spawned_platforms_tick(data, DT * self.player_time_scale, 0..form);
                         self.push_tick(index, action, data);
                         return;
                     }
@@ -10383,6 +10382,7 @@ impl RolloutWorld {
                                 rope.separation = scale * data.rock.min_rope_length / count;
                             }
                         }
+                        self.form_entry_turn(data, index);
                         // BounceBall sits after SlimeController in the player
                         // prefab, so its UpdateSim runs on the entry pass too.
                         self.rock_rope_update(index, jump_pressed, data);
@@ -10445,6 +10445,7 @@ impl RolloutWorld {
                         // Roll collider later in this same updater pass.
                         slot.reported_position = form_position;
                         slot.reported_tick = self.tick;
+                        self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
                         // before PlayerPhysics.Move (SlimeController.cs:1067,
@@ -10504,18 +10505,7 @@ impl RolloutWorld {
                             grounded_entry: grounded,
                             ..MeteorState::default()
                         };
-                        // MeteorSmash.UpdateSim takes its first turn at the
-                        // form's own hierarchy, after the pickups older than
-                        // it, whose vibration draws from the shared RNG.
-                        if !self.ability_pickups.is_empty() {
-                            let entity = self.players[index].meteor_entity;
-                            let below = self.entities[entity]
-                                .hierarchy
-                                .saturating_sub(100_000_000)
-                                .min(self.first_live_scale_changer().unwrap_or(u32::MAX));
-                            let updater_dt = DT * self.player_time_scale;
-                            self.ability_pickups_tick_before(below, data, updater_dt);
-                        }
+                        self.form_entry_turn(data, index);
                         self.meteor_tick(index, action, data);
                         // OnEnterAbility places the hitbox at the synced
                         // form position before this pass's UpdateSim moves it.
@@ -10571,6 +10561,7 @@ impl RolloutWorld {
                         };
                         slot.base.position = form_position;
                         slot.base.radius = form_radius;
+                        self.form_entry_turn(data, index);
                         self.mine_throw_tick(index, action, data);
                         return;
                     }
@@ -10607,6 +10598,7 @@ impl RolloutWorld {
                             slot.base.position = platform.surface.position(slot.base.local, slot.base.radius);
                             slot.base.align(platform);
                         }
+                        self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
                         // before PlayerPhysics.Move (SlimeController.cs:1067,
@@ -10615,16 +10607,6 @@ impl RolloutWorld {
                         // the form moves.
                         if self.ability_boundary_kill(index, false) {
                             return;
-                        }
-                        // The form's Ability.UpdateSim runs at the form's own
-                        // turn this pass, after any ScaleChanger spawned
-                        // between the slime and a form instantiated at its
-                        // first cast.
-                        let slime = self.entities[self.players[index].body_entity].hierarchy;
-                        let form = self.players[index].time_stop_entity;
-                        if form != usize::MAX && slime < self.entities[form].hierarchy {
-                            let form = self.entities[form].hierarchy;
-                            self.player_scale_changers_update(data, slime..form);
                         }
                         self.time_stop_cast_tick(index, action, jump_pressed, data);
                         return;
@@ -10674,6 +10656,7 @@ impl RolloutWorld {
                             Vec2::angle(synced.rotation),
                             data.spike.hurtbox_extents,
                         );
+                        self.form_entry_turn(data, index);
                         // The entry pass's Ability.UpdateSim.
                         self.scale_spike_form(index, data);
                         // The form's DestroyIfOutsideSceneBounds takes its
@@ -10714,6 +10697,7 @@ impl RolloutWorld {
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
                         self.plant_form_radius(index);
+                        self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds takes its
                         // turn on the entry pass, ahead of the Move below.
                         if self.form_bounds_kill(index, data) {
@@ -10751,6 +10735,7 @@ impl RolloutWorld {
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
                         self.plant_form_radius(index);
+                        self.form_entry_turn(data, index);
                         if self.form_bounds_kill(index, data) {
                             return;
                         }
@@ -10813,6 +10798,7 @@ impl RolloutWorld {
                         }
                         self.players[index]
                             .sync_gun_hurtbox(data.freeze.collider_offset, &self.platforms);
+                        self.form_entry_turn(data, index);
                         self.freeze_tick(index, action, data);
                         return;
                     }
@@ -10866,6 +10852,7 @@ impl RolloutWorld {
                         }
                         self.players[index]
                             .sync_gun_hurtbox(data.blink.collider_offset, &self.platforms);
+                        self.form_entry_turn(data, index);
                         self.blink_tick(index, action, data);
                         return;
                     }
@@ -10920,6 +10907,7 @@ impl RolloutWorld {
                         }
                         self.players[index]
                             .sync_gun_hurtbox(ray.collider_offset, &self.platforms);
+                        self.form_entry_turn(data, index);
                         self.scale_ray_tick(index, action, data);
                         return;
                     }
@@ -10979,6 +10967,7 @@ impl RolloutWorld {
                         }
                         self.players[index]
                             .sync_gun_hurtbox(data.duplicator.collider_offset, &self.platforms);
+                        self.form_entry_turn(data, index);
                         self.duplicator_tick(index, action, data);
                         return;
                     }
@@ -11067,6 +11056,7 @@ impl RolloutWorld {
                             row.up_x = collider.up.x.raw();
                             row.up_y = collider.up.y.raw();
                         }
+                        self.form_entry_turn(data, index);
                         self.magnet_tick(index, action, movement_input, data, false);
                         return;
                     }
@@ -11127,6 +11117,7 @@ impl RolloutWorld {
                         // list, so a newly enabled Bow updates later in this
                         // same pass (like Dash, unlike a newly instantiated
                         // projectile which is deferred).
+                        self.form_entry_turn(data, index);
                         self.bow_tick(index, action, data);
                         return;
                     }
@@ -11183,6 +11174,7 @@ impl RolloutWorld {
                         if self.form_bounds_kill(index, data) {
                             return;
                         }
+                        self.form_entry_turn(data, index);
                         self.quick_spell_tick(index, jump_pressed, data);
                         return;
                     }
@@ -11220,6 +11212,7 @@ impl RolloutWorld {
                         if self.form_bounds_kill(index, data) {
                             return;
                         }
+                        self.form_entry_turn(data, index);
                         self.quick_spell_tick(index, jump_pressed, data);
                         return;
                     }
@@ -11297,6 +11290,7 @@ impl RolloutWorld {
                             data.black_hole.collider_offset,
                         );
                         slot.base.radius = slot.forms[s].physics_radius();
+                        self.form_entry_turn(data, index);
                         if self.ability_boundary_kill(index, false) {
                             return;
                         }
@@ -11374,6 +11368,7 @@ impl RolloutWorld {
                         slot.base.velocity = self_imposed;
                         slot.base.radius = form_radius;
                         slot.base.constants = data.macho_throw.constants.clone();
+                        self.form_entry_turn(data, index);
                         self.macho_throw_tick(index, action, false, false, data);
                         return;
                     }
@@ -11424,18 +11419,7 @@ impl RolloutWorld {
                         slot.drill.hitbox_up = slot.base.up;
                         slot.drill.hitbox_rotation = slot.base.rotation;
                         place_drill_hitbox_rows(&mut self.entities, &self.players[index], data);
-                        // Drill.UpdateSim runs at the form's own turn this
-                        // pass, after any RocketEngine spawned between the
-                        // slime and a form instantiated at its first cast.
-                        let slime = self.entities[self.players[index].body_entity].hierarchy;
-                        let form = self.players[index].drill_entity;
-                        if !self.engines.is_empty()
-                            && form != usize::MAX
-                            && slime < self.entities[form].hierarchy
-                        {
-                            let form = self.entities[form].hierarchy;
-                            self.engines_tick_below(data, DT * self.player_time_scale, form);
-                        }
+                        self.form_entry_turn(data, index);
                         self.drill_tick(index, action, jump_pressed, data, false);
                         return;
                     }
@@ -11549,6 +11533,7 @@ impl RolloutWorld {
                         // against the entry call that Updater has not reached
                         // yet. A kill on the entry pass still publishes the orb.
                         self.spawn_beam_orb(index, data);
+                        self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
                         // before PlayerPhysics.Move (SlimeController.cs:1067,
@@ -11592,6 +11577,7 @@ impl RolloutWorld {
                         let scale = slot.player_scale;
                         slot.forms[s].set_circle_scale(scale, data.platform.hurtbox_radius);
                         slot.forms[s].set_circle_scale(scale, data.platform.hurtbox_radius);
+                        self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
                         // before PlayerPhysics.Move (SlimeController.cs:1067,
@@ -38189,6 +38175,31 @@ impl RolloutWorld {
         self.platform_body_scale_tick(PlatformPass::Duplicated);
         self.platform_orbits_tick(data, updater_dt, PlatformPass::Duplicated);
         self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Duplicated);
+    }
+
+    /// A form's first UpdateSim on its entry pass takes the form's own
+    /// Updater turn. The form prefab was instantiated at pickup, so the
+    /// Spawned platforms, pickups, player ScaleChangers and RocketEngines
+    /// registered after the slime but before the form, which the slime's turn
+    /// did not reach, update first.
+    fn form_entry_turn(&mut self, data: &data::RolloutData, index: usize) {
+        let entity = Self::hurtbox_entity(&self.players[index]);
+        if entity == usize::MAX {
+            return;
+        }
+        let form = self.entities[entity].hierarchy;
+        let updater_dt = DT * self.player_time_scale;
+        self.spawned_platforms_tick(data, updater_dt, 0..form);
+        if !self.ability_pickups.is_empty() {
+            let below = form
+                .saturating_sub(100_000_000)
+                .min(self.first_live_scale_changer().unwrap_or(u32::MAX));
+            self.ability_pickups_tick_before(below, data, updater_dt);
+        }
+        self.player_scale_changers_update(data, 0..form);
+        if !self.engines.is_empty() {
+            self.engines_tick_below(data, updater_dt, form);
+        }
     }
 
     /// The Spawned platform pass for the platforms whose row hierarchy is in
