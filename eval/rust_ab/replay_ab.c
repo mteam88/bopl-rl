@@ -52,6 +52,8 @@
  *                        TSV (tick, player, x, y in world units) for the
  *                        single game being replayed; used by the recorded-JSON
  *                        self check
+ *   REPLAY_AB_LOG        path: the libraries' own log (default
+ *                        /tmp/replay_ab.log); give concurrent runs their own
  *   REPLAY_AB_CACHE      directory: keep a per-tick hash of every compared
  *                        reference field, keyed by the reference library's
  *                        identity and the game. A game whose hashes are cached
@@ -792,6 +794,7 @@ int main(int argc, char **argv) {
     int quiet = getenv("REPLAY_AB_QUIET") && atoi(getenv("REPLAY_AB_QUIET"));
     int full = getenv("REPLAY_AB_FULL") && atoi(getenv("REPLAY_AB_FULL"));
     const char *trace_path = getenv("REPLAY_AB_TRACE");
+    const char *log_path = getenv("REPLAY_AB_LOG") ? getenv("REPLAY_AB_LOG") : "/tmp/replay_ab.log";
     report_all = getenv("REPLAY_AB_ALL") && atoi(getenv("REPLAY_AB_ALL"));
     ignore_list = getenv("REPLAY_AB_IGNORE");
     strict = getenv("REPLAY_AB_STRICT") && atoi(getenv("REPLAY_AB_STRICT"));
@@ -813,7 +816,7 @@ int main(int argc, char **argv) {
     BoplRl *world[2] = {NULL, NULL};
     for (int backend = cache_root ? 1 : 0; backend < 2; backend++) {
         world[backend] = bopl_rl_open(argv[backend + 1], "/tmp/gate_bootstrap.rep",
-                                      "/tmp/replay_ab.log", 180000, error, sizeof error);
+                                      log_path, 180000, error, sizeof error);
         if (!world[backend]) { fprintf(stderr, "open %s failed: %s\n", argv[backend + 1], error); return 2; }
     }
 
@@ -839,7 +842,7 @@ int main(int argc, char **argv) {
                                                             &cached, &result);
             free(cached.hash);
             if (!world[0] && !hit) {
-                world[0] = bopl_rl_open(argv[1], "/tmp/gate_bootstrap.rep", "/tmp/replay_ab.log", 180000,
+                world[0] = bopl_rl_open(argv[1], "/tmp/gate_bootstrap.rep", log_path, 180000,
                                         error, sizeof error);
                 if (!world[0]) { fprintf(stderr, "open %s failed: %s\n", argv[1], error); return 2; }
             }
