@@ -609,6 +609,8 @@ pub struct ThrownItem {
     /// reflected in mass on the following updater pass, as in the source.
     pub scale: Fix,
     pub body_scale: Fix,
+    /// The pass whose Updater turn this item's BoplBody.UpdateSim has taken.
+    pub body_ran_tick: Option<u32>,
     /// DPhysicsCircle's live radius. Scale mutates this incrementally through
     /// `(1 / old_scale) * new_scale`, retaining its fixed-point history.
     pub collider_radius: Fix,
@@ -7845,6 +7847,9 @@ impl RolloutWorld {
                 match item.ability {
                     ABILITY_POKE_BALL | ABILITY_TACK => push(100_000_000 + item.hierarchy_base, 2, i),
                     ABILITY_MJOLNIR => push(100_000_000 + item.hierarchy_base, 3, i),
+                    _ if item.active && item.body_ran_tick != Some(tick) => {
+                        push(100_000_000 + item.hierarchy_base, 15, i)
+                    }
                     _ => {}
                 }
             }
@@ -7925,8 +7930,14 @@ impl RolloutWorld {
                     }
                 }
                 1 => self.black_holes_update(data, updater_dt, turn),
-                2 => self.poke_balls_and_tacks_tick(data, updater_dt, turn.clone(), turn),
-                3 => self.mjolnirs_tick(data, updater_dt, turn),
+                2 => {
+                    self.thrown_item_body_step(index);
+                    self.poke_balls_and_tacks_tick(data, updater_dt, turn.clone(), turn);
+                }
+                3 => {
+                    self.thrown_item_body_step(index);
+                    self.mjolnirs_tick(data, updater_dt, turn);
+                }
                 4 => self.portals_update(data, updater_dt, turn),
                 5 => {
                     let base = hierarchy - 100_000_000;
@@ -7950,11 +7961,12 @@ impl RolloutWorld {
                     updater_dt,
                     Some(hierarchy - 99_999_999),
                 ),
-                _ => {
+                14 => {
                     let clone = &mut self.abilityless_clones[index];
                     clone.pass_start = (tick, clone.base.position);
                     self.abilityless_clone_update_tagged(index);
                 }
+                _ => self.thrown_item_body_step(index),
             }
             // Updater never returns to a turn it has passed: one skipped here,
             // hidden or disabled, waits for the next pass.
@@ -7975,12 +7987,13 @@ impl RolloutWorld {
                 14 => self.abilityless_clones[index].updater_ran_tick = tick,
                 // A pickup newer than a live ScaleChanger keeps its turn
                 // behind it.
-                _ => {
+                5 => {
                     let base = hierarchy - 100_000_000;
                     if self.first_live_scale_changer().is_none_or(|changer| base < changer) {
                         self.ability_pickups[index].updater_tick = self.tick;
                     }
                 }
+                _ => {}
             }
         }
         self.scratch.spawned_queue = queue;
@@ -24508,6 +24521,7 @@ impl RolloutWorld {
             },
             scale: self.players[index].player_scale,
             body_scale: Fix::ONE,
+            body_ran_tick: None,
             collider_radius: data.mine.item_radius * self.players[index].player_scale,
             fuse: Fix::MAX,
             hurt_owner_delay: Fix::ZERO,
@@ -24888,6 +24902,7 @@ impl RolloutWorld {
             },
             scale: self.players[index].player_scale,
             body_scale: Fix::ONE,
+            body_ran_tick: None,
             collider_radius: config.item_radius * self.players[index].player_scale,
             fuse: match ability {
                 ABILITY_GRENADE => data.grenade.detonation_time,
@@ -34147,25 +34162,33 @@ impl RolloutWorld {
 
     fn thrown_item_scale_mass_tick(&mut self) {
         for item_index in 0..self.thrown_items.len() {
-            // A tunnel's release comes after this updater's turn.
-            if !self.thrown_items[item_index].active
-                || self.blink_object_hidden(self.thrown_items[item_index].entity)
-                || self.blink_object_released(self.thrown_items[item_index].entity)
-            {
-                continue;
-            }
-            let item = &mut self.thrown_items[item_index];
-            if item.scale == item.body_scale
-                || item.body.inverse_mass == Fix::ZERO
-                || item.body.inverse_inertia == Fix::ZERO
-            {
-                continue;
-            }
-            let ratio = item.body_scale / item.scale;
-            item.body.inverse_mass *= ratio;
-            item.body.inverse_inertia *= ratio;
-            item.body_scale = item.scale;
+            self.thrown_item_body_step(item_index);
         }
+    }
+
+    /// The item's BoplBody.UpdateSim, once per pass: the mass follows the
+    /// scale its collider had when this turn came.
+    fn thrown_item_body_step(&mut self, item_index: usize) {
+        // A tunnel's release comes after this updater's turn.
+        if !self.thrown_items[item_index].active
+            || self.thrown_items[item_index].body_ran_tick == Some(self.tick)
+            || self.blink_object_hidden(self.thrown_items[item_index].entity)
+            || self.blink_object_released(self.thrown_items[item_index].entity)
+        {
+            return;
+        }
+        let item = &mut self.thrown_items[item_index];
+        item.body_ran_tick = Some(self.tick);
+        if item.scale == item.body_scale
+            || item.body.inverse_mass == Fix::ZERO
+            || item.body.inverse_inertia == Fix::ZERO
+        {
+            return;
+        }
+        let ratio = item.body_scale / item.scale;
+        item.body.inverse_mass *= ratio;
+        item.body.inverse_inertia *= ratio;
+        item.body_scale = item.scale;
     }
 
     /// Mjolnir.UpdateSim, then the Gust Shockwave impulse queued on it.
