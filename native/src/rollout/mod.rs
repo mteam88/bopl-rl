@@ -24988,21 +24988,10 @@ impl RolloutWorld {
         if self.ability_boundary_kill(index, false) {
             return;
         }
-        if self.players[index].throw_item.grounded && !self.players[index].base.grounded {
-            let slot = &mut self.players[index];
-            slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            slot.exit_to_fall();
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
-            slot.restore_slime_radius();
-            slot.base.collision_rays(terrain!(self));
-            slot.set_ordinary_body_scale(slot.player_scale);
-            return;
-        }
         if aim != Vec2::ZERO && !self.players[index].throw_item.has_inputted_fire {
             let slot = &mut self.players[index];
             slot.throw_item.direction = aim;
-            if slot.throw_item.grounded {
+            if slot.base.grounded {
                 // currentNormal off attachedGround, even one destroyed
                 // earlier in this pass (ThrowItem2.cs:252-254).
                 let normal = slot
@@ -25025,6 +25014,21 @@ impl RolloutWorld {
             && let Some(item_index) = self.held_throw_item(index)
         {
             self.thrown_items[item_index].position = self.throw_dummy_position(index, gd);
+        }
+        // A grounded throw that lost its ground leaves only after OldUpdate,
+        // through ExitAbility, which tosses a still-held item straight up
+        // (ThrowItem2.cs:179-191, 298-302).
+        if self.players[index].throw_item.grounded && !self.players[index].base.grounded {
+            self.release_held_throw_item_on_exit(index, false, data);
+            let slot = &mut self.players[index];
+            slot.set_active_form(&mut self.entities, ActiveAbility::None);
+            slot.exit_to_fall();
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.restore_slime_radius();
+            slot.base.collision_rays(terrain!(self));
+            slot.set_ordinary_body_scale(slot.player_scale);
+            return;
         }
 
         let button = 2u8 << self.players[index].active_slot;
@@ -25130,7 +25134,8 @@ impl RolloutWorld {
         } else {
             Fix::ONE
         };
-        let mut dummy = if slot.throw_item.grounded {
+        // dummyPos reads the live PlayerPhysics.IsGrounded (ThrowItem2.cs:290).
+        let mut dummy = if slot.base.grounded {
             *config.ground_dummy.last().expect("Grenade ground dummy")
         } else {
             *config.air_dummy.last().expect("Grenade air dummy")
