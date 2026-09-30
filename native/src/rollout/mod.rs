@@ -19409,6 +19409,8 @@ impl RolloutWorld {
         entities: &[CEntity],
         players: &[PlayerSlot],
         clones: &[AbilitylessClone],
+        spikes: &[SpawnedSpike],
+        engines: &[SpawnedEngine],
         origin: Vec2,
         direction: Vec2,
         maximum: Fix,
@@ -19460,7 +19462,22 @@ impl RolloutWorld {
                     if right == Vec2::ZERO || up == Vec2::ZERO {
                         continue;
                     }
+                    // Box.inverseExtents is the reciprocal of the collider's
+                    // own extents (DPhysicsBox.cs:358), not of a rotated
+                    // right/up's rounded length.
                     let inverse_extents = Self::hurtbox_inverse_extents(players, clones, entity)
+                        .or_else(|| {
+                            spikes
+                                .iter()
+                                .find(|spike| spike.active && spike.entity == Some(entity))
+                                .map(|spike| spike.inverse_extents)
+                        })
+                        .or_else(|| {
+                            engines
+                                .iter()
+                                .find(|engine| engine.active && engine.entity == Some(entity))
+                                .map(|engine| engine.inverse_extents)
+                        })
                         .unwrap_or_else(|| Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()));
                     OrientedBox { center, right, up, inverse_extents }.raycast(origin, direction)
                 };
@@ -19487,6 +19504,7 @@ impl RolloutWorld {
         let platform_entities = &self.platform_entities;
         let entities = &self.entities;
         let (players, clones) = (&self.players, &self.abilityless_clones);
+        let (spikes, engines) = (&self.spike_attacks, &self.engines);
         self.beam_graph.step_into(
             &self.beam_inputs,
             &mut |origin, direction, distance, mask| {
@@ -19497,6 +19515,8 @@ impl RolloutWorld {
                     entities,
                     players,
                     clones,
+                    spikes,
+                    engines,
                     origin,
                     direction,
                     distance,
