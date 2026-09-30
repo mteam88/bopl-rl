@@ -423,6 +423,7 @@ const LAYER_ITEM: u32 = 10;
 const LAYER_WEAPON: u32 = 13;
 const LAYER_WALL: u32 = 11;
 const LAYER_WATER: u32 = 4;
+const LAYER_ROPE: u32 = 24;
 
 const CAUSE_OTHER: u32 = 0;
 const CAUSE_SQUISHED: u32 = 1;
@@ -3848,8 +3849,6 @@ struct PlatformScratch {
     item_order: Vec<usize>,
     cc_contacts: Vec<(Part, Part, Contact)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
-    /// Smoke grenades an active grapple hook touched this pass.
-    hook_smoke_hits: Vec<usize>,
     /// Sweep keys of the wall manifolds resolved as one batch: the
     /// Circle/RoundedRect group's, or the Box/RoundedRect group's.
     circle_wall_order: Vec<(SweepRank, SweepRank, u8, usize)>,
@@ -3940,7 +3939,6 @@ impl PlatformScratch {
             item_order: Vec::with_capacity(192),
             cc_contacts: Vec::with_capacity(256),
             item_platform_contacts: Vec::with_capacity(256),
-            hook_smoke_hits: Vec::with_capacity(4),
             circle_wall_order: Vec::with_capacity(256),
             pickup_order: Vec::with_capacity(16),
             missile_contacts: Vec::with_capacity(256),
@@ -36607,20 +36605,6 @@ impl RolloutWorld {
         }
         // The hook is on the Rope layer, not a Projectile, so a Smoke it
         // touches goes off whatever the hook attaches to.
-        let hook_smoke_hits = std::mem::take(&mut self.scratch.hook_smoke_hits);
-        for &item_index in &hook_smoke_hits {
-            let item = self.thrown_items[item_index];
-            if item.active
-                && item.ability == ABILITY_SMOKE
-                && item.detonates_on_owner
-                && smoke_callback_count < smoke_callbacks.len()
-            {
-                smoke_callbacks[smoke_callback_count] = item_index;
-                smoke_callback_count += 1;
-            }
-        }
-        self.scratch.hook_smoke_hits = hook_smoke_hits;
-        self.scratch.hook_smoke_hits.clear();
         for &(a, b, _) in &self.scratch.cc_contacts {
             // A portal shot's Projectile does not ignite explosives.
             if matches!(a, Part::Shot(_)) || matches!(b, Part::Shot(_)) {

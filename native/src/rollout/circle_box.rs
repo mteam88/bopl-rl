@@ -4,6 +4,7 @@
 //! of a group's manifolds built before any resolves, each pair's callbacks
 //! queued first side first (DetPhysics.cs:2405-2437).
 use super::*;
+use super::rope_abilities::HookTarget;
 use crate::physics::shape::Collider;
 
 /// A DetPhysics collider, by the collection that owns it.
@@ -21,6 +22,8 @@ pub(super) enum Part {
     Pickup(usize),
     /// A Duplicator's Rock_noPlayer copy.
     DuplicatedRock(usize),
+    /// A RopeHook's circle, by rope.
+    Hook(usize),
 }
 
 impl RolloutWorld {
@@ -56,6 +59,7 @@ impl RolloutWorld {
                 center: self.duplicated_rocks[i].position,
                 radius: self.duplicated_rocks[i].collider_radius,
             }),
+            Part::Hook(r) => Collider::Circle(self.hook_circle(r)),
         }
     }
 
@@ -76,6 +80,7 @@ impl RolloutWorld {
             Part::DuplicatedRock(i) => {
                 self.duplicated_rocks[i].entity.map_or(LAYER_LETHAL_TERRAIN, |entity| self.entities[entity].layer)
             }
+            Part::Hook(r) => self.ropes[r].hook_entity.map_or(LAYER_ROPE, |entity| self.entities[entity].layer),
         }
     }
 
@@ -110,6 +115,7 @@ impl RolloutWorld {
             Part::Rock(i) => Some(self.players[i].rock_entity),
             Part::Pickup(i) => self.ability_pickups[i].entity,
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].entity,
+            Part::Hook(r) => self.ropes[r].hook_entity,
         }
     }
 
@@ -124,7 +130,8 @@ impl RolloutWorld {
             | Part::Missile(_)
             | Part::Rock(_)
             | Part::Pickup(_)
-            | Part::DuplicatedRock(_) => None,
+            | Part::DuplicatedRock(_)
+            | Part::Hook(_) => None,
         }
     }
 
@@ -141,6 +148,9 @@ impl RolloutWorld {
             Part::Rock(i) => self.players[i].rock.body,
             Part::Pickup(i) => self.ability_pickups[i].body,
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].body,
+            // A DPhysicsCircle with no BoplBody registers inverseMass -1, a
+            // trigger that never resolves (DPhysicsCircle.cs:278-283).
+            Part::Hook(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
         }
     }
 
@@ -155,6 +165,7 @@ impl RolloutWorld {
             Part::Rock(i) => self.players[i].active == ActiveAbility::Rock,
             Part::Pickup(i) => self.ability_pickups[i].active,
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].active,
+            Part::Hook(r) => self.hook_live(r),
         }
     }
 
@@ -172,6 +183,7 @@ impl RolloutWorld {
                 (pickup.body, pickup.position + pickup.offset)
             }
             (Part::DuplicatedRock(i), None) => (self.duplicated_rocks[i].body, self.duplicated_rocks[i].position),
+            (Part::Hook(r), None) => (self.part_body(part), self.ropes[r].hook_position),
             _ => unreachable!(),
         }
     }
@@ -224,6 +236,7 @@ impl RolloutWorld {
                 self.duplicated_rocks[i].position += delta;
                 self.sync_duplicated_rock_entity(i);
             }
+            Part::Hook(_) => {}
         }
         if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_), Some(entity)) = (part, self.part_entity(part)) {
             let (body, position) = self.part_resolve_body(part);
@@ -255,6 +268,7 @@ impl RolloutWorld {
             Part::Rock(i) => self.players[i].base.position,
             Part::Pickup(i) => self.ability_pickups[i].position,
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].position,
+            Part::Hook(r) => self.ropes[r].hook_position,
         }
     }
 
@@ -404,9 +418,10 @@ impl RolloutWorld {
     }
 
     /// DetPhysics' Circle/Circle group, after every Circle/RoundedRect pair
-    /// and before the Circle/Box pairs' narrow phase. Its callbacks the
-    /// rollout reacts to are a Rock's bounce off another Rock and a Smoke's,
-    /// which reads `cc_contacts`.
+    /// and before the Circle/Box pairs' narrow phase: every manifold is built
+    /// before the first resolves (DetPhysics.cs:3052-3089). Its callbacks the
+    /// rollout reacts to are a hook's, a Rock's bounce off another Rock and a
+    /// Smoke's, which reads `cc_contacts`.
     pub(super) fn circle_circle_group(&mut self, data: &data::RolloutData) {
         let mut parts = std::mem::take(&mut self.scratch.cb_parts);
         parts.clear();
@@ -453,6 +468,11 @@ impl RolloutWorld {
                 parts.push(Part::DuplicatedRock(i));
             }
         }
+        for rope in 0..self.ropes.len() {
+            if self.hook_live(rope) {
+                parts.push(Part::Hook(rope));
+            }
+        }
         parts.sort_by_key(|&part| self.part_rank(part));
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
@@ -469,6 +489,35 @@ impl RolloutWorld {
                     contacts.push((prior, current, contact));
                 }
             }
+        }
+        // PrepareCollisionCallBacks queues every pair's callbacks before the
+        // first ResolveCollision (DetPhysics.cs:3068-3071).
+        for &(a, b, _) in &contacts {
+            let (rope, other) = match (a, b) {
+                (Part::Hook(rope), other) | (other, Part::Hook(rope)) => (rope, other),
+                _ => continue,
+            };
+            let target = match other {
+                Part::Item(i) => HookTarget::Item(i),
+                Part::Shot(i) => HookTarget::Shot(i),
+                Part::Node(i) => HookTarget::Node(i),
+                Part::Pickup(_) => HookTarget::Pickup,
+                // RopeHook ignores every body of the caster's and the end's
+                // player (RopeHook.cs:108-115).
+                Part::Rock(player) => {
+                    let body_player = self.players[player].owner;
+                    if body_player == self.players[self.ropes[rope].owner].owner
+                        || body_player == self.ropes[rope].hook_end_player
+                    {
+                        continue;
+                    }
+                    HookTarget::Player(player)
+                }
+                // A hook on a Duplicator copy has no rope parent here yet.
+                Part::DuplicatedRock(_) => continue,
+                Part::Engine(_) | Part::Spike(_) | Part::Missile(_) | Part::Hook(_) => unreachable!(),
+            };
+            self.queue_hook_hit(rope, GROUP_CC, self.part_rank(other), target);
         }
         for &(a, b, contact) in &contacts {
             self.resolve_parts(a, b, contact);

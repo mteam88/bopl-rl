@@ -1676,17 +1676,17 @@ impl RolloutWorld {
         }
     }
 
-    fn hook_live(&self, rope: usize) -> bool {
+    pub(super) fn hook_live(&self, rope: usize) -> bool {
         self.ropes[rope].physics.enabled && self.ropes[rope].hook_active
     }
 
-    fn hook_circle(&self, rope: usize) -> Circle {
+    pub(super) fn hook_circle(&self, rope: usize) -> Circle {
         Circle { center: self.ropes[rope].hook_position, radius: data::get().ropes.hook_radius }
     }
 
     /// Queues RopeHook.OnCollide for one of the hook's pairs at its place in
     /// DetPhysics' callback queue.
-    fn queue_hook_hit(&mut self, rope: usize, group: u8, other: SweepRank, target: HookTarget) {
+    pub(super) fn queue_hook_hit(&mut self, rope: usize, group: u8, other: SweepRank, target: HookTarget) {
         let circle = self.hook_circle(rope);
         let min = if self.sweep_x() { circle.center.x } else { circle.center.y } - circle.radius;
         let rank = sweep_rank(&self.entities, min, self.ropes[rope].hook_entity);
@@ -1716,10 +1716,10 @@ impl RolloutWorld {
         }
     }
 
-    /// The hooks' Circle/Circle and Circle/Box pairs, on the colliders the
-    /// Circle/RoundedRect corrections left.
+    /// The hooks' pairs with black holes and arrows, which circle_circle_group
+    /// does not list yet, and their Circle/Box pairs, on the colliders the
+    /// Circle/Circle corrections left.
     pub(super) fn grapple_hook_pairs(&mut self) {
-        self.scratch.hook_smoke_hits.clear();
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let circle_circle = GROUP_CC;
@@ -1730,18 +1730,6 @@ impl RolloutWorld {
             }
             let circle = self.hook_circle(rope);
             let touches = |other: Circle| crate::physics::contact::circle_circle(circle, other).is_some();
-            // SmokeGrenadeExplode2 takes the hook's contact on its own
-            // callback, whatever the hook does with it.
-            for (index, item) in self.thrown_items.iter().enumerate() {
-                if item.active
-                    && item.entity.is_some()
-                    && item.ability == ABILITY_SMOKE
-                    && touches(Circle { center: item.position, radius: item.collider_radius })
-                    && !self.scratch.hook_smoke_hits.contains(&index)
-                {
-                    self.scratch.hook_smoke_hits.push(index);
-                }
-            }
             for (index, hole) in self.black_holes.iter().enumerate() {
                 if hole.active
                     && !self.blink_object_hidden(hole.entity)
@@ -1749,24 +1737,6 @@ impl RolloutWorld {
                 {
                     let rank = sweep_rank(&self.entities, axis(hole.position) - hole.radius, hole.entity);
                     hits.push((rope, circle_circle, rank, HookTarget::BlackHole(index)));
-                }
-            }
-            for (index, item) in self.thrown_items.iter().enumerate() {
-                if item.active
-                    && item.entity.is_some()
-                    && touches(Circle { center: item.position, radius: item.collider_radius })
-                {
-                    let rank = self.part_rank(Part::Item(index));
-                    hits.push((rope, circle_circle, rank, HookTarget::Item(index)));
-                }
-            }
-            for (index, shot) in self.portal_shots.iter().enumerate() {
-                if shot.active
-                    && shot.registered
-                    && touches(Circle { center: shot.position, radius: shot.collider_radius })
-                {
-                    let rank = self.part_rank(Part::Shot(index));
-                    hits.push((rope, circle_circle, rank, HookTarget::Shot(index)));
                 }
             }
             for (index, arrow) in self.arrows.iter().enumerate() {
@@ -1779,23 +1749,6 @@ impl RolloutWorld {
                     hits.push((rope, circle_circle, rank, HookTarget::Arrow(index)));
                 }
             }
-            for (index, node) in self.tesla_nodes.iter().enumerate() {
-                if node.active
-                    && !node.macho_carried
-                    && node.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
-                    && touches(Circle { center: node.collider_center, radius: node.radius })
-                {
-                    let rank = self.part_rank(Part::Node(index));
-                    hits.push((rope, circle_circle, rank, HookTarget::Node(index)));
-                }
-            }
-            for pickup in &self.ability_pickups {
-                let center = pickup.position + pickup.offset;
-                if pickup.active && pickup.enabled && touches(Circle { center, radius: pickup.radius }) {
-                    let rank = sweep_rank(&self.entities, axis(center) - pickup.radius, pickup.entity);
-                    hits.push((rope, circle_circle, rank, HookTarget::Pickup));
-                }
-            }
             // RopeHook ignores every body of the caster's and the end's
             // player (RopeHook.cs:122-129).
             let owner = self.players[self.ropes[rope].owner].owner;
@@ -1805,15 +1758,10 @@ impl RolloutWorld {
                 if body_player == owner || body_player == end_player || !self.playable(player) {
                     continue;
                 }
-                let slot = &self.players[player];
-                let hit = if slot.active == ActiveAbility::Rock {
-                    touches(Circle { center: slot.base.position, radius: slot.rock_circle().circle_radius })
-                } else {
-                    // A form's own Player-layer collider carries its
-                    // PlayerBody, so the hook meets the form's box.
-                    self.player_hit_by_circle(player, circle)
-                };
-                if hit {
+                // A Rock form's circle meets the hook in circle_circle_group.
+                // A form's own Player-layer collider carries its PlayerBody,
+                // so the hook meets the form's box.
+                if self.players[player].active != ActiveAbility::Rock && self.player_hit_by_circle(player, circle) {
                     let group = GROUP_CB - self.player_is_circle(player) as u8;
                     hits.push((rope, group, self.player_sweep_rank(player), HookTarget::Player(player)));
                 }
