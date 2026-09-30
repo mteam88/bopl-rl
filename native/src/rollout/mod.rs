@@ -2137,6 +2137,9 @@ pub struct DuplicatedRock {
     pub position: Vec2,
     pub body: Body,
     pub scale: Fix,
+    /// DPhysicsCircle.radius, which the Scale setter multiplies by
+    /// `(1 / old) * new` (DPhysicsCircle.cs:214-221).
+    pub collider_radius: Fix,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
     pub hierarchy_base: u32,
@@ -7667,7 +7670,7 @@ impl RolloutWorld {
             self.rock_wall_manifolds();
         }
         if has(ABILITY_DUPLICATOR) {
-            self.duplicated_rock_wall_manifolds(data);
+            self.duplicated_rock_wall_manifolds();
         }
         // DetPhysics corrects every Circle/RR pair before any Circle/Circle
         // one, so an item's wall correction moves it before an arrow's
@@ -7685,7 +7688,7 @@ impl RolloutWorld {
             self.rocks_contacts(data);
         }
         if has(ABILITY_DUPLICATOR) {
-            self.duplicated_rock_contacts(data);
+            self.duplicated_rock_contacts();
         }
         if has(ABILITY_PORTAL_GUN) && has(ABILITY_ROCK) {
             self.portal_shot_rock_contacts();
@@ -21360,7 +21363,7 @@ impl RolloutWorld {
                 PendingObject::DuplicatedPickup => self.register_duplicated_pickup(index, data),
                 PendingObject::AbilitylessClone => self.register_abilityless_clone(index),
                 PendingObject::BlackHole => self.register_black_hole(index, data),
-                PendingObject::DuplicatedRock => self.register_duplicated_rock(index, data),
+                PendingObject::DuplicatedRock => self.register_duplicated_rock(index),
                 PendingObject::ClappedBlackHole => {
                     if let Some((position, hierarchy)) = self.players[index].pending_black_hole.take() {
                         self.spawn_black_hole(index, position, hierarchy, data);
@@ -28607,6 +28610,7 @@ impl RolloutWorld {
                 position,
                 body,
                 scale: source_scale,
+                collider_radius: data.rock.radius * source_scale,
                 duplicate_lifespan: 1800,
                 duplicate_shake_offset: Vec2::ZERO,
                 hierarchy_base: self.next_spawn_hierarchy,
@@ -28769,6 +28773,7 @@ impl RolloutWorld {
             position,
             body,
             scale: source.scale,
+            collider_radius: data.rock.radius * source.scale,
             duplicate_lifespan: 1800,
             duplicate_shake_offset: Vec2::ZERO,
             hierarchy_base: self.next_spawn_hierarchy,
@@ -28779,7 +28784,7 @@ impl RolloutWorld {
 
     /// The copy's circle joins DetPhysics. Its row reads no owner, since
     /// Explosion is not an IPlayerIdHolder.
-    fn register_duplicated_rock(&mut self, index: usize, data: &data::RolloutData) {
+    fn register_duplicated_rock(&mut self, index: usize) {
         let mut rock = self.pending_duplicated_rocks[index];
         let entity = self.entities.len();
         let id = self.next_id();
@@ -28793,7 +28798,7 @@ impl RolloutWorld {
             y: rock.position.y.raw(),
             vx: rock.body.velocity.x.raw(),
             vy: rock.body.velocity.y.raw(),
-            radius: (data.rock.radius * rock.scale).raw(),
+            radius: rock.collider_radius.raw(),
             rotation: rock.body.orientation.raw(),
             angular_velocity: rock.body.angular_velocity.raw(),
             inverse_mass: rock.body.inverse_mass.raw(),
@@ -31728,6 +31733,7 @@ impl RolloutWorld {
             for rock in &mut self.duplicated_rocks {
                 if rock.active && rock.entity == Some(effect.victim) {
                     rock.scale = scale;
+                    rock.collider_radius *= ratio;
                 }
             }
             for arrow in &mut self.arrows {
@@ -36979,7 +36985,7 @@ impl RolloutWorld {
         const DUPLICATED_ROCK: u8 = 5;
         let duplicate_min = |rock_index: usize| {
             let rock = &self.duplicated_rocks[rock_index];
-            axis(rock.position) - data.rock.radius * rock.scale
+            axis(rock.position) - rock.collider_radius
         };
         let arrow_min = |arrow_index: usize| {
             axis(self.arrows[arrow_index].position) - self.arrows[arrow_index].collider_radius
@@ -40769,14 +40775,14 @@ impl RolloutWorld {
     /// Duplicated rocks' Circle/RoundedRectangle manifolds, built with the
     /// Rock forms' and resolved in the same sweep order
     /// (thrown_item_platform_contacts).
-    fn duplicated_rock_wall_manifolds(&mut self, data: &data::RolloutData) {
+    fn duplicated_rock_wall_manifolds(&mut self) {
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.duplicated_rock_wall_contacts.clear();
         scratch.duplicated_rock_swept.clear();
         for (rock_index, rock) in self.duplicated_rocks.iter().enumerate() {
             let circle = Circle {
                 center: rock.position,
-                radius: data.rock.radius * rock.scale,
+                radius: rock.collider_radius,
             };
             scratch.duplicated_rock_swept.push(circle);
             if !rock.active || self.blink_object_hidden(rock.entity) {
@@ -40803,7 +40809,7 @@ impl RolloutWorld {
     /// A Rock_noPlayer's Explosion against slimes' hurtboxes. It carries no
     /// BounceBall, so only the victim's PlayerCollision reacts, and its
     /// canHurtOwner lets it kill the slime it was copied from.
-    fn duplicated_rock_contacts(&mut self, data: &data::RolloutData) {
+    fn duplicated_rock_contacts(&mut self) {
         for rock_index in 0..self.duplicated_rocks.len() {
             let rock = self.duplicated_rocks[rock_index];
             if !rock.active || self.blink_object_hidden(rock.entity) {
@@ -40811,7 +40817,7 @@ impl RolloutWorld {
             }
             let circle = Circle {
                 center: rock.position,
-                radius: data.rock.radius * rock.scale,
+                radius: rock.collider_radius,
             };
             let killer = player_id(&self.players, rock.owner);
             for victim in 0..self.players.len() {
@@ -41266,7 +41272,7 @@ impl RolloutWorld {
                 let rock = &self.duplicated_rocks[index - DUPLICATE];
                 Circle {
                     center: rock.position,
-                    radius: data.rock.radius * rock.scale,
+                    radius: rock.collider_radius,
                 }
             } else if index >= PICKUP {
                 pickup_circle(index - PICKUP)
@@ -48341,6 +48347,7 @@ mod tests {
             position: rock_position,
             body: data::get().rock.body,
             scale: Fix::ONE,
+            collider_radius: data::get().rock.radius,
             mass_scale: Fix::ONE,
             ..DuplicatedRock::default()
         });
