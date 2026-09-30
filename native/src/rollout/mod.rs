@@ -3262,6 +3262,8 @@ struct PlatformScratch {
     spike_swept: Vec<Vec2>,
     rock_wall_contacts: Vec<(usize, usize, Contact)>,
     duplicated_rock_wall_contacts: Vec<(usize, usize, Contact)>,
+    /// Duplicated rocks' circles after integration, before any correction.
+    duplicated_rock_swept: Vec<Circle>,
     rock_spike_hits: Vec<(usize, usize, Vec2)>,
     /// Each slime's position before PlayerPhysics.LateUpdateSim follows its
     /// ground, where an older Mine's LateUpdateSim still finds it.
@@ -39100,14 +39102,16 @@ impl RolloutWorld {
     fn duplicated_rock_wall_manifolds(&mut self, data: &data::RolloutData) {
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.duplicated_rock_wall_contacts.clear();
+        scratch.duplicated_rock_swept.clear();
         for (rock_index, rock) in self.duplicated_rocks.iter().enumerate() {
-            if !rock.active || self.blink_object_hidden(rock.entity) {
-                continue;
-            }
             let circle = Circle {
                 center: rock.position,
                 radius: data.rock.radius * rock.scale,
             };
+            scratch.duplicated_rock_swept.push(circle);
+            if !rock.active || self.blink_object_hidden(rock.entity) {
+                continue;
+            }
             for (wall_index, platform) in self.platforms.iter().enumerate() {
                 if !platform.active || !scratch.swept_pairs(self.tick, wall_index, circle) {
                     continue;
@@ -39160,6 +39164,42 @@ impl RolloutWorld {
                 let axis = if self.sweep_x() { circle.center.x } else { circle.center.y };
                 let rank = sweep_rank(&self.entities, axis - circle.radius, rock.entity);
                 self.queue_callback_kill(victim, true, rank, killer, cause);
+            }
+        }
+    }
+
+    /// A copy's Circle/Circle pair with a Rock form or another copy:
+    /// ResolveCollision and PositionalCorrection, with no callback.
+    /// Participants from `duplicate` up are copies, the rest Rock forms.
+    fn resolve_duplicated_rock_pair(&mut self, a: usize, b: usize, duplicate: usize, contact: Contact) {
+        let state = |world: &Self, index: usize| {
+            if index >= duplicate {
+                let rock = &world.duplicated_rocks[index - duplicate];
+                (rock.body, rock.position)
+            } else {
+                let slot = &world.players[index];
+                (slot.rock.body, slot.base.position)
+            }
+        };
+        let (mut body_a, position_a) = state(self, a);
+        let (mut body_b, position_b) = state(self, b);
+        resolve(contact, &mut body_a, &mut body_b, position_a, position_b);
+        let correction =
+            positional_correction(contact, body_a.inverse_mass, body_b.inverse_mass, false);
+        for (index, body, position) in [
+            (a, body_a, position_a + correction[0]),
+            (b, body_b, position_b + correction[1]),
+        ] {
+            if index >= duplicate {
+                let rock = &mut self.duplicated_rocks[index - duplicate];
+                rock.body = body;
+                rock.position = position;
+                self.sync_duplicated_rock_entity(index - duplicate);
+            } else {
+                let slot = &mut self.players[index];
+                slot.rock.body = body;
+                slot.base.position = position;
+                slot.base.velocity = body.velocity;
             }
         }
     }
@@ -39432,6 +39472,16 @@ impl RolloutWorld {
         // BounceBall ignores the weapon layer. Participants from PICKUP up
         // are pickups.
         const PICKUP: usize = 1 << 16;
+        // A Rock_noPlayer is a LethalTerrain circle, which pairs with the
+        // Player layer and with other copies. BounceBall ignores that layer
+        // and the copy has no callback, so the pair only moves the bodies.
+        // Participants from DUPLICATE up are copies.
+        const DUPLICATE: usize = 1 << 17;
+        let duplicate_swept = std::mem::take(&mut self.scratch.duplicated_rock_swept);
+        let duplicate_usable = |index: usize| {
+            let rock = &self.duplicated_rocks[index];
+            rock.active && index < duplicate_swept.len() && !self.blink_object_hidden(rock.entity)
+        };
         let pickup_circle = |index: usize| {
             let pickup = &self.ability_pickups[index];
             Circle {
@@ -39440,7 +39490,10 @@ impl RolloutWorld {
             }
         };
         let participant_min = |index: usize| {
-            if index >= PICKUP {
+            if index >= DUPLICATE {
+                let circle = duplicate_swept[index - DUPLICATE];
+                axis(circle.center) - circle.radius
+            } else if index >= PICKUP {
                 let circle = pickup_circle(index - PICKUP);
                 axis(circle.center) - circle.radius
             } else {
@@ -39448,7 +39501,9 @@ impl RolloutWorld {
             }
         };
         let rank = |index: usize| {
-            let entity = if index >= PICKUP {
+            let entity = if index >= DUPLICATE {
+                self.duplicated_rocks[index - DUPLICATE].entity
+            } else if index >= PICKUP {
                 self.ability_pickups[index - PICKUP].entity
             } else {
                 Some(self.players[index].rock_entity)
@@ -39485,6 +39540,33 @@ impl RolloutWorld {
                 pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
                 pair_count += 1;
             }
+            for duplicate in 0..self.duplicated_rocks.len() {
+                if !duplicate_usable(duplicate)
+                    || !swept[a].bounds_overlap(duplicate_swept[duplicate])
+                    || pair_count == pairs.len()
+                {
+                    continue;
+                }
+                let b = DUPLICATE + duplicate;
+                pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
+                pair_count += 1;
+            }
+        }
+        for first in 0..self.duplicated_rocks.len() {
+            if !duplicate_usable(first) {
+                continue;
+            }
+            for second in first + 1..self.duplicated_rocks.len() {
+                if !duplicate_usable(second)
+                    || !duplicate_swept[first].bounds_overlap(duplicate_swept[second])
+                    || pair_count == pairs.len()
+                {
+                    continue;
+                }
+                let (a, b) = (DUPLICATE + first, DUPLICATE + second);
+                pairs[pair_count] = if rank(b) < rank(a) { (b, a) } else { (a, b) };
+                pair_count += 1;
+            }
         }
         let usable = |pickup: &AbilityPickup| {
             pickup.active && pickup.enabled && !self.blink_object_hidden(pickup.entity)
@@ -39510,7 +39592,13 @@ impl RolloutWorld {
         // CollisionTest builds every Circle/Circle manifold before the first
         // ResolveCollision, so a later pair keeps its pre-correction contact.
         let circle = |index: usize| {
-            if index >= PICKUP {
+            if index >= DUPLICATE {
+                let rock = &self.duplicated_rocks[index - DUPLICATE];
+                Circle {
+                    center: rock.position,
+                    radius: data.rock.radius * rock.scale,
+                }
+            } else if index >= PICKUP {
                 pickup_circle(index - PICKUP)
             } else {
                 Circle {
@@ -39523,7 +39611,14 @@ impl RolloutWorld {
         for (contact, &(a, b)) in contacts.iter_mut().zip(pairs.iter()) {
             *contact = crate::physics::contact::circle_circle(circle(a), circle(b));
         }
+        self.scratch.duplicated_rock_swept = duplicate_swept;
         for (&(a, b), contact) in pairs.iter().zip(contacts) {
+            if a >= DUPLICATE || b >= DUPLICATE {
+                if let Some(contact) = contact {
+                    self.resolve_duplicated_rock_pair(a, b, DUPLICATE, contact);
+                }
+                continue;
+            }
             if a >= PICKUP && b >= PICKUP {
                 if let Some(contact) = contact {
                     self.resolve_pickup_pair(a - PICKUP, b - PICKUP, contact);
