@@ -22,27 +22,17 @@ impl Player {
         // at its next sync.
         self.dash.active = true;
         self.sync_collider();
+        // readyDash's UnGround (Dash.cs:109).
         if self.grounded {
             self.dash.local = self.local;
-            self.position = self
-                .platform(platforms)
-                .unwrap()
-                .surface
-                .position(self.local, self.dash.radius);
-            self.position += self
-                .platform(platforms)
-                .unwrap()
-                .surface
-                .normal(self.position)
-                * Fix::from_f32(0.05);
+            let surface = &self.platform(platforms).unwrap().surface;
+            self.position = surface.position(self.local, self.dash.radius);
+            self.unground(Some(surface), true);
         } else {
             self.ground = None;
+            self.unground(None, true);
         }
         self.local = self.dash.local;
-        self.grounded = false;
-        self.grounded_speed = Fix::ZERO;
-        self.rotation = Fix::ZERO;
-        self.up = Vec2::UP;
         self.velocity = Vec2::ZERO;
         self.external_velocity = Vec2::ZERO;
         self.dash.time = Fix::ZERO;

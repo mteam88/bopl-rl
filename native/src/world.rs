@@ -806,9 +806,7 @@ impl Player {
             normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum + up * strength;
         self.position += self.velocity * self.constants.jump_teleport;
         self.jumped_this_frame = true;
-        let mut motion = self.ground_state();
-        motion.unground(retained.map(|p| &p.surface), true);
-        self.apply_ground_state(motion);
+        self.unground(retained.map(|p| &p.surface), true);
     }
     /// PlayerPhysics.Move's ground input direction: -1, 0 or 1 along the
     /// surface tangent.
@@ -840,9 +838,7 @@ impl Player {
             // before calling Move: it zeros rotation, then UnGround(false).
             self.rotation = Fix::ZERO;
             self.up = Vec2::UP;
-            let mut motion = self.ground_state();
-            motion.unground(None, false);
-            self.apply_ground_state(motion);
+            self.unground(None, false);
             return;
         };
         let normal = platform.surface.normal(self.position);
@@ -863,9 +859,7 @@ impl Player {
             );
         }
         if !platform.active {
-            let mut motion = self.ground_state();
-            motion.unground(Some(&platform.surface), true);
-            self.apply_ground_state(motion);
+            self.unground(Some(&platform.surface), true);
             return;
         }
         // The position has not moved since `normal` was evaluated above.
@@ -1097,51 +1091,15 @@ impl Player {
             inverse_extents: inv,
         };
     }
-    /// Detach from the ground without the jump impulse (PlayerPhysics.UnGround).
-    /// PlayerPhysics.UnGround lifts the body off attachedGround, which still
-    /// names a platform that went inactive; only a destroyed one is null.
-    /// PlayerPhysics.UnGround(nullRotation: false): lifts off attachedGround,
-    /// which is the live platform or, when `dead` names it, a removed one an
-    /// updater destroyed earlier in this pass and the drain has not yet nulled
-    /// (PlayerPhysics.cs:366-370).
-    pub(crate) fn force_unground(&mut self, platforms: &[Platform], dead: Option<&Surface>) {
-        let surface = platforms
-            .iter()
-            .find(|p| Some(p.id) == self.ground)
-            .map(|platform| &platform.surface)
-            .or(dead)
-            .cloned();
+    /// PlayerPhysics.UnGround's body half (PlayerPhysics.cs:362-376): lift off
+    /// `surface`, the retained attachedGround the caller resolved, and keep
+    /// `ground`. Its OnNoLongerGrounded subscribers are the caller's; returns
+    /// the rotation they are handed.
+    pub(crate) fn unground(&mut self, surface: Option<&Surface>, null_rotation: bool) -> Fix {
         let mut motion = self.ground_state();
-        motion.unground(surface.as_ref(), false);
+        let rotation = motion.unground(surface, null_rotation);
         self.apply_ground_state(motion);
-    }
-    /// PlayerPhysics.UnGround(nullRotation: false) when the ground has gone
-    /// inactive: attachedGround still names it, so the body still lifts off
-    /// its surface.
-    pub(crate) fn unground_inactive(&mut self, platforms: &[Platform]) {
-        let Some(ground) = platforms.iter().find(|p| !p.active && Some(p.id) == self.ground)
-        else {
-            return;
-        };
-        let surface = ground.surface.clone();
-        let mut motion = self.ground_state();
-        motion.unground(Some(&surface), false);
-        self.apply_ground_state(motion);
-    }
-    /// PlayerPhysics.UnGround() with its default nullRotation: the body
-    /// levels even when it was not attached.
-    pub(crate) fn unground_level(&mut self, platforms: &[Platform]) {
-        let surface = self.platform(platforms).map(|platform| platform.surface.clone());
-        let mut motion = self.ground_state();
-        motion.unground(surface.as_ref(), true);
-        self.apply_ground_state(motion);
-    }
-    /// PlayerPhysics.UnGround off a destroyed ground, which lifts the body
-    /// only while attachedGround is not yet null (`DestroyedGround::attached`).
-    pub(crate) fn unground_off(&mut self, attached: Option<&Surface>, null_rotation: bool) {
-        let mut motion = self.ground_state();
-        motion.unground(attached, null_rotation);
-        self.apply_ground_state(motion);
+        rotation
     }
     pub(crate) fn late_step(&mut self, platforms: &[Platform]) {
         // A grounded body whose attachedGround is null or destroyed stays put;

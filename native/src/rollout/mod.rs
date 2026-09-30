@@ -2613,24 +2613,87 @@ impl DestroyedGround {
     }
 }
 
-/// UnGround(false) from anywhere but the rider's own lost-ground check. The
-/// record is spent: attachedGround is null afterwards, so no later check this
-/// pass lifts the body again.
-fn force_unground(
+/// PlayerPhysics.UnGround (PlayerPhysics.cs:362-385) short of its
+/// OnNoLongerGrounded event. It lifts off attachedGround, which it keeps: the
+/// platform `ground` names, active or not, else one an updater destroyed
+/// earlier in this pass. The destroyed-ground record is spent, so no later
+/// lost-ground check this pass lifts the body again. Returns the rotation.
+fn unground_physics(
     body: &mut Player,
     lost: &mut Option<DestroyedGround>,
     platforms: &[Platform],
     tick: u32,
-) {
+    null_rotation: bool,
+) -> Fix {
     let lost = lost.take();
-    body.force_unground(platforms, lost.as_ref().and_then(|lost| lost.attached(tick)));
+    let surface = platforms
+        .iter()
+        .find(|p| Some(p.id) == body.ground)
+        .map(|platform| &platform.surface)
+        .or(lost.as_ref().and_then(|lost| lost.attached(tick)));
+    body.unground(surface, null_rotation)
+}
+
+/// The PlayerPhysics an UnGround acts on, which decides who hears its
+/// OnNoLongerGrounded (PlayerPhysics.cs:377-380).
+enum UngroundBody<'a> {
+    /// The slot's slime: SlimeController.OnNoLongerGrounded
+    /// (SlimeController.cs:956-965) sets State.fall, ending any ragdoll.
+    Slime(&'a mut PlayerSlot),
+    /// The slot's active form: only Beam subscribes (Beam.cs:164-173).
+    Form(&'a mut PlayerSlot),
+    /// An ability-less clone, with its own SlimeController.
+    Clone(&'a mut AbilitylessClone),
+}
+
+impl UngroundBody<'_> {
+    /// PlayerPhysics.UnGround and its subscribers; returns the rotation they
+    /// are handed.
+    fn unground(&mut self, platforms: &[Platform], tick: u32, null_rotation: bool) -> Fix {
+        match self {
+            Self::Slime(slot) => {
+                let rotation = unground_physics(
+                    &mut slot.base,
+                    &mut slot.ground_destroyed,
+                    platforms,
+                    tick,
+                    null_rotation,
+                );
+                slot.obs_state = STATE_FALL;
+                slot.state_ticks = 0;
+                slot.ragdoll = RagdollState::default();
+                rotation
+            }
+            Self::Form(slot) => {
+                let rotation = unground_physics(
+                    &mut slot.base,
+                    &mut slot.ground_destroyed,
+                    platforms,
+                    tick,
+                    null_rotation,
+                );
+                if slot.active == ActiveAbility::Beam {
+                    slot.beam_on_ungrounded();
+                }
+                rotation
+            }
+            Self::Clone(clone) => {
+                let rotation = unground_physics(
+                    &mut clone.base,
+                    &mut clone.ground_destroyed,
+                    platforms,
+                    tick,
+                    null_rotation,
+                );
+                clone.obs_state = STATE_FALL;
+                clone.state_ticks = 0;
+                rotation
+            }
+        }
+    }
 }
 
 impl AbilitylessClone {
-    fn force_unground(&mut self, platforms: &[Platform], tick: u32) {
-        force_unground(&mut self.base, &mut self.ground_destroyed, platforms, tick);
-    }
-
     /// PlayerPhysics.DropPlatformTest closing a grounded Move: a platform
     /// dropping its riders ungrounds the clone and pushes it off along the
     /// normal (PlayerPhysics.cs:285-301).
@@ -3121,9 +3184,6 @@ impl PlayerSlot {
         }
     }
 
-    fn force_unground(&mut self, platforms: &[Platform], tick: u32) {
-        force_unground(&mut self.base, &mut self.ground_destroyed, platforms, tick);
-    }
     /// The surface of a ground an updater destroyed earlier in this pass,
     /// which attachedGround still names until the drain.
     fn dead_ground(&self, tick: u32) -> Option<&Surface> {
@@ -3144,8 +3204,18 @@ impl PlayerSlot {
         let Some(surface) = lost.attached(tick) else {
             return false;
         };
-        self.base.unground_off(Some(surface), true);
+        self.base.unground(Some(surface), true);
         true
+    }
+    /// Beam.OnUngrounded and OnGrounded: a ground form re-reads its staff
+    /// against the body's new rotation and faces along it.
+    fn beam_on_ungrounded(&mut self) {
+        if !self.beam.in_air {
+            let right = self.base.up.perp_cw();
+            let staff = self.beam.staff_dir;
+            self.beam.relative_staff_dir = staff.complex_mul(Vec2::new(right.x, -right.y));
+            self.facing_right = staff.dot(right) > Fix::ZERO;
+        }
     }
     /// Which PlayerBody carries the rope: the slime's, or the active form's.
     fn rope_body(&self) -> usize {
@@ -9388,8 +9458,15 @@ impl RolloutWorld {
                 let inward_speed = (-vin.dot(endpoint.normal)).max(Fix::from_int(2));
                 let sideways = vin.dot(endpoint.tangent);
                 let exit = self.portals[linked];
-                self.players[player_index].force_unground(&self.platforms, self.tick);
                 let slot = &mut self.players[player_index];
+                // gap: SlimeController.OnNoLongerGrounded sets State.fall.
+                unground_physics(
+                    &mut slot.base,
+                    &mut slot.ground_destroyed,
+                    &self.platforms,
+                    self.tick,
+                    false,
+                );
                 slot.base.position = exit.position + exit.normal * data.portal_gun.exit_offset;
                 slot.base.velocity = exit.normal * inward_speed - exit.tangent * sideways;
                 slot.base.external_velocity = Vec2::ZERO;
@@ -9431,8 +9508,16 @@ impl RolloutWorld {
                 };
                 self.portals[linked].player_inside[player_id] = true;
                 // UnGround leaves the velocity the portal redirects untouched.
-                self.abilityless_clones[clone_index].force_unground(&self.platforms, self.tick);
-                let clone = &mut self.abilityless_clones[clone_index].base;
+                let clone = &mut self.abilityless_clones[clone_index];
+                // gap: its SlimeController.OnNoLongerGrounded sets State.fall.
+                unground_physics(
+                    &mut clone.base,
+                    &mut clone.ground_destroyed,
+                    &self.platforms,
+                    self.tick,
+                    false,
+                );
+                let clone = &mut clone.base;
                 let vin = clone.velocity + clone.external_velocity;
                 let inward_speed = (-vin.dot(endpoint.normal)).max(Fix::from_int(2));
                 let sideways = vin.dot(endpoint.tangent);
@@ -9894,7 +9979,7 @@ impl RolloutWorld {
             {
                 slot.base.rotation = Fix::ZERO;
                 slot.base.up = Vec2::UP;
-                slot.base.unground_off(lost.attached(tick), false);
+                slot.base.unground(lost.attached(tick), false);
                 slot.base.ground = None;
                 if matches!(
                     slot.obs_state,
@@ -10020,7 +10105,7 @@ impl RolloutWorld {
             // the rotation (Spike.cs:163-166, PlayerPhysics.cs:216-219).
             let null_rotation = slot.active == ActiveAbility::Spike;
             let attached = lost.as_ref().and_then(|lost| lost.attached(tick));
-            slot.base.unground_off(attached, null_rotation);
+            slot.base.unground(attached, null_rotation);
             slot.base.ground = None;
         }
         if !in_ability {
@@ -10348,11 +10433,18 @@ impl RolloutWorld {
                             self.attach_player_rope(index, None, top);
                             let slot = &mut self.players[index];
                             slot.rewind.attached_ground = attached_ground;
-                            slot.force_unground(&self.platforms, self.tick);
                             // UnGround raises OnNoLongerGrounded, which sets
                             // State.fall (PlayerPhysics.cs:377-380,
                             // SlimeController.cs:956), so a landing in the
                             // Move below starts the land animation afresh.
+                            // gap: it also ends the ragdoll.
+                            unground_physics(
+                                &mut slot.base,
+                                &mut slot.ground_destroyed,
+                                &self.platforms,
+                                self.tick,
+                                false,
+                            );
                             slot.obs_state = STATE_FALL;
                             slot.state_ticks = 0;
                             slot.base.velocity = Vec2::ZERO;
@@ -11613,11 +11705,6 @@ impl RolloutWorld {
                         // other QuickSpell form, already reads it this way.
                         let attached_ground =
                             retained_ground(&self.players[index], entry_obs_state, &self.platforms);
-                        let detach_normal = attached_ground
-                            .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
-                            .map(|platform| {
-                                platform.surface.normal(self.players[index].base.position)
-                            });
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Gust);
@@ -11631,14 +11718,11 @@ impl RolloutWorld {
                         // QuickSpell synchronizes the copied PlayerInfo,
                         // ungrounds by the standard 0.05-unit separation and
                         // then clears both velocity channels.
-                        if let Some(normal) = detach_normal {
-                            slot.base.position += normal * Fix::from_f32(0.05);
-                        }
-                        slot.base.rotation = Fix::ZERO;
-                        slot.base.up = Vec2::UP;
-                        slot.base.grounded = false;
+                        let surface = attached_ground
+                            .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
+                            .map(|platform| &platform.surface);
+                        slot.base.unground(surface, true);
                         slot.base.ground = None;
-                        slot.base.grounded_speed = Fix::ZERO;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
                         // The Gust body's own boundary component is enabled by
@@ -11659,11 +11743,6 @@ impl RolloutWorld {
                     ABILITY_REVIVAL => {
                         let attached_ground =
                             retained_ground(&self.players[index], entry_obs_state, &self.platforms);
-                        let detach_normal = attached_ground
-                            .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
-                            .map(|platform| {
-                                platform.surface.normal(self.players[index].base.position)
-                            });
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Revival);
@@ -11674,14 +11753,11 @@ impl RolloutWorld {
                             ..RevivalState::default()
                         };
                         slot.scale_form_circle(data.revival.hurtbox_radius, data.revival.collider_offset);
-                        if let Some(normal) = detach_normal {
-                            slot.base.position += normal * Fix::from_f32(0.05);
-                        }
-                        slot.base.rotation = Fix::ZERO;
-                        slot.base.up = Vec2::UP;
-                        slot.base.grounded = false;
+                        let surface = attached_ground
+                            .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
+                            .map(|platform| &platform.surface);
+                        slot.base.unground(surface, true);
                         slot.base.ground = None;
-                        slot.base.grounded_speed = Fix::ZERO;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
                         // Revival.prefab places its boundary component at the
@@ -12364,19 +12440,9 @@ impl RolloutWorld {
                 .any(|platform| platform.active && platform.id == id)
         }) || self.players[index].dead_ground(self.tick).is_some();
         if self.players[index].base.grounded && !ground_live {
-            if self.players[index].ground_destroyed.take().is_some() {
-                self.players[index].base.unground_off(None, true);
-            } else {
-                // An inactive ground, such as a tunnelled wall, is still
-                // attachedGround, so UnGround lifts the body off its surface.
-                let ground = self.players[index].base.ground;
-                let surface = self
-                    .platforms
-                    .iter()
-                    .find(|platform| Some(platform.id) == ground)
-                    .map(|platform| platform.surface.clone());
-                self.players[index].base.unground_off(surface.as_ref(), true);
-            }
+            // An inactive ground, such as a tunnelled wall, is still
+            // attachedGround, so UnGround lifts the body off its surface.
+            UngroundBody::Form(&mut self.players[index]).unground(&self.platforms, self.tick, true);
             self.exit_roll(index, false, data);
             return;
         }
@@ -12399,9 +12465,7 @@ impl RolloutWorld {
                 if slot.roll.jump_button_has_been_up && jump_down {
                     let right = slot.base.up.perp_cw();
                     let velocity = right * slot.roll.grounded_speed * Fix::from_f32(0.75);
-                    slot.force_unground(&self.platforms, self.tick);
-                    slot.base.rotation = Fix::ZERO;
-                    slot.base.up = Vec2::UP;
+                    UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
                     slot.base.velocity = velocity;
                     self.exit_roll(index, false, data);
                     return;
@@ -13802,19 +13866,12 @@ impl RolloutWorld {
                 slot.base.external_velocity = destination.external_velocity;
                 slot.base.rotation = destination.rotation;
                 slot.base.up = Vec2::angle(destination.rotation).perp();
-                if let Some(ground_id) = slot.rewind.attached_ground
-                    && let Some(platform) = self
-                        .platforms
-                        .iter()
-                        .find(|platform| platform.id == ground_id)
-                {
-                    slot.base.position +=
-                        platform.surface.normal(slot.base.position) * Fix::from_f32(0.05);
-                }
                 // ReleaseControl's UnGround keeps attachedGround, so the next
                 // UnGround (another Rewind's) lifts off it again.
-                slot.base.grounded = false;
-                slot.base.grounded_speed = Fix::ZERO;
+                let surface = slot.rewind.attached_ground.and_then(|id| {
+                    self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
+                });
+                slot.base.unground(surface, false);
                 // Its OnNoLongerGrounded sets State.fall (SlimeController.cs:956)
                 // over any ragdoll taken during the playback.
                 slot.obs_state = STATE_FALL;
@@ -13971,25 +14028,18 @@ impl RolloutWorld {
             // QuickSpell calls UnGround a second time. PlayerPhysics kept the
             // old attachedGround reference even though isGrounded was false,
             // so a moving platform supplies a fresh normal for this nudge.
-            let exit_normal = slot.gust.attached_ground.and_then(|id| {
-                self.platforms
-                    .iter()
-                    .find(|platform| platform.id == id)
-                    .map(|platform| platform.surface.normal(slot.base.position))
+            let surface = slot.gust.attached_ground.and_then(|id| {
+                self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
             });
-            if let Some(normal) = exit_normal {
-                slot.base.position += normal * Fix::from_f32(0.05);
-            }
+            slot.base.unground(surface, true);
             // Ability.ExitAbility publishes the QuickSpell collider before
             // SlimeController installs the returned body and immediately
             // raycasts it (Ability.cs:151, SlimeController.cs:217-272).
             let ability_position = slot.base.position;
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            slot.base.rotation = Fix::ZERO;
             // QuickSpell exits with a default AbilityExitInfo, whose isFacingRight
             // is false; SlimeController flips to match.
             slot.facing_right = false;
-            slot.base.up = Vec2::UP;
             slot.exit_to_fall();
             slot.base.collision_rays(terrain!(self));
             slot.reported_position = ability_position;
@@ -14035,22 +14085,9 @@ impl RolloutWorld {
                 }
                 self.players[index].cast_spell.ticks += 1;
                 if self.players[index].cast_spell.ticks > data.time_stop.idle_to_fall_ticks {
-                    let normal = self.players[index].base.ground.and_then(|ground| {
-                        self.platforms
-                            .iter()
-                            .find(|platform| platform.id == ground)
-                            .map(|platform| {
-                                platform.surface.normal(self.players[index].base.position)
-                            })
-                    });
+                    // BeginChanneling (CastSpell.cs:151).
                     let slot = &mut self.players[index];
-                    if let Some(normal) = normal {
-                        slot.base.position += normal * Fix::from_f32(0.05);
-                    }
-                    slot.base.grounded = false;
-                    slot.base.grounded_speed = Fix::ZERO;
-                    slot.base.rotation = Fix::ZERO;
-                    slot.base.up = Vec2::UP;
+                    UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
                     slot.cast_spell.phase = 1;
                     slot.cast_spell.ticks = 0;
                 }
@@ -15276,18 +15313,8 @@ impl RolloutWorld {
     }
 
     fn exit_time_stop_cast(&mut self, index: usize, data: &data::RolloutData) {
-        let normal = self.players[index].base.ground.and_then(|ground| {
-            self.platforms
-                .iter()
-                .find(|platform| platform.id == ground)
-                .map(|platform| platform.surface.normal(self.players[index].base.position))
-        });
         let slot = &mut self.players[index];
-        if let Some(normal) = normal {
-            slot.base.position += normal * Fix::from_f32(0.05);
-        }
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
+        UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         let published_position = slot.base.position;
         // Ability.ExitAbility publishes and freezes the ability collider at
         // this pose, while the returned slime is placed at ExitAbilityOffset.
@@ -15296,8 +15323,6 @@ impl RolloutWorld {
         slot.cast_spell.collider_rotation = Fix::ZERO;
         slot.base.position += data.time_stop.exit_offset * slot.player_scale;
         slot.base.external_velocity = Vec2::ZERO;
-        slot.base.grounded = false;
-        slot.base.grounded_speed = Fix::ZERO;
         // CastSpell exits with a default AbilityExitInfo: facing left.
         slot.facing_right = false;
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
@@ -16456,15 +16481,10 @@ impl RolloutWorld {
             self.players[index].revival.phase = 1;
             self.players[index].revival.ticks = 0;
         } else if slot.revival.phase == 1 && slot.revival.ticks > data.revival.exit_ticks {
-            let exit_normal = slot.revival.attached_ground.and_then(|id| {
-                self.platforms
-                    .iter()
-                    .find(|platform| platform.id == id)
-                    .map(|platform| platform.surface.normal(slot.base.position))
+            let surface = slot.revival.attached_ground.and_then(|id| {
+                self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
             });
-            if let Some(normal) = exit_normal {
-                slot.base.position += normal * Fix::from_f32(0.05);
-            }
+            slot.base.unground(surface, true);
             slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
             // QuickSpell exits with a default AbilityExitInfo, whose isFacingRight
@@ -16472,8 +16492,6 @@ impl RolloutWorld {
             slot.facing_right = false;
             slot.exit_to_fall();
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
             slot.base.collision_rays(terrain!(self));
             return;
         }
@@ -18814,7 +18832,7 @@ impl RolloutWorld {
         } else if self.players[index].base.grounded {
             self.players[index].base.move_only(input, terrain!(self));
             if !self.players[index].base.grounded {
-                self.beam_on_ungrounded(index);
+                self.players[index].beam_on_ungrounded();
             }
         } else {
             // A ground form off its ground: AddGravityFactor, then Move's air
@@ -18837,7 +18855,7 @@ impl RolloutWorld {
             .expect("valid Beam aerial constants");
             self.players[index].base.collision_rays(terrain!(self));
             if self.players[index].base.grounded {
-                self.beam_on_ungrounded(index);
+                self.players[index].beam_on_ungrounded();
             }
         }
 
@@ -19001,27 +19019,13 @@ impl RolloutWorld {
     /// re-reads the staff against the zeroed rotation. Nothing else moves the
     /// form that pass.
     fn beam_lost_ground(&mut self, index: usize) -> bool {
-        let Some(lost) = std::mem::take(&mut self.players[index].ground_destroyed) else {
+        let slot = &mut self.players[index];
+        if slot.ground_destroyed.is_none() {
             return false;
-        };
-        let tick = self.tick;
-        let slot = &mut self.players[index];
-        slot.base.unground_off(lost.attached(tick), true);
-        slot.base.ground = None;
-        self.beam_on_ungrounded(index);
-        true
-    }
-
-    /// Beam.OnUngrounded and OnGrounded: a ground form re-reads its staff
-    /// against the body's new rotation and faces along it.
-    fn beam_on_ungrounded(&mut self, index: usize) {
-        let slot = &mut self.players[index];
-        if !slot.beam.in_air {
-            let right = slot.base.up.perp_cw();
-            let staff = slot.beam.staff_dir;
-            slot.beam.relative_staff_dir = staff.complex_mul(Vec2::new(right.x, -right.y));
-            slot.facing_right = staff.dot(right) > Fix::ZERO;
         }
+        UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
+        slot.base.ground = None;
+        true
     }
 
     fn update_beam_orb_position(
@@ -21910,12 +21914,19 @@ impl RolloutWorld {
             if has_player_physics {
                 let rope_top = self.players[player_index].rope_top;
                 self.attach_player_rope(player_index, None, rope_top);
-                self.players[player_index].base.velocity = Vec2::ZERO;
-                self.players[player_index].force_unground(&self.platforms, self.tick);
-                self.players[player_index].base.rotation = Fix::ZERO;
-                self.players[player_index].base.up = Vec2::UP;
-                self.players[player_index].obs_state = STATE_FALL;
-                self.players[player_index].state_ticks = 0;
+                let slot = &mut self.players[player_index];
+                slot.base.velocity = Vec2::ZERO;
+                // gap: the slime's OnNoLongerGrounded also ends the ragdoll,
+                // and a Beam form's recomputes its staff.
+                unground_physics(
+                    &mut slot.base,
+                    &mut slot.ground_destroyed,
+                    &self.platforms,
+                    self.tick,
+                    true,
+                );
+                slot.obs_state = STATE_FALL;
+                slot.state_ticks = 0;
                 // UnGround(nullRotation) zeroes a ThrowItem or SparkShot
                 // form's body rotation too (PlayerPhysics.cs:372-376); its box
                 // takes it at the next sync.
@@ -21983,9 +21994,14 @@ impl RolloutWorld {
         {
             let clone = &mut self.abilityless_clones[clone_index];
             clone.base.velocity = Vec2::ZERO;
-            clone.force_unground(&self.platforms, self.tick);
-            clone.base.rotation = Fix::ZERO;
-            clone.base.up = Vec2::UP;
+            // gap: OnNoLongerGrounded also restarts the fall (state_ticks).
+            unground_physics(
+                &mut clone.base,
+                &mut clone.ground_destroyed,
+                &self.platforms,
+                self.tick,
+                true,
+            );
             clone.base.position += shift;
             clone.base.sync_collider();
             clone.obs_state = STATE_FALL;
@@ -24360,7 +24376,7 @@ impl RolloutWorld {
         let moved_off = grounded && dead.is_some();
         if moved_off {
             let slot = &mut self.players[index];
-            slot.base.unground_off(dead.as_ref(), true);
+            slot.base.unground(dead.as_ref(), true);
             slot.base.ground = None;
             slot.missile.collider_rotation = Fix::ZERO;
         }
@@ -24794,9 +24810,7 @@ impl RolloutWorld {
         self.players[index].base.alive = false;
         self.players[index].base.out_of_bounds = true;
         if unground {
-            self.players[index].base.rotation = Fix::ZERO;
-            self.players[index].base.up = Vec2::UP;
-            self.players[index].force_unground(&self.platforms, self.tick);
+            UngroundBody::Form(&mut self.players[index]).unground(&self.platforms, self.tick, true);
         }
         self.players[index].reported_position = self.players[index].base.position;
         true
@@ -25330,7 +25344,9 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
-            self.players[index].force_unground(&self.platforms, self.tick);
+            // gap: GunTransform.cs:161 and MagnetGun.cs:1215 null the rotation.
+            UngroundBody::Form(&mut self.players[index])
+                .unground(&self.platforms, self.tick, false);
         }
 
         if !self.players[index].base.grounded {
@@ -25434,9 +25450,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.freeze.knockback);
-            slot.force_unground(&self.platforms, self.tick);
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
+            UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         } else {
             slot.base.velocity = -(aim * data.freeze.knockback);
         }
@@ -25493,7 +25507,9 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
-            self.players[index].force_unground(&self.platforms, self.tick);
+            // gap: GunTransform.cs:161 and MagnetGun.cs:1215 null the rotation.
+            UngroundBody::Form(&mut self.players[index])
+                .unground(&self.platforms, self.tick, false);
         }
 
         if !self.players[index].base.grounded {
@@ -25597,9 +25613,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.blink.knockback);
-            slot.force_unground(&self.platforms, self.tick);
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
+            UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         } else {
             slot.base.velocity = -(aim * data.blink.knockback);
         }
@@ -25648,7 +25662,9 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
-            self.players[index].force_unground(&self.platforms, self.tick);
+            // gap: GunTransform.cs:161 and MagnetGun.cs:1215 null the rotation.
+            UngroundBody::Form(&mut self.players[index])
+                .unground(&self.platforms, self.tick, false);
         }
 
         if !self.players[index].base.grounded {
@@ -25754,9 +25770,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * ray.knockback);
-            slot.force_unground(&self.platforms, self.tick);
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
+            UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         } else {
             slot.base.velocity = -(aim * ray.knockback);
         }
@@ -25800,7 +25814,9 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
-            self.players[index].force_unground(&self.platforms, self.tick);
+            // gap: GunTransform.cs:161 and MagnetGun.cs:1215 null the rotation.
+            UngroundBody::Form(&mut self.players[index])
+                .unground(&self.platforms, self.tick, false);
         }
 
         if !self.players[index].base.grounded {
@@ -25996,7 +26012,9 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
-            self.players[index].force_unground(&self.platforms, self.tick);
+            // gap: GunTransform.cs:161 and MagnetGun.cs:1215 null the rotation.
+            UngroundBody::Form(&mut self.players[index])
+                .unground(&self.platforms, self.tick, false);
         }
 
         if !self.players[index].base.grounded {
@@ -26950,7 +26968,9 @@ impl RolloutWorld {
                 }
                 let slot = &mut self.players[i];
                 // MagnetGun.cs:687 calls UnGround() with nullRotation.
-                slot.base.unground_level(&self.platforms);
+                // gap: it lifts off an inactive attachedGround too.
+                let surface = slot.base.platform(&self.platforms).map(|p| &p.surface);
+                slot.base.unground(surface, true);
                 slot.base.skip_next_gravity = true;
                 slot.ragdoll = RagdollState {
                     active: true,
@@ -26974,7 +26994,9 @@ impl RolloutWorld {
                 // (1,0) for the rest of the pass.
                 let slot = &mut self.players[index];
                 if slot.base.grounded && slot.base.ground == Some(self.platforms[platform].id) {
-                    slot.base.unground_level(&self.platforms);
+                    // gap: it lifts off an inactive attachedGround too.
+                    let surface = slot.base.platform(&self.platforms).map(|p| &p.surface);
+                    slot.base.unground(surface, true);
                     slot.magnet.body_right = Vec2::RIGHT;
                 }
             }
@@ -27633,7 +27655,8 @@ impl RolloutWorld {
         slot.base.rotation = facing.normalized_angle();
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.magnet.knockback);
-            slot.force_unground(&self.platforms, self.tick);
+            // gap: MagnetGun.cs:408 nulls the rotation.
+            UngroundBody::Form(slot).unground(&self.platforms, self.tick, false);
         } else {
             slot.base.velocity = -(aim * data.magnet.knockback);
         }
@@ -27666,7 +27689,7 @@ impl RolloutWorld {
         slot.base.rotation = Fix::ZERO;
         slot.base.up = Vec2::UP;
         if !landed {
-            slot.force_unground(terrain.platforms, self.tick);
+            UngroundBody::Form(slot).unground(terrain.platforms, self.tick, true);
         }
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.exit_to_fall();
@@ -27718,9 +27741,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * gun.knockback);
-            slot.force_unground(&self.platforms, self.tick);
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
+            UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         } else {
             slot.base.velocity = -(aim * gun.knockback);
         }
@@ -31003,16 +31024,13 @@ impl RolloutWorld {
         }
         let slot = &mut self.players[victim];
         slot.frozen_solid_count = slot.frozen_solid_count.saturating_add(1);
-        slot.ragdoll = RagdollState::default();
         slot.base.velocity = Vec2::ZERO;
-        slot.force_unground(&self.platforms, self.tick);
         // FrozenSolid.Begin applies ragdoll first, then UnGround invokes
         // SlimeController.OnNoLongerGrounded and overwrites the state with
         // Fall. Until FrozenSolid's first pass (it updates after the slimes,
         // and not on the pass it spawns) the slime plays on as usual, casts
         // included; PlayerPhysics.skipNextUpdate only suppresses its gravity.
-        slot.obs_state = STATE_FALL;
-        slot.state_ticks = 0;
+        UngroundBody::Slime(slot).unground(&self.platforms, self.tick, false);
         slot.base.skip_next_gravity = true;
     }
 
@@ -32101,9 +32119,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         // GunTransform.ExitAbility: `isFacingRight = inputVector.x >= 0`.
         slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
-        slot.force_unground(terrain.platforms, self.tick);
+        UngroundBody::Form(slot).unground(terrain.platforms, self.tick, true);
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.exit_to_fall();
         slot.reported_position = slot.base.position;
@@ -32119,9 +32135,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         // GunTransform.ExitAbility: `isFacingRight = inputVector.x >= 0`.
         slot.facing_right = slot.gun.aim.x >= Fix::ZERO;
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
-        slot.force_unground(terrain.platforms, self.tick);
+        UngroundBody::Form(slot).unground(terrain.platforms, self.tick, true);
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.exit_to_fall();
         slot.reported_position = slot.base.position;
@@ -32172,9 +32186,7 @@ impl RolloutWorld {
             if slot.base.outside_bounds() {
                 slot.base.alive = false; // game_tick attributes it after this updater
                 slot.base.out_of_bounds = true;
-                slot.base.rotation = Fix::ZERO;
-                slot.base.up = Vec2::UP;
-                slot.force_unground(&self.platforms, self.tick);
+                UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
                 slot.reported_position = slot.base.position;
                 return;
             }
@@ -32247,12 +32259,12 @@ impl RolloutWorld {
             let dead = lost.as_ref().and_then(|lost| lost.attached(tick));
             let resting = slot.base.velocity.length_squared() <= Fix::from_f32(1e-6);
             if dead.is_some() && resting && !slot.bow.has_fired {
-                slot.base.unground_off(dead, true);
+                slot.base.unground(dead, true);
                 moved_off = true;
             } else if lost.is_some() {
-                slot.base.unground_off(dead, false);
-            } else {
-                slot.base.unground_inactive(platforms);
+                slot.base.unground(dead, false);
+            } else if platforms.iter().any(|p| !p.active && Some(p.id) == slot.base.ground) {
+                UngroundBody::Form(slot).unground(platforms, tick, false);
             }
             if !slot.base.grounded && !moved_off {
                 slot.form_gravity[slot.active_slot] = Fix::from_f32(0.03);
@@ -32405,7 +32417,7 @@ impl RolloutWorld {
                     .map_or(slot.base.up, |platform| platform.surface.normal(slot.base.position)),
             };
             slot.base.velocity = -(normal * bow.knockback);
-            slot.force_unground(platforms, tick);
+            UngroundBody::Form(slot).unground(platforms, tick, false);
             slot.bow.fire_ticks_left = bow.fire_ground_ticks;
         } else {
             slot.base.velocity = -(aim * bow.knockback);
@@ -33890,7 +33902,12 @@ impl RolloutWorld {
             slot.late_obs_state = slot.obs_state;
             slot.captured_by_ball = Some(item_index);
             slot.poke_invulnerable = true;
-            slot.force_unground(&self.platforms, self.tick);
+            // BeginCapture applies ragdoll first, then UnGround invokes
+            // SlimeController.OnNoLongerGrounded and overwrites the state with
+            // Fall. Until a hold ragdolls it again, the slime's next pass is an
+            // ordinary falling one, Move and its landing rays included;
+            // PlayerPhysics.skipNextUpdate only suppresses its gravity.
+            UngroundBody::Slime(slot).unground(&self.platforms, self.tick, false);
             slot.base.position = capture_position;
             slot.base.velocity = Vec2::ZERO;
             if sync_collider {
@@ -33900,14 +33917,6 @@ impl RolloutWorld {
             }
             slot.late_obs_position = capture_position;
             slot.late_obs_state = STATE_FALL;
-            // BeginCapture applies ragdoll first, then UnGround invokes
-            // SlimeController.OnNoLongerGrounded and overwrites the state with
-            // Fall. Until a hold ragdolls it again, the slime's next pass is an
-            // ordinary falling one, Move and its landing rays included;
-            // PlayerPhysics.skipNextUpdate only suppresses its gravity.
-            slot.obs_state = STATE_FALL;
-            slot.state_ticks = 0;
-            slot.ragdoll = RagdollState::default();
             slot.base.skip_next_gravity = true;
         }
         // victimPlayer.isInvisible (PokeBall.cs:190) is the Player's.
@@ -33935,14 +33944,12 @@ impl RolloutWorld {
         let clone = &mut self.abilityless_clones[clone_index];
         clone.captured_by_ball = Some(item_index);
         clone.poke_invulnerable = true;
-        clone.force_unground(&self.platforms, self.tick);
+        // UnGround's OnNoLongerGrounded overwrites BeginCapture's ragdoll
+        // with fall, as for a player victim.
+        UngroundBody::Clone(clone).unground(&self.platforms, self.tick, false);
         clone.base.position = capture_position;
         clone.base.velocity = Vec2::ZERO;
         clone.base.sync_collider();
-        // UnGround's OnNoLongerGrounded overwrites BeginCapture's ragdoll
-        // with fall, as for a player victim.
-        clone.obs_state = STATE_FALL;
-        clone.state_ticks = 0;
         self.players[owner].invisible = true;
         let item = &mut self.thrown_items[item_index];
         item.capture_victim = Some(clone_index);
@@ -39963,7 +39970,7 @@ impl RolloutWorld {
             clone.base.rotation = Fix::ZERO;
             clone.base.up = Vec2::UP;
             clone.base.skip_next_gravity = true;
-            clone.base.unground_off(lost.attached(self.tick), false);
+            clone.base.unground(lost.attached(self.tick), false);
             clone.base.ground = None;
         }
         let stopped =
@@ -42546,10 +42553,7 @@ impl RolloutWorld {
             // resets rotation, then PlayerPhysics.UnGround moves the form one
             // 0.05-unit surface-normal step before Ability copies that
             // position back to the slime and stock logic reads it.
-            let slot = &mut self.players[index];
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
-            slot.force_unground(&self.platforms, self.tick);
+            UngroundBody::Form(&mut self.players[index]).unground(&self.platforms, self.tick, true);
         }
         if form_exit
             && matches!(self.players[index].active, ActiveAbility::Gust | ActiveAbility::Revival)
@@ -42563,15 +42567,10 @@ impl RolloutWorld {
             } else {
                 slot.revival.attached_ground
             };
-            let normal = ground.and_then(|id| {
-                self.platforms
-                    .iter()
-                    .find(|platform| platform.id == id)
-                    .map(|platform| platform.surface.normal(slot.base.position))
+            let surface = ground.and_then(|id| {
+                self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
             });
-            if let Some(normal) = normal {
-                slot.base.position += normal * Fix::from_f32(0.05);
-            }
+            slot.base.unground(surface, true);
         }
         // Roll.ExitAbility hands a grounded ball's exit position in by the
         // radius difference along the ground normal (Roll.cs:216-219), and
@@ -42826,7 +42825,16 @@ impl RolloutWorld {
             }
             // The stock branch of killPlayer starts with UnGround, which
             // steps the body off even a stale attachedGround.
-            slot.force_unground(&self.platforms, self.tick);
+            // gap: UnGround() nulls the rotation and raises OnNoLongerGrounded;
+            // begin_stock_respawn overwrites the rotation and state, not the
+            // ragdoll.
+            unground_physics(
+                &mut slot.base,
+                &mut slot.ground_destroyed,
+                &self.platforms,
+                self.tick,
+                false,
+            );
             // Player.Position keeps the destroyed slime's last SetPosition
             // until the clone's first OldUpdate on the next pass: this pass's
             // publish if it already ran, else the last pass's.
@@ -46278,9 +46286,7 @@ fn bow_exit(slot: &mut PlayerSlot, entities: &mut [CEntity], terrain: Terrain, t
         // own attached ground cleared first (PlayerPhysics.cs:577).
         // ExitAbility zeroes the rotation itself (BowTransform.cs:119), so an
         // airborne Bow with no retained ground leaves unrotated too.
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
-        slot.force_unground(platforms, tick);
+        UngroundBody::Form(slot).unground(platforms, tick, true);
         slot.reported_position = slot.base.position; // Ability.cs:151
         slot.base.ground = None;
         slot.restore_slime_radius();

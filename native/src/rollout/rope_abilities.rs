@@ -377,9 +377,7 @@ fn pin_grounded_rope_end(
             > Fix::from_int(30)
     {
         // Gated on a live ground: nothing destroyed to fall back on.
-        body.force_unground(platforms, None);
-        body.rotation = Fix::ZERO;
-        body.up = Vec2::UP;
+        body.unground(Some(&platform.surface), true);
         ungrounded = true;
     }
     rope.physics.segment[endpoint] = body.position;
@@ -1112,9 +1110,14 @@ impl RolloutWorld {
         if self.players[player].base.grounded {
             // UnGround raises OnNoLongerGrounded: State.fall.
             let slot = &mut self.players[player];
-            slot.force_unground(&self.platforms, self.tick);
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
+            // gap: it also ends the ragdoll.
+            unground_physics(
+                &mut slot.base,
+                &mut slot.ground_destroyed,
+                &self.platforms,
+                self.tick,
+                true,
+            );
             slot.base.velocity += Vec2::UP * WEB_GROUNDED_POP;
             slot.obs_state = STATE_FALL;
             slot.state_ticks = 0;
