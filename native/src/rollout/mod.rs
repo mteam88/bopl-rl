@@ -1059,6 +1059,10 @@ pub struct MissileFormState {
     /// once it is destroyed, when SparkShot's sparkBody reads null.
     pub projectile_hierarchy: u32,
     pub collider_rotation: Fix,
+    /// The hurtbox centre OnEnterAbility synced, which DetPhysics keeps
+    /// until the entry pass's Simulate.
+    pub entry_tick: Option<u32>,
+    pub entry_center: Vec2,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -10452,6 +10456,8 @@ impl RolloutWorld {
                             slot.telemetry.ability_activations[s] += 1;
                             slot.missile = MissileFormState {
                                 collider_rotation: entry_rotation,
+                                entry_tick: Some(self.tick),
+                                entry_center: form_position,
                                 ..MissileFormState::default()
                             };
                             // Ability.EnterAbility assigns Player.Scale to
@@ -29950,8 +29956,13 @@ impl RolloutWorld {
             }
             // SparkShot.OnEnterAbility syncs its hurtbox too (SparkShot.cs:89-90).
             ActiveAbility::Missile => {
+                let center = if slot.missile.entry_tick == Some(self.tick) {
+                    slot.missile.entry_center
+                } else {
+                    slot.base.collider.center
+                };
                 return Some(slot.forms[slot.active_slot].hurtbox(
-                    slot.base.collider.center,
+                    center,
                     Vec2::angle(slot.missile.collider_rotation),
                     data.missile.hurtbox_extents,
                 ));
