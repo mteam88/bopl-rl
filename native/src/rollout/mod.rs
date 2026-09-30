@@ -1743,7 +1743,6 @@ pub struct BowState {
 #[derive(Clone, Copy, Default)]
 pub struct RockState {
     pub body: Body,
-    pub collider_radius: Fix,
     /// The circle DetPhysics' broadphase swept this pass, before any
     /// correction moved it.
     pub swept: Circle,
@@ -1752,7 +1751,6 @@ pub struct RockState {
     pub scale_sum: Fix,
     pub exit_scale: Fix,
     pub scale_last_frame: Fix,
-    pub scale: Fix,
     pub exiting: bool,
     pub previous_player_velocity: Vec2,
 }
@@ -3258,6 +3256,19 @@ impl PlayerSlot {
     fn gun_offset(&self, s: usize, offset: Vec2) -> Vec2 {
         let form = &self.forms[s];
         if form.scale == Fix::ZERO { offset * self.base.scale } else { form.offset }
+    }
+
+    /// The slot whose Rock prefab holds the form's row.
+    fn rock_slot(&self) -> usize {
+        (self.form_entities.iter())
+            .position(|&e| e != usize::MAX && e == self.rock_entity)
+            .unwrap_or(self.active_slot)
+    }
+
+    /// BounceBall's DPhysicsCircle: its radius and Scale, kept by its slot's
+    /// prefab between uses like any other form collider.
+    fn rock_circle(&self) -> &FormScale {
+        &self.forms[self.rock_slot()]
     }
 
     /// The slot whose ability prefab registered `entity`. A forced exit leaves
@@ -8440,7 +8451,7 @@ impl RolloutWorld {
                 }
                 let rock_circle = Circle {
                     center: self.players[rock_index].base.position,
-                    radius: self.players[rock_index].rock.collider_radius,
+                    radius: self.players[rock_index].rock_circle().circle_radius,
                 };
                 // SortAndSweepXAxis supplies circle A from the lower AABB
                 // minimum. Rock colliders are registered before spawned shots,
@@ -8543,7 +8554,7 @@ impl RolloutWorld {
                 let item_circle = Circle { center: self.thrown_items[item_index].position, radius };
                 let rock_circle = Circle {
                     center: self.players[rock_index].base.position,
-                    radius: self.players[rock_index].rock.collider_radius,
+                    radius: self.players[rock_index].rock_circle().circle_radius,
                 };
                 // SortAndSweep makes A the circle whose box starts first.
                 let item_first = axis(item_swept.center) - item_swept.radius
@@ -10896,16 +10907,8 @@ impl RolloutWorld {
                         } else {
                             self.players[index].base.position
                         };
-                        // Ability.EnterAbility rescales the form's own collider
-                        // from the scale it was left at, keeping its Q32 residue;
-                        // a new form starts from the prefab radius.
-                        let collider_radius = if self.players[index].form_entities[s] == usize::MAX {
-                            data.rock.radius
-                        } else {
-                            let rock = &self.players[index].rock;
-                            rock.collider_radius * (Fix::ONE / rock.scale)
-                        };
                         if self.players[index].form_entities[s] == usize::MAX {
+                            self.players[index].forms[s] = FormScale::default();
                             let id = self.next_id();
                             let entity = self.entities.len();
                             self.entities.push(CEntity {
@@ -10962,19 +10965,21 @@ impl RolloutWorld {
                         // off the slime's own position (BounceBall.cs:131).
                         slot.reported_position = form_position;
                         slot.reported_tick = self.tick;
+                        // Ability.EnterAbility rescales the slot's own circle
+                        // from the scale its last use left, keeping its Q32
+                        // residue; a new form starts from the prefab radius.
+                        slot.forms[s].set_circle_scale(Fix::ONE, data.rock.radius);
                         slot.rock = RockState {
                             body,
-                            collider_radius,
                             exit_scale: Fix::ONE,
                             scale_last_frame: Fix::ONE,
-                            scale: Fix::ONE,
                             previous_player_velocity: velocity,
                             ..RockState::default()
                         };
                         // BounceBall.cs:146-151: a roped entry stretches a
                         // short rope to minRopeLength at the form's scale.
                         if let Some(rope_index) = self.players[index].rope {
-                            let scale = self.players[index].rock.scale;
+                            let scale = self.players[index].forms[s].scale;
                             let rope = &mut self.ropes[rope_index].physics;
                             let count = Fix::from_int(rope.count as i64);
                             if rope.separation * count < data.rock.min_rope_length * scale {
@@ -12247,9 +12252,9 @@ impl RolloutWorld {
             // Ability.UpdateSim restores the owning player's unit scale before
             // DetPhysics. DPhysicsCircle applies the ratio against the pulse
             // left by BounceBall.LateUpdateSim, retaining its Q32 residue.
-            let st = &mut self.players[index].rock;
-            st.collider_radius *= Fix::ONE / st.scale;
-            st.scale = Fix::ONE;
+            let slot = &mut self.players[index];
+            let s = slot.rock_slot();
+            slot.forms[s].set_circle_scale(Fix::ONE, data.rock.radius);
             self.rock_rope_update(index, jump_pressed, data);
             // Rock's DestroyIfOutsideSceneBounds runs after BounceBall and
             // before its BoplBody, observing the previous physics pass's
@@ -26670,7 +26675,7 @@ impl RolloutWorld {
             if player.active == ActiveAbility::Rock {
                 let circle = Circle {
                     center: player.base.position,
-                    radius: player.rock.collider_radius,
+                    radius: player.rock_circle().circle_radius,
                 };
                 consider(
                     MagnetHeld::Rock(player_index),
@@ -27469,7 +27474,7 @@ impl RolloutWorld {
                 self.players[i].rock.time -= holder_dt;
                 let correction = self.magnet_circle_out_of_walls(Circle {
                     center: position,
-                    radius: self.players[i].rock.collider_radius,
+                    radius: self.players[i].rock_circle().circle_radius,
                 });
                 let rock = &mut self.players[i];
                 rock.base.position = position + correction;
@@ -28453,7 +28458,8 @@ impl RolloutWorld {
         if self.players[victim].active == ActiveAbility::Rock {
             let source_position = self.players[victim].base.position;
             let source = self.players[victim].rock;
-            let position = source_position + direction * Fix::from_int(4) * source.scale;
+            let source_scale = self.players[victim].rock_circle().scale;
+            let position = source_position + direction * Fix::from_int(4) * source_scale;
             let mut body = data.rock.body;
             body.velocity = (position - source_position).normalized_safe()
                 * (source.body.velocity.length() + Fix::from_int(15));
@@ -28467,7 +28473,7 @@ impl RolloutWorld {
                 owner: victim,
                 position,
                 body,
-                scale: source.scale,
+                scale: source_scale,
                 duplicate_lifespan: 1800,
                 duplicate_shake_offset: Vec2::ZERO,
                 hierarchy_base: self.next_spawn_hierarchy,
@@ -35548,7 +35554,7 @@ impl RolloutWorld {
                 if let Some(contact) = crate::physics::contact::circle_circle(
                     Circle {
                         center: player.base.position,
-                        radius: player.rock.collider_radius,
+                        radius: player.rock_circle().circle_radius,
                     },
                     circle,
                 ) {
@@ -38004,7 +38010,7 @@ impl RolloutWorld {
                         circle,
                         Circle {
                             center: player.base.position,
-                            radius: player.rock.collider_radius,
+                            radius: player.rock_circle().circle_radius,
                         },
                     )
                     .is_some()
@@ -40782,7 +40788,7 @@ impl RolloutWorld {
             return;
         }
 
-        let scale = self.players[index].rock.scale;
+        let scale = self.players[index].rock_circle().scale;
         let velocity = self.players[index].rock.body.velocity;
         let previous = self.players[index].rock.previous_player_velocity;
         let position = self.players[index].base.position;
@@ -40932,7 +40938,7 @@ impl RolloutWorld {
                 center: slot.base.position,
                 // Ability.UpdateSim restores Player.Scale before DetPhysics;
                 // BounceBall's pulse is applied only in the later LateUpdate.
-                radius: slot.rock.collider_radius,
+                radius: slot.rock_circle().circle_radius,
             };
             swept[rock_index] = circle;
             for (wall_index, platform) in self.platforms.iter().enumerate() {
@@ -41126,7 +41132,7 @@ impl RolloutWorld {
             } else {
                 Circle {
                     center: self.players[index].base.position,
-                    radius: self.players[index].rock.collider_radius,
+                    radius: self.players[index].rock_circle().circle_radius,
                 }
             }
         };
@@ -41165,7 +41171,7 @@ impl RolloutWorld {
                     if pickup_first { (b, a - PICKUP) } else { (a, b - PICKUP) };
                 let rock_circle = Circle {
                     center: self.players[rock_index].base.position,
-                    radius: self.players[rock_index].rock.collider_radius,
+                    radius: self.players[rock_index].rock_circle().circle_radius,
                 };
                 let pickup = self.ability_pickups[pickup_index];
                 let pickup_center = pickup.position + pickup.offset;
@@ -41283,7 +41289,7 @@ impl RolloutWorld {
                 }
                 let circle = Circle {
                     center: self.players[rock_index].base.position,
-                    radius: self.players[rock_index].rock.collider_radius,
+                    radius: self.players[rock_index].rock_circle().circle_radius,
                 };
                 let Some(contact) = crate::physics::contact::circle_box(circle, attack_box) else {
                     continue;
@@ -41345,7 +41351,7 @@ impl RolloutWorld {
             }
             let rock = Circle {
                 center: centers[rock_index],
-                radius: self.players[rock_index].rock.collider_radius,
+                radius: self.players[rock_index].rock_circle().circle_radius,
             };
             for victim in 0..self.players.len() {
                 if victim == rock_index
@@ -41481,7 +41487,9 @@ impl RolloutWorld {
             } else {
                 DT * self.player_time_scale
             };
-            let st = &mut self.players[index].rock;
+            let slot = &mut self.players[index];
+            let s = slot.rock_slot();
+            let (st, circle) = (&mut slot.rock, &mut slot.forms[s]);
             if st.time > data.rock.max_duration && !st.exiting {
                 st.exiting = true;
                 st.exit_scale = Fix::ONE - st.scale_sum;
@@ -41492,9 +41500,9 @@ impl RolloutWorld {
                 if st.exit_time > data.rock.exit_time {
                     let exit_scale = st.exit_scale;
                     let velocity = st.body.velocity;
+                    circle.scale = exit_scale;
+                    circle.circle_radius *= exit_scale;
                     let slot = &mut self.players[index];
-                    slot.rock.scale = exit_scale;
-                    slot.rock.collider_radius *= exit_scale;
                     slot.set_active_form(&mut self.entities, ActiveAbility::None);
                     slot.base.velocity = velocity;
                     slot.base.external_velocity = Vec2::ZERO;
@@ -41516,19 +41524,19 @@ impl RolloutWorld {
                 }
                 let delta = Fix::ONE - st.scale_last_frame;
                 st.exit_scale += delta;
-                st.scale = data.rock.exit_scale.evaluate(st.exit_time) * st.exit_scale;
-                st.collider_radius *= st.scale;
+                circle.scale = data.rock.exit_scale.evaluate(st.exit_time) * st.exit_scale;
+                circle.circle_radius *= circle.scale;
             } else {
                 let amount = data.rock.enter_scale.evaluate(st.time);
                 // DetPhysics synchronizes the collider from FixTransform before
                 // each LateUpdateSim. SetScale_DPhysicsOnly does not change the
                 // transform's authoritative public scale, so the getter starts
                 // from the entry scale again on the following pass.
-                st.scale = Fix::ONE + amount;
-                st.collider_radius *= st.scale;
+                circle.scale = Fix::ONE + amount;
+                circle.circle_radius *= circle.scale;
                 st.scale_sum += amount;
             }
-            st.scale_last_frame = st.scale;
+            st.scale_last_frame = circle.scale;
         }
     }
 
@@ -44635,7 +44643,7 @@ impl RolloutWorld {
                     circle.y = slot.base.position.y.raw();
                     circle.vx = slot.rock.body.velocity.x.raw();
                     circle.vy = slot.rock.body.velocity.y.raw();
-                    circle.radius = slot.rock.collider_radius.raw();
+                    circle.radius = slot.rock_circle().circle_radius.raw();
                     circle.rotation = slot.rock.body.orientation.raw();
                     circle.angular_velocity = slot.rock.body.angular_velocity.raw();
                     circle.inverse_mass = data.rock.body.inverse_mass.raw();
@@ -47150,7 +47158,8 @@ mod tests {
         let target_entity = world.players[1].body_entity;
         world.players[0].set_active_form(&mut world.entities, ActiveAbility::Rock);
         world.players[0].rope = Some(0);
-        world.players[0].rock.collider_radius = data::get().rock.radius;
+        world.players[0].forms[0] =
+            FormScale { scale: Fix::ONE, circle_radius: data::get().rock.radius, ..FormScale::default() };
         world.players[0].rock.body.force = Vec2::ZERO;
         world.players[0].base.position = Vec2::new(
             Fix::from_raw(world.entities[target_entity].x),

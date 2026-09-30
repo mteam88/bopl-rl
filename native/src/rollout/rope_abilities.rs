@@ -834,7 +834,7 @@ impl RolloutWorld {
                     circle_query,
                     Circle {
                         center: self.players[candidate].base.position,
-                        radius: self.players[candidate].rock.collider_radius,
+                        radius: self.players[candidate].rock_circle().circle_radius,
                     },
                 )
                 .is_some()
@@ -1793,7 +1793,7 @@ impl RolloutWorld {
                 if slot.active == ActiveAbility::Rock {
                     let rock = Circle {
                         center: slot.base.position,
-                        radius: slot.rock.collider_radius,
+                        radius: slot.rock_circle().circle_radius,
                     };
                     if rock_victim.is_none()
                         && crate::physics::contact::circle_circle(circle, rock).is_some()
@@ -1952,7 +1952,7 @@ impl RolloutWorld {
             }
             if let Some(parent) = parent {
                 let scale = match parent {
-                    RopeParent::Rock(player) => self.players[player].rock.scale,
+                    RopeParent::Rock(player) => self.players[player].rock_circle().scale,
                     RopeParent::Item(item, _) => self.thrown_items[item].scale,
                     RopeParent::Shot(..) => Fix::ONE,
                     RopeParent::Spike(spike, _) => self.spike_attacks[spike].scale,
