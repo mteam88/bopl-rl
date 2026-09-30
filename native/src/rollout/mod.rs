@@ -9973,8 +9973,11 @@ impl RolloutWorld {
         // The check is gated on isGrounded (SlimeController.cs:1063): a
         // rewind that ended on the pass the ground went away already lifted
         // the slime off it, so the record is stale.
-        if let Some(lost) = lost
-            && !finds_it_later
+        // attachedGround is already null when a SyncPhysicsTo airborne arm
+        // dropped a destroyed ground, and UnGround has nothing to lift off.
+        let null_ground = self.players[index].active == ActiveAbility::None
+            && self.players[index].base.ground.is_none();
+        if (lost.is_some() && !finds_it_later || null_ground)
             && self.players[index].base.grounded
         {
             let tick = self.tick;
@@ -10001,7 +10004,8 @@ impl RolloutWorld {
             // Spike finds it in its UpdateSim's Move, whose UnGround() nulls
             // the rotation (Spike.cs:163-166, PlayerPhysics.cs:216-219).
             let null_rotation = slot.active == ActiveAbility::Spike;
-            slot.base.unground_off(lost.attached(tick), null_rotation);
+            let attached = lost.as_ref().and_then(|lost| lost.attached(tick));
+            slot.base.unground_off(attached, null_rotation);
             slot.base.ground = None;
         }
         if !in_ability {
@@ -13591,6 +13595,14 @@ impl RolloutWorld {
             .ground
             .and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
         else {
+            // A destroyed attachedGround takes the airborne arm, which keeps
+            // isGrounded but nulls the ground and the rotation
+            // (PlayerPhysics.SyncPhysicsTo).
+            slot.base.ground = None;
+            slot.base.grounded_speed = Fix::ZERO;
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+            slot.ground_destroyed = None;
             return false;
         };
         let position = platform.surface.position(slot.base.local, form_radius);

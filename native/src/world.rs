@@ -1127,8 +1127,13 @@ impl Player {
         self.apply_ground_state(motion);
     }
     pub(crate) fn late_step(&mut self, platforms: &[Platform]) {
-        if self.alive && self.grounded && !self.dash.active {
-            let platform = self.platform(platforms).unwrap();
+        // A grounded body whose attachedGround is null or destroyed stays put
+        // (PlayerPhysics.LateUpdateSim).
+        if self.alive
+            && self.grounded
+            && !self.dash.active
+            && let Some(platform) = self.platform(platforms)
+        {
             self.position = platform.surface.position(self.local, self.radius);
             self.align(platform);
         }
