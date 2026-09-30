@@ -33031,14 +33031,12 @@ impl RolloutWorld {
         self.next_platform_id += 1;
         self.platform_defs.push(usize::MAX);
         self.platform_entities.push(entity);
-        // CreatePlatform immediately calls ResizePlatform with the prefab
-        // dimensions after ManualInit. That recomputes mass and inertia even
-        // though the geometry itself did not change.
-        self.reshape_platform(
-            platform_index,
-            pd.spawn_extents * scale,
-            pd.spawn_radius * scale,
-        );
+        // CreatePlatform immediately calls ResizePlatform with the collider's
+        // CalcExtents and radius after ManualInit (PlatformTransform.cs:164-165).
+        // That recomputes mass and inertia, and re-reads the extents through
+        // One / (One / e).
+        let collider = self.platforms[platform_index].collider;
+        self.reshape_platform(platform_index, collider.calc_extents(), collider.radius);
         // CreatePlatform explicitly activates a new body's sudden-death mode
         // only when the global transition is already in progress.
         // Init clears it again, so the body's first pass draws afresh.
