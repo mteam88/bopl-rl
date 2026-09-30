@@ -137,6 +137,8 @@ pub(crate) struct RolloutRope {
     pub rope_time: Fix,
     pub reel_out_time: Fix,
     pub reel_in: bool,
+    /// Rope.hookArrived: the hook met something it collides with.
+    pub hook_arrived: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -489,6 +491,7 @@ fn empty_rope() -> RolloutRope {
         rope_time: Fix::ZERO,
         reel_out_time: Fix::ZERO,
         reel_in: false,
+        hook_arrived: false,
     }
 }
 
@@ -610,6 +613,7 @@ impl RolloutWorld {
         rope.rope_time = Fix::ZERO;
         rope.reel_out_time = Fix::ZERO;
         rope.reel_in = false;
+        rope.hook_arrived = false;
         for j in 0..SEGMENTS {
             let point = anchor
                 + (player - anchor) * Fix::from_int(j as i64) / Fix::from_int(SEGMENTS as i64);
@@ -969,7 +973,7 @@ impl RolloutWorld {
             self.ropes[index].rope_time += DT;
             // Rope.UpdateSim times out a rope whose hook has not arrived, even
             // one already reeled out to full length.
-            if self.ropes[index].physics.time_since_hook_arrived < Fix::ZERO
+            if !self.ropes[index].hook_arrived
                 && self.ropes[index].rope_time > source.rope_max_travel_time
             {
                 self.disable_rope(index);
@@ -1676,6 +1680,21 @@ impl RolloutWorld {
                     self.scratch.hook_smoke_hits.push(index);
                 }
             }
+            // RopeHook.OnCollide marks the hook arrived before it looks at the
+            // layer, so an AbilityPickup on the weapon layer, which it does not
+            // attach to, still ends the reel-out (RopeHook.cs:115-120).
+            if self.ability_pickups.iter().any(|pickup| {
+                pickup.active
+                    && pickup.enabled
+                    && crate::physics::contact::circle_circle(
+                        circle,
+                        Circle { center: pickup.position + pickup.offset, radius: pickup.radius },
+                    )
+                    .is_some()
+            }) {
+                self.ropes[rope_index].reel_in = true;
+                self.ropes[rope_index].hook_arrived = true;
+            }
             let mut attached = None;
             for platform in 0..self.platforms.len() {
                 if self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
@@ -1708,6 +1727,7 @@ impl RolloutWorld {
                 rope.hook_hit = Some(position);
                 rope.platform_pull = platform_pull;
                 rope.reel_in = true;
+                rope.hook_arrived = true;
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
@@ -1751,6 +1771,7 @@ impl RolloutWorld {
                 rope.black_hole = Some(hole_index);
                 rope.black_hole_reel_frames = 0;
                 rope.reel_in = true;
+                rope.hook_arrived = true;
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
@@ -1899,6 +1920,7 @@ impl RolloutWorld {
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.time_since_hook_arrived = Fix::ZERO;
                 rope.reel_in = true;
+                rope.hook_arrived = true;
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
@@ -1958,6 +1980,7 @@ impl RolloutWorld {
                 rope.parent = Some(parent);
                 rope.parent_offset = offset;
                 rope.reel_in = true;
+                rope.hook_arrived = true;
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
@@ -1979,6 +2002,7 @@ impl RolloutWorld {
                 let rope = &mut self.ropes[rope_index];
                 rope.physics.time_since_hook_arrived = Fix::ZERO;
                 rope.reel_in = true;
+                rope.hook_arrived = true;
                 rope.hook_active = false;
                 rope.hook_remove_next = true;
                 if let Some(entity) = rope.hook_entity {
