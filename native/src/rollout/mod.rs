@@ -2035,8 +2035,8 @@ pub struct BlackHoleCastState {
     pub collider_position: Vec2,
     pub collider_up: Vec2,
     pub collider_rotation: Fix,
-    /// The form's rotation and up when a grounded exit re-placed the slime:
-    /// its frozen FixTransform keeps them.
+    /// The form's rotation and up at its exit: its frozen FixTransform keeps
+    /// them while the exit re-places or levels the slime.
     pub exit_pose: Option<(Fix, Vec2)>,
 }
 
@@ -16426,8 +16426,12 @@ impl RolloutWorld {
                     .base
                     .move_only(Vec2::ZERO, terrain!(self));
             } else {
-                // BlackHoleClap's lost-ground exit hands over isFacingRight true.
-                self.players[index].facing_right = true;
+                // BlackHoleClap's lost-ground exit zeroes the form body's
+                // rotation and hands over isFacingRight true.
+                let slot = &mut self.players[index];
+                slot.facing_right = true;
+                slot.base.rotation = Fix::ZERO;
+                slot.base.up = Vec2::UP;
                 self.exit_black_hole_form(index, false);
                 return;
             }
@@ -16550,6 +16554,7 @@ impl RolloutWorld {
             slot.reported_tick = self.tick;
             return;
         } else {
+            slot.black_hole_cast.exit_pose = Some((slot.base.rotation, slot.base.up));
             slot.restore_slime_radius();
             slot.base.rotation = Fix::ZERO;
             slot.base.up = Vec2::UP;
