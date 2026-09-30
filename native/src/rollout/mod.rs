@@ -9805,7 +9805,30 @@ impl RolloutWorld {
             // controller's input. Cooldowns still advance, SlimeController
             // calls Move(zero), and PlayerBody remains live ahead of the
             // recorder.
+            let tick = self.tick;
             let slot = &mut self.players[index];
+            // SlimeController's destroyed-ground check still runs ahead of
+            // OldUpdate: it levels the slime, UnGround(false) lifts it off the
+            // dead surface, and OnNoLongerGrounded sets State.fall
+            // (SlimeController.cs:1061-1065).
+            if let Some(lost) = slot.ground_destroyed.take()
+                && slot.base.grounded
+            {
+                slot.base.rotation = Fix::ZERO;
+                slot.base.up = Vec2::UP;
+                slot.base.unground_off(lost.attached(tick), false);
+                slot.base.ground = None;
+                if matches!(
+                    slot.obs_state,
+                    STATE_IDLE | STATE_RUN | STATE_LAND | STATE_STOP | STATE_TURN
+                ) {
+                    slot.obs_state = STATE_FALL;
+                    slot.state_ticks = 0;
+                }
+            }
+            // OldUpdate publishes the body position (SlimeController.cs:712).
+            slot.reported_position = slot.base.position;
+            slot.reported_tick = tick;
             slot.obs_input_suppressed_this_tick = true;
             for timer in &mut slot.timers {
                 *timer += DT;
