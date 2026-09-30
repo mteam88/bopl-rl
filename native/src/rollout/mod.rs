@@ -743,6 +743,9 @@ pub struct GuidedMissile {
     /// `(1 / old) * new`.
     pub inverse_extents: Vec2,
     pub instability_ticks: u32,
+    /// The pass whose Updater turn Missile.UpdateSim has taken. A newer
+    /// updater, such as a Shockwave, acts on the missile after its thrust.
+    pub updater_ran_tick: Option<u32>,
     /// `DetPhysics.duplicatedObjects` state for Missile copies. Keeping this
     /// on the pooled projectile avoids a side allocation in the hot path.
     pub duplicated: bool,
@@ -8074,6 +8077,15 @@ impl RolloutWorld {
                 push(100_000_000 + clone.hierarchy_base, 14, i);
             }
         }
+        for (i, missile) in self.guided_missiles.iter().enumerate() {
+            if missile.active
+                && missile.registered
+                && missile.updater_ran_tick != Some(tick)
+                && !self.blink_object_hidden(missile.entity)
+            {
+                push(100_000_000 + missile.hierarchy_base, 16, i);
+            }
+        }
         queue.sort_unstable();
         for &(hierarchy, kind, index) in &queue {
             let turn = hierarchy..hierarchy + 1;
@@ -8121,6 +8133,10 @@ impl RolloutWorld {
                     let clone = &mut self.abilityless_clones[index];
                     clone.pass_start = (tick, clone.base.position);
                     self.abilityless_clone_update_tagged(index);
+                }
+                16 => {
+                    let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
+                    self.guided_missile_update_sim(index, DT * self.player_time_scale, being_held, data);
                 }
                 _ => self.thrown_item_body_step(index),
             }
@@ -33610,19 +33626,10 @@ impl RolloutWorld {
                 continue;
             }
 
-            let missile = &mut self.guided_missiles[index];
-            missile.instability_ticks += 1;
-            // SparkShot.UpdateSim still advances its instability counter while
-            // GameTime is frozen, but AddForce scales by FixedTimeStep. Do not
-            // leave thrust queued for the first unfrozen DetPhysics pass.
-            if physics_dt > Fix::ZERO && !being_held {
-                if missile.instability_ticks >= 3 {
-                    missile.body.force += missile.up * data.missile.instability_accel;
-                } else if missile.up.dot(missile.body.velocity) < data.missile.minimum_forward_speed
-                {
-                    missile.body.force += missile.up * data.missile.accel;
-                }
+            if self.guided_missiles[index].updater_ran_tick != Some(self.tick) {
+                self.guided_missile_update_sim(index, physics_dt, being_held, data);
             }
+            let missile = &mut self.guided_missiles[index];
             missile.position += missile.body.integrate(physics_dt, Fix::from_int(-40));
             self.sync_guided_missile_entity(index);
             // DetPhysics writes PhysicsBody.orientation back through the
@@ -33630,6 +33637,32 @@ impl RolloutWorld {
             // basis that SparkShot reads on the following updater pass.
             let missile = &mut self.guided_missiles[index];
             missile.up = Vec2::angle(missile.body.orientation).perp();
+        }
+    }
+
+    /// Missile.UpdateSim (Missile.cs:106-126): the thrust reads the velocity
+    /// at the missile's own Updater turn, after the SparkShot that steers it
+    /// and before a newer Shockwave's impulse.
+    fn guided_missile_update_sim(
+        &mut self,
+        index: usize,
+        physics_dt: Fix,
+        being_held: bool,
+        data: &data::RolloutData,
+    ) {
+        let tick = self.tick;
+        let missile = &mut self.guided_missiles[index];
+        missile.updater_ran_tick = Some(tick);
+        missile.instability_ticks += 1;
+        // SparkShot.UpdateSim still advances its instability counter while
+        // GameTime is frozen, but AddForce scales by FixedTimeStep. Do not
+        // leave thrust queued for the first unfrozen DetPhysics pass.
+        if physics_dt > Fix::ZERO && !being_held {
+            if missile.instability_ticks >= 3 {
+                missile.body.force += missile.up * data.missile.instability_accel;
+            } else if missile.up.dot(missile.body.velocity) < data.missile.minimum_forward_speed {
+                missile.body.force += missile.up * data.missile.accel;
+            }
         }
     }
 
