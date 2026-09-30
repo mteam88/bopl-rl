@@ -635,10 +635,10 @@ pub struct ThrownItem {
     pub prev_chase_dir: Vec2,
     pub prev_rand_vector: Vec2,
     pub prev_velocity_change: Vec2,
-    /// A FixTransform move the collider only takes at the next Simulate: a
-    /// Mine's last shake, or Fire's throw from where ManualInit found the
-    /// payload in the hand.
-    pub pending_shake: Vec2,
+    /// Where ManualInit registered the collider: at the spawn, or in the
+    /// hand when Fire throws a payload spawned this pass. DetPhysics keeps it
+    /// there until the next Simulate.
+    pub synced_center: Vec2,
     /// Poke Ball capture state. `None` is the ordinary flying/fizzle phase.
     pub capture_victim: Option<usize>,
     pub capture_victim_is_clone: bool,
@@ -17038,7 +17038,7 @@ impl RolloutWorld {
                 // FixTransform, which the collider takes at the next Simulate.
                 // An item spawned this pass has its collider at the spawn.
                 let center = if item.born_tick == self.tick {
-                    item.position - item.pending_shake
+                    item.synced_center
                 } else {
                     let row = self.entities[item.entity.unwrap()];
                     Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y))
@@ -24658,7 +24658,7 @@ impl RolloutWorld {
             prev_chase_dir: Vec2::RIGHT,
             prev_rand_vector: Vec2::ZERO,
             prev_velocity_change: Vec2::ZERO,
-            pending_shake: Vec2::ZERO,
+            synced_center: position,
             capture_victim: None,
             capture_victim_is_clone: false,
             capture_left: Fix::ZERO,
@@ -25041,7 +25041,7 @@ impl RolloutWorld {
             prev_chase_dir: Vec2::RIGHT,
             prev_rand_vector: Vec2::ZERO,
             prev_velocity_change: Vec2::ZERO,
-            pending_shake: Vec2::ZERO,
+            synced_center: position,
             capture_victim: None,
             capture_victim_is_clone: false,
             capture_left: Fix::ZERO,
@@ -25111,7 +25111,7 @@ impl RolloutWorld {
                 None => (item.position.x.raw(), item.position.y.raw()),
             };
             if item.entity.is_none() {
-                item.pending_shake = position - item.position;
+                item.synced_center = item.position;
             }
             item.position = position;
             // SpawnGrenade instantiated the payload with the form rotation.
@@ -28855,7 +28855,7 @@ impl RolloutWorld {
             clone.prev_chase_dir = Vec2::RIGHT;
             clone.prev_rand_vector = Vec2::ZERO;
             clone.prev_velocity_change = Vec2::ZERO;
-            clone.pending_shake = Vec2::ZERO;
+            clone.synced_center = position;
             clone.capture_victim = None;
             clone.capture_victim_is_clone = false;
             clone.capture_left = Fix::ZERO;
@@ -33752,7 +33752,6 @@ impl RolloutWorld {
                 mine.position -= mine.prev_velocity_change;
                 let velocity_change = random_vector - mine.prev_rand_vector;
                 mine.position += velocity_change;
-                mine.pending_shake = velocity_change - mine.prev_velocity_change;
                 mine.prev_rand_vector = random_vector;
                 mine.prev_velocity_change = velocity_change;
             }
@@ -34334,9 +34333,6 @@ impl RolloutWorld {
                 continue;
             }
             let item = &mut self.thrown_items[item_index];
-            if item.ability != ABILITY_MINE {
-                item.pending_shake = Vec2::ZERO;
-            }
             if updater_dt > Fix::ZERO && item.active && item.magnet_holder.is_some() {
                 item.magnet_hold_ticks -= 1;
                 if item.magnet_hold_ticks == 0 {
