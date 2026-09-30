@@ -14636,10 +14636,14 @@ impl RolloutWorld {
             .position(local, Fix::ZERO)
             + normal * surface_offset;
         let relative_right = node_right.complex_mul(inverse_basis);
+        // `hitbox.Scale = startScale` clamps to the circle's MinScale before
+        // SetScale_DPhysicsOnly multiplies the offset by `new / old`
+        // (SimpleSparkNode.cs:107, DPhysicsCircle.cs:214-221,
+        // FixTransform.cs:99-103).
+        let collider_offset = data.tesla.node_collider_offset * collider_scale;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
-            + (data.tesla.node_collider_offset * scale).complex_mul(relative_right);
+            + collider_offset.complex_mul(relative_right);
         let relative_rotation = node_rotation - parent_rotation;
-        let collider_offset = data.tesla.node_collider_offset * scale;
 
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
@@ -28829,7 +28833,7 @@ impl RolloutWorld {
         let surface_offset = Fix::from_f64(2.2) * source.scale;
         let root_position = surface_position + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
-            + (data.tesla.node_collider_offset * source.scale).complex_mul(relative_right);
+            + source.collider_offset.complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.tesla.node_updatable_count;
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
@@ -28873,7 +28877,9 @@ impl RolloutWorld {
             scale: source.scale,
             collider_scale: source.collider_scale,
             radius: data.tesla.node_radius * source.collider_scale,
-            collider_offset: data.tesla.node_collider_offset * source.scale,
+            // The copy takes the source's FixTransform.offset
+            // (ShootDuplicator.cs:471).
+            collider_offset: source.collider_offset,
             offset_scale: source.scale,
             body: data.tesla.node_body,
             // Instantiate copies the GameObject's layer: a copy of a lit node
