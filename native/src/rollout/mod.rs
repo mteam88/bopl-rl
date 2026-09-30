@@ -15120,13 +15120,20 @@ impl RolloutWorld {
             dynamics.root_body.force = Vec2::ZERO;
         } else {
             // Remove*FromComposite copies only velocity and angularVelocity
-            // from the retired combined body. The rounded rect's own force
-            // still joins it in DetPhysics.Simulate.
+            // from the retired combined body. The new combined body starts as
+            // a copy of the rounded rect's PhysicsBody struct, whose
+            // compositeParent is still the not-yet-Reset old composite, so the
+            // first CombineBodies keeps its force; it then nulls that
+            // compositeParent, so a second one clears it (DetPhysics.cs:
+            // 1484-1505). With one child left, the rounded rect's force also
+            // stays on its own body and joins again in DetPhysics.Simulate.
             dynamics.body.inverse_mass = inverse_mass;
             dynamics.body.inverse_inertia = inverse_inertia;
             dynamics.body.velocity = old.velocity;
             dynamics.body.angular_velocity = old.angular_velocity;
-            dynamics.body.force = Vec2::ZERO;
+            if count > 1 {
+                dynamics.body.force = Vec2::ZERO;
+            }
         }
         dynamics.attached_children = count;
         dynamics.composite_position = self.platforms[platform_index].surface.center;
