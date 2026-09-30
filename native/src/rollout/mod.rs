@@ -6721,6 +6721,10 @@ impl RolloutWorld {
             self.level_intro_tick(data);
         }
         self.scratch.spawned_platforms_below = 0;
+        // Cleared before the player turns: a ScaleChanger stepped early, in a
+        // player's window or ahead of a form's entry turn, is still newer than
+        // a clone that reads Player.Scale later in the pass.
+        self.scratch.player_scale_changes.clear();
         self.platform_updaters_tick(data, updater_dt);
         self.ability_spawner_tick(data, updater_dt);
         self.beam_inputs.clear();
@@ -7152,7 +7156,6 @@ impl RolloutWorld {
         if has(ABILITY_REWIND) {
             self.rewind_recorders_tick(&player_order[recorded..player_count]);
         }
-        self.scratch.player_scale_changes.clear();
         self.scratch.platform_resizes.clear();
         let action_count = actions.len().min(self.player_count);
         self.scratch.clone_action_count = action_count;
