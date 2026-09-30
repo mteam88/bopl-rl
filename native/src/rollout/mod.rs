@@ -6989,16 +6989,6 @@ impl RolloutWorld {
             .map(|marker| marker.hierarchy_base)
             .min()
             .unwrap_or(u32::MAX);
-        // A rope cast after a runtime-spawned platform updates behind that
-        // platform's AnimateVelocity, so its pull lands on the spring's
-        // angular velocity.
-        let first_platform = self
-            .spawned
-            .iter()
-            .filter(|spawned| spawned.active)
-            .map(|spawned| spawned.hierarchy_base)
-            .min()
-            .unwrap_or(u32::MAX);
         let ropes_before_clones = first_clone.min(first_hammer);
         // A rope hanging from a platform that an older Shrink or Growth Ray
         // ScaleChanger resizes this pass hangs from, and collides with, the
@@ -7023,7 +7013,7 @@ impl RolloutWorld {
             }
         }
         if has_rope {
-            self.ropes_update(0..ropes_before_clones.min(first_teleport).min(first_platform));
+            self.ropes_update(0..ropes_before_clones.min(first_teleport));
         }
         if has(ABILITY_BEAM) {
             self.beam_orbs_tick(data);
@@ -7084,9 +7074,6 @@ impl RolloutWorld {
         // pushes it after its AnimateVelocity spring has read the velocity.
         // Those older than a player object took their turn before it.
         self.spawned_platforms_tick(data, updater_dt, 0..u32::MAX);
-        if has_rope && first_platform < ropes_before_clones.min(first_teleport) {
-            self.ropes_update(first_platform..ropes_before_clones.min(first_teleport));
-        }
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT, 0..deferred_to);
         }

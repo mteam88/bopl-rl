@@ -972,6 +972,11 @@ impl RolloutWorld {
                 continue;
             }
             self.ropes[index].grapple_ran_tick = Some(self.tick);
+            let hierarchy = 100_000_000 + self.ropes[index].hierarchy;
+            self.run_spawned_before(data::get(), DT * self.player_time_scale, hierarchy);
+            if !self.ropes[index].physics.enabled {
+                continue;
+            }
             if self.ropes[index].hook_remove_next {
                 if let Some(entity) = self.ropes[index].hook_entity.take() {
                     self.entities[entity].flags = E_REMOVED;
@@ -1303,11 +1308,16 @@ impl RolloutWorld {
                 continue;
             }
             self.ropes[index].rope_ran_tick = Some(self.tick);
-            // A wall QuantumTunnel registered before this rope (ShootQuantum
-            // reuses a wall's tunnel) has already hidden or restored its wall
-            // when the RopeAttachment asks activeInHierarchy.
+            // The spawned updatables registered before this rope have taken
+            // their turns: a wall QuantumTunnel (ShootQuantum reuses a wall's
+            // tunnel) has hidden or restored its wall when the RopeAttachment
+            // asks activeInHierarchy, and a Throw boulder's ShakablePlatform
+            // has moved the body it reads.
             let hierarchy = self.ropes[index].hierarchy;
-            self.blink_platform_tunnels_tick(data::get(), DT * self.player_time_scale, Some(hierarchy));
+            self.run_spawned_before(data::get(), DT * self.player_time_scale, 100_000_000 + hierarchy);
+            if !self.ropes[index].physics.enabled {
+                continue;
+            }
             if self.ropes[index].physics.time_since_hook_arrived >= Fix::ZERO {
                 self.ropes[index].physics.time_since_hook_arrived += DT * self.player_time_scale;
             }
