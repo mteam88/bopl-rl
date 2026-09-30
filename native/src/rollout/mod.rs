@@ -788,6 +788,13 @@ pub struct SpawnedSpike {
     pub transform_center: Vec2,
     pub surface_offset: Fix,
     pub scale: Fix,
+    /// FixTransform.offset. SetScale_DPhysicsOnly compounds each rescale as
+    /// `offset *= new / old`.
+    pub collider_offset: Vec2,
+    /// The box collider's inverseExtents. DPhysicsBox.Scale divides it by
+    /// `(1 / old) * new`, and Box.SetRotation rebuilds right/up from its
+    /// reciprocals, so it is not `1 / (extents * scale)`.
+    pub inverse_extents: Vec2,
     pub time: Fix,
     pub body: Body,
     /// SpikeAttack.pushedThisFrame: only the first knock of a pass also
@@ -796,6 +803,13 @@ pub struct SpawnedSpike {
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
+}
+
+impl SpawnedSpike {
+    /// Box.SetRotation's `Vec2.right / inverseExtents.x` and `up / .y`.
+    fn box_extents(&self) -> Vec2 {
+        Vec2::new(Fix::ONE / self.inverse_extents.x, Fix::ONE / self.inverse_extents.y)
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -865,6 +879,10 @@ pub struct SpawnedEngine {
     pub transform_rotation: Fix,
     pub surface_offset: Fix,
     pub scale: Fix,
+    /// FixTransform.offset, compounded like SpawnedSpike::collider_offset.
+    pub collider_offset: Vec2,
+    /// The box collider's inverseExtents, as in SpawnedSpike.
+    pub inverse_extents: Vec2,
     /// RocketEngine.prevScale: component offsets adopt a DPhysics scale write
     /// on the following RocketEngine updater pass.
     pub offset_scale: Fix,
@@ -879,6 +897,25 @@ pub struct SpawnedEngine {
     /// FixTransform.up as PlaceRocketEngine set it, until the first physics
     /// sync replaces it with the body rotation's.
     pub placed_up: Option<Vec2>,
+}
+
+impl SpawnedEngine {
+    /// Box.SetRotation's `Vec2.right / inverseExtents.x` and `up / .y`.
+    fn box_extents(&self) -> Vec2 {
+        Vec2::new(Fix::ONE / self.inverse_extents.x, Fix::ONE / self.inverse_extents.y)
+    }
+
+    /// The rocket's box collider at its collider pose.
+    fn rocket_box(&self) -> OrientedBox {
+        let basis = Vec2::angle(self.collider_rotation);
+        let extents = self.box_extents();
+        OrientedBox {
+            center: self.collider_center,
+            right: basis * extents.x,
+            up: (Vec2::UP * extents.y).complex_mul(basis),
+            inverse_extents: self.inverse_extents,
+        }
+    }
 }
 
 /// One SimpleSparkNode circle and the optional lightning owned by the newer
@@ -7342,7 +7379,7 @@ impl RolloutWorld {
             self.thrown_item_pair_contacts(data);
         }
         if has(ABILITY_ENGINE) || has(ABILITY_SPIKE) {
-            self.composite_child_box_contacts(data);
+            self.composite_child_box_contacts();
         }
         if has(ABILITY_PORTAL_GUN) {
             let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
@@ -8466,7 +8503,7 @@ impl RolloutWorld {
                     + spike.relative_rotation,
             );
             let position = spike.transform_center
-                - (data.spike.attack_collider_offset * spike.scale).complex_mul(right);
+                - spike.collider_offset.complex_mul(right);
             let combined = self.platform_dynamics[spike.platform_index].body;
             if let Some(entity) = spike
                 .entity
@@ -8492,7 +8529,7 @@ impl RolloutWorld {
             }
             let right = Vec2::angle(engine.transform_rotation);
             let position = engine.transform_center
-                - (data.engine.rocket_collider_offset * engine.scale).complex_mul(right);
+                - engine.collider_offset.complex_mul(right);
             let combined = self.platform_dynamics[engine.platform_index].body;
             if let Some(entity) = engine.entity.filter(|_| {
                 engine.active && !engine.macho_carried && combined.inverse_mass > Fix::ZERO
@@ -8785,7 +8822,7 @@ impl RolloutWorld {
                     .orientation
                     + spike.relative_rotation,
             );
-            let offset = (data.spike.attack_collider_offset * spike.scale).complex_mul(right);
+            let offset = spike.collider_offset.complex_mul(right);
             let root = spike.transform_center - offset;
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
@@ -8816,7 +8853,7 @@ impl RolloutWorld {
                 continue;
             }
             let right = Vec2::angle(engine.transform_rotation);
-            let offset = (data.engine.rocket_collider_offset * engine.scale).complex_mul(right);
+            let offset = engine.collider_offset.complex_mul(right);
             let root = engine.transform_center - offset;
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
@@ -14295,14 +14332,22 @@ impl RolloutWorld {
             .position(local, Fix::ZERO)
             + normal * surface_offset;
         let relative_right = rocket_right.complex_mul(inverse_basis);
+        // RocketEngineInit writes `hitbox.Scale` twice, the raw and then the
+        // clamped scale: ManualInit's |1 / startExtents| is divided by
+        // `(1 / 1) * scale`, then by `(1 / scale) * scale`.
+        let collider_offset = data.engine.rocket_collider_offset * scale;
+        let extents = data.engine.rocket_extents;
+        let inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y) / scale
+            / ((Fix::ONE / scale) * scale);
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
-            + (data.engine.rocket_collider_offset * scale).complex_mul(relative_right);
+            + collider_offset.complex_mul(relative_right);
         let relative_rotation = rocket_rotation - parent_rotation;
 
         let attach_order = self.attach_child_body(platform_index, data.engine.rocket_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
-        let collider_extents = data::surface_extents(data.engine.rocket_extents * scale);
+        let collider_extents =
+            Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -14341,6 +14386,8 @@ impl RolloutWorld {
             transform_rotation: rocket_rotation,
             surface_offset,
             scale,
+            collider_offset,
+            inverse_extents,
             offset_scale: scale,
             time: Fix::ZERO,
             phase: 0,
@@ -14603,8 +14650,9 @@ impl RolloutWorld {
         // does (Drill.cs:175 is the same convention). Scaling the product
         // instead floors twice and moves the hitbox by up to 5 raw at
         // off-unit scale.
+        let collider_offset = data.spike.attack_collider_offset * scale;
         let relative_center = (root_position - parent_position).complex_mul(parent_inverse_basis)
-            + (data.spike.attack_collider_offset * scale).complex_mul(relative_right);
+            + collider_offset.complex_mul(relative_right);
         let relative_rotation = spike_rotation - parent_rotation;
 
         let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
@@ -14614,9 +14662,14 @@ impl RolloutWorld {
         // places only its collider, so its FixTransform stays there until
         // DetPhysics syncs it (SpikeAttack.cs:94-106).
         let transform_center = surface_position
-            + (data.spike.attack_collider_offset * scale)
+            + collider_offset
                 .complex_mul(Vec2::angle(parent_rotation + relative_rotation));
-        let collider_extents = data::surface_extents(data.spike.attack_extents * scale);
+        // ManualInit takes |1 / startExtents|, then Initialize's `Scale = scale`
+        // divides it by `(1 / 1) * scale`.
+        let extents = data.spike.attack_extents;
+        let inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y) / scale;
+        let collider_extents =
+            Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity_index = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity {
@@ -14653,6 +14706,8 @@ impl RolloutWorld {
             transform_center,
             surface_offset,
             scale,
+            collider_offset,
+            inverse_extents,
             time: Fix::ZERO,
             body: data.spike.attack_body,
             pushed_this_frame: false,
@@ -14845,12 +14900,12 @@ impl RolloutWorld {
         }
         attack.surface_offset =
             data.spike.down_thrust.evaluate(attack.time) + data.spike.surface_offset;
-        self.place_spike_attack(index, data);
+        self.place_spike_attack(index);
     }
 
     /// SpikeAttack.UpdatePosition, and RepositionOnParent with the offset it
     /// last wrote: the collider's pose relative to its platform.
-    fn place_spike_attack(&mut self, index: usize, data: &data::RolloutData) {
+    fn place_spike_attack(&mut self, index: usize) {
         let attack = self.spike_attacks[index];
         let platform = &self.platforms[attack.platform_index];
         let parent_rotation = self.platform_dynamics[attack.platform_index].body.orientation;
@@ -14863,7 +14918,7 @@ impl RolloutWorld {
         // FixTransform.cs:100-103; see cast_spike.
         self.spike_attacks[index].relative_center = (root_position - platform.surface.center)
             .complex_mul(inverse_basis)
-            + (data.spike.attack_collider_offset * attack.scale).complex_mul(relative_right);
+            + attack.collider_offset.complex_mul(relative_right);
     }
 
     /// ResizablePlatform.ResizePlatform ends with RepositionOnParent on every
@@ -14881,7 +14936,6 @@ impl RolloutWorld {
     fn reposition_platform_children(
         &mut self,
         platform: usize,
-        data: &data::RolloutData,
         fresh: bool,
     ) {
         let tick = self.tick;
@@ -14894,7 +14948,7 @@ impl RolloutWorld {
         for index in 0..self.spike_attacks.len() {
             let spike = &mut self.spike_attacks[index];
             if settled(spike.active, spike.macho_carried, spike.platform_index, spike.born_tick) {
-                self.place_spike_attack(index, data);
+                self.place_spike_attack(index);
             } else if spike.active
                 && !spike.macho_carried
                 && spike.platform_index == platform
@@ -14929,7 +14983,7 @@ impl RolloutWorld {
                     engine.local,
                     up(engine.transform_rotation, engine.placed_up, engine.born_tick),
                     engine.surface_offset,
-                    data.engine.rocket_collider_offset * engine.scale,
+                    engine.collider_offset,
                 );
             }
         }
@@ -15058,7 +15112,7 @@ impl RolloutWorld {
                     let normal = self.platforms[platform].surface.normal(surface_position);
                     let rocket_right = Vec2::angle(engine.transform_rotation);
                     let root = engine.transform_center
-                        - (data.engine.rocket_collider_offset * engine.scale)
+                        - engine.collider_offset
                             .complex_mul(rocket_right);
                     // RocketEngine.BlowUpSmokeTouchingTheFire (RocketEngine.cs:70)
                     // is `position + up * (offset.y * Scale) + right * (offset.x
@@ -15428,37 +15482,35 @@ impl RolloutWorld {
         }
     }
 
-    fn spike_attack_box(&self, spike: SpawnedSpike, data: &data::RolloutData) -> OrientedBox {
-        Self::spike_attack_box_in(&self.platform_dynamics, spike, data)
+    fn spike_attack_box(&self, spike: SpawnedSpike) -> OrientedBox {
+        Self::spike_attack_box_in(&self.platform_dynamics, spike)
     }
 
     fn spike_attack_box_in(
         platform_dynamics: &[PlatformDynamics],
         spike: SpawnedSpike,
-        data: &data::RolloutData,
     ) -> OrientedBox {
         let parent = &platform_dynamics[spike.platform_index];
         let basis = Vec2::angle(parent.body.orientation + spike.relative_rotation);
-        let scaled_extents = data.spike.attack_extents * spike.scale;
-        let extents = data::surface_extents(scaled_extents);
+        let extents = spike.box_extents();
         OrientedBox {
             center: spike.collider_center,
             right: basis * extents.x,
             up: (Vec2::UP * extents.y).complex_mul(basis),
-            inverse_extents: Vec2::new(Fix::ONE / scaled_extents.x, Fix::ONE / scaled_extents.y),
+            inverse_extents: spike.inverse_extents,
         }
     }
 
     /// The SpikeAttack FixTransform: SyncGameObject places it at the box
     /// collider's own corrected centre less its scaled offset.
-    fn spike_attack_root(&self, spike_index: usize, data: &data::RolloutData) -> Vec2 {
+    fn spike_attack_root(&self, spike_index: usize) -> Vec2 {
         let spike = self.spike_attacks[spike_index];
         let spike_right = Vec2::angle(
             self.platform_dynamics[spike.platform_index].body.orientation
                 + spike.relative_rotation,
         );
         spike.collider_center
-            - (data.spike.attack_collider_offset * spike.scale).complex_mul(spike_right)
+            - spike.collider_offset.complex_mul(spike_right)
     }
 
     /// SpikeAttack.OnCollide's push back on its own platform, once per pass.
@@ -15472,7 +15524,7 @@ impl RolloutWorld {
         if self.spike_attacks[spike_index].pushed_this_frame {
             return;
         }
-        let direction = (point - self.spike_attack_root(spike_index, data)).normalized_safe();
+        let direction = (point - self.spike_attack_root(spike_index)).normalized_safe();
         let parent_index = self.spike_attacks[spike_index].platform_index;
         self.platform_dynamics[parent_index].body.apply_impulse(
             -direction * strength * data.spike.self_push_multiplier,
@@ -15492,7 +15544,7 @@ impl RolloutWorld {
                 if self.spike_attacks[spike_index].time >= data.spike.push_time {
                     continue;
                 }
-                let spike_root = self.spike_attack_root(spike_index, data);
+                let spike_root = self.spike_attack_root(spike_index);
                 let direction = (contact.point - spike_root).normalized_safe();
                 let wall_arm =
                     (contact.point - self.platforms[wall_index].surface.center).normalized_safe();
@@ -15520,7 +15572,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let direction =
-                    (point - self.spike_attack_root(spike_index, data)).normalized_safe();
+                    (point - self.spike_attack_root(spike_index)).normalized_safe();
                 let item = &mut self.thrown_items[item_index];
                 let arm = (point - item.position).normalized_safe();
                 item.body.apply_impulse(direction * data.spike.knock_player, arm);
@@ -15554,7 +15606,7 @@ impl RolloutWorld {
             // SpikeAttack's Explosion has igniteFlammables, but its
             // LethalTerrain layer never pairs with Smoke, so the attack does
             // not light a cloud.
-            let attack_box = self.spike_attack_box(spike, data);
+            let attack_box = self.spike_attack_box(spike);
             let mut victims = [None; MAX_PLAYERS];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 if !self.hittable(player_index) {
@@ -18584,7 +18636,7 @@ impl RolloutWorld {
         dynamics.transform_rotation = Some(dynamics.body.orientation);
         // The setter re-seats every attached child before it rescales the
         // collider, so each reads the pre-resize shape.
-        self.reposition_platform_children(platform, data::get(), fresh);
+        self.reposition_platform_children(platform, fresh);
         let collider = &mut self.platforms[platform].collider;
         collider.radius *= ratio;
         collider.inner.right *= ratio;
@@ -19422,7 +19474,6 @@ impl RolloutWorld {
         &mut self,
         owner: usize,
         platform_index: usize,
-        data: &data::RolloutData,
     ) {
         let Some(engine_index) = self.players[owner].macho_throw.picked_engine.take() else {
             return;
@@ -19447,7 +19498,7 @@ impl RolloutWorld {
         let desired_up = desired_right.perp();
         let old_right = Vec2::angle(source.transform_rotation);
         let old_root = source.transform_center
-            - (data.engine.rocket_collider_offset * source.scale).complex_mul(old_right);
+            - source.collider_offset.complex_mul(old_right);
         let probe = old_root + desired_up * Fix::from_int(1000);
         let Ok(closest) = self.platforms[platform_index].surface.closest_point(probe) else {
             return;
@@ -19465,7 +19516,7 @@ impl RolloutWorld {
         let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let relative_right = desired_right.complex_mul(inverse_basis);
         let relative_center = (root - parent_position).complex_mul(inverse_basis)
-            + (data.engine.rocket_collider_offset * source.scale).complex_mul(relative_right);
+            + source.collider_offset.complex_mul(relative_right);
         let mut child = source.body;
         child.orientation = desired_rotation;
         let attach_order = self.attach_child_body(platform_index, child);
@@ -19484,6 +19535,10 @@ impl RolloutWorld {
         engine.transform_center = engine.collider_center;
         engine.transform_rotation = desired_rotation;
         engine.offset_scale = engine.scale;
+        // RocketEngineInit's two `hitbox.Scale = scale` writes each divide the
+        // inverse extents by `(1 / scale) * scale`; the offset keeps `s / s`.
+        let unit = (Fix::ONE / engine.scale) * engine.scale;
+        engine.inverse_extents = engine.inverse_extents / unit / unit;
         engine.time = Fix::ZERO;
         engine.phase = 0;
         engine.ticks = 0;
@@ -19584,7 +19639,7 @@ impl RolloutWorld {
         let old_rotation = Fix::from_raw(self.entities[entity].rotation);
         let old_right = Vec2::angle(old_rotation);
         let old_root = source.transform_center
-            - (data.spike.attack_collider_offset * source.scale).complex_mul(old_right);
+            - source.collider_offset.complex_mul(old_right);
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
         let desired_rotation = parent_rotation + Fix::PI;
@@ -19608,7 +19663,7 @@ impl RolloutWorld {
         let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
         let relative_right = desired_right.complex_mul(inverse_basis);
         let relative_center = (root - parent_position).complex_mul(inverse_basis)
-            + (data.spike.attack_collider_offset * source.scale).complex_mul(relative_right);
+            + source.collider_offset.complex_mul(relative_right);
         let mut child_body = source.body;
         child_body.orientation = desired_rotation;
         let attach_order = self.attach_child_body(platform_index, child_body);
@@ -19625,6 +19680,8 @@ impl RolloutWorld {
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         spike.transform_center = spike.collider_center;
         spike.surface_offset = surface_offset;
+        // Initialize's `hitbox.Scale = scale` divides by `(1 / scale) * scale`.
+        spike.inverse_extents = spike.inverse_extents / ((Fix::ONE / spike.scale) * spike.scale);
         spike.body = child_body;
         self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_COMPOSITE;
         self.entities[entity].inverse_mass = child_body.inverse_mass.raw();
@@ -19807,7 +19864,7 @@ impl RolloutWorld {
         if held {
             self.players[owner].macho_throw.held_boulder = Some(boulder_index);
         }
-        self.macho_attach_engine_to_boulder(owner, platform_index, data);
+        self.macho_attach_engine_to_boulder(owner, platform_index);
         self.macho_attach_tesla_to_boulder(owner, platform_index, data);
         self.macho_attach_spike_to_boulder(owner, platform_index, data);
         self.macho_attach_rope_to_boulder(owner, platform_index, data);
@@ -27871,7 +27928,7 @@ impl RolloutWorld {
             self.platform_dynamics[platform_index].body.orientation + source.relative_rotation,
         );
         let source_position = source.transform_center
-            - (data.spike.attack_collider_offset * source.scale).complex_mul(source_right);
+            - source.collider_offset.complex_mul(source_right);
         let local = self.duplicate_attached_local(
             platform_index,
             source_position,
@@ -27895,7 +27952,7 @@ impl RolloutWorld {
         let surface_offset = Fix::from_f32(0.75);
         let root_position = surface_position + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
-            + (data.spike.attack_collider_offset * source.scale).complex_mul(relative_right);
+            + source.collider_offset.complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.spike.attack_updatable_count;
         let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
@@ -27937,6 +27994,11 @@ impl RolloutWorld {
             transform_center: collider_center,
             surface_offset,
             scale: source.scale,
+            collider_offset: source.collider_offset,
+            inverse_extents: Vec2::new(
+                Fix::ONE / (data.spike.attack_extents.x * source.scale),
+                Fix::ONE / (data.spike.attack_extents.y * source.scale),
+            ),
             time: Fix::ZERO,
             body: data.spike.attack_body,
             pushed_this_frame: false,
@@ -27967,7 +28029,7 @@ impl RolloutWorld {
         // LocalPlayerPosFromPos reads the hit child's FixTransform, which
         // SyncGameObject placed at the collider less its rotated offset.
         let source_position = source.transform_center
-            - (data.engine.rocket_collider_offset * source.scale)
+            - source.collider_offset
                 .complex_mul(Vec2::angle(source.transform_rotation));
         let local = self.duplicate_attached_local(
             platform_index,
@@ -27992,7 +28054,7 @@ impl RolloutWorld {
         let surface_offset = Fix::from_f32(0.3) * source.scale;
         let root_position = surface_position + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
-            + (data.engine.rocket_collider_offset * source.scale).complex_mul(relative_right);
+            + source.collider_offset.complex_mul(relative_right);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.engine.rocket_updatable_count;
         let attach_order = self.attach_child_body(platform_index, data.engine.rocket_body);
@@ -28037,6 +28099,11 @@ impl RolloutWorld {
             transform_rotation: rotation,
             surface_offset,
             scale: source.scale,
+            collider_offset: source.collider_offset,
+            inverse_extents: Vec2::new(
+                Fix::ONE / (data.engine.rocket_extents.x * source.scale),
+                Fix::ONE / (data.engine.rocket_extents.y * source.scale),
+            ),
             offset_scale: source.scale,
             time: Fix::ZERO,
             phase: 0,
@@ -29092,7 +29159,6 @@ impl RolloutWorld {
         &mut self,
         entity: usize,
         scale: Fix,
-        data: &data::RolloutData,
     ) -> bool {
         if let Some(index) = self
             .spike_attacks
@@ -29113,15 +29179,19 @@ impl RolloutWorld {
                 + right.perp() * spike.surface_offset;
             let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
             let relative_right = right.complex_mul(inverse_basis);
+            let collider_offset = spike.collider_offset * (scale / spike.scale);
             let relative_center = (root - parent_position).complex_mul(inverse_basis)
-                + (data.spike.attack_collider_offset * scale).complex_mul(relative_right);
+                + collider_offset.complex_mul(relative_right);
+            let ratio = (Fix::ONE / spike.scale) * scale;
+            self.spike_attacks[index].collider_offset = collider_offset;
+            self.spike_attacks[index].inverse_extents = spike.inverse_extents / ratio;
             self.spike_attacks[index].scale = scale;
             self.spike_attacks[index].relative_center = relative_center;
             let center =
                 parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
             self.spike_attacks[index].collider_center = center;
             self.spike_attacks[index].transform_center = center;
-            let extents = data::surface_extents(data.spike.attack_extents * scale);
+            let extents = self.spike_attacks[index].box_extents();
             self.entities[entity].right_x = (right * extents.x).x.raw();
             self.entities[entity].right_y = (right * extents.x).y.raw();
             self.entities[entity].up_x = (Vec2::UP * extents.y).complex_mul(right).x.raw();
@@ -29147,15 +29217,19 @@ impl RolloutWorld {
                 + right.perp() * engine.surface_offset;
             let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
             let relative_right = right.complex_mul(inverse_basis);
+            let collider_offset = engine.collider_offset * (scale / engine.scale);
             let relative_center = (root - parent_position).complex_mul(inverse_basis)
-                + (data.engine.rocket_collider_offset * scale).complex_mul(relative_right);
+                + collider_offset.complex_mul(relative_right);
+            let ratio = (Fix::ONE / engine.scale) * scale;
+            self.engines[index].collider_offset = collider_offset;
+            self.engines[index].inverse_extents = engine.inverse_extents / ratio;
             self.engines[index].scale = scale;
             self.engines[index].relative_center = relative_center;
             let center =
                 parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
             self.engines[index].collider_center = center;
             self.engines[index].transform_center = center;
-            let extents = data::surface_extents(data.engine.rocket_extents * scale);
+            let extents = self.engines[index].box_extents();
             self.entities[entity].right_x = (right * extents.x).x.raw();
             self.entities[entity].right_y = (right * extents.x).y.raw();
             self.entities[entity].up_x = (Vec2::UP * extents.y).complex_mul(right).x.raw();
@@ -30659,7 +30733,7 @@ impl RolloutWorld {
                 let scale = (effect.current_scale + ray.scale_curve.evaluate(time) * multiplier)
                     .clamp(min_scale, max_scale);
                 let ratio = (Fix::ONE / effect.current_scale) * scale;
-                if !self.scale_attached_entity(effect.victim, scale, data) {
+                if !self.scale_attached_entity(effect.victim, scale) {
                     let row = &mut self.entities[effect.victim];
                     row.radius = (Fix::from_raw(row.radius) * ratio).raw();
                     row.right_x = (Fix::from_raw(row.right_x) * ratio).raw();
@@ -34823,17 +34897,7 @@ impl RolloutWorld {
                     .find(|engine| {
                         engine.active && !engine.macho_carried && engine.entity == Some(entity)
                     })
-                    .map(|engine| {
-                        let basis = Vec2::angle(engine.collider_rotation);
-                        let extents = data.engine.rocket_extents * engine.scale;
-                        let surface = data::surface_extents(extents);
-                        OrientedBox {
-                            center: engine.collider_center,
-                            right: basis * surface.x,
-                            up: (Vec2::UP * surface.y).complex_mul(basis),
-                            inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
-                        }
-                    });
+                    .map(|engine| engine.rocket_box());
                 // The live boxes: the rows still hold last pass's rotation.
                 let child_box = engine_box.or_else(|| {
                     self.spike_attacks
@@ -34841,7 +34905,7 @@ impl RolloutWorld {
                         .find(|spike| {
                             spike.active && !spike.macho_carried && spike.entity == Some(entity)
                         })
-                        .map(|&spike| Self::spike_attack_box_in(&self.platform_dynamics, spike, data))
+                        .map(|&spike| Self::spike_attack_box_in(&self.platform_dynamics, spike))
                 });
                 let contact = if let Some(child_box) = child_box {
                     crate::physics::contact::circle_box(circle, child_box).map(|contact| (contact, false))
@@ -35357,7 +35421,7 @@ impl RolloutWorld {
             if count == contacts.len() || !spike.active || spike.macho_carried || !live(spike.entity) {
                 continue;
             }
-            let child = Self::spike_attack_box_in(&self.platform_dynamics, *spike, data);
+            let child = Self::spike_attack_box_in(&self.platform_dynamics, *spike);
             let child_first = self.box_sweep_min(child) < missile_min;
             let contact = if child_first {
                 crate::physics::contact::box_box(child, missile_box)
@@ -35373,15 +35437,7 @@ impl RolloutWorld {
             if count == contacts.len() || !engine.active || engine.macho_carried || !live(engine.entity) {
                 continue;
             }
-            let basis = Vec2::angle(engine.collider_rotation);
-            let extents = data.engine.rocket_extents * engine.scale;
-            let surface = data::surface_extents(extents);
-            let child = OrientedBox {
-                center: engine.collider_center,
-                right: basis * surface.x,
-                up: (Vec2::UP * surface.y).complex_mul(basis),
-                inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
-            };
+            let child = engine.rocket_box();
             let child_first = self.box_sweep_min(child) < missile_min;
             let contact = if child_first {
                 crate::physics::contact::box_box(child, missile_box)
@@ -35487,7 +35543,7 @@ impl RolloutWorld {
                         continue;
                     }
                     let direction =
-                        (point - self.spike_attack_root(spike_index, data)).normalized_safe();
+                        (point - self.spike_attack_root(spike_index)).normalized_safe();
                     let arm = (point - center).normalized_safe();
                     body.apply_impulse(direction * data.spike.knock_player, arm);
                     self.spike_attack_self_push(spike_index, point, data.spike.knock_player, data);
@@ -36096,7 +36152,7 @@ impl RolloutWorld {
     /// combined body and position, and PositionalCorrection takes the
     /// children's own inverse masses and moves their colliders and
     /// CompositeBody.position (DetPhysics.cs:3131-3168, PhysTools.cs:1006).
-    fn composite_child_box_contacts(&mut self, data: &data::RolloutData) {
+    fn composite_child_box_contacts(&mut self) {
         const SPIKE: usize = 1 << 16;
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
@@ -36112,15 +36168,7 @@ impl RolloutWorld {
             if !engine.active || engine.macho_carried || !live(engine.platform_index, engine.entity) {
                 continue;
             }
-            let basis = Vec2::angle(engine.collider_rotation);
-            let extents = data.engine.rocket_extents * engine.scale;
-            let surface = data::surface_extents(extents);
-            let rocket = OrientedBox {
-                center: engine.collider_center,
-                right: basis * surface.x,
-                up: (Vec2::UP * surface.y).complex_mul(basis),
-                inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
-            };
+            let rocket = engine.rocket_box();
             let swept = self.scratch.engine_swept.get(index).copied();
             let swept = OrientedBox { center: swept.unwrap_or(rocket.center), ..rocket };
             children.push((index, engine.platform_index, engine.entity, rocket, swept));
@@ -36129,7 +36177,7 @@ impl RolloutWorld {
             if !spike.active || spike.macho_carried || !live(spike.platform_index, spike.entity) {
                 continue;
             }
-            let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike, data);
+            let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike);
             let swept = self.scratch.spike_swept.get(index).copied();
             let swept = OrientedBox { center: swept.unwrap_or(attack_box.center), ..attack_box };
             children.push((SPIKE + index, spike.platform_index, spike.entity, attack_box, swept));
@@ -36560,15 +36608,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let basis = Vec2::angle(engine.collider_rotation);
-                let extents = data.engine.rocket_extents * engine.scale;
-                let surface = data::surface_extents(extents);
-                let rocket = OrientedBox {
-                    center: engine.collider_center,
-                    right: basis * surface.x,
-                    up: (Vec2::UP * surface.y).complex_mul(basis),
-                    inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
-                };
+                let rocket = engine.rocket_box();
                 if let Some(contact) = crate::physics::contact::circle_box(circle, rocket) {
                     engine_contacts[engine_contact_count] = (index, engine_index, contact);
                     engine_contact_count += 1;
@@ -36588,7 +36628,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike, data);
+                let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike);
                 if let Some(contact) = crate::physics::contact::circle_box(circle, attack_box) {
                     engine_contacts[engine_contact_count] = (index, SPIKE + spike_index, contact);
                     engine_contact_count += 1;
@@ -36610,15 +36650,12 @@ impl RolloutWorld {
         let engine_min = |engine_index: usize| {
             if engine_index >= SPIKE {
                 let spike = self.spike_attacks[engine_index - SPIKE];
-                let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike, data);
+                let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike);
                 return axis(attack_box.center) - axis(attack_box.right).abs() - axis(attack_box.up).abs();
             }
             let engine = self.engines[engine_index];
-            let basis = Vec2::angle(engine.collider_rotation);
-            let surface = data::surface_extents(data.engine.rocket_extents * engine.scale);
-            axis(engine.collider_center)
-                - axis(basis * surface.x).abs()
-                - axis((Vec2::UP * surface.y).complex_mul(basis)).abs()
+            let rocket = engine.rocket_box();
+            axis(rocket.center) - axis(rocket.right).abs() - axis(rocket.up).abs()
         };
         engine_contacts.sort_by_key(|&(index, engine_index, _)| {
             let circle = if index >= NODE {
@@ -37359,7 +37396,7 @@ impl RolloutWorld {
                     if !self.hittable(player) {
                         continue;
                     }
-                    let direction = (point - self.spike_attack_root(spike, data)).normalized_safe();
+                    let direction = (point - self.spike_attack_root(spike)).normalized_safe();
                     let row = &mut self.entities[entity];
                     let velocity = Vec2::new(Fix::from_raw(row.vx), Fix::from_raw(row.vy))
                         + direction * data.spike.knock_player * Fix::from_raw(row.inverse_mass);
@@ -38132,7 +38169,7 @@ impl RolloutWorld {
         {
             return;
         }
-        self.reposition_platform_children(i, data, false);
+        self.reposition_platform_children(i, false);
         let radius = self.platforms[i].collider.radius;
         let (inner, extents) = self.platforms[i].collider.inner.reset_extents();
         self.platforms[i].collider.inner = inner;
@@ -38168,7 +38205,7 @@ impl RolloutWorld {
                 && attack.platform_index == i
                 && attack.born_tick != self.tick
             {
-                self.place_spike_attack(index, data);
+                self.place_spike_attack(index);
             }
         }
         self.platforms_changed();
@@ -39876,7 +39913,7 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let attack_box = self.spike_attack_box(spike, data);
+                let attack_box = self.spike_attack_box(spike);
                 let bounds = attack_box.bounds(Fix::ZERO);
                 let rock = swept[rock_index];
                 if rock.center.x + rock.radius <= bounds.min.x
@@ -39923,7 +39960,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let direction =
-                    (point - self.spike_attack_root(spike_index, data)).normalized_safe();
+                    (point - self.spike_attack_root(spike_index)).normalized_safe();
                 let rock = &mut self.players[rock_index];
                 let arm = (point - rock.base.position).normalized_safe();
                 rock.rock.body.apply_impulse(direction * data.spike.knock_player, arm);
@@ -40508,7 +40545,7 @@ impl RolloutWorld {
             // The children move before StickyRect.UpdateBounds takes the new
             // size, but after the RoundedRect took its new radius.
             self.platforms[index].surface.radius = radius;
-            self.reposition_platform_children(index, data, false);
+            self.reposition_platform_children(index, false);
             self.reshape_platform(index, extents, radius);
         }
         for (index, vector, cube, mass, controlled) in late_pulls {
@@ -40649,12 +40686,10 @@ impl RolloutWorld {
             .map(|c| {
                 let rotation =
                     self.platform_dynamics[c.platform_index].body.orientation + c.relative_rotation;
-                let extents = data::surface_extents(data.spike.attack_extents * c.scale);
-                (c.active, c.macho_carried, c.entity, rotation, extents)
+                (c.active, c.macho_carried, c.entity, rotation, c.box_extents())
             })
             .chain((self.engines.iter()).map(|c| {
-                let extents = data::surface_extents(data.engine.rocket_extents * c.scale);
-                (c.active, c.macho_carried, c.entity, c.collider_rotation, extents)
+                (c.active, c.macho_carried, c.entity, c.collider_rotation, c.box_extents())
             }));
         for (active, carried, entity, rotation, extents) in boxes {
             if let (true, false, Some(entity)) = (active, carried, entity) {
@@ -40765,16 +40800,12 @@ impl RolloutWorld {
             let parent = &self.platform_dynamics[parent_index].body;
             let basis = Vec2::angle(parent.orientation + spike.relative_rotation);
             let center = spike.collider_center;
-            let scaled_extents = data.spike.attack_extents * spike.scale;
-            let spike_extents = data::surface_extents(scaled_extents);
+            let spike_extents = spike.box_extents();
             let attack_box = OrientedBox {
                 center,
                 right: basis * spike_extents.x,
                 up: (Vec2::UP * spike_extents.y).complex_mul(basis),
-                inverse_extents: Vec2::new(
-                    Fix::ONE / scaled_extents.x,
-                    Fix::ONE / scaled_extents.y,
-                ),
+                inverse_extents: spike.inverse_extents,
             };
             let attack_rr = RoundedRect {
                 inner: attack_box,
@@ -40822,13 +40853,13 @@ impl RolloutWorld {
             let parent_index = engine.platform_index;
             let basis = Vec2::angle(engine.collider_rotation);
             let center = engine.collider_center;
-            let extents = data::surface_extents(data.engine.rocket_extents * engine.scale);
+            let extents = engine.box_extents();
             let box_rr = RoundedRect {
                 inner: OrientedBox {
                     center,
                     right: basis * extents.x,
                     up: (Vec2::UP * extents.y).complex_mul(basis),
-                    inverse_extents: Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+                    inverse_extents: engine.inverse_extents,
                 },
                 radius: Fix::ZERO,
             };
@@ -42428,7 +42459,7 @@ impl RolloutWorld {
             let rotation = engine.collider_rotation;
             let basis = Vec2::angle(rotation);
             let center = engine.collider_center;
-            let extents = data::surface_extents(data.engine.rocket_extents * engine.scale);
+            let extents = engine.box_extents();
             self.entities[entity] = CEntity {
                 id: self.entities[entity].id,
                 kind: 1,
@@ -42475,7 +42506,7 @@ impl RolloutWorld {
             // 0*x - e*y floors e*y before negating, where `perp() * e` would
             // floor the negative product (1 raw apart).
             let center = spike.collider_center;
-            let extents = data::surface_extents(data.spike.attack_extents * spike.scale);
+            let extents = spike.box_extents();
             self.entities[entity] = CEntity {
                 id: self.entities[entity].id,
                 kind: 1,
@@ -45884,7 +45915,7 @@ mod tests {
         assert!(world.spawn_engine(0, data::get()));
         let source = world.engines[0];
         let source_position = source.transform_center
-            - (data::get().engine.rocket_collider_offset * source.scale)
+            - source.collider_offset
                 .complex_mul(Vec2::angle(source.transform_rotation));
         let expected = world.duplicate_attached_local(
             source.platform_index,
@@ -46286,6 +46317,7 @@ mod tests {
             active: true,
             phase: 1,
             scale: Fix::ONE,
+            collider_offset: data.engine.rocket_collider_offset,
             offset_scale: Fix::ONE,
             platform_index: 0,
             ..SpawnedEngine::default()

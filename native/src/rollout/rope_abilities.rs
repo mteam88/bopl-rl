@@ -1908,7 +1908,6 @@ impl RolloutWorld {
                 // takes only when its centre is inside the collider. The end
                 // then keeps the hook's place on the spike (RopeHook.cs:91-98,
                 // 158-171).
-                let spike_data = data::get();
                 for index in 0..self.spike_attacks.len() {
                     let spike = self.spike_attacks[index];
                     if !spike.active
@@ -1919,7 +1918,7 @@ impl RolloutWorld {
                     {
                         continue;
                     }
-                    let collider = self.spike_attack_box(spike, spike_data);
+                    let collider = self.spike_attack_box(spike);
                     if crate::physics::contact::circle_box(circle, collider).is_none()
                         || !collider.overlaps(position)
                     {
