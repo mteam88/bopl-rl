@@ -1446,6 +1446,10 @@ pub struct PlatformDynamics {
     /// the tick: a Black Hole registered before a Duplicator copy pulls it
     /// first, with that mass (BlackHole.cs:434, BoplBody.cs:332-343).
     pub unscaled_inverse_mass: Option<(u32, Fix)>,
+    /// AnimateVelocity.isBeingControlled: set by a Push on it, cleared only
+    /// when that Push leaves through its own ExitAbility or by Initialize
+    /// (ControlPlatform.cs:120-130,160-166; AnimateVelocity.cs:88-93).
+    pub being_controlled: bool,
     pub home_position: Vec2,
     pub home_rotation: Fix,
     pub speed: Fix,
@@ -4577,6 +4581,7 @@ impl RolloutWorld {
                 attach_count: 0,
                 composite_position: intro_surface.center,
                 composite_rebuild: false,
+                being_controlled: false,
                 home_position: intro_surface.center,
                 transform_rotation: None,
                 init_tick: None,
@@ -13004,6 +13009,11 @@ impl RolloutWorld {
             return;
         };
         if !self.players[index].base.grounded {
+            // ExitAbility releases the ground it is still attached to
+            // (ControlPlatform.cs:120-130).
+            if let Some(platform) = self.platforms.iter().position(|platform| platform.id == ground_id) {
+                self.platform_dynamics[platform].being_controlled = false;
+            }
             self.exit_push(index);
             return;
         }
@@ -13027,6 +13037,10 @@ impl RolloutWorld {
             .iter()
             .any(|boulder| boulder.active && boulder.platform_index == platform_index);
         let has_animate_velocity = !is_boulder;
+        // ControlPlatform.cs:163-166.
+        if has_animate_velocity {
+            self.platform_dynamics[platform_index].being_controlled = true;
+        }
         if has_animate_velocity && !self.sudden_death {
             let dynamics = &mut self.platform_dynamics[platform_index];
             let weight = DT * data.push.home_position_lerp_speed;
@@ -13066,6 +13080,9 @@ impl RolloutWorld {
             slot.push.channeling = true;
         }
         if action.buttons & slot_button == 0 {
+            // OldUpdate's button release goes through the same ExitAbility
+            // (ControlPlatform.cs:201-204).
+            self.platform_dynamics[platform_index].being_controlled = false;
             self.exit_push(index);
         }
     }
@@ -16625,11 +16642,6 @@ impl RolloutWorld {
             // while they are attached (BlackHole.cs:383,410; DetPhysics.cs:
             // Simulate skips composite members): it never reaches the platform.
 
-            let controlled_ground = self.players.iter().find_map(|player| {
-                (player.active == ActiveAbility::Push)
-                    .then_some(player.base.ground)
-                    .flatten()
-            });
             let mut changed = false;
             for platform_index in 0..self.platforms.len() {
                 // The rounded rect's own PhysicsBody: its mass, and its force
@@ -16677,7 +16689,10 @@ impl RolloutWorld {
                 if cube == Fix::ZERO {
                     continue;
                 }
-                let controlled = controlled_ground == Some(self.platforms[platform_index].id);
+                // Only an AnimateVelocity still flagged isBeingControlled takes
+                // the platform multiplier; a Boulder has none (BlackHole.cs:
+                // 275-290).
+                let controlled = self.platform_dynamics[platform_index].being_controlled;
                 // Updaters run in spawn order. A platform spawned before this
                 // hole has already shrunk by the time its pull is computed.
                 let shrunk_first = self.spawned.iter().any(|spawn| {
@@ -19725,6 +19740,7 @@ impl RolloutWorld {
             float_next_frame: false,
             spring_step: None,
             unscaled_inverse_mass: None,
+            being_controlled: false,
             home_position: position,
             home_rotation: Fix::ZERO,
             speed: Fix::ZERO,
@@ -31245,6 +31261,10 @@ impl RolloutWorld {
         }
         dynamics.composite_position = position;
         dynamics.home_position = position;
+        // Instantiate leaves the private `initialized` false, so the copy's
+        // Init runs Initialize, which clears isBeingControlled
+        // (AnimateVelocity.cs:74-93).
+        dynamics.being_controlled = false;
         // DuplicatePlatformEffect writes the source's rotation from when the
         // ray hit into the copy's FixTransform, where AnimateVelocity.Init
         // homes it next pass.
@@ -32050,6 +32070,7 @@ impl RolloutWorld {
             attach_count: 0,
             composite_position: position,
             composite_rebuild: false,
+            being_controlled: false,
             home_position: position,
             transform_rotation: None,
             init_tick: Some(self.tick + 1),
