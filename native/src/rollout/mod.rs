@@ -12913,20 +12913,18 @@ impl RolloutWorld {
                 // The animator's Jump callback runs after Ability.UpdateSim.
                 published = Some(self.players[index].base.position);
                 if self.players[index].meteor.ticks > data.meteor.ground_enter_ticks {
-                    let normal = self.players[index]
-                        .base
-                        .platform(&self.platforms)
-                        .map_or(Vec2::UP, |platform| {
-                            platform.surface.normal(self.players[index].base.position)
-                        });
+                    // MeteorSmash.Jump (MeteorSmash.cs:157-166): UnGround off the
+                    // attachedGround, then teleport up by extraJumpTeleportMultiplier
+                    // if the form was still grounded, else by 1.75.
                     let slot = &mut self.players[index];
-                    slot.base.position += normal * Fix::from_f32(0.05)
-                        + Vec2::UP * data.meteor.constants.jump_teleport;
-                    slot.base.grounded = false;
-                    slot.base.ground = None;
-                    slot.base.grounded_speed = Fix::ZERO;
-                    slot.base.rotation = Fix::ZERO;
-                    slot.base.up = Vec2::UP;
+                    let grounded = slot.base.grounded;
+                    UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
+                    slot.base.position += Vec2::UP
+                        * if grounded {
+                            data.meteor.constants.jump_teleport
+                        } else {
+                            Fix::from_f64(1.75)
+                        };
                     // Jump raycasts between its two teleports and lands on
                     // anything already overhead.
                     slot.base.collision_rays(terrain!(self));
