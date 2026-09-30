@@ -30590,14 +30590,28 @@ impl RolloutWorld {
 
     #[inline]
     fn blink_object_hidden(&self, entity: Option<usize>) -> bool {
+        Self::object_hidden_in(
+            &self.entities,
+            &self.blink_object_tunnels,
+            &self.teleport_object_effects,
+            entity,
+        )
+    }
+
+    fn object_hidden_in(
+        entities: &[CEntity],
+        tunnels: &[BlinkObjectTunnel],
+        effects: &[TeleportObjectEffect],
+        entity: Option<usize>,
+    ) -> bool {
         let Some(entity) = entity else {
             return false;
         };
-        let entity_id = self.entities.get(entity).map_or(0, |row| row.id);
-        self.blink_object_tunnels
+        let entity_id = entities.get(entity).map_or(0, |row| row.id);
+        tunnels
             .iter()
             .any(|tunnel| tunnel.active && tunnel.entity == entity && tunnel.entity_id == entity_id)
-            || self.teleport_object_effects.iter().any(|effect| {
+            || effects.iter().any(|effect| {
                 effect.active && effect.entity == entity && effect.entity_id == entity_id
             })
     }
@@ -36249,9 +36263,7 @@ impl RolloutWorld {
     fn composite_child_box_contacts(&mut self) {
         const SPIKE: usize = 1 << 16;
         let live = |platform: usize, entity: Option<usize>| {
-            platform < self.platforms.len()
-                && self.platforms[platform].active
-                && entity.is_none_or(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+            platform < self.platforms.len() && !self.attached_hidden(platform, entity)
         };
         // (child, platform, entity, box, collider in the sweep)
         let mut children = Vec::new();
@@ -40391,9 +40403,16 @@ impl RolloutWorld {
                 || spike.macho_carried
                 || spike.platform_index >= self.platforms.len()
                 // Out of the hierarchy with its wall or on its own
-                // (`attached_hidden`, which `scratch` keeps out of reach).
+                // (`attached_hidden`, which `scratch` keeps out of reach). The
+                // row's E_ACTIVE is last pass's: a wall whose QuantumTunnel
+                // ended this pass brings its children back into this Simulate.
                 || !self.platforms[spike.platform_index].active
-                || spike.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0)
+                || Self::object_hidden_in(
+                    &self.entities,
+                    &self.blink_object_tunnels,
+                    &self.teleport_object_effects,
+                    spike.entity,
+                )
             {
                 continue;
             }
@@ -40447,7 +40466,12 @@ impl RolloutWorld {
                 || engine.macho_carried
                 || engine.platform_index >= self.platforms.len()
                 || !self.platforms[engine.platform_index].active
-                || engine.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0)
+                || Self::object_hidden_in(
+                    &self.entities,
+                    &self.blink_object_tunnels,
+                    &self.teleport_object_effects,
+                    engine.entity,
+                )
             {
                 continue;
             }
@@ -46911,4 +46935,5 @@ mod tests {
         assert_eq!(world.players[0].base.position, position);
     }
 }
+
 
