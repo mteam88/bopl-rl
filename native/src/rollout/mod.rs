@@ -7173,7 +7173,7 @@ impl RolloutWorld {
             self.rocks_integrate(physics_dt);
         }
         if has(ABILITY_DUPLICATOR) {
-            self.duplicated_rocks_integrate(physics_dt);
+            self.duplicated_rocks_integrate(physics_dt, data);
         }
         self.claim_queued_spawns(u32::MAX);
         // killPlayer from an updater (Mjolnir.TryHitPlayers) destroys the
@@ -38845,11 +38845,30 @@ impl RolloutWorld {
         }
     }
 
-    fn duplicated_rocks_integrate(&mut self, physics_dt: Fix) {
+    fn duplicated_rocks_integrate(&mut self, physics_dt: Fix, data: &data::RolloutData) {
+        let map = &data.maps[self.map];
         for rock_index in 0..self.duplicated_rocks.len() {
             if !self.duplicated_rocks[rock_index].active
                 || self.blink_object_hidden(self.duplicated_rocks[rock_index].entity)
             {
+                continue;
+            }
+            // Rock_noPlayer's DestroyIfOutsideSceneBounds: below the water it
+            // leaves the splash DownEffect; its other exits have no effect.
+            let position = self.duplicated_rocks[rock_index].position;
+            let below = position.y < map.lower_boundary();
+            if below
+                || position.y > Fix::from_f64(72.5)
+                || position.x.abs() > Fix::from_f64(131.25)
+            {
+                if below && !map.is_space() {
+                    self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                }
+                let rock = &mut self.duplicated_rocks[rock_index];
+                rock.active = false;
+                if let Some(entity) = rock.entity {
+                    self.entities[entity].flags = E_REMOVED;
+                }
                 continue;
             }
             let rock = &mut self.duplicated_rocks[rock_index];
