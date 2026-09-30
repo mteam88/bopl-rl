@@ -2640,7 +2640,9 @@ pub struct PlayerSlot {
     /// Ability catalog ids per slot, and which slots this backend simulates.
     pub abilities: [u32; 3],
     /// Incremented whenever a stock/revival clone instantiates fresh ability prefabs.
-    pub ability_generation: u32,
+    /// One per ability slot: each ability instance's identity. A pickup
+    /// replaces the third slot's instance; a replacement slime all three.
+    pub ability_generation: [u32; 3],
     /// Pickup-created ability prefabs are serialized inactive, but their
     /// Awake registrations become visible on the scheduler's following pass.
     pub ability_instantiated: [bool; 3],
@@ -4793,7 +4795,7 @@ impl RolloutWorld {
                 slime_gone: false,
                 abilityless: false,
                 abilities,
-                ability_generation: 0,
+                ability_generation: [0; 3],
                 ability_instantiated: [true; 3],
                 forms: [FormScale::default(); 3],
                 pending_ability_hierarchy: [u32::MAX; 3],
@@ -5711,6 +5713,9 @@ impl RolloutWorld {
             // The new Spike's currentSpike is null, so its first cast leaves
             // the replaced instance's SpikeAttack in place (Spike.cs:96-99).
             slot.spike_attacks[2] = None;
+            // Engines, spark nodes, smoke clouds and thrown items stay with
+            // the replaced instance: the new one's buffers start empty.
+            slot.ability_generation[2] = slot.ability_generation[2].wrapping_add(1);
             for spawn in &mut self.spawned {
                 if spawn.buffer == Some((player_index, 2)) {
                     spawn.buffer = None;
@@ -7718,7 +7723,7 @@ impl RolloutWorld {
             born_tick: self.tick,
             owner,
             ability_slot,
-            ability_generation: self.players[owner].ability_generation,
+            ability_generation: self.players[owner].ability_generation[ability_slot],
             blue,
             hierarchy_base,
             position,
@@ -8183,7 +8188,7 @@ impl RolloutWorld {
         let gun_alive = shot.orphan.is_some()
             || shot.owner < self.players.len()
             && self.players[shot.owner].base.alive
-            && self.players[shot.owner].ability_generation == shot.ability_generation
+            && self.players[shot.owner].ability_generation[shot.ability_slot] == shot.ability_generation
             && self.players[shot.owner].abilities[shot.ability_slot] == ABILITY_PORTAL_GUN;
         if gun_alive {
             self.place_portal(shot, outward_normal, data);
@@ -8315,7 +8320,7 @@ impl RolloutWorld {
     /// shots in flight keep their `gun` and land through its own pair
     /// (PortalShot.Land tests only `gun.IsDestroyed`).
     fn orphan_portal_gun(&mut self, owner: usize) {
-        let generation = self.players[owner].ability_generation;
+        let generation = self.players[owner].ability_generation[2];
         let gun = self.orphan_portal_guns.len();
         let mut in_flight = false;
         for shot in &mut self.portal_shots {
@@ -14082,7 +14087,7 @@ impl RolloutWorld {
         let scale = self.players[index].player_scale;
         let collider_scale = scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
         let ability_slot = self.players[index].active_slot;
-        let ability_generation = self.players[index].ability_generation;
+        let ability_generation = self.players[index].ability_generation[ability_slot];
 
         let mut oldest = None;
         let mut count = 0usize;
@@ -14373,7 +14378,7 @@ impl RolloutWorld {
             .clamp(Fix::from_f32(0.1), Fix::from_int(5));
 
         let ability_slot = self.players[index].active_slot;
-        let ability_generation = self.players[index].ability_generation;
+        let ability_generation = self.players[index].ability_generation[ability_slot];
         let mut oldest = None;
         let mut count = 0usize;
         for (engine_index, engine) in self.engines.iter().enumerate() {
@@ -19923,7 +19928,7 @@ impl RolloutWorld {
             active: true,
             owner,
             ability_slot: self.players[owner].active_slot,
-            ability_generation: self.players[owner].ability_generation,
+            ability_generation: self.players[owner].ability_generation[self.players[owner].active_slot],
             platform_index,
             born_tick: self.tick,
             hierarchy_base,
@@ -22066,7 +22071,9 @@ impl RolloutWorld {
                 });
             }
             let slot = &mut self.players[index];
-            slot.ability_generation = slot.ability_generation.wrapping_add(1);
+            for generation in &mut slot.ability_generation {
+                *generation = generation.wrapping_add(1);
+            }
             // The fresh ability instances carry their prefab cooldowns, not
             // what Invisibility, Gold Mushroom or Web Swing set on the old ones.
             for (cooldown, &ability) in slot.cooldowns.iter_mut().zip(&slot.abilities) {
@@ -22580,7 +22587,9 @@ impl RolloutWorld {
             }
 
             let slot = &mut self.players[index];
-            slot.ability_generation = slot.ability_generation.wrapping_add(1);
+            for generation in &mut slot.ability_generation {
+                *generation = generation.wrapping_add(1);
+            }
             // The fresh ability instances carry their prefab cooldowns, not
             // what Invisibility, Gold Mushroom or Web Swing set on the old ones.
             for (cooldown, &ability) in slot.cooldowns.iter_mut().zip(&slot.abilities) {
@@ -24180,7 +24189,7 @@ impl RolloutWorld {
             owner: index,
             ability: ABILITY_MINE,
             ability_slot: self.players[index].active_slot,
-            ability_generation: self.players[index].ability_generation,
+            ability_generation: self.players[index].ability_generation[self.players[index].active_slot],
             born_tick: self.tick,
             hierarchy_base,
             entity: None,
@@ -24562,7 +24571,7 @@ impl RolloutWorld {
             owner: index,
             ability,
             ability_slot: self.players[index].active_slot,
-            ability_generation: self.players[index].ability_generation,
+            ability_generation: self.players[index].ability_generation[self.players[index].active_slot],
             born_tick: self.tick,
             hierarchy_base,
             entity: None,
@@ -28165,7 +28174,7 @@ impl RolloutWorld {
             born_tick: self.tick,
             owner: caster,
             ability_slot: self.players[caster].active_slot,
-            ability_generation: self.players[caster].ability_generation,
+            ability_generation: self.players[caster].ability_generation[self.players[caster].active_slot],
             hierarchy_base,
             entity: Some(entity),
             platform_index,
@@ -28264,7 +28273,7 @@ impl RolloutWorld {
             spawn_tick: self.tick,
             owner: caster,
             ability_slot: self.players[caster].active_slot,
-            ability_generation: self.players[caster].ability_generation,
+            ability_generation: self.players[caster].ability_generation[self.players[caster].active_slot],
             hierarchy_base,
             entity: Some(entity),
             platform_index,
@@ -42334,7 +42343,7 @@ impl RolloutWorld {
                 // (ShootDuplicator.cs:290-296).
                 let thrower = &self.players[item.owner];
                 row.reserved[0] = if !item.duplicated
-                    && thrower.ability_generation == item.ability_generation
+                    && thrower.ability_generation[item.ability_slot] == item.ability_generation
                     && held[thrower.base.id as usize][item.ability_slot] == item.ability
                 {
                     item.ability
