@@ -31999,8 +31999,10 @@ impl RolloutWorld {
         }
 
         let mut dynamics = self.platform_dynamics[source];
-        // The copy's updaters take their own turn.
-        dynamics.updater_ran_tick = None;
+        // Updater adds an updatable registered mid-pass to its list only at
+        // the start of the next pass (Updater.cs:258-282), so the copy's
+        // updaters first run then, wherever this effect's turn fell.
+        dynamics.updater_ran_tick = Some(self.tick);
         // The source's BoplBody rescale this pass is not the copy's.
         dynamics.unscaled_inverse_mass = None;
         dynamics.scale = copy_scale;
