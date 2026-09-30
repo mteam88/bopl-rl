@@ -25355,9 +25355,9 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
-            // gap: GunTransform.cs:161 and MagnetGun.cs:1215 null the rotation.
+            // UnGround(nullRotation: true) (GunTransform.cs:161).
             UngroundBody::Form(&mut self.players[index])
-                .unground(&self.platforms, self.tick, false);
+                .unground(&self.platforms, self.tick, true);
         }
 
         if !self.players[index].base.grounded {
@@ -25518,9 +25518,9 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
-            // gap: GunTransform.cs:161 and MagnetGun.cs:1215 null the rotation.
+            // UnGround(nullRotation: true) (GunTransform.cs:161).
             UngroundBody::Form(&mut self.players[index])
-                .unground(&self.platforms, self.tick, false);
+                .unground(&self.platforms, self.tick, true);
         }
 
         if !self.players[index].base.grounded {
@@ -25673,9 +25673,9 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
-            // gap: GunTransform.cs:161 and MagnetGun.cs:1215 null the rotation.
+            // UnGround(nullRotation: true) (GunTransform.cs:161).
             UngroundBody::Form(&mut self.players[index])
-                .unground(&self.platforms, self.tick, false);
+                .unground(&self.platforms, self.tick, true);
         }
 
         if !self.players[index].base.grounded {
@@ -25825,9 +25825,9 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
-            // gap: GunTransform.cs:161 and MagnetGun.cs:1215 null the rotation.
+            // UnGround(nullRotation: true) (GunTransform.cs:161).
             UngroundBody::Form(&mut self.players[index])
-                .unground(&self.platforms, self.tick, false);
+                .unground(&self.platforms, self.tick, true);
         }
 
         if !self.players[index].base.grounded {
@@ -26023,9 +26023,10 @@ impl RolloutWorld {
         if invalid_ground {
             let slot = self.players[index].active_slot;
             self.players[index].form_gravity[slot] = Fix::from_f32(0.03);
-            // gap: GunTransform.cs:161 and MagnetGun.cs:1215 null the rotation.
-            UngroundBody::Form(&mut self.players[index])
-                .unground(&self.platforms, self.tick, false);
+            // UnGround(nullRotation: true) resets body.right (MagnetGun.cs:1215).
+            let slot = &mut self.players[index];
+            UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
+            slot.magnet.body_right = Vec2::RIGHT;
         }
 
         if !self.players[index].base.grounded {
