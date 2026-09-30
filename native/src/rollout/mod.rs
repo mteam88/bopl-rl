@@ -2264,6 +2264,9 @@ pub struct MachoBoulder {
     pub dropped: bool,
     /// Boulder.shouldDrop: false from Awake until its first UpdateSim.
     pub should_drop: bool,
+    /// Its DestroyIfOutsideSceneBounds destroyed it at its Updater turn;
+    /// the platform stays inactive until the platform walk is over.
+    pub drowning: bool,
 }
 
 /// A RevivePositionIndicator spawned by one Revival ability instance.
@@ -5574,9 +5577,8 @@ impl RolloutWorld {
 
     /// Boulder's DestroyIfOutsideSceneBounds destroys it below the water in
     /// updater order, and the next RaycastToClosestRoundedRect drops it
-    /// (RemoveDestroyedColliders). macho_boulders_tick applies that destroy
-    /// after the pickups, so a later pickup raycasting in the same pass must
-    /// not see the boulder.
+    /// (RemoveDestroyedColliders), so a newer pickup raycasting in the same
+    /// pass must not see the boulder.
     fn platform_removed_before(
         &self,
         platform_index: usize,
@@ -7079,9 +7081,6 @@ impl RolloutWorld {
             // still advance DynamicAbilityPickup.
             self.ability_pickups_tick_before(deferred_to, data, updater_dt);
         }
-        if has(ABILITY_THROW) {
-            self.macho_boulders_tick(data);
-        }
         // SuperStarEffect prefabs spawned during a slime update join the
         // updater list on the following tick. Once live they run after player
         // forms and can overwrite the tick's vertical self-imposed velocity.
@@ -7100,6 +7099,9 @@ impl RolloutWorld {
         // pushes it after its AnimateVelocity spring has read the velocity.
         // Those older than a player object took their turn before it.
         self.spawned_platforms_tick(data, updater_dt, 0..u32::MAX);
+        if has(ABILITY_THROW) {
+            self.macho_boulders_remove_drowned();
+        }
         if has(ABILITY_GUST) {
             self.shockwaves_update(false, data, DT, 0..deferred_to);
         }
@@ -20232,6 +20234,7 @@ impl RolloutWorld {
             held,
             dropped: !held,
             should_drop: false,
+            drowning: false,
         };
         let boulder_index = if let Some(free) = self.macho_boulders.iter().position(|b| !b.active) {
             self.macho_boulders[free] = state;
@@ -20687,7 +20690,8 @@ impl RolloutWorld {
     }
 
     /// Whether the boulder on `platform` sinks below the water this pass at a
-    /// hierarchy older than `hierarchy`, as macho_boulders_tick decides.
+    /// hierarchy older than `hierarchy`, as its DestroyIfOutsideSceneBounds
+    /// decides at the boulder's turn.
     fn boulder_drowns_before(&self, platform: usize, hierarchy: u32) -> bool {
         let lower_boundary = data::get().maps[self.map].lower_boundary();
         let entity = self.platform_entities[platform];
@@ -20697,61 +20701,82 @@ impl RolloutWorld {
             && self.platforms[platform].surface.center.y < lower_boundary
     }
 
-    fn macho_boulders_tick(&mut self, data: &data::RolloutData) {
-        let lower_boundary = data.maps[self.map].lower_boundary();
+    /// The live Throw boulder whose rounded rectangle is platform `i`, once
+    /// its prefab has joined the Updater (a boulder spawned this pass waits
+    /// in toBeAddedUpdatables).
+    fn turn_boulder(&self, i: usize) -> Option<usize> {
+        if self.macho_boulders.is_empty() {
+            return None;
+        }
+        self.macho_boulders.iter().position(|boulder| {
+            boulder.active && boulder.platform_index == i && boulder.born_tick != self.tick
+        })
+    }
+
+    /// DestroyIfOutsideSceneBounds at the boulder's turn. Boulder.prefab only
+    /// destroys below the water boundary: DestroyIfTooFarX=false and
+    /// DoNotDestroyUp=true. The destroyed GameObject leaves the Updater and
+    /// DetPhysics at once, and the storage is compacted once the platform
+    /// walk is over.
+    fn macho_boulder_drowns(&mut self, data: &data::RolloutData, boulder_index: usize) -> bool {
+        let platform_index = self.macho_boulders[boulder_index].platform_index;
+        if self.platforms[platform_index].surface.center.y >= data.maps[self.map].lower_boundary() {
+            return false;
+        }
+        self.macho_boulders[boulder_index].drowning = true;
+        self.platforms[platform_index].active = false;
+        self.platforms_changed();
+        // A newer RopeAttachment on it sees IsDestroyed this pass.
+        let entity = self.platform_entities[platform_index];
+        let hierarchy = self.entities[entity].hierarchy - 100_000_000;
+        for rope in &mut self.ropes {
+            if rope.platform == Some(platform_index) {
+                rope.platform_destroyed_at = (self.tick, hierarchy);
+            }
+        }
+        // A spark node planted on it and older than the check has already
+        // redrawn its lightning in its own UpdateSim, which the line keeps
+        // when the drowning destroys it.
+        for node_index in 0..self.tesla_nodes.len() {
+            let node = self.tesla_nodes[node_index];
+            if node.active
+                && !node.macho_carried
+                && node.platform_index == platform_index
+                && node.connected
+                && node.child.is_some()
+                && node.hierarchy_base < hierarchy
+            {
+                self.update_tesla_line_geometry(node_index, data);
+            }
+        }
+        // In space the floor exit instantiates UpEffect, which Boulder.prefab
+        // leaves empty; only the water exit splashes.
+        if !data.maps[self.map].is_space() {
+            self.next_spawn_hierarchy += data.macho_throw.boulder_down_effect_updatable_count;
+        }
+        true
+    }
+
+    /// Boulder.UpdateSim drops a boulder nobody held since its last update,
+    /// which a Duplicator copy is (Boulder.cs:21-29).
+    fn macho_boulder_update(&mut self, data: &data::RolloutData, boulder_index: usize) {
+        let boulder = self.macho_boulders[boulder_index];
+        if !boulder.held && !boulder.dropped && boulder.should_drop {
+            Self::drop_boulder(&mut self.platform_dynamics[boulder.platform_index], data);
+            self.macho_boulders[boulder_index].dropped = true;
+            self.platforms_changed();
+        }
+        self.macho_boulders[boulder_index].should_drop = true;
+    }
+
+    /// Remove the boulders their DestroyIfOutsideSceneBounds destroyed at
+    /// this pass's turns, before this pass's contacts and export.
+    fn macho_boulders_remove_drowned(&mut self) {
         for boulder_index in 0..self.macho_boulders.len() {
             let boulder = self.macho_boulders[boulder_index];
-            // A boulder spawned this pass waits in toBeAddedUpdatables; its
-            // DestroyIfOutsideSceneBounds first runs on the next pass.
-            if !boulder.active
-                || boulder.platform_index >= self.platforms.len()
-                || boulder.born_tick == self.tick
-            {
-                continue;
-            }
-            // Boulder.UpdateSim drops a boulder nobody held since its last
-            // update, which a Duplicator copy is (Boulder.cs:21-29).
-            if !boulder.held && !boulder.dropped && boulder.should_drop {
-                Self::drop_boulder(&mut self.platform_dynamics[boulder.platform_index], data);
-                self.macho_boulders[boulder_index].dropped = true;
-                self.platforms_changed();
-            }
-            self.macho_boulders[boulder_index].should_drop = true;
-            // Boulder.prefab only destroys below the water boundary:
-            // DestroyIfTooFarX=false and DoNotDestroyUp=true. The updater's
-            // DestroyFix removes it before this pass's contacts and export.
-            if self.platforms[boulder.platform_index].surface.center.y < lower_boundary {
-                // This runs as one pass, but the boulder's bounds check sits at
-                // its own hierarchy, after older RopeAttachments on it.
-                let entity = self.platform_entities[boulder.platform_index];
-                let hierarchy = self.entities[entity].hierarchy - 100_000_000;
-                for rope in &mut self.ropes {
-                    if rope.platform == Some(boulder.platform_index) {
-                        rope.platform_destroyed_at = (self.tick, hierarchy);
-                    }
-                }
-                // A spark node planted on it and older than the check has
-                // already redrawn its lightning in its own UpdateSim, which
-                // the line keeps when the drowning destroys it.
-                for node_index in 0..self.tesla_nodes.len() {
-                    let node = self.tesla_nodes[node_index];
-                    if node.active
-                        && !node.macho_carried
-                        && node.platform_index == boulder.platform_index
-                        && node.connected
-                        && node.child.is_some()
-                        && node.hierarchy_base < hierarchy
-                    {
-                        self.update_tesla_line_geometry(node_index, data);
-                    }
-                }
+            if boulder.active && boulder.drowning {
+                self.macho_boulders[boulder_index].drowning = false;
                 self.remove_platform(boulder.platform_index, true);
-                // In space the floor exit instantiates UpEffect, which
-                // Boulder.prefab leaves empty; only the water exit splashes.
-                if !data.maps[self.map].is_space() {
-                    self.next_spawn_hierarchy +=
-                        data.macho_throw.boulder_down_effect_updatable_count;
-                }
             }
         }
     }
@@ -31881,6 +31906,7 @@ impl RolloutWorld {
                 held: false,
                 dropped: false,
                 should_drop: false,
+                drowning: false,
             };
             if let Some(free) = self.macho_boulders.iter().position(|b| !b.active) {
                 self.macho_boulders[free] = state;
@@ -39294,10 +39320,20 @@ impl RolloutWorld {
             if !self.platform_updates_in(i, pass) {
                 continue;
             }
+            // A Throw boulder's DestroyIfOutsideSceneBounds sits between its
+            // StickyRR and its ShakablePlatform, and Boulder.UpdateSim follows
+            // the shake; a drowning ends the boulder's turn.
+            let boulder = self.turn_boulder(i);
+            if boulder.is_some_and(|b| self.macho_boulder_drowns(data, b)) {
+                continue;
+            }
             self.platform_spring(data, updater_dt, i);
             shook |= self.platform_shake(data, updater_dt, i);
             if pass != PlatformPass::Authored {
                 self.platform_resizable(data, i);
+            }
+            if let Some(b) = boulder {
+                self.macho_boulder_update(data, b);
             }
         }
         if shook {
