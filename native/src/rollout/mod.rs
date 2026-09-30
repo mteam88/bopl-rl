@@ -10001,16 +10001,16 @@ impl RolloutWorld {
                 _ => {}
             }
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
+            slot.set_ordinary_body_scale(slot.player_scale);
+            slot.restore_slime_radius();
             slot.base.constants = data.player.constants.clone();
             slot.exit_to_fall();
             slot.reported_position = slot.base.position; // Ability.cs:151
             // The slime's SyncPhysicsTo airborne arm (PlayerPhysics.cs:577),
             // then EnterFall's VelocityBasedRaycasts (SlimeController.cs:271).
             slot.base.ground = None;
-            slot.restore_slime_radius();
             slot.base.collision_rays(terrain!(self));
             slot.reported_tick = self.tick;
-            slot.set_ordinary_body_scale(slot.player_scale);
         } else {
             // An ordinary slime has no IAbilityComponent, so no EnterFall,
             // and it already published its position before Move.
@@ -12926,6 +12926,7 @@ impl RolloutWorld {
         // Roll.ExitAbility leaves Ability.KillPlayersOnContact unchanged on
         // the now-inactive prefab; the next OnEnterAbility clears it.
         slot.base.constants = data.player.constants.clone();
+        slot.set_ordinary_body_scale(slot.player_scale);
         slot.restore_slime_radius();
         slot.base.rotation = Fix::ZERO;
         if grounded {
@@ -14241,6 +14242,7 @@ impl RolloutWorld {
             // raycasts it (Ability.cs:151, SlimeController.cs:217-272).
             let ability_position = slot.base.position;
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
+            slot.set_ordinary_body_scale(slot.player_scale);
             slot.restore_slime_radius();
             // QuickSpell exits with a default AbilityExitInfo, whose isFacingRight
             // is false; SlimeController flips to match.
@@ -16709,6 +16711,7 @@ impl RolloutWorld {
             slot.facing_right = false;
             slot.exit_to_fall();
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
+            slot.set_ordinary_body_scale(slot.player_scale);
             slot.restore_slime_radius();
             slot.base.collision_rays(terrain!(self));
             return;
@@ -18429,6 +18432,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.position = position;
+        slot.set_ordinary_body_scale(slot.player_scale);
         slot.restore_slime_radius();
         slot.base.constants = data.player.constants.clone();
         slot.base.rotation = Fix::ZERO;
@@ -18832,6 +18836,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
+            slot.set_ordinary_body_scale(slot.player_scale);
             slot.restore_slime_radius();
             slot.base.constants = data.player.constants.clone();
             slot.facing_right = slot.beam.entry_facing_right;
@@ -31275,6 +31280,7 @@ impl RolloutWorld {
         }
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.dash.active = false;
+        slot.set_ordinary_body_scale(slot.player_scale);
         slot.restore_slime_radius();
         // The slime's own PlayerPhysics never took the form's movement
         // constants (MachoThrow2 has its own).
@@ -32885,6 +32891,7 @@ impl RolloutWorld {
                     slot.set_active_form(&mut self.entities, ActiveAbility::None);
                     // SyncPhysicsTo's UpdateScale catches the slime's radius
                     // up with a Player.Scale a ray changed mid-form.
+                    slot.set_ordinary_body_scale(slot.player_scale);
                     slot.restore_slime_radius();
                     slot.exit_to_fall();
                     // Ability.ExitAbility republishes potentialCollider.position
@@ -41660,6 +41667,7 @@ impl RolloutWorld {
                     circle.write_circle_scale(exit_scale, min, max);
                     let slot = &mut self.players[index];
                     slot.set_active_form(&mut self.entities, ActiveAbility::None);
+                    slot.set_ordinary_body_scale(slot.player_scale);
                     slot.restore_slime_radius();
                     slot.base.velocity = velocity;
                     slot.base.external_velocity = Vec2::ZERO;
