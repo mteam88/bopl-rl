@@ -15518,6 +15518,9 @@ impl RolloutWorld {
                 || engine.macho_carried
                 || engine.born_tick == self.tick
                 || self.attached_hidden(engine.platform_index, engine.entity)
+                // A QuantumTunnel always updates after the engine it swallowed,
+                // so the pass that lets the engine go has already passed it by.
+                || self.blink_object_released(engine.entity)
             {
                 continue;
             }
