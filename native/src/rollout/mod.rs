@@ -18681,46 +18681,26 @@ impl RolloutWorld {
                 .ground
                 .is_some_and(|ground| self.platforms.iter().any(|platform| platform.id == ground));
         let form_position = self.players[index].base.position;
-        let grounded_pose = if grounded {
-            self.players[index]
-                .base
-                .ground
-                .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
-                .map(|platform| {
-                    // Beam.MovePlayer updates LocalPlatformPos without moving
-                    // the body. SyncPhysicsTo(AbilityExitInfo) first resolves
-                    // that new local using Beam's radius, then maps the world
-                    // point back onto the ordinary slime's smaller perimeter.
-                    let position = platform
-                        .surface
-                        .position(self.players[index].base.local, self.players[index].base.radius);
-                    let local = platform
-                        .surface
-                        .local_position(position, self.players[index].exit_slime_radius())
-                        .ok();
-                    (position, local)
-                })
-        } else {
-            None
-        };
+        // Beam.MovePlayer updates LocalPlatformPos without moving the body;
+        // SyncPhysicsTo(AbilityExitInfo) places the slime from that local at
+        // Beam's radius and aligns it to the normal there.
+        if grounded {
+            self.sync_exit_to_ground(index);
+        }
         {
             let slot = &mut self.players[index];
             slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            slot.set_ordinary_body_scale(slot.player_scale);
-            slot.restore_slime_radius();
+            if !grounded {
+                slot.set_ordinary_body_scale(slot.player_scale);
+                slot.restore_slime_radius();
+            }
             slot.base.constants = data.player.constants.clone();
             slot.facing_right = slot.beam.entry_facing_right;
             if grounded {
                 // SyncPhysicsTo(AbilityExitInfo) discards self-imposed
                 // velocity when the reported attachment remains valid.
                 slot.base.velocity = Vec2::ZERO;
-                if let Some((position, local)) = grounded_pose {
-                    slot.base.position = position;
-                    if let Some(local) = local {
-                        slot.base.local = local;
-                    }
-                }
                 // EnterIdle; the slime's OldUpdate already passed this pass.
                 slot.obs_state = STATE_IDLE;
                 slot.state_ticks = 0;
