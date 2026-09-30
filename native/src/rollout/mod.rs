@@ -33242,6 +33242,12 @@ impl RolloutWorld {
         // synced collider rows lag a form change on its own pass and sit at a
         // form's collider offset, so the player's state decides instead.
         let slot = &self.players[owner];
+        // A stock death parks the hidden clone at the hold point, where it
+        // stays an active SlimeController through the whole choice
+        // (PlayerCollision.cs:170-181, SlimeController.cs:611-627).
+        if slot.respawn_ticks > 0 {
+            return Some(slot.base.position);
+        }
         // A TeleportedObjectEffect newer than the hammer reenables the player
         // after the hammer's UpdateSim on its release pass.
         let released_later = slot.teleport_effect_released_tick == Some(self.tick)
