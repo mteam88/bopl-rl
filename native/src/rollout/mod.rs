@@ -34794,7 +34794,9 @@ impl RolloutWorld {
         let item = self.thrown_items[item_index];
         let item_position = item.position;
         let owner = item.owner;
-        let hammer_radius = data.mjolnir.item_radius * item.scale;
+        // Mjolnir.cs:210 reads hitbox.radius * hitbox.Scale: the circle's
+        // radius already carries the Scale setter's factor, so Scale counts twice.
+        let hammer_radius = item.collider_radius * item.scale;
         let thrower = self.players[owner].owner;
         // alreadyKilled holds player ids: one body per player.
         let mut victims = 0u8;
