@@ -3886,6 +3886,11 @@ enum CallbackHit {
     /// with another Player-layer collider; `lower` is whether the slime's
     /// collider is the earlier in the hierarchy.
     SlimeCollide { slime: Prey, other: Prey, lower: bool },
+    /// PlayerCollision.OnCollide's wall branch squishing a grounded slime,
+    /// a player's or an abilityless clone's (PlayerCollision.cs:327-347).
+    Squish { clone: bool, index: usize },
+    /// A young SpikeAttack.OnCollide with a wall (SpikeAttack.cs:116-131).
+    SpikeWallKnock { spike: usize, wall: usize, point: Vec2 },
 }
 
 /// Per-tick working storage of `platforms_tick`/`platform_pairs` (contents
@@ -3968,8 +3973,8 @@ struct PlatformScratch {
     /// DuplicatePlatformEffect resized them: (platform, updater hierarchy,
     /// shape before).
     platform_resizes: Vec<(usize, u32, Platform)>,
-    /// Grounded slimes a wall squished this pass, in callback order:
-    /// (abilityless clone, player or clone index).
+    /// Grounded slimes a wall squished this pass: (abilityless clone,
+    /// player or clone index).
     squished: Vec<(bool, usize)>,
     /// Ropes below this hierarchy have run their UpdateSim this pass.
     ropes_updated_below: u32,
@@ -5637,7 +5642,7 @@ impl RolloutWorld {
             if i < SLIME_AWAKE_TICK {
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT);
-                    self.kill_squished();
+                    self.run_callback_hits(data);
                 }
                 continue;
             }
@@ -5646,7 +5651,7 @@ impl RolloutWorld {
                 self.spawn_animation_overlap_pushes();
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT);
-                    self.kill_squished();
+                    self.run_callback_hits(data);
                 }
                 // The recorder starts sampling on the pass the slime wakes.
                 self.record_warmup_rewind(i);
@@ -5664,7 +5669,7 @@ impl RolloutWorld {
                 self.record_warmup_rewind(i);
                 if self.intro_phase == 3 {
                     self.platforms_tick(data, DT);
-                    self.kill_squished();
+                    self.run_callback_hits(data);
                 }
                 continue;
             }
@@ -6666,7 +6671,7 @@ impl RolloutWorld {
             }
         }
         self.platforms_tick(data, DT);
-        self.kill_squished();
+        self.run_callback_hits(data);
         for slot in &mut self.players {
             if slot.base.alive {
                 slot.base.late_step(&self.platforms);
@@ -7714,11 +7719,6 @@ impl RolloutWorld {
         if has_pickups {
             self.ability_pickups_contacts();
         }
-        // That was the last correction that moves a wall. The squish callback
-        // queued in the Box/RR group runs only after every group's corrections
-        // (DetPhysics.cs:3195-3199), so a form's dead ExitAbility ungrounds off
-        // the wall where the item pushes left it.
-        self.kill_squished();
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_pairs();
         }
@@ -7746,9 +7746,6 @@ impl RolloutWorld {
             self.land_portal_shots_on_walls(&shot_contacts, data);
             shot_contacts.clear();
             self.scratch.portal_shot_wall_contacts = shot_contacts;
-        }
-        if has(ABILITY_SPIKE) {
-            self.spike_wall_callbacks(data);
         }
         if has(ABILITY_MJOLNIR) {
             self.mjolnir_wall_pushes(data);
@@ -16252,31 +16249,6 @@ impl RolloutWorld {
             direction,
         );
         self.spike_attacks[spike_index].pushed_this_frame = true;
-    }
-
-    /// SpikeAttack.OnCollide for its Box/RR manifolds with walls. DetPhysics
-    /// runs every callback after all groups resolved, so the knock on the
-    /// wall and the push back on the spike's own platform land after the
-    /// Circle/RR, Circle/Circle and Circle/Box impulses of this pass.
-    fn spike_wall_callbacks(&mut self, data: &data::RolloutData) {
-        let contacts = std::mem::take(&mut self.scratch.spike_wall_contacts);
-        if self.player_time_scale >= Fix::from_f32(0.01) {
-            for &(spike_index, wall_index, contact) in &contacts {
-                if self.spike_attacks[spike_index].time >= data.spike.push_time {
-                    continue;
-                }
-                let spike_root = self.spike_attack_root(spike_index);
-                let direction = (contact.point - spike_root).normalized_safe();
-                let wall_arm =
-                    (contact.point - self.platforms[wall_index].surface.center).normalized_safe();
-                self.platform_dynamics[wall_index]
-                    .body
-                    .apply_impulse(direction * data.spike.knock_wall, wall_arm);
-                self.spike_attack_self_push(spike_index, contact.point, data.spike.knock_wall, data);
-            }
-        }
-        self.scratch.spike_wall_contacts = contacts;
-        self.scratch.spike_wall_contacts.clear();
     }
 
     fn spike_contacts(&mut self, data: &data::RolloutData) {
@@ -37244,6 +37216,21 @@ impl RolloutWorld {
                 CallbackHit::SlimeCollide { slime, other, lower } => {
                     self.slime_collide(slime, other, lower);
                 }
+                CallbackHit::Squish { clone, index } => self.squish(clone, index),
+                CallbackHit::SpikeWallKnock { spike, wall, point } => {
+                    if self.player_time_scale < Fix::from_f32(0.01)
+                        || self.spike_attacks[spike].time >= data.spike.push_time
+                        || self.entities[self.platform_entities[wall]].flags & E_DESTROYED != 0
+                    {
+                        continue;
+                    }
+                    let direction = (point - self.spike_attack_root(spike)).normalized_safe();
+                    let wall_arm = (point - self.platforms[wall].surface.center).normalized_safe();
+                    self.platform_dynamics[wall]
+                        .body
+                        .apply_impulse(direction * data.spike.knock_wall, wall_arm);
+                    self.spike_attack_self_push(spike, point, data.spike.knock_wall, data);
+                }
                 CallbackHit::ItemDetonate { item, count } => {
                     let state = self.thrown_items[item];
                     if !state.active {
@@ -40051,8 +40038,8 @@ impl RolloutWorld {
     /// PlayerCollision kills a grounded slime when a different wall's
     /// rounded rectangle contains its squish point (the stock player prefab
     /// uses the body centre). Player boxes are triggers, so this is a
-    /// callback effect rather than a rigid-body response, so the kills wait
-    /// for `kill_squished`.
+    /// callback effect rather than a rigid-body response: the kill is a
+    /// Squish hit in the callback queue.
     fn squish_grounded(&mut self, colliders: &[RoundedRect]) {
         let mut squished = std::mem::take(&mut self.scratch.squished);
         squished.clear();
@@ -40083,31 +40070,34 @@ impl RolloutWorld {
                 squished.push((true, index));
             }
         }
-        if squished.len() > 1 {
-            // The Box/RoundedRect callbacks run in SortAndSweep pair order: by
-            // the later bounding box's rank on the sweep axis, then the
-            // earlier's.
-            let sweep_x = self.sweep_x();
-            let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-            let min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
-            squished.sort_by_key(|&(clone, index)| {
-                let (base, entity) = if clone {
-                    let clone = &self.abilityless_clones[index];
-                    (&clone.base, clone.entity)
-                } else {
-                    (&self.players[index].base, Some(self.players[index].body_entity))
-                };
-                let body = sweep_rank(&self.entities, min(base.collider), entity);
-                self.squishing_walls(colliders, clone, index)
-                    .map(|wall| {
-                        let collider = colliders[wall];
-                        let wall_min = min(collider.inner) - collider.radius;
-                        let wall = Some(self.platform_entities[wall]);
-                        sweep_pair(body, sweep_rank(&self.entities, wall_min, wall))
-                    })
-                    .min()
-            });
+        // The squish queues in the Box/RoundedRect group at its first wall
+        // pair in SortAndSweep order.
+        let sweep_x = self.sweep_x();
+        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+        let min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
+        for &(clone, index) in &squished {
+            let (base, entity) = if clone {
+                let clone = &self.abilityless_clones[index];
+                (&clone.base, clone.entity)
+            } else {
+                (&self.players[index].base, Some(self.players[index].body_entity))
+            };
+            let body = sweep_rank(&self.entities, min(base.collider), entity);
+            let first = self
+                .squishing_walls(colliders, clone, index)
+                .map(|wall| {
+                    let collider = colliders[wall];
+                    let wall_min = min(collider.inner) - collider.radius;
+                    let wall = Some(self.platform_entities[wall]);
+                    sweep_pair(body, sweep_rank(&self.entities, wall_min, wall))
+                })
+                .min();
+            if let Some((later, earlier)) = first {
+                let hit = CallbackHit::Squish { clone, index };
+                self.scratch.callback_hits.push(((GROUP_BOX_RR, later, earlier), hit));
+            }
         }
+        squished.clear();
         self.scratch.squished = squished;
     }
 
@@ -40134,33 +40124,30 @@ impl RolloutWorld {
         })
     }
 
-    /// DetPhysics runs every OnCollide callback after Simulate has stepped the
-    /// ropes (DetPhysics.cs:2926, 3197), so a squished slime's killPlayer
-    /// detaches its rope only after this pass's rope step.
-    fn kill_squished(&mut self) {
-        let squished = std::mem::take(&mut self.scratch.squished);
-        for &(clone, index) in &squished {
-            if !clone {
-                self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
-                continue;
-            }
-            let entity = self.abilityless_clones[index].entity;
-            let alive = self.abilityless_clones[index].active;
-            // killPlayer(spawnEffect: true) creates the death effect
-            // (PlayerCollision.cs:457).
-            if alive {
-                self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
-            }
-            self.kill_abilityless_clone(index, ENVIRONMENT, CAUSE_SQUISHED);
-            // A callback casualty stays visible as destroyed until the next
-            // pass's DetPhysics.Simulate drops it.
-            if let Some(entity) = entity.filter(|_| alive) {
-                self.entities[entity].flags = E_DESTROYED | E_TRIGGER;
-                self.entities[entity].owner = 0;
-            }
+    /// PlayerCollision.OnCollide's squish kill (PlayerCollision.cs:327-347),
+    /// from the callback queue. DetPhysics runs every OnCollide callback after
+    /// Simulate has stepped the ropes and every group resolved
+    /// (DetPhysics.cs:2926, 3197), so a squished slime's killPlayer detaches
+    /// its rope only after this pass's rope step.
+    fn squish(&mut self, clone: bool, index: usize) {
+        if !clone {
+            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
+            return;
         }
-        self.scratch.squished = squished;
-        self.scratch.squished.clear();
+        let entity = self.abilityless_clones[index].entity;
+        let alive = self.abilityless_clones[index].active;
+        // killPlayer(spawnEffect: true) creates the death effect
+        // (PlayerCollision.cs:457).
+        if alive {
+            self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+        }
+        self.kill_abilityless_clone(index, ENVIRONMENT, CAUSE_SQUISHED);
+        // A callback casualty stays visible as destroyed until the next
+        // pass's DetPhysics.Simulate drops it.
+        if let Some(entity) = entity.filter(|_| alive) {
+            self.entities[entity].flags = E_DESTROYED | E_TRIGGER;
+            self.entities[entity].owner = 0;
+        }
     }
 
     /// SyncAllPhysicsObjectsToFixTransformPosition still syncs an inactive
@@ -40700,11 +40687,14 @@ impl RolloutWorld {
         // PrepareCollisionCallBacks queues the callbacks in the same pair
         // order, so a spike touching two walls pushes itself off the first
         // in sweep order.
-        scratch.spike_wall_contacts = order
-            .iter()
-            .filter(|&&(_, _, kind, _)| kind == SPIKE)
-            .map(|&(_, _, _, k)| scratch.spike_wall_contacts[k])
-            .collect();
+        for &(later, earlier, kind, k) in &order {
+            if kind == SPIKE {
+                let (spike, wall, contact) = scratch.spike_wall_contacts[k];
+                let hit = CallbackHit::SpikeWallKnock { spike, wall, point: contact.point };
+                scratch.callback_hits.push(((GROUP_BOX_RR, later, earlier), hit));
+            }
+        }
+        scratch.spike_wall_contacts.clear();
         if !scratch.missile_wall_contacts.is_empty() {
             self.platform_epoch += 1;
         }
