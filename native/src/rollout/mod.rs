@@ -1522,9 +1522,6 @@ pub struct PlatformDynamics {
     pub shake_duration: Fix,
     pub shake_amount: Fix,
     pub shake_previous: Vec2,
-    /// The shake moves the transform only; the DetPhysics collider that
-    /// raycasts read catches up at the next Simulate.
-    pub shake_unsynced: Vec2,
     pub meteor_shake_curve: bool,
     /// `AnimateVelocity.randomSuddenDeathDelay`, drawn when the body enters
     /// sudden death; `None` until then (`inSuddenDeath`).
@@ -4801,7 +4798,6 @@ impl RolloutWorld {
                 shake_duration: Fix::ZERO,
                 shake_amount: Fix::ZERO,
                 shake_previous: Vec2::ZERO,
-                shake_unsynced: Vec2::ZERO,
                 meteor_shake_curve: false,
                 sudden_death_delay: None,
                 duplicate_spawner_hierarchy: None,
@@ -7633,9 +7629,13 @@ impl RolloutWorld {
                 false
             }
         });
-        for i in 0..self.platforms.len() {
-            let unsynced = std::mem::replace(&mut self.platform_dynamics[i].shake_unsynced, Vec2::ZERO);
-            self.platforms[i].collider.inner.center += unsynced;
+        // SyncAll: each DetPhysics collider takes its FixTransform. A shake,
+        // a PlatformTransform resize or a portal teleport moved only the
+        // transform, so raycasts and BlackHole saw the collider until now.
+        if self.platforms.iter().any(|platform| platform.collider.inner.center != platform.surface.center) {
+            for platform in self.platforms.iter_mut() {
+                platform.collider.inner.center = platform.surface.center;
+            }
         }
         self.refresh_actor_entities();
         if self.intro_phase == 3 {
@@ -9290,7 +9290,6 @@ impl RolloutWorld {
                 // the DetPhysics collider a Black Hole reads follows at the
                 // next Simulate.
                 self.platforms[platform_index].surface.center += delta;
-                self.platform_dynamics[platform_index].shake_unsynced += delta;
                 platforms_changed = true;
             }
         }
@@ -20259,7 +20258,6 @@ impl RolloutWorld {
             shake_duration: Fix::ZERO,
             shake_amount: Fix::ZERO,
             shake_previous: Vec2::ZERO,
-                shake_unsynced: Vec2::ZERO,
             meteor_shake_curve: false,
             sudden_death_delay: None,
             duplicate_spawner_hierarchy: None,
@@ -32633,7 +32631,6 @@ impl RolloutWorld {
         // PlatformTransform moves the ground body's FixTransform and the
         // spring's home; the DetPhysics collider follows at the next Simulate.
         self.platforms[platform_index].surface.center = new_center;
-        self.platform_dynamics[platform_index].shake_unsynced += shift;
         self.platform_dynamics[platform_index].home_position += shift;
         self.reshape_platform(platform_index, Vec2::new(a, a2), radius);
         self.players[index].base.position = new_center;
@@ -32716,7 +32713,6 @@ impl RolloutWorld {
             shake_duration: Fix::ZERO,
             shake_amount: Fix::ZERO,
             shake_previous: Vec2::ZERO,
-                shake_unsynced: Vec2::ZERO,
             meteor_shake_curve: false,
             sudden_death_delay: None,
             duplicate_spawner_hierarchy: None,
@@ -39024,7 +39020,6 @@ impl RolloutWorld {
         let delta = offset - self.platform_dynamics[i].shake_previous;
         self.platform_dynamics[i].shake_previous = offset;
         self.platforms[i].surface.center += delta;
-        self.platform_dynamics[i].shake_unsynced += delta;
         self.platform_dynamics[i].composite_position += delta;
         if self.platform_dynamics[i].shake_time >= duration {
             self.platform_dynamics[i].shake_time = Fix::ZERO;
