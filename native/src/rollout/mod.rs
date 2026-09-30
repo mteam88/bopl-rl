@@ -1651,8 +1651,7 @@ impl FormScale {
                 ),
                 radius,
                 physics_scale: Fix::ONE,
-                offset: Vec2::ZERO,
-                circle_radius: Fix::ZERO,
+                ..FormScale::default()
             };
         }
         let ratio = (Fix::ONE / self.scale) * value;
@@ -1697,6 +1696,13 @@ impl FormScale {
             self.offset = offset;
         }
         self.offset = self.offset * (self.scale / old);
+    }
+
+    /// DPhysicsCircle.Scale's setter on a circle with its own bounds.
+    fn write_circle_scale(&mut self, value: Fix, min: Fix, max: Fix) {
+        let value = value.clamp(min, max);
+        self.circle_radius *= (Fix::ONE / self.scale) * value;
+        self.scale = value;
     }
 
     /// PlayerPhysics.UpdateScale.
@@ -3173,6 +3179,11 @@ pub struct PlayerSlot {
 /// and Roll form colliders carry the same bounds (Drill.prefab, Roll.prefab).
 fn hurtbox_scale(scale: Fix) -> Fix {
     scale.clamp(Fix::from_f32(0.3), Fix::from_int(3))
+}
+
+/// BounceBall's DPhysicsCircle MinScale and MaxScale.
+fn rock_scale_bounds() -> (Fix, Fix) {
+    (Fix::from_f32(0.3), Fix::from_int(4))
 }
 
 impl PlayerSlot {
@@ -10982,10 +10993,11 @@ impl RolloutWorld {
                         // off the slime's own position (BounceBall.cs:131).
                         slot.reported_position = form_position;
                         slot.reported_tick = self.tick;
-                        // Ability.EnterAbility rescales the slot's own circle
-                        // from the scale its last use left, keeping its Q32
-                        // residue; a new form starts from the prefab radius.
-                        slot.forms[s].set_circle_scale(Fix::ONE, data.rock.radius);
+                        // Ability.EnterAbility rescales the slot's own circle to
+                        // Player.Scale from the scale its last use left, keeping
+                        // its Q32 residue; a new form starts from the prefab radius.
+                        let scale = slot.player_scale;
+                        slot.forms[s].set_circle_scale(scale, data.rock.radius);
                         slot.rock = RockState {
                             body,
                             exit_scale: Fix::ONE,
@@ -12281,12 +12293,13 @@ impl RolloutWorld {
             return;
         }
         if self.players[index].active == ActiveAbility::Rock {
-            // Ability.UpdateSim restores the owning player's unit scale before
-            // DetPhysics. DPhysicsCircle applies the ratio against the pulse
-            // left by BounceBall.LateUpdateSim, retaining its Q32 residue.
+            // Ability.UpdateSim restores Player.Scale before DetPhysics.
+            // DPhysicsCircle applies the ratio against the pulse left by
+            // BounceBall.LateUpdateSim, retaining its Q32 residue.
             let slot = &mut self.players[index];
             let s = slot.rock_slot();
-            slot.forms[s].set_circle_scale(Fix::ONE, data.rock.radius);
+            let scale = slot.player_scale;
+            slot.forms[s].set_circle_scale(scale, data.rock.radius);
             self.rock_rope_update(index, jump_pressed, data);
             // Rock's DestroyIfOutsideSceneBounds runs after BounceBall and
             // before its BoplBody, observing the previous physics pass's
@@ -41546,9 +41559,10 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             let s = slot.rock_slot();
             let (st, circle) = (&mut slot.rock, &mut slot.forms[s]);
+            let (min, max) = rock_scale_bounds();
             if st.time > data.rock.max_duration && !st.exiting {
                 st.exiting = true;
-                st.exit_scale = Fix::ONE - st.scale_sum;
+                st.exit_scale = circle.scale - st.scale_sum;
             }
             st.time += dt;
             if st.exiting {
@@ -41556,8 +41570,8 @@ impl RolloutWorld {
                 if st.exit_time > data.rock.exit_time {
                     let exit_scale = st.exit_scale;
                     let velocity = st.body.velocity;
-                    circle.scale = exit_scale;
-                    circle.circle_radius *= exit_scale;
+                    // BounceBall.ExitAbility: body.Scale = exitScale.
+                    circle.write_circle_scale(exit_scale, min, max);
                     let slot = &mut self.players[index];
                     slot.set_active_form(&mut self.entities, ActiveAbility::None);
                     slot.base.velocity = velocity;
@@ -41578,18 +41592,15 @@ impl RolloutWorld {
                     self.purge_destroyed_colliders();
                     continue;
                 }
-                let delta = Fix::ONE - st.scale_last_frame;
+                let delta = circle.scale - st.scale_last_frame;
                 st.exit_scale += delta;
-                circle.scale = data.rock.exit_scale.evaluate(st.exit_time) * st.exit_scale;
-                circle.circle_radius *= circle.scale;
+                let value = data.rock.exit_scale.evaluate(st.exit_time) * st.exit_scale;
+                circle.write_circle_scale(value, min, max);
             } else {
+                // CollisionCircle.Scale += the entry curve, on top of the
+                // Player.Scale Ability restored this pass.
                 let amount = data.rock.enter_scale.evaluate(st.time);
-                // DetPhysics synchronizes the collider from FixTransform before
-                // each LateUpdateSim. SetScale_DPhysicsOnly does not change the
-                // transform's authoritative public scale, so the getter starts
-                // from the entry scale again on the following pass.
-                circle.scale = Fix::ONE + amount;
-                circle.circle_radius *= circle.scale;
+                circle.write_circle_scale(circle.scale + amount, min, max);
                 st.scale_sum += amount;
             }
             st.scale_last_frame = circle.scale;
