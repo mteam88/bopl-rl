@@ -526,6 +526,7 @@ def main():
         "layer": rp["data"].get("layer"),
         "extents": vec2(rp_rr, "startExtents"),
         "radius": fix(rp_rr, "startRadius") if "startRadius.m_rawValue" in rp_rr else fix(rp_rr, "radius"),
+        "min_scale": fix(rp_rr, "MinScale"),
         "animate_velocity": {
             "speed": fix(rp_av, "speed"),
             "mu": fix(rp_av, "mu"),

@@ -32653,7 +32653,7 @@ impl RolloutWorld {
             body_scale: scale,
             body_resizable: true,
             intro_disabled: false,
-            min_scale: Fix::from_f32(0.1),
+            min_scale: pd.spawn_min_scale,
             base_scale: Fix::ONE,
             time_since_scaled_up: Fix::ZERO,
             stuck_arrows: 0,
