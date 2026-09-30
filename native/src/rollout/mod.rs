@@ -26937,7 +26937,9 @@ impl RolloutWorld {
             );
         }
         for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
-            if !pickup.active || self.blink_object_hidden(pickup.entity) {
+            // CircleCastAll tests DetPhysics.IsActive, which a pickup's still
+            // disabled hitbox fails.
+            if !pickup.active || !pickup.enabled || self.blink_object_hidden(pickup.entity) {
                 continue;
             }
             let center = pickup.collider_center;
