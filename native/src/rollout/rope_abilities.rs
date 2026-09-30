@@ -819,16 +819,16 @@ impl RolloutWorld {
             radius: source.grapple_player_cast_radius,
         };
         let mut nearby_player = None;
-        // A slime in its spawn animation already has its hurtbox enabled.
+        // A slime in its spawn animation already has its hurtbox enabled. The
+        // cast reads each slime's current hurtbox where DetPhysics last synced
+        // it: an ability form's own box, not the slime body's.
         for candidate in 0..self.players.len() {
             if candidate != player
                 && self.hittable(candidate)
                 && self.players[candidate].active != ActiveAbility::Rock
-                && crate::physics::contact::circle_box(
-                    player_query,
-                    self.players[candidate].base.synced,
-                )
-                .is_some()
+                && self.cast_box(candidate).is_some_and(|collider| {
+                    crate::physics::contact::circle_box(player_query, collider).is_some()
+                })
             {
                 // CircleCastClosestPlayers retains the final matching box.
                 nearby_player = Some(RopeTarget::Player(candidate));
@@ -1972,6 +1972,15 @@ impl RolloutWorld {
 
     /// The abilityless clones whose Player-layer box DetPhysics holds, in
     /// the order their boxes registered.
+    /// The slime's current player-layer box as a DetPhysics query sees it:
+    /// where its last sync left it, else its published row.
+    fn cast_box(&self, player: usize) -> Option<OrientedBox> {
+        let entity = Self::hurtbox_entity(&self.players[player]);
+        let row = *self.entities.get(entity)?;
+        self.detphysics_box(entity, data::get())
+            .or_else(|| (row.kind == 1 && row.flags & E_ACTIVE != 0).then(|| Self::row_box(row)))
+    }
+
     pub(super) fn player_layer_clones(&self) -> Vec<usize> {
         let mut clones: Vec<usize> = (0..self.abilityless_clones.len())
             .filter(|&index| {
