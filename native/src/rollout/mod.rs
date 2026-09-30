@@ -30487,13 +30487,26 @@ impl RolloutWorld {
     }
 
     /// The collider a mid-pass DetPhysics query sees for a slime's, form's,
-    /// clone's or ability pickup's entity: where DetPhysics last synced it, at
-    /// its Simulate or an explicit sync (OnEnterAbility, onExitAbility), and
-    /// not where this pass's updates have since moved the body. A clone's row
-    /// already follows its update. None: not in DetPhysics now, which is
-    /// DetPhysics.IsActive failing (DetPhysics.cs:1658); `is_body_collider`
+    /// clone's, spark node's or ability pickup's entity: where DetPhysics last
+    /// synced it, at its Simulate or an explicit sync (OnEnterAbility,
+    /// onExitAbility), and not where this pass's updates have since moved the
+    /// body. A clone's row already follows its update. None: not in DetPhysics
+    /// now, as IsActive reads the live hierarchy (DetPhysics.cs:1658-1665);
+    /// `is_body_collider`
     /// says whether the entity is a slime's, form's or clone's at all.
     fn detphysics_collider(&self, entity: usize) -> Option<DetCollider> {
+        // A spark node's circle is a child of its wall's CompositeBody, and a
+        // wall a QuantumTunnel hid takes it out of the hierarchy.
+        if let Some(node) =
+            self.tesla_nodes.iter().find(|node| node.active && node.entity == Some(entity))
+        {
+            let live = node.platform_index < self.platforms.len()
+                && !self.attached_hidden(node.platform_index, node.entity);
+            return live.then_some(DetCollider::Circle(Circle {
+                center: node.collider_center,
+                radius: node.radius,
+            }));
+        }
         if let Some(clone) =
             self.abilityless_clones.iter().find(|clone| clone.active && clone.entity == Some(entity))
         {
@@ -39676,12 +39689,13 @@ impl RolloutWorld {
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.tesla_wall_contacts.clear();
         for (node_index, node) in self.tesla_nodes.iter().enumerate() {
-            if !node.active || node.macho_carried || node.platform_index >= self.platforms.len() {
+            if !node.active || node.macho_carried {
                 continue;
             }
-            let circle = Circle {
-                center: node.collider_center,
-                radius: node.radius,
+            let Some(DetCollider::Circle(circle)) =
+                node.entity.and_then(|entity| self.detphysics_collider(entity))
+            else {
+                continue;
             };
             for (wall_index, platform) in self.platforms.iter().enumerate() {
                 if wall_index == node.platform_index
