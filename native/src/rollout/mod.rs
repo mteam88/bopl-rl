@@ -36221,8 +36221,8 @@ impl RolloutWorld {
         }
         // The Circle/Box group follows, built from the corrected circles:
         // items and Portal shots against the RocketEngine boxes of platform
-        // composites, and items against Spike attack boxes. ResolveCollision
-        // swaps the child for its combined body and position;
+        // composites, and items and Tesla nodes against Spike attack boxes.
+        // ResolveCollision swaps a child for its combined body and position;
         // PositionalCorrection takes the child's own inverse mass and moves
         // its collider and CompositeBody.position. Box references from SPIKE
         // up are spikes; the item callbacks ignore their LethalTerrain layer.
@@ -36230,10 +36230,13 @@ impl RolloutWorld {
         let mut engine_contacts = [(usize::MAX, usize::MAX, Contact::default()); 64];
         let mut engine_contact_count = 0;
         for &index in self.scratch.item_order.iter() {
-            if index >= NODE {
-                continue;
-            }
-            let circle = if index >= SHOT {
+            // A node never meets the children of its own composite.
+            let own_platform =
+                (index >= NODE).then(|| self.tesla_nodes[index - NODE].platform_index);
+            let circle = if index >= NODE {
+                let node = self.tesla_nodes[index - NODE];
+                Circle { center: node.collider_center, radius: node.radius }
+            } else if index >= SHOT {
                 Circle {
                     center: self.portal_shots[index - SHOT].position,
                     radius: data.portal_gun.shot_radius,
@@ -36246,6 +36249,7 @@ impl RolloutWorld {
                 if !engine.active
                     || engine.macho_carried
                     || engine.platform_index >= self.platforms.len()
+                    || own_platform == Some(engine.platform_index)
                     || engine_contact_count == engine_contacts.len()
                 {
                     continue;
@@ -36264,13 +36268,14 @@ impl RolloutWorld {
                     engine_contact_count += 1;
                 }
             }
-            if index >= SHOT {
+            if (SHOT..NODE).contains(&index) {
                 continue;
             }
             for (spike_index, spike) in self.spike_attacks.iter().copied().enumerate() {
                 if !spike.active
                     || spike.macho_carried
                     || spike.platform_index >= self.platforms.len()
+                    || own_platform == Some(spike.platform_index)
                     || spike.body.inverse_mass <= Fix::ZERO
                     || spike.entity.is_none_or(|entity| self.entities[entity].flags & 3 != 3)
                     || engine_contact_count == engine_contacts.len()
@@ -36286,7 +36291,10 @@ impl RolloutWorld {
         }
         let engine_contacts = &mut engine_contacts[..engine_contact_count];
         let circle_min = |index: usize| {
-            if index >= SHOT {
+            if index >= NODE {
+                let node = self.tesla_nodes[index - NODE];
+                axis(node.swept_center) - node.radius
+            } else if index >= SHOT {
                 axis(self.portal_shots[index - SHOT].position) - data.portal_gun.shot_radius
             } else {
                 let item = self.thrown_items[index];
@@ -36307,7 +36315,9 @@ impl RolloutWorld {
                 - axis((Vec2::UP * surface.y).complex_mul(basis)).abs()
         };
         engine_contacts.sort_by_key(|&(index, engine_index, _)| {
-            let circle = if index >= SHOT {
+            let circle = if index >= NODE {
+                self.tesla_nodes[index - NODE].entity
+            } else if index >= SHOT {
                 self.portal_shots[index - SHOT].entity
             } else {
                 self.thrown_items[index].entity
@@ -36330,11 +36340,16 @@ impl RolloutWorld {
                 let engine = self.engines[engine_index];
                 (engine.platform_index, engine.body.inverse_mass)
             };
-            let (mut circle_body, circle_position) = if index >= SHOT {
+            let (mut circle_body, circle_position, circle_inverse_mass) = if index >= NODE {
+                let node = self.tesla_nodes[index - NODE];
+                let dynamics = &self.platform_dynamics[node.platform_index];
+                (dynamics.body, dynamics.composite_position, node.body.inverse_mass)
+            } else if index >= SHOT {
                 let shot = self.portal_shots[index - SHOT];
-                (shot.body, shot.position)
+                (shot.body, shot.position, shot.body.inverse_mass)
             } else {
-                (self.thrown_items[index].body, self.thrown_items[index].position)
+                let item = self.thrown_items[index];
+                (item.body, item.position, item.body.inverse_mass)
             };
             let mut platform_body = self.platform_dynamics[platform].body;
             resolve(
@@ -36346,11 +36361,16 @@ impl RolloutWorld {
             );
             let correction = positional_correction(
                 contact,
-                circle_body.inverse_mass,
+                circle_inverse_mass,
                 child_inverse_mass,
                 false,
             );
-            if index >= SHOT {
+            if index >= NODE {
+                let node_platform = self.tesla_nodes[index - NODE].platform_index;
+                self.platform_dynamics[node_platform].body = circle_body;
+                self.platform_dynamics[node_platform].composite_position += correction[0];
+                self.tesla_nodes[index - NODE].collider_center += correction[0];
+            } else if index >= SHOT {
                 let shot = &mut self.portal_shots[index - SHOT];
                 shot.body = circle_body;
                 shot.position += correction[0];
