@@ -3802,7 +3802,6 @@ struct PlatformScratch {
     /// Circle/RoundedRect group's, or the Box/RoundedRect group's.
     circle_wall_order: Vec<(SweepRank, SweepRank, u8, usize)>,
     pickup_order: Vec<usize>,
-    pickup_window: Vec<usize>,
     pickup_contacts: Vec<(usize, usize, Contact)>,
     /// Guided-Missile Box/Box manifolds. Every manifold is captured before
     /// either Missile callback destroys a participant.
@@ -3895,7 +3894,6 @@ impl PlatformScratch {
             hook_smoke_hits: Vec::with_capacity(4),
             circle_wall_order: Vec::with_capacity(256),
             pickup_order: Vec::with_capacity(16),
-            pickup_window: Vec::with_capacity(16),
             pickup_contacts: Vec::with_capacity(32),
             missile_contacts: Vec::with_capacity(256),
             callback_hits: Vec::with_capacity(16),
@@ -5989,9 +5987,6 @@ impl RolloutWorld {
         {
             return;
         }
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let other = |v: Vec2| if sweep_x { v.y } else { v.x };
         let center = |pickup: AbilityPickup| pickup.position + pickup.offset;
         let radius = |pickup: AbilityPickup| pickup.radius;
 
@@ -6007,45 +6002,30 @@ impl RolloutWorld {
                 }),
         );
         order.sort_unstable_by_key(|&index| {
-            let pickup = self.ability_pickups[index];
-            sweep_rank(&self.entities, axis(center(pickup)) - radius(pickup), pickup.entity)
+            sweep_rank(&self.entities, self.swept_min(Swept::Pickup(index)), self.ability_pickups[index].entity)
         });
-        let mut window = std::mem::take(&mut self.scratch.pickup_window);
         let mut contacts = std::mem::take(&mut self.scratch.pickup_contacts);
-        window.clear();
         contacts.clear();
-        for &current in order.iter() {
+        for (k, &current) in order.iter().enumerate() {
             let current_pickup = self.ability_pickups[current];
-            let current_center = center(current_pickup);
-            let current_radius = radius(current_pickup);
-            let current_min = axis(current_center) - current_radius;
-            window.retain(|&prior| {
-                axis(center(self.ability_pickups[prior])) + radius(self.ability_pickups[prior])
-                    > current_min
-            });
-            for &prior in window.iter() {
-                let prior_pickup = self.ability_pickups[prior];
-                let prior_center = center(prior_pickup);
-                let prior_radius = radius(prior_pickup);
-                if other(prior_center) + prior_radius <= other(current_center) - current_radius
-                    || other(prior_center) - prior_radius >= other(current_center) + current_radius
-                {
+            for &prior in &order[..k] {
+                if !self.swept_pair(Swept::Pickup(prior), Swept::Pickup(current)) {
                     continue;
                 }
+                let prior_pickup = self.ability_pickups[prior];
                 if let Some(contact) = crate::physics::contact::circle_circle(
                     Circle {
-                        center: prior_center,
-                        radius: prior_radius,
+                        center: center(prior_pickup),
+                        radius: radius(prior_pickup),
                     },
                     Circle {
-                        center: current_center,
-                        radius: current_radius,
+                        center: center(current_pickup),
+                        radius: radius(current_pickup),
                     },
                 ) {
                     contacts.push((prior, current, contact));
                 }
             }
-            window.push(current);
         }
         for &(a_index, b_index, contact) in contacts.iter() {
             self.resolve_pickup_pair(a_index, b_index, contact);
@@ -6062,10 +6042,8 @@ impl RolloutWorld {
             row.vy = pickup.body.velocity.y.raw();
         }
         order.clear();
-        window.clear();
         contacts.clear();
         self.scratch.pickup_order = order;
-        self.scratch.pickup_window = window;
         self.scratch.pickup_contacts = contacts;
     }
 
@@ -6113,17 +6091,6 @@ impl RolloutWorld {
         // not prefab registration order. This matters when two death drops
         // overlap one slime on the same pass: AddAdditionalAbility replaces
         // the third slot twice, so the later callback wins.
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let body_rank = |player_index: usize| {
-            let entity = self.players[player_index].body_entity;
-            let row = self.entities[entity];
-            let center = if sweep_x { row.x } else { row.y };
-            let right = if sweep_x { row.right_x } else { row.right_y };
-            let up = if sweep_x { row.up_x } else { row.up_y };
-            let min = Fix::from_raw(center - right.abs() - up.abs());
-            sweep_rank(&self.entities, min, Some(entity))
-        };
         let clones = self.player_layer_clones();
         let mut hits = Vec::new();
         for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
@@ -6134,13 +6101,14 @@ impl RolloutWorld {
                 center: pickup.position + pickup.offset,
                 radius: pickup.radius,
             };
-            let pickup_rank =
-                sweep_rank(&self.entities, axis(circle.center) - circle.radius, pickup.entity);
+            let swept = Swept::Pickup(pickup_index);
+            let pickup_rank = sweep_rank(&self.entities, self.swept_min(swept), pickup.entity);
             for player_index in 0..self.players.len() {
                 let slot = &self.players[player_index];
                 if !self.playable(player_index)
                     || slot.active != ActiveAbility::None
                     || self.entities[slot.body_entity].flags & E_ACTIVE == 0
+                    || !self.swept_pair(swept, Swept::Player(player_index))
                 {
                     continue;
                 }
@@ -6154,7 +6122,7 @@ impl RolloutWorld {
                     inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
                 };
                 if crate::physics::contact::circle_box(circle, body).is_some() {
-                    let (later, earlier) = sweep_pair(pickup_rank, body_rank(player_index));
+                    let (later, earlier) = sweep_pair(pickup_rank, self.player_sweep_rank(player_index));
                     hits.push((later, earlier, pickup_index, PickupTaker::Body(player_index)));
                 }
             }
@@ -6163,12 +6131,10 @@ impl RolloutWorld {
             for &clone_index in &clones {
                 let clone = &self.abilityless_clones[clone_index];
                 let entity = clone.entity.expect("player-layer clone has a row");
-                if crate::physics::contact::circle_box(circle, clone.base.collider).is_some() {
-                    let row = self.entities[entity];
-                    let center = if sweep_x { row.x } else { row.y };
-                    let right = if sweep_x { row.right_x } else { row.right_y };
-                    let up = if sweep_x { row.up_x } else { row.up_y };
-                    let min = Fix::from_raw(center - right.abs() - up.abs());
+                if self.swept_pair(swept, Swept::Clone(clone_index))
+                    && crate::physics::contact::circle_box(circle, clone.base.collider).is_some()
+                {
+                    let min = self.swept_min(Swept::Clone(clone_index));
                     let (later, earlier) =
                         sweep_pair(pickup_rank, sweep_rank(&self.entities, min, Some(entity)));
                     hits.push((later, earlier, pickup_index, PickupTaker::Clone(clone_index)));
@@ -8442,6 +8408,7 @@ impl RolloutWorld {
             for rock_index in 0..self.players.len() {
                 if self.players[rock_index].active != ActiveAbility::Rock
                     || !self.playable(rock_index)
+                    || !self.swept_pair(Swept::Part(Part::Shot(shot_index)), Swept::Player(rock_index))
                 {
                     continue;
                 }
@@ -8449,11 +8416,9 @@ impl RolloutWorld {
                     center: self.players[rock_index].base.position,
                     radius: self.players[rock_index].rock_circle().circle_radius,
                 };
-                // SortAndSweepXAxis supplies circle A from the lower AABB
-                // minimum. Rock colliders are registered before spawned shots,
-                // so they also win an exact tie.
-                let shot_first = shot_circle.center.x - shot_circle.radius
-                    < rock_circle.center.x - rock_circle.radius;
+                // SortAndSweep supplies circle A from the earlier box.
+                let shot_first =
+                    self.part_rank(Part::Shot(shot_index)) < self.player_sweep_rank(rock_index);
                 let contact = if shot_first {
                     crate::physics::contact::circle_circle(shot_circle, rock_circle)
                 } else {
@@ -35453,13 +35418,13 @@ impl RolloutWorld {
             // normal and so the rounding of each side's correction.
             let mut item_contacts = [(usize::MAX, Contact::default(), false); 64];
             let mut item_contact_count = 0;
-            let sweep_x = self.sweep_x();
-            let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
+            let arrow_rank = sweep_rank(&self.entities, self.swept_min(Swept::Arrow(i)), arrow.entity);
             for (item_index, item) in self.thrown_items.iter().enumerate() {
                 if item_contact_count == item_contacts.len()
                     || !item.active
                     || item.entity.is_none()
                     || item.callback_registered_tick == self.tick
+                    || !self.swept_pair(Swept::Arrow(i), Swept::Part(Part::Item(item_index)))
                 {
                     continue;
                 }
@@ -35467,8 +35432,7 @@ impl RolloutWorld {
                     center: item.position,
                     radius: thrown_item_radius(data, *item),
                 };
-                let arrow_first = axis(circle.center) - circle.radius
-                    < axis(item_circle.center) - item_circle.radius;
+                let arrow_first = arrow_rank < self.part_rank(Part::Item(item_index));
                 let contact = if arrow_first {
                     crate::physics::contact::circle_circle(circle, item_circle)
                 } else {
@@ -35623,7 +35587,10 @@ impl RolloutWorld {
             let mut portal_contacts = [(usize::MAX, Contact::default()); 64];
             let mut portal_contact_count = 0;
             for (shot_index, shot) in self.portal_shots.iter().enumerate() {
-                if portal_contact_count == portal_contacts.len() || !shot.active || !shot.registered
+                if portal_contact_count == portal_contacts.len()
+                    || !shot.active
+                    || !shot.registered
+                    || !self.swept_pair(Swept::Arrow(i), Swept::Part(Part::Shot(shot_index)))
                 {
                     continue;
                 }
@@ -35688,7 +35655,11 @@ impl RolloutWorld {
                 if missile_contact_count == missile_contacts.len() {
                     break;
                 }
-                if !missile.active || !missile.registered || missile.magnet_hold_ticks >= 0 {
+                if !missile.active
+                    || !missile.registered
+                    || missile.magnet_hold_ticks >= 0
+                    || !self.swept_pair(Swept::Arrow(i), Swept::Part(Part::Missile(missile_index)))
+                {
                     continue;
                 }
                 let missile_box = missile.collider();
@@ -35736,9 +35707,7 @@ impl RolloutWorld {
                     row.rotation = arrow_body.orientation.raw();
                     row.angular_velocity = arrow_body.angular_velocity.raw();
                 }
-                let min = if self.sweep_x() { arrow.position.x } else { arrow.position.y }
-                    - data.arrow.radius * arrow.scale;
-                let arrow_rank = sweep_rank(&self.entities, min, arrow.entity);
+                let arrow_rank = sweep_rank(&self.entities, self.swept_min(Swept::Arrow(i)), arrow.entity);
                 for &(missile_index, _) in &missile_contacts[..missile_contact_count] {
                     self.queue_missile_blast(missile_index, GROUP_CB, arrow_rank);
                 }
@@ -35985,6 +35954,8 @@ impl RolloutWorld {
                 if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED) {
                     continue;
                 }
+                let sweep_x = self.sweep_x();
+                let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
                 let (hit, row_min) = if row.kind == 0 {
                     let hit = crate::physics::contact::circle_circle(
@@ -36019,9 +35990,8 @@ impl RolloutWorld {
                     (false, Fix::ZERO)
                 };
                 if hit {
-                    let arrow_min = axis(circle.center) - circle.radius;
                     let key = sweep_pair(
-                        sweep_rank(&self.entities, arrow_min, arrow.entity),
+                        sweep_rank(&self.entities, self.swept_min(Swept::Arrow(i)), arrow.entity),
                         sweep_rank(&self.entities, row_min, Some(entity)),
                     );
                     player_hits.push((key, arrow.owner, j));
@@ -37295,12 +37265,7 @@ impl RolloutWorld {
             // has no guard against a second call, so a grenade spawns one
             // Explosion for each pair that sets it off; the item queues once,
             // at its first pair, with the pair count.
-            let circle_min = if self.sweep_x() {
-                circle.center.x - circle.radius
-            } else {
-                circle.center.y - circle.radius
-            };
-            let item_rank = sweep_rank(&self.entities, circle_min, item.entity);
+            let item_rank = self.part_rank(Part::Item(item_index));
             let mut first_key: Option<CallbackKey> = None;
             let mut detonations = 0;
             if item.ability == ABILITY_SMOKE
@@ -37352,7 +37317,7 @@ impl RolloutWorld {
                     earliest_key(&mut first_key, (GROUP_CB, later, earlier));
                 }
                 detonations += count;
-                let (line_hits, line_key) = self.explosion_layer_item_hits(circle, item.entity);
+                let (line_hits, line_key) = self.explosion_layer_item_hits(circle, item_rank);
                 detonations += line_hits;
                 if let Some(key) = line_key {
                     earliest_key(&mut first_key, key);
@@ -38066,7 +38031,7 @@ impl RolloutWorld {
     fn explosion_layer_item_hits(
         &self,
         circle: Circle,
-        entity: Option<usize>,
+        item_rank: SweepRank,
     ) -> (usize, Option<CallbackKey>) {
         let live_nodes = self.tesla_nodes.len();
         let mut boxes = [(OrientedBox::default(), None); 16];
@@ -38112,12 +38077,6 @@ impl RolloutWorld {
                 count += 1;
             }
         }
-        let circle_min = if self.sweep_x() {
-            circle.center.x - circle.radius
-        } else {
-            circle.center.y - circle.radius
-        };
-        let item_rank = sweep_rank(&self.entities, circle_min, entity);
         let key = boxes[..count]
             .iter()
             .map(|&(hitbox, hitbox_entity)| {
@@ -40020,7 +39979,7 @@ impl RolloutWorld {
             let clone_entity = self.abilityless_clones[clone_index].entity;
             let clone_owner = self.abilityless_clones[clone_index].base.id;
             let clone_box = self.abilityless_clones[clone_index].base.collider;
-            let clone_min = self.box_sweep_min(clone_box);
+            let clone_min = self.swept_min(Swept::Clone(clone_index));
             for (entity, row) in self.entities.iter().copied().enumerate() {
                 if Some(entity) == clone_entity
                     || row.flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED
@@ -48104,6 +48063,7 @@ mod tests {
         let second_entity = world.players[1].body_entity;
         world.entities[second_entity].x = first_row.x;
         world.entities[second_entity].y = first_row.y;
+        world.players[1].base.collider = world.players[0].base.collider;
         world.spawn_ability_pickup(position, ABILITY_MINE, Vec2::ZERO, data::get());
         let pickup_index = world.ability_pickups.len() - 1;
         world.ability_pickups[pickup_index].enabled = true;
