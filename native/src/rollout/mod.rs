@@ -9803,6 +9803,11 @@ impl RolloutWorld {
                 // follows it (Roll.cs:214, BlackHoleClap.cs:157, ThrowItem2.cs:198).
                 _ => {}
             }
+            // Ability.ExitAbility deactivates the form where UnGround left
+            // it, unrotated, and DetPhysics syncs that FixTransform to its box.
+            let entity = Self::hurtbox_entity(slot);
+            slot.sync_form_pose();
+            slot.form_frozen = Some(FrozenForm { tick, entity, posed: true });
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.set_ordinary_body_scale(slot.player_scale);
             slot.restore_slime_radius();
@@ -42872,6 +42877,8 @@ impl RolloutWorld {
                         // A grounded form's box keeps this pass's recoil
                         // drift; LateUpdateSim snaps only the body.
                         (synced, slot.throw_item.collider_rotation)
+                    } else if let Some((position, rotation, _)) = frozen_pose(throw_e) {
+                        (position, rotation)
                     } else {
                         // A timed exit leaves the box at the form's pose;
                         // the slime that lands or re-grounds turns on its own.
