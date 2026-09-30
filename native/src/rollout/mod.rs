@@ -39200,9 +39200,9 @@ impl RolloutWorld {
         let mut turns = std::mem::take(&mut self.scratch.platform_turns);
         turns.clear();
         turns.extend((0..self.platforms.len()).filter(|&i| self.platform_updates_in(i, pass)));
+        self.platform_sticky_tick(updater_dt, pass);
         self.platform_bounds_tick(pass);
         self.platform_motion_tick(data, updater_dt, pass);
-        self.platform_sticky_tick(updater_dt, pass);
         self.platform_body_scale_tick(pass);
         self.platform_orbits_tick(data, updater_dt, pass);
         self.platform_vector_fields_tick(data, updater_dt, pass);
@@ -39263,7 +39263,7 @@ impl RolloutWorld {
 
     /// AnimateVelocity then ShakablePlatform for one half of the platform
     /// list, one platform at a time in registration order (a spawned
-    /// platform's ResizablePlatform sits between the two). Both draw from the
+    /// platform's ResizablePlatform follows the two). Both draw from the
     /// shared random stream - the sudden-death delay on the first pass that
     /// sees the flag, the shake on every pass it shakes - so running all the
     /// springs before all the shakes would deal the numbers out in the wrong
@@ -39295,10 +39295,10 @@ impl RolloutWorld {
                 continue;
             }
             self.platform_spring(data, updater_dt, i);
+            shook |= self.platform_shake(data, updater_dt, i);
             if pass != PlatformPass::Authored {
                 self.platform_resizable(data, i);
             }
-            shook |= self.platform_shake(data, updater_dt, i);
         }
         if shook {
             self.platforms_changed();
@@ -39465,13 +39465,14 @@ impl RolloutWorld {
     }
 
     fn platform_updaters_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        // Each platform's updaters run in its component order (StickyRR,
+        // AnimateVelocity, ShakablePlatform, ..., BoplBody): the ease back
+        // and the UpdateBounds that closes it come before the spring, and
+        // BoplBody is last, so the spring still pushes with the mass from
+        // before this pass's rescale.
+        self.platform_sticky_tick(updater_dt, PlatformPass::Authored);
         self.platform_bounds_tick(PlatformPass::Authored);
         self.platform_motion_tick(data, updater_dt, PlatformPass::Authored);
-
-        // BoplBody is the last updater on every platform (StickyRR,
-        // AnimateVelocity, ShakablePlatform, ..., BoplBody), so the spring
-        // above still pushed with the mass from before this pass's rescale.
-        self.platform_sticky_tick(updater_dt, PlatformPass::Authored);
         self.platform_body_scale_tick(PlatformPass::Authored);
         self.platform_orbits_tick(data, updater_dt, PlatformPass::Authored);
         self.platform_vector_fields_tick(data, updater_dt, PlatformPass::Authored);
