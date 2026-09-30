@@ -12074,18 +12074,27 @@ impl RolloutWorld {
                             );
                             form.physics_radius()
                         };
-                        let form_position = if grounded {
+                        // SyncPhysicsTo re-snaps a grounded body and aligns it
+                        // to the surface normal there (PlayerPhysics.cs:534-539,
+                        // StickyRoundedRectangle.cs:611-615) before SetStartDir
+                        // reads body.right (Beam.cs:291).
+                        let (form_position, form_up) = if grounded {
                             let base = &self.players[index].base;
                             base.ground
                                 .and_then(|ground| {
                                     self.platforms.iter().find(|platform| platform.id == ground)
                                 })
-                                .map_or(base.position, |platform| {
-                                    platform.surface.position(base.local, physics_radius)
+                                .map_or((base.position, base.up), |platform| {
+                                    let position =
+                                        platform.surface.position(base.local, physics_radius);
+                                    (position, platform.surface.normal(position))
                                 })
                         } else {
-                            self.players[index].base.position
+                            (self.players[index].base.position, self.players[index].base.up)
                         };
+                        if grounded {
+                            self.players[index].base.align_to(form_up);
+                        }
                         let right = self.players[index].base.up.perp_cw();
                         let mut aim = action.direction();
                         if aim == Vec2::ZERO {
