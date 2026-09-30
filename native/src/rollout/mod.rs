@@ -43862,6 +43862,8 @@ impl RolloutWorld {
             e.y = position.y.raw();
             e.vx = marker.body.velocity.x.raw();
             e.vy = marker.body.velocity.y.raw();
+            e.rotation = marker.body.orientation.raw();
+            e.angular_velocity = marker.body.angular_velocity.raw();
         }
         for marker in &self.teleport_marker_pool {
             if !marker.active || !marker.registered {
@@ -43873,6 +43875,7 @@ impl RolloutWorld {
             e.y = position.y.raw();
             e.vx = marker.body.velocity.x.raw();
             e.vy = marker.body.velocity.y.raw();
+            e.rotation = marker.body.orientation.raw();
             e.angular_velocity = marker.body.angular_velocity.raw();
         }
     }
