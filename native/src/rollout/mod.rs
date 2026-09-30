@@ -31072,6 +31072,8 @@ impl RolloutWorld {
         }
 
         let mut dynamics = self.platform_dynamics[source];
+        // The source's BoplBody rescale this pass is not the copy's.
+        dynamics.unscaled_inverse_mass = None;
         dynamics.scale = copy_scale;
         dynamics.start_radius = effect_radius / effect_scale;
         if dynamics.attached_children != 0 || dynamics.composite_rebuild {
