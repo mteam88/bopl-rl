@@ -1356,7 +1356,6 @@ pub struct MissileFormState {
     /// Which missile `projectile` held. Another spawn can take the pool slot
     /// once it is destroyed, when SparkShot's sparkBody reads null.
     pub projectile_hierarchy: u32,
-    pub collider_rotation: Fix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3176,9 +3175,6 @@ impl UngroundBody<'_> {
                     tick,
                     null_rotation,
                 );
-                if null_rotation {
-                    slot.null_form_box_rotation();
-                }
                 if slot.active == ActiveAbility::Beam {
                     slot.beam_on_ungrounded();
                 }
@@ -3940,13 +3936,6 @@ impl PlayerSlot {
         self.sync_slime_row(entities);
     }
 
-    /// UnGround(nullRotation) zeroes a SparkShot form's body rotation too
-    /// (PlayerPhysics.cs:372-376); its box takes it at the next sync.
-    fn null_form_box_rotation(&mut self) {
-        if self.active == ActiveAbility::Missile {
-            self.missile.collider_rotation = Fix::ZERO;
-        }
-    }
 
     /// The only writer of `teleport_effect_active`: teleportObject hides the
     /// slime until the TeleportedObjectEffect shows it again.
@@ -11077,10 +11066,7 @@ impl RolloutWorld {
                         self.sync_physics_to_player_info(index, form_radius);
                         let slot = &mut self.players[index];
                         let entry_rotation = slot.base.rotation();
-                        slot.missile = MissileFormState {
-                            collider_rotation: entry_rotation,
-                            ..MissileFormState::default()
-                        };
+                        slot.missile = MissileFormState::default();
                         let collider = stored_box(
                             slot.base.position,
                             Vec2::angle(entry_rotation),
@@ -11143,9 +11129,6 @@ impl RolloutWorld {
                                 )
                                 .expect("valid Missile gravity constants");
                                 slot.base.collision_rays(terrain!(self));
-                                if slot.base.grounded {
-                                    slot.missile.collider_rotation = slot.base.rotation();
-                                }
                             }
                             if self.players[index].base.grounded {
                                 self.players[index]
@@ -11184,9 +11167,7 @@ impl RolloutWorld {
                                 slot.base.collision_rays(terrain!(self));
                                 let held = self.form_rope_release(index);
                                 let slot = &mut self.players[index];
-                                if slot.base.grounded {
-                                    slot.missile.collider_rotation = slot.base.rotation();
-                                } else {
+                                if !slot.base.grounded {
                                     slot.base.position +=
                                         (slot.base.velocity + slot.base.external_velocity) * DT;
                                 }
@@ -23861,9 +23842,6 @@ impl RolloutWorld {
     }
 
     fn missile_form_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
-        // DPhysicsBox publishes the basis from the start of SparkShot's pass;
-        // PlayerPhysics may align the live transform later in that pass.
-        self.players[index].missile.collider_rotation = self.players[index].base.rotation();
         // The form's updatables run SpriteAnimator, Ability, PlayerCollision,
         // PlayerPhysics, DestroyIfOutsideSceneBounds, SparkShot, DPhysicsBox,
         // PlayerBody. The animator's callbacks advance the phases first.
@@ -23910,9 +23888,6 @@ impl RolloutWorld {
             )
             .expect("valid Missile gravity constants");
             slot.base.collision_rays(terrain!(self));
-            if slot.base.grounded {
-                slot.missile.collider_rotation = slot.base.rotation();
-            }
         }
         // On the pass the boundary fires, SparkShot never steers the live
         // projectile. SparkShot's ExitAbility does not unground.
@@ -23941,7 +23916,6 @@ impl RolloutWorld {
         let grounded = self.players[index].base.grounded;
         if grounded && ((lost.is_some() && dead.is_none()) || ground_inactive) {
             let info = self.lost_ground_packet(index);
-            self.players[index].missile.collider_rotation = Fix::ZERO;
             self.ability_exit(index, info);
             return;
         }
@@ -23951,7 +23925,6 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             slot.base.unground(dead.as_ref(), true);
             slot.base.ground = None;
-            slot.missile.collider_rotation = Fix::ZERO;
         }
         // A form PlayerPhysics attached observes a grounded body, calls
         // Move(zero), and still steers the live projectile this pass.
@@ -23974,12 +23947,6 @@ impl RolloutWorld {
             // steering above is SparkShot's after its Move.
             if self.apply_platform_drop(index) {
                 return;
-            }
-            let slot = &mut self.players[index];
-            // Move aligned the transform to the surface where the body stands;
-            // DetPhysics publishes that rotation.
-            if slot.base.grounded {
-                slot.missile.collider_rotation = slot.base.rotation();
             }
             // SparkShot calls PlayerPhysics.Move(zero) above, then the later
             // PlayerBody component still integrates and damps external
@@ -24008,11 +23975,7 @@ impl RolloutWorld {
             slot.base.collision_rays(terrain!(self));
             let held = self.form_rope_release(index);
             let slot = &mut self.players[index];
-            // A landing in Move's own query attaches the form and aligns its
-            // FixTransform, which DetPhysics publishes before LateUpdateSim.
-            if slot.base.grounded {
-                slot.missile.collider_rotation = slot.base.rotation();
-            } else {
+            if !slot.base.grounded {
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             }
             if held {
@@ -41264,8 +41227,9 @@ impl RolloutWorld {
                 let live = throwing || missile_form;
                 let flags = form_box_flags(alive && live);
                 if sync_form_row(throw_box, flags, live, entered == throw_e, slot.base.id) {
+                    let at_sync = slot.forms[slot.entity_slot(throw_e)].synced;
                     let (center, rotation) = if missile_form {
-                        (synced, slot.missile.collider_rotation)
+                        (at_sync.position, at_sync.orientation.rotation())
                     } else if throwing {
                         // A grounded form's box keeps this pass's recoil
                         // drift and turn; LateUpdateSim moves only the body.
@@ -41276,7 +41240,7 @@ impl RolloutWorld {
                         // A timed exit leaves the box at the form's pose;
                         // the slime that lands or re-grounds turns on its own.
                         let rotation = if missile_row {
-                            slot.missile.collider_rotation
+                            at_sync.orientation.rotation()
                         } else {
                             slot.forms[slot.entity_slot(throw_e)].pose.orientation.rotation()
                         };
