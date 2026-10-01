@@ -30672,10 +30672,16 @@ impl RolloutWorld {
         slot.base.up = Vec2::angle(slot.base.rotation).perp();
         // SetActive(false) freezes the form's box at the transform its
         // PlayerBody already moved this pass (QuantumTunnel.cs:132-136).
+        // Every later Simulate still syncs the hidden box from that transform,
+        // which the form's own UpdateSim, skipped while hidden, no longer
+        // moves (DetPhysics.cs:2499-2531).
         if slot.active == ActiveAbility::BlackHole {
             slot.black_hole_cast.collider_position = slot.base.position;
             slot.black_hole_cast.collider_up = slot.base.up;
             slot.black_hole_cast.collider_rotation = slot.base.rotation;
+        }
+        if slot.active != ActiveAbility::None {
+            slot.sync_form_pose();
         }
         slot.set_blink_tunnel(&mut self.entities, true);
         slot.blink_tunnel_born_tick = self.tick;
@@ -31060,6 +31066,12 @@ impl RolloutWorld {
                 let slot = &mut self.players[victim];
                 if slot.active == ActiveAbility::BlackHole {
                     slot.black_hole_cast.collider_position = slot.base.position;
+                }
+                // The release moved victimFixTrans, a form's own transform,
+                // which the next Simulate syncs to its hidden box
+                // (QuantumTunnel.cs:180-182, DetPhysics.cs:2499-2531).
+                if slot.active != ActiveAbility::None {
+                    slot.sync_form_pose();
                 }
                 self.players[victim].base.sync_collider();
                 self.players[victim].blink_tunnel_released = true;
