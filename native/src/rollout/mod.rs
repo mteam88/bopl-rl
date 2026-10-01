@@ -13863,8 +13863,7 @@ impl RolloutWorld {
             (slot.obs_state, slot.state_ticks) =
                 if info.enter_turn { (STATE_STOP, STOP_TICKS + 2) } else { (STATE_IDLE, 0) };
             if info.just_landed && (info.ground.is_some() || lost_up.is_some()) {
-                slot.obs_state = STATE_LAND;
-                slot.state_ticks = LAND_TICKS + 2;
+                slot.begin_land(true);
                 let position = slot.base.position;
                 let up = ground.map(|platform| platform.surface.normal(position)).or(lost_up);
                 if up.is_some_and(|up| up.y < Fix::ZERO) {
