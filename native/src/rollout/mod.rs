@@ -8231,6 +8231,7 @@ impl RolloutWorld {
             || has(ABILITY_BOW)
             || has(ABILITY_BLACK_HOLE)
             || has(ABILITY_SPIKE)
+            || has(ABILITY_MISSILE)
             || has_pickups
         {
             self.thrown_item_pair_contacts(data);
@@ -35015,8 +35016,8 @@ impl RolloutWorld {
         missile.active && missile.registered && !self.blink_object_hidden(missile.entity)
     }
 
-    /// The Guided Missile's trigger pairs in the Box/Box group, which only
-    /// call back: water, explosions and slimes. Each pair queues
+    /// The Guided Missile's trigger pairs that only call back: water and
+    /// explosions. Each pair queues
     /// Missile.OnCollide; a held missile suppresses it after DetPhysics
     /// resolved the pair.
     fn guided_missile_contacts(&mut self, data: &data::RolloutData) {
@@ -35043,15 +35044,6 @@ impl RolloutWorld {
                 }
             }
             self.queue_missile_trigger_blasts(missile_index, missile_box);
-            for player_index in 0..self.players.len() {
-                if self.swept_pair(swept, Swept::Player(player_index))
-                    && self.guided_missile_hits_player(missile, missile_box, missile_rank, player_index)
-                {
-                    let category = GROUP_BB - self.player_is_circle(player_index) as u8;
-                    let rank = self.player_sweep_rank(player_index);
-                    self.queue_missile_blast(missile_index, category, rank);
-                }
-            }
             if let Some(entity) = missile.entity {
                 let row = &mut self.entities[entity];
                 row.x = missile.position.x.raw();
@@ -35090,71 +35082,6 @@ impl RolloutWorld {
         }
         for &(group, rank) in &blasts[..count] {
             self.queue_missile_blast(missile_index, group, rank);
-        }
-    }
-
-    /// Whether the box touches the slime's registered hurtbox.
-    fn guided_missile_hits_player(
-        &self,
-        missile: GuidedMissile,
-        missile_box: OrientedBox,
-        missile_rank: SweepRank,
-        index: usize,
-    ) -> bool {
-        let player = &self.players[index];
-        if !self.hittable(index) || missile.magnet_holder == Some(index) {
-            return false;
-        }
-        let entity = match player.active {
-            ActiveAbility::None => player.body_entity,
-            ActiveAbility::Dash => player.dash_entity,
-            ActiveAbility::Bow => player.bow_entity,
-            ActiveAbility::Grenade
-            | ActiveAbility::Smoke
-            | ActiveAbility::Tack
-            | ActiveAbility::Mjolnir
-            | ActiveAbility::PokeBall
-            | ActiveAbility::Missile => player.throw_entity,
-            ActiveAbility::Mine => player.mine_entity,
-            // A Rock form's circle meets the box in circle_box_group, which
-            // resolves the pair.
-            ActiveAbility::Rock => return false,
-            ActiveAbility::Roll => player.roll_entity,
-            ActiveAbility::Meteor => player.meteor_entity,
-            ActiveAbility::Push => player.push_entity,
-            ActiveAbility::Freeze => player.freeze_entity,
-            ActiveAbility::Blink => player.blink_entity,
-            ActiveAbility::GrowthRay => player.growth_ray_entity,
-            ActiveAbility::ShrinkRay => player.shrink_ray_entity,
-            ActiveAbility::Duplicator => player.duplicator_entity,
-            ActiveAbility::Magnet => player.magnet_entity,
-            ActiveAbility::Spike => player.spike_entity,
-            ActiveAbility::Engine => player.engine_entity,
-            ActiveAbility::Tesla => player.tesla_entity,
-            ActiveAbility::TimeStop => player.time_stop_entity,
-            ActiveAbility::Gust => player.gust_entity,
-            ActiveAbility::Revival => player.revival_entity,
-            ActiveAbility::BlackHole => player.black_hole_entity,
-            ActiveAbility::Throw => player.macho_throw_entity,
-            ActiveAbility::Drill => player.drill_entity,
-            ActiveAbility::Beam => player.beam_entity,
-            ActiveAbility::Platform => player.circle_entity,
-        };
-        if !self.collides(entity) {
-            return false;
-        }
-        let row = self.entities[entity];
-        if row.kind == 0 {
-            crate::physics::contact::circle_box(
-                Circle {
-                    center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                    radius: Fix::from_raw(row.radius),
-                },
-                missile_box,
-            )
-            .is_some()
-        } else {
-            swept_box_box(Self::row_box(&self.entity_inverse_extents, entity, row), self.player_sweep_rank(index), missile_box, missile_rank).is_some()
         }
     }
 

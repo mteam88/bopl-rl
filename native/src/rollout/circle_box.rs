@@ -1022,6 +1022,7 @@ impl RolloutWorld {
                     | Part::Item(_)
                     | Part::Pickup(_)
                     | Part::Spike(_)
+                    | Part::Missile(_)
             )
         {
             return;
