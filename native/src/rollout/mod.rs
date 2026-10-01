@@ -2276,6 +2276,32 @@ pub enum EatingPhase {
     Swallow,
 }
 
+impl EatingState {
+    /// The SpriteAnimator's pass over the current eating animation. Returns
+    /// the phase whose callback fired: Bite's Chew, Chew's start of the
+    /// swallow, Swallow's FinishEating.
+    fn animation_step(&mut self) -> Option<EatingPhase> {
+        self.frames -= 1;
+        if self.frames > 0 {
+            return None;
+        }
+        let ended = self.phase;
+        match ended {
+            EatingPhase::Bite => {
+                self.phase = EatingPhase::Chew;
+                self.frames = CHEW_TICKS + 1;
+            }
+            EatingPhase::Chew => {
+                self.phase = EatingPhase::Swallow;
+                self.frames = SWALLOW_TICKS + 1;
+                self.swallowing = true;
+            }
+            EatingPhase::Swallow => self.swallowing = false,
+        }
+        Some(ended)
+    }
+}
+
 /// FrozenSolid has no physics collider or observation row. It is still an
 /// Updater member: Begin acts immediately, registration is deferred, and each
 /// later update pins and re-ragdolls its victim until the ice shatters.
@@ -10107,56 +10133,65 @@ impl RolloutWorld {
     }
 
     /// The rest of a biting slime's pass. OldUpdate returns before input,
-    /// casting and the state switch, and UpdateSim grows a swallowing slime,
-    /// writes Player.Scale to the hurtbox and skips PlayerPhysics.Move
-    /// (SlimeController.cs:787, 1060-1080). PlayerBody still integrates, then
-    /// the slime's SpriteAnimator, a child after SlimeController, steps the
-    /// eating animations.
+    /// casting and the state switch, and UpdateSim's own part follows
+    /// (`biting_slime_update`). PlayerBody still integrates, then the slime's
+    /// SpriteAnimator, a child after SlimeController, steps the eating
+    /// animations.
     fn biting_tick(&mut self, index: usize, action: Action) {
-        let stopped = self.is_time_stopped_for(index);
+        self.players[index].base.previous_jump = action.buttons & 1 != 0;
+        self.biting_slime_update(index);
         let slot = &mut self.players[index];
-        slot.base.previous_jump = action.buttons & 1 != 0;
-        if slot.eating.swallowing && !stopped {
-            slot.player_scale = (slot.player_scale + SCALE_INCREASE_ON_NOM)
-                .clamp(Fix::from_f64(0.3), Fix::from_int(3));
-            self.share_player_scale(index);
-        }
-        let slot = &mut self.players[index];
-        let scale = slot.player_scale;
-        slot.set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
         if slot.base.outside_bounds() {
             slot.base.alive = false;
             slot.base.out_of_bounds = true;
             return;
         }
         slot.base.integrate();
-        if stopped {
+        self.eating_animation_step(index);
+    }
+
+    /// SlimeController.UpdateSim on a biting slime: a swallowing slime grows,
+    /// Player.Scale goes to the hurtbox, and it returns before
+    /// PlayerPhysics.Move (SlimeController.cs:1069-1081).
+    fn biting_slime_update(&mut self, index: usize) {
+        if self.players[index].eating.swallowing && !self.is_time_stopped_for(index) {
+            self.swallow_growth(index);
+        }
+        let slot = &mut self.players[index];
+        let scale = slot.player_scale;
+        slot.set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
+    }
+
+    /// A swallowing SlimeController's `Player.Scale += scaleIncreaseOnNom`
+    /// (SlimeController.cs:1069-1072), the slime's or one of its clones'.
+    fn swallow_growth(&mut self, owner: usize) {
+        let slot = &mut self.players[owner];
+        slot.player_scale = (slot.player_scale + SCALE_INCREASE_ON_NOM)
+            .clamp(Fix::from_f64(0.3), Fix::from_int(3));
+        self.share_player_scale(owner);
+    }
+
+    /// The slime's SpriteAnimator stepping the bite, chew and swallow
+    /// animations. It holds while time is stopped for the slime
+    /// (SpriteAnimator.cs:85-102).
+    fn eating_animation_step(&mut self, index: usize) {
+        if self.is_time_stopped_for(index) {
             return;
         }
-        slot.eating.frames -= 1;
-        if slot.eating.frames > 0 {
-            return;
-        }
-        match slot.eating.phase {
-            EatingPhase::Bite => {
-                slot.eating.phase = EatingPhase::Chew;
-                slot.eating.frames = CHEW_TICKS + 1;
+        let slot = &mut self.players[index];
+        match slot.eating.animation_step() {
+            Some(EatingPhase::Bite) => {
                 let (killer, eating) = (slot.base.id, slot.eating);
                 self.chew(killer, eating);
             }
-            EatingPhase::Chew => {
-                slot.eating.phase = EatingPhase::Swallow;
-                slot.eating.frames = SWALLOW_TICKS + 1;
-                slot.eating.swallowing = true;
-            }
-            EatingPhase::Swallow => {
+            Some(EatingPhase::Swallow) => {
                 // FinishEating is the SpriteAnimator's callback, after an
                 // OldUpdate that returned while biting (SlimeController.cs:787).
-                slot.eating.swallowing = false;
                 slot.obs_state = STATE_IDLE;
                 slot.state_ticks = 0;
                 slot.obs_state_disabled_this_tick = true;
             }
+            Some(EatingPhase::Chew) | None => {}
         }
     }
 
@@ -10356,11 +10391,22 @@ impl RolloutWorld {
             for s in 0..3 {
                 slot.reset_ignored_cooldown(s, action.buttons & (2 << s) as u8 != 0);
             }
-            // SlimeController still writes Player.Scale to its hurtbox before
-            // Move (SlimeController.cs:1078), so a Growth or Shrink Ray lands.
-            let scale = slot.player_scale;
-            slot.set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
-            slot.base.move_only(Vec2::ZERO, terrain!(self));
+            // The recorder leaves SlimeController and its SpriteAnimator
+            // running, so a biting slime still grows, returns before Move and
+            // goes on to Chew.
+            let biting = slot.obs_state == STATE_BITING;
+            if biting {
+                self.biting_slime_update(index);
+            } else {
+                // SlimeController still writes Player.Scale to its hurtbox
+                // before Move (SlimeController.cs:1078), so a Growth or Shrink
+                // Ray lands.
+                let slot = &mut self.players[index];
+                let scale = slot.player_scale;
+                slot.set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
+                slot.base.move_only(Vec2::ZERO, terrain!(self));
+            }
+            let slot = &mut self.players[index];
             // A landing inside Move retargets attachedGround, which the
             // arrival's UnGround lifts off (RewindRecorder.cs:358).
             if slot.base.grounded {
@@ -10374,6 +10420,9 @@ impl RolloutWorld {
                 return;
             }
             self.form_body_move(index, jump_pressed);
+            if biting {
+                self.eating_animation_step(index);
+            }
             return;
         }
         // A Beam form finds its lost ground inside Beam.MovePlayer instead,
@@ -37870,10 +37919,7 @@ impl RolloutWorld {
         let clone = &mut self.abilityless_clones[clone_index];
         let owner = clone.owner;
         if clone.eating.swallowing {
-            let slot = &mut self.players[owner];
-            slot.player_scale = (slot.player_scale + SCALE_INCREASE_ON_NOM)
-                .clamp(Fix::from_f64(0.3), Fix::from_int(3));
-            self.share_player_scale(owner);
+            self.swallow_growth(owner);
         }
         let clone = &mut self.abilityless_clones[clone_index];
         if clone.base.outside_bounds() {
@@ -37882,27 +37928,16 @@ impl RolloutWorld {
             return;
         }
         clone.base.integrate();
-        clone.eating.frames -= 1;
-        if clone.eating.frames > 0 {
-            return;
-        }
-        match clone.eating.phase {
-            EatingPhase::Bite => {
-                clone.eating.phase = EatingPhase::Chew;
-                clone.eating.frames = CHEW_TICKS + 1;
+        match clone.eating.animation_step() {
+            Some(EatingPhase::Bite) => {
                 let (killer, eating) = (clone.base.id, clone.eating);
                 self.chew(killer, eating);
             }
-            EatingPhase::Chew => {
-                clone.eating.phase = EatingPhase::Swallow;
-                clone.eating.frames = SWALLOW_TICKS + 1;
-                clone.eating.swallowing = true;
-            }
-            EatingPhase::Swallow => {
-                clone.eating.swallowing = false;
+            Some(EatingPhase::Swallow) => {
                 clone.obs_state = STATE_IDLE;
                 clone.state_ticks = 0;
             }
+            Some(EatingPhase::Chew) | None => {}
         }
     }
 
