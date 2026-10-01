@@ -4430,9 +4430,7 @@ enum HoleTarget {
     Shot(usize),
     DuplicatedRock(usize),
     Missile(usize),
-    RevivalMarker(usize),
     Cloud(usize),
-    TeleportMarker(usize),
     Spike(usize),
     Engine(usize),
     Node(usize),
@@ -17162,11 +17160,13 @@ impl RolloutWorld {
         }
     }
 
-    /// BlackHole.OnCollide's pairs with the markers and clouds, which are not
-    /// group parts yet. DetPhysics calls every pair back from its queue after
-    /// all groups resolved, in SortAndSweep pair order (DetPhysics.cs:3197-3199).
+    /// BlackHole.OnCollide's pairs with the smoke clouds, which are not group
+    /// parts yet. DetPhysics calls every pair back from its queue after all
+    /// groups resolved, in SortAndSweep pair order (DetPhysics.cs:3197-3199).
     /// Every other collider pairs in `circle_circle_group` and
-    /// `circle_box_group`.
+    /// `circle_box_group`. Revival and Teleport markers sit on the spell
+    /// layer, which the collision matrix pairs with no named layer, so the
+    /// sweep never pairs them with a hole (DetPhysics.cs:2183, 2252).
     /// The callback reads the hole's mass only then (BlackHole.cs:447), so a
     /// white hole's pairs are queued too.
     fn black_hole_contacts(&mut self) {
@@ -17199,17 +17199,6 @@ impl RolloutWorld {
             let row_group = |world: &Self, entity: usize| {
                 if world.entities[entity].kind == 0 { GROUP_CC } else { GROUP_CB }
             };
-            for marker_index in 0..self.revival_marker_pool.len() {
-                let marker = self.revival_marker_pool[marker_index];
-                let Some(entity) = marker.entity else {
-                    continue;
-                };
-                if marker.active && marker.registered && self.circle_overlaps_entity(circle, entity) {
-                    let (other, group) = (row_rank(self, entity), row_group(self, entity));
-                    let target = HoleTarget::RevivalMarker(marker_index);
-                    queue(self, target, marker.body.inverse_mass, other, group);
-                }
-            }
             // Smoke (layer 22) pairs with RigidBodyAffector, so an unlit cloud
             // is eaten like any other positive-mass circle.
             for cloud_index in 0..self.smoke_clouds.len() {
@@ -17224,17 +17213,6 @@ impl RolloutWorld {
                 {
                     let (other, group) = (row_rank(self, entity), row_group(self, entity));
                     queue(self, HoleTarget::Cloud(cloud_index), cloud.body.inverse_mass, other, group);
-                }
-            }
-            for marker_index in 0..self.teleport_marker_pool.len() {
-                let marker = self.teleport_marker_pool[marker_index];
-                let Some(entity) = marker.entity else {
-                    continue;
-                };
-                if marker.active && marker.registered && self.circle_overlaps_entity(circle, entity) {
-                    let (other, group) = (row_rank(self, entity), row_group(self, entity));
-                    let inverse_mass = data::get().teleport.marker_body.inverse_mass;
-                    queue(self, HoleTarget::TeleportMarker(marker_index), inverse_mass, other, group);
                 }
             }
         }
@@ -17382,17 +17360,6 @@ impl RolloutWorld {
                     self.destroy_guided_missile(index, true);
                 }
             }
-            HoleTarget::RevivalMarker(index) => {
-                grow(self, Fix::ZERO);
-                let marker = &mut self.revival_marker_pool[index];
-                if marker.active {
-                    marker.active = false;
-                    marker.registered = false;
-                    if let Some(entity) = marker.entity {
-                        self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
-                    }
-                }
-            }
             HoleTarget::Cloud(index) => {
                 grow(self, Fix::ZERO);
                 let cloud = &mut self.smoke_clouds[index];
@@ -17400,17 +17367,6 @@ impl RolloutWorld {
                     cloud.active = false;
                     cloud.registered = false;
                     if let Some(entity) = cloud.entity {
-                        self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
-                    }
-                }
-            }
-            HoleTarget::TeleportMarker(index) => {
-                grow(self, Fix::ZERO);
-                let marker = &mut self.teleport_marker_pool[index];
-                if marker.active {
-                    marker.active = false;
-                    marker.registered = false;
-                    if let Some(entity) = marker.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
                     }
                 }
