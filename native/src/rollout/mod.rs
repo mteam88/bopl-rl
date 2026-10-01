@@ -36217,7 +36217,14 @@ impl RolloutWorld {
             }
             CallbackHit::CloneKill { clone, killer, cause } => self.clone_collision_kill(clone, killer, cause),
             CallbackHit::SpikeKnock { spike, player, entity, point } => {
-                if !self.hittable(player) {
+                // SpikeAttack.OnCollide returns only on a destroyed collider
+                // (SpikeAttack.cs:118): a killPlayer earlier in the queue
+                // DestroyFix'd the slime's box, while one through a form only
+                // exits it (PlayerCollision.cs:121-132, 211).
+                let slot = &self.players[player];
+                if (entity == slot.body_entity && slot.slime_destroyed_tick == Some(self.tick))
+                    || self.entities[entity].flags & (E_DESTROYED | E_REMOVED) != 0
+                {
                     return;
                 }
                 let direction = (point - self.spike_attack_root(spike)).normalized_safe();
