@@ -543,7 +543,7 @@ impl RolloutWorld {
         };
         let layer = self.part_layer(other, data);
         if ARROW_STICK_TO & (1 << layer) != 0 && (layer != LAYER_PLAYER || matches!(other, Part::Rock(_))) {
-            self.scratch.arrow_landings.push((arrow, key));
+            self.scratch.arrow_landings.push((arrow, key, other));
         }
     }
 

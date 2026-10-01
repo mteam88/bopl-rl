@@ -3904,7 +3904,10 @@ enum CallbackHit {
     /// RopeHook.OnCollide with the collider the hook met.
     RopeHook { rope: usize, target: HookTarget },
     /// PlayerCollision.OnCollide with a player's own or another's arrow.
-    ArrowKill { victim: usize, owner: u32 },
+    ArrowKill { victim: usize, owner: u32, arrow: usize },
+    /// Arrow.OnCollide with a StickTo collider: a wall, or a Circle/Circle
+    /// or Circle/Box part with a BoplBody.
+    ArrowLand { arrow: usize, wall: Option<usize>, part: Option<Part> },
     /// PortalShot.OnCollide with a wall, with the surface's outward normal.
     PortalShotLand { shot: usize, normal: Vec2 },
     /// PokeBall.OnCollide with a slime's or an abilityless clone's box.
@@ -4027,7 +4030,7 @@ struct PlatformScratch {
     cc_contacts: Vec<(Part, Part, Contact)>,
     /// Each arrow's StickTo contacts in the Circle/Circle and Circle/Box
     /// groups, by callback key.
-    arrow_landings: Vec<(usize, CallbackKey)>,
+    arrow_landings: Vec<(usize, CallbackKey, Part)>,
     item_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Sweep keys of the wall manifolds resolved as one batch: the
     /// Circle/RoundedRect group's, or the Box/RoundedRect group's.
@@ -7814,7 +7817,7 @@ impl RolloutWorld {
             self.thrown_item_pair_contacts(data);
         }
         if has(ABILITY_BOW) {
-            self.arrows_contacts(data);
+            self.arrows_contacts();
         }
         if has(ABILITY_MISSILE) {
             self.guided_missile_contacts(data);
@@ -35510,9 +35513,9 @@ impl RolloutWorld {
     /// destroyed. Landing destroys the components from the callback queue:
     /// this pass still observes the corrected collider and resolved body,
     /// flagged destroyed and ownerless; the next pass removes it.
-    fn arrows_contacts(&mut self, data: &data::RolloutData) {
-        // PlayerCollision callbacks, queued at their pairs: (key, arrow owner, victim).
-        let mut player_hits: Vec<(CallbackKey, u32, usize)> = Vec::new();
+    fn arrows_contacts(&mut self) {
+        // The arrows' own and the victims' PlayerCollision callbacks.
+        let mut landings: Vec<(CallbackKey, CallbackHit)> = Vec::new();
         let sweep_x = self.sweep_x();
         for i in 0..self.arrows.len() {
             if !self.arrows[i].active
@@ -35527,17 +35530,15 @@ impl RolloutWorld {
                 radius: arrow.collider_radius,
             };
             let arrow_rank = self.part_rank(Part::Arrow(i));
-            let platform_hit = self
-                .scratch
-                .arrow_platform_contacts
-                .iter()
-                .find(|&&(a, ..)| a == i)
-                .map(|&(_, p, _)| p);
-            let landing = if platform_hit.is_some() {
-                Some((GROUP_CIRCLE_RR, arrow_rank, arrow_rank))
-            } else {
-                self.scratch.arrow_landings.iter().filter(|&&(a, _)| a == i).map(|&(_, key)| key).min()
-            };
+            // Arrow.OnCollide with each StickTo pair; the first to run lands it.
+            for &(_, p, _) in self.scratch.arrow_platform_contacts.iter().filter(|&&(a, ..)| a == i) {
+                let (later, earlier) = sweep_pair(arrow_rank, self.wall_rank(p));
+                let hit = CallbackHit::ArrowLand { arrow: i, wall: Some(p), part: None };
+                landings.push(((GROUP_CIRCLE_RR, later, earlier), hit));
+            }
+            for &(_, key, part) in self.scratch.arrow_landings.iter().filter(|&&(a, ..)| a == i) {
+                landings.push((key, CallbackHit::ArrowLand { arrow: i, wall: None, part: Some(part) }));
+            }
 
             // The retained rows give every form's collider with the pose
             // DetPhysics synchronized; a Rock form's circle is a part.
@@ -35624,29 +35625,41 @@ impl RolloutWorld {
                 if hit {
                     let group = GROUP_BB - 1 - (row.kind == 0) as u8;
                     let (later, earlier) = sweep_pair(arrow_rank, sweep_rank(&self.entities, row_min, Some(entity)));
-                    let key = (group, later, earlier);
-                    if landing.is_none_or(|landing| key < landing) {
-                        player_hits.push((key, arrow.owner, j));
-                    }
+                    let hit = CallbackHit::ArrowKill { victim: j, owner: arrow.owner, arrow: i };
+                    landings.push(((group, later, earlier), hit));
                 }
-            }
-            if landing.is_some() {
-                if let Some(p) = platform_hit {
-                    self.platform_dynamics[p].stuck_arrows += 1;
-                }
-                self.destroy_arrow_contact(i, arrow.position, arrow.body(&data.arrow.body));
             }
         }
         self.scratch.arrow_landings.clear();
-        for (key, owner, victim) in player_hits {
-            self.scratch.callback_hits.push((key, CallbackHit::ArrowKill { victim, owner }));
+        self.scratch.callback_hits.extend(landings);
+    }
+
+    /// Arrow.OnCollide: once landed it ignores every later pair, and a
+    /// collider an earlier callback destroyed does not take it
+    /// (Arrow.cs:85-131).
+    fn arrow_land(&mut self, index: usize, wall: Option<usize>, part: Option<Part>, data: &data::RolloutData) {
+        if !self.arrows[index].active {
+            return;
         }
+        if let Some(p) = wall {
+            if self.entities[self.platform_entities[p]].flags & E_DESTROYED != 0 {
+                return;
+            }
+            self.platform_dynamics[p].stuck_arrows += 1;
+        }
+        if part.is_some_and(|part| self.part_destroyed(part)) {
+            return;
+        }
+        let arrow = self.arrows[index];
+        self.destroy_arrow_contact(index, arrow.position, arrow.body(&data.arrow.body));
     }
 
     /// PlayerCollision.OnCollide with an arrow, run from the callback queue
-    /// in its pair's place (PlayerCollision.cs:352-458, 465).
-    fn arrow_kill(&mut self, victim: usize, owner: u32) {
-        if !self.players[victim].base.alive {
+    /// in its pair's place; an arrow that landed earlier in the queue has a
+    /// destroyed FixTransform and kills no one (PlayerCollision.cs:313-316,
+    /// 352-458, 465).
+    fn arrow_kill(&mut self, victim: usize, owner: u32, arrow: usize) {
+        if !self.players[victim].base.alive || !self.arrows[arrow].active {
             return;
         }
         let victim_id = self.players[victim].base.id;
@@ -37057,7 +37070,8 @@ impl RolloutWorld {
         hits.sort_by_key(|&(key, _)| key);
         for &(_, hit) in &hits {
             match hit {
-                CallbackHit::ArrowKill { victim, owner } => self.arrow_kill(victim, owner),
+                CallbackHit::ArrowKill { victim, owner, arrow } => self.arrow_kill(victim, owner, arrow),
+                CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
                 CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
                 CallbackHit::FormTarget { entity, near, caster } => {
                     self.player_form_target_callback(entity, near, caster, data);
