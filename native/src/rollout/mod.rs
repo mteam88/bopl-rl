@@ -3877,6 +3877,8 @@ enum CallbackHit {
     PortalShotLand { shot: usize, normal: Vec2 },
     /// PokeBall.OnCollide with a slime's or an abilityless clone's box.
     PokeCapture { item: usize, victim: usize, clone: bool },
+    /// FlammableSmoke.OnCollide with an igniteFlammables Explosion.
+    SmokeIgnite { cloud: usize, entity: usize },
     /// A lethal Roll's target-side callback on a collider that is no player:
     /// an arrow, a missile, a grenade or a mine.
     FormTarget { entity: usize, near: Vec2, caster: usize },
@@ -16476,7 +16478,7 @@ impl RolloutWorld {
             };
             // Smoke collides with the Explosion-layer line but not with the
             // node's LethalTerrain or NonLethalTerrain circle.
-            for cloud in &mut self.smoke_clouds {
+            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
                 let Some(line) = line else {
                     break;
                 };
@@ -16492,8 +16494,10 @@ impl RolloutWorld {
                     radius: Fix::from_raw(self.entities[entity].radius),
                 };
                 if crate::physics::contact::circle_box(smoke, line).is_some() {
-                    cloud.ignition_time = Fix::ZERO;
-                    self.entities[entity].flags = E_ACTIVE;
+                    // The lightning line has no entity row.
+                    let line_rank = sweep_rank(&self.entities, box_min(line), None);
+                    let key = self.smoke_ignite_key(entity, false, line_rank);
+                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
                 }
             }
             // Mine.Igniters holds the line's layer but not LethalTerrain, so
@@ -19758,7 +19762,8 @@ impl RolloutWorld {
             }
             // BeamObject is also an Explosion with igniteFlammables
             // (BeamObject.prefab), so it lights the smoke it touches.
-            for cloud in &mut self.smoke_clouds {
+            let beam_rank = sweep_rank(&self.entities, axis(swept.min), Some(entity));
+            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
                 if !cloud.active || !cloud.registered {
                     continue;
                 }
@@ -19777,8 +19782,8 @@ impl RolloutWorld {
                 }
                 if crate::physics::contact::circle_box(Circle { center, radius }, hitbox).is_some()
                 {
-                    cloud.ignition_time = Fix::ZERO;
-                    self.entities[entity].flags = E_ACTIVE;
+                    let key = self.smoke_ignite_key(entity, false, beam_rank);
+                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
                 }
             }
         }
@@ -37008,6 +37013,7 @@ impl RolloutWorld {
                     self.player_form_target_callback(entity, near, caster, data);
                 }
                 CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
+                CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
                 CallbackHit::PokeCapture { item, victim, clone } => {
                     let ball = self.thrown_items[item];
                     if !ball.active || !ball.launched || ball.capture_victim.is_some() {
@@ -37371,10 +37377,34 @@ impl RolloutWorld {
         }
     }
 
+    /// A cloud's pair with an Explosion collider: Circle/Circle with an orb,
+    /// Circle/Box with a box.
+    fn smoke_ignite_key(&self, cloud_entity: usize, explosion_is_circle: bool, explosion: SweepRank) -> CallbackKey {
+        let cloud = sweep_rank(&self.entities, self.swept_min(Swept::Row(cloud_entity)), Some(cloud_entity));
+        let (later, earlier) = sweep_pair(explosion, cloud);
+        (if explosion_is_circle { GROUP_CC } else { GROUP_CB }, later, earlier)
+    }
+
+    /// FlammableSmoke.OnCollide: an Explosion with igniteFlammables Ignites
+    /// the cloud, which restarts its detonation clock and disables its
+    /// collider (FlammableSmoke.cs:85-98). An Explosion destroys itself only
+    /// from its animation, never inside the callback phase, and the
+    /// callback does not ask whether the cloud itself is destroyed.
+    fn ignite_smoke(&mut self, index: usize, entity: usize) {
+        let cloud = &mut self.smoke_clouds[index];
+        if cloud.entity != Some(entity) {
+            return;
+        }
+        cloud.ignition_time = Fix::ZERO;
+        self.entities[entity].flags &= !E_ENABLED;
+    }
+
     fn smoke_contacts(&mut self, data: &data::RolloutData) {
         // Both grenade and smoke explosions have `igniteFlammables`; their
         // boxes are enabled only on their first registered physics pass.
-        // Ignite disables the cloud's collider, so a lit cloud is not relit.
+        // FlammableSmoke.OnCollide runs from the callback queue, so a cloud
+        // stays enabled for every group of this pass and each Explosion that
+        // met it queues its own Ignite.
         for explosion in self.grenade_explosions.iter().copied() {
             if !explosion.active || !explosion.registered || explosion.age != 1 {
                 continue;
@@ -37384,7 +37414,8 @@ impl RolloutWorld {
                 Vec2::RIGHT,
                 data.grenade.explosion_extents * explosion.scale,
             );
-            for cloud in &mut self.smoke_clouds {
+            let explosion_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), explosion.entity);
+            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
                 if !cloud.active || !cloud.registered {
                     continue;
                 }
@@ -37402,8 +37433,8 @@ impl RolloutWorld {
                 )
                 .is_some()
                 {
-                    cloud.ignition_time = Fix::ZERO;
-                    self.entities[entity].flags = E_ACTIVE;
+                    let key = self.smoke_ignite_key(entity, false, explosion_rank);
+                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
                 }
             }
         }
@@ -37417,7 +37448,8 @@ impl RolloutWorld {
                 Vec2::RIGHT,
                 data.missile.explosion_extents * explosion.scale,
             );
-            for cloud in &mut self.smoke_clouds {
+            let explosion_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), explosion.entity);
+            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
                 if !cloud.active || !cloud.registered {
                     continue;
                 }
@@ -37435,8 +37467,8 @@ impl RolloutWorld {
                 )
                 .is_some()
                 {
-                    cloud.ignition_time = Fix::ZERO;
-                    self.entities[entity].flags = E_ACTIVE;
+                    let key = self.smoke_ignite_key(entity, false, explosion_rank);
+                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
                 }
             }
         }
@@ -37449,7 +37481,8 @@ impl RolloutWorld {
             let extents = data.smoke.explosion_extents * explosion.scale;
             let center = explosion.position + data.smoke.explosion_collider_offset * explosion.scale;
             let hitbox = OrientedBox::from_basis(center, Vec2::RIGHT, extents);
-            for cloud in &mut self.smoke_clouds {
+            let explosion_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), explosion.entity);
+            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
                 if !cloud.active || !cloud.registered {
                     continue;
                 }
@@ -37467,8 +37500,8 @@ impl RolloutWorld {
                 )
                 .is_some()
                 {
-                    cloud.ignition_time = Fix::ZERO;
-                    self.entities[entity].flags = E_ACTIVE;
+                    let key = self.smoke_ignite_key(entity, false, explosion_rank);
+                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
                 }
             }
 
@@ -37531,7 +37564,9 @@ impl RolloutWorld {
                 center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
                 radius: Fix::from_raw(row.radius),
             };
-            for cloud in &mut self.smoke_clouds {
+            let orb_min = if self.sweep_x() { hitbox.center.x } else { hitbox.center.y } - hitbox.radius;
+            let orb_rank = sweep_rank(&self.entities, orb_min, Some(orb_entity));
+            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
                 if !cloud.active || !cloud.registered {
                     continue;
                 }
@@ -37545,8 +37580,8 @@ impl RolloutWorld {
                     radius,
                 };
                 if crate::physics::contact::circle_circle(body, hitbox).is_some() {
-                    cloud.ignition_time = Fix::ZERO;
-                    self.entities[entity].flags = E_ACTIVE;
+                    let key = self.smoke_ignite_key(entity, true, orb_rank);
+                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
                 }
             }
         }
