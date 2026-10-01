@@ -1176,7 +1176,7 @@ impl RolloutWorld {
         if self.players[player].base.grounded {
             // UnGround raises OnNoLongerGrounded: State.fall.
             let slot = &mut self.players[player];
-            UngroundBody::Slime(slot).unground(&self.platforms, self.tick, true);
+            UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, true);
             slot.base.velocity += Vec2::UP * WEB_GROUNDED_POP;
         }
         self.players[player].web_swing[ability_slot] = WebSwingState {
@@ -2071,7 +2071,7 @@ impl RolloutWorld {
                 && rope.appended <= self.tick
                 && clone.grip.attach_tick != self.tick
             {
-                let body = UngroundBody::Clone(clone);
+                let body = UngroundBody::Slime(clone.slime_mut());
                 pin_grounded_rope_end(body, rope, top, &self.platforms, self.tick);
             }
             if overstretched(rope) {
@@ -2120,7 +2120,7 @@ impl RolloutWorld {
                 // PlayerPhysics.LateUpdateSim's UnGround nulls the rotation
                 // and raises the OnNoLongerGrounded of the slime or the form.
                 let body = if slot.active == ActiveAbility::None {
-                    UngroundBody::Slime(slot)
+                    UngroundBody::Slime(slot.slime_mut())
                 } else {
                     UngroundBody::Form(slot)
                 };

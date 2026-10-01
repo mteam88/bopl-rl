@@ -2232,11 +2232,42 @@ pub struct EatingState {
     pub swallowing: bool,
 }
 
-/// A Player-layer body a SlimeController.OnCollide may bite.
-#[derive(Clone, Copy)]
-enum Prey {
+/// A SlimeController: a player's own slime, or an ability-less clone's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slime {
     Player(usize),
     Clone(usize),
+}
+
+impl Slime {
+    /// The state both kinds of SlimeController keep, borrowed out of the
+    /// pools beside the rest of the world.
+    fn of<'a>(self, players: &'a mut [PlayerSlot], clones: &'a mut [AbilitylessClone]) -> SlimeMut<'a> {
+        match self {
+            Self::Player(index) => players[index].slime_mut(),
+            Self::Clone(index) => clones[index].slime_mut(),
+        }
+    }
+}
+
+/// A SlimeController with its PlayerBody and PlayerPhysics: the fields a
+/// player's slime and an ability-less clone both keep.
+struct SlimeMut<'a> {
+    base: &'a mut Player,
+    obs_state: &'a mut u32,
+    state_ticks: &'a mut u32,
+    ground_destroyed: &'a mut Option<DestroyedGround>,
+}
+
+impl SlimeMut<'_> {
+    /// PlayerPhysics.UnGround; OnNoLongerGrounded (SlimeController.cs:
+    /// 956-965) sets State.fall, ending any ragdoll.
+    fn unground(&mut self, platforms: &[Platform], tick: u32, null_rotation: bool) -> Fix {
+        let rotation = unground_physics(self.base, self.ground_destroyed, platforms, tick, null_rotation);
+        *self.obs_state = STATE_FALL;
+        *self.state_ticks = 0;
+        rotation
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -3086,20 +3117,18 @@ fn unground_physics(
 /// The PlayerPhysics an UnGround acts on, which decides who hears its
 /// OnNoLongerGrounded (PlayerPhysics.cs:377-380).
 enum UngroundBody<'a> {
-    /// The slot's slime: SlimeController.OnNoLongerGrounded
+    /// A SlimeController's own body: OnNoLongerGrounded
     /// (SlimeController.cs:956-965) sets State.fall, ending any ragdoll.
-    Slime(&'a mut PlayerSlot),
+    Slime(SlimeMut<'a>),
     /// The slot's active form: only Beam subscribes (Beam.cs:164-173).
     Form(&'a mut PlayerSlot),
-    /// An ability-less clone, with its own SlimeController.
-    Clone(&'a mut AbilitylessClone),
 }
 
 impl UngroundBody<'_> {
     fn base(&mut self) -> &mut Player {
         match self {
-            Self::Slime(slot) | Self::Form(slot) => &mut slot.base,
-            Self::Clone(clone) => &mut clone.base,
+            Self::Slime(slime) => slime.base,
+            Self::Form(slot) => &mut slot.base,
         }
     }
 
@@ -3107,18 +3136,7 @@ impl UngroundBody<'_> {
     /// are handed.
     fn unground(&mut self, platforms: &[Platform], tick: u32, null_rotation: bool) -> Fix {
         match self {
-            Self::Slime(slot) => {
-                let rotation = unground_physics(
-                    &mut slot.base,
-                    &mut slot.ground_destroyed,
-                    platforms,
-                    tick,
-                    null_rotation,
-                );
-                slot.obs_state = STATE_FALL;
-                slot.state_ticks = 0;
-                rotation
-            }
+            Self::Slime(slime) => slime.unground(platforms, tick, null_rotation),
             Self::Form(slot) => {
                 let rotation = unground_physics(
                     &mut slot.base,
@@ -3132,23 +3150,20 @@ impl UngroundBody<'_> {
                 }
                 rotation
             }
-            Self::Clone(clone) => {
-                let rotation = unground_physics(
-                    &mut clone.base,
-                    &mut clone.ground_destroyed,
-                    platforms,
-                    tick,
-                    null_rotation,
-                );
-                clone.obs_state = STATE_FALL;
-                clone.state_ticks = 0;
-                rotation
-            }
         }
     }
 }
 
 impl AbilitylessClone {
+    fn slime_mut(&mut self) -> SlimeMut<'_> {
+        SlimeMut {
+            base: &mut self.base,
+            obs_state: &mut self.obs_state,
+            state_ticks: &mut self.state_ticks,
+            ground_destroyed: &mut self.ground_destroyed,
+        }
+    }
+
     /// The inverseExtents of the clone's hurtbox, as its row holds them, or
     /// |One / startExtents| before Init.
     fn hurtbox_inverse_extents(&self, table: &[Vec2]) -> Vec2 {
@@ -3181,7 +3196,7 @@ impl AbilitylessClone {
         }
         let normal = platforms[index].surface.normal(self.base.position);
         // UnGround(nullRotation: true) keeps attachedGround (PlayerPhysics.cs:291).
-        UngroundBody::Clone(self).unground(platforms, tick, true);
+        UngroundBody::Slime(self.slime_mut()).unground(platforms, tick, true);
         self.base.velocity += normal * dynamics.drop_force;
         self.base.position += self.base.velocity / Fix::from_int(100);
         self.state_ticks = 1;
@@ -3747,6 +3762,15 @@ impl PlayerSlot {
     /// the Dash body's own while it dashes, as their rows hold them.
     fn hurtbox_inverse_extents(&self, table: &[Vec2]) -> Vec2 {
         table[if self.base.dash.active { self.dash_entity } else { self.body_entity }]
+    }
+
+    fn slime_mut(&mut self) -> SlimeMut<'_> {
+        SlimeMut {
+            base: &mut self.base,
+            obs_state: &mut self.obs_state,
+            state_ticks: &mut self.state_ticks,
+            ground_destroyed: &mut self.ground_destroyed,
+        }
     }
 
     fn collider_scale(&self) -> Fix {
@@ -4367,7 +4391,7 @@ enum CallbackHit {
     /// SlimeController.OnCollide of a slime's or an abilityless clone's box
     /// with another Player-layer collider; `lower` is whether the slime's
     /// collider is the earlier in the hierarchy.
-    SlimeCollide { slime: Prey, other: Prey, lower: bool },
+    SlimeCollide { slime: Slime, other: Slime, lower: bool },
     /// PlayerCollision.OnCollide's wall branch squishing a grounded slime,
     /// a player's or an abilityless clone's (PlayerCollision.cs:327-347).
     Squish { clone: bool, index: usize },
@@ -9547,23 +9571,23 @@ impl RolloutWorld {
                 continue;
             }
             let endpoint = self.portals[endpoint_index];
-            for player_index in 0..self.players.len() {
-                if !self.players[player_index].base.alive
-                    || !self.slime_active(player_index)
-                    || self.players[player_index].respawn_ticks != 0
-                    || self.players[player_index].respawn_spawn_ticks != 0
-                    || self.players[player_index].revival_clone_pending
-                    || self.players[player_index].stock_clone_pending
-                {
+            // FindObjectsOfType<SlimeController>: the players' slimes, then
+            // the ability-less Duplicator clones. A clone shares its owner's
+            // player-id hysteresis bit, as the source's fixed
+            // `playerWasInside[8]` array does.
+            let slimes = (0..self.players.len())
+                .map(Slime::Player)
+                .chain((0..self.abilityless_clones.len()).map(Slime::Clone));
+            for slime in slimes {
+                if !self.portal_finds(slime) {
                     continue;
                 }
-                let player_id = self.players[player_index].base.id as usize;
+                let base = self.slime_base(slime);
+                let player_id = base.id as usize;
                 if player_id >= 8 {
                     continue;
                 }
-                let inside =
-                    Self::portal_inside(endpoint, self.players[player_index].base.position, data);
-                if !inside {
+                if !Self::portal_inside(endpoint, base.position, data) {
                     self.portals[endpoint_index].player_inside[player_id] = false;
                     continue;
                 }
@@ -9578,79 +9602,23 @@ impl RolloutWorld {
                     continue;
                 };
                 self.portals[linked].player_inside[player_id] = true;
-                let vin = self.players[player_index].base.velocity
-                    + self.players[player_index].base.external_velocity;
+                let exit = self.portals[linked];
+                let mut body = slime.of(&mut self.players, &mut self.abilityless_clones);
+                let vin = body.base.velocity + body.base.external_velocity;
                 let inward_speed = (-vin.dot(endpoint.normal)).max(Fix::from_int(2));
                 let sideways = vin.dot(endpoint.tangent);
-                let exit = self.portals[linked];
-                let slot = &mut self.players[player_index];
-                if slot.obs_state == STATE_BITING {
+                if *body.obs_state == STATE_BITING {
                     // gap: currentState turns to fall while the SpriteAnimator
                     // still chews; the eating machine must follow its bite,
                     // chew and swallow callbacks independently of obs_state.
-                    let lost = &mut slot.ground_destroyed;
-                    unground_physics(&mut slot.base, lost, &self.platforms, self.tick, false);
+                    unground_physics(body.base, body.ground_destroyed, &self.platforms, self.tick, false);
                 } else {
-                    UngroundBody::Slime(slot).unground(&self.platforms, self.tick, false);
+                    body.unground(&self.platforms, self.tick, false);
                 }
-                slot.base.position = exit.position + exit.normal * data.portal_gun.exit_offset;
-                slot.base.velocity = exit.normal * inward_speed - exit.tangent * sideways;
-                slot.base.external_velocity = Vec2::ZERO;
-                slot.base.skip_next_gravity = true;
-            }
-            // Ability-less Duplicator clones are ordinary active
-            // SlimeControllers in the source query. They deliberately share
-            // the owner's player-id hysteresis bit, exactly like the source's
-            // fixed `playerWasInside[8]` array.
-            for clone_index in 0..self.abilityless_clones.len() {
-                if !self.abilityless_clones[clone_index].active
-                    || !self.abilityless_clones[clone_index].base.alive
-                    || self.players[self.abilityless_clones[clone_index].owner].out
-                {
-                    continue;
-                }
-                let player_id = self.abilityless_clones[clone_index].base.id as usize;
-                if player_id >= 8 {
-                    continue;
-                }
-                let inside = Self::portal_inside(
-                    endpoint,
-                    self.abilityless_clones[clone_index].base.position,
-                    data,
-                );
-                if !inside {
-                    self.portals[endpoint_index].player_inside[player_id] = false;
-                    continue;
-                }
-                if self.portals[endpoint_index].player_inside[player_id] {
-                    continue;
-                }
-                self.portals[endpoint_index].player_inside[player_id] = true;
-                let Some(linked) = endpoint
-                    .linked
-                    .filter(|&linked| linked < self.portals.len() && self.portals[linked].active)
-                else {
-                    continue;
-                };
-                self.portals[linked].player_inside[player_id] = true;
-                // UnGround leaves the velocity the portal redirects untouched.
-                let clone = &mut self.abilityless_clones[clone_index];
-                if clone.obs_state == STATE_BITING {
-                    // gap: as for a biting slime above.
-                    let lost = &mut clone.ground_destroyed;
-                    unground_physics(&mut clone.base, lost, &self.platforms, self.tick, false);
-                } else {
-                    UngroundBody::Clone(clone).unground(&self.platforms, self.tick, false);
-                }
-                let clone = &mut clone.base;
-                let vin = clone.velocity + clone.external_velocity;
-                let inward_speed = (-vin.dot(endpoint.normal)).max(Fix::from_int(2));
-                let sideways = vin.dot(endpoint.tangent);
-                let exit = self.portals[linked];
-                clone.position = exit.position + exit.normal * data.portal_gun.exit_offset;
-                clone.velocity = exit.normal * inward_speed - exit.tangent * sideways;
-                clone.external_velocity = Vec2::ZERO;
-                clone.skip_next_gravity = true;
+                body.base.position = exit.position + exit.normal * data.portal_gun.exit_offset;
+                body.base.velocity = exit.normal * inward_speed - exit.tangent * sideways;
+                body.base.external_velocity = Vec2::ZERO;
+                body.base.skip_next_gravity = true;
             }
             self.portal_objects_tick(endpoint_index, data);
         }
@@ -9706,6 +9674,33 @@ impl RolloutWorld {
             | ActiveAbility::Duplicator
             | ActiveAbility::Magnet => true,
             ActiveAbility::Platform => slot.platform.phase == PLATFORM_ANTICIPATION,
+        }
+    }
+
+    fn slime_base(&self, slime: Slime) -> &Player {
+        match slime {
+            Slime::Player(index) => &self.players[index].base,
+            Slime::Clone(index) => &self.abilityless_clones[index].base,
+        }
+    }
+
+    /// Portal.UpdateSim's SlimeController query: an active, undestroyed
+    /// SlimeController whose Player is alive (Portal.cs:177-189).
+    fn portal_finds(&self, slime: Slime) -> bool {
+        match slime {
+            Slime::Player(index) => {
+                let slot = &self.players[index];
+                slot.base.alive
+                    && self.slime_active(index)
+                    && slot.respawn_ticks == 0
+                    && slot.respawn_spawn_ticks == 0
+                    && !slot.revival_clone_pending
+                    && !slot.stock_clone_pending
+            }
+            Slime::Clone(index) => {
+                let clone = &self.abilityless_clones[index];
+                clone.active && clone.base.alive && !self.players[clone.owner].out
+            }
         }
     }
 
@@ -9818,7 +9813,7 @@ impl RolloutWorld {
     /// SlimeController.OnCollide bites before it shoves: a grounded slime at
     /// least scaleDiffBeforeNomNom bigger than an enemy body whose box it
     /// touches starts eating it, unless that body is invulnerable.
-    fn try_bite(&mut self, eater: usize, prey: Prey) {
+    fn try_bite(&mut self, eater: usize, prey: Slime) {
         let slot = &self.players[eater];
         if !self.playable(eater)
             || slot.obs_state == STATE_BITING
@@ -9835,7 +9830,7 @@ impl RolloutWorld {
     }
 
     /// `try_bite` for an abilityless clone's own SlimeController.
-    fn try_clone_bite(&mut self, eater: usize, prey: Prey) {
+    fn try_clone_bite(&mut self, eater: usize, prey: Slime) {
         let clone = &self.abilityless_clones[eater];
         let owner = clone.owner;
         if !clone.base.alive
@@ -9858,9 +9853,9 @@ impl RolloutWorld {
     /// refuses a body whose active PlayerCollision is invulnerable. OnCollide
     /// trusts the pair's manifold and tests no overlap of its own
     /// (SlimeController.cs:1142-1170, 1206-1219).
-    fn bite(&self, scale: Fix, team: u32, prey: Prey) -> Option<EatingState> {
+    fn bite(&self, scale: Fix, team: u32, prey: Slime) -> Option<EatingState> {
         let (prey_scale, prey_team, invulnerable, eating) = match prey {
-            Prey::Player(victim) => {
+            Slime::Player(victim) => {
                 let slot = &self.players[victim];
                 // Ability.UpdateSim gives the form's collider Player.Scale.
                 let prey_scale =
@@ -9872,7 +9867,7 @@ impl RolloutWorld {
                 };
                 (prey_scale, slot.team, slot.poke_invulnerable, eating)
             }
-            Prey::Clone(clone_index) => {
+            Slime::Clone(clone_index) => {
                 let clone = &self.abilityless_clones[clone_index];
                 let eating = EatingState {
                     victim: clone.owner,
@@ -10006,7 +10001,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         // UnGround(nullRotation: true) keeps attachedGround (PlayerPhysics.cs:291).
         if active == ActiveAbility::None {
-            UngroundBody::Slime(slot).unground(&self.platforms, tick, true);
+            UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, tick, true);
         } else {
             UngroundBody::Form(slot).unground(&self.platforms, tick, true);
         }
@@ -10621,7 +10616,7 @@ impl RolloutWorld {
                             // State.fall (PlayerPhysics.cs:377-380,
                             // SlimeController.cs:956), so a landing in the
                             // Move below starts the land animation afresh.
-                            UngroundBody::Slime(slot).unground(&self.platforms, self.tick, false);
+                            UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, false);
                             slot.base.velocity = Vec2::ZERO;
                             slot.base.external_velocity = Vec2::ZERO;
                             // The slime stays active and writes Player.Scale
@@ -20445,7 +20440,7 @@ impl RolloutWorld {
                 let slot = &mut self.players[player_index];
                 slot.base.velocity = Vec2::ZERO;
                 if slot.active == ActiveAbility::None {
-                    UngroundBody::Slime(slot).unground(&self.platforms, self.tick, true);
+                    UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, true);
                 } else {
                     UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
                     slot.obs_state = STATE_FALL;
@@ -20483,7 +20478,7 @@ impl RolloutWorld {
         {
             let clone = &mut self.abilityless_clones[clone_index];
             clone.base.velocity = Vec2::ZERO;
-            UngroundBody::Clone(clone).unground(&self.platforms, self.tick, true);
+            UngroundBody::Slime(clone.slime_mut()).unground(&self.platforms, self.tick, true);
             clone.base.position += shift;
             clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
             // UnGround lifted it before the move, so its row follows the body.
@@ -24987,7 +24982,7 @@ impl RolloutWorld {
                 // MagnetGun.cs:687 calls UnGround() with nullRotation. A
                 // packet SyncPhysicsTo took airborne left no attachedGround
                 // for it to lift the slime off.
-                UngroundBody::Slime(slot).unground(&self.platforms, self.tick, true);
+                UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, true);
                 slot.base.skip_next_gravity = true;
                 // ApplyRagDoll's zero speed is the new selfImposedVelocity.
                 slot.base.velocity = Vec2::ZERO;
@@ -29551,7 +29546,7 @@ impl RolloutWorld {
         // Fall. Until FrozenSolid's first pass (it updates after the slimes,
         // and not on the pass it spawns) the slime plays on as usual, casts
         // included; PlayerPhysics.skipNextUpdate only suppresses its gravity.
-        UngroundBody::Slime(slot).unground(&self.platforms, self.tick, false);
+        UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, false);
         slot.base.skip_next_gravity = true;
     }
 
@@ -32379,7 +32374,7 @@ impl RolloutWorld {
             // Fall. Until a hold ragdolls it again, the slime's next pass is an
             // ordinary falling one, Move and its landing rays included;
             // PlayerPhysics.skipNextUpdate only suppresses its gravity.
-            UngroundBody::Slime(slot).unground(&self.platforms, self.tick, false);
+            UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, false);
             slot.base.position = capture_position;
             slot.base.velocity = Vec2::ZERO;
             if sync_collider {
@@ -32416,7 +32411,7 @@ impl RolloutWorld {
         clone.poke_invulnerable = true;
         // UnGround's OnNoLongerGrounded overwrites BeginCapture's ragdoll
         // with fall, as for a player victim.
-        UngroundBody::Clone(clone).unground(&self.platforms, self.tick, false);
+        UngroundBody::Slime(clone.slime_mut()).unground(&self.platforms, self.tick, false);
         clone.base.skip_next_gravity = true;
         clone.base.position = capture_position;
         clone.base.velocity = Vec2::ZERO;
@@ -34119,7 +34114,7 @@ impl RolloutWorld {
                     b_slime && self.player_hit_by_box(a, self.players[b].base.collider, self.player_sweep_rank(b))
                 };
                 if touching {
-                    self.queue_slime_pair(Prey::Player(a), a_slime, Prey::Player(b), b_slime);
+                    self.queue_slime_pair(Slime::Player(a), a_slime, Slime::Player(b), b_slime);
                 }
             }
         }
@@ -34135,7 +34130,7 @@ impl RolloutWorld {
                     && self.player_hit_by_box(player, clone_box, self.clone_sweep_rank(clone))
                 {
                     let slime = self.players[player].active == ActiveAbility::None;
-                    self.queue_slime_pair(Prey::Clone(clone), true, Prey::Player(player), slime);
+                    self.queue_slime_pair(Slime::Clone(clone), true, Slime::Player(player), slime);
                 }
             }
             for other in clone + 1..self.abilityless_clones.len() {
@@ -34149,7 +34144,7 @@ impl RolloutWorld {
                     )
                     .is_some()
                 {
-                    self.queue_slime_pair(Prey::Clone(clone), true, Prey::Clone(other), true);
+                    self.queue_slime_pair(Slime::Clone(clone), true, Slime::Clone(other), true);
                 }
             }
         }
@@ -34172,20 +34167,20 @@ impl RolloutWorld {
     /// Queues SlimeController.OnCollide for each side of the pair whose
     /// SlimeController is live, at the pair's place in ToMakeCallBacks; the
     /// collider earlier in the sweep has its callbacks first.
-    fn queue_slime_pair(&mut self, a: Prey, a_live: bool, b: Prey, b_live: bool) {
-        let rank = |prey: Prey| match prey {
-            Prey::Player(index) => self.player_sweep_rank(index),
-            Prey::Clone(index) => {
+    fn queue_slime_pair(&mut self, a: Slime, a_live: bool, b: Slime, b_live: bool) {
+        let rank = |prey: Slime| match prey {
+            Slime::Player(index) => self.player_sweep_rank(index),
+            Slime::Clone(index) => {
                 let min = self.swept_min(Swept::Clone(index));
                 sweep_rank(&self.entities, min, self.abilityless_clones[index].entity)
             }
         };
-        let entity = |prey: Prey| match prey {
-            Prey::Player(index) => Some(Self::hurtbox_entity(&self.players[index])),
-            Prey::Clone(index) => self.abilityless_clones[index].entity,
+        let entity = |prey: Slime| match prey {
+            Slime::Player(index) => Some(Self::hurtbox_entity(&self.players[index])),
+            Slime::Clone(index) => self.abilityless_clones[index].entity,
         };
-        let hierarchy = |prey: Prey| entity(prey).and_then(|e| self.entities.get(e)).map(|row| row.hierarchy);
-        let circle = |prey: Prey| matches!(prey, Prey::Player(index) if self.player_is_circle(index));
+        let hierarchy = |prey: Slime| entity(prey).and_then(|e| self.entities.get(e)).map(|row| row.hierarchy);
+        let circle = |prey: Slime| matches!(prey, Slime::Player(index) if self.player_is_circle(index));
         let (a_rank, b_rank) = (rank(a), rank(b));
         let (later, earlier) = sweep_pair(a_rank, b_rank);
         let key = (GROUP_BB - circle(a) as u8 - circle(b) as u8, later, earlier);
@@ -34203,9 +34198,9 @@ impl RolloutWorld {
 
     /// SlimeController.OnCollide: bite a small enough enemy body, then push
     /// away from the other collider's FixTransform (SlimeController.cs:1206-1244).
-    fn slime_collide(&mut self, slime: Prey, other: Prey, lower: bool) {
+    fn slime_collide(&mut self, slime: Slime, other: Slime, lower: bool) {
         match slime {
-            Prey::Player(index) => {
+            Slime::Player(index) => {
                 // A slime killed by an earlier callback shoves its destroyed
                 // body, not the one a stock respawns.
                 if !self.players[index].base.alive
@@ -34215,7 +34210,7 @@ impl RolloutWorld {
                 }
                 self.try_bite(index, other);
             }
-            Prey::Clone(index) => {
+            Slime::Clone(index) => {
                 let clone = &self.abilityless_clones[index];
                 if !clone.active || !clone.base.alive {
                     return;
@@ -34226,15 +34221,15 @@ impl RolloutWorld {
         let position = match other {
             // An earlier callback's stock death leaves the other slime's
             // destroyed body where it died, and OnCollide still reads it.
-            Prey::Player(index) => match self.players[index].stock_death {
+            Slime::Player(index) => match self.players[index].stock_death {
                 Some((tick, position)) if tick == self.tick => position,
                 _ => self.players[index].base.position,
             },
-            Prey::Clone(index) => self.abilityless_clones[index].base.position,
+            Slime::Clone(index) => self.abilityless_clones[index].base.position,
         };
         match slime {
-            Prey::Player(index) => self.players[index].base.push_from(position, lower),
-            Prey::Clone(index) => self.abilityless_clones[index].base.push_from(position, lower),
+            Slime::Player(index) => self.players[index].base.push_from(position, lower),
+            Slime::Clone(index) => self.abilityless_clones[index].base.push_from(position, lower),
         }
     }
 
@@ -37499,7 +37494,7 @@ impl RolloutWorld {
             // The stock branch of killPlayer starts with UnGround, which
             // steps the body off even a stale attachedGround and ends a
             // ragdoll through OnNoLongerGrounded (PlayerCollision.cs:177).
-            UngroundBody::Slime(slot).unground(&self.platforms, self.tick, true);
+            UngroundBody::Slime(slot.slime_mut()).unground(&self.platforms, self.tick, true);
             // Player.Position keeps the destroyed slime's last SetPosition
             // until the clone's first OldUpdate on the next pass: this pass's
             // publish if it already ran, else the last pass's.
