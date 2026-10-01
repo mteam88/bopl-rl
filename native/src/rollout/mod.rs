@@ -27127,31 +27127,6 @@ impl RolloutWorld {
         }
     }
 
-    /// Where a form's own ExitAbility leaves its body: BowTransform,
-    /// GunTransform, MagnetGun, CastSpell and QuickSpell UnGround it first,
-    /// lifting it off the ground it keeps; the other forms leave it in place.
-    fn form_body_after_exit(&self, index: usize) -> Vec2 {
-        let slot = &self.players[index];
-        if !matches!(
-            slot.active,
-            ActiveAbility::Bow
-                | ActiveAbility::Freeze
-                | ActiveAbility::Blink
-                | ActiveAbility::GrowthRay
-                | ActiveAbility::ShrinkRay
-                | ActiveAbility::Duplicator
-                | ActiveAbility::Magnet
-                | ActiveAbility::TimeStop
-                | ActiveAbility::Gust
-                | ActiveAbility::Revival
-        ) {
-            return slot.base.position;
-        }
-        let (mut body, mut lost) = (slot.base.clone(), slot.ground_destroyed.clone());
-        unground_physics(&mut body, &mut lost, &self.platforms, self.tick, true);
-        body.position
-    }
-
     fn magnet_take_target(&mut self, index: usize, held: MagnetHeld, data: &data::RolloutData) {
         // MagnetSteal/OnItemWasStolen pauses the previous holder. BlackHole's
         // shipped Hold method clears its own holder immediately, but the
@@ -27236,16 +27211,11 @@ impl RolloutWorld {
         };
         // MagnetGun exits an ability form with an ungrounded packet placed at
         // its CurrentFirePoint, but the form's own ExitAbility overwrites that
-        // position with its body's. Only Drill and MeteorSmash pass it on;
-        // CastSpell adds its ExitAbilityOffset.
+        // position with its body's. Only Drill and MeteorSmash pass it on.
+        let firepoint = self.magnet_firepoint(index, data);
         if let MagnetHeld::Player(victim) = held {
             match self.players[victim].active {
-                ActiveAbility::Drill | ActiveAbility::Meteor => {
-                    position = self.magnet_firepoint(index, data);
-                }
-                ActiveAbility::TimeStop => {
-                    position += data.time_stop.exit_offset * self.players[victim].player_scale;
-                }
+                ActiveAbility::Drill | ActiveAbility::Meteor => position = firepoint,
                 ActiveAbility::Throw => self.drop_macho_held_boulder(victim, data),
                 _ => {}
             }
@@ -27302,13 +27272,35 @@ impl RolloutWorld {
                 // MagnetGun hands every form its own ExitAbility and moves
                 // only the slime, so the form's FixTransform stops wherever
                 // that exit left its body (MagnetGun.cs:663-678).
-                let body = self.form_body_after_exit(i);
+                let body = self.players[i].base.position;
                 let freeze = move |slot: &mut PlayerSlot| {
                     let s = slot.entity_slot(entity);
                     slot.forms[s].pose.position = body;
                     slot.form_frozen = frozen;
                 };
-                if self.players[i].active == ActiveAbility::Throw {
+                if matches!(
+                    self.players[i].active,
+                    ActiveAbility::Bow
+                        | ActiveAbility::Freeze
+                        | ActiveAbility::Blink
+                        | ActiveAbility::GrowthRay
+                        | ActiveAbility::ShrinkRay
+                        | ActiveAbility::Duplicator
+                        | ActiveAbility::Magnet
+                        | ActiveAbility::TimeStop
+                        | ActiveAbility::Gust
+                        | ActiveAbility::Revival
+                ) {
+                    let handed =
+                        ExitInfo { position: firepoint, facing_right: true, ..ExitInfo::default() };
+                    let info = self.form_exit_ability(i, handed);
+                    let slot = &mut self.players[i];
+                    let s = slot.entity_slot(entity);
+                    slot.forms[s].pose.position = slot.base.position;
+                    slot.form_frozen = frozen;
+                    self.ability_exit(i, info);
+                    self.players[index].magnet.held_position = self.players[i].base.position;
+                } else if self.players[i].active == ActiveAbility::Throw {
                     // MachoThrow2.ExitAbility overwrites the packet with the
                     // form's own grounding, so SyncPhysicsTo sets the slime
                     // back on its platform. MagnetGun reads heldPosition from
@@ -27368,35 +27360,6 @@ impl RolloutWorld {
                     slot.base.velocity = Vec2::ZERO;
                     freeze(slot);
                     self.players[index].magnet.held_position = body;
-                } else if matches!(
-                    self.players[i].active,
-                    ActiveAbility::Bow
-                        | ActiveAbility::Freeze
-                        | ActiveAbility::Blink
-                        | ActiveAbility::GrowthRay
-                        | ActiveAbility::ShrinkRay
-                        | ActiveAbility::Duplicator
-                ) {
-                    // BowTransform's and GunTransform's ExitAbility zero the
-                    // rotation, UnGround the body off its retained ground and
-                    // hand over that body's position, velocities and aim's
-                    // facing (BowTransform.cs:116-130, GunTransform.cs:84-98).
-                    // ApplyRagDoll then zeroes only the self-imposed part.
-                    self.exit_form(i);
-                    let slot = &mut self.players[i];
-                    slot.base.velocity = Vec2::ZERO;
-                    freeze(slot);
-                    self.players[index].magnet.held_position = self.players[i].base.position;
-                } else if self.players[i].active == ActiveAbility::Magnet {
-                    // The held form's own MagnetGun.ExitAbility ungrounds it
-                    // and hands over its body's position and velocities
-                    // (MagnetGun.cs:356-373). ApplyRagDoll then zeroes only
-                    // the self-imposed part.
-                    self.exit_form(i);
-                    let slot = &mut self.players[i];
-                    slot.base.velocity = Vec2::ZERO;
-                    freeze(slot);
-                    self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active != ActiveAbility::None {
                     self.exit_form_for_freeze(i, data);
                     self.players[i].base.position = position;
@@ -27404,9 +27367,13 @@ impl RolloutWorld {
                     freeze(&mut self.players[i]);
                 }
                 let slot = &mut self.players[i];
-                // MagnetGun.cs:687 calls UnGround() with nullRotation.
+                // MagnetGun.cs:687 calls UnGround() with nullRotation. A
+                // packet SyncPhysicsTo took airborne left no attachedGround
+                // for it to lift the slime off.
                 UngroundBody::Slime(slot).unground(&self.platforms, self.tick, true);
                 slot.base.skip_next_gravity = true;
+                // ApplyRagDoll's zero speed is the new selfImposedVelocity.
+                slot.base.velocity = Vec2::ZERO;
                 slot.ragdoll = RagdollState {
                     active: true,
                     skip_physics: true,
