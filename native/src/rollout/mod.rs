@@ -26576,10 +26576,12 @@ impl RolloutWorld {
             MagnetHeld::Player(i) => {
                 let entity = Self::hurtbox_entity(&self.players[i]);
                 let tick = self.tick;
-                let frozen = Some(FrozenForm { tick, entity, posed: false });
+                let frozen = Some(FrozenForm { tick, entity, posed: true });
                 // MagnetGun hands every form its own ExitAbility and moves
                 // only the slime, so the form's FixTransform stops wherever
-                // that exit left its body (MagnetGun.cs:663-678).
+                // that exit left its body, rotation included
+                // (MagnetGun.cs:663-678): BlackHoleClap.ExitAbility(info)
+                // keeps the rotation its own exits zero.
                 if self.players[i].active != ActiveAbility::None {
                     let handed =
                         ExitInfo { position: firepoint, facing_right: true, ..ExitInfo::default() };
