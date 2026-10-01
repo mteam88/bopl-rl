@@ -1746,11 +1746,12 @@ pub struct SpawnedPlatform {
 #[derive(Clone, Copy, Default)]
 pub struct PlatformDynamics {
     pub body: Body,
-    /// Its prefab's registration list (`World::register_prefab`) and its
-    /// collider's number in it. Its row's HierarchyNumber less that one is
-    /// what every number in the list registered offset by, which a copy made
-    /// while it is out of the hierarchy keeps (ShootDuplicator.cs:709-718).
-    pub registered: (&'static [u32], u32),
+    /// Its prefab's registration list (`World::register_prefab`), the
+    /// script execution order of each, and its collider's number in it. Its
+    /// row's HierarchyNumber less that one is what every number in the list
+    /// registered offset by, which a copy made while it is out of the
+    /// hierarchy keeps (ShootDuplicator.cs:709-718).
+    pub registered: (&'static [u32], &'static [i32], u32),
     /// DPhysicsRoundedRect.Scale and its authored lower clamp. MachoThrow2
     /// mutates these while excavating a Boulder from the attached platform.
     pub scale: Fix,
@@ -5859,7 +5860,11 @@ impl RolloutWorld {
                 p.ice,
             ));
             self.platform_dynamics.push(PlatformDynamics {
-                registered: (&data::get().maps[map].platforms[index].registrations, p.hierarchy),
+                registered: (
+                    &data::get().maps[map].platforms[index].registrations,
+                    &data::get().maps[map].platforms[index].registration_orders,
+                    p.hierarchy,
+                ),
                 body: p.body,
                 scale: p.base_scale,
                 body_scale: p.base_scale,
@@ -19086,7 +19091,11 @@ impl RolloutWorld {
         self.platforms.push(make_platform(self.next_platform_id, &surface, extents, ice));
         self.next_platform_id += 1;
         self.platform_dynamics.push(PlatformDynamics {
-            registered: (data::get().prefab("Boulder"), data.macho_throw.boulder_collider_hierarchy),
+            registered: (
+                data::get().prefab("Boulder"),
+                data::get().prefab_orders("Boulder"),
+                data.macho_throw.boulder_collider_hierarchy,
+            ),
             body: data.macho_throw.boulder_body,
             scale,
             // Boulder.Scale is assigned before its first BoplBody update;
@@ -26662,7 +26671,7 @@ impl RolloutWorld {
         body.velocity = (position - source.position).normalized_safe()
             * (source.body.velocity.length() + Fix::from_int(15));
         body.orientation = source.body.orientation;
-        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("Rock_noPlayer")), 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("Rock_noPlayer"), data.copy_orders("Rock_noPlayer")), 1);
         self.pending_duplicated_rocks.push(DuplicatedRock {
             active: true,
             appended: self.tick + 1,
@@ -26778,7 +26787,7 @@ impl RolloutWorld {
         let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("SpikeAttack")), 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("SpikeAttack"), data.copy_orders("SpikeAttack")), 1);
         let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
@@ -26882,7 +26891,7 @@ impl RolloutWorld {
         let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("RocketEngine")), 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("RocketEngine"), data.copy_orders("RocketEngine")), 1);
         let attach_order = self.attach_child_body(platform_index, data.engine.rocket_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
@@ -26987,7 +26996,7 @@ impl RolloutWorld {
         let root_position = surface_position + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("simple_SparkNode")), 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("simple_SparkNode"), data.copy_orders("simple_SparkNode")), 1);
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
         let id = self.next_id();
@@ -27066,7 +27075,7 @@ impl RolloutWorld {
                 data.mine.clone_count,
                 data.mine.duplicate_spacing,
                 data.mine.duplicate_angle,
-                data.copy("Mine_0"),
+                (data.copy("Mine_0"), data.copy_orders("Mine_0")),
             )
         } else {
             let item = throw_config(data, source.ability);
@@ -27097,7 +27106,7 @@ impl RolloutWorld {
                     data.grenade.duplicate_angle,
                 ),
             };
-            (clone_count, spacing, angle, data.copy(item.item_prefab))
+            (clone_count, spacing, angle, (data.copy(item.item_prefab), data.copy_orders(item.item_prefab)))
         };
         let speed = source.body.velocity.length() + Fix::from_int(10);
         let prefab_body = if source.ability == ABILITY_MINE {
@@ -27117,7 +27126,7 @@ impl RolloutWorld {
                 angle,
                 clone_index,
             );
-            let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, copy), 1);
+            let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, copy.0, copy.1), 1);
             let mut clone = source;
             clone.active = true;
             clone.id = 0;
@@ -27202,7 +27211,7 @@ impl RolloutWorld {
                 clone_index,
             );
             let up = (position - source.position).normalized_safe();
-            let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("Spark")), 1);
+            let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("Spark"), data.copy_orders("Spark")), 1);
             let mut body = data.missile.spark_body;
             body.velocity = up * speed;
             // duplicateBoplBody first copies the live rotation, then the
@@ -30359,29 +30368,42 @@ impl RolloutWorld {
         // source's own numbers, offset like any prefab's.
         let hidden = self.wall_deactivated(source);
         let lists = data::get();
-        let (registrations, collider_hierarchy) = if definition != usize::MAX {
+        let (registrations, orders, collider_hierarchy) = if definition != usize::MAX {
             let def = &lists.maps[self.map].platforms[definition];
             if hidden {
-                (def.registrations.as_slice(), def.hierarchy)
+                (def.registrations.as_slice(), def.registration_orders.as_slice(), def.hierarchy)
             } else {
-                (def.copy_registrations.as_slice(), def.duplicate_collider_hierarchy)
+                (
+                    def.copy_registrations.as_slice(),
+                    def.copy_registration_orders.as_slice(),
+                    def.duplicate_collider_hierarchy,
+                )
             }
         } else if self.platform_dynamics[source].body_resizable {
             // A Platform ability's ResizablePlatform: six updatables, the
             // DPhysicsRoundedRect sixth.
-            (lists.copy("ResizablePlatform"), data.platform.spawn_collider_hierarchy)
+            (
+                lists.copy("ResizablePlatform"),
+                lists.copy_orders("ResizablePlatform"),
+                data.platform.spawn_collider_hierarchy,
+            )
         } else {
             // A Macho boulder, or a copy of one: the Boulder prefab's six
             // updatables all sit on its root in prefab order, so DuplicateObject
             // renumbers them 1-6 and its DPhysicsRoundedRect stays second.
-            (lists.copy("Boulder"), data.macho_throw.boulder_collider_hierarchy)
+            (lists.copy("Boulder"), lists.copy_orders("Boulder"), data.macho_throw.boulder_collider_hierarchy)
         };
         // A hidden source's collider keeps its own number in the copy, and
         // its updatables the numbers they registered with.
         let source_hierarchy = self.entities[self.platform_entities[source]].hierarchy;
         let collider_hierarchy = if hidden { source_hierarchy } else { collider_hierarchy };
-        let registered = if hidden { self.platform_dynamics[source].registered } else { (registrations, collider_hierarchy) };
-        let own = if hidden { (source_hierarchy - registered.1, registered.0) } else { (0, registrations) };
+        let registered =
+            if hidden { self.platform_dynamics[source].registered } else { (registrations, orders, collider_hierarchy) };
+        let own = if hidden {
+            (source_hierarchy - registered.2, registered.0, registered.1)
+        } else {
+            (0, registrations, orders)
+        };
         let hierarchy_base = self.duplicate_hierarchy(source_hierarchy, !hidden, own, collider_hierarchy);
 
         let mut platform = self.platforms[source].clone();
@@ -31252,7 +31274,11 @@ impl RolloutWorld {
             false,
         ));
         self.platform_dynamics.push(PlatformDynamics {
-            registered: (data::get().prefab("ResizablePlatform"), pd.spawn_collider_hierarchy),
+            registered: (
+                data::get().prefab("ResizablePlatform"),
+                data::get().prefab_orders("ResizablePlatform"),
+                pd.spawn_collider_hierarchy,
+            ),
             body: pd.spawn_body,
             scale,
             body_scale: scale,
@@ -33778,7 +33804,7 @@ impl RolloutWorld {
     /// a new child of the copy, whose own HierarchyNumber `key_offset` past
     /// that base names it (ShootDuplicator.cs:707-753, FixTransform.cs:160-168,
     /// Arrow.cs:33-45, Updater.cs:143-152).
-    fn duplicate_hierarchy(&mut self, source: u32, in_hierarchy: bool, own: (u32, &[u32]), key_offset: u32) -> u32 {
+    fn duplicate_hierarchy(&mut self, source: u32, in_hierarchy: bool, own: (u32, &[u32], &[i32]), key_offset: u32) -> u32 {
         let next = self.next_spawn_hierarchy;
         let arrows: Vec<u32> = self
             .landed_arrows
@@ -33791,11 +33817,17 @@ impl RolloutWorld {
         let earlier = if in_hierarchy { sorted.partition_point(|&hierarchy| hierarchy < source) as u32 } else { 0 };
         let base = next + earlier;
         let parent = 100_000_000 + base + key_offset;
-        // The copy registers its own updatables, then each copied arrow's,
-        // with the numbers DuplicateObject gave them; each belongs to the
-        // copy or to its arrow.
-        let (offset, own) = own;
-        let mut members: Vec<(u32, u32)> = own.iter().map(|&local| (earlier + offset + local, earlier)).collect();
+        // The copy's Awakes run over its behaviours collected depth-first,
+        // its own ahead of its arrow children's, stable-sorted by script
+        // execution order (UnityShim World.CollectActiveBehaviours,
+        // ScriptExecutionOrder.SortStable): each copied arrow's Arrow
+        // registers after the copy's own updatables that order at or before
+        // it and ahead of the rest. Each registers with the number
+        // DuplicateObject gave it and belongs to the copy or to its arrow.
+        let (offset, own, orders) = own;
+        let split = orders.partition_point(|&order| order <= data::get().arrow.execution_order);
+        let mut members: Vec<(u32, u32)> = own[..split].iter().map(|&local| (earlier + offset + local, earlier)).collect();
+        let tail: Vec<(u32, u32)> = own[split..].iter().map(|&local| (earlier + offset + local, earlier)).collect();
         for hierarchy in arrows {
             let local = if in_hierarchy {
                 let rank = sorted.binary_search(&hierarchy).unwrap() as u32;
@@ -33806,6 +33838,7 @@ impl RolloutWorld {
             members.push((local, local - 1));
             self.landed_arrows.push(LandedArrow { parent, hierarchy: 100_000_000 + next + local, trimmed: None });
         }
+        members.extend(tail);
         self.register_members(members.into_iter());
         base
     }

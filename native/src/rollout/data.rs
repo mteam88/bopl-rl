@@ -67,6 +67,8 @@ struct RawPlatform {
     duplicate_collider_hierarchy: u32,
     registrations: Vec<u32>,
     copy_registrations: Vec<u32>,
+    registration_orders: Vec<i32>,
+    copy_registration_orders: Vec<i32>,
     animate_velocity: RawAnimateVelocity,
     body: RawBody,
     orbit: Option<RawOrbit>,
@@ -196,6 +198,7 @@ struct RawArrow {
     radius: i64,
     collider_hierarchy: u32,
     arrow_hierarchy: u32,
+    arrow_execution_order: i32,
     body: RawArrowBody,
 }
 #[derive(Deserialize)]
@@ -1220,6 +1223,8 @@ struct RawRollout {
     collision_matrix: [u32; 32],
     registrations: HashMap<String, Vec<u32>>,
     copy_registrations: HashMap<String, Vec<u32>>,
+    registration_orders: HashMap<String, Vec<i32>>,
+    copy_registration_orders: HashMap<String, Vec<i32>>,
 }
 #[derive(Deserialize)]
 struct RawAbility {
@@ -1295,6 +1300,9 @@ pub struct PlatformDef {
     /// (`RolloutData::registrations`).
     pub registrations: Vec<u32>,
     pub copy_registrations: Vec<u32>,
+    /// Each one's script execution order (`RolloutData::registration_orders`).
+    pub registration_orders: Vec<i32>,
+    pub copy_registration_orders: Vec<i32>,
     pub min_scale: Fix,
     pub max_scale: Fix,
     pub base_scale: Fix,
@@ -1454,6 +1462,9 @@ pub struct ArrowData {
     /// The Arrow component's own number, the one updatable a landed arrow
     /// keeps (Arrow.cs:124-128).
     pub arrow_hierarchy: u32,
+    /// The Arrow script's execution order, which places a landed arrow's
+    /// Awake among those of the copy it is a child of.
+    pub execution_order: i32,
     /// BoplBody.NewPhysicsBody for the Arrow prefab (BoplBody.cs:215-229).
     pub body: crate::physics::Body,
 }
@@ -2351,6 +2362,10 @@ pub struct RolloutData {
     /// The same for a copy ShootDuplicator.DuplicateObject makes of a live
     /// instance, renumbered 1.. (ShootDuplicator.cs:709-717).
     pub copy_registrations: HashMap<String, Vec<u32>>,
+    /// Each registration's script execution order, the key Awake ran by
+    /// (`registrations` with `orders`), parallel to the lists above.
+    pub registration_orders: HashMap<String, Vec<i32>>,
+    pub copy_registration_orders: HashMap<String, Vec<i32>>,
     pub player: MovementData,
     pub black_hole: BlackHoleData,
     pub dash: DashData,
@@ -2548,6 +2563,8 @@ fn map_def(raw: &RawMap) -> MapDef {
                 duplicate_collider_hierarchy: p.duplicate_collider_hierarchy,
                 registrations: p.registrations.clone(),
                 copy_registrations: p.copy_registrations.clone(),
+                registration_orders: p.registration_orders.clone(),
+                copy_registration_orders: p.copy_registration_orders.clone(),
                 min_scale: Fix::from_raw(p.min_scale),
                 max_scale: Fix::from_raw(p.max_scale),
                 base_scale,
@@ -2664,6 +2681,16 @@ impl RolloutData {
     pub fn copy(&self, stem: &str) -> &[u32] {
         self.copy_registrations.get(stem).unwrap_or_else(|| panic!("no copy registrations for prefab {stem}"))
     }
+
+    /// The script execution orders parallel to `prefab(stem)`.
+    pub fn prefab_orders(&self, stem: &str) -> &[i32] {
+        self.registration_orders.get(stem).unwrap_or_else(|| panic!("no registration orders for prefab {stem}"))
+    }
+
+    /// The script execution orders parallel to `copy(stem)`.
+    pub fn copy_orders(&self, stem: &str) -> &[i32] {
+        self.copy_registration_orders.get(stem).unwrap_or_else(|| panic!("no copy registration orders for prefab {stem}"))
+    }
 }
 
 pub fn get() -> &'static RolloutData {
@@ -2684,6 +2711,8 @@ pub fn get() -> &'static RolloutData {
             collision_matrix: raw.collision_matrix,
             registrations: raw.registrations.clone(),
             copy_registrations: raw.copy_registrations.clone(),
+            registration_orders: raw.registration_orders.clone(),
+            copy_registration_orders: raw.copy_registration_orders.clone(),
             player: MovementData {
                 constants: constants(&raw.prefabs.player.physics),
                 radius: Fix::from_raw(raw.prefabs.player.physics.radius),
@@ -2751,6 +2780,7 @@ pub fn get() -> &'static RolloutData {
                 radius: Fix::from_raw(raw.prefabs.arrow.radius),
                 collider_hierarchy: raw.prefabs.arrow.collider_hierarchy,
                 arrow_hierarchy: raw.prefabs.arrow.arrow_hierarchy,
+                execution_order: raw.prefabs.arrow.arrow_execution_order,
                 body: {
                     let b = &raw.prefabs.arrow.body;
                     body(

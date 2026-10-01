@@ -135,7 +135,7 @@ def registering_count(prefab):
 EXECUTION_ORDER = json.loads((ROOT.parent / "sim" / "Export" / "execution-order.json").read_text())
 
 
-def registrations(prefab, copy=False, exclude=()):
+def registrations(prefab, copy=False, exclude=(), orders=False):
     # The prefab's updatables in the order Updater.RegisterUpdatable sees them
     # when it is instantiated, as their local HierarchyNumbers: Awake runs over
     # the active behaviours collected depth-first, stable-sorted by script
@@ -152,7 +152,9 @@ def registrations(prefab, copy=False, exclude=()):
     # HierarchyNumber order (ShootDuplicator.cs:709-717), and a slime's live
     # RewindRecorder sits last on its GameObject, so the copy collects it with
     # the rest and its Awake runs in execution order. `exclude`: components
-    # gone from the live source (GrowOnStart destroys itself).
+    # gone from the live source (GrowOnStart destroys itself). `orders`: each
+    # one's script execution order instead, which places the children a
+    # copy adds (its landed arrows) among them.
     batch = []
 
     def collect(game_object, root=False):
@@ -175,9 +177,10 @@ def registrations(prefab, copy=False, exclude=()):
     for i in order:
         c = batch[i]
         if id(c) in number and registers_with_updater(c["type"]):
-            out.append(number[id(c)])
+            order = EXECUTION_ORDER.get(c["type"], 0)
+            out.append(order if orders else number[id(c)])
             if c["type"] == "SlimeController" and not copy:
-                out.append(8)
+                out.append(order if orders else 8)
     return out
 
 
@@ -351,6 +354,8 @@ def extract_map(metadata):
                 # (registrations above).
                 "registrations": registrations({"data": node}, exclude=("GrowOnStart",)),
                 "copy_registrations": registrations({"data": node}, copy=True, exclude=("GrowOnStart",)),
+                "registration_orders": registrations({"data": node}, exclude=("GrowOnStart",), orders=True),
+                "copy_registration_orders": registrations({"data": node}, copy=True, exclude=("GrowOnStart",), orders=True),
                 "duplicate_collider_hierarchy": 1 + [
                     typ for _, typ in sorted(
                         (c["properties"]["hierarchyNumber"], c["type"])
@@ -547,6 +552,7 @@ def main():
         "radius": fix(arrow_circle, "startRadius") if "startRadius.m_rawValue" in arrow_circle else fix(arrow_circle, "radius"),
         "collider_hierarchy": arrow_circle["hierarchyNumber"],
         "arrow_hierarchy": component(arrow, "Arrow")["hierarchyNumber"],
+        "arrow_execution_order": EXECUTION_ORDER.get("Arrow", 0),
         "updatable_count": updater_count(arrow),
         "body": {k[:-len(".m_rawValue")]: v for k, v in arrow_body.items()
                  if k.endswith("m_rawValue")},
@@ -2253,6 +2259,10 @@ def main():
                if entry.get("path", "").endswith(".prefab") and registrations(entry)]
     out["registrations"] = {Path(entry["path"]).stem: registrations(entry) for entry in prefabs}
     out["copy_registrations"] = {Path(entry["path"]).stem: registrations(entry, copy=True) for entry in prefabs}
+    out["registration_orders"] = {Path(entry["path"]).stem: registrations(entry, orders=True) for entry in prefabs}
+    out["copy_registration_orders"] = {
+        Path(entry["path"]).stem: registrations(entry, copy=True, orders=True) for entry in prefabs
+    }
 
     target = ROOT / "data" / "rollout.json"
     with open(target, "w") as fh:
