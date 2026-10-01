@@ -4083,15 +4083,35 @@ enum PickupTaker {
     Clone(usize),
 }
 
-/// How PlayerCollision.killPlayer is reached. Only PlayerCollision.OnCollide
-/// checks and sets wasKilledThisFrame (PlayerCollision.cs:305-316, 449-470);
-/// any other callback, BlackHole.OnCollide among them, calls killPlayer
-/// directly.
+/// Where in the pass a kill runs. An updatable's casualties leave before
+/// this pass's DetPhysics; a collision callback's are observed once as
+/// destroyed rows and dropped at the next pass.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum KillRoute {
+enum PassPhase {
     Updater,
     Callback,
-    OnCollide,
+}
+
+/// How PlayerCollision.killPlayer is reached: in which phase, and whether
+/// through PlayerCollision.OnCollide. Only OnCollide checks and sets
+/// wasKilledThisFrame (PlayerCollision.cs:305-316, 449-470); any other
+/// caller, BlackHole.OnCollide among them, calls killPlayer directly.
+/// MeteorSmash.Dash and Roll.CollideExtraHurtBoxes call the target's
+/// OnCollide from their own UpdateSim, so theirs is both.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct KillRoute {
+    phase: PassPhase,
+    on_collide: bool,
+}
+
+impl KillRoute {
+    const UPDATER: Self = Self { phase: PassPhase::Updater, on_collide: false };
+    const CALLBACK: Self = Self { phase: PassPhase::Callback, on_collide: false };
+    const ON_COLLIDE: Self = Self { phase: PassPhase::Callback, on_collide: true };
+
+    fn callback(self) -> bool {
+        self.phase == PassPhase::Callback
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -9966,7 +9986,7 @@ impl RolloutWorld {
                 .position(|clone| clone.active && clone.entity == Some(entity))
                 && !self.abilityless_clones[clone].poke_invulnerable
             {
-                self.kill_abilityless_clone(clone, killer, CAUSE_EATEN, KillRoute::Updater, false);
+                self.kill_abilityless_clone(clone, killer, CAUSE_EATEN, KillRoute::UPDATER, false);
             }
         } else if self.players[eating.victim].deaths == eating.victim_deaths
             && self.playable(eating.victim)
@@ -13023,7 +13043,7 @@ impl RolloutWorld {
                     }
                     self.players[index].base.position = near;
                     let entity = Self::hurtbox_entity(&self.players[target]);
-                    self.form_target_on_collide(entity, near, index, KillRoute::Updater, data);
+                    self.form_target_on_collide(entity, near, index, PassPhase::Updater, data);
                     // A Rock (no PlayerCollision) or an invulnerable target
                     // survives, and the reciprocal PlayerCollision callback
                     // can still kill the Meteor against a lethal form.
@@ -13044,7 +13064,7 @@ impl RolloutWorld {
                 2 => {
                     let entity = hit.index;
                     self.players[index].base.position = near;
-                    self.form_target_on_collide(entity, near, index, KillRoute::Updater, data);
+                    self.form_target_on_collide(entity, near, index, PassPhase::Updater, data);
                     let row = self.entities[entity];
                     if row.flags & E_DESTROYED == 0
                         && matches!(row.layer, LAYER_PROJECTILE | 16 | 18 | 26)
@@ -13207,10 +13227,11 @@ impl RolloutWorld {
         entity: usize,
         near: Vec2,
         caster: usize,
-        route: KillRoute,
+        phase: PassPhase,
         data: &data::RolloutData,
     ) {
-        let by_callback = route != KillRoute::Updater;
+        let route = KillRoute { phase, on_collide: true };
+        let by_callback = route.callback();
         let killer = self.players[caster].base.id;
         if let Some(target) = self
             .players
@@ -17724,14 +17745,14 @@ impl RolloutWorld {
                 // wasKilledThisFrame, so a slime an earlier callback destroyed
                 // this pass dies again (BlackHole.cs:497).
                 if self.player_collision_active(index, slime) {
-                    self.kill_with(index, killer, CAUSE_OTHER, KillRoute::Callback, false, false, true);
+                    self.kill_with(index, killer, CAUSE_OTHER, KillRoute::CALLBACK, false, false, true);
                 }
             }
             HoleTarget::Clone(index) => {
                 grow(self, Fix::ZERO);
                 let clone = &self.abilityless_clones[index];
                 let (entity, alive) = (clone.entity, clone.active);
-                self.kill_abilityless_clone(index, hole.killer(&self.players), CAUSE_OTHER, KillRoute::Callback, false);
+                self.kill_abilityless_clone(index, hole.killer(&self.players), CAUSE_OTHER, KillRoute::CALLBACK, false);
                 // A callback casualty stays visible as destroyed until the
                 // next pass's DetPhysics.Simulate drops it.
                 if let Some(entity) = entity.filter(|_| alive) {
@@ -34307,7 +34328,7 @@ impl RolloutWorld {
             // DetPhysics removes all killed colliders before contacts.
             self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
             if victim_is_clone {
-                self.kill_abilityless_clone(victim, killer, CAUSE_OTHER, KillRoute::Updater, false);
+                self.kill_abilityless_clone(victim, killer, CAUSE_OTHER, KillRoute::UPDATER, false);
             } else {
                 self.kill(victim, killer, CAUSE_OTHER, false, false);
             }
@@ -34624,7 +34645,7 @@ impl RolloutWorld {
                 }
                 MjolnirVictim::Clone(clone_index) => {
                     let killer = player_id(&self.players, owner);
-                    self.kill_abilityless_clone(clone_index, killer, CAUSE_OTHER, KillRoute::Updater, false);
+                    self.kill_abilityless_clone(clone_index, killer, CAUSE_OTHER, KillRoute::UPDATER, false);
                 }
             }
         }
@@ -36338,7 +36359,7 @@ impl RolloutWorld {
                 CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
                 CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
                 CallbackHit::FormTarget { entity, near, caster } => {
-                    self.form_target_on_collide(entity, near, caster, KillRoute::Callback, data);
+                    self.form_target_on_collide(entity, near, caster, PassPhase::Callback, data);
                 }
                 CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
                 CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
@@ -37451,7 +37472,7 @@ impl RolloutWorld {
             // kill ignores invulnerability; a form's ExitAbility kills through
             // the slime's killPlayer, which does not.
             let ignore_invulnerability = cause == CAUSE_ACCIDENT;
-            self.kill_with(index, ENVIRONMENT, cause, KillRoute::Updater, false, true, ignore_invulnerability);
+            self.kill_with(index, ENVIRONMENT, cause, KillRoute::UPDATER, false, true, ignore_invulnerability);
         }
     }
 
@@ -38171,7 +38192,7 @@ impl RolloutWorld {
             // water/bounds effect too.
             self.next_spawn_hierarchy += data::get().player.boundary_effect_updatable_count;
             self.abilityless_clones[clone_index].drowned_tick = self.tick;
-            self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::Updater, false);
+            self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::UPDATER, false);
             return;
         }
         self.abilityless_clones[clone_index].base.move_collider();
@@ -38279,7 +38300,7 @@ impl RolloutWorld {
             return;
         }
         // KillPlayerOnCollision's guards (PlayerCollision.cs:305-316, 449-470).
-        if route == KillRoute::OnCollide {
+        if route.on_collide {
             if self.abilityless_clones[clone_index].was_killed_tick == Some(tick)
                 || self.players[owner].bodies_alive <= 0
             {
@@ -38287,7 +38308,7 @@ impl RolloutWorld {
             }
             self.abilityless_clones[clone_index].was_killed_tick = Some(tick);
         }
-        if route != KillRoute::Updater {
+        if route.callback() {
             self.abilityless_clones[clone_index].destroyed_tick = Some(tick);
         }
         if spawn_effect && self.players[owner].extra_life != REVIVE_BEING {
@@ -38957,7 +38978,7 @@ impl RolloutWorld {
             // it begins the reciprocal Roll hurtbox callback walk.
             for hit_offset in 0..hit_count {
                 let entity = self.scratch.ray_hits[hit_offset].index;
-                self.form_target_on_collide(entity, center, roller, KillRoute::Updater, data);
+                self.form_target_on_collide(entity, center, roller, PassPhase::Updater, data);
             }
 
             for hit_offset in 0..hit_count {
@@ -39129,7 +39150,7 @@ impl RolloutWorld {
     fn clone_collision_kill(&mut self, index: usize, killer: u32, cause: u32) {
         let entity = self.abilityless_clones[index].entity;
         let alive = self.abilityless_clones[index].active;
-        self.kill_abilityless_clone(index, killer, cause, KillRoute::OnCollide, true);
+        self.kill_abilityless_clone(index, killer, cause, KillRoute::ON_COLLIDE, true);
         // A callback casualty stays visible as destroyed until the next
         // pass's DetPhysics.Simulate drops it.
         if let Some(entity) = entity.filter(|_| alive) {
@@ -39488,7 +39509,7 @@ impl RolloutWorld {
         // Scene-boundary deaths pass ignoreInvulnerability=true; ordinary
         // collision callbacks do not.
         let ignore_invulnerability = killer == ENVIRONMENT && cause == CAUSE_ACCIDENT;
-        let route = if by_callback { KillRoute::OnCollide } else { KillRoute::Updater };
+        let route = if by_callback { KillRoute::ON_COLLIDE } else { KillRoute::UPDATER };
         self.kill_with(index, killer, cause, route, spawn_effect, true, ignore_invulnerability)
     }
 
@@ -39745,7 +39766,7 @@ impl RolloutWorld {
         let owner = self.players[index].owner;
         // KillPlayerOnCollision also returns once the player's counter is
         // spent, before it sets wasKilledThisFrame (PlayerCollision.cs:305-316).
-        if route == KillRoute::OnCollide {
+        if route.on_collide {
             if self.players[index].was_killed_tick == Some(self.tick)
                 || self.players[owner].bodies_alive <= 0
             {
@@ -39753,7 +39774,7 @@ impl RolloutWorld {
             }
             self.players[index].was_killed_tick = Some(self.tick);
         }
-        let callback = route != KillRoute::Updater;
+        let callback = route.callback();
         // A killPlayer on a slime a callback already destroyed this pass finds
         // no ability, no abilities and no RespawnPositions, and its slot may
         // hold the clone that replaced it: what is left is the branch the
