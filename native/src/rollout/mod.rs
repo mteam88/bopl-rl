@@ -14351,7 +14351,13 @@ impl RolloutWorld {
             slot.cast_spell.collider_right = slot.base.up.perp_cw();
             slot.cast_spell.collider_rotation = slot.base.rotation;
         }
-        if !self.players[index].base.grounded && self.time_stop_cast_airborne(index) {
+        // CastSpell.UpdateSim: on a live ground the form slides by its
+        // external velocity along the surface, which spends it, so a grounded
+        // rope pull from the last LateUpdateSim never reaches PlayerBody
+        // (CastSpell.cs:187-190).
+        if self.players[index].base.grounded && !self.ground_gone(index) {
+            self.players[index].base.move_along_current_platform(terrain!(self));
+        } else if self.time_stop_cast_airborne(index) {
             return;
         }
         let button = 2u8 << self.players[index].active_slot;

@@ -875,6 +875,24 @@ impl Player {
         // The position has not moved since `normal` was evaluated above.
         self.align_to(normal);
         let speed = (self.grounded_speed + self.external_velocity.dot(forward)) * speed_scale;
+        self.move_along_surface(platform_index, forward, speed, terrain);
+    }
+    /// PlayerPhysics.MoveAlongCurrentPlatForm (PlayerPhysics.cs:323-328): the
+    /// body slides along its ground by only the external velocity's component
+    /// along the surface, and that external velocity is spent.
+    pub(crate) fn move_along_current_platform(&mut self, terrain: Terrain) {
+        let Some(platform_index) = terrain.platforms.iter().position(|p| Some(p.id) == self.ground) else {
+            return;
+        };
+        let forward = terrain.platforms[platform_index].surface.normal(self.position).perp_cw();
+        let speed = self.external_velocity.dot(forward);
+        self.external_velocity = Vec2::ZERO;
+        self.move_along_surface(platform_index, forward, speed, terrain);
+    }
+    /// StickyRoundedRectangle.moveAlongSurface: the surface local advances by
+    /// `speed`, cut short by the nearest other platform ahead.
+    fn move_along_surface(&mut self, platform_index: usize, forward: Vec2, speed: Fix, terrain: Terrain) {
+        let platform = &terrain.platforms[platform_index];
         let velocity = forward * speed;
         // The own platform is excluded from the blocking test; with no other
         // platform near the rays `movement_limit` would return its unblocked
