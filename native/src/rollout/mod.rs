@@ -3812,12 +3812,16 @@ impl PlayerSlot {
             FormPose { position: base.position, orientation: base.orientation };
     }
 
-    /// SyncAllPhysicsObjectsToFixTransformPosition for the form boxes: each
-    /// `registered` box takes its FixTransform, a hidden form's included
-    /// (DetPhysics.cs:2517-2524). The live form's FixTransform is the body.
-    fn sync_form_boxes(&mut self, registered: [bool; 3]) {
+    /// SyncAllPhysicsObjectsToFixTransformPosition for the player's boxes:
+    /// each registered one takes its FixTransform, hidden or time-stopped
+    /// alike (DetPhysics.cs:2517-2524). `hurtbox` is the registered live box's
+    /// inverseExtents; the live form's FixTransform is the body.
+    fn sync_boxes(&mut self, hurtbox: Option<Vec2>, forms: [bool; 3]) {
+        if let Some(inverse_extents) = hurtbox {
+            self.base.sync_collider(inverse_extents);
+        }
         let live = (self.active != ActiveAbility::None).then_some(self.active_slot);
-        for s in (0..self.forms.len()).filter(|&s| registered[s]) {
+        for s in (0..self.forms.len()).filter(|&s| forms[s]) {
             self.forms[s].synced = if live == Some(s) {
                 FormPose { position: self.base.position, orientation: self.base.orientation }
             } else {
@@ -7977,20 +7981,6 @@ impl RolloutWorld {
             // more; they resume synchronization on the following pass.
             let frozen =
                 updater_dt < DT * Fix::from_f32(0.01) && !time_stop_protected_at_pass_start[index];
-            // A Blink tunnel deactivates what it swallowed, but SyncAll still
-            // moves that collider to the body the updaters left.
-            let swallowed =
-                self.players[index].base.alive && self.players[index].blink_tunnel_active;
-            if (self.playable(index) || swallowed) && !frozen {
-                self.sync_hurtbox(index);
-            } else if !frozen
-                && self.players[index].base.alive
-                && (self.players[index].respawn_ticks > 0 || self.players[index].respawn_spawn_ticks > 0)
-            {
-                // The stock clone's hurtbox stays registered while it waits and
-                // spawns, so SyncAll moves it to the point ReSpawnFast chose.
-                self.sync_hurtbox(index);
-            }
             if !frozen || self.scratch.frozen_turns & (1 << index) == 0 {
                 let input = action.input_direction(self.players[index].keyboard);
                 self.update_obs_state(index, input);
@@ -8083,10 +8073,17 @@ impl RolloutWorld {
         // registered takes its FixTransform, and RemoveDestroyedColliders
         // has dropped the destroyed ones just before (DetPhysics.cs:2731-2735).
         for index in 0..self.players.len().min(player_count) {
-            let registered = self.players[index].form_entities.map(|entity| {
+            let registered = |entity: usize| {
                 entity != usize::MAX && self.entities[entity].flags & (E_DESTROYED | E_REMOVED) == 0
-            });
-            self.players[index].sync_form_boxes(registered);
+            };
+            let slot = &self.players[index];
+            // A slime not yet spawned has no box; one eliminated lost it.
+            let hurtbox = (slot.unspawned == 0
+                && !slot.slime_destroyed()
+                && registered(Self::hurtbox_entity(slot)))
+            .then(|| slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
+            let forms = slot.form_entities.map(registered);
+            self.players[index].sync_boxes(hurtbox, forms);
         }
         if self.platforms.iter().any(|platform| platform.collider.inner.center != platform.surface.center) {
             for platform in self.platforms.iter_mut() {
