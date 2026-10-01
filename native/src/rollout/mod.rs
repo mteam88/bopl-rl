@@ -12284,8 +12284,13 @@ impl RolloutWorld {
             && self.players[index].base.grounded
         {
             // AttachToGround's synchronous callback enters Land after the
-            // restored slime's air Move reaches the Bow's former surface.
-            self.players[index].begin_land(false);
+            // restored slime's air Move reaches the Bow's former surface, and
+            // turns a slime set down on a ceiling (SlimeController.cs:1126-1134).
+            let slot = &mut self.players[index];
+            if slot.base.attach_upside_down == Some(true) {
+                slot.facing_right = !slot.facing_right;
+            }
+            slot.begin_land(false);
         }
         // SlimeController writes Player.Scale to its hurtbox after OldUpdate;
         // PlayerPhysics observes this FixTransform scale on the next pass.
@@ -37224,10 +37229,9 @@ impl RolloutWorld {
         if stock_clone_spawned {
             return;
         }
-        let (in_form, in_ability) = {
+        let in_form = {
             let slot = &self.players[index];
-            let in_ability = slot.active != ActiveAbility::None;
-            (in_ability || slot.base.dash.active, in_ability)
+            slot.active != ActiveAbility::None || slot.base.dash.active
         };
         self.exited_ability(index, data);
         let casts_before = self.players[index].telemetry.ability_activations;
@@ -37268,22 +37272,6 @@ impl RolloutWorld {
                 && slot.active == ActiveAbility::None
                 && !slot.base.dash.active
         };
-        // An ability exit marked `justlanded` runs attachToGround, which
-        // flips a slime that came out on a ceiling
-        // (SlimeController.cs:238-240, 1131-1134).
-        if exited && in_ability && self.players[index].obs_state == STATE_LAND {
-            let slot = &self.players[index];
-            let upside_down = slot
-                .base
-                .ground
-                .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
-                .is_some_and(|platform| {
-                    platform.surface.normal(slot.base.position).y < Fix::ZERO
-                });
-            if upside_down {
-                self.players[index].facing_right = !self.players[index].facing_right;
-            }
-        }
         // SlimeController.onExitAbility ends by syncing the hurtbox
         // (SlimeController.cs:251), so later updaters this pass (Black
         // Hole's pull, another Magnet) find the slime where it came out.
