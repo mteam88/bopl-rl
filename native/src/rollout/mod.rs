@@ -996,6 +996,8 @@ pub struct SpawnedSpike {
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
+    /// The pass SpikeAttack.UpdateSim last took its Updater turn.
+    pub stepped_tick: Option<u32>,
 }
 
 impl SpawnedSpike {
@@ -4231,6 +4233,7 @@ struct PlatformScratch {
     /// groups, by callback key.
     arrow_landings: Vec<(usize, CallbackKey, Part)>,
     pickup_order: Vec<usize>,
+    spike_order: Vec<usize>,
     /// Guided-Missile Box/Box manifolds. Every manifold is captured before
     /// either Missile callback destroys a participant.
     missile_contacts: Vec<(usize, usize, Contact)>,
@@ -4318,6 +4321,7 @@ impl PlatformScratch {
             arrow_landings: Vec::with_capacity(16),
             wall_contacts: Vec::with_capacity(256),
             pickup_order: Vec::with_capacity(16),
+            spike_order: Vec::with_capacity(16),
             missile_contacts: Vec::with_capacity(256),
             callback_hits: Vec::with_capacity(16),
             ray_hits: Vec::with_capacity(192),
@@ -8414,6 +8418,11 @@ impl RolloutWorld {
                 push(100_000_000 + clone.blink_tunnel_hierarchy, 23, i);
             }
         }
+        for (i, spike) in self.spike_attacks.iter().enumerate() {
+            if spike.active && !spike.macho_carried && spike.born_tick < tick && spike.stepped_tick != Some(tick) {
+                push(100_000_000 + spike.hierarchy_base, 24, i);
+            }
+        }
         for (i, missile) in self.guided_missiles.iter().enumerate() {
             if missile.active
                 && missile.registered
@@ -8477,6 +8486,7 @@ impl RolloutWorld {
                 21 => self.teleport_player_effect_step(index, data, updater_dt),
                 22 => self.teleport_object_effect_step(index, data, updater_dt),
                 23 => self.blink_clone_tunnel_step(index, data, updater_dt),
+                24 => self.spike_attack_step(data, updater_dt, index),
                 // Grenade.UpdateSim: a fuse that runs out detonates at the
                 // item's own turn, before a younger cloud's FlammableSmoke
                 // detonates.
@@ -15474,6 +15484,7 @@ impl RolloutWorld {
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
+            stepped_tick: None,
         };
         let attack_index = if let Some(free) = self.spike_attacks.iter().position(|s| !s.active) {
             // A pooled collider receives a fresh DetPhysics id on ManualInit;
@@ -15576,15 +15587,11 @@ impl RolloutWorld {
 
     fn spike_attacks_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) -> Option<u32> {
         let deferred = self.first_live_scale_changer();
-        for index in 0..self.spike_attacks.len() {
-            if deferred.is_none_or(|from| self.spike_attacks[index].hierarchy_base < from) {
-                self.spike_attack_step(data, updater_dt, index);
-            }
-        }
+        self.spike_attacks_between(data, updater_dt, 0, deferred.unwrap_or(u32::MAX));
         deferred
     }
 
-    /// Steps the spikes with hierarchy in `from..to`.
+    /// Steps the spikes with hierarchy in `from..to`, in hierarchy order.
     fn spike_attacks_between(
         &mut self,
         data: &data::RolloutData,
@@ -15592,11 +15599,17 @@ impl RolloutWorld {
         from: u32,
         to: u32,
     ) {
-        for index in 0..self.spike_attacks.len() {
-            if (from..to).contains(&self.spike_attacks[index].hierarchy_base) {
-                self.spike_attack_step(data, updater_dt, index);
-            }
+        let mut order = std::mem::take(&mut self.scratch.spike_order);
+        order.clear();
+        order.extend(
+            (0..self.spike_attacks.len())
+                .filter(|&index| (from..to).contains(&self.spike_attacks[index].hierarchy_base)),
+        );
+        order.sort_unstable_by_key(|&index| (self.spike_attacks[index].hierarchy_base, index));
+        for &index in &order {
+            self.spike_attack_step(data, updater_dt, index);
         }
+        self.scratch.spike_order = order;
     }
 
     fn spike_attack_step(&mut self, data: &data::RolloutData, updater_dt: Fix, index: usize) {
@@ -15614,6 +15627,10 @@ impl RolloutWorld {
             .expect("authored SpikeAttack curve")
             .time;
         let attack = &mut self.spike_attacks[index];
+        if attack.stepped_tick == Some(self.tick) {
+            return;
+        }
+        attack.stepped_tick = Some(self.tick);
         attack.pushed_this_frame = false;
         if !attack.active || attack.macho_carried || attack.born_tick >= self.tick {
             return;
@@ -28301,6 +28318,7 @@ impl RolloutWorld {
             duplicated: true,
             duplicate_lifespan: 1800,
             duplicate_shake_offset: Vec2::ZERO,
+            stepped_tick: None,
         };
         if let Some(free) = self.spike_attacks.iter().position(|spike| !spike.active) {
             self.spike_attacks[free] = clone;
