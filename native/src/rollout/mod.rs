@@ -28703,6 +28703,32 @@ impl RolloutWorld {
             self.entities[entity].y = self.tesla_nodes[index].collider_center.y.raw();
             return true;
         }
+        // A node MachoThrow2 carries is out of the hierarchy but still the
+        // ScaleChanger's victim: the Scale setter rescales its FixTransform
+        // offset, and the next Simulate puts the free circle at the
+        // FixTransform position plus that offset (ScaleChanger.cs:34-59,
+        // DPhysicsCircle.cs:208-221, FixTransform.cs:99-108, DetPhysics.cs:2509-2516).
+        if let Some(index) = self
+            .tesla_nodes
+            .iter()
+            .position(|node| node.active && node.macho_carried && node.entity == Some(entity))
+        {
+            let node = self.tesla_nodes[index];
+            let old = node.scale;
+            let new = scale.clamp(Fix::from_f32(0.6), Fix::from_int(5));
+            let collider_offset = node.collider_offset * (new / old);
+            let center = node.transform_position()
+                + collider_offset.complex_mul(Vec2::angle(node.transform_rotation));
+            let node = &mut self.tesla_nodes[index];
+            node.collider_offset = collider_offset;
+            node.scale = new;
+            node.radius *= (Fix::ONE / old) * new;
+            node.collider_center = center;
+            self.entities[entity].radius = node.radius.raw();
+            self.entities[entity].x = center.x.raw();
+            self.entities[entity].y = center.y.raw();
+            return true;
+        }
         false
     }
 
