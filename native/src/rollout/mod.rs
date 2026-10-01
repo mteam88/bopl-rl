@@ -1005,6 +1005,10 @@ pub struct SpawnedSpike {
     /// composite's UpdatePhysicsPositions re-places the collider without it
     /// (DetPhysics.cs:2467-2496), so updaters reading the transform keep it.
     pub transform_center: Vec2,
+    /// The FixTransform.offset that pose was placed with. A later Scale
+    /// write compounds the offset but leaves the FixTransform where it is
+    /// (FixTransform.cs:99-103, DPhysicsBox.cs:207-208, SpikeAttack.cs:144-158).
+    pub transform_offset: Vec2,
     pub surface_offset: Fix,
     /// SpikeAttack.fixedOffset, the offset Initialize was handed: Spike's
     /// 0.5 for a cast, ShootDuplicator's 0.75 for a copy, and MachoThrow2's
@@ -7996,6 +8000,7 @@ impl RolloutWorld {
         // collider's pose before the collision callbacks (DetPhysics.cs:3172-3192).
         for spike in &mut self.spike_attacks {
             spike.transform_center = spike.collider_center;
+            spike.transform_offset = spike.collider_offset;
         }
         for engine in &mut self.engines {
             engine.transform_center = engine.collider_center;
@@ -9103,7 +9108,7 @@ impl RolloutWorld {
                     + spike.relative_rotation,
             );
             let position = spike.transform_center
-                - spike.collider_offset.complex_mul(right);
+                - spike.transform_offset.complex_mul(right);
             let combined = self.platform_dynamics[spike.platform_index].body;
             if let Some(entity) = spike
                 .entity
@@ -9434,14 +9439,15 @@ impl RolloutWorld {
                     .orientation
                     + spike.relative_rotation,
             );
+            let root = spike.transform_center - spike.transform_offset.complex_mul(right);
             let offset = spike.collider_offset.complex_mul(right);
-            let root = spike.transform_center - offset;
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
             {
                 let center = position + offset;
                 self.spike_attacks[index].collider_center = center;
                 self.spike_attacks[index].transform_center = center;
+                self.spike_attacks[index].transform_offset = spike.collider_offset;
                 self.platform_dynamics[spike.platform_index].body.velocity =
                     Self::portal_velocity(entry, exit, combined.velocity);
                 let row = &mut self.entities[entity];
@@ -15276,6 +15282,7 @@ impl RolloutWorld {
             relative_rotation,
             collider_center,
             transform_center,
+            transform_offset: collider_offset,
             surface_offset,
             fixed_offset: data.spike.surface_offset,
             scale,
@@ -18807,7 +18814,7 @@ impl RolloutWorld {
         let old_rotation = Fix::from_raw(self.entities[entity].rotation);
         let old_right = Vec2::angle(old_rotation);
         let old_root = source.transform_center
-            - source.collider_offset.complex_mul(old_right);
+            - source.transform_offset.complex_mul(old_right);
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
         let desired_rotation = parent_rotation + Fix::PI;
@@ -18850,6 +18857,7 @@ impl RolloutWorld {
         spike.collider_center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         spike.transform_center = spike.collider_center;
+        spike.transform_offset = spike.collider_offset;
         spike.surface_offset = surface_offset;
         spike.fixed_offset = fixed_offset;
         // Initialize's `hitbox.Scale = scale` divides by `(1 / scale) * scale`.
@@ -26603,7 +26611,7 @@ impl RolloutWorld {
             self.platform_dynamics[platform_index].body.orientation + source.relative_rotation,
         );
         let source_position = source.transform_center
-            - source.collider_offset.complex_mul(source_right);
+            - source.transform_offset.complex_mul(source_right);
         let local = self.duplicate_attached_local(
             platform_index,
             source_position,
@@ -26677,6 +26685,7 @@ impl RolloutWorld {
             relative_rotation: rotation - parent_rotation,
             collider_center,
             transform_center: collider_center,
+            transform_offset: source.collider_offset,
             surface_offset,
             fixed_offset,
             scale: source.scale,
@@ -27868,8 +27877,10 @@ impl RolloutWorld {
             self.spike_attacks[index].relative_center = relative_center;
             let center =
                 parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
+            // RepositionOnParent only sets the child body's relativePos, so the
+            // FixTransform keeps its pose until SyncGameObject
+            // (DPhysicsBox.cs:207-208, SpikeAttack.cs:144-158).
             self.spike_attacks[index].collider_center = center;
-            self.spike_attacks[index].transform_center = center;
             let extents = self.spike_attacks[index].box_extents(&self.entity_inverse_extents);
             self.entities[entity].right_x = (right * extents.x).x.raw();
             self.entities[entity].right_y = (right * extents.x).y.raw();

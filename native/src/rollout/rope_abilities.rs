@@ -166,11 +166,10 @@ pub enum RopeParent {
 }
 
 /// The SpikeAttack FixTransform's pose: SyncGameObject's copy of the box
-/// less the box's scaled offset, and its right vector.
+/// less the offset it synced with, and its right vector.
 fn spike_transform(spike: &SpawnedSpike, dynamics: &[PlatformDynamics]) -> (Vec2, Vec2) {
     let right = Vec2::angle(dynamics[spike.platform_index].body.orientation + spike.relative_rotation);
-    let root = spike.transform_center
-        - (data::get().spike.attack_collider_offset * spike.scale).complex_mul(right);
+    let root = spike.transform_center - spike.transform_offset.complex_mul(right);
     (root, right)
 }
 
