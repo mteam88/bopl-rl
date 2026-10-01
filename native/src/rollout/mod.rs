@@ -16385,6 +16385,12 @@ impl RolloutWorld {
                 if !self.collides(entity) {
                     continue;
                 }
+                // SortAndSweep pairs the attack where integration left it,
+                // before the ground under it pushes it out this pass; only
+                // then does the narrow phase test the corrected box.
+                if !self.swept_pair(Swept::Part(Part::Spike(spike_index)), Swept::Player(player_index)) {
+                    continue;
+                }
                 let row = self.entities[entity];
                 let contact = if row.kind == 0 {
                     crate::physics::contact::circle_box(
