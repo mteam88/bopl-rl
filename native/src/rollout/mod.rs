@@ -34644,9 +34644,12 @@ impl RolloutWorld {
         // platform.
         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
         slot.obs_state = STATE_RAGDOLL;
+        // ApplyRagDoll leaves skipNextUpdate as it was: a Pop's pin set it
+        // this pass, while a Burst over a victim that vanished returns before
+        // the pin (PokeBall.cs:93-104).
         slot.ragdoll = RagdollState {
             active: true,
-            skip_physics: true,
+            skip_physics: slot.ragdoll.skip_physics,
             hold_on_ground: slot.base.grounded,
             time: Fix::ZERO,
             duration: Fix::from_f32(0.45),
