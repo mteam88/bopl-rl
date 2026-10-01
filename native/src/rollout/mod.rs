@@ -6542,6 +6542,16 @@ impl RolloutWorld {
             self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
             (0, Fix::from_int(100))
         };
+        // OnCollide instantiated the slot's previous pickup this pass too.
+        // Losing its reference does not destroy it: it registers with the
+        // rest and stays behind at the origin.
+        let slot = &self.players[player_index];
+        if !slot.ability_instantiated[ability_slot]
+            && slot.pending_ability_hierarchy[ability_slot] != u32::MAX
+        {
+            self.pending_orphan_abilities
+                .push((slot.pending_ability_hierarchy[ability_slot], slot.abilities[ability_slot]));
+        }
         // The new slot is ready at once, and the future-clone loadout
         // follows it.
         let slot = &mut self.players[player_index];
