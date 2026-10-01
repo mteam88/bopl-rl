@@ -14079,6 +14079,38 @@ impl RolloutWorld {
                 info.take_body(&slot.base);
                 info.facing_right = slot.magnet.aim.x >= Fix::ZERO;
             }
+            ActiveAbility::TimeStop => {
+                // CastSpell.ExitAbility (CastSpell.cs:164-182). The form's
+                // collider stays where UnGround left the body.
+                let data = data::get();
+                let slot = &mut self.players[index];
+                slot.base.rotation = Fix::ZERO;
+                UngroundBody::Form(slot).unground(&self.platforms, tick, true);
+                slot.cast_spell.collider_position = slot.base.position;
+                slot.cast_spell.collider_right = Vec2::RIGHT;
+                slot.cast_spell.collider_rotation = Fix::ZERO;
+                info.take_body(&slot.base);
+                info.position += data.time_stop.exit_offset * slot.player_scale;
+                info.external_velocity = Vec2::ZERO;
+            }
+            ActiveAbility::Gust | ActiveAbility::Revival => {
+                // QuickSpell.ExitAbility (QuickSpell.cs:93-106); both prefabs
+                // author a zero ExitAbilityOffset. Its UnGround is the second:
+                // PlayerPhysics kept the attachedGround the cast left, so a
+                // moving platform supplies a fresh normal for this nudge.
+                let slot = &mut self.players[index];
+                let ground = if active == ActiveAbility::Gust {
+                    slot.gust.attached_ground
+                } else {
+                    slot.revival.attached_ground
+                };
+                let surface = ground.and_then(|id| {
+                    self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
+                });
+                slot.base.rotation = Fix::ZERO;
+                slot.base.unground(surface, true);
+                info.take_body(&slot.base);
+            }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
         info
@@ -14536,26 +14568,7 @@ impl RolloutWorld {
             slot.gust.phase = 1;
             slot.gust.ticks = 0;
         } else if slot.gust.phase == 1 && slot.gust.ticks > data.gust.exit_ticks {
-            // QuickSpell calls UnGround a second time. PlayerPhysics kept the
-            // old attachedGround reference even though isGrounded was false,
-            // so a moving platform supplies a fresh normal for this nudge.
-            let surface = slot.gust.attached_ground.and_then(|id| {
-                self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
-            });
-            slot.base.unground(surface, true);
-            // Ability.ExitAbility publishes the QuickSpell collider before
-            // SlimeController installs the returned body and immediately
-            // raycasts it (Ability.cs:151, SlimeController.cs:217-272).
-            let ability_position = slot.base.position;
-            slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            slot.set_ordinary_body_scale(slot.player_scale);
-            slot.restore_slime_radius();
-            // QuickSpell exits with a default AbilityExitInfo, whose isFacingRight
-            // is false; SlimeController flips to match.
-            slot.facing_right = false;
-            slot.exit_to_fall(terrain!(self));
-            slot.reported_position = ability_position;
-            slot.reported_tick = self.tick;
+            self.exit_form(index);
             return;
         }
         // Ability.UpdateSim follows QuickSpell in the prefab and publishes
@@ -14598,7 +14611,7 @@ impl RolloutWorld {
                 if action.buttons & button == 0
                     && self.players[index].cast_spell.time <= data.time_stop.cast_time
                 {
-                    self.exit_time_stop_cast(index, data);
+                    self.exit_form(index);
                     return;
                 }
                 self.players[index].cast_spell.ticks += 1;
@@ -14613,7 +14626,7 @@ impl RolloutWorld {
             1 => {
                 let released = action.buttons & button == 0;
                 if released && self.players[index].cast_spell.time <= data.time_stop.cast_time {
-                    self.exit_time_stop_cast(index, data);
+                    self.exit_form(index);
                     return;
                 }
                 if self.players[index].cast_spell.time > data.time_stop.cast_time {
@@ -14645,7 +14658,7 @@ impl RolloutWorld {
             _ => {
                 self.players[index].cast_spell.ticks += 1;
                 if self.players[index].cast_spell.ticks > data.time_stop.ease_out_ticks {
-                    self.exit_time_stop_cast(index, data);
+                    self.exit_form(index);
                     return;
                 }
             }
@@ -15919,29 +15932,6 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
-    fn exit_time_stop_cast(&mut self, index: usize, data: &data::RolloutData) {
-        let slot = &mut self.players[index];
-        UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-        let published_position = slot.base.position;
-        // Ability.ExitAbility publishes and freezes the ability collider at
-        // this pose, while the returned slime is placed at ExitAbilityOffset.
-        slot.cast_spell.collider_position = published_position;
-        slot.cast_spell.collider_right = Vec2::RIGHT;
-        slot.cast_spell.collider_rotation = Fix::ZERO;
-        slot.base.position += data.time_stop.exit_offset * slot.player_scale;
-        slot.base.external_velocity = Vec2::ZERO;
-        // CastSpell exits with a default AbilityExitInfo: facing left.
-        slot.facing_right = false;
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        // onExitAbility assigns Player.Scale to the slime's hurtbox, and
-        // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
-        slot.set_ordinary_body_scale(slot.player_scale);
-        slot.restore_slime_radius();
-        slot.exit_to_fall(terrain!(self));
-        slot.reported_position = published_position;
-        slot.reported_tick = self.tick;
-    }
-
     fn register_pending_time_stops(&mut self) {
         for effect in &mut self.time_stop_effects {
             if !effect.active || effect.registered || effect.born_tick >= self.tick {
@@ -17032,19 +17022,7 @@ impl RolloutWorld {
             self.players[index].revival.phase = 1;
             self.players[index].revival.ticks = 0;
         } else if slot.revival.phase == 1 && slot.revival.ticks > data.revival.exit_ticks {
-            let surface = slot.revival.attached_ground.and_then(|id| {
-                self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
-            });
-            slot.base.unground(surface, true);
-            slot.reported_position = slot.base.position;
-            slot.reported_tick = self.tick;
-            // QuickSpell exits with a default AbilityExitInfo, whose isFacingRight
-            // is false; SlimeController flips to match.
-            slot.facing_right = false;
-            slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            slot.set_ordinary_body_scale(slot.player_scale);
-            slot.restore_slime_radius();
-            slot.exit_to_fall(terrain!(self));
+            self.exit_form(index);
             return;
         }
         self.players[index].reported_position = self.players[index].base.position;
@@ -45964,7 +45942,7 @@ mod tests {
         world.players[0].base.velocity = self_imposed;
         world.players[0].base.external_velocity = Vec2::new(Fix::ONE, Fix::ONE);
 
-        world.exit_time_stop_cast(0, data::get());
+        world.exit_form(0);
 
         assert_eq!(
             world.players[0].base.position,
