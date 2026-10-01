@@ -7937,9 +7937,6 @@ impl RolloutWorld {
         if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
             self.poke_balls_and_tacks_tick(data, updater_dt, 0..u32::MAX, 0..u32::MAX);
         }
-        if has_rope && (has(ABILITY_TACK) || has(ABILITY_POKE_BALL)) {
-            self.rope_parents_update(rope_abilities::RopeParentPass::OlderTackOrBall);
-        }
         if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
             self.scale_changers_tick(data, updater_dt, deferred_spikes, deferred_updaters);
         }
@@ -33523,6 +33520,10 @@ impl RolloutWorld {
         if self.scratch.ropes_deferred_from < u32::MAX {
             self.rope_parents_update(rope_abilities::RopeParentPass::AfterHammers);
         }
+        // A hook on a tack or Poke Ball thrown before it updates after the
+        // item's last updater, its DestroyIfOutsideSceneBounds, so a ball that
+        // drowned this pass is already gone when the attachment looks.
+        self.rope_parents_update(rope_abilities::RopeParentPass::OlderTackOrBall);
 
         // DetPhysics then integrates each body on its own.
         for item_index in 0..self.thrown_items.len() {
