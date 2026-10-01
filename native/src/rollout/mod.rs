@@ -2138,7 +2138,7 @@ pub struct RollState {
 }
 
 /// MeteorSmash's four source states. `position` is the ability PlayerBody;
-/// the original slime remains frozen in `ability_origin` while this is live.
+/// the original slime remains frozen in `frozen_slime` while this is live.
 #[derive(Clone, Copy, Default)]
 pub struct MeteorState {
     /// 0 anticipation, 1 jump, 2 vibrate, 3 dash.
@@ -2225,6 +2225,27 @@ pub struct MagnetState {
     /// allocation-free StaticUpdate parry sweep.
     pub parry_registered: bool,
     pub parry_circle: Circle,
+}
+
+/// The slime as EnterAbility left it: SlimeController, PlayerBody and
+/// PlayerPhysics go inactive with the form (SlimeController.cs:190) and keep
+/// the pass's post-gravity state until the form exits.
+#[derive(Clone, Copy)]
+pub struct FrozenSlime {
+    /// The pass this was taken on.
+    pub tick: u32,
+    pub position: Vec2,
+    /// PlayerBody.Velocity: the self-imposed and external parts together.
+    pub velocity: Vec2,
+    /// The external part of `velocity`.
+    pub external: Vec2,
+    pub rotation: Fix,
+    /// SlimeController.currentState.
+    pub state: u32,
+    /// The hurtbox's Scale.
+    pub scale: Fix,
+    /// PlayerPhysics keeps its ground while in a form.
+    pub ground: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3282,20 +3303,10 @@ pub struct PlayerSlot {
     pub active_slot: usize,
     /// The original SlimeController stays at the ability entry point while
     /// the active ability's separate body moves.
-    pub ability_origin: Vec2,
-    /// The pass `ability_origin` was taken on.
-    pub ability_origin_tick: u32,
+    pub frozen_slime: FrozenSlime,
     /// The pass and the body position before this player's updaters ran on
     /// it: an Updater object older than the form still sees it there.
     pub pass_start: (u32, Vec2),
-    pub ability_origin_velocity: Vec2,
-    /// The external part of `ability_origin_velocity`.
-    pub ability_origin_external: Vec2,
-    pub ability_origin_rotation: Fix,
-    pub ability_origin_state: u32,
-    pub ability_origin_scale: Fix,
-    /// The deactivated slime's PlayerPhysics keeps its ground while in a form.
-    pub ability_origin_ground: Option<u32>,
     pub ability_entry_action: Action,
     /// Player.Scale, which ScaleChanger mutates after the player updaters.
     pub player_scale: Fix,
@@ -5945,15 +5956,17 @@ impl RolloutWorld {
                 grapple: [rope_abilities::GrappleState::default(); 3],
                 active: ActiveAbility::None,
                 active_slot: 0,
-                ability_origin: spawn,
-                ability_origin_tick: u32::MAX,
+                frozen_slime: FrozenSlime {
+                    tick: u32::MAX,
+                    position: spawn,
+                    velocity: Vec2::ZERO,
+                    external: Vec2::ZERO,
+                    rotation: Fix::ZERO,
+                    state: STATE_FALL,
+                    scale: Fix::ONE,
+                    ground: None,
+                },
                 pass_start: (u32::MAX, Vec2::ZERO),
-                ability_origin_velocity: Vec2::ZERO,
-                ability_origin_external: Vec2::ZERO,
-                ability_origin_rotation: Fix::ZERO,
-                ability_origin_state: STATE_FALL,
-                ability_origin_scale: Fix::ONE,
-                ability_origin_ground: None,
                 ability_entry_action: Action::default(),
                 player_scale: Fix::ONE,
                 physics_scale: Fix::ONE,
@@ -10805,13 +10818,6 @@ impl RolloutWorld {
                         // grounded fall ends with the form.
                         slot.ragdoll_grounded_fall = false;
                     }
-                    slot.ability_origin = frozen.position;
-                    slot.ability_origin_tick = self.tick;
-                    slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
-                    slot.ability_origin_external = frozen.external_velocity;
-                    slot.ability_origin_rotation = frozen.rotation();
-                    slot.ability_origin_state = slot.obs_state;
-                    slot.ability_origin_ground = frozen.ground.filter(|_| frozen.grounded);
                     // SlimeController still writes Player.Scale to its hurtbox
                     // after OldUpdate on the pass it enters an ability. An
                     // instant cast carries on to the pass's own write.
@@ -10822,7 +10828,16 @@ impl RolloutWorld {
                             self.entity_inverse_extents[slot.body_entity] / ratio;
                         slot.body_collider_scale = scale;
                     }
-                    slot.ability_origin_scale = scale;
+                    slot.frozen_slime = FrozenSlime {
+                        tick: self.tick,
+                        position: frozen.position,
+                        velocity: frozen.velocity + frozen.external_velocity,
+                        external: frozen.external_velocity,
+                        rotation: frozen.rotation(),
+                        state: slot.obs_state,
+                        scale,
+                        ground: frozen.ground.filter(|_| frozen.grounded),
+                    };
                     slot.slime_radius = slot.base.radius;
                     slot.select_form(s);
                     // Ability.EnterAbility scales the enabled form collider
@@ -11785,7 +11800,7 @@ impl RolloutWorld {
                             // Duplicator's authored PlayerPhysics radius
                             // differs from the ordinary slime. SyncPhysicsTo
                             // changes Player.Position immediately while the
-                            // disabled SlimeController retains ability_origin.
+                            // disabled SlimeController retains frozen_slime.
                             let slot = &mut self.players[index];
                             slot.reported_position = slot.base.position;
                             slot.reported_tick = self.tick;
@@ -22317,7 +22332,7 @@ impl RolloutWorld {
         slot.empty_prefab_facing();
         slot.timers.fill(Fix::from_f32(-1.5));
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.ability_origin_scale = slot.player_scale;
+        slot.frozen_slime.scale = slot.player_scale;
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
         // strand the dead slime let go keeps hanging, since only the
@@ -22820,7 +22835,7 @@ impl RolloutWorld {
         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
         slot.empty_prefab_facing();
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.ability_origin_scale = slot.player_scale;
+        slot.frozen_slime.scale = slot.player_scale;
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
         // strand the dead slime let go keeps hanging, since only the
@@ -27846,7 +27861,7 @@ impl RolloutWorld {
         } else if self.players[victim].active == ActiveAbility::None {
             (source.ground.filter(|_| source.grounded), source.position)
         } else {
-            (self.players[victim].ability_origin_ground, self.players[victim].ability_origin)
+            (self.players[victim].frozen_slime.ground, self.players[victim].frozen_slime.position)
         };
         let current_normal = slime_ground
             .and_then(|ground| {
@@ -30967,10 +30982,10 @@ impl RolloutWorld {
                 // slime the form left behind.
                 self.frozen_solids[effect_index].active = false;
                 slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-                slot.ability_origin_velocity =
-                    Vec2::new(Fix::ZERO, Fix::from_int(4)) + slot.ability_origin_external;
-                slot.ability_origin_rotation = Vec2::UP.normalized_angle();
-                slot.ability_origin_state = STATE_RAGDOLL;
+                slot.frozen_slime.velocity =
+                    Vec2::new(Fix::ZERO, Fix::from_int(4)) + slot.frozen_slime.external;
+                slot.frozen_slime.rotation = Vec2::UP.normalized_angle();
+                slot.frozen_slime.state = STATE_RAGDOLL;
                 slot.timers.fill(Fix::ZERO);
                 continue;
             }
@@ -33873,7 +33888,7 @@ impl RolloutWorld {
         let form = slot.form_entities[slot.active_slot];
         if slot.active != ActiveAbility::None
             && slot.pass_start.0 == self.tick
-            && !(slot.ability_origin_tick == self.tick && slot.ability_origin_ground.is_some())
+            && !(slot.frozen_slime.tick == self.tick && slot.frozen_slime.ground.is_some())
             && form < self.entities.len()
             && self.entities[form].hierarchy > 100_000_000 + hierarchy
         {
@@ -34770,12 +34785,12 @@ impl RolloutWorld {
             // The victim cast out of the ball: the eject lands on the
             // deactivated slime the form left behind, and the form's exit
             // overwrites it.
-            slot.ability_origin = position;
-            slot.ability_origin_velocity = velocity + slot.ability_origin_external;
+            slot.frozen_slime.position = position;
+            slot.frozen_slime.velocity = velocity + slot.frozen_slime.external;
             if eject_direction != Vec2::ZERO {
-                slot.ability_origin_rotation = eject_direction.normalized_angle();
+                slot.frozen_slime.rotation = eject_direction.normalized_angle();
             }
-            slot.ability_origin_state = STATE_RAGDOLL;
+            slot.frozen_slime.state = STATE_RAGDOLL;
             return;
         }
         slot.base.position = position;
@@ -41219,7 +41234,7 @@ impl RolloutWorld {
             let (center, angle) = if body_active || slime_teleporting {
                 (synced, rotation)
             } else {
-                (slot.ability_origin, slot.ability_origin_rotation)
+                (slot.frozen_slime.position, slot.frozen_slime.rotation)
             };
             let in_form = alive && (dashing || in_ability);
             if body_active || body_was_active || slime_teleporting || in_form {
@@ -42092,7 +42107,7 @@ impl RolloutWorld {
             let (center, angle) = if body_active || (teleporting && !in_ability) {
                 (synced, rotation)
             } else {
-                (slot.ability_origin, slot.ability_origin_rotation)
+                (slot.frozen_slime.position, slot.frozen_slime.rotation)
             };
             let in_form = alive && (dashing || in_ability);
             if body_active || body_was_active || teleporting || in_form {
@@ -42356,10 +42371,10 @@ impl RolloutWorld {
                     )
                 } else if in_ability {
                     (
-                        slot.ability_origin,
-                        slot.ability_origin_velocity,
-                        slot.ability_origin_rotation,
-                        slot.ability_origin_state,
+                        slot.frozen_slime.position,
+                        slot.frozen_slime.velocity,
+                        slot.frozen_slime.rotation,
+                        slot.frozen_slime.state,
                     )
                 } else {
                     (
@@ -42380,7 +42395,7 @@ impl RolloutWorld {
                 vy: velocity.y.raw(),
                 rotation: rotation.raw(),
                 scale: if in_ability {
-                    slot.ability_origin_scale.raw()
+                    slot.frozen_slime.scale.raw()
                 } else {
                     slot.base.scale.raw()
                 },
@@ -44919,7 +44934,7 @@ mod tests {
         world.reset(&test_config()).unwrap();
         world.players[0].set_active_form(&mut world.entities, ActiveAbility::Freeze);
         world.players[0].player_scale = Fix::from_int(2);
-        world.players[0].ability_origin_scale = Fix::from_int(2);
+        world.players[0].frozen_slime.scale = Fix::from_int(2);
         world.players[0].base.grounded = false;
         world.players[0].base.ground = None;
 
