@@ -38411,11 +38411,8 @@ impl RolloutWorld {
         {
             return;
         }
-        let center = self.players[roller].base.collider.center;
-        let query = Circle {
-            center,
-            radius: self.players[roller].forms[self.players[roller].active_slot].circle_radius,
-        };
+        let form = self.players[roller].forms[self.players[roller].active_slot];
+        let query = Circle { center: form.synced.position, radius: form.circle_radius };
         let roller_entity = self.players[roller].roll_entity;
         let roller_id = self.players[roller].base.id;
         let roller_rank = self.player_sweep_rank(roller);
