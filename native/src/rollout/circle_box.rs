@@ -466,6 +466,26 @@ impl RolloutWorld {
         (row.layer == LAYER_PLAYER && self.collides(entity)).then_some(row.kind == 0)
     }
 
+    /// Whether a Tesla node's circle is a part of the Circle/Circle group, or
+    /// of the Circle/Box group. A node whose platform went inactive earlier
+    /// in this pass is skipped by DetPhysics' Circle/Circle group, though its
+    /// row still shows the last publish.
+    fn node_part(&self, i: usize, circle_group: bool) -> bool {
+        let node = &self.tesla_nodes[i];
+        self.child_registered(node.entity)
+            && (!circle_group
+                || (node.active
+                    && !node.macho_carried
+                    && node.platform_index < self.platforms.len()
+                    && node.body.inverse_mass >= Fix::ZERO))
+    }
+
+    /// Whether the groups test a live Tesla node against a slime's or form's
+    /// collider, so the pair's callbacks queue there.
+    pub(super) fn node_body_grouped(&self, node: usize, player: usize) -> bool {
+        self.body_part_circle(player).is_some_and(|circle| self.node_part(node, circle))
+    }
+
     /// Whether an abilityless clone's collider is in this Simulate's pairs,
     /// and whether it is a circle.
     fn clone_part_circle(&self, i: usize) -> Option<bool> {
@@ -510,8 +530,8 @@ impl RolloutWorld {
                 parts.push(Part::Shot(i));
             }
         }
-        for (i, node) in self.tesla_nodes.iter().enumerate() {
-            if self.child_registered(node.entity) {
+        for i in 0..self.tesla_nodes.len() {
+            if self.node_part(i, false) {
                 parts.push(Part::Node(i));
             }
         }
@@ -790,15 +810,8 @@ impl RolloutWorld {
                 parts.push(Part::Item(i));
             }
         }
-        // A node whose platform went inactive earlier in this pass is skipped
-        // by DetPhysics, though its row still shows the last publish.
-        for (i, node) in self.tesla_nodes.iter().enumerate() {
-            if node.active
-                && !node.macho_carried
-                && node.platform_index < self.platforms.len()
-                && node.body.inverse_mass >= Fix::ZERO
-                && self.child_registered(node.entity)
-            {
+        for i in 0..self.tesla_nodes.len() {
+            if self.node_part(i, true) {
                 parts.push(Part::Node(i));
             }
         }
@@ -1057,6 +1070,9 @@ impl RolloutWorld {
                     return;
                 }
                 let (killer, cause) = match other {
+                    // A SimpleSparkNode never assigns its Explosion's
+                    // PlayerOwnerId, so the kill credits its zero default.
+                    Part::Node(node) if self.tesla_nodes[node].lethal => (0, CAUSE_OTHER),
                     Part::Rock(rock) => (self.players[rock].base.id, CAUSE_OTHER),
                     Part::DuplicatedRock(rock) => {
                         let killer = player_id(&self.players, self.duplicated_rocks[rock].owner);

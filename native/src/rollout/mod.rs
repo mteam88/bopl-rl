@@ -16643,7 +16643,10 @@ impl RolloutWorld {
                     (pass, later, earlier)
                 };
                 let node_min = self.swept_min(swept_node);
-                let node_key = node_hit.then(|| pair(node_pass, node_min, node.entity));
+                // A live node's pair with a slime's or form's collider queues
+                // from the Circle/Circle and Circle/Box groups.
+                let grouped = node_index < live_nodes && self.node_body_grouped(node_index, player_index);
+                let node_key = (node_hit && !grouped).then(|| pair(node_pass, node_min, node.entity));
                 let line_key = line
                     .filter(|_| line_hit)
                     .map(|line| pair(node_pass + 1, box_min(line), None));
