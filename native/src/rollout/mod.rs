@@ -38942,13 +38942,14 @@ impl RolloutWorld {
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
         for &(clone, index) in &squished {
-            let (base, entity) = if clone {
+            // A player in a form is squished through the form's own
+            // PlayerCollision, so its pair is the form's box (PlayerCollision.cs:327).
+            let body = if clone {
                 let clone = &self.abilityless_clones[index];
-                (&clone.base, clone.entity)
+                sweep_rank(&self.entities, min(clone.base.collider), clone.entity)
             } else {
-                (&self.players[index].base, Some(self.players[index].body_entity))
+                self.player_sweep_rank(index)
             };
-            let body = sweep_rank(&self.entities, min(base.collider), entity);
             let first = self
                 .squishing_walls(colliders, clone, index)
                 .map(|wall| {
