@@ -2145,6 +2145,11 @@ impl RolloutWorld {
                 {
                     Some(items[item].position)
                 }
+                // Likewise an arrow that stuck in Simulate (Arrow.OnCollide
+                // DestroyFixes its FixTransform, RopeAttachment.cs:174).
+                Some(RopeParent::Arrow(arrow, id)) if spikes.3[arrow].id == id => {
+                    Some(spikes.3[arrow].position)
+                }
                 parent => parent.and_then(|parent| {
                     parent_position(players, items, shots, spikes, parent, rope.parent_offset)
                 }),
