@@ -25511,7 +25511,7 @@ impl RolloutWorld {
             .expect("valid freeze-ray gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, &mut self.entities, terrain!(self), self.tick);
+                bow_exit(slot, &mut self.entities, terrain!(self), self.tick, true);
                 return;
             }
         }
@@ -25684,7 +25684,7 @@ impl RolloutWorld {
             .expect("valid Blink gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, &mut self.entities, terrain!(self), self.tick);
+                bow_exit(slot, &mut self.entities, terrain!(self), self.tick, true);
                 return;
             }
         }
@@ -25849,7 +25849,7 @@ impl RolloutWorld {
             .expect("valid scale-ray gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, &mut self.entities, terrain!(self), self.tick);
+                bow_exit(slot, &mut self.entities, terrain!(self), self.tick, true);
                 return;
             }
         }
@@ -27106,6 +27106,26 @@ impl RolloutWorld {
                     slot.base.velocity = Vec2::ZERO;
                     freeze_at(slot, body);
                     self.players[index].magnet.held_position = body;
+                } else if matches!(
+                    self.players[i].active,
+                    ActiveAbility::Bow
+                        | ActiveAbility::Freeze
+                        | ActiveAbility::Blink
+                        | ActiveAbility::GrowthRay
+                        | ActiveAbility::ShrinkRay
+                        | ActiveAbility::Duplicator
+                ) {
+                    // BowTransform's and GunTransform's ExitAbility zero the
+                    // rotation, UnGround the body off its retained ground and
+                    // hand over that body's position, velocities and aim's
+                    // facing (BowTransform.cs:116-130, GunTransform.cs:84-98).
+                    // ApplyRagDoll then zeroes only the self-imposed part.
+                    bow_exit(&mut self.players[i], &mut self.entities, terrain!(self), self.tick, false);
+                    let slot = &mut self.players[i];
+                    slot.base.velocity = Vec2::ZERO;
+                    let position = slot.base.position;
+                    freeze_at(slot, position);
+                    self.players[index].magnet.held_position = position;
                 } else if self.players[i].active == ActiveAbility::Magnet {
                     // The held form's own MagnetGun.ExitAbility ungrounds it
                     // and hands over its body's position and velocities
@@ -32417,7 +32437,7 @@ impl RolloutWorld {
         let b = &mut self.players[index].bow;
         if b.has_fired && animates {
             if b.fire_ticks_left == 0 {
-                bow_exit(&mut self.players[index], &mut self.entities, terrain!(self), self.tick);
+                bow_exit(&mut self.players[index], &mut self.entities, terrain!(self), self.tick, false);
                 return;
             }
             b.fire_ticks_left -= 1;
@@ -32616,7 +32636,7 @@ impl RolloutWorld {
             slot.bow.form_rotation = slot.bow.aim.perp_cw().normalized_angle();
         }
         if exit {
-            bow_exit(slot, &mut this.entities, terrain, this.tick);
+            bow_exit(slot, &mut this.entities, terrain, this.tick, true);
             // The first pass after a tunnel: Ability.UpdateSim's publish wins
             // the tie against ExitAbility's (Player.cs:311-322).
             if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == tick) {
@@ -44823,14 +44843,14 @@ fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radi
 
 /// Leaves the bow ability: a landing exit (BowTransform.cs:225-239) or the
 /// fire animation's end (BowTransform.cs:116-130).
-fn bow_exit(slot: &mut PlayerSlot, entities: &mut [CEntity], terrain: Terrain, tick: u32) {
+fn bow_exit(slot: &mut PlayerSlot, entities: &mut [CEntity], terrain: Terrain, tick: u32, landed: bool) {
     let platforms = terrain.platforms;
     // BowTransform and GunTransform exit facing their aim's side
     // (`isFacingRight = inputVector.x >= 0`).
     let aim = if slot.active == ActiveAbility::Bow { slot.bow.aim } else { slot.gun.aim };
     slot.facing_right = aim.x >= Fix::ZERO;
     slot.set_active_form(entities, ActiveAbility::None);
-    if slot.base.grounded {
+    if landed {
         // Landing exit (BowTransform.cs:225-239): the slime's
         // SyncPhysicsTo(AbilityExitInfo) (PlayerPhysics.cs:556-570)
         // re-derives its surface local from the exit position;
@@ -44854,7 +44874,8 @@ fn bow_exit(slot: &mut PlayerSlot, entities: &mut [CEntity], terrain: Terrain, t
         slot.reported_position = position;
         slot.exit_to_fall(terrain);
     } else {
-        // Animation-end exit (BowTransform.cs:116-130): UnGround
+        // ExitAbility (BowTransform.cs:116-130), which the animation end
+        // and a Magnet's grab call: UnGround
         // nudges the body off any retained ground and zeroes the
         // rotation; the slime then enters fall and immediately
         // raycasts for a landing (SlimeController.cs:251-259), its
