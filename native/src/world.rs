@@ -149,16 +149,6 @@ pub struct Player {
     /// `collider_rotation` can miss by a few Q32 units.
     #[serde(default)]
     pub collider_up: Vec2,
-    /// `Box.inverseExtents` of the Player-layer hurtbox as
-    /// `DPhysicsBox.Scale` has accumulated it. The setter rescales the
-    /// stored reciprocal by `(One / oldScale) * newScale`
-    /// (DPhysicsBox.cs:203-219) instead of rebuilding it from the authored
-    /// extents, and `SlimeController.UpdateSim` assigns `hurtBox.Scale`
-    /// every pass (SlimeController.cs:206), so even a constant scale walks
-    /// the value by raw units. Zero until the first assignment, which is
-    /// the standalone movement slice's unscaled case.
-    #[serde(skip, default)]
-    pub collider_inverse_extents: Vec2,
     /// `Vec2::angle(collider_rotation)`, kept so an unchanged rotation does
     /// not pay for the sine table again (zero until the first sync).
     #[serde(default)]
@@ -200,13 +190,10 @@ pub struct DashState {
     /// picks up the ray-corrected body on the next.
     #[serde(default)]
     pub exit_position: Vec2,
-    /// Dash's own PlayerPhysics radius and hurtbox inverse extents, which
-    /// follow the form's scale history rather than the slime's. Set before
-    /// every entry; zero extents mean the authored box at the body's scale.
+    /// Dash's own PlayerPhysics radius, which follows the form's scale
+    /// history rather than the slime's. Set before every entry.
     #[serde(default)]
     pub radius: Fix,
-    #[serde(default)]
-    pub inverse_extents: Vec2,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[repr(C)]
@@ -312,7 +299,7 @@ impl World {
             }
         }
         for player in &mut self.players {
-            player.sync_collider();
+            player.sync_collider(player.authored_inverse_extents());
             player.late_step(&self.platforms);
         }
         self.tick += 1;
@@ -976,19 +963,27 @@ impl Player {
     /// uses the same vector for both; keyboard players use W/A/S/D for motion
     /// and the joystick byte independently for ability aim.
     pub(crate) fn step_with_input(&mut self, action: Action, input: Vec2, terrain: Terrain) {
-        if self.step_unintegrated(action, input, terrain) {
+        let dash_inverse_extents = Some(self.authored_inverse_extents_of(true));
+        if self.step_unintegrated(action, input, terrain, dash_inverse_extents) {
             self.integrate();
         }
     }
-    /// `step_with_input` short of PlayerBody's integration.
-    pub(crate) fn step_unintegrated(&mut self, action: Action, input: Vec2, terrain: Terrain) -> bool {
+    /// `step_with_input` short of PlayerBody's integration. A Dash it enters
+    /// takes `dash_inverse_extents` for its box's inverseExtents.
+    pub(crate) fn step_unintegrated(
+        &mut self,
+        action: Action,
+        input: Vec2,
+        terrain: Terrain,
+        dash_inverse_extents: Option<Vec2>,
+    ) -> bool {
         self.begin_pass();
         if !self.dash.active {
             self.gravity_step(terrain);
             self.dash.radius = self.radius;
         }
         self.capture_pre_move(terrain.platforms);
-        self.move_unintegrated(action, input, terrain)
+        self.move_unintegrated(action, input, terrain, dash_inverse_extents)
     }
     /// Start of this body's updater pass, before PlayerPhysics.UpdateSim.
     /// `attach_upside_down` records whichever of this pass's two raycast
@@ -1015,14 +1010,28 @@ impl Player {
     /// SlimeController.UpdateSim after PlayerPhysics.UpdateSim has applied
     /// gravity: dash entry/continuation, jump, ground or air movement, then
     /// PlayerBody's integration.
-    pub(crate) fn move_step(&mut self, action: Action, input: Vec2, terrain: Terrain) {
-        if self.move_unintegrated(action, input, terrain) {
+    pub(crate) fn move_step(
+        &mut self,
+        action: Action,
+        input: Vec2,
+        terrain: Terrain,
+        dash_inverse_extents: Option<Vec2>,
+    ) {
+        if self.move_unintegrated(action, input, terrain, dash_inverse_extents) {
             self.integrate();
         }
     }
     /// `move_step` short of PlayerBody's integration. False when Dash took
     /// the pass or the body left the level, and there is nothing to integrate.
-    pub(crate) fn move_unintegrated(&mut self, action: Action, input: Vec2, terrain: Terrain) -> bool {
+    /// Only a caller that lets the dash button through can enter a Dash, and
+    /// it passes that box's inverseExtents.
+    pub(crate) fn move_unintegrated(
+        &mut self,
+        action: Action,
+        input: Vec2,
+        terrain: Terrain,
+        dash_inverse_extents: Option<Vec2>,
+    ) -> bool {
         let jump = action.buttons & 1 != 0;
         let cast = self.instant_cast_this_pass;
         if self.dash.active {
@@ -1032,7 +1041,8 @@ impl Player {
         }
         self.cooldown += DT;
         if action.buttons & 2 != 0 && self.cooldown > Fix::from_int(4) {
-            self.enter_dash(action, input, terrain);
+            let dash_inverse_extents = dash_inverse_extents.expect("a Dash entry with its box's inverseExtents");
+            self.enter_dash(action, input, terrain, dash_inverse_extents);
             self.previous_jump = jump;
             self.dash_step(action, terrain);
             return false;
@@ -1116,28 +1126,28 @@ impl Player {
         self.external_velocity += direction * Fix::from_raw(21_474_836) * Fix::from_int(35);
     }
     /// A DetPhysics sync of the hurtbox to the body.
-    pub(crate) fn sync_collider(&mut self) {
-        self.move_collider();
+    pub(crate) fn sync_collider(&mut self, inverse_extents: Vec2) {
+        self.move_collider(inverse_extents);
         self.synced = self.collider;
     }
-    /// Moves the exported box onto the body without DetPhysics seeing it
-    /// until its next sync.
-    pub(crate) fn move_collider(&mut self) {
-        // The Dash body is its own DPhysicsBox and its `OnScaleChanged` is
-        // empty (Dash.cs:70-72), so only the slime hurtbox carries the
-        // accumulated reciprocal.
-        let inv = if !self.dash.active && self.collider_inverse_extents != Vec2::ZERO {
-            self.collider_inverse_extents
-        } else if self.dash.active && self.dash.inverse_extents != Vec2::ZERO {
-            self.dash.inverse_extents
+    /// The standalone slice's hurtbox inverseExtents: the authored box, the
+    /// Dash body's while it dashes, at the body's scale.
+    pub(crate) fn authored_inverse_extents(&self) -> Vec2 {
+        self.authored_inverse_extents_of(self.dash.active)
+    }
+    fn authored_inverse_extents_of(&self, dash: bool) -> Vec2 {
+        let extents = if dash {
+            Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))
         } else {
-            let extents = if self.dash.active {
-                Vec2::new(Fix::from_raw(5_626_406_912), Fix::from_raw(4_359_391_744))
-            } else {
-                Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
-            } * self.scale;
-            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
-        };
+            Vec2::new(Fix::from_raw(5_712_306_688), Fix::from_raw(3_478_923_520))
+        } * self.scale;
+        Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
+    }
+    /// Moves the exported box onto the body without DetPhysics seeing it
+    /// until its next sync. `inv` is the inverseExtents of the box the body
+    /// currently has: the slime hurtbox's, or the Dash body's own while it
+    /// dashes (Dash.cs:70-72).
+    pub(crate) fn move_collider(&mut self, inv: Vec2) {
         if self.rotation() != self.collider_rotation || self.collider_basis == Vec2::ZERO {
             self.collider_basis = Vec2::angle(self.rotation());
             self.collider_rotation = self.rotation();

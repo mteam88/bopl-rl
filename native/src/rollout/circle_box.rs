@@ -50,11 +50,11 @@ impl RolloutWorld {
                 center: self.tesla_nodes[i].collider_center,
                 radius: self.tesla_nodes[i].radius,
             }),
-            Part::Engine(i) => Collider::Box(self.engines[i].rocket_box()),
+            Part::Engine(i) => Collider::Box(self.engines[i].rocket_box(&self.entity_inverse_extents)),
             Part::Spike(i) => {
-                Collider::Box(Self::spike_attack_box_in(&self.platform_dynamics, self.spike_attacks[i]))
+                Collider::Box(Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, self.spike_attacks[i]))
             }
-            Part::Missile(i) => Collider::Box(self.guided_missiles[i].collider()),
+            Part::Missile(i) => Collider::Box(self.guided_missiles[i].collider(&self.entity_inverse_extents)),
             Part::Rock(i) => Collider::Circle(Circle {
                 center: self.players[i].base.position,
                 radius: self.players[i].rock_circle().circle_radius,

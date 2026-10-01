@@ -2,7 +2,13 @@
 use super::*;
 
 impl Player {
-    pub(super) fn enter_dash(&mut self, action: Action, movement_input: Vec2, terrain: Terrain) {
+    pub(super) fn enter_dash(
+        &mut self,
+        action: Action,
+        movement_input: Vec2,
+        terrain: Terrain,
+        inverse_extents: Vec2,
+    ) {
         let platforms = terrain.platforms;
         let mut old = self.clone();
         // OldUpdate enters the ability, but SlimeController.UpdateSim still calls
@@ -21,7 +27,7 @@ impl Player {
         // readyDash ungrounds the body; DetPhysics moves it onto the body only
         // at its next sync.
         self.dash.active = true;
-        self.sync_collider();
+        self.sync_collider(inverse_extents);
         // readyDash's UnGround (Dash.cs:109).
         if self.grounded {
             self.dash.local = self.local;

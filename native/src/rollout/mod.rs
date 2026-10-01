@@ -228,6 +228,14 @@ fn sweep_rank(entities: &[CEntity], min: Fix, entity: Option<usize>) -> SweepRan
     (min, entities.get(entity).map_or(u32::MAX, |row| row.kind), entity)
 }
 
+/// Records the Box.inverseExtents of box row `entity` (Box.cs:30-41).
+fn set_inverse_extents(table: &mut Vec<Vec2>, entity: usize, value: Vec2) {
+    if table.len() <= entity {
+        table.resize(entity + 1, Vec2::ZERO);
+    }
+    table[entity] = value;
+}
+
 /// SortAndSweep reaches a pair at its later collider and walks the earlier ones
 /// in sort order, so pairs come out by the later rank, then the earlier
 /// (DetPhysics.cs:2169-2231).
@@ -838,10 +846,10 @@ pub struct GuidedMissile {
     pub body: Body,
     pub up: Vec2,
     pub scale: Fix,
-    /// The Spark DPhysicsBox's stored inverse extents. Box.Rotate rebuilds
-    /// right and up from them, and each Scale write divides them by
-    /// `(1 / old) * new`.
-    pub inverse_extents: Vec2,
+    /// The Spark DPhysicsBox's |One / startExtents|, which Init copies into
+    /// its row's inverseExtents. A Scale write before Init lands here
+    /// (DPhysicsBox.cs:212-214); later ones divide the row's.
+    pub start_inverse_extents: Vec2,
     pub instability_ticks: u32,
     /// The pass whose Updater turn Missile.UpdateSim has taken. A newer
     /// updater, such as a Shockwave, acts on the missile after its thrust.
@@ -856,14 +864,14 @@ pub struct GuidedMissile {
 }
 
 impl GuidedMissile {
-    fn collider(&self) -> OrientedBox {
-        let basis = Vec2::angle(self.body.orientation);
-        OrientedBox {
-            center: self.position,
-            right: (Vec2::RIGHT / self.inverse_extents.x).complex_mul(basis),
-            up: (Vec2::UP / self.inverse_extents.y).complex_mul(basis),
-            inverse_extents: self.inverse_extents,
-        }
+    /// The Spark box, rebuilt from the inverseExtents its row holds, or from
+    /// startExtents before Init.
+    fn collider(&self, table: &[Vec2]) -> OrientedBox {
+        let inverse_extents = match self.entity {
+            Some(entity) if self.registered => table[entity],
+            _ => self.start_inverse_extents,
+        };
+        stored_box(self.position, Vec2::angle(self.body.orientation), inverse_extents)
     }
 }
 
@@ -988,10 +996,6 @@ pub struct SpawnedSpike {
     /// FixTransform.offset. SetScale_DPhysicsOnly compounds each rescale as
     /// `offset *= new / old`.
     pub collider_offset: Vec2,
-    /// The box collider's inverseExtents. DPhysicsBox.Scale divides it by
-    /// `(1 / old) * new`, and Box.SetRotation rebuilds right/up from its
-    /// reciprocals, so it is not `1 / (extents * scale)`.
-    pub inverse_extents: Vec2,
     pub time: Fix,
     pub body: Body,
     /// SpikeAttack.pushedThisFrame: only the first knock of a pass also
@@ -1005,9 +1009,16 @@ pub struct SpawnedSpike {
 }
 
 impl SpawnedSpike {
+    /// The box collider's inverseExtents, which its row holds. DPhysicsBox.Scale
+    /// divides it by `(1 / old) * new`, so it is not `1 / (extents * scale)`.
+    fn inverse_extents(&self, table: &[Vec2]) -> Vec2 {
+        table[self.entity.expect("a registered spike")]
+    }
+
     /// Box.SetRotation's `Vec2.right / inverseExtents.x` and `up / .y`.
-    fn box_extents(&self) -> Vec2 {
-        Vec2::new(Fix::ONE / self.inverse_extents.x, Fix::ONE / self.inverse_extents.y)
+    fn box_extents(&self, table: &[Vec2]) -> Vec2 {
+        let inverse_extents = self.inverse_extents(table);
+        Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y)
     }
 }
 
@@ -1071,8 +1082,6 @@ pub struct SpawnedEngine {
     pub scale: Fix,
     /// FixTransform.offset, compounded like SpawnedSpike::collider_offset.
     pub collider_offset: Vec2,
-    /// The box collider's inverseExtents, as in SpawnedSpike.
-    pub inverse_extents: Vec2,
     /// RocketEngine.prevScale: component offsets adopt a DPhysics scale write
     /// on the following RocketEngine updater pass.
     pub offset_scale: Fix,
@@ -1090,20 +1099,26 @@ pub struct SpawnedEngine {
 }
 
 impl SpawnedEngine {
+    /// The box collider's inverseExtents, as in SpawnedSpike.
+    fn inverse_extents(&self, table: &[Vec2]) -> Vec2 {
+        table[self.entity.expect("a registered engine")]
+    }
+
     /// Box.SetRotation's `Vec2.right / inverseExtents.x` and `up / .y`.
-    fn box_extents(&self) -> Vec2 {
-        Vec2::new(Fix::ONE / self.inverse_extents.x, Fix::ONE / self.inverse_extents.y)
+    fn box_extents(&self, table: &[Vec2]) -> Vec2 {
+        let inverse_extents = self.inverse_extents(table);
+        Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y)
     }
 
     /// The rocket's box collider at its collider pose.
-    fn rocket_box(&self) -> OrientedBox {
+    fn rocket_box(&self, table: &[Vec2]) -> OrientedBox {
         let basis = Vec2::angle(self.collider_rotation);
-        let extents = self.box_extents();
+        let extents = self.box_extents(table);
         OrientedBox {
             center: self.collider_center,
             right: basis * extents.x,
             up: (Vec2::UP * extents.y).complex_mul(basis),
-            inverse_extents: self.inverse_extents,
+            inverse_extents: self.inverse_extents(table),
         }
     }
 }
@@ -1194,7 +1209,9 @@ pub struct SpawnedTeslaNode {
     pub line_center: Vec2,
     pub line_right: Vec2,
     pub line_up: Vec2,
-    pub line_inverse_extents: Vec2,
+    /// The lightning box's |One / startExtents| until Init copies it into its
+    /// row; SetExtents before Init only replaces startExtents.
+    pub line_start_inverse_extents: Vec2,
     pub line_rotation: Fix,
     pub flicker_time: Fix,
     pub flicker_ticks: u32,
@@ -1335,18 +1352,23 @@ struct ThrowConfig<'a> {
 
 /// HitboxCombo.UpdateHitBoxPositionsAndScale for the active Drill slot's
 /// boxes, at the pose `drill.hitbox_*` holds (HitboxCombo.cs:87-98).
-fn place_drill_hitbox_rows(entities: &mut [CEntity], slot: &PlayerSlot, data: &data::RolloutData) {
+fn place_drill_hitbox_rows(
+    entities: &mut [CEntity],
+    inverse_extents: &[Vec2],
+    slot: &PlayerSlot,
+    data: &data::RolloutData,
+) {
     for (hitbox_index, &entity) in slot.drill_hitbox_entities[slot.active_slot].iter().enumerate() {
         if entity == usize::MAX {
             continue;
         }
         let row = &mut entities[entity];
-        let (offset, extents) = data.drill.hitboxes[hitbox_index];
+        let (offset, _) = data.drill.hitboxes[hitbox_index];
         let basis = slot.drill.hitbox_up.perp_cw();
         let form = slot.drill_hitbox_scales[slot.active_slot][hitbox_index];
         let scale = if form.scale == Fix::ZERO { hurtbox_scale(slot.player_scale) } else { form.scale };
         let center = slot.drill.hitbox_position + (offset * scale).complex_mul(basis);
-        let collider = form.hurtbox(center, Vec2::angle(slot.drill.hitbox_rotation), extents * scale);
+        let collider = stored_box(center, Vec2::angle(slot.drill.hitbox_rotation), inverse_extents[entity]);
         row.x = center.x.raw();
         row.y = center.y.raw();
         row.right_x = collider.right.x.raw();
@@ -1815,14 +1837,13 @@ pub const PLATFORM_EXIT: u32 = 3;
 
 /// An ability form's box collider and PlayerPhysics follow Player.Scale on
 /// their own. Ability assigns the scale to the box every pass, which divides
-/// its inverse extents by the rounded `(One / old) * new`, and
+/// the inverse extents its row holds by the rounded `(One / old) * new`, and
 /// PlayerPhysics.UpdateScale multiplies the radius by `new / prevScal`. The
 /// form object outlives each use, so its drift carries over. A zero scale
 /// marks a form that has not been entered yet.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FormScale {
     pub scale: Fix,
-    pub inverse_extents: Vec2,
     pub radius: Fix,
     pub physics_scale: Fix,
     /// FixTransform.offset, which SetScale_DPhysicsOnly multiplies by
@@ -1850,16 +1871,13 @@ pub struct FormPose {
 impl FormScale {
     /// `potentialCollider.Scale = Player.Scale` (Ability.cs:105, 135). Every
     /// form prefab's box clamps it to MinScale (Fix)0.3f, above Player.Scale's
-    /// own (Fix)0.3 floor.
-    fn set_scale(&mut self, value: Fix, extents: Vec2, radius: Fix) {
+    /// own (Fix)0.3 floor. The setter divides the box's inverseExtents, which
+    /// its row's entry holds, right then (DPhysicsBox.cs:212-214).
+    fn set_scale(&mut self, value: Fix, radius: Fix, inverse_extents: &mut Vec2) {
         let value = hurtbox_scale(value);
         if self.scale == Fix::ZERO {
             *self = FormScale {
                 scale: Fix::ONE,
-                inverse_extents: Vec2::new(
-                    (Fix::ONE / extents.x).abs(),
-                    (Fix::ONE / extents.y).abs(),
-                ),
                 radius,
                 physics_scale: Fix::ONE,
                 pose: self.pose,
@@ -1867,16 +1885,16 @@ impl FormScale {
             };
         }
         let ratio = (Fix::ONE / self.scale) * value;
-        self.inverse_extents = self.inverse_extents / ratio;
+        *inverse_extents = *inverse_extents / ratio;
         self.scale = value;
     }
 
     /// `set_scale` for a box collider with an offset.
-    fn set_scale_offset(&mut self, value: Fix, extents: Vec2, radius: Fix, offset: Vec2) {
+    fn set_scale_offset(&mut self, value: Fix, radius: Fix, offset: Vec2, inverse_extents: &mut Vec2) {
         let value = hurtbox_scale(value);
         let fresh = self.scale == Fix::ZERO;
         let old = if fresh { Fix::ONE } else { self.scale };
-        self.set_scale(value, extents, radius);
+        self.set_scale(value, radius, inverse_extents);
         if fresh {
             self.offset = offset;
         }
@@ -1962,17 +1980,16 @@ impl FormScale {
         self.radius
     }
 
-    /// Box.SetRotation from the stored inverse extents.
-    fn hurtbox(&self, center: Vec2, basis: Vec2, extents: Vec2) -> OrientedBox {
-        if self.scale == Fix::ZERO {
-            return OrientedBox::from_basis(center, basis, extents);
-        }
-        OrientedBox {
-            center,
-            right: (Vec2::RIGHT / self.inverse_extents.x).complex_mul(basis),
-            up: (Vec2::UP / self.inverse_extents.y).complex_mul(basis),
-            inverse_extents: self.inverse_extents,
-        }
+}
+
+/// Box.SetRotation: a box's axes rebuilt from the inverseExtents it stores
+/// (Box.cs:30-35).
+fn stored_box(center: Vec2, basis: Vec2, inverse_extents: Vec2) -> OrientedBox {
+    OrientedBox {
+        center,
+        right: (Vec2::RIGHT / inverse_extents.x).complex_mul(basis),
+        up: (Vec2::UP / inverse_extents.y).complex_mul(basis),
+        inverse_extents,
     }
 }
 
@@ -3037,6 +3054,18 @@ impl UngroundBody<'_> {
 }
 
 impl AbilitylessClone {
+    /// The inverseExtents of the clone's hurtbox, as its row holds them, or
+    /// |One / startExtents| before Init.
+    fn hurtbox_inverse_extents(&self, table: &[Vec2]) -> Vec2 {
+        match self.entity {
+            Some(entity) => table[entity],
+            None => {
+                let extents = data::get().player.hurtbox_extents;
+                Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
+            }
+        }
+    }
+
     /// PlayerPhysics.DropPlatformTest closing a grounded Move: a platform
     /// dropping its riders ungrounds the clone and pushes it off along the
     /// normal (PlayerPhysics.cs:285-301).
@@ -3187,7 +3216,6 @@ pub struct PlayerSlot {
     /// old-to-new scale ratio. Keeping that representation reproduces the
     /// few-raw-unit drift that an absolute authored_extents * scale loses.
     pub body_collider_scale: Fix,
-    pub body_inverse_extents: Vec2,
     /// Each ability slot's form object.
     pub forms: [FormScale; 3],
     /// Player.isInvisible and its two clocks. `was_invisible` belongs to the
@@ -3534,16 +3562,17 @@ fn rock_scale_bounds() -> (Fix, Fix) {
 impl PlayerSlot {
     /// HitboxCombo.UpdateHitBoxPositionsAndScale: the boxes take the Drill's
     /// pose, and its Scale only when it differs (HitboxCombo.cs:87-98).
-    fn update_drill_hitboxes(&mut self, data: &data::RolloutData) {
+    fn update_drill_hitboxes(&mut self, inverse_extents: &mut [Vec2]) {
         self.drill.hitbox_position = self.base.position;
         self.drill.hitbox_up = self.base.up();
         self.drill.hitbox_rotation = self.base.rotation();
         let scale = hurtbox_scale(self.player_scale);
-        for (form, &(_, extents)) in
-            self.drill_hitbox_scales[self.active_slot].iter_mut().zip(&data.drill.hitboxes)
+        for (form, &entity) in self.drill_hitbox_scales[self.active_slot]
+            .iter_mut()
+            .zip(&self.drill_hitbox_entities[self.active_slot])
         {
             if form.scale != scale {
-                form.set_scale(scale, extents, Fix::ZERO);
+                form.set_scale(scale, Fix::ZERO, &mut inverse_extents[entity]);
             }
         }
     }
@@ -3607,9 +3636,10 @@ impl PlayerSlot {
         Some(multiplier)
     }
 
-    fn scale_form(&mut self, extents: Vec2, radius: Fix, offset: Vec2) {
+    fn scale_form(&mut self, radius: Fix, offset: Vec2, inverse_extents: &mut [Vec2]) {
         let scale = hurtbox_scale(self.player_scale);
-        self.forms[self.active_slot].set_scale_offset(scale, extents, radius, offset);
+        let entity = self.form_entities[self.active_slot];
+        self.forms[self.active_slot].set_scale_offset(scale, radius, offset, &mut inverse_extents[entity]);
     }
 
     /// FixTransform.offset of slot `s`'s gun form box: as its last Scale set
@@ -3621,6 +3651,12 @@ impl PlayerSlot {
 
     /// FixTransform.Scale of the player's enabled collider: the slime's
     /// hurtbox, or the active form prefab's box once Ability has scaled it.
+    /// The inverseExtents of the box the slime's body has: its hurtbox's, or
+    /// the Dash body's own while it dashes, as their rows hold them.
+    fn hurtbox_inverse_extents(&self, table: &[Vec2]) -> Vec2 {
+        table[if self.base.dash.active { self.dash_entity } else { self.body_entity }]
+    }
+
     fn collider_scale(&self) -> Fix {
         let form = &self.forms[self.active_slot];
         if self.active == ActiveAbility::None || form.scale == Fix::ZERO {
@@ -3966,14 +4002,14 @@ impl PlayerSlot {
         self.scale_form_circle(data.time_stop.hurtbox_radius, data.time_stop.collider_offset);
     }
 
-    fn set_ordinary_body_scale(&mut self, scale: Fix) {
+    fn set_ordinary_body_scale(&mut self, scale: Fix, inverse_extents: &mut [Vec2]) {
         let scale = hurtbox_scale(scale);
         // SlimeController assigns hurtBox.Scale every pass even when the
         // value is unchanged. Q32 `(One / old) * new` is not necessarily one,
-        // so the collider's stored inverse extents keep drifting by raw units.
+        // so the collider's stored inverse extents keep drifting by raw units
+        // (SlimeController.cs:206, DPhysicsBox.cs:212-214).
         let ratio = (Fix::ONE / self.body_collider_scale) * scale;
-        self.body_inverse_extents = self.body_inverse_extents / ratio;
-        self.base.collider_inverse_extents = self.body_inverse_extents;
+        inverse_extents[self.body_entity] = inverse_extents[self.body_entity] / ratio;
         self.body_collider_scale = scale;
         self.base.scale = scale;
     }
@@ -4535,6 +4571,11 @@ pub struct RolloutWorld {
     pub queued_spawns: Vec<(u32, BoundsEffect)>,
     // Observation buffers. `entities`/`slimes` back the pointers in `state`.
     pub entities: Vec<CEntity>,
+    /// Box.inverseExtents for each box row, and for each rounded-rect row's
+    /// inner box: the reciprocal of the extents DetPhysics registered it with,
+    /// divided by every Scale since and never rebuilt from its axes
+    /// (Box.cs:30-41, DPhysicsBox.cs:212-214, DPhysicsRoundedRect.cs:129).
+    pub entity_inverse_extents: Vec<Vec2>,
     pub slimes: Vec<CSlime>,
     pub state: Box<CState>,
     /// Emitted rows (the fixed table minus `E_REMOVED` entries).
@@ -4669,6 +4710,7 @@ impl RolloutWorld {
             next_spawn_hierarchy: 0,
             queued_spawns: Vec::new(),
             entities: Vec::with_capacity(192),
+            entity_inverse_extents: Vec::with_capacity(192),
             slimes: Vec::with_capacity(MAX_PLAYERS * 17),
             state: empty_state(),
             state_entities: Vec::with_capacity(192),
@@ -4786,6 +4828,7 @@ impl RolloutWorld {
         self.last_observed_id = src.last_observed_id;
         self.next_spawn_hierarchy = src.next_spawn_hierarchy;
         self.entities.clone_from(&src.entities);
+        self.entity_inverse_extents.clone_from(&src.entity_inverse_extents);
         self.state_entities.clone_from(&src.state_entities);
         self.slimes.clone_from(&src.slimes);
         *self.state = *src.state;
@@ -4889,6 +4932,7 @@ impl RolloutWorld {
             next_spawn_hierarchy: _,
             queued_spawns: _,
             entities: _,
+            entity_inverse_extents: _,
             slimes: _,
             state: _,
             state_entities: _,
@@ -5017,6 +5061,7 @@ impl RolloutWorld {
         self.platform_defs.clear();
         self.platform_entities.clear();
         self.entities.clear();
+        self.entity_inverse_extents.clear();
         self.slimes.clear();
 
         let def = &data.maps[map];
@@ -5186,6 +5231,11 @@ impl RolloutWorld {
             // DPhysicsBox's collider axes are `Vec2.right / inverseExtents.x`
             // (Box.SetRotation, Box.cs:33) with `inverseExtents = One / extents`,
             // the same round trip as the platform perimeters.
+            set_inverse_extents(
+                &mut self.entity_inverse_extents,
+                self.entities.len(),
+                Vec2::new(Fix::ONE / water_extents.x, Fix::ONE / water_extents.y),
+            );
             let water_extents = data::surface_extents(water_extents);
             self.entities.push(CEntity {
                 id: water_id,
@@ -5204,7 +5254,7 @@ impl RolloutWorld {
         }
         for i in 0..players {
             for s in 0..=slots {
-                let (extents, hierarchy, target, body) = if s == 0 {
+                let (authored, hierarchy, target, body) = if s == 0 {
                     (
                         data.player.hurtbox_extents,
                         100_000_000 + player_hierarchy[i] + 6,
@@ -5215,31 +5265,31 @@ impl RolloutWorld {
                     let slot_index = s - 1;
                     match resolved_abilities[i][slot_index] {
                         ABILITY_DASH => (
-                            data::surface_extents(data.dash.hurtbox_extents),
+                            data.dash.hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut dash_entity[i][slot_index],
                             false,
                         ),
                         ABILITY_BOW => (
-                            data::surface_extents(data.bow.hurtbox_extents),
+                            data.bow.hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut bow_entity[i],
                             false,
                         ),
                         ABILITY_MISSILE => (
-                            data::surface_extents(data.missile.hurtbox_extents),
+                            data.missile.hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut throw_entity[i][slot_index],
                             false,
                         ),
                         ABILITY_MINE => (
-                            data::surface_extents(data.mine.hurtbox_extents),
+                            data.mine.hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 7,
                             &mut mine_entity[i],
                             false,
                         ),
                         ABILITY_PUSH => (
-                            data::surface_extents(data.push.hurtbox_extents),
+                            data.push.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.push.collider_hierarchy,
@@ -5247,7 +5297,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_FREEZE => (
-                            data::surface_extents(data.freeze.hurtbox_extents),
+                            data.freeze.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.freeze.collider_hierarchy,
@@ -5255,7 +5305,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_BLINK => (
-                            data::surface_extents(data.blink.hurtbox_extents),
+                            data.blink.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.blink.collider_hierarchy,
@@ -5265,7 +5315,7 @@ impl RolloutWorld {
                         ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
                             let ray = scale_ray_data(data, ability);
                             (
-                                data::surface_extents(ray.hurtbox_extents),
+                                ray.hurtbox_extents,
                                 100_000_000
                                     + ability_hierarchy[i][slot_index]
                                     + ray.collider_hierarchy,
@@ -5278,7 +5328,7 @@ impl RolloutWorld {
                             )
                         }
                         ABILITY_DUPLICATOR => (
-                            data::surface_extents(data.duplicator.hurtbox_extents),
+                            data.duplicator.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.duplicator.collider_hierarchy,
@@ -5286,7 +5336,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_MAGNET => (
-                            data::surface_extents(data.magnet.hurtbox_extents),
+                            data.magnet.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.magnet.collider_hierarchy,
@@ -5295,7 +5345,7 @@ impl RolloutWorld {
                         ),
                         ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK
                         | ABILITY_MJOLNIR | ABILITY_POKE_BALL) => (
-                            data::surface_extents(throw_config(data, ability).hurtbox_extents),
+                            throw_config(data, ability).hurtbox_extents,
                             100_000_000 + ability_hierarchy[i][slot_index] + 8,
                             &mut throw_entity[i][slot_index],
                             false,
@@ -5309,7 +5359,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_ENGINE => (
-                            data::surface_extents(data.engine.hurtbox_extents),
+                            data.engine.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.engine.collider_hierarchy,
@@ -5317,7 +5367,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_TESLA => (
-                            data::surface_extents(data.tesla.hurtbox_extents),
+                            data.tesla.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.tesla.collider_hierarchy,
@@ -5325,7 +5375,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_METEOR => (
-                            data::surface_extents(data.meteor.hurtbox_extents),
+                            data.meteor.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.meteor.collider_hierarchy,
@@ -5341,7 +5391,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_THROW => (
-                            data::surface_extents(data.macho_throw.hurtbox_extents),
+                            data.macho_throw.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.macho_throw.collider_hierarchy,
@@ -5349,7 +5399,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_DRILL => (
-                            data::surface_extents(data.drill.hurtbox_extents),
+                            data.drill.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.drill.collider_hierarchy,
@@ -5357,7 +5407,7 @@ impl RolloutWorld {
                             false,
                         ),
                         ABILITY_BEAM => (
-                            data::surface_extents(data.beam.hurtbox_extents),
+                            data.beam.hurtbox_extents,
                             100_000_000
                                 + ability_hierarchy[i][slot_index]
                                 + data.beam.collider_hierarchy,
@@ -5366,6 +5416,16 @@ impl RolloutWorld {
                         ),
                         _ => continue,
                     }
+                };
+                // The rows a form box starts on are its SetRotation'd axes,
+                // `Vec2.right / inverseExtents.x` (Box.cs:33), all but the
+                // body's, Spike's and Black Hole's.
+                let extents = if body
+                    || matches!(resolved_abilities[i][s - 1], ABILITY_SPIKE | ABILITY_BLACK_HOLE)
+                {
+                    authored
+                } else {
+                    data::surface_extents(authored)
                 };
                 *target = self.entities.len();
                 if !body {
@@ -5498,6 +5558,11 @@ impl RolloutWorld {
                     inverse_mass: -(1 << 32),
                     ..CEntity::default()
                 });
+                set_inverse_extents(
+                    &mut self.entity_inverse_extents,
+                    *target,
+                    Vec2::new((Fix::ONE / authored.x).abs(), (Fix::ONE / authored.y).abs()),
+                );
             }
         }
         self.next_platform_id = 100;
@@ -5690,7 +5755,6 @@ impl RolloutWorld {
                     },
                     collider_rotation: Fix::ZERO,
                     collider_up: Vec2::UP,
-                    collider_inverse_extents: Vec2::ZERO,
                     collider_basis: Vec2::ZERO,
                     aligned: None,
                     input_normalized: None,
@@ -5740,10 +5804,6 @@ impl RolloutWorld {
                 physics_scale: Fix::ONE,
                 slime_radius: data.player.radius,
                 body_collider_scale: Fix::ONE,
-                body_inverse_extents: Vec2::new(
-                    Fix::ONE / data.player.hurtbox_extents.x,
-                    Fix::ONE / data.player.hurtbox_extents.y,
-                ),
                 invisible: false,
                 invisible_time: Fix::ZERO,
                 was_invisible: false,
@@ -6436,14 +6496,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let row = self.entities[slot.body_entity];
-                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                let body = OrientedBox {
-                    center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                    right,
-                    up,
-                    inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
-                };
+                let body = Self::row_box(&self.entity_inverse_extents, slot.body_entity, row);
                 if crate::physics::contact::circle_box(circle, body).is_some() {
                     let (later, earlier) = sweep_pair(pickup_rank, self.player_sweep_rank(player_index));
                     hits.push((later, earlier, pickup_index, PickupTaker::Body(player_index)));
@@ -6791,50 +6844,50 @@ impl RolloutWorld {
 
         let box_data = match ability {
             ABILITY_DASH => Some((
-                data::surface_extents(data.dash.hurtbox_extents),
+                data.dash.hurtbox_extents,
                 Vec2::ZERO,
                 7,
                 0,
             )),
             ABILITY_BOW => Some((
-                data::surface_extents(data.bow.hurtbox_extents),
+                data.bow.hurtbox_extents,
                 Vec2::ZERO,
                 7,
                 1,
             )),
             ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
             | ABILITY_POKE_BALL) => Some((
-                data::surface_extents(throw_config(data, ability).hurtbox_extents),
+                throw_config(data, ability).hurtbox_extents,
                 Vec2::ZERO,
                 8,
                 2,
             )),
             ABILITY_MISSILE => Some((
-                data::surface_extents(data.missile.hurtbox_extents),
+                data.missile.hurtbox_extents,
                 Vec2::ZERO,
                 7,
                 2,
             )),
             ABILITY_MINE => Some((
-                data::surface_extents(data.mine.hurtbox_extents),
+                data.mine.hurtbox_extents,
                 data.mine.collider_offset,
                 7,
                 3,
             )),
             ABILITY_PUSH => Some((
-                data::surface_extents(data.push.hurtbox_extents),
+                data.push.hurtbox_extents,
                 data.push.collider_offset,
                 data.push.collider_hierarchy,
                 4,
             )),
             ABILITY_FREEZE => Some((
-                data::surface_extents(data.freeze.hurtbox_extents),
+                data.freeze.hurtbox_extents,
                 data.freeze.collider_offset,
                 data.freeze.collider_hierarchy,
                 5,
             )),
             ABILITY_BLINK => Some((
-                data::surface_extents(data.blink.hurtbox_extents),
+                data.blink.hurtbox_extents,
                 data.blink.collider_offset,
                 data.blink.collider_hierarchy,
                 6,
@@ -6842,20 +6895,20 @@ impl RolloutWorld {
             ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
                 let ray = scale_ray_data(data, ability);
                 Some((
-                    data::surface_extents(ray.hurtbox_extents),
+                    ray.hurtbox_extents,
                     ray.collider_offset,
                     ray.collider_hierarchy,
                     if ability == ABILITY_GROWTH_RAY { 7 } else { 8 },
                 ))
             }
             ABILITY_DUPLICATOR => Some((
-                data::surface_extents(data.duplicator.hurtbox_extents),
+                data.duplicator.hurtbox_extents,
                 data.duplicator.collider_offset,
                 data.duplicator.collider_hierarchy,
                 17,
             )),
             ABILITY_MAGNET => Some((
-                data::surface_extents(data.magnet.hurtbox_extents),
+                data.magnet.hurtbox_extents,
                 data.magnet.collider_offset,
                 data.magnet.collider_hierarchy,
                 18,
@@ -6867,19 +6920,19 @@ impl RolloutWorld {
                 9,
             )),
             ABILITY_ENGINE => Some((
-                data::surface_extents(data.engine.hurtbox_extents),
+                data.engine.hurtbox_extents,
                 data.engine.collider_offset,
                 data.engine.collider_hierarchy,
                 10,
             )),
             ABILITY_TESLA => Some((
-                data::surface_extents(data.tesla.hurtbox_extents),
+                data.tesla.hurtbox_extents,
                 data.tesla.collider_offset,
                 data.tesla.collider_hierarchy,
                 11,
             )),
             ABILITY_METEOR => Some((
-                data::surface_extents(data.meteor.hurtbox_extents),
+                data.meteor.hurtbox_extents,
                 data.meteor.collider_offset,
                 data.meteor.collider_hierarchy,
                 12,
@@ -6891,28 +6944,40 @@ impl RolloutWorld {
                 13,
             )),
             ABILITY_THROW => Some((
-                data::surface_extents(data.macho_throw.hurtbox_extents),
+                data.macho_throw.hurtbox_extents,
                 data.macho_throw.collider_offset,
                 data.macho_throw.collider_hierarchy,
                 14,
             )),
             ABILITY_DRILL => Some((
-                data::surface_extents(data.drill.hurtbox_extents),
+                data.drill.hurtbox_extents,
                 data.drill.collider_offset,
                 data.drill.collider_hierarchy,
                 15,
             )),
             ABILITY_BEAM => Some((
-                data::surface_extents(data.beam.hurtbox_extents),
+                data.beam.hurtbox_extents,
                 data.beam.collider_offset,
                 data.beam.collider_hierarchy,
                 16,
             )),
             _ => None,
         };
-        let (extents, offset, relative_hierarchy, target) = box_data?;
+        let (authored, offset, relative_hierarchy, target) = box_data?;
+        // SetRotation'd axes, `Vec2.right / inverseExtents.x` (Box.cs:33), for
+        // all but Spike's and Black Hole's.
+        let extents = if matches!(ability, ABILITY_SPIKE | ABILITY_BLACK_HOLE) {
+            authored
+        } else {
+            data::surface_extents(authored)
+        };
         let id = self.next_id();
         let entity = self.entities.len();
+        set_inverse_extents(
+            &mut self.entity_inverse_extents,
+            entity,
+            Vec2::new((Fix::ONE / authored.x).abs(), (Fix::ONE / authored.y).abs()),
+        );
         self.entities.push(CEntity {
             id,
             kind: 1,
@@ -6984,7 +7049,7 @@ impl RolloutWorld {
         self.record_warmup_rewind(warmup_tick);
         for slot in &mut self.players {
             if slot.base.alive {
-                slot.base.sync_collider();
+                slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             }
         }
         self.platforms_tick(data, DT);
@@ -7850,7 +7915,7 @@ impl RolloutWorld {
                 ) {
                     self.players[index].gun.collider_up = self.players[index].base.up();
                 }
-                self.players[index].base.sync_collider();
+                self.sync_hurtbox(index);
                 if self.players[index].active == ActiveAbility::Throw {
                     let (position, right, rotation, basis) = {
                         let base = &self.players[index].base;
@@ -7873,7 +7938,7 @@ impl RolloutWorld {
             {
                 // The stock clone's hurtbox stays registered while it waits and
                 // spawns, so SyncAll moves it to the point ReSpawnFast chose.
-                self.players[index].base.sync_collider();
+                self.sync_hurtbox(index);
             }
             if !frozen || self.scratch.frozen_turns & (1 << index) == 0 {
                 let input = action.input_direction(self.players[index].keyboard);
@@ -9768,10 +9833,10 @@ impl RolloutWorld {
         let throw = &slot.macho_throw;
         let form = &slot.forms[slot.active_slot];
         let offset = if form.scale == Fix::ZERO { data.macho_throw.collider_offset } else { form.offset };
-        form.hurtbox(
+        stored_box(
             throw.collider_position + throw.collider_right.complex_mul(offset),
             throw.collider_basis,
-            data::surface_extents(data.macho_throw.hurtbox_extents),
+            self.entity_inverse_extents[slot.macho_throw_entity],
         )
     }
 
@@ -10031,7 +10096,7 @@ impl RolloutWorld {
         }
         let slot = &mut self.players[index];
         let scale = slot.player_scale;
-        slot.set_ordinary_body_scale(scale);
+        slot.set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
         if slot.base.outside_bounds() {
             slot.base.alive = false;
             slot.base.out_of_bounds = true;
@@ -10214,7 +10279,7 @@ impl RolloutWorld {
             // A ragdoll's OldUpdate returns after its cooldown loop.
             self.players[index].slime_updated = true;
             let scale = self.players[index].player_scale;
-            self.players[index].set_ordinary_body_scale(scale);
+            self.players[index].set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
             return;
         }
         if self.players[index].rewind.rewinding {
@@ -10267,7 +10332,7 @@ impl RolloutWorld {
             // SlimeController still writes Player.Scale to its hurtbox before
             // Move (SlimeController.cs:1078), so a Growth or Shrink Ray lands.
             let scale = slot.player_scale;
-            slot.set_ordinary_body_scale(scale);
+            slot.set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
             slot.base.move_only(Vec2::ZERO, terrain!(self));
             // A landing inside Move retargets attachedGround, which the
             // arrival's UnGround lifts off (RewindRecorder.cs:358).
@@ -10553,7 +10618,8 @@ impl RolloutWorld {
                     let scale = hurtbox_scale(slot.player_scale);
                     if !data.abilities[ability as usize].instant {
                         let ratio = (Fix::ONE / slot.body_collider_scale) * scale;
-                        slot.body_inverse_extents = slot.body_inverse_extents / ratio;
+                        self.entity_inverse_extents[slot.body_entity] =
+                            self.entity_inverse_extents[slot.body_entity] / ratio;
                         slot.body_collider_scale = scale;
                     }
                     slot.ability_origin_scale = scale;
@@ -10698,14 +10764,13 @@ impl RolloutWorld {
                             // The slime stays active and writes Player.Scale
                             // to its hurtbox (SlimeController.cs:1078).
                             let scale = slot.player_scale;
-                            slot.set_ordinary_body_scale(scale);
+                            slot.set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
                             // EnterAbility returns from OldUpdate, but this
                             // already-running SlimeController pass still uses
                             // the input vector captured before Rewind set
                             // suppressInput. The slime stays out of form, so
                             // its hurtbox carries the scale written on entry
                             // (SlimeController.cs:1078).
-                            slot.base.collider_inverse_extents = slot.body_inverse_extents;
                             slot.base.scale = slot.body_collider_scale;
                             slot.base.move_only(movement_input, terrain!(self));
                             if slot.base.grounded {
@@ -10745,16 +10810,14 @@ impl RolloutWorld {
                         let slot = &mut self.players[index];
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
-                        form.set_scale(scale, data.dash.hurtbox_extents, data.player.radius);
+                        form.set_scale(scale, data.player.radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         slot.base.dash.radius = form.physics_radius();
-                        slot.base.dash.inverse_extents = form.inverse_extents;
                         // Dash.OnEnterAbility syncs its hitbox after SyncPhysicsTo
                         // (Dash.cs:94-95); readyDash then places the body itself.
                         let radius = slot.base.dash.radius;
                         let (position, up) = (self.player_info_pose(index, radius))
                             .unwrap_or((self.players[index].base.position, Vec2::UP));
-                        let extents = data.dash.hurtbox_extents;
-                        self.sync_form_entry(index, position, up, Vec2::ZERO, extents);
+                        self.sync_form_entry(index, position, up, Vec2::ZERO);
                         // Dash is registered after SlimeController in this
                         // prefab, so its freshly enabled UpdateSim runs later
                         // in the same pass. That performs anticipation setup
@@ -10780,11 +10843,7 @@ impl RolloutWorld {
                             let slot = &mut self.players[index];
                             let scale = slot.player_scale;
                             let form = &mut slot.forms[s];
-                            form.set_scale(
-                                scale,
-                                throw_config(data, ability).hurtbox_extents,
-                                data.player.radius,
-                            );
+                            form.set_scale(scale, data.player.radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                             form.physics_radius()
                         };
                         let slot = &mut self.players[index];
@@ -10799,8 +10858,7 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        let extents = throw_config(data, ability).hurtbox_extents;
-                        self.form_enter(index, form_radius, Vec2::ZERO, extents);
+                        self.form_enter(index, form_radius, Vec2::ZERO);
                         let slot = &mut self.players[index];
                         let grounded = slot.base.grounded;
                         slot.throw_item = ThrowItemState {
@@ -10825,11 +10883,7 @@ impl RolloutWorld {
                             let slot = &mut self.players[index];
                             let scale = slot.player_scale;
                             let form = &mut slot.forms[s];
-                            form.set_scale(
-                                scale,
-                                data.missile.hurtbox_extents,
-                                data.missile.physics_radius,
-                            );
+                            form.set_scale(scale, data.missile.physics_radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                             form.physics_radius()
                         };
                         self.enter_form_flags(index);
@@ -10842,11 +10896,7 @@ impl RolloutWorld {
                         // The form's Ability.UpdateSim assigns Player.Scale
                         // again on the entry pass.
                         let scale = slot.player_scale;
-                        slot.forms[s].set_scale(
-                            scale,
-                            data.missile.hurtbox_extents,
-                            data.missile.physics_radius,
-                        );
+                        slot.forms[s].set_scale(scale, data.missile.physics_radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         // SparkShot.OnEnterAbility syncs the hurtbox after
                         // SyncPhysicsTo, then restores PlayerInfo's rotation
                         // (SparkShot.cs:6-8).
@@ -10858,10 +10908,10 @@ impl RolloutWorld {
                             collider_rotation: entry_rotation,
                             ..MissileFormState::default()
                         };
-                        let collider = slot.forms[s].hurtbox(
+                        let collider = stored_box(
                             slot.base.position,
                             Vec2::angle(entry_rotation),
-                            data.missile.hurtbox_extents,
+                            self.entity_inverse_extents[slot.form_entities[s]],
                         );
                         let collider = DetCollider::Box(collider);
                         Self::sync_form_row(&mut self.entities, slot.throw_entity, collider);
@@ -10976,7 +11026,7 @@ impl RolloutWorld {
                         // SparkShot.OnEnterAbility explicitly syncs its
                         // hurtbox, and DetPhysics sees the later PlayerBody
                         // position from this same updater pass.
-                        self.players[index].base.sync_collider();
+                        self.sync_hurtbox(index);
                         return;
                     }
                     ABILITY_PUSH => {
@@ -10994,18 +11044,12 @@ impl RolloutWorld {
                         // later in this updater pass.
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
-                        form.set_scale_offset(
-                            scale,
-                            data.push.hurtbox_extents,
-                            data.push.radius,
-                            data.push.collider_offset,
-                        );
+                        form.set_scale_offset(scale, data.push.radius, data.push.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         let (radius, offset) = (form.physics_radius(), form.offset);
-                        let extents = data::surface_extents(data.push.hurtbox_extents);
-                        self.form_enter(index, radius, offset, extents);
+                        self.form_enter(index, radius, offset);
                         // The box later updaters this pass (BlackHole) read.
                         let slot = &mut self.players[index];
-                        slot.base.sync_collider();
+                        slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
                         slot.base.collider.center =
                             slot.base.position + slot.base.up().perp_cw().complex_mul(offset);
                         slot.base.synced = slot.base.collider;
@@ -11197,8 +11241,7 @@ impl RolloutWorld {
                         slot.base.constants = data.meteor.constants.clone();
                         let form = slot.forms[s];
                         let offset = if form.scale == Fix::ZERO { data.meteor.collider_offset } else { form.offset };
-                        let extents = data::surface_extents(data.meteor.hurtbox_extents);
-                        self.form_enter(index, self.players[index].base.radius, offset, extents);
+                        self.form_enter(index, self.players[index].base.radius, offset);
                         // MeteorSmash.OnEnterAbility then stills and unrotates
                         // the body (MeteorSmash.cs:130-136).
                         let slot = &mut self.players[index];
@@ -11237,12 +11280,7 @@ impl RolloutWorld {
                             let slot = &mut self.players[index];
                             let scale = slot.player_scale;
                             let form = &mut slot.forms[s];
-                            form.set_scale_offset(
-                                scale,
-                                data.mine.hurtbox_extents,
-                                data.player.radius,
-                                data.mine.collider_offset,
-                            );
+                            form.set_scale_offset(scale, data.player.radius, data.mine.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                             form.physics_radius()
                         };
                         let slot = &mut self.players[index];
@@ -11254,8 +11292,7 @@ impl RolloutWorld {
                         let rotation = slot.base.rotation();
                         let form = slot.forms[s];
                         let offset = if form.scale == Fix::ZERO { data.mine.collider_offset } else { form.offset };
-                        let extents = data::surface_extents(data.mine.hurtbox_extents);
-                        self.form_enter(index, form_radius, offset, extents);
+                        self.form_enter(index, form_radius, offset);
                         // ThrowItem.OnEnterAbility then hands the body PlayerInfo's
                         // rotation (ThrowItem.cs:116-118).
                         let slot = &mut self.players[index];
@@ -11324,7 +11361,7 @@ impl RolloutWorld {
                         let slot = &mut self.players[index];
                         let radius = slot.forms[s].physics_radius();
                         let (position, offset) = (slot.base.position, slot.forms[s].offset);
-                        self.form_enter(index, radius, offset, data.spike.hurtbox_extents);
+                        self.form_enter(index, radius, offset);
                         self.players[index].base.position = position;
                         self.form_entry_turn(data, index);
                         // The entry pass's Ability.UpdateSim.
@@ -11359,7 +11396,7 @@ impl RolloutWorld {
                         // Ability.EnterAbility, then the entry pass's UpdateSim.
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
-                        self.plant_form_enter(index, data);
+                        self.plant_form_enter(index);
                         self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds takes its
                         // turn on the entry pass, ahead of the Move below.
@@ -11390,7 +11427,7 @@ impl RolloutWorld {
                         slot.sync_form_pose();
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
-                        self.plant_form_enter(index, data);
+                        self.plant_form_enter(index);
                         self.form_entry_turn(data, index);
                         if self.form_bounds_kill(index, data) {
                             return;
@@ -11434,7 +11471,6 @@ impl RolloutWorld {
                         };
                         self.gun_form_enter(
                             index,
-                            data.freeze.hurtbox_extents,
                             data.freeze.radius,
                             data.freeze.collider_offset,
                         );
@@ -11470,7 +11506,6 @@ impl RolloutWorld {
                         };
                         self.gun_form_enter(
                             index,
-                            data.blink.hurtbox_extents,
                             data.blink.radius,
                             data.blink.collider_offset,
                         );
@@ -11511,7 +11546,6 @@ impl RolloutWorld {
                         };
                         self.gun_form_enter(
                             index,
-                            ray.hurtbox_extents,
                             ray.radius,
                             ray.collider_offset,
                         );
@@ -11547,7 +11581,6 @@ impl RolloutWorld {
                         };
                         self.gun_form_enter(
                             index,
-                            data.duplicator.hurtbox_extents,
                             data.duplicator.radius,
                             data.duplicator.collider_offset,
                         );
@@ -11600,17 +11633,11 @@ impl RolloutWorld {
                         // the body with.
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
-                        form.set_scale_offset(
-                            scale,
-                            data::surface_extents(data.magnet.hurtbox_extents),
-                            data.magnet.radius,
-                            data.magnet.collider_offset,
-                        );
+                        form.set_scale_offset(scale, data.magnet.radius, data.magnet.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         let radius = form.physics_radius();
                         let offset = form.offset;
                         slot.base.constants = data.magnet.constants.clone();
-                        let extents = data::surface_extents(data.magnet.hurtbox_extents);
-                        self.form_enter(index, radius, offset, extents);
+                        self.form_enter(index, radius, offset);
                         self.aim_form_entry_tail(index);
                         // OnEnterAbility ends with `body.rotation = Fix.Zero`
                         // (MagnetGun.cs:325), and FixTransform's rotation
@@ -11644,13 +11671,13 @@ impl RolloutWorld {
                         // the body with.
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
-                        form.set_scale(scale, data.bow.hurtbox_extents, data.player.radius);
+                        form.set_scale(scale, data.player.radius, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         let radius = form.physics_radius();
-                        self.form_enter(index, radius, Vec2::ZERO, data.bow.hurtbox_extents);
+                        self.form_enter(index, radius, Vec2::ZERO);
                         // Later updaters this pass (BlackHole's pull) see the
                         // synced hurtbox.
                         let slot = &mut self.players[index];
-                        slot.base.sync_collider();
+                        slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
                         self.aim_form_entry_tail(index);
                         let slot = &mut self.players[index];
                         // Ability.UpdateSim publishes the body SyncPhysicsTo
@@ -11767,12 +11794,7 @@ impl RolloutWorld {
                         let slot = &mut self.players[index];
                         let scale = hurtbox_scale(slot.player_scale);
                         let form = &mut slot.forms[s];
-                        form.set_scale_offset(
-                            scale,
-                            data.black_hole.hurtbox_extents,
-                            data.black_hole.physics_radius,
-                            data.black_hole.collider_offset,
-                        );
+                        form.set_scale_offset(scale, data.black_hole.physics_radius, data.black_hole.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                         let radius = form.physics_radius();
                         let offset = form.offset;
                         slot.timers[s] = Fix::ZERO;
@@ -11788,7 +11810,7 @@ impl RolloutWorld {
                         // BlackHoleClap.OnEnterAbility syncs the box, then gives
                         // the body PlayerInfo's rotation back (BlackHoleClap.cs).
                         let entry = slot.base.rotation();
-                        self.form_enter(index, radius, offset, data.black_hole.hurtbox_extents);
+                        self.form_enter(index, radius, offset);
                         let slot = &mut self.players[index];
                         slot.base.set_rotation(entry);
                         if !grounded {
@@ -11808,11 +11830,7 @@ impl RolloutWorld {
                         // entry tick rather than surviving the cast.
                         // The form's Ability.UpdateSim assigns the scale again.
                         let slot = &mut self.players[index];
-                        slot.scale_form(
-                            data.black_hole.hurtbox_extents,
-                            data.black_hole.physics_radius,
-                            data.black_hole.collider_offset,
-                        );
+                        slot.scale_form(data.black_hole.physics_radius, data.black_hole.collider_offset, &mut self.entity_inverse_extents);
                         slot.base.radius = slot.forms[s].physics_radius();
                         self.form_entry_turn(data, index);
                         if self.ability_boundary_kill(index) {
@@ -11872,12 +11890,6 @@ impl RolloutWorld {
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Throw);
                         slot.active_slot = s;
-                        // A box never scaled still holds the inverseExtents of its
-                        // authored size; a scaled one keeps what its last Scale left.
-                        if slot.forms[s].scale == Fix::ZERO {
-                            let extents = data::surface_extents(data.macho_throw.hurtbox_extents);
-                            slot.forms[s].inverse_extents = Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
-                        }
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.macho_throw = MachoThrowState {
@@ -11935,22 +11947,18 @@ impl RolloutWorld {
                         slot.base.grounded_speed = Fix::ZERO;
                         // EnterAbility assigns Player.Scale to the box
                         // (Ability.cs:103-106) before OnEnterAbility syncs it.
-                        slot.scale_form(
-                            data::surface_extents(data.drill.hurtbox_extents),
-                            Fix::ZERO,
-                            data.drill.collider_offset,
-                        );
-                        let collider = slot.forms[s].hurtbox(
+                        slot.scale_form(Fix::ZERO, data.drill.collider_offset, &mut self.entity_inverse_extents);
+                        let collider = stored_box(
                             slot.base.position + slot.forms[s].offset.complex_mul(slot.base.up().perp_cw()),
                             right,
-                            data::surface_extents(data.drill.hurtbox_extents) * scale,
+                            self.entity_inverse_extents[slot.form_entities[s]],
                         );
                         Self::sync_form_row(&mut self.entities, slot.drill_entity, DetCollider::Box(collider));
                         // OnEnterAbility moves the hitbox combo to the entry
                         // pose and syncs it, so a form that dies this pass
                         // leaves its boxes there (Drill.cs:178-181).
-                        slot.update_drill_hitboxes(data);
-                        place_drill_hitbox_rows(&mut self.entities, &self.players[index], data);
+                        slot.update_drill_hitboxes(&mut self.entity_inverse_extents);
+                        place_drill_hitbox_rows(&mut self.entities, &self.entity_inverse_extents, &self.players[index], data);
                         self.form_entry_turn(data, index);
                         self.drill_tick(index, action, jump_pressed, data, false);
                         return;
@@ -11984,12 +11992,7 @@ impl RolloutWorld {
                             let slot = &mut self.players[index];
                             let scale = slot.player_scale;
                             let form = &mut slot.forms[s];
-                            form.set_scale_offset(
-                                scale,
-                                extents,
-                                data.beam.radius,
-                                data.beam.collider_offset,
-                            );
+                            form.set_scale_offset(scale, data.beam.radius, data.beam.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[s]]);
                             form.physics_radius()
                         };
                         // SyncPhysicsTo re-snaps a grounded body and aligns it
@@ -12022,9 +12025,9 @@ impl RolloutWorld {
                             slot.active_slot = s;
                             // Beam.OnEnterAbility's SetExtents stores One / extents outright
                             // (Beam.cs:222, 235; Box.cs:41).
-                            let form = &mut slot.forms[s];
-                            form.inverse_extents =
+                            self.entity_inverse_extents[slot.form_entities[s]] =
                                 Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y);
+                            let form = &mut slot.forms[s];
                             // The hurtbox syncs from the offset this slot's prefab
                             // was left with (Beam.cs:206) before OnEnterAbility
                             // sets this use's own (Beam.cs:221, 234).
@@ -12053,10 +12056,10 @@ impl RolloutWorld {
                                 ..BeamState::default()
                             };
                             let entry_rotation = if grounded { slot.base.rotation() } else { Fix::ZERO };
-                            let collider = slot.forms[s].hurtbox(
+                            let collider = stored_box(
                                 entry_center,
                                 Vec2::angle(entry_rotation),
-                                extents,
+                                self.entity_inverse_extents[slot.form_entities[s]],
                             );
                             Self::sync_form_row(&mut self.entities, slot.beam_entity, DetCollider::Box(collider));
                             slot.base.constants = data.beam.constants.clone();
@@ -12381,7 +12384,7 @@ impl RolloutWorld {
         } else {
             let integrate = self.players[index]
                 .base
-                .move_unintegrated(masked, movement_input, terrain!(self));
+                .move_unintegrated(masked, movement_input, terrain!(self), None);
             if grounded && self.playable(index) {
                 self.apply_platform_drop(index);
             }
@@ -12404,7 +12407,7 @@ impl RolloutWorld {
         // SlimeController writes Player.Scale to its hurtbox after OldUpdate;
         // PlayerPhysics observes this FixTransform scale on the next pass.
         let scale = self.players[index].player_scale;
-        self.players[index].set_ordinary_body_scale(scale);
+        self.players[index].set_ordinary_body_scale(scale, &mut self.entity_inverse_extents);
     }
 
     /// Roll.UpdateSim/OldUpdate. Ground travel is split exactly like the
@@ -12754,7 +12757,7 @@ impl RolloutWorld {
                 slot.base.velocity = Vec2::UP * data.meteor.hold_speed;
                 slot.base.external_velocity *= Fix::from_f64(0.8);
                 slot.base.external_velocity *= Fix::from_f64(0.95);
-                slot.base.sync_collider();
+                slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
                 slot.meteor.position = slot.base.position;
                 slot.meteor.velocity = slot.base.velocity;
                 slot.meteor.external_velocity = slot.base.external_velocity;
@@ -12768,7 +12771,7 @@ impl RolloutWorld {
                 if slot.meteor.dash_updates > data.meteor.fixed_updates_in_dash {
                     slot.base.position =
                         Vec2::new(slot.base.position.x, scene_water - Fix::from_int(20));
-                    slot.base.sync_collider();
+                    slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
                     slot.meteor.position = slot.base.position;
                 }
             }
@@ -12782,12 +12785,7 @@ impl RolloutWorld {
     fn scale_meteor_form(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale_offset(
-            slot.player_scale,
-            data::surface_extents(data.meteor.hurtbox_extents),
-            data.meteor.physics_radius,
-            data.meteor.collider_offset,
-        );
+        form.set_scale_offset(slot.player_scale, data.meteor.physics_radius, data.meteor.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
         slot.base.radius = form.physics_radius();
     }
 
@@ -12936,7 +12934,7 @@ impl RolloutWorld {
                     return;
                 }
                 self.form_body_step(index);
-                self.players[index].base.sync_collider();
+                self.sync_hurtbox(index);
             }
         }
         let slot = &mut self.players[index];
@@ -13096,7 +13094,7 @@ impl RolloutWorld {
             }
             self.form_body_step(index);
             let slot = &mut self.players[index];
-            slot.base.sync_collider();
+            slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             slot.meteor.position = slot.base.position;
             slot.meteor.velocity = slot.base.velocity;
             slot.meteor.external_velocity = slot.base.external_velocity;
@@ -13416,6 +13414,11 @@ impl RolloutWorld {
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.meteor.smear_updatable_count;
         let entity_index = self.entities.len();
+        set_inverse_extents(
+            &mut self.entity_inverse_extents,
+            entity_index,
+            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+        );
         let id = self.next_id();
         self.entities.push(CEntity {
             id,
@@ -13488,12 +13491,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         let scale = slot.player_scale;
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale_offset(
-            scale,
-            data.push.hurtbox_extents,
-            data.push.radius,
-            data.push.collider_offset,
-        );
+        form.set_scale_offset(scale, data.push.radius, data.push.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
         slot.base.radius = form.physics_radius();
         self.players[index].base.external_velocity *= Fix::from_f64(0.8);
         // ControlPlatform delegates to PlayerPhysics.Move(zero) before its
@@ -13949,7 +13947,7 @@ impl RolloutWorld {
         slot.reported_tick = tick;
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.constants = data::get().player.constants.clone();
-        slot.set_ordinary_body_scale(slot.player_scale);
+        slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
         slot.facing_right = info.facing_right;
         slot.base.grounded = info.grounded;
         slot.restore_slime_radius();
@@ -14001,7 +13999,7 @@ impl RolloutWorld {
             slot.enter_fall(terrain!(self));
         }
         // hurtBox.UpdatePhysicsPositions: later updaters this pass see the slime.
-        slot.base.sync_collider();
+        slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
     }
 
     fn gold_mushroom_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
@@ -14558,12 +14556,7 @@ impl RolloutWorld {
     /// prefab's first updatable, ahead of the SpriteAnimator that casts.
     fn scale_spike_form(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
-        slot.forms[slot.active_slot].set_scale_offset(
-            slot.player_scale,
-            data.spike.hurtbox_extents,
-            data.player.radius,
-            data.spike.collider_offset,
-        );
+        slot.forms[slot.active_slot].set_scale_offset(slot.player_scale, data.player.radius, data.spike.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
     }
 
     fn spike_form_move(&mut self, index: usize, published: Vec2, jump_pressed: bool) {
@@ -14627,35 +14620,25 @@ impl RolloutWorld {
     /// SpriteAnimator whose callbacks plant and exit.
     fn scale_plant_form(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
-        let (extents, offset) = if slot.active == ActiveAbility::Engine {
-            (data.engine.hurtbox_extents, data.engine.collider_offset)
+        let offset = if slot.active == ActiveAbility::Engine {
+            data.engine.collider_offset
         } else {
-            (data.tesla.hurtbox_extents, data.tesla.collider_offset)
+            data.tesla.collider_offset
         };
         let scale = slot.player_scale;
-        slot.forms[slot.active_slot].set_scale_offset(
-            scale,
-            data::surface_extents(extents),
-            data.player.radius,
-            offset,
-        );
+        slot.forms[slot.active_slot].set_scale_offset(scale, data.player.radius, offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
     }
 
     /// PlantObjectOnPlatform.OnEnterAbility (PlantObjectOnPlatform.cs:80-85):
     /// SyncPhysicsTo at the radius UpdateScale gives the form, the hitbox at
     /// that pose, then the body back at PlayerInfo's position.
-    fn plant_form_enter(&mut self, index: usize, data: &data::RolloutData) {
-        let extents = if self.players[index].active == ActiveAbility::Engine {
-            data.engine.hurtbox_extents
-        } else {
-            data.tesla.hurtbox_extents
-        };
+    fn plant_form_enter(&mut self, index: usize) {
         let slot = &mut self.players[index];
         let position = slot.base.position;
         let s = slot.active_slot;
         let radius = slot.forms[s].physics_radius();
         let offset = slot.forms[s].offset;
-        self.form_enter(index, radius, offset, data::surface_extents(extents));
+        self.form_enter(index, radius, offset);
         self.players[index].base.position = position;
     }
 
@@ -15152,6 +15135,7 @@ impl RolloutWorld {
         let collider_extents =
             Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity = self.entities.len();
+        set_inverse_extents(&mut self.entity_inverse_extents, entity, inverse_extents);
         let id = self.next_id();
         self.entities.push(CEntity {
             id,
@@ -15191,7 +15175,6 @@ impl RolloutWorld {
             surface_offset,
             scale,
             collider_offset,
-            inverse_extents,
             offset_scale: scale,
             time: Fix::ZERO,
             phase: 0,
@@ -15497,6 +15480,7 @@ impl RolloutWorld {
         let collider_extents =
             Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity_index = self.entities.len();
+        set_inverse_extents(&mut self.entity_inverse_extents, entity_index, inverse_extents);
         let id = self.next_id();
         self.entities.push(CEntity {
             id,
@@ -15535,7 +15519,6 @@ impl RolloutWorld {
             fixed_offset: data.spike.surface_offset,
             scale,
             collider_offset,
-            inverse_extents,
             time: Fix::ZERO,
             body: data.spike.attack_body,
             pushed_this_frame: false,
@@ -16035,6 +16018,7 @@ impl RolloutWorld {
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
         });
+        set_inverse_extents(&mut self.entity_inverse_extents, entity, node.line_start_inverse_extents);
         self.tesla_nodes[node_index].line_entity = Some(entity);
     }
 
@@ -16267,8 +16251,8 @@ impl RolloutWorld {
         // the box exists it keeps y as CalcExtents().y = One / inverseExtents.y,
         // which UpdateExtents inverts back, and the physics sync's
         // Box.SetRotation rebuilds both axes from the angle.
-        let height = if node.line_entity.is_some() {
-            Fix::ONE / node.line_inverse_extents.y
+        let height = if let Some(entity) = node.line_entity {
+            Fix::ONE / self.entity_inverse_extents[entity].y
         } else {
             data.tesla.lightning_extents.y
         };
@@ -16281,7 +16265,6 @@ impl RolloutWorld {
         node.line_center = line.center;
         node.line_right = line.right;
         node.line_up = line.up;
-        node.line_inverse_extents = line.inverse_extents;
         node.line_rotation = line_rotation;
         // The physics sync moves the box to this pose before the broadphase
         // averages every collider, the inactive line included, to pick its
@@ -16289,25 +16272,29 @@ impl RolloutWorld {
         if let Some(entity) = node.line_entity {
             self.entities[entity].x = line.center.x.raw();
             self.entities[entity].y = line.center.y.raw();
+            self.entity_inverse_extents[entity] = line.inverse_extents;
+        } else {
+            node.line_start_inverse_extents = line.inverse_extents;
         }
     }
 
     fn spike_attack_box(&self, spike: SpawnedSpike) -> OrientedBox {
-        Self::spike_attack_box_in(&self.platform_dynamics, spike)
+        Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, spike)
     }
 
     fn spike_attack_box_in(
         platform_dynamics: &[PlatformDynamics],
+        inverse_extents: &[Vec2],
         spike: SpawnedSpike,
     ) -> OrientedBox {
         let parent = &platform_dynamics[spike.platform_index];
         let basis = Vec2::angle(parent.body.orientation + spike.relative_rotation);
-        let extents = spike.box_extents();
+        let extents = spike.box_extents(inverse_extents);
         OrientedBox {
             center: spike.collider_center,
             right: basis * extents.x,
             up: (Vec2::UP * extents.y).complex_mul(basis),
-            inverse_extents: spike.inverse_extents,
+            inverse_extents: spike.inverse_extents(inverse_extents),
         }
     }
 
@@ -16413,19 +16400,7 @@ impl RolloutWorld {
                         attack_box,
                     )
                 } else {
-                    let player_box = OrientedBox {
-                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                        right: Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y)),
-                        up: Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)),
-                        inverse_extents: Vec2::new(
-                            Fix::ONE
-                                / Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y))
-                                    .length(),
-                            Fix::ONE
-                                / Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y))
-                                    .length(),
-                        ),
-                    };
+                    let player_box = Self::row_box(&self.entity_inverse_extents, entity, row);
                     swept_box_box(attack_box, hitbox_rank, player_box, self.player_sweep_rank(player_index))
                         .map(|(contact, _)| contact)
                 };
@@ -16500,7 +16475,7 @@ impl RolloutWorld {
                     center: node.line_center,
                     right: node.line_right,
                     up: node.line_up,
-                    inverse_extents: node.line_inverse_extents,
+                    inverse_extents: self.entity_inverse_extents[node.line_entity.expect("a registered lightning")],
                 })
             } else {
                 None
@@ -16605,7 +16580,7 @@ impl RolloutWorld {
                         }),
                     )
                 } else {
-                    let player_box = Self::row_box(row);
+                    let player_box = Self::row_box(&self.entity_inverse_extents, entity, row);
                     (
                         GROUP_CB,
                         paired && crate::physics::contact::circle_box(node_circle, player_box).is_some(),
@@ -16834,11 +16809,7 @@ impl RolloutWorld {
         // The animator (1) has not exited the form, so Ability (2) assigns
         // Player.Scale to the box and PlayerPhysics (4) UpdateScales the radius.
         let slot = &mut self.players[index];
-        slot.scale_form(
-            data.black_hole.hurtbox_extents,
-            data.black_hole.physics_radius,
-            data.black_hole.collider_offset,
-        );
+        slot.scale_form(data.black_hole.physics_radius, data.black_hole.collider_offset, &mut self.entity_inverse_extents);
         slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         // BlackHoleClap's DestroyIfOutsideSceneBounds runs before PlayerBody
         // integrates this pass; its ExitAbility publishes the attached
@@ -17541,10 +17512,7 @@ impl RolloutWorld {
                     let radius = Fix::from_raw(row.radius);
                     crate::physics::contact::circle_circle(circle, Circle { center, radius }).is_some()
                 } else {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    let inverse_extents = Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length());
-                    let body = OrientedBox { center, right, up, inverse_extents };
+                    let body = Self::row_box(&self.entity_inverse_extents, entity, row);
                     crate::physics::contact::circle_box(circle, body).is_some()
                 };
                 if !overlaps {
@@ -17831,7 +17799,7 @@ impl RolloutWorld {
         debug_assert_eq!(data.drill.hitboxes.len(), 3);
         let owner = self.players[index].base.id;
         let mut entities = [usize::MAX; 3];
-        for entity_slot in &mut entities {
+        for (entity_slot, &(_, extents)) in entities.iter_mut().zip(&data.drill.hitboxes) {
             let hierarchy_base = self.next_spawn_hierarchy;
             self.next_spawn_hierarchy += data.drill.hitbox_updatable_count;
             let entity = self.entities.len();
@@ -17847,6 +17815,11 @@ impl RolloutWorld {
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
             });
+            set_inverse_extents(
+                &mut self.entity_inverse_extents,
+                entity,
+                Vec2::new((Fix::ONE / extents.x).abs(), (Fix::ONE / extents.y).abs()),
+            );
             *entity_slot = entity;
         }
         self.players[index].drill_hitbox_entities[ability_slot] = entities;
@@ -17880,11 +17853,7 @@ impl RolloutWorld {
         // Ability.UpdateSim assigns Player.Scale to the box and publishes the
         // collider before SpriteAnimator, PlayerBody, and Drill advance this
         // prefab for the current pass (Ability.cs:120-136).
-        self.players[index].scale_form(
-            data::surface_extents(data.drill.hurtbox_extents),
-            Fix::ZERO,
-            data.drill.collider_offset,
-        );
+        self.players[index].scale_form(Fix::ZERO, data.drill.collider_offset, &mut self.entity_inverse_extents);
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
         self.players[index].drill.updated_tick = Some(self.tick);
@@ -18065,7 +18034,7 @@ impl RolloutWorld {
         self.players[index].drill.collider_position = self.players[index].base.position;
         self.players[index].drill.collider_up = self.players[index].base.up();
         self.players[index].drill.collider_rotation = self.players[index].base.rotation();
-        self.players[index].update_drill_hitboxes(data);
+        self.players[index].update_drill_hitboxes(&mut self.entity_inverse_extents);
     }
 
     /// Drill.exitAbility(useOffset) (Drill.cs:471-482): a packet holding only
@@ -18103,24 +18072,8 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                let hitbox_row = self.entities[hitbox_entity];
-                let hitbox_right = Vec2::new(
-                    Fix::from_raw(hitbox_row.right_x),
-                    Fix::from_raw(hitbox_row.right_y),
-                );
-                let hitbox_up = Vec2::new(
-                    Fix::from_raw(hitbox_row.up_x),
-                    Fix::from_raw(hitbox_row.up_y),
-                );
-                let hitbox = OrientedBox {
-                    center: Vec2::new(Fix::from_raw(hitbox_row.x), Fix::from_raw(hitbox_row.y)),
-                    right: hitbox_right,
-                    up: hitbox_up,
-                    inverse_extents: Vec2::new(
-                        Fix::ONE / hitbox_right.length(),
-                        Fix::ONE / hitbox_up.length(),
-                    ),
-                };
+                let hitbox =
+                    Self::row_box(&self.entity_inverse_extents, hitbox_entity, self.entities[hitbox_entity]);
                 for victim in 0..self.players.len() {
                     if victim == attacker || !self.hittable(victim) {
                         continue;
@@ -18184,7 +18137,7 @@ impl RolloutWorld {
                         )
                         .is_some()
                     } else {
-                        swept_box_box(hitbox, hitbox_rank, Self::row_box(row), row_rank).is_some()
+                        swept_box_box(hitbox, hitbox_rank, Self::row_box(&self.entity_inverse_extents, entity, row), row_rank).is_some()
                     };
                     if hit {
                         let group = if row.kind == 0 { GROUP_CB } else { GROUP_BB };
@@ -18421,7 +18374,7 @@ impl RolloutWorld {
         // after SpriteAnimator's callbacks (Beam.prefab component order).
         {
             let slot = &mut self.players[index];
-            slot.scale_form(data.beam.hurtbox_extents, data.beam.radius, data.beam.collider_offset);
+            slot.scale_form(data.beam.radius, data.beam.collider_offset, &mut self.entity_inverse_extents);
         }
         let mut exit_now = false;
         if advance_animation {
@@ -18920,78 +18873,13 @@ impl RolloutWorld {
         }
     }
 
-    /// A slime hurtbox row keeps the inverse extents its rescaling left, Q32
-    /// drift included, where the row itself only gives right and up. An active
-    /// form's box keeps the ones its own DPhysicsBox stored.
-    fn hurtbox_inverse_extents(
-        players: &[PlayerSlot],
-        clones: &[AbilitylessClone],
-        entity: usize,
-    ) -> Option<Vec2> {
-        players
-            .iter()
-            .flat_map(|slot| {
-                let form = (slot.active != ActiveAbility::None).then(|| {
-                    (Self::hurtbox_entity(slot), slot.forms[slot.active_slot].inverse_extents)
-                });
-                [(slot.body_entity, slot.base.collider.inverse_extents)].into_iter().chain(form)
-            })
-            .chain(clones.iter().filter_map(|clone| {
-                clone.entity.map(|e| (e, clone.base.collider.inverse_extents))
-            }))
-            .find(|&(owned, inverse_extents)| owned == entity && inverse_extents != Vec2::ZERO)
-            .map(|(_, inverse_extents)| inverse_extents)
-    }
-
-    /// The inverseExtents DetPhysics' Box holds for an entity: the reciprocal
-    /// of its authored extents, divided by every Scale since and never rebuilt
-    /// from its axes (Box.cs:30-41). None: a box this port keeps no extents for.
-    fn stored_inverse_extents(
-        players: &[PlayerSlot],
-        clones: &[AbilitylessClone],
-        spikes: &[SpawnedSpike],
-        engines: &[SpawnedEngine],
-        entity: usize,
-    ) -> Option<Vec2> {
-        Self::hurtbox_inverse_extents(players, clones, entity)
-            .or_else(|| {
-                players.iter().find_map(|slot| {
-                    let form_slot = slot.drill_hitbox_entities.iter().position(|boxes| boxes.contains(&entity))?;
-                    let hitbox = slot.drill_hitbox_entities[form_slot].iter().position(|&e| e == entity)?;
-                    let form = slot.drill_hitbox_scales[form_slot][hitbox];
-                    (form.scale != Fix::ZERO).then_some(form.inverse_extents)
-                })
-            })
-            .or_else(|| {
-                spikes
-                    .iter()
-                    .find(|spike| spike.active && spike.entity == Some(entity))
-                    .map(|spike| spike.inverse_extents)
-            })
-            .or_else(|| {
-                engines
-                    .iter()
-                    .find(|engine| engine.active && engine.entity == Some(entity))
-                    .map(|engine| engine.inverse_extents)
-            })
-    }
-
-    /// `stored_inverse_extents` for a row box, else its axes' rounded lengths.
-    fn box_inverse_extents(&self, entity: usize, right: Vec2, up: Vec2) -> Vec2 {
-        Self::stored_inverse_extents(&self.players, &self.abilityless_clones, &self.spike_attacks, &self.engines, entity)
-            .unwrap_or_else(|| Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()))
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn beam_raycast(
         platforms: &[Platform],
         swept: Option<&[RoundedRect]>,
         platform_entities: &[usize],
         entities: &[CEntity],
-        players: &[PlayerSlot],
-        clones: &[AbilitylessClone],
-        spikes: &[SpawnedSpike],
-        engines: &[SpawnedEngine],
+        inverse_extents: &[Vec2],
         origin: Vec2,
         direction: Vec2,
         maximum: Fix,
@@ -19046,9 +18934,8 @@ impl RolloutWorld {
                     // Box.inverseExtents is the reciprocal of the collider's
                     // own extents (DPhysicsBox.cs:358), not of a rotated
                     // right/up's rounded length.
-                    let inverse_extents = Self::stored_inverse_extents(players, clones, spikes, engines, entity)
-                        .unwrap_or_else(|| Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()));
-                    OrientedBox { center, right, up, inverse_extents }.raycast(origin, direction)
+                    OrientedBox { center, right, up, inverse_extents: inverse_extents[entity] }
+                        .raycast(origin, direction)
                 };
                 if let Some(hit) = hit
                     && hit.near < result.distance
@@ -19072,8 +18959,7 @@ impl RolloutWorld {
         .then_some(self.scratch.callback_colliders.as_slice());
         let platform_entities = &self.platform_entities;
         let entities = &self.entities;
-        let (players, clones) = (&self.players, &self.abilityless_clones);
-        let (spikes, engines) = (&self.spike_attacks, &self.engines);
+        let inverse_extents = &self.entity_inverse_extents;
         self.beam_graph.step_into(
             &self.beam_inputs,
             &mut |origin, direction, distance, mask| {
@@ -19082,10 +18968,7 @@ impl RolloutWorld {
                     swept,
                     platform_entities,
                     entities,
-                    players,
-                    clones,
-                    spikes,
-                    engines,
+                    inverse_extents,
                     origin,
                     direction,
                     distance,
@@ -19172,7 +19055,9 @@ impl RolloutWorld {
                 &data.beam.width_curve,
             );
             let collider = slot.hitbox.collider.expect("initialized BeamObject");
-            let row = &mut self.entities[slot.entity.expect("BeamObject entity")];
+            let entity = slot.entity.expect("BeamObject entity");
+            set_inverse_extents(&mut self.entity_inverse_extents, entity, collider.inverse_extents);
+            let row = &mut self.entities[entity];
             row.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
             row.x = collider.center.x.raw();
             row.y = collider.center.y.raw();
@@ -19450,7 +19335,7 @@ impl RolloutWorld {
                     )
                     .is_some()
                 } else {
-                    swept_box_box(hitbox, beam_rank, Self::row_box(row), target_rank).is_some()
+                    swept_box_box(hitbox, beam_rank, Self::row_box(&self.entity_inverse_extents, target, row), target_rank).is_some()
                 };
                 if overlap {
                     let (later, earlier) = sweep_pair(target_rank, beam_rank);
@@ -19804,7 +19689,9 @@ impl RolloutWorld {
         // RocketEngineInit's two `hitbox.Scale = scale` writes each divide the
         // inverse extents by `(1 / scale) * scale`; the offset keeps `s / s`.
         let unit = (Fix::ONE / engine.scale) * engine.scale;
-        engine.inverse_extents = engine.inverse_extents / unit / unit;
+        if let Some(entity) = engine.entity {
+            self.entity_inverse_extents[entity] = self.entity_inverse_extents[entity] / unit / unit;
+        }
         engine.time = Fix::ZERO;
         engine.phase = 0;
         engine.ticks = 0;
@@ -19949,7 +19836,8 @@ impl RolloutWorld {
         spike.surface_offset = surface_offset;
         spike.fixed_offset = fixed_offset;
         // Initialize's `hitbox.Scale = scale` divides by `(1 / scale) * scale`.
-        spike.inverse_extents = spike.inverse_extents / ((Fix::ONE / spike.scale) * spike.scale);
+        self.entity_inverse_extents[entity] =
+            self.entity_inverse_extents[entity] / ((Fix::ONE / spike.scale) * spike.scale);
         spike.body = child_body;
         self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_COMPOSITE;
         self.entities[entity].inverse_mass = child_body.inverse_mass.raw();
@@ -20272,12 +20160,7 @@ impl RolloutWorld {
     fn scale_macho_throw_form(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale_offset(
-            slot.player_scale,
-            data::surface_extents(data.macho_throw.hurtbox_extents),
-            data.macho_throw.physics_radius,
-            data.macho_throw.collider_offset,
-        );
+        form.set_scale_offset(slot.player_scale, data.macho_throw.physics_radius, data.macho_throw.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
         slot.base.scale = form.scale;
     }
 
@@ -20888,6 +20771,7 @@ impl RolloutWorld {
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
         };
+        set_inverse_extents(&mut self.entity_inverse_extents, entity, collider.inverse_extents);
         self.grenade_explosions[explosion_index].registered = true;
         for wave in data.grenade.explosion_shockwaves {
             self.apply_explosion_shockwave(explosion.position, wave);
@@ -21000,6 +20884,7 @@ impl RolloutWorld {
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
         };
+        set_inverse_extents(&mut self.entity_inverse_extents, entity, collider.inverse_extents);
         self.smoke_explosions[explosion_index].registered = true;
     }
 
@@ -21127,7 +21012,7 @@ impl RolloutWorld {
                 if !missile.active || !missile.registered {
                     continue;
                 }
-                let collider = missile.collider();
+                let collider = missile.collider(&self.entity_inverse_extents);
                 if crate::physics::contact::circle_box(query, collider).is_none() {
                     continue;
                 }
@@ -21244,19 +21129,9 @@ impl RolloutWorld {
                 )
                 .is_some()
             } else {
-                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
                 crate::physics::contact::circle_box(
                     query,
-                    OrientedBox {
-                        center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                        right,
-                        up,
-                        inverse_extents: Vec2::new(
-                            Fix::ONE / right.length(),
-                            Fix::ONE / up.length(),
-                        ),
-                    },
+                    Self::row_box(&self.entity_inverse_extents, entity, row),
                 )
                 .is_some()
             };
@@ -21593,15 +21468,12 @@ impl RolloutWorld {
                                     center,
                                     right,
                                     up,
-                                    inverse_extents: Vec2::new(
-                                        Fix::ONE / right.length(),
-                                        Fix::ONE / up.length(),
-                                    ),
+                                    inverse_extents: self.entity_inverse_extents[entity],
                                 },
                             )
                             .is_some()
                     }
-                    _ => Self::entity_rounded_rect(row)
+                    _ => Self::entity_rounded_rect(&self.entity_inverse_extents, entity, row)
                         .and_then(|rounded| crate::physics::contact::circle_rounded(query, rounded))
                         .is_some(),
                 };
@@ -21685,7 +21557,7 @@ impl RolloutWorld {
             self.players[player_index].teleported_from =
                 (self.tick, marker_hierarchy, self.players[player_index].base.position);
             self.players[player_index].base.position += shift;
-            self.players[player_index].base.sync_collider();
+            self.sync_hurtbox(player_index);
             // teleportObject hides a form but keeps its FixTransform, which
             // DetPhysics syncs to its box: the moved body, which UnGround
             // unrotated unless the form has no PlayerPhysics
@@ -21716,7 +21588,7 @@ impl RolloutWorld {
             clone.base.velocity = Vec2::ZERO;
             UngroundBody::Clone(clone).unground(&self.platforms, self.tick, true);
             clone.base.position += shift;
-            clone.base.sync_collider();
+            clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
             // UnGround lifted it before the move, so its row follows the body.
             self.entities[entity].x = clone.base.collider.center.x.raw();
             self.entities[entity].y = clone.base.collider.center.y.raw();
@@ -22070,6 +21942,12 @@ impl RolloutWorld {
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
         });
+        let body_extents = data.player.hurtbox_extents;
+        set_inverse_extents(
+            &mut self.entity_inverse_extents,
+            body_entity,
+            Vec2::new((Fix::ONE / body_extents.x).abs(), (Fix::ONE / body_extents.y).abs()),
+        );
         let mut dash_entities = [usize::MAX; 3];
         let mut bow_entity = usize::MAX;
         let mut throw_entities = [usize::MAX; 3];
@@ -22090,52 +21968,52 @@ impl RolloutWorld {
         let mut drill_entity = usize::MAX;
         let mut beam_entity = usize::MAX;
         for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
-            let (extents, relative_hierarchy, target) = match abilities[slot] {
+            let (authored, relative_hierarchy, target) = match abilities[slot] {
                 ABILITY_DASH => (
-                    data::surface_extents(data.dash.hurtbox_extents),
+                    data.dash.hurtbox_extents,
                     7,
                     &mut dash_entities[slot],
                 ),
                 ABILITY_BOW => (
-                    data::surface_extents(data.bow.hurtbox_extents),
+                    data.bow.hurtbox_extents,
                     7,
                     &mut bow_entity,
                 ),
                 ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
                 | ABILITY_POKE_BALL) => (
-                    data::surface_extents(throw_config(data, ability).hurtbox_extents),
+                    throw_config(data, ability).hurtbox_extents,
                     8,
                     &mut throw_entities[slot],
                 ),
                 ABILITY_MISSILE => (
-                    data::surface_extents(data.missile.hurtbox_extents),
+                    data.missile.hurtbox_extents,
                     7,
                     &mut throw_entities[slot],
                 ),
                 ABILITY_MINE => (
-                    data::surface_extents(data.mine.hurtbox_extents),
+                    data.mine.hurtbox_extents,
                     7,
                     &mut mine_entity,
                 ),
                 ABILITY_PUSH => (
-                    data::surface_extents(data.push.hurtbox_extents),
+                    data.push.hurtbox_extents,
                     data.push.collider_hierarchy,
                     &mut push_entity,
                 ),
                 ABILITY_FREEZE => (
-                    data::surface_extents(data.freeze.hurtbox_extents),
+                    data.freeze.hurtbox_extents,
                     data.freeze.collider_hierarchy,
                     &mut freeze_entities[slot],
                 ),
                 ABILITY_BLINK => (
-                    data::surface_extents(data.blink.hurtbox_extents),
+                    data.blink.hurtbox_extents,
                     data.blink.collider_hierarchy,
                     &mut blink_entity,
                 ),
                 ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
                     let ray = scale_ray_data(data, ability);
                     (
-                        data::surface_extents(ray.hurtbox_extents),
+                        ray.hurtbox_extents,
                         ray.collider_hierarchy,
                         if ability == ABILITY_GROWTH_RAY {
                             &mut growth_ray_entity
@@ -22145,12 +22023,12 @@ impl RolloutWorld {
                     )
                 }
                 ABILITY_DUPLICATOR => (
-                    data::surface_extents(data.duplicator.hurtbox_extents),
+                    data.duplicator.hurtbox_extents,
                     data.duplicator.collider_hierarchy,
                     &mut duplicator_entity,
                 ),
                 ABILITY_MAGNET => (
-                    data::surface_extents(data.magnet.hurtbox_extents),
+                    data.magnet.hurtbox_extents,
                     data.magnet.collider_hierarchy,
                     &mut magnet_entity,
                 ),
@@ -22160,17 +22038,17 @@ impl RolloutWorld {
                     &mut spike_entity,
                 ),
                 ABILITY_ENGINE => (
-                    data::surface_extents(data.engine.hurtbox_extents),
+                    data.engine.hurtbox_extents,
                     data.engine.collider_hierarchy,
                     &mut engine_entity,
                 ),
                 ABILITY_TESLA => (
-                    data::surface_extents(data.tesla.hurtbox_extents),
+                    data.tesla.hurtbox_extents,
                     data.tesla.collider_hierarchy,
                     &mut tesla_entity,
                 ),
                 ABILITY_METEOR => (
-                    data::surface_extents(data.meteor.hurtbox_extents),
+                    data.meteor.hurtbox_extents,
                     data.meteor.collider_hierarchy,
                     &mut meteor_entity,
                 ),
@@ -22180,21 +22058,28 @@ impl RolloutWorld {
                     &mut black_hole_entity,
                 ),
                 ABILITY_THROW => (
-                    data::surface_extents(data.macho_throw.hurtbox_extents),
+                    data.macho_throw.hurtbox_extents,
                     data.macho_throw.collider_hierarchy,
                     &mut macho_throw_entity,
                 ),
                 ABILITY_DRILL => (
-                    data::surface_extents(data.drill.hurtbox_extents),
+                    data.drill.hurtbox_extents,
                     data.drill.collider_hierarchy,
                     &mut drill_entity,
                 ),
                 ABILITY_BEAM => (
-                    data::surface_extents(data.beam.hurtbox_extents),
+                    data.beam.hurtbox_extents,
                     data.beam.collider_hierarchy,
                     &mut beam_entity,
                 ),
                 _ => continue,
+            };
+            // SetRotation'd axes, `Vec2.right / inverseExtents.x` (Box.cs:33),
+            // for all but Spike's and Black Hole's.
+            let extents = if matches!(abilities[slot], ABILITY_SPIKE | ABILITY_BLACK_HOLE) {
+                authored
+            } else {
+                data::surface_extents(authored)
             };
             let id = self.next_id();
             *target = self.entities.len();
@@ -22283,6 +22168,11 @@ impl RolloutWorld {
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
             });
+            set_inverse_extents(
+                &mut self.entity_inverse_extents,
+                *target,
+                Vec2::new((Fix::ONE / authored.x).abs(), (Fix::ONE / authored.y).abs()),
+            );
         }
         let slot = &mut self.players[index];
         for generation in &mut slot.ability_generation {
@@ -22316,15 +22206,14 @@ impl RolloutWorld {
         slot.base.skip_next_gravity = false;
         slot.physics_scale = Fix::ONE;
         slot.body_collider_scale = Fix::ONE;
-        slot.body_inverse_extents = Vec2::new(
+        self.entity_inverse_extents[slot.body_entity] = Vec2::new(
             Fix::ONE / data.player.hurtbox_extents.x,
             Fix::ONE / data.player.hurtbox_extents.y,
         );
         // The empty player prefab's box is unscaled until the clone's first
         // SlimeController.UpdateSim assigns Player.Scale (`respawn_tick`).
-        slot.base.collider_inverse_extents = slot.body_inverse_extents;
         slot.base.scale = Fix::ONE;
-        slot.base.sync_collider();
+        slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
         slot.reported_position = position;
         slot.reported_tick = self.tick;
         slot.obs_state = STATE_NOTHING;
@@ -22585,6 +22474,7 @@ impl RolloutWorld {
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
             });
+            set_inverse_extents(&mut self.entity_inverse_extents, body_entity, body_collider.inverse_extents);
             new_box_entities[new_box_count] = body_entity;
             new_box_count += 1;
             let mut dash_entities = [usize::MAX; 3];
@@ -22607,52 +22497,52 @@ impl RolloutWorld {
             let mut drill_entity = usize::MAX;
             let mut beam_entity = usize::MAX;
             for (slot, &hierarchy) in ability_hierarchy.iter().enumerate() {
-                let (extents, relative_hierarchy, target) = match abilities[slot] {
+                let (authored, relative_hierarchy, target) = match abilities[slot] {
                     ABILITY_DASH => (
-                        data::surface_extents(data.dash.hurtbox_extents),
+                        data.dash.hurtbox_extents,
                         7,
                         &mut dash_entities[slot],
                     ),
                     ABILITY_BOW => (
-                        data::surface_extents(data.bow.hurtbox_extents),
+                        data.bow.hurtbox_extents,
                         7,
                         &mut bow_entity,
                     ),
                     ability @ (ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_TACK | ABILITY_MJOLNIR
                     | ABILITY_POKE_BALL) => (
-                        data::surface_extents(throw_config(data, ability).hurtbox_extents),
+                        throw_config(data, ability).hurtbox_extents,
                         8,
                         &mut throw_entities[slot],
                     ),
                     ABILITY_MISSILE => (
-                        data::surface_extents(data.missile.hurtbox_extents),
+                        data.missile.hurtbox_extents,
                         7,
                         &mut throw_entities[slot],
                     ),
                     ABILITY_MINE => (
-                        data::surface_extents(data.mine.hurtbox_extents),
+                        data.mine.hurtbox_extents,
                         7,
                         &mut mine_entity,
                     ),
                     ABILITY_PUSH => (
-                        data::surface_extents(data.push.hurtbox_extents),
+                        data.push.hurtbox_extents,
                         data.push.collider_hierarchy,
                         &mut push_entity,
                     ),
                     ABILITY_FREEZE => (
-                        data::surface_extents(data.freeze.hurtbox_extents),
+                        data.freeze.hurtbox_extents,
                         data.freeze.collider_hierarchy,
                         &mut freeze_entities[slot],
                     ),
                     ABILITY_BLINK => (
-                        data::surface_extents(data.blink.hurtbox_extents),
+                        data.blink.hurtbox_extents,
                         data.blink.collider_hierarchy,
                         &mut blink_entity,
                     ),
                     ability @ (ABILITY_GROWTH_RAY | ABILITY_SHRINK_RAY) => {
                         let ray = scale_ray_data(data, ability);
                         (
-                            data::surface_extents(ray.hurtbox_extents),
+                            ray.hurtbox_extents,
                             ray.collider_hierarchy,
                             if ability == ABILITY_GROWTH_RAY {
                                 &mut growth_ray_entity
@@ -22662,12 +22552,12 @@ impl RolloutWorld {
                         )
                     }
                     ABILITY_DUPLICATOR => (
-                        data::surface_extents(data.duplicator.hurtbox_extents),
+                        data.duplicator.hurtbox_extents,
                         data.duplicator.collider_hierarchy,
                         &mut duplicator_entity,
                     ),
                     ABILITY_MAGNET => (
-                        data::surface_extents(data.magnet.hurtbox_extents),
+                        data.magnet.hurtbox_extents,
                         data.magnet.collider_hierarchy,
                         &mut magnet_entity,
                     ),
@@ -22677,17 +22567,17 @@ impl RolloutWorld {
                         &mut spike_entity,
                     ),
                     ABILITY_ENGINE => (
-                        data::surface_extents(data.engine.hurtbox_extents),
+                        data.engine.hurtbox_extents,
                         data.engine.collider_hierarchy,
                         &mut engine_entity,
                     ),
                     ABILITY_TESLA => (
-                        data::surface_extents(data.tesla.hurtbox_extents),
+                        data.tesla.hurtbox_extents,
                         data.tesla.collider_hierarchy,
                         &mut tesla_entity,
                     ),
                     ABILITY_METEOR => (
-                        data::surface_extents(data.meteor.hurtbox_extents),
+                        data.meteor.hurtbox_extents,
                         data.meteor.collider_hierarchy,
                         &mut meteor_entity,
                     ),
@@ -22697,21 +22587,28 @@ impl RolloutWorld {
                         &mut black_hole_entity,
                     ),
                     ABILITY_THROW => (
-                        data::surface_extents(data.macho_throw.hurtbox_extents),
+                        data.macho_throw.hurtbox_extents,
                         data.macho_throw.collider_hierarchy,
                         &mut macho_throw_entity,
                     ),
                     ABILITY_DRILL => (
-                        data::surface_extents(data.drill.hurtbox_extents),
+                        data.drill.hurtbox_extents,
                         data.drill.collider_hierarchy,
                         &mut drill_entity,
                     ),
                     ABILITY_BEAM => (
-                        data::surface_extents(data.beam.hurtbox_extents),
+                        data.beam.hurtbox_extents,
                         data.beam.collider_hierarchy,
                         &mut beam_entity,
                     ),
                     _ => continue,
+                };
+                // SetRotation'd axes, `Vec2.right / inverseExtents.x`
+                // (Box.cs:33), for all but Spike's and Black Hole's.
+                let extents = if matches!(abilities[slot], ABILITY_SPIKE | ABILITY_BLACK_HOLE) {
+                    authored
+                } else {
+                    data::surface_extents(authored)
                 };
                 *target = self.entities.len();
                 form_entities[slot] = *target;
@@ -22801,6 +22698,11 @@ impl RolloutWorld {
                     inverse_mass: -Fix::ONE.raw(),
                     ..CEntity::default()
                 });
+                set_inverse_extents(
+                    &mut self.entity_inverse_extents,
+                    *target,
+                    Vec2::new((Fix::ONE / authored.x).abs(), (Fix::ONE / authored.y).abs()),
+                );
                 new_box_entities[new_box_count] = *target;
                 new_box_count += 1;
             }
@@ -22830,15 +22732,14 @@ impl RolloutWorld {
             slot.base.skip_next_gravity = false;
             slot.physics_scale = Fix::ONE;
             slot.body_collider_scale = Fix::ONE;
-            slot.body_inverse_extents = Vec2::new(
+            self.entity_inverse_extents[slot.body_entity] = Vec2::new(
                 Fix::ONE / data.player.hurtbox_extents.x,
                 Fix::ONE / data.player.hurtbox_extents.y,
             );
             // The empty player prefab's box is unscaled until the clone's
             // first SlimeController.UpdateSim assigns Player.Scale.
-            slot.base.collider_inverse_extents = slot.body_inverse_extents;
             slot.base.scale = Fix::ONE;
-            slot.base.sync_collider();
+            slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             slot.empty_prefab_facing();
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.ability_origin_scale = slot.player_scale;
@@ -23010,7 +22911,7 @@ impl RolloutWorld {
             self.players[owner].extra_life = REVIVE_NONE;
             let slot = &mut self.players[index];
             slot.base.position = target;
-            slot.base.sync_collider();
+            slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             slot.respawn_spawn_ticks = data.player.spawn_anim_ticks + 1;
             slot.obs_state = STATE_FALL;
         }
@@ -23556,17 +23457,17 @@ impl RolloutWorld {
     }
 
     fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
+        let dash_inverse_extents = self.entity_inverse_extents.get(self.players[index].dash_entity).copied();
         self.players[index]
             .base
-            .move_step(action, movement_input, terrain!(self));
+            .move_step(action, movement_input, terrain!(self), dash_inverse_extents);
         if self.players[index].base.dash.active {
             // Ability (updater 2) and PlayerPhysics (3) follow Dash.
             let slot = &mut self.players[index];
             let scale = slot.player_scale;
             let form = &mut slot.forms[slot.active_slot];
-            form.set_scale(scale, data::get().dash.hurtbox_extents, data::get().player.radius);
+            form.set_scale(scale, data::get().player.radius, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
             slot.base.dash.radius = form.physics_radius();
-            slot.base.dash.inverse_extents = form.inverse_extents;
         }
         // Dash precedes Ability in the prefab updater order, so the public
         // player position sees Dash's post-update transform on every active
@@ -23872,7 +23773,7 @@ impl RolloutWorld {
                 if right == Vec2::ZERO || up == Vec2::ZERO {
                     None
                 } else {
-                    OrientedBox { center, right, up, inverse_extents: self.box_inverse_extents(entity, right, up) }
+                    OrientedBox { center, right, up, inverse_extents: self.entity_inverse_extents[entity] }
                         .raycast(origin, direction)
                 }
             }
@@ -23908,7 +23809,7 @@ impl RolloutWorld {
             scale,
             // SparkShot.Fire writes Scale before DPhysicsBox.Init, so it
             // lands in startExtents.
-            inverse_extents: {
+            start_inverse_extents: {
                 let extents = data.missile.spark_extents * scale;
                 Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
             },
@@ -23999,7 +23900,7 @@ impl RolloutWorld {
         // form's box, and its PlayerPhysics.UpdateScale follows.
         let slot = &mut self.players[index];
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale(slot.player_scale, data.missile.hurtbox_extents, data.missile.physics_radius);
+        form.set_scale(slot.player_scale, data.missile.physics_radius, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
         slot.base.radius = form.physics_radius();
 
         // PlayerPhysics' gravity raycast can attach the form, and move it
@@ -24175,12 +24076,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         let scale = slot.player_scale;
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale_offset(
-            scale,
-            data.mine.hurtbox_extents,
-            data.player.radius,
-            data.mine.collider_offset,
-        );
+        form.set_scale_offset(scale, data.player.radius, data.mine.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
         slot.base.radius = form.physics_radius();
         // Mine.prefab is boundary/ability 5/6 - DestroyIfOutsideSceneBounds 5,
         // ThrowItem 6, PlayerBody 8 - so the boundary runs *before* ThrowItem's
@@ -24508,7 +24404,7 @@ impl RolloutWorld {
         let slot = &mut self.players[index];
         let scale = slot.player_scale;
         let form = &mut slot.forms[slot.active_slot];
-        form.set_scale(scale, gd.hurtbox_extents, data.player.radius);
+        form.set_scale(scale, data.player.radius, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
         slot.base.radius = form.physics_radius();
         // The enter animation's callback spawns the held payload the same way
         // (ThrowItem2.cs:151-163), so a form the boundary kills on that pass
@@ -25025,7 +24921,7 @@ impl RolloutWorld {
         // before PlayerBody moves. A form that landed and exited keeps the
         // previous pass's scale.
         self.players[index].on_scale_changed();
-        self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
+        self.players[index].scale_form(gun.radius, gun.collider_offset, &mut self.entity_inverse_extents);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
         slot.base.radius = slot.forms[slot.active_slot].physics_radius();
@@ -25197,7 +25093,7 @@ impl RolloutWorld {
         // before PlayerBody moves. A form that landed and exited keeps the
         // previous pass's scale.
         self.players[index].on_scale_changed();
-        self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
+        self.players[index].scale_form(gun.radius, gun.collider_offset, &mut self.entity_inverse_extents);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
         slot.base.radius = slot.forms[slot.active_slot].physics_radius();
@@ -25361,7 +25257,7 @@ impl RolloutWorld {
         // before PlayerBody moves. A form that landed and exited keeps the
         // previous pass's scale.
         self.players[index].on_scale_changed();
-        self.players[index].scale_form(ray.hurtbox_extents, ray.radius, ray.collider_offset);
+        self.players[index].scale_form(ray.radius, ray.collider_offset, &mut self.entity_inverse_extents);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
         slot.base.radius = slot.forms[slot.active_slot].physics_radius();
@@ -25525,7 +25421,7 @@ impl RolloutWorld {
         // before PlayerBody moves. A form that landed and exited keeps the
         // previous pass's scale.
         self.players[index].on_scale_changed();
-        self.players[index].scale_form(gun.hurtbox_extents, gun.radius, gun.collider_offset);
+        self.players[index].scale_form(gun.radius, gun.collider_offset, &mut self.entity_inverse_extents);
         // PlayerPhysics follows Ability and UpdateScales the radius to the box.
         let slot = &mut self.players[index];
         slot.base.radius = slot.forms[slot.active_slot].physics_radius();
@@ -25600,12 +25496,7 @@ impl RolloutWorld {
         // the form's radius to it.
         let slot = &mut self.players[index];
         let form = &mut slot.forms[ability_slot];
-        form.set_scale_offset(
-            scale,
-            data::surface_extents(data.magnet.hurtbox_extents),
-            data.magnet.radius,
-            data.magnet.collider_offset,
-        );
+        form.set_scale_offset(scale, data.magnet.radius, data.magnet.collider_offset, &mut self.entity_inverse_extents[slot.form_entities[ability_slot]]);
         slot.base.radius = form.physics_radius();
     }
 
@@ -25869,13 +25760,11 @@ impl RolloutWorld {
                 // caster back through the generic PlayerBody branch. That box
                 // is where DetPhysics last put it: the published row, or the
                 // entry pose on the entry pass.
-                let row = &self.entities[target.magnet_entity];
-                let collider = OrientedBox {
-                    center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                    right: Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y)),
-                    up: Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)),
-                    inverse_extents: target.forms[target.active_slot].inverse_extents,
-                };
+                let collider = Self::row_box(
+                    &self.entity_inverse_extents,
+                    target.magnet_entity,
+                    self.entities[target.magnet_entity],
+                );
                 crate::physics::contact::box_box(query, collider).is_some()
             } else {
                 // A player in a form is found through that form's own shape.
@@ -25940,7 +25829,7 @@ impl RolloutWorld {
             if !missile.active || !missile.registered || missile.magnet_holder.is_some() {
                 continue;
             }
-            let collider = missile.collider();
+            let collider = missile.collider(&self.entity_inverse_extents);
             if crate::physics::contact::box_box(query, collider).is_none() {
                 continue;
             }
@@ -26334,7 +26223,7 @@ impl RolloutWorld {
             if !missile.active || !missile.registered {
                 continue;
             }
-            let collider = missile.collider();
+            let collider = missile.collider(&self.entity_inverse_extents);
             consider(
                 MagnetHeld::Missile(missile_index),
                 missile.position,
@@ -26900,7 +26789,7 @@ impl RolloutWorld {
                 missile.body.velocity = Vec2::ZERO;
                 missile.magnet_holder = Some(index);
                 missile.magnet_hold_ticks = 2;
-                let (shape, own) = (missile.collider(), missile.entity);
+                let (shape, own) = (missile.collider(&self.entity_inverse_extents), missile.entity);
                 if let Some(correction) = self.move_object_out_of_walls(WallMover::Box(shape), own) {
                     self.guided_missiles[i].position = shape.center + correction;
                 }
@@ -27495,7 +27384,7 @@ impl RolloutWorld {
         }
     }
 
-    fn entity_rounded_rect(row: CEntity) -> Option<RoundedRect> {
+    fn entity_rounded_rect(inverse_extents: &[Vec2], entity: usize, row: CEntity) -> Option<RoundedRect> {
         if row.kind != 2 {
             return None;
         }
@@ -27509,7 +27398,7 @@ impl RolloutWorld {
                 center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
                 right,
                 up,
-                inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+                inverse_extents: inverse_extents[entity],
             },
             radius: Fix::from_raw(row.radius),
         })
@@ -27526,7 +27415,8 @@ impl RolloutWorld {
                 row.kind == 2
                     && self.collides(entity)
                     && excluded != Some(entity)
-                    && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
+                    && Self::entity_rounded_rect(&self.entity_inverse_extents, entity, *row)
+                        .is_some_and(|shape| shape.overlaps(origin))
             })
             .map(|(entity, _)| entity)
     }
@@ -27580,12 +27470,12 @@ impl RolloutWorld {
                                 center,
                                 right,
                                 up,
-                                inverse_extents: self.box_inverse_extents(entity, right, up),
+                                inverse_extents: self.entity_inverse_extents[entity],
                             })
                             .and_then(|shape| shape.raycast(origin, direction))
                             .map(|hit| hit.near)
                     }
-                    _ => Self::entity_rounded_rect(row)
+                    _ => Self::entity_rounded_rect(&self.entity_inverse_extents, entity, row)
                         .and_then(|shape| shape.raycast(origin, direction))
                         .map(|hit| hit.near),
                 };
@@ -27952,10 +27842,6 @@ impl RolloutWorld {
             synced: collider,
             collider_rotation: Fix::ZERO,
             collider_up: Vec2::UP,
-            collider_inverse_extents: Vec2::new(
-                Fix::ONE / data.player.hurtbox_extents.x,
-                Fix::ONE / data.player.hurtbox_extents.y,
-            ),
             collider_basis: Vec2::RIGHT,
             aligned: None,
             input_normalized: None,
@@ -28146,10 +28032,11 @@ impl RolloutWorld {
         let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
-        let inverse_extents = duplicated_inverse_extents(source.inverse_extents, source.scale, 1);
+        let inverse_extents = duplicated_inverse_extents(source.inverse_extents(&self.entity_inverse_extents), source.scale, 1);
         let collider_extents =
             Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity = self.entities.len();
+        set_inverse_extents(&mut self.entity_inverse_extents, entity, inverse_extents);
         let id = self.next_id();
         self.entities.push(CEntity {
             id,
@@ -28187,7 +28074,6 @@ impl RolloutWorld {
             fixed_offset,
             scale: source.scale,
             collider_offset: source.collider_offset,
-            inverse_extents,
             time: Fix::ZERO,
             body: data.spike.attack_body,
             pushed_this_frame: false,
@@ -28255,10 +28141,11 @@ impl RolloutWorld {
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         // RocketEngineInit writes the scale twice.
-        let inverse_extents = duplicated_inverse_extents(source.inverse_extents, source.scale, 2);
+        let inverse_extents = duplicated_inverse_extents(source.inverse_extents(&self.entity_inverse_extents), source.scale, 2);
         let collider_extents =
             Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity = self.entities.len();
+        set_inverse_extents(&mut self.entity_inverse_extents, entity, inverse_extents);
         let id = self.next_id();
         self.entities.push(CEntity {
             id,
@@ -28298,7 +28185,6 @@ impl RolloutWorld {
             surface_offset,
             scale: source.scale,
             collider_offset: source.collider_offset,
-            inverse_extents,
             offset_scale: source.scale,
             time: Fix::ZERO,
             phase: 0,
@@ -28588,7 +28474,11 @@ impl RolloutWorld {
                 // duplicateBoplBody hands the copy the source's Scale
                 // (ShootDuplicator.cs:280, 694).
                 scale: source.scale,
-                inverse_extents: duplicated_inverse_extents(source.inverse_extents, source.scale, 0),
+                start_inverse_extents: duplicated_inverse_extents(
+                    source.collider(&self.entity_inverse_extents).inverse_extents,
+                    source.scale,
+                    0,
+                ),
                 duplicated: true,
                 duplicate_lifespan: 1800,
                 ..GuidedMissile::default()
@@ -29375,14 +29265,14 @@ impl RolloutWorld {
                 + collider_offset.complex_mul(relative_right);
             let ratio = (Fix::ONE / spike.scale) * scale;
             self.spike_attacks[index].collider_offset = collider_offset;
-            self.spike_attacks[index].inverse_extents = spike.inverse_extents / ratio;
+            self.entity_inverse_extents[entity] = self.entity_inverse_extents[entity] / ratio;
             self.spike_attacks[index].scale = scale;
             self.spike_attacks[index].relative_center = relative_center;
             let center =
                 parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
             self.spike_attacks[index].collider_center = center;
             self.spike_attacks[index].transform_center = center;
-            let extents = self.spike_attacks[index].box_extents();
+            let extents = self.spike_attacks[index].box_extents(&self.entity_inverse_extents);
             self.entities[entity].right_x = (right * extents.x).x.raw();
             self.entities[entity].right_y = (right * extents.x).y.raw();
             self.entities[entity].up_x = (Vec2::UP * extents.y).complex_mul(right).x.raw();
@@ -29413,14 +29303,14 @@ impl RolloutWorld {
                 + collider_offset.complex_mul(relative_right);
             let ratio = (Fix::ONE / engine.scale) * scale;
             self.engines[index].collider_offset = collider_offset;
-            self.engines[index].inverse_extents = engine.inverse_extents / ratio;
+            self.entity_inverse_extents[entity] = self.entity_inverse_extents[entity] / ratio;
             self.engines[index].scale = scale;
             self.engines[index].relative_center = relative_center;
             let center =
                 parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
             self.engines[index].collider_center = center;
             self.engines[index].transform_center = center;
-            let extents = self.engines[index].box_extents();
+            let extents = self.engines[index].box_extents(&self.entity_inverse_extents);
             self.entities[entity].right_x = (right * extents.x).x.raw();
             self.entities[entity].right_y = (right * extents.x).y.raw();
             self.entities[entity].up_x = (Vec2::UP * extents.y).complex_mul(right).x.raw();
@@ -29726,22 +29616,22 @@ impl RolloutWorld {
     /// OnEnterAbility's SyncPhysicsTo(PlayerInfo), then its
     /// hurtBox.UpdatePhysicsPositions: the box at the body, `offset` along the
     /// body's right, which later queries this pass read.
-    fn form_enter(&mut self, index: usize, radius: Fix, offset: Vec2, extents: Vec2) {
+    fn form_enter(&mut self, index: usize, radius: Fix, offset: Vec2) {
         self.sync_physics_to_player_info(index, radius);
         let slot = &self.players[index];
-        self.sync_form_entry(index, slot.base.position, slot.base.up(), offset, extents);
+        self.sync_form_entry(index, slot.base.position, slot.base.up(), offset);
     }
 
     /// GunTransform.OnEnterAbility (GunTransform.cs:62-82): Ability.EnterAbility
     /// scales the box, SyncPhysicsTo places the body at the radius UpdateScale
     /// gives it, and the hurtbox syncs to that pose before the aiming tail.
-    fn gun_form_enter(&mut self, index: usize, extents: Vec2, radius: Fix, offset: Vec2) {
+    fn gun_form_enter(&mut self, index: usize, radius: Fix, offset: Vec2) {
         let slot = &mut self.players[index];
-        slot.scale_form(extents, radius, offset);
+        slot.scale_form(radius, offset, &mut self.entity_inverse_extents);
         let radius = slot.forms[slot.active_slot].physics_radius();
         self.sync_physics_to_player_info(index, radius);
         self.players[index].sync_gun_hurtbox(offset, &self.platforms);
-        self.sync_gun_entry(index, extents);
+        self.sync_gun_entry(index);
         self.aim_form_entry_tail(index);
     }
 
@@ -29780,15 +29670,14 @@ impl RolloutWorld {
         position: Vec2,
         up: Vec2,
         offset: Vec2,
-        extents: Vec2,
     ) {
         let slot = &self.players[index];
         let right = up.perp_cw();
         let rotation = if up == Vec2::UP { Fix::ZERO } else { right.normalized_angle() };
-        let collider = slot.forms[slot.active_slot].hurtbox(
+        let collider = stored_box(
             position + right.complex_mul(offset),
             Vec2::angle(rotation),
-            extents,
+            self.entity_inverse_extents[slot.form_entities[slot.active_slot]],
         );
         self.sync_form_box(index, collider);
         // UpdatePhysicsPositions also hands the body its orientation
@@ -29801,13 +29690,13 @@ impl RolloutWorld {
     }
 
     /// GunTransform.OnEnterAbility's sync, from `sync_gun_hurtbox`.
-    fn sync_gun_entry(&mut self, index: usize, extents: Vec2) {
+    fn sync_gun_entry(&mut self, index: usize) {
         let slot = &self.players[index];
         let basis = Vec2::angle(slot.gun.collider_up.perp_cw().normalized_angle());
-        let collider = slot.forms[slot.active_slot].hurtbox(
+        let collider = stored_box(
             slot.gun.hurtbox_center,
             basis,
-            data::surface_extents(extents) * slot.base.scale,
+            self.entity_inverse_extents[slot.form_entities[slot.active_slot]],
         );
         self.sync_form_box(index, collider);
     }
@@ -29852,8 +29741,7 @@ impl RolloutWorld {
                 // Box.SetRotation rebuilds the axes from the inverseExtents the
                 // box stores, set from its authored size and every Scale since,
                 // never read back from its axes (Box.cs:30-41).
-                let form = slot.forms[slot.active_slot];
-                Some(DetCollider::Box(OrientedBox { inverse_extents: form.inverse_extents, ..Self::row_box(row) }))
+                Some(DetCollider::Box(Self::row_box(&self.entity_inverse_extents, entity, row)))
             }
             _ => None,
         }
@@ -29887,13 +29775,13 @@ impl RolloutWorld {
             self.engines.iter().find(|engine| engine.active && engine.entity == Some(entity))
         {
             let live = !engine.macho_carried && self.attached_live(engine.platform_index, engine.entity);
-            return live.then(|| DetCollider::Box(engine.rocket_box()));
+            return live.then(|| DetCollider::Box(engine.rocket_box(&self.entity_inverse_extents)));
         }
         if let Some(spike) =
             self.spike_attacks.iter().find(|spike| spike.active && spike.entity == Some(entity))
         {
             let live = !spike.macho_carried && self.attached_live(spike.platform_index, spike.entity);
-            return live.then(|| DetCollider::Box(Self::spike_attack_box_in(&self.platform_dynamics, *spike)));
+            return live.then(|| DetCollider::Box(Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, *spike)));
         }
         if let Some(clone) =
             self.abilityless_clones.iter().find(|clone| clone.active && clone.entity == Some(entity))
@@ -29944,7 +29832,7 @@ impl RolloutWorld {
                 center: node.line_center,
                 right: node.line_right,
                 up: node.line_up,
-                inverse_extents: node.line_inverse_extents,
+                inverse_extents: self.entity_inverse_extents[entity],
             }));
         }
         match self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity) {
@@ -29976,7 +29864,7 @@ impl RolloutWorld {
                     center,
                     right,
                     up,
-                    inverse_extents: self.box_inverse_extents(entity, right, up),
+                    inverse_extents: self.entity_inverse_extents[entity],
                 }))
             }
             _ => None,
@@ -30043,15 +29931,22 @@ impl RolloutWorld {
             || self.players.iter().any(|slot| Self::hurtbox_entity(slot) == entity)
     }
 
-    fn row_box(row: CEntity) -> OrientedBox {
-        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+    /// A box row as DetPhysics holds it, with the inverseExtents its Box
+    /// stores (Box.cs:30-41).
+    fn row_box(inverse_extents: &[Vec2], entity: usize, row: CEntity) -> OrientedBox {
         OrientedBox {
             center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-            right,
-            up,
-            inverse_extents: Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length()),
+            right: Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y)),
+            up: Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y)),
+            inverse_extents: inverse_extents[entity],
         }
+    }
+
+
+    /// A DetPhysics sync of player `index`'s hurtbox to its body.
+    fn sync_hurtbox(&mut self, index: usize) {
+        let inverse_extents = self.players[index].hurtbox_inverse_extents(&self.entity_inverse_extents);
+        self.players[index].base.sync_collider(inverse_extents);
     }
 
     fn hurtbox_entity(slot: &PlayerSlot) -> usize {
@@ -30147,7 +30042,7 @@ impl RolloutWorld {
         // The hidden slime's transform is its body's, position and rotation,
         // ahead of the collider row synced before this pass's move.
         let mut body = clone.base.clone();
-        body.sync_collider();
+        body.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
         if let Some(entity) = clone.entity {
             let row = &mut self.entities[entity];
             row.flags &= !E_ACTIVE;
@@ -30516,7 +30411,7 @@ impl RolloutWorld {
             if slot.active != ActiveAbility::None {
                 slot.sync_form_pose();
             }
-            self.players[victim].base.sync_collider();
+            self.sync_hurtbox(victim);
             self.players[victim].blink_tunnel_released = true;
         }
     }
@@ -30587,7 +30482,10 @@ impl RolloutWorld {
             } else {
                 self.release_airborne_blink_player(owner);
             }
-            self.players[owner].base.sync_collider();
+            // The clone's own hurtbox, its body swapped in for the release.
+            let inverse_extents =
+                self.abilityless_clones[clone_index].hurtbox_inverse_extents(&self.entity_inverse_extents);
+            self.players[owner].base.sync_collider(inverse_extents);
             std::mem::swap(
                 &mut self.players[owner].base,
                 &mut self.abilityless_clones[clone_index].base,
@@ -31267,6 +31165,9 @@ impl RolloutWorld {
                 .clamp(min_scale, max_scale);
             let ratio = (Fix::ONE / effect.current_scale) * scale;
             if !self.scale_attached_entity(effect.victim, scale) {
+                if let Some(inverse_extents) = self.entity_inverse_extents.get_mut(effect.victim) {
+                    *inverse_extents = *inverse_extents / ratio;
+                }
                 let row = &mut self.entities[effect.victim];
                 row.radius = (Fix::from_raw(row.radius) * ratio).raw();
                 row.right_x = (Fix::from_raw(row.right_x) * ratio).raw();
@@ -31447,7 +31348,9 @@ impl RolloutWorld {
         let previous = missile.scale;
         missile.scale = (missile.scale + ray.scale_curve.evaluate(time) * multiplier)
             .clamp(Fix::from_f32(0.1), Fix::from_int(5));
-        missile.inverse_extents = missile.inverse_extents / ((Fix::ONE / previous) * missile.scale);
+        let entity = missile.entity.expect("registered Missile collider");
+        self.entity_inverse_extents[entity] =
+            self.entity_inverse_extents[entity] / ((Fix::ONE / previous) * missile.scale);
         self.scale_changers[index].time = time;
     }
 
@@ -32005,7 +31908,7 @@ impl RolloutWorld {
             let slot = &mut self.players[index];
             let scale = slot.player_scale;
             let form = &mut slot.forms[slot.active_slot];
-            form.set_scale(scale, bow.hurtbox_extents, data.player.radius);
+            form.set_scale(scale, data.player.radius, &mut self.entity_inverse_extents[slot.form_entities[slot.active_slot]]);
             slot.base.radius = form.physics_radius();
         }
         // The Bow's DestroyIfOutsideSceneBounds (hierarchy 50) runs after
@@ -32108,7 +32011,7 @@ impl RolloutWorld {
             } else {
                 // Grounded aiming: physics.Move(zero) = friction, stay attached.
                 let action = Action::default();
-                step_integrate = slot.base.step_unintegrated(action, action.direction(), terrain);
+                step_integrate = slot.base.step_unintegrated(action, action.direction(), terrain, None);
                 drop_test = true;
             }
         } else if !slot.bow.has_fired {
@@ -33118,8 +33021,9 @@ impl RolloutWorld {
         let missile = self.guided_missiles[index];
         let entity = self.pooled_row(missile.entity);
         self.guided_missiles[index].entity = Some(entity);
+        set_inverse_extents(&mut self.entity_inverse_extents, entity, missile.start_inverse_extents);
         let id = self.next_id();
-        let collider = missile.collider();
+        let collider = self.guided_missiles[index].collider(&self.entity_inverse_extents);
         self.entities[entity] = CEntity {
             id,
             kind: 1,
@@ -33171,6 +33075,7 @@ impl RolloutWorld {
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
         };
+        set_inverse_extents(&mut self.entity_inverse_extents, entity, collider.inverse_extents);
         self.missile_explosions[index].registered = true;
         self.apply_explosion_shockwave(explosion.position, data.missile.explosion_shockwave);
     }
@@ -33318,7 +33223,7 @@ impl RolloutWorld {
     fn sync_guided_missile_entity(&mut self, index: usize) {
         let missile = self.guided_missiles[index];
         let entity = missile.entity.expect("registered Missile collider");
-        let collider = missile.collider();
+        let collider = missile.collider(&self.entity_inverse_extents);
         let row = &mut self.entities[entity];
         row.x = missile.position.x.raw();
         row.y = missile.position.y.raw();
@@ -33456,18 +33361,7 @@ impl RolloutWorld {
                 },
             )
         } else {
-            let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-            let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-            let inverse_extents = self.box_inverse_extents(entity, right, up);
-            crate::physics::contact::circle_box(
-                query,
-                OrientedBox {
-                    center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                    right,
-                    up,
-                    inverse_extents,
-                },
-            )
+            crate::physics::contact::circle_box(query, Self::row_box(&self.entity_inverse_extents, entity, row))
         }
     }
 
@@ -33740,7 +33634,7 @@ impl RolloutWorld {
             slot.base.position = capture_position;
             slot.base.velocity = Vec2::ZERO;
             if sync_collider {
-                slot.base.sync_collider();
+                slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             }
             slot.late_obs_position = capture_position;
             slot.late_obs_state = STATE_FALL;
@@ -33776,7 +33670,7 @@ impl RolloutWorld {
         UngroundBody::Clone(clone).unground(&self.platforms, self.tick, false);
         clone.base.position = capture_position;
         clone.base.velocity = Vec2::ZERO;
-        clone.base.sync_collider();
+        clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
         self.players[owner].invisible = true;
         let item = &mut self.thrown_items[item_index];
         item.capture_victim = Some(clone_index);
@@ -34025,7 +33919,7 @@ impl RolloutWorld {
                 let clone = &mut self.abilityless_clones[victim];
                 clone.base.position = position;
                 clone.base.velocity = Vec2::ZERO;
-                clone.base.move_collider();
+                clone.base.move_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
                 clone.obs_state = STATE_RAGDOLL;
                 // The pin writes the transform (PokeBall.cs:196), so the row reads
                 // it, not the body its PlayerBody integrated earlier.
@@ -34039,7 +33933,7 @@ impl RolloutWorld {
                 }
                 slot.base.position = position;
                 slot.base.velocity = Vec2::ZERO;
-                slot.base.move_collider();
+                slot.base.move_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
                 slot.obs_state = STATE_RAGDOLL;
                 // A victim that landed while BeginCapture had left it falling
                 // stays attached: this ragdoll keeps it on the ground, and
@@ -34799,7 +34693,7 @@ impl RolloutWorld {
         // ReleaseVictim never ungrounds: a victim that landed during the
         // capture stays attached, and its LateUpdateSim puts it back on the
         // platform.
-        slot.base.sync_collider();
+        slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
         slot.obs_state = STATE_RAGDOLL;
         slot.ragdoll = RagdollState {
             active: true,
@@ -34847,7 +34741,7 @@ impl RolloutWorld {
         }
         clone.base.grounded = false;
         clone.base.ground = None;
-        clone.base.sync_collider();
+        clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
         clone.obs_state = STATE_RAGDOLL;
         self.players[owner].invisible = false;
     }
@@ -35145,10 +35039,7 @@ impl RolloutWorld {
                                 center,
                                 right,
                                 up,
-                                inverse_extents: Vec2::new(
-                                    Fix::ONE / right.length(),
-                                    Fix::ONE / up.length(),
-                                ),
+                                inverse_extents: self.entity_inverse_extents[entity],
                             },
                         )
                         .is_some();
@@ -35254,8 +35145,8 @@ impl RolloutWorld {
                 if !self.swept_pair(Swept::Part(Part::Missile(prior)), Swept::Part(Part::Missile(current))) {
                     continue;
                 }
-                let a_box = self.guided_missiles[prior].collider();
-                let b_box = self.guided_missiles[current].collider();
+                let a_box = self.guided_missiles[prior].collider(&self.entity_inverse_extents);
+                let b_box = self.guided_missiles[current].collider(&self.entity_inverse_extents);
                 let a_rank = self.part_rank(Part::Missile(prior));
                 let b_rank = self.part_rank(Part::Missile(current));
                 if let Some((contact, _)) = swept_box_box(a_box, a_rank, b_box, b_rank) {
@@ -35295,7 +35186,7 @@ impl RolloutWorld {
     /// it finds the missile destroyed.
     fn guided_missile_child_contacts(&mut self, missile_index: usize) {
         let missile = self.guided_missiles[missile_index];
-        let missile_box = missile.collider();
+        let missile_box = missile.collider(&self.entity_inverse_extents);
         let missile_rank = self.part_rank(Part::Missile(missile_index));
         let live = |entity: Option<usize>| {
             entity.is_some_and(|entity| self.collides(entity))
@@ -35306,7 +35197,7 @@ impl RolloutWorld {
             if count == contacts.len() || !spike.active || spike.macho_carried || !live(spike.entity) {
                 continue;
             }
-            let child = Self::spike_attack_box_in(&self.platform_dynamics, *spike);
+            let child = Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, *spike);
             let child_rank = self.part_rank(Part::Spike(index));
             if let Some((contact, child_first)) = swept_box_box(child, child_rank, missile_box, missile_rank) {
                 contacts[count] = (Part::Spike(index), contact, child_first);
@@ -35317,7 +35208,7 @@ impl RolloutWorld {
             if count == contacts.len() || !engine.active || engine.macho_carried || !live(engine.entity) {
                 continue;
             }
-            let child = engine.rocket_box();
+            let child = engine.rocket_box(&self.entity_inverse_extents);
             let child_rank = self.part_rank(Part::Engine(index));
             if let Some((contact, child_first)) = swept_box_box(child, child_rank, missile_box, missile_rank) {
                 contacts[count] = (Part::Engine(index), contact, child_first);
@@ -35389,7 +35280,7 @@ impl RolloutWorld {
             }
             self.guided_missile_child_contacts(missile_index);
             let missile = self.guided_missiles[missile_index];
-            let missile_box = missile.collider();
+            let missile_box = missile.collider(&self.entity_inverse_extents);
             let swept = Swept::Part(Part::Missile(missile_index));
             let missile_rank = self.part_rank(Part::Missile(missile_index));
             // Water is a trigger box, so it does not resolve the body.
@@ -35518,7 +35409,7 @@ impl RolloutWorld {
             )
             .is_some()
         } else {
-            swept_box_box(Self::row_box(row), self.player_sweep_rank(index), missile_box, missile_rank).is_some()
+            swept_box_box(Self::row_box(&self.entity_inverse_extents, entity, row), self.player_sweep_rank(index), missile_box, missile_rank).is_some()
         }
     }
 
@@ -35655,13 +35546,13 @@ impl RolloutWorld {
                 continue;
             }
             let swept = Swept::Part(Part::Engine(index));
-            children.push((index, engine.platform_index, engine.entity, engine.rocket_box(), swept));
+            children.push((index, engine.platform_index, engine.entity, engine.rocket_box(&self.entity_inverse_extents), swept));
         }
         for (index, spike) in self.spike_attacks.iter().copied().enumerate() {
             if !spike.active || spike.macho_carried || !live(spike.platform_index, spike.entity) {
                 continue;
             }
-            let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, spike);
+            let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, spike);
             let swept = Swept::Part(Part::Spike(index));
             children.push((SPIKE + index, spike.platform_index, spike.entity, attack_box, swept));
         }
@@ -36049,7 +35940,7 @@ impl RolloutWorld {
             if !self.guided_missile_live(index) {
                 continue;
             }
-            let missile_box = missile.collider();
+            let missile_box = missile.collider(&self.entity_inverse_extents);
             let missile_rank =
                 sweep_rank(&self.entities, self.box_sweep_min(missile_box), missile.entity);
             if swept_box_box(missile_box, missile_rank, hitbox, hitbox_rank).is_none() {
@@ -36503,7 +36394,7 @@ impl RolloutWorld {
                 center: smear.center,
                 right: smear.right,
                 up: smear.up,
-                inverse_extents: Vec2::new(Fix::ONE / smear.right.x, Fix::ONE / smear.up.y),
+                inverse_extents: self.entity_inverse_extents[smear.entity.expect("registered MeteorSmear")],
             };
             for player_index in 0..self.players.len() {
                 if player_index == smear.owner || !self.hittable(player_index) {
@@ -37158,18 +37049,14 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 // Ability.UpdateSim still assigns Player.Scale to the box
                 // (Ability.cs:135).
-                slot.scale_form(
-                    data::surface_extents(data.drill.hurtbox_extents),
-                    Fix::ZERO,
-                    data.drill.collider_offset,
-                );
+                slot.scale_form(Fix::ZERO, data.drill.collider_offset, &mut self.entity_inverse_extents);
                 slot.reported_position = slot.base.position;
                 slot.reported_tick = self.tick;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
                 slot.drill.collider_position = slot.base.position;
                 slot.drill.collider_up = slot.base.up();
                 slot.drill.collider_rotation = slot.base.rotation();
-                slot.update_drill_hitboxes(data);
+                slot.update_drill_hitboxes(&mut self.entity_inverse_extents);
                 return;
             }
             if self.players[index].active == ActiveAbility::Meteor {
@@ -37343,7 +37230,7 @@ impl RolloutWorld {
         // Hole's pull, another Magnet) find the slime where it came out.
         self.exited_ability(index, data);
         if exited {
-            self.players[index].base.sync_collider();
+            self.sync_hurtbox(index);
         }
         if self.players[index].active == ActiveAbility::Roll {
             self.roll_contacts_for(index, data);
@@ -37957,7 +37844,8 @@ impl RolloutWorld {
             } else {
                 base.integrate();
             }
-            self.abilityless_clones[clone_index].base.move_collider();
+            let clone = &mut self.abilityless_clones[clone_index];
+            clone.base.move_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
             self.sync_abilityless_clone_entity(clone_index);
             return;
         }
@@ -38065,7 +37953,7 @@ impl RolloutWorld {
             clone.base.previous_jump = !jump_pressed;
             clone.base.capture_pre_move(terrain.platforms);
             let grounded = clone.base.grounded;
-            let integrate = clone.base.move_unintegrated(action, movement, terrain);
+            let integrate = clone.base.move_unintegrated(action, movement, terrain, None);
             if grounded && integrate {
                 clone.drop_platform_test(terrain.platforms, &self.platform_dynamics, self.tick);
             }
@@ -38104,10 +37992,11 @@ impl RolloutWorld {
                 .find(|&&(player, changer, _)| player == owner && changer > hierarchy)
                 .map_or(self.players[owner].player_scale, |&(_, _, before)| before);
             let scale = hurtbox_scale(scale);
-            let clone = &mut self.abilityless_clones[clone_index].base;
-            let ratio = (Fix::ONE / clone.scale) * scale;
-            clone.collider_inverse_extents = clone.collider_inverse_extents / ratio;
-            clone.scale = scale;
+            let clone = &mut self.abilityless_clones[clone_index];
+            let entity = clone.entity.expect("an updating clone has its row");
+            let ratio = (Fix::ONE / clone.base.scale) * scale;
+            self.entity_inverse_extents[entity] = self.entity_inverse_extents[entity] / ratio;
+            clone.base.scale = scale;
         }
         if !self.abilityless_clones[clone_index].base.alive {
             // The clone's DestroyIfOutsideSceneBounds instantiates the
@@ -38117,7 +38006,9 @@ impl RolloutWorld {
             self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::UPDATER, false);
             return;
         }
-        self.abilityless_clones[clone_index].base.move_collider();
+        let clone = &mut self.abilityless_clones[clone_index];
+        let entity = clone.entity.expect("an updating clone has its row");
+        clone.base.move_collider(self.entity_inverse_extents[entity]);
         self.sync_abilityless_clone_entity(clone_index);
     }
 
@@ -38174,6 +38065,13 @@ impl RolloutWorld {
         let entity = self.entities.len();
         let id = self.next_id();
         self.entities.push(CEntity { id, hierarchy, ..CEntity::default() });
+        // The clone's own hurtbox, built at the authored extents (Box.cs:41).
+        let extents = data::get().player.hurtbox_extents;
+        set_inverse_extents(
+            &mut self.entity_inverse_extents,
+            entity,
+            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+        );
         self.abilityless_clones[clone_index].entity = Some(entity);
         self.sync_abilityless_clone_entity(clone_index);
     }
@@ -38376,7 +38274,7 @@ impl RolloutWorld {
                 } else {
                     right != Vec2::ZERO
                         && up != Vec2::ZERO
-                        && swept_box_box(Self::row_box(row), row_rank, clone_box, clone_rank).is_some()
+                        && swept_box_box(Self::row_box(&self.entity_inverse_extents, entity, row), row_rank, clone_box, clone_rank).is_some()
                 };
                 if !overlaps {
                     continue;
@@ -39251,14 +39149,16 @@ impl RolloutWorld {
             .map(|c| {
                 let rotation =
                     self.platform_dynamics[c.platform_index].body.orientation + c.relative_rotation;
-                (c.active, c.macho_carried, c.entity, rotation, c.box_extents())
+                (c.active, c.macho_carried, c.entity, rotation)
             })
             .chain((self.engines.iter()).map(|c| {
-                (c.active, c.macho_carried, c.entity, c.collider_rotation, c.box_extents())
+                (c.active, c.macho_carried, c.entity, c.collider_rotation)
             }));
-        for (active, carried, entity, rotation, extents) in boxes {
+        for (active, carried, entity, rotation) in boxes {
             if let (true, false, Some(entity)) = (active, carried, entity) {
                 let basis = Vec2::angle(rotation);
+                let inverse_extents = self.entity_inverse_extents[entity];
+                let extents = Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
                 let row = &mut self.entities[entity];
                 row.right_x = (basis * extents.x).x.raw();
                 row.right_y = (basis * extents.x).y.raw();
@@ -39719,7 +39619,7 @@ impl RolloutWorld {
             self.exit_ability_callback(index, data::get());
             let slot = &mut self.players[index];
             let old = slot.body_collider_scale;
-            slot.set_ordinary_body_scale(slot.player_scale);
+            slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
             let ratio = (Fix::ONE / old) * slot.body_collider_scale;
             if let Some(row) = self.entities.get_mut(slot.body_entity) {
                 row.right_x = (Fix::from_raw(row.right_x) * ratio).raw();
@@ -40180,8 +40080,8 @@ impl RolloutWorld {
             // It also assigns hurtBox.Scale = player.Scale every pass
             // (SlimeController.cs:1078), which is not the identity at a
             // Player.Scale other than one, so the hidden box keeps drifting.
-            slot.set_ordinary_body_scale(slot.player_scale);
-            slot.base.sync_collider();
+            slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
+            slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
         }
         // From the pass after SpawnClone, the revival clone's
         // DestroyIfOutsideSceneBounds runs at the marker position
@@ -40246,7 +40146,7 @@ impl RolloutWorld {
                 slot.base.position = position;
                 // ReSpawn simulates the body again (SlimeController.cs:591),
                 // so the hurtbox is exported at the chosen point this pass.
-                slot.base.sync_collider();
+                slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
                 // The chooser is ordered before its replacement slime. Its
                 // ReSpawnFast call moves the body, then that slime's OldUpdate
                 // publishes the selected position in this same pass.
@@ -41150,7 +41050,7 @@ impl RolloutWorld {
             let rotation = engine.collider_rotation;
             let basis = Vec2::angle(rotation);
             let center = engine.collider_center;
-            let extents = engine.box_extents();
+            let extents = engine.box_extents(&self.entity_inverse_extents);
             self.entities[entity] = CEntity {
                 id: self.entities[entity].id,
                 kind: 1,
@@ -41197,7 +41097,7 @@ impl RolloutWorld {
             // 0*x - e*y floors e*y before negating, where `perp() * e` would
             // floor the negative product (1 raw apart).
             let center = spike.collider_center;
-            let extents = spike.box_extents();
+            let extents = spike.box_extents(&self.entity_inverse_extents);
             self.entities[entity] = CEntity {
                 id: self.entities[entity].id,
                 kind: 1,
@@ -41260,7 +41160,7 @@ impl RolloutWorld {
         // gave them (HitboxCombo.UpdateHitBoxPositionsAndScale), so SyncAll
         // places them whether or not their slime was destroyed this pass.
         for slot in &self.players {
-            place_drill_hitbox_rows(&mut self.entities, slot, data);
+            place_drill_hitbox_rows(&mut self.entities, &self.entity_inverse_extents, slot, data);
         }
         for index in 0..self.players.len() {
             let (
@@ -41355,13 +41255,10 @@ impl RolloutWorld {
             let macho_throwing = slot.active == ActiveAbility::Throw;
             let drilling = slot.active == ActiveAbility::Drill;
             let beaming = slot.active == ActiveAbility::Beam;
-            let throw_config = throw_config(data::get(), active_throw_ability(slot.active));
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
             let bow_form_rotation = slot.bow.form_rotation;
-            let bow_form = slot.forms[slot.active_slot];
-            let dash_form = slot.forms[slot.active_slot];
             let push_form = slot.forms[slot.active_slot];
             // Ability.ExitAbility deactivates the ability body where it
             // ended (Ability.cs:151-152) and DetPhysics still syncs that
@@ -41454,13 +41351,10 @@ impl RolloutWorld {
                 let (right, up) = if body_active || slime_teleporting {
                     (slot.base.collider.right, slot.base.collider.up)
                 } else {
-                    let basis = Vec2::angle(angle);
-                    (
-                        (Vec2::RIGHT / slot.body_inverse_extents.x).complex_mul(basis),
-                        (Vec2::UP / slot.body_inverse_extents.y).complex_mul(basis),
-                    )
+                    let collider = stored_box(center, Vec2::angle(angle), self.entity_inverse_extents[body_e]);
+                    (collider.right, collider.up)
                 };
-                body.right_x = right.x.raw();
+                                body.right_x = right.x.raw();
                 body.right_y = right.y.raw();
                 body.up_x = up.x.raw();
                 body.up_y = up.y.raw();
@@ -41490,10 +41384,10 @@ impl RolloutWorld {
                     } else {
                         (exit_position, dash_exit_rotation)
                     };
-                    let collider = dash_form.hurtbox(
+                    let collider = stored_box(
                         center,
                         Vec2::angle(angle),
-                        data.dash.hurtbox_extents,
+                        self.entity_inverse_extents[dash_e],
                     );
                     dash_box.x = center.x.raw();
                     dash_box.y = center.y.raw();
@@ -41526,7 +41420,6 @@ impl RolloutWorld {
                     bow_box.flags = E_ENABLED | E_TRIGGER;
                 }
                 if (alive && bowing) || bow_was_active {
-                    let extents = data.bow.hurtbox_extents;
                     // Bow's own exits zero its body rotation before
                     // ExitAbility (BowTransform.cs:119, 225). FreezeRayGun
                     // invokes Ability.ExitAbility directly, so the disabled
@@ -41538,7 +41431,7 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO)
                     };
-                    let hurtbox = bow_form.hurtbox(center, Vec2::angle(rotation), extents);
+                    let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[bow_e]);
                     bow_box.x = center.x.raw();
                     bow_box.y = center.y.raw();
                     bow_box.vx = 0;
@@ -41585,16 +41478,16 @@ impl RolloutWorld {
                         (exit_position, rotation)
                     };
                     let hurtbox = if missile_row {
-                        slot.forms[slot.entity_slot(throw_e)].hurtbox(
+                        stored_box(
                             center,
                             Vec2::angle(rotation),
-                            data.missile.hurtbox_extents,
+                            self.entity_inverse_extents[throw_e],
                         )
                     } else {
-                        slot.forms[slot.entity_slot(throw_e)].hurtbox(
+                        stored_box(
                             center,
                             Vec2::angle(rotation),
-                            throw_config.hurtbox_extents,
+                            self.entity_inverse_extents[throw_e],
                         )
                     };
                     throw_box.x = center.x.raw();
@@ -41637,10 +41530,10 @@ impl RolloutWorld {
                         mine_form.offset
                     };
                     let center = root + offset_basis.complex_mul(offset);
-                    let hurtbox = mine_form.hurtbox(
+                    let hurtbox = stored_box(
                         center,
                         basis,
-                        data::surface_extents(data.mine.hurtbox_extents),
+                        self.entity_inverse_extents[mine_e],
                     );
                     mine_box.x = center.x.raw();
                     mine_box.y = center.y.raw();
@@ -41750,10 +41643,10 @@ impl RolloutWorld {
                         form.offset
                     };
                     let center = root + right.complex_mul(offset);
-                    let collider = form.hurtbox(
+                    let collider = stored_box(
                         center,
                         basis,
-                        data::surface_extents(data.meteor.hurtbox_extents),
+                        self.entity_inverse_extents[meteor_e],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -41799,10 +41692,10 @@ impl RolloutWorld {
                         push_form.offset
                     };
                     let center = root + offset_basis.complex_mul(offset);
-                    let collider = push_form.hurtbox(
+                    let collider = stored_box(
                         center,
                         basis,
-                        data::surface_extents(data.push.hurtbox_extents),
+                        self.entity_inverse_extents[push_e],
                     );
                     push_box.x = center.x.raw();
                     push_box.y = center.y.raw();
@@ -41860,10 +41753,10 @@ impl RolloutWorld {
                     let s = slot.entity_slot(freeze_e);
                     let offset = slot.gun_offset(s, data.freeze.collider_offset);
                     let center = root + offset_basis.complex_mul(offset);
-                    let collider = slot.forms[s].hurtbox(
+                    let collider = stored_box(
                         center,
                         basis,
-                        data::surface_extents(data.freeze.hurtbox_extents),
+                        self.entity_inverse_extents[freeze_e],
                     );
                     freeze_box.x = center.x.raw();
                     freeze_box.y = center.y.raw();
@@ -41889,13 +41782,13 @@ impl RolloutWorld {
                     blink_box.owner = slot.base.id;
                 }
                 if (alive && blinking) || was_active || forced_exit {
-                    let (root, rotation, scale) = if blinking {
+                    let (root, rotation) = if blinking {
                         // Latched at the shot, as at the Freeze row above.
-                        (synced, rotation, slot.base.scale)
+                        (synced, rotation)
                     } else if forced_exit {
-                        (exit_position, slot.gun.forced_exit_basis.1, slot.base.scale)
+                        (exit_position, slot.gun.forced_exit_basis.1)
                     } else {
-                        (exit_position, Fix::ZERO, slot.base.scale)
+                        (exit_position, Fix::ZERO)
                     };
                     let basis = Vec2::angle(rotation);
                     let offset_basis = if blinking {
@@ -41908,10 +41801,10 @@ impl RolloutWorld {
                     let s = slot.entity_slot(blink_e);
                     let offset = slot.gun_offset(s, data.blink.collider_offset);
                     let center = root + offset_basis.complex_mul(offset);
-                    let collider = slot.forms[s].hurtbox(
+                    let collider = stored_box(
                         center,
                         basis,
-                        data::surface_extents(data.blink.hurtbox_extents) * scale,
+                        self.entity_inverse_extents[blink_e],
                     );
                     blink_box.x = center.x.raw();
                     blink_box.y = center.y.raw();
@@ -41943,13 +41836,13 @@ impl RolloutWorld {
                     ray_box.owner = slot.base.id;
                 }
                 if (alive && active) || was_active || forced_exit {
-                    let (root, rotation, scale) = if active {
+                    let (root, rotation) = if active {
                         // Latched at the shot, as at the Freeze row above.
-                        (synced, rotation, slot.base.scale)
+                        (synced, rotation)
                     } else if forced_exit {
-                        (exit_position, slot.gun.forced_exit_basis.1, slot.base.scale)
+                        (exit_position, slot.gun.forced_exit_basis.1)
                     } else {
-                        (exit_position, Fix::ZERO, slot.base.scale)
+                        (exit_position, Fix::ZERO)
                     };
                     let basis = Vec2::angle(rotation);
                     let offset_basis = if active {
@@ -41962,10 +41855,10 @@ impl RolloutWorld {
                     let s = slot.entity_slot(ray_e);
                     let offset = slot.gun_offset(s, ray.collider_offset);
                     let center = root + offset_basis.complex_mul(offset);
-                    let collider = slot.forms[s].hurtbox(
+                    let collider = stored_box(
                         center,
                         basis,
-                        data::surface_extents(ray.hurtbox_extents) * scale,
+                        self.entity_inverse_extents[ray_e],
                     );
                     ray_box.x = center.x.raw();
                     ray_box.y = center.y.raw();
@@ -41991,13 +41884,13 @@ impl RolloutWorld {
                     row.owner = slot.base.id;
                 }
                 if (alive && duplicating) || was_active || forced_exit {
-                    let (root, rotation, scale) = if duplicating {
+                    let (root, rotation) = if duplicating {
                         // Latched at the shot, as at the Freeze row above.
-                        (synced, rotation, slot.base.scale)
+                        (synced, rotation)
                     } else if forced_exit {
-                        (exit_position, slot.gun.forced_exit_basis.1, slot.base.scale)
+                        (exit_position, slot.gun.forced_exit_basis.1)
                     } else {
-                        (exit_position, Fix::ZERO, slot.base.scale)
+                        (exit_position, Fix::ZERO)
                     };
                     let basis = Vec2::angle(rotation);
                     let offset_basis = if duplicating {
@@ -42010,10 +41903,10 @@ impl RolloutWorld {
                     let s = slot.entity_slot(duplicator_e);
                     let offset = slot.gun_offset(s, data.duplicator.collider_offset);
                     let center = root + offset_basis.complex_mul(offset);
-                    let collider = slot.forms[s].hurtbox(
+                    let collider = stored_box(
                         center,
                         basis,
-                        data::surface_extents(data.duplicator.hurtbox_extents) * scale,
+                        self.entity_inverse_extents[duplicator_e],
                     );
                     row.x = center.x.raw();
                     row.y = center.y.raw();
@@ -42049,10 +41942,10 @@ impl RolloutWorld {
                     };
                     let basis = Vec2::angle(rotation);
                     let center = root + offset_basis.complex_mul(form.offset);
-                    let collider = form.hurtbox(
+                    let collider = stored_box(
                         center,
                         basis,
-                        data::surface_extents(data.magnet.hurtbox_extents),
+                        self.entity_inverse_extents[magnet_e],
                     );
                     row.x = center.x.raw();
                     row.y = center.y.raw();
@@ -42199,10 +42092,10 @@ impl RolloutWorld {
                         form.offset
                     };
                     let center = position + center_basis.complex_mul(offset);
-                    let collider = form.hurtbox(
+                    let collider = stored_box(
                         center,
                         collider_basis,
-                        data.spike.hurtbox_extents,
+                        self.entity_inverse_extents[spike_e],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -42241,10 +42134,10 @@ impl RolloutWorld {
                         form.offset
                     };
                     let center = position + center_basis.complex_mul(offset);
-                    let collider = form.hurtbox(
+                    let collider = stored_box(
                         center,
                         collider_basis,
-                        data::surface_extents(data.engine.hurtbox_extents),
+                        self.entity_inverse_extents[engine_e],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -42283,10 +42176,10 @@ impl RolloutWorld {
                         form.offset
                     };
                     let center = position + center_basis.complex_mul(offset);
-                    let collider = form.hurtbox(
+                    let collider = stored_box(
                         center,
                         collider_basis,
-                        data::surface_extents(data.tesla.hurtbox_extents),
+                        self.entity_inverse_extents[tesla_e],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -42331,10 +42224,10 @@ impl RolloutWorld {
                     let center = position + basis.complex_mul(offset);
                     // DetPhysics rebuilds the box axes from the synced angle
                     // (Box.SetRotation), not from the body's up vector.
-                    let collider = form.hurtbox(
+                    let collider = stored_box(
                         center,
                         Vec2::angle(rotation),
-                        data.black_hole.hurtbox_extents,
+                        self.entity_inverse_extents[black_hole_e],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -42384,10 +42277,10 @@ impl RolloutWorld {
                         form.offset
                     };
                     let center = position + center_basis.complex_mul(offset);
-                    let collider = form.hurtbox(
+                    let collider = stored_box(
                         center,
                         collider_basis,
-                        data::surface_extents(data.macho_throw.hurtbox_extents),
+                        self.entity_inverse_extents[macho_throw_e],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -42434,10 +42327,10 @@ impl RolloutWorld {
                         form.offset
                     };
                     let center = position + offset.complex_mul(basis);
-                    let collider = form.hurtbox(
+                    let collider = stored_box(
                         center,
                         Vec2::angle(rotation),
-                        data::surface_extents(data.drill.hurtbox_extents) * scale,
+                        self.entity_inverse_extents[drill_e],
                     );
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
@@ -42468,18 +42361,13 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Vec2::UP, Fix::ZERO)
                     };
-                    let extents = if state.in_air {
-                        data.beam.air_extents
-                    } else {
-                        data.beam.hurtbox_extents
-                    };
                     // OnEnterAbility and StartBeam write the authored offset and
                     // extents after Ability scaled the box, so they stay unscaled
                     // until Player.Scale itself changes (Beam.cs:221-235, 345).
                     let form = &slot.forms[slot.entity_slot(slot.beam_entity)];
                     let basis = up.perp_cw();
                     let center = position + form.offset.complex_mul(basis);
-                    let collider = form.hurtbox(center, Vec2::angle(rotation), extents);
+                    let collider = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[beam_e]);
                     box_row.x = center.x.raw();
                     box_row.y = center.y.raw();
                     box_row.vx = 0;
@@ -42632,13 +42520,10 @@ impl RolloutWorld {
                 let (right, up) = if body_active || teleporting {
                     (slot.base.collider.right, slot.base.collider.up)
                 } else {
-                    let basis = Vec2::angle(angle);
-                    (
-                        (Vec2::RIGHT / slot.body_inverse_extents.x).complex_mul(basis),
-                        (Vec2::UP / slot.body_inverse_extents.y).complex_mul(basis),
-                    )
+                    let collider = stored_box(center, Vec2::angle(angle), self.entity_inverse_extents[slot.body_entity]);
+                    (collider.right, collider.up)
                 };
-                body.right_x = right.x.raw();
+                                body.right_x = right.x.raw();
                 body.right_y = right.y.raw();
                 body.up_x = up.x.raw();
                 body.up_y = up.y.raw();
@@ -42660,10 +42545,10 @@ impl RolloutWorld {
                     } else {
                         (exit_position, slot.base.dash.exit_rotation)
                     };
-                    let collider = slot.forms[slot.active_slot].hurtbox(
+                    let collider = stored_box(
                         center,
                         Vec2::angle(angle),
-                        data.dash.hurtbox_extents,
+                        self.entity_inverse_extents[slot.dash_entity],
                     );
                     dash_box.x = center.x.raw();
                     dash_box.y = center.y.raw();
@@ -42747,6 +42632,11 @@ impl RolloutWorld {
             // RlObservation publishes the DetPhysics collider axes (Box.SetRotation).
             let right = platform.collider.inner.right;
             let up = platform.collider.inner.up;
+            set_inverse_extents(
+                &mut self.entity_inverse_extents,
+                self.platform_entities[i],
+                platform.collider.inner.inverse_extents,
+            );
             e.right_x = right.x.raw();
             e.right_y = right.y.raw();
             e.up_x = up.x.raw();
@@ -43779,10 +43669,10 @@ mod tests {
             .entities
             .iter()
             .enumerate()
-            .rfind(|(_, row)| {
+            .rfind(|&(entity, row)| {
                 row.kind == 2
                     && row.flags & E_ACTIVE != 0
-                    && RolloutWorld::entity_rounded_rect(**row)
+                    && RolloutWorld::entity_rounded_rect(&world.entity_inverse_extents, entity, *row)
                         .is_some_and(|shape| shape.overlaps(center))
             })
             .map(|(entity, _)| entity);
@@ -44038,12 +43928,16 @@ mod tests {
             },
             up: Vec2::UP,
             scale: Fix::ONE,
-            inverse_extents: {
-                let extents = data::get().missile.spark_extents;
-                Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
-            },
+            entity: Some(world.entities.len()),
             ..GuidedMissile::default()
         });
+        let extents = data::get().missile.spark_extents;
+        set_inverse_extents(
+            &mut world.entity_inverse_extents,
+            world.entities.len(),
+            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
+        );
+        world.entities.push(CEntity::default());
 
         world.missile_form_tick(
             0,
@@ -44520,7 +44414,7 @@ mod tests {
         // An idle slime's body is live whatever its row says; lift the
         // duplicated slime off the ray so only its clone is in the way.
         world.players[1].base.position += Vec2::UP * Fix::from_int(10);
-        world.players[1].base.sync_collider();
+        world.sync_hurtbox(1);
 
         world.shoot_blink_ray(
             position - Vec2::RIGHT * Fix::from_int(10),
