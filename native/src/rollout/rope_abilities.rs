@@ -1484,6 +1484,19 @@ impl RolloutWorld {
     /// on it waits for the tacks; a Poke Ball thrown before it may release
     /// its catch and go first, and the attachment then lets go on that pass.
     /// `pass` picks the attachments of one place.
+    /// A SpikeAttack or SparkNode hangs under its platform's GameObject
+    /// (Spike.cs:122, PlaceSparkNode.cs:40), so it leaves the hierarchy with
+    /// the platform, and RopeAttachment.UpdateSim's activeInHierarchy test
+    /// lets go of it (RopeAttachment.cs:96-100).
+    fn parent_platform_active(&self, parent: RopeParent) -> bool {
+        let platform = match parent {
+            RopeParent::Spike(spike, _) => self.spike_attacks[spike].platform_index,
+            RopeParent::Node(node, _) => self.tesla_nodes[node].platform_index,
+            _ => return true,
+        };
+        self.platforms[platform].active
+    }
+
     pub(super) fn rope_parents_update(&mut self, pass: RopeParentPass) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         for index in 0..self.ropes.len() {
@@ -1517,7 +1530,8 @@ impl RolloutWorld {
                 (&self.spike_attacks, &self.tesla_nodes, &self.platform_dynamics, &self.arrows),
                 parent,
                 self.ropes[index].parent_offset,
-            ) else {
+            )
+            .filter(|_| self.parent_platform_active(parent)) else {
                 self.deattach_rope(index, true);
                 self.ropes[index].parent = None;
                 continue;
