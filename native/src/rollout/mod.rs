@@ -8069,9 +8069,6 @@ impl RolloutWorld {
                 match item.ability {
                     ABILITY_POKE_BALL | ABILITY_TACK => push(100_000_000 + item.hierarchy_base, 2, i),
                     ABILITY_MJOLNIR => push(100_000_000 + item.hierarchy_base, 3, i),
-                    ABILITY_GRENADE | ABILITY_SMOKE if item.active => {
-                        push(100_000_000 + item.hierarchy_base, 18, i)
-                    }
                     _ if item.active && item.body_ran_tick != Some(tick) => {
                         push(100_000_000 + item.hierarchy_base, 15, i)
                     }
@@ -8213,17 +8210,6 @@ impl RolloutWorld {
                 }
                 16 => self.tesla_nodes_update(data, updater_dt, hierarchy - 99_999_999),
                 17 => self.blink_object_tunnels_tick(data, updater_dt, Some(hierarchy - 99_999_999)),
-                // Grenade.UpdateSim: a fuse that runs out detonates at the
-                // item's own turn, before a younger cloud's FlammableSmoke
-                // detonates.
-                18 => {
-                    self.thrown_item_body_step(index);
-                    if !self.teleport_revealed_this_pass(self.thrown_items[index].entity)
-                        && self.take_updater_turn(index)
-                    {
-                        self.thrown_item_update(index, data, updater_dt);
-                    }
-                }
                 19 => {
                     let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
                     self.guided_missile_update_sim(index, DT * self.player_time_scale, being_held, data);
@@ -21904,11 +21890,6 @@ impl RolloutWorld {
         hierarchy_order(&mut order, &self.smoke_clouds, |cloud| cloud.hierarchy_base);
         for &cloud_index in &order {
             if self.smoke_clouds[cloud_index].updater_ran_tick != Some(self.tick) {
-                let hierarchy = self.smoke_clouds[cloud_index].hierarchy_base;
-                self.run_spawned_before(data, updater_dt, 100_000_000 + hierarchy);
-                if self.smoke_clouds[cloud_index].updater_ran_tick == Some(self.tick) {
-                    continue;
-                }
                 self.smoke_clouds[cloud_index].updater_ran_tick = Some(self.tick);
                 self.smoke_cloud_update(cloud_index, data, updater_dt);
             }
@@ -34898,12 +34879,10 @@ impl RolloutWorld {
                 self.ropes_update(self.scratch.ropes_updated_below..hierarchy);
                 self.scratch.ropes_updated_below = hierarchy;
             }
-            let ability = self.thrown_items[item_index].ability;
-            if ability == ABILITY_MJOLNIR && self.take_updater_turn(item_index) {
+            if self.thrown_items[item_index].ability == ABILITY_MJOLNIR
+                && self.take_updater_turn(item_index)
+            {
                 self.mjolnir_hammer_update(item_index, data, updater_dt);
-            }
-            if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && !self.take_updater_turn(item_index) {
-                continue;
             }
             self.thrown_item_update(item_index, data, updater_dt);
         }
