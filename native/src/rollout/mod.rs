@@ -41133,8 +41133,9 @@ impl RolloutWorld {
                     // synced box with the dash extents from that rotation.
                     // On the exit pass the slime body has taken over, so the
                     // box is rebuilt at the teleport/landing pose.
+                    let at_sync = slot.forms[slot.entity_slot(dash_e)].synced;
                     let (center, angle) = if alive && dashing {
-                        (synced, rotation)
+                        (at_sync.position, at_sync.orientation.rotation())
                     } else {
                         (exit_position, dash_exit_rotation)
                     };
