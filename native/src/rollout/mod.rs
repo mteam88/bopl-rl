@@ -20005,12 +20005,97 @@ impl RolloutWorld {
         let mut hits = [usize::MAX; 50];
         let count = self.circle_cast_all(query, wave.collision_mask, |_, _| false, &mut hits);
         let hits = &hits[..count];
-        if wave.collision_mask & (1 << 11) != 0 {
-            let mut applied = false;
-            for platform_index in 0..self.platforms.len() {
-                if !hits.contains(&self.platform_entities[platform_index]) {
+        // ActivateShockWave walks its hits in order. A Player-layer hit is
+        // pushed at once and is not recorded in gameObjectIdsHit
+        // (Shockwave.cs:81-138): an Ability form with isPushable=false is
+        // skipped, Rock's BoplBody takes the 9000-fold fallback, and every
+        // other SlimeController (a slime, through its slime box or its
+        // ability form, or an ability-less clone) takes PlayerPhysics.AddForce.
+        // A slime in its spawn animation has its hurtbox enabled, and
+        // AddForce feeds the disabled PlayerPhysics' externalVelocity all the
+        // same. A LethalTerrain hit that is not IPlatformAttachable (a lit
+        // Tesla node and a SpikeAttack are) takes the same fallback on its
+        // BoplBody: a duplicated rock (Shockwave.cs:139-152).
+        // The one-shot wave divides by 7 (Shockwave.cs:117-121,143-147).
+        let strength_at = |at: Vec2| {
+            let delta = at - position;
+            let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
+            (delta, wave.default_force / (distance * Fix::from_int(7)))
+        };
+        for &entity in hits {
+            let layer = self.entities[entity].layer;
+            if layer == LAYER_LETHAL_TERRAIN {
+                if let Some(rock) =
+                    self.duplicated_rocks.iter_mut().find(|rock| rock.active && rock.entity == Some(entity))
+                {
+                    let (delta, strength) = strength_at(rock.position);
+                    rock.body.force += delta * strength * Fix::from_int(9000);
+                }
+                continue;
+            }
+            if layer != LAYER_PLAYER {
+                continue;
+            }
+            let slime = if let Some(player_index) =
+                self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity)
+            {
+                if !self.hittable(player_index)
+                    || matches!(
+                        self.players[player_index].active,
+                        ActiveAbility::Dash
+                            | ActiveAbility::Gust
+                            | ActiveAbility::Meteor
+                            | ActiveAbility::Platform
+                            | ActiveAbility::Push
+                            | ActiveAbility::Revival
+                    )
+                {
                     continue;
                 }
+                Slime::Player(player_index)
+            } else if let Some(clone_index) = self
+                .abilityless_clones
+                .iter()
+                .position(|clone| clone.active && clone.entity == Some(entity))
+            {
+                Slime::Clone(clone_index)
+            } else {
+                continue;
+            };
+            let (delta, strength) = strength_at(self.slime_base(slime).position);
+            if let Slime::Player(player_index) = slime
+                && self.players[player_index].active == ActiveAbility::Rock
+            {
+                self.players[player_index].rock.body.force += delta * strength * Fix::from_int(9000);
+                continue;
+            }
+            let body = slime.of(&mut self.players, &mut self.abilityless_clones).base;
+            let force = if body.grounded {
+                delta * wave.grounded_player_multiplier * strength
+            } else {
+                delta * strength
+            };
+            body.external_velocity += force * Fix::from_int(35);
+        }
+        // UpdateHitObjects then walks the same hits in the same order and
+        // pushes each one recorded, neither Player nor LethalTerrain
+        // (Shockwave.cs:139-158,180-215): a
+        // StickyRoundedRectangle from its closest point, a black hole through
+        // BlackHole.AddForce without the impulse's sixty-fold conversion, and
+        // any other body by an impulse at its position.
+        let mut platforms_pushed = false;
+        for &entity in hits {
+            if matches!(self.entities[entity].layer, LAYER_PLAYER | LAYER_LETHAL_TERRAIN) {
+                continue;
+            }
+            let away = |at: Vec2| {
+                let direction = at - position;
+                let distance =
+                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
+                direction.normalized_safe() * (wave.default_force / distance)
+            };
+            let matches = |active: bool, candidate: Option<usize>| active && candidate == Some(entity);
+            if let Some(platform_index) = self.platform_entities.iter().position(|&row| row == entity) {
                 let surface = self.platforms[platform_index].surface.clone();
                 let Ok(point) = surface.closest_point(position) else {
                     continue;
@@ -20018,7 +20103,7 @@ impl RolloutWorld {
                 let direction = -surface.normal(point);
                 let distance = ((position - point).length_squared() / Fix::from_int(10))
                     .max(Fix::from_f64(1.5));
-                // Shockwave pushes a "boulder"-tagged platform with defaultForce.
+                // A "boulder"-tagged platform is pushed with defaultForce.
                 let boulder = self
                     .macho_boulders
                     .iter()
@@ -20034,165 +20119,27 @@ impl RolloutWorld {
                 self.platform_dynamics[platform_index]
                     .body
                     .apply_impulse(impulse, arm);
-                applied = true;
-            }
-            if applied {
-                self.platforms_changed();
-            }
-        }
-        if wave.collision_mask & (1 << LAYER_ITEM) != 0 {
-            for item_index in 0..self.thrown_items.len() {
-                let Some(entity) = self.thrown_items[item_index].entity else { continue };
-                if !self.thrown_items[item_index].active || !hits.contains(&entity) {
-                    continue;
-                }
-                let item = &mut self.thrown_items[item_index];
-                let direction = item.position - position;
-                let distance =
-                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
-                let impulse = direction.normalized_safe()
-                    * (wave.default_force / distance)
-                    * Fix::from_int(60);
+                platforms_pushed = true;
+            } else if let Some(item) = self.thrown_items.iter_mut().find(|item| matches(item.active, item.entity)) {
+                let impulse = away(item.position) * Fix::from_int(60);
                 item.body.apply_impulse(impulse, Vec2::ZERO);
-            }
-            // A Portal Gun shot is an item-layer circle with its own BoplBody.
-            for shot in &mut self.portal_shots {
-                if !shot.active || shot.entity.is_none_or(|entity| !hits.contains(&entity)) {
-                    continue;
-                }
-                let direction = shot.position - position;
-                let distance =
-                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
-                let impulse = direction.normalized_safe()
-                    * (wave.default_force / distance)
-                    * Fix::from_int(60);
+            } else if let Some(shot) = self.portal_shots.iter_mut().find(|shot| matches(shot.active, shot.entity)) {
+                // A Portal Gun shot is an item-layer circle with its own BoplBody.
+                let impulse = away(shot.position) * Fix::from_int(60);
                 shot.body.apply_impulse(impulse, Vec2::ZERO);
-            }
-        }
-        if wave.collision_mask & (1 << LAYER_PROJECTILE) != 0 {
-            for arrow in &mut self.arrows {
-                if !arrow.active || arrow.entity.is_none_or(|entity| !hits.contains(&entity)) {
-                    continue;
-                }
-                let direction = arrow.position - position;
-                let distance =
-                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
-                arrow.velocity += direction.normalized_safe()
-                    * (wave.default_force / distance)
-                    * Fix::from_int(60)
-                    * arrow.inverse_mass;
-            }
-            for missile in &mut self.guided_missiles {
-                if !missile.active || missile.entity.is_none_or(|entity| !hits.contains(&entity)) {
-                    continue;
-                }
-                let direction = missile.position - position;
-                let distance =
-                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
-                let impulse = direction.normalized_safe()
-                    * (wave.default_force / distance)
-                    * Fix::from_int(60);
+            } else if let Some(arrow) = self.arrows.iter_mut().find(|arrow| matches(arrow.active, arrow.entity)) {
+                arrow.velocity += away(arrow.position) * Fix::from_int(60) * arrow.inverse_mass;
+            } else if let Some(missile) =
+                self.guided_missiles.iter_mut().find(|missile| matches(missile.active, missile.entity))
+            {
+                let impulse = away(missile.position) * Fix::from_int(60);
                 missile.body.apply_impulse(impulse, Vec2::ZERO);
+            } else if let Some(hole) = self.black_holes.iter_mut().find(|hole| matches(hole.active, hole.entity)) {
+                hole.velocity += away(hole.position) / hole.mass;
             }
         }
-        if wave.collision_mask & (1 << 23) != 0 {
-            // RigidBodyAffector: BlackHole.AddForce, without the impulse's
-            // sixty-fold conversion.
-            for hole_index in 0..self.black_holes.len() {
-                if !self.black_holes[hole_index].active
-                    || self.black_holes[hole_index].entity.is_none_or(|entity| !hits.contains(&entity))
-                {
-                    continue;
-                }
-                let hole = &mut self.black_holes[hole_index];
-                let direction = hole.position - position;
-                let distance =
-                    (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
-                hole.velocity +=
-                    direction.normalized_safe() * (wave.default_force / distance) / hole.mass;
-            }
-        }
-        if wave.collision_mask & (1 << LAYER_PLAYER) == 0 {
-            return;
-        }
-        // A slime in its spawn animation has its hurtbox enabled, and AddForce
-        // feeds the disabled PlayerPhysics' externalVelocity all the same.
-        for player_index in 0..self.players.len() {
-            if !self.hittable(player_index) {
-                continue;
-            }
-            if matches!(
-                self.players[player_index].active,
-                ActiveAbility::Dash
-                    | ActiveAbility::Gust
-                    | ActiveAbility::Meteor
-                    | ActiveAbility::Platform
-                    | ActiveAbility::Push
-                    | ActiveAbility::Revival
-            ) {
-                // Shockwave skips an Ability component whose prefab has
-                // isPushable=false before looking for PlayerPhysics.
-                continue;
-            }
-            // CircleCastAll sees the registered Player-layer collider. During
-            // a non-instant ability that is the form row, while the ordinary
-            // slime box is disabled. The form may extend into a blast whose
-            // centre does not reach the hidden slime collider (Bow is the
-            // common case).
-            let player = &self.players[player_index];
-            let entity = match player.active {
-                ActiveAbility::None => player.body_entity,
-                ActiveAbility::Dash => player.dash_entity,
-                ActiveAbility::Bow => player.bow_entity,
-                ActiveAbility::Grenade
-                | ActiveAbility::Smoke
-                | ActiveAbility::Tack
-                | ActiveAbility::Mjolnir
-                | ActiveAbility::PokeBall
-                | ActiveAbility::Missile => player.throw_entity,
-                ActiveAbility::Mine => player.mine_entity,
-                ActiveAbility::Rock => player.rock_entity,
-                ActiveAbility::Roll => player.roll_entity,
-                ActiveAbility::Meteor => player.meteor_entity,
-                ActiveAbility::Push => player.push_entity,
-                ActiveAbility::Freeze => player.freeze_entity,
-                ActiveAbility::Blink => player.blink_entity,
-                ActiveAbility::GrowthRay => player.growth_ray_entity,
-                ActiveAbility::ShrinkRay => player.shrink_ray_entity,
-                ActiveAbility::Duplicator => player.duplicator_entity,
-                ActiveAbility::Magnet => player.magnet_entity,
-                ActiveAbility::Spike => player.spike_entity,
-                ActiveAbility::Engine => player.engine_entity,
-                ActiveAbility::Tesla => player.tesla_entity,
-                ActiveAbility::TimeStop => player.time_stop_entity,
-                ActiveAbility::Gust => player.gust_entity,
-                ActiveAbility::Revival => player.revival_entity,
-                ActiveAbility::BlackHole => player.black_hole_entity,
-                ActiveAbility::Throw => player.macho_throw_entity,
-                ActiveAbility::Drill => player.drill_entity,
-                ActiveAbility::Beam => player.beam_entity,
-                ActiveAbility::Platform => player.circle_entity,
-            };
-            if !hits.contains(&entity) {
-                continue;
-            }
-            let target = &mut self.players[player_index];
-            let delta = target.base.position - position;
-            let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
-            if target.active == ActiveAbility::Rock {
-                // Rock has a BoplBody but no PlayerPhysics/PlayerBody. The
-                // one-shot Shockwave fallback applies ordinary force with
-                // the source's 9000 multiplier instead of player velocity.
-                target.rock.body.force += delta
-                    * (wave.default_force / distance / Fix::from_int(7))
-                    * Fix::from_int(9000);
-                continue;
-            }
-            let mut force = delta * (wave.default_force / distance / Fix::from_int(7));
-            if target.base.grounded {
-                force *= wave.grounded_player_multiplier;
-            }
-            target.base.external_velocity += force * Fix::from_int(35);
+        if platforms_pushed {
+            self.platforms_changed();
         }
     }
 
