@@ -2596,9 +2596,6 @@ pub struct DrillState {
     pub time_underground: Fix,
     pub underground: bool,
     pub current_platform: Option<usize>,
-    pub collider_position: Vec2,
-    pub collider_up: Vec2,
-    pub collider_rotation: Fix,
     pub hitbox_position: Vec2,
     pub hitbox_up: Vec2,
     pub hitbox_rotation: Fix,
@@ -14027,9 +14024,6 @@ impl RolloutWorld {
                 // position and grounding.
                 self.deactivate_drill_hitboxes(index);
                 let slot = &mut self.players[index];
-                slot.drill.collider_position = slot.base.position;
-                slot.drill.collider_up = slot.base.up();
-                slot.drill.collider_rotation = slot.base.rotation();
                 info.velocity = slot.base.velocity;
                 info.external_velocity = slot.base.external_velocity;
                 info.facing_right = (info.velocity + info.external_velocity).x >= Fix::ZERO;
@@ -18168,9 +18162,6 @@ impl RolloutWorld {
             drill.phase = 2;
             drill.ticks = 0;
         }
-        self.players[index].drill.collider_position = self.players[index].base.position;
-        self.players[index].drill.collider_up = self.players[index].base.up();
-        self.players[index].drill.collider_rotation = self.players[index].base.rotation();
         self.players[index].update_drill_hitboxes(&mut self.entity_inverse_extents);
     }
 
@@ -37150,9 +37141,6 @@ impl RolloutWorld {
                 slot.reported_position = slot.base.position;
                 slot.reported_tick = self.tick;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
-                slot.drill.collider_position = slot.base.position;
-                slot.drill.collider_up = slot.base.up();
-                slot.drill.collider_rotation = slot.base.rotation();
                 slot.update_drill_hitboxes(&mut self.entity_inverse_extents);
                 return;
             }
@@ -41945,17 +41933,13 @@ impl RolloutWorld {
                 let box_row = &mut self.entities[drill_e];
                 let flags = form_box_flags(alive && drilling);
                 if sync_form_row(box_row, flags, drilling, entered == drill_e, slot.base.id) {
-                    let (position, up, rotation) = if drilling {
-                        (slot.base.position, slot.base.up(), slot.base.rotation())
-                    } else {
-                        (
-                            slot.drill.collider_position,
-                            slot.drill.collider_up,
-                            slot.drill.collider_rotation,
-                        )
-                    };
-                    let basis = up.perp_cw();
+                    // Drill.ExitAbility leaves the body's rotation
+                    // (Drill.cs:125-133), so the out box keeps it.
                     let form = slot.forms[slot.entity_slot(drill_e)];
+                    let at_sync = form.synced;
+                    let position = if drilling { at_sync.position } else { exit_position };
+                    let rotation = at_sync.orientation.rotation();
+                    let basis = at_sync.orientation.up().perp_cw();
                     let scale = hurtbox_scale(slot.player_scale);
                     let offset = if form.scale == Fix::ZERO {
                         data.drill.collider_offset * scale
