@@ -12789,6 +12789,11 @@ impl RolloutWorld {
                     self.exit_meteor_grounded(index);
                     return;
                 }
+                // DestroyIfOutsideSceneBounds follows MeteorSmash in every
+                // state, ahead of the SpriteAnimator (Meteor.prefab).
+                if self.ability_boundary_kill(index) {
+                    return;
+                }
                 // The animator's Jump callback runs after Ability.UpdateSim.
                 published = Some(self.players[index].base.position);
                 if self.players[index].meteor.ticks > data.meteor.ground_enter_ticks {
@@ -12832,6 +12837,9 @@ impl RolloutWorld {
                 slot.base.collision_rays(terrain!(self));
                 if self.players[index].base.grounded {
                     self.exit_meteor_grounded(index);
+                    return;
+                }
+                if self.ability_boundary_kill(index) {
                     return;
                 }
                 // PlayerBody moves by selfImposed plus external velocity,
