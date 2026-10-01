@@ -15036,6 +15036,9 @@ impl RolloutWorld {
     /// Updater.DestroyFix mid-pass: from here the node is IsDestroyed.
     fn mark_tesla_node_destroyed(&mut self, node_index: usize) {
         self.tesla_nodes[node_index].destroyed_tick = Some(self.tick);
+        if let Some(entity) = self.tesla_nodes[node_index].entity {
+            self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
+        }
     }
 
     /// Updater.DestroyFix on a wall marks every component in its children
@@ -16645,8 +16648,13 @@ impl RolloutWorld {
                 let node_min = self.swept_min(swept_node);
                 // A live node's pair with a slime's or form's collider queues
                 // from the Circle/Circle and Circle/Box groups.
-                let grouped = node_index < live_nodes && self.node_body_grouped(node_index, player_index);
-                let node_key = (node_hit && !grouped).then(|| pair(node_pass, node_min, node.entity));
+                // RingBuffer.Add DestroyFixes an evicted node, whose circle
+                // stays in this pass's DetPhysics; PlayerCollision refuses a
+                // destroyed collider (PlayerCollision.cs:313), so only its
+                // lightning, a separate object, still kills.
+                let retired = node_index >= live_nodes;
+                let grouped = !retired && self.node_body_grouped(node_index, player_index);
+                let node_key = (node_hit && !grouped && !retired).then(|| pair(node_pass, node_min, node.entity));
                 let line_key = line
                     .filter(|_| line_hit)
                     .map(|line| pair(node_pass + 1, box_min(line), None));
@@ -43494,7 +43502,7 @@ mod tests {
     }
 
     #[test]
-    fn evicted_tesla_remains_lethal_for_current_contacts() {
+    fn evicted_tesla_node_does_not_kill() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let entity = world.players[1].body_entity;
@@ -43514,7 +43522,7 @@ mod tests {
         world.tesla_contacts(data::get());
         world.run_callback_hits(data::get());
 
-        assert_eq!(world.players[1].deaths, 1);
+        assert_eq!(world.players[1].deaths, 0);
         assert!(world.retired_tesla_contacts.is_empty());
     }
 

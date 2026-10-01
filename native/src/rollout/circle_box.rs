@@ -920,6 +920,12 @@ impl RolloutWorld {
         }
     }
 
+    /// FixTransform.IsDestroyed for an entry's other collider: Updater.DestroyFix
+    /// marked its row earlier in this pass.
+    fn collider_destroyed(&self, collider: Option<usize>) -> bool {
+        collider.and_then(|entity| self.entities.get(entity)).is_some_and(|row| row.flags & E_DESTROYED != 0)
+    }
+
     /// The receiver's collisionCallback.OnCollide, run from DetPhysics' queue
     /// (DetPhysics.cs:3202-3205).
     pub(super) fn on_collide(
@@ -1053,6 +1059,9 @@ impl RolloutWorld {
             Part::Missile(missile) if self.part_layer(other, data) != LAYER_RIGID_BODY_AFFECTOR => {
                 self.run_callback_hit(CallbackHit::MissileBlast { missile }, data);
             }
+            // PlayerCollision.OnCollide refuses a collider an earlier callback
+            // destroyed (PlayerCollision.cs:313).
+            Part::Body(_) | Part::Clone(_) if self.collider_destroyed(collider) => {}
             // PlayerCollision.OnCollide: the Rock form is a
             // KillPlayersOnContact Ability, and Rock_noPlayer's Explosion
             // can hurt the slime it was copied from (PlayerCollision.cs:352-458).
