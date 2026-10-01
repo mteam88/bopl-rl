@@ -3306,7 +3306,7 @@ pub struct PlayerSlot {
     /// The slime's own PlayerPhysics and PlayerBody while a form's stand in
     /// for them as `base`: they go inactive with the form
     /// (SlimeController.cs:190) and keep the state this pass's Move left
-    /// them, until the form exits. Stale once the slime is live again.
+    /// them, until the form exits and they are `base` again. Empty otherwise.
     pub slime: Player,
     /// The pass `slime` went inactive on.
     pub slime_tick: u32,
@@ -3927,10 +3927,8 @@ impl PlayerSlot {
 
     /// The only writer of `active`. Entering a form hides the slime
     /// (SlimeController.cs:190) and leaving it shows the slime again.
+    /// A form leaves through `leave_form`, which hands the body back first.
     fn set_active_form(&mut self, entities: &mut [CEntity], form: ActiveAbility) {
-        if form == ActiveAbility::None && self.active != ActiveAbility::None {
-            self.slime_body_returns();
-        }
         self.active = form;
         self.base.sync_rotation_to_platform = form.sync_rotation_to_platform(data::get());
         if form != ActiveAbility::None {
@@ -3943,8 +3941,17 @@ impl PlayerSlot {
     /// PlayerPhysics and PlayerBody, and the slime's are the live body again.
     /// onExitAbility's SyncPhysicsTo(AbilityExitInfo) then writes the packet
     /// over them (PlayerPhysics.cs:554-585, SlimeController.cs:193-260).
-    fn slime_body_returns(&mut self) {
-        let form = std::mem::replace(&mut self.base, self.slime.clone());
+    /// `woken`: a refused kill's onExitAbility returns before SyncPhysicsTo
+    /// (SlimeController.cs:215-221), and the slime keeps its own motion.
+    fn leave_form(&mut self, entities: &mut [CEntity], woken: bool) {
+        if self.active != ActiveAbility::None {
+            self.slime_body_returns(woken);
+        }
+        self.set_active_form(entities, ActiveAbility::None);
+    }
+
+    fn slime_body_returns(&mut self, woken: bool) {
+        let form = std::mem::replace(&mut self.base, std::mem::take(&mut self.slime));
         // The Player object's own state, and the port's Dash state, which it
         // keeps on whichever body is live.
         self.base.alive = form.alive;
@@ -3961,14 +3968,16 @@ impl PlayerSlot {
         // grounded, grounded_speed, scale, radius, constants and box again;
         // the refused kill keeps grounded_speed and scale, a kill all of it.
         self.base.position = form.position; // leak: position
-        self.base.orientation = form.orientation; // leak: orientation
-        self.base.velocity = form.velocity; // leak: velocity
-        self.base.external_velocity = form.external_velocity; // leak: external_velocity
+        if !woken {
+            self.base.orientation = form.orientation; // leak: orientation
+            self.base.velocity = form.velocity; // leak: velocity
+            self.base.external_velocity = form.external_velocity; // leak: external_velocity
+            self.base.grounded = form.grounded; // leak: grounded
+            self.base.ground = form.ground; // leak: ground
+            self.base.local = form.local; // leak: local
+        }
         self.base.radius = form.radius; // leak: radius
         self.base.scale = form.scale; // leak: scale
-        self.base.grounded = form.grounded; // leak: grounded
-        self.base.ground = form.ground; // leak: ground
-        self.base.local = form.local; // leak: local
         self.base.grounded_speed = form.grounded_speed; // leak: grounded_speed
         self.base.skip_next_gravity = form.skip_next_gravity; // leak: skip_next_gravity
         self.base.jumped_this_frame = form.jumped_this_frame; // leak: jumped_this_frame
@@ -6035,7 +6044,6 @@ impl RolloutWorld {
                 grapple: [rope_abilities::GrappleState::default(); 3],
                 active: ActiveAbility::None,
                 active_slot: 0,
-                // The spawned slime itself, set below.
                 slime: Player::default(),
                 slime_tick: u32::MAX,
                 inactive_obs_state: STATE_FALL,
@@ -6206,8 +6214,6 @@ impl RolloutWorld {
                 drill_entity: drill_entity[i],
                 beam_entity: beam_entity[i],
             });
-            let slot = self.players.last_mut().expect("just pushed");
-            slot.slime = slot.base.clone();
         }
         self.body_template = self.players.first().cloned().map(Box::new);
 
@@ -13741,7 +13747,7 @@ impl RolloutWorld {
     /// for the next one.
     fn ability_exit(&mut self, index: usize, info: ExitInfo) {
         let tick = self.tick;
-        self.form_returns_slime(index);
+        self.form_returns_slime(index, false);
         let slot = &mut self.players[index];
         slot.set_ordinary_body_scale(slot.player_scale, &mut self.entity_inverse_extents);
         slot.facing_right = info.facing_right;
@@ -13813,7 +13819,7 @@ impl RolloutWorld {
     /// slime's onExitAbility (SlimeController.cs:198): the form publishes its
     /// position and goes inactive, and the body is the slime's again, on its
     /// own PlayerPhysics and radius.
-    fn form_returns_slime(&mut self, index: usize) {
+    fn form_returns_slime(&mut self, index: usize, woken: bool) {
         let slot = &mut self.players[index];
         if slot.active != ActiveAbility::None {
             slot.keep_form_rotation();
@@ -13826,7 +13832,7 @@ impl RolloutWorld {
         }
         slot.reported_position = slot.base.position;
         slot.reported_tick = tick;
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
+        slot.leave_form(&mut self.entities, woken);
         slot.base.constants = data::get().player.constants.clone();
         slot.base.radius = slot.slime_radius;
     }
@@ -21053,8 +21059,7 @@ impl RolloutWorld {
         slot.obs_state = STATE_NOTHING;
         slot.empty_prefab_facing();
         slot.timers.fill(Fix::from_f32(-1.5));
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.slime.scale = slot.player_scale;
+        slot.leave_form(&mut self.entities, false);
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
         // strand the dead slime let go keeps hanging, since only the
@@ -21551,8 +21556,7 @@ impl RolloutWorld {
         slot.base.scale = Fix::ONE;
         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
         slot.empty_prefab_facing();
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.slime.scale = slot.player_scale;
+        slot.leave_form(&mut self.entities, false);
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
         // strand the dead slime let go keeps hanging, since only the
@@ -36569,7 +36573,7 @@ impl RolloutWorld {
         slot.base.alive = false;
         // Nothing of it is left in the scene.
         slot.slime_gone = true;
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
+        slot.leave_form(&mut self.entities, false);
         slot.revival_clone_pending = false;
         slot.stock_clone_pending = false;
         slot.revival_target_marker = None;
@@ -36748,16 +36752,13 @@ impl RolloutWorld {
             // killPlayer refused, clears isInAbility and returns
             // (SlimeController.cs:215-221): no SyncPhysicsTo, so the slime
             // is on the PlayerPhysics it froze with.
-            self.form_returns_slime(index);
+            self.form_returns_slime(index, true);
             let slot = &mut self.players[index];
             // The slime's own PlayerBody and PlayerPhysics, enabled again as
             // they froze.
-            slot.base.set_rotation(slot.slime.rotation());
-            slot.base.external_velocity = slot.slime.external_velocity;
-            slot.base.velocity = slot.slime.velocity;
-            slot.base.ground = slot.slime.ground.filter(|_| slot.slime.grounded);
+            slot.base.set_rotation(slot.base.rotation());
+            slot.base.ground = slot.base.ground.filter(|_| slot.base.grounded);
             slot.base.grounded = slot.base.ground.is_some();
-            slot.base.local = slot.slime.local;
             slot.base.position = drop_position;
             slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             return true;
@@ -36825,7 +36826,7 @@ impl RolloutWorld {
             self.players[index].reported_tick = self.tick;
         }
         let slot = &mut self.players[index];
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
+        slot.leave_form(&mut self.entities, false);
         slot.base.dash.active = false;
         // Teleport's marker reference belongs to the destroyed ability
         // instance. The independent indicator survives, but a replacement
@@ -38353,8 +38354,10 @@ impl RolloutWorld {
             // that left one form and cast the next this pass shows the new one.
             let (center, angle) = if body_active || slime_teleporting {
                 (synced, rotation)
-            } else {
+            } else if in_ability {
                 (slot.slime.position, slot.slime.rotation())
+            } else {
+                (slot.base.position, slot.base.rotation())
             };
             let in_form = alive && (dashing || in_ability);
             if body_active || body_was_active || slime_teleporting || in_form {
