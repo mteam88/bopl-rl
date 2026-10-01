@@ -3912,6 +3912,10 @@ enum CallbackHit {
     PortalShotLand { shot: usize, normal: Vec2 },
     /// PokeBall.OnCollide with a slime's or an abilityless clone's box.
     PokeCapture { item: usize, victim: usize, clone: bool },
+    /// Mjolnir.OnCollide with a wall.
+    MjolnirWall { item: usize, wall: usize },
+    /// BananaPeel.OnCollide with a wall, with the manifold's normal.
+    TackWall { item: usize, normal: Vec2 },
     /// FlammableSmoke.OnCollide with an igniteFlammables Explosion.
     SmokeIgnite { cloud: usize, entity: usize },
     /// A lethal Roll's target-side callback on a collider that is no player:
@@ -7832,10 +7836,10 @@ impl RolloutWorld {
             self.scratch.portal_shot_wall_contacts = shot_contacts;
         }
         if has(ABILITY_MJOLNIR) {
-            self.mjolnir_wall_pushes(data);
+            self.queue_item_wall_callbacks(ABILITY_MJOLNIR);
         }
         if has(ABILITY_TACK) {
-            self.tack_wall_settles();
+            self.queue_item_wall_callbacks(ABILITY_TACK);
         }
         if has_thrown_item {
             self.thrown_items_contacts(data);
@@ -36242,65 +36246,74 @@ impl RolloutWorld {
         self.scratch.item_platform_contacts = all_contacts;
     }
 
-    /// Mjolnir.OnCollide on its wall manifolds. DetPhysics runs every
-    /// callback after all contact types resolved, so the push follows the
-    /// hammer's velocity after its Circle/Circle contacts too.
-    fn mjolnir_wall_pushes(&mut self, data: &data::RolloutData) {
+    /// Each wall manifold of a registered Mjolnir or Tack queues the item's
+    /// OnCollide at its Circle/RoundedRect pair's place.
+    fn queue_item_wall_callbacks(&mut self, ability: u32) {
         let contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
-        for &(item_index, platform_index, _) in &contacts {
-            let item = self.thrown_items[item_index];
-            if item.ability != ABILITY_MJOLNIR
-                || !item.active
-                || item.entity.is_none()
-                || item.callback_registered_tick == self.tick
-                || self.blink_object_hidden(item.entity)
-                || !item.launched
-                || item.age < data.mjolnir.clang_grace_seconds
+        for &(item, wall, contact) in &contacts {
+            let thrown = self.thrown_items[item];
+            if thrown.ability != ability
+                || !thrown.active
+                || thrown.entity.is_none()
+                || thrown.callback_registered_tick == self.tick
+                || self.blink_object_hidden(thrown.entity)
             {
                 continue;
             }
-            let force = item.body.velocity.normalized_safe() * data.mjolnir.platform_push_force;
-            self.platform_dynamics[platform_index].body.force += force;
-            self.platforms_changed();
-            if item.phase == 0 {
-                self.thrown_items[item_index].phase = 1;
-            }
+            let (later, earlier) = sweep_pair(self.part_rank(Part::Item(item)), self.wall_rank(wall));
+            let hit = if ability == ABILITY_MJOLNIR {
+                CallbackHit::MjolnirWall { item, wall }
+            } else {
+                CallbackHit::TackWall { item, normal: contact.normal }
+            };
+            self.scratch.callback_hits.push(((GROUP_CIRCLE_RR, later, earlier), hit));
         }
         self.scratch.item_platform_contacts = contacts;
     }
 
-    /// BananaPeel.OnCollide on its wall manifolds. It runs from DetPhysics'
-    /// callback queue, after every contact group resolved, so the settle
-    /// point includes the Circle/Circle and Circle/Box corrections and the
-    /// velocity test sees the velocity those groups left.
-    fn tack_wall_settles(&mut self) {
-        let contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
-        for &(item_index, _, contact) in &contacts {
-            let item = self.thrown_items[item_index];
-            if item.ability != ABILITY_TACK
-                || !item.active
-                || item.callback_registered_tick == self.tick
-                || self.blink_object_hidden(item.entity)
-                || item.settled
-                || !item.launched
-                || item.age <= Fix::from_f32(0.1)
-                || contact.normal.y >= Fix::from_f32(-0.5)
-                || item.body.velocity.y > Fix::from_f32(0.5)
-            {
-                continue;
-            }
-            let Some(entity) = item.entity else { continue };
-            let thrown = &mut self.thrown_items[item_index];
-            thrown.settled = true;
-            thrown.settle_position = thrown.position;
-            thrown.body.velocity = Vec2::ZERO;
-            thrown.body.angular_velocity = Fix::ZERO;
-            let row = &mut self.entities[entity];
-            row.vx = 0;
-            row.vy = 0;
-            row.angular_velocity = 0;
+    /// Mjolnir.OnCollide with a wall: past its clang grace a launched hammer
+    /// pushes any wall that is not destroyed along its velocity, which every
+    /// group of the pass has resolved, and a hammer still flying out turns
+    /// back (Mjolnir.cs:292-318).
+    fn mjolnir_wall_callback(&mut self, item_index: usize, wall: usize, data: &data::RolloutData) {
+        let item = self.thrown_items[item_index];
+        if !item.active || !item.launched || item.age < data.mjolnir.clang_grace_seconds {
+            return;
         }
-        self.scratch.item_platform_contacts = contacts;
+        if self.entities[self.platform_entities[wall]].flags & E_DESTROYED == 0 {
+            let force = item.body.velocity.normalized_safe() * data.mjolnir.platform_push_force;
+            self.platform_dynamics[wall].body.force += force;
+            self.platforms_changed();
+        }
+        if item.phase == 0 {
+            self.thrown_items[item_index].phase = 1;
+        }
+    }
+
+    /// BananaPeel.OnCollide with a wall: a launched tack past its first 0.1 s
+    /// settles on a wall below it while not rising, at the position and with
+    /// the velocity every group of the pass left (BananaPeel.cs:113-138).
+    fn tack_wall_callback(&mut self, item_index: usize, normal: Vec2) {
+        let item = self.thrown_items[item_index];
+        if !item.active
+            || item.settled
+            || !item.launched
+            || item.age <= Fix::from_f32(0.1)
+            || normal.y >= Fix::from_f32(-0.5)
+            || item.body.velocity.y > Fix::from_f32(0.5)
+        {
+            return;
+        }
+        let Some(entity) = item.entity else { return };
+        let thrown = &mut self.thrown_items[item_index];
+        thrown.settled = true;
+        thrown.settle_position = thrown.position;
+        thrown.body.velocity = Vec2::ZERO;
+        thrown.body.angular_velocity = Fix::ZERO;
+        let row = &mut self.entities[entity];
+        row.vx = 0;
+        row.vy = 0;
+        row.angular_velocity = 0;
     }
 
     /// Item circles participate in ordinary rigid-body contacts.
@@ -37078,6 +37091,8 @@ impl RolloutWorld {
                 }
                 CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
                 CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
+                CallbackHit::MjolnirWall { item, wall } => self.mjolnir_wall_callback(item, wall, data),
+                CallbackHit::TackWall { item, normal } => self.tack_wall_callback(item, normal),
                 CallbackHit::PokeCapture { item, victim, clone } => {
                     let ball = self.thrown_items[item];
                     if !ball.active || !ball.launched || ball.capture_victim.is_some() {
