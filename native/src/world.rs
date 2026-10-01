@@ -36,7 +36,7 @@ pub struct Platform {
     pub collider: RoundedRect,
     pub ice: bool,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MovementConstants {
     pub max_speed: Fix,
     pub accel: Fix,
@@ -57,7 +57,7 @@ fn default_fixed_delta_time() -> Fix {
     DT
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Player {
     pub alive: bool,
     /// Set with `alive = false` when a boundary component destroyed the body.

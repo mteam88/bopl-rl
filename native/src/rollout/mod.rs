@@ -1398,8 +1398,8 @@ fn place_drill_hitbox_rows(
         let row = &mut entities[entity];
         let (offset, _) = data.drill.hitboxes[hitbox_index];
         let basis = slot.drill.hitbox_up.perp_cw();
-        let form = slot.drill_hitbox_scales[slot.active_slot][hitbox_index];
-        let scale = if form.scale == Fix::ZERO { hurtbox_scale(slot.player_scale) } else { form.scale };
+        let scale = slot.drill_hitbox_scales[slot.active_slot][hitbox_index];
+        let scale = if scale == Fix::ZERO { hurtbox_scale(slot.player_scale) } else { scale };
         let center = slot.drill.hitbox_position + (offset * scale).complex_mul(basis);
         let collider = stored_box(center, Vec2::angle(slot.drill.hitbox_rotation), inverse_extents[entity]);
         row.x = center.x.raw();
@@ -1856,14 +1856,18 @@ pub const PLATFORM_ROTATION: u32 = 1;
 pub const PLATFORM_SIZE: u32 = 2;
 pub const PLATFORM_EXIT: u32 = 3;
 
-/// An ability form's box collider and PlayerPhysics follow Player.Scale on
-/// their own. Ability assigns the scale to the box every pass, which divides
-/// the inverse extents its row holds by the rounded `(One / old) * new`, and
-/// PlayerPhysics.UpdateScale multiplies the radius by `new / prevScal`. The
-/// form object outlives each use, so its drift carries over. A zero scale
-/// marks a form that has not been entered yet.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct FormScale {
+/// An ability slot's form object, which outlives each use. Its box collider
+/// and PlayerPhysics follow Player.Scale on their own. Ability assigns the
+/// scale to the box every pass, which divides the inverse extents its row
+/// holds by the rounded `(One / old) * new`, and PlayerPhysics.UpdateScale
+/// multiplies the radius by `new / prevScal`, so the drift carries over. A
+/// zero scale marks a form that has not been entered yet.
+#[derive(Clone, Debug, Default)]
+pub struct FormBody {
+    /// The form's PlayerPhysics and PlayerBody while it is inactive. While it
+    /// is live they are `PlayerSlot::base`: they move in at entry and back
+    /// out at exit.
+    pub body: Player,
     pub scale: Fix,
     pub radius: Fix,
     pub physics_scale: Fix,
@@ -1901,26 +1905,33 @@ pub struct FormPose {
     pub orientation: Orientation,
 }
 
-impl FormScale {
-    /// `potentialCollider.Scale = Player.Scale` (Ability.cs:105, 135). Every
-    /// form prefab's box clamps it to MinScale (Fix)0.3f, above Player.Scale's
-    /// own (Fix)0.3 floor. The setter divides the box's inverseExtents, which
-    /// its row's entry holds, right then (DPhysicsBox.cs:212-214).
+/// `Scale = value` on a box collider whose Scale is `scale` (zero for one
+/// never scaled): every form prefab's box clamps it to MinScale (Fix)0.3f,
+/// above Player.Scale's own (Fix)0.3 floor. The setter divides the box's
+/// inverseExtents, which its row's entry holds, right then
+/// (DPhysicsBox.cs:212-214).
+fn scale_box(scale: &mut Fix, value: Fix, inverse_extents: &mut Vec2) {
+    let value = hurtbox_scale(value);
+    let old = if *scale == Fix::ZERO { Fix::ONE } else { *scale };
+    *inverse_extents = *inverse_extents / ((Fix::ONE / old) * value);
+    *scale = value;
+}
+
+impl FormBody {
+    /// `potentialCollider.Scale = Player.Scale` (Ability.cs:105, 135).
     fn set_scale(&mut self, value: Fix, radius: Fix, inverse_extents: &mut Vec2) {
-        let value = hurtbox_scale(value);
         if self.scale == Fix::ZERO {
-            *self = FormScale {
+            *self = FormBody {
+                body: std::mem::take(&mut self.body),
                 scale: Fix::ONE,
                 radius,
                 physics_scale: Fix::ONE,
                 pose: self.pose,
                 synced: self.synced,
-                ..FormScale::default()
+                ..FormBody::default()
             };
         }
-        let ratio = (Fix::ONE / self.scale) * value;
-        *inverse_extents = *inverse_extents / ratio;
-        self.scale = value;
+        scale_box(&mut self.scale, value, inverse_extents);
     }
 
     /// `set_scale` for a box collider with an offset.
@@ -1939,12 +1950,13 @@ impl FormScale {
     /// the prefab's MinScale (Fix)0.3f and MaxScale 3.
     fn set_circle_scale(&mut self, value: Fix, radius: Fix) {
         if self.scale == Fix::ZERO {
-            *self = FormScale {
+            *self = FormBody {
+                body: std::mem::take(&mut self.body),
                 scale: Fix::ONE,
                 circle_radius: radius,
                 pose: self.pose,
                 synced: self.synced,
-                ..FormScale::default()
+                ..FormBody::default()
             };
         }
         let value = hurtbox_scale(value);
@@ -1956,14 +1968,15 @@ impl FormScale {
     /// radius `physics_radius` then follows.
     fn set_circle_scale_physics(&mut self, value: Fix, radius: Fix, physics_radius: Fix) {
         if self.scale == Fix::ZERO {
-            *self = FormScale {
+            *self = FormBody {
+                body: std::mem::take(&mut self.body),
                 scale: Fix::ONE,
                 circle_radius: radius,
                 radius: physics_radius,
                 physics_scale: Fix::ONE,
                 pose: self.pose,
                 synced: self.synced,
-                ..FormScale::default()
+                ..FormBody::default()
             };
         }
         self.set_circle_scale(value, radius);
@@ -2078,7 +2091,7 @@ pub struct RollState {
 }
 
 /// MeteorSmash's four source states. `position` is the ability PlayerBody;
-/// the original slime remains frozen in `frozen_slime` while this is live.
+/// the original slime remains frozen in `PlayerSlot::slime` while this is live.
 #[derive(Clone, Copy, Default)]
 pub struct MeteorState {
     /// 0 anticipation, 1 jump, 2 vibrate, 3 dash.
@@ -2155,42 +2168,6 @@ pub struct MagnetState {
     /// allocation-free StaticUpdate parry sweep.
     pub parry_registered: bool,
     pub parry_circle: Circle,
-}
-
-/// The slime as EnterAbility left it: SlimeController, PlayerBody and
-/// PlayerPhysics go inactive with the form (SlimeController.cs:190) and keep
-/// the pass's post-gravity state until the form exits.
-#[derive(Clone, Copy)]
-pub struct FrozenSlime {
-    /// The pass this was taken on.
-    pub tick: u32,
-    pub position: Vec2,
-    /// PlayerBody.Velocity: the self-imposed and external parts together.
-    pub velocity: Vec2,
-    /// The external part of `velocity`.
-    pub external: Vec2,
-    pub rotation: Fix,
-    /// SlimeController.currentState.
-    pub state: u32,
-    /// The hurtbox's Scale.
-    pub scale: Fix,
-    /// PlayerPhysics keeps its ground while in a form.
-    pub ground: Option<u32>,
-    /// PlayerPhysics.LocalPlatformPos on that ground.
-    pub local: Fix,
-}
-
-impl FrozenSlime {
-    /// The slime's PlayerBody and PlayerPhysics enabled again as they froze,
-    /// before any SyncPhysicsTo.
-    fn wake(&self, base: &mut Player) {
-        base.set_rotation(self.rotation);
-        base.external_velocity = self.external;
-        base.velocity = self.velocity - self.external;
-        base.ground = self.ground;
-        base.grounded = self.ground.is_some();
-        base.local = self.local;
-    }
 }
 
 /// SlimeController's ragdoll timer, which runs while its currentState
@@ -3063,7 +3040,7 @@ pub struct DestroyedGround {
 }
 
 /// A form whose GameObject went inactive on `tick`'s pass. DetPhysics still syncs an
-/// inactive transform, so the form's row shows its FixTransform (`FormScale::pose`):
+/// inactive transform, so the form's row shows its FixTransform (`FormBody::pose`):
 /// through the exit pass, or for as long as a teleport keeps the form hidden. Where
 /// `posed` is false only the position holds, and the form's own exit rotation applies.
 #[derive(Clone, Copy)]
@@ -3326,9 +3303,15 @@ pub struct PlayerSlot {
     pub(crate) grapple: [rope_abilities::GrappleState; 3],
     pub active: ActiveAbility,
     pub active_slot: usize,
-    /// The original SlimeController stays at the ability entry point while
-    /// the active ability's separate body moves.
-    pub frozen_slime: FrozenSlime,
+    /// The slime's own PlayerPhysics and PlayerBody while a form's stand in
+    /// for them as `base`: they go inactive with the form
+    /// (SlimeController.cs:190) and keep the state this pass's Move left
+    /// them, until the form exits. Stale once the slime is live again.
+    pub slime: Player,
+    /// The pass `slime` went inactive on.
+    pub slime_tick: u32,
+    /// The inactive SlimeController's currentState.
+    pub inactive_obs_state: u32,
     /// The pass and the body position before this player's updaters ran on
     /// it: an Updater object older than the form still sees it there.
     pub pass_start: (u32, Vec2),
@@ -3346,7 +3329,7 @@ pub struct PlayerSlot {
     /// few-raw-unit drift that an absolute authored_extents * scale loses.
     pub body_collider_scale: Fix,
     /// Each ability slot's form object.
-    pub forms: [FormScale; 3],
+    pub forms: [FormBody; 3],
     /// Player.isInvisible and its two clocks. `was_invisible` belongs to the
     /// currently active SlimeController and drives cooldown restoration.
     pub invisible: bool,
@@ -3493,7 +3476,8 @@ pub struct PlayerSlot {
     /// Each of those boxes' DPhysicsBox.Scale history. The setter divides the
     /// inverse extents by `(One / old) * new` (DPhysicsBox.cs:204-218), and the
     /// boxes outlive each use, so the drift carries over like `forms`.
-    pub drill_hitbox_scales: [[FormScale; 3]; 3],
+    /// Zero marks a box never scaled.
+    pub drill_hitbox_scales: [[Fix; 3]; 3],
     /// BlackHoleClap sets Ability.isCastable=false after firing. This belongs
     /// to the equipped prefab instance, so duplicate slots are independent.
     pub black_hole_castable: [bool; 3],
@@ -3703,12 +3687,12 @@ impl PlayerSlot {
         self.drill.hitbox_up = self.base.up();
         self.drill.hitbox_rotation = self.base.rotation();
         let scale = hurtbox_scale(self.player_scale);
-        for (form, &entity) in self.drill_hitbox_scales[self.active_slot]
+        for (box_scale, &entity) in self.drill_hitbox_scales[self.active_slot]
             .iter_mut()
             .zip(&self.drill_hitbox_entities[self.active_slot])
         {
-            if form.scale != scale {
-                form.set_scale(scale, Fix::ZERO, &mut inverse_extents[entity]);
+            if *box_scale != scale {
+                scale_box(box_scale, scale, &mut inverse_extents[entity]);
             }
         }
     }
@@ -3831,7 +3815,7 @@ impl PlayerSlot {
 
     /// BounceBall's DPhysicsCircle: its radius and Scale, kept by its slot's
     /// prefab between uses like any other form collider.
-    fn rock_circle(&self) -> &FormScale {
+    fn rock_circle(&self) -> &FormBody {
         &self.forms[self.rock_slot()]
     }
 
@@ -3944,6 +3928,9 @@ impl PlayerSlot {
     /// The only writer of `active`. Entering a form hides the slime
     /// (SlimeController.cs:190) and leaving it shows the slime again.
     fn set_active_form(&mut self, entities: &mut [CEntity], form: ActiveAbility) {
+        if form == ActiveAbility::None && self.active != ActiveAbility::None {
+            self.slime_body_returns();
+        }
         self.active = form;
         self.base.sync_rotation_to_platform = form.sync_rotation_to_platform(data::get());
         if form != ActiveAbility::None {
@@ -3952,6 +3939,51 @@ impl PlayerSlot {
         self.sync_slime_row(entities);
     }
 
+    /// Leaving a form, by its exit or its death: the form keeps its own
+    /// PlayerPhysics and PlayerBody, and the slime's are the live body again.
+    /// onExitAbility's SyncPhysicsTo(AbilityExitInfo) then writes the packet
+    /// over them (PlayerPhysics.cs:554-585, SlimeController.cs:193-260).
+    fn slime_body_returns(&mut self) {
+        let form = std::mem::replace(&mut self.base, self.slime.clone());
+        // The Player object's own state, and the port's Dash state, which it
+        // keeps on whichever body is live.
+        self.base.alive = form.alive;
+        self.base.out_of_bounds = form.out_of_bounds;
+        self.base.id = form.id;
+        self.base.space = form.space;
+        self.base.previous_jump = form.previous_jump;
+        self.base.fixed_delta_time = form.fixed_delta_time;
+        self.base.instant_cast_this_pass = form.instant_cast_this_pass;
+        self.base.cooldown = form.cooldown;
+        self.base.dash = form.dash.clone();
+        // The slime goes on from the form's body wherever the exit writes
+        // nothing over it. ability_exit writes the pose, velocities, ground,
+        // grounded, grounded_speed, scale, radius, constants and box again;
+        // the refused kill keeps grounded_speed and scale, a kill all of it.
+        self.base.position = form.position; // leak: position
+        self.base.orientation = form.orientation; // leak: orientation
+        self.base.velocity = form.velocity; // leak: velocity
+        self.base.external_velocity = form.external_velocity; // leak: external_velocity
+        self.base.radius = form.radius; // leak: radius
+        self.base.scale = form.scale; // leak: scale
+        self.base.grounded = form.grounded; // leak: grounded
+        self.base.ground = form.ground; // leak: ground
+        self.base.local = form.local; // leak: local
+        self.base.grounded_speed = form.grounded_speed; // leak: grounded_speed
+        self.base.skip_next_gravity = form.skip_next_gravity; // leak: skip_next_gravity
+        self.base.jumped_this_frame = form.jumped_this_frame; // leak: jumped_this_frame
+        self.base.was_upside_down = form.was_upside_down; // leak: was_upside_down
+        self.base.pre_move_up = form.pre_move_up; // leak: pre_move_up
+        self.base.pre_move_grounded = form.pre_move_grounded; // leak: pre_move_grounded
+        self.base.attach_upside_down = form.attach_upside_down; // leak: attach_upside_down
+        self.base.constants = form.constants.clone(); // leak: constants
+        self.base.collider = form.collider; // leak: collider
+        self.base.synced = form.synced; // leak: synced
+        self.base.collider_rotation = form.collider_rotation; // leak: collider_rotation
+        self.base.collider_up = form.collider_up; // leak: collider_up
+        self.base.collider_basis = form.collider_basis; // leak: collider_basis
+        self.forms[self.active_slot].body = form;
+    }
 
     /// The only writer of `teleport_effect_active`: teleportObject hides the
     /// slime until the TeleportedObjectEffect shows it again.
@@ -4037,7 +4069,7 @@ impl PlayerSlot {
     /// Forgets the entity rows this body held.
     fn clear_entity_rows(&mut self) {
         self.drill_hitbox_entities = [[usize::MAX; 3]; 3];
-        self.drill_hitbox_scales = [[FormScale::default(); 3]; 3];
+        self.drill_hitbox_scales = [[Fix::ZERO; 3]; 3];
         self.form_entities = [usize::MAX; 3];
         self.circle_entity = usize::MAX;
         self.rock_entity = usize::MAX;
@@ -5990,7 +6022,7 @@ impl RolloutWorld {
                 abilities,
                 ability_generation: [0; 3],
                 ability_instantiated: [true; 3],
-                forms: [FormScale::default(); 3],
+                forms: Default::default(),
                 pending_ability_hierarchy: [u32::MAX; 3],
                 timers: [timer0; 3],
                 cooldowns,
@@ -6003,17 +6035,10 @@ impl RolloutWorld {
                 grapple: [rope_abilities::GrappleState::default(); 3],
                 active: ActiveAbility::None,
                 active_slot: 0,
-                frozen_slime: FrozenSlime {
-                    tick: u32::MAX,
-                    position: spawn,
-                    velocity: Vec2::ZERO,
-                    external: Vec2::ZERO,
-                    rotation: Fix::ZERO,
-                    state: STATE_FALL,
-                    scale: Fix::ONE,
-                    ground: None,
-                    local: Fix::ZERO,
-                },
+                // The spawned slime itself, set below.
+                slime: Player::default(),
+                slime_tick: u32::MAX,
+                inactive_obs_state: STATE_FALL,
                 pass_start: (u32::MAX, Vec2::ZERO),
                 ability_entry_action: Action::default(),
                 player_scale: Fix::ONE,
@@ -6081,7 +6106,7 @@ impl RolloutWorld {
                 beam: BeamState::default(),
                 beam_orb_slots: [None; 3],
                 drill_hitbox_entities: [[usize::MAX; 3]; 3],
-                drill_hitbox_scales: [[FormScale::default(); 3]; 3],
+                drill_hitbox_scales: [[Fix::ZERO; 3]; 3],
                 black_hole_castable: [true; 3],
                 revival_markers: [None; 3],
                 revival_clone_pending: false,
@@ -6181,6 +6206,8 @@ impl RolloutWorld {
                 drill_entity: drill_entity[i],
                 beam_entity: beam_entity[i],
             });
+            let slot = self.players.last_mut().expect("just pushed");
+            slot.slime = slot.base.clone();
         }
         self.body_template = self.players.first().cloned().map(Box::new);
 
@@ -6733,9 +6760,9 @@ impl RolloutWorld {
         // The new Beam component has no orbEffect yet (Beam.cs:261).
         slot.beam_orb_slots[ability_slot] = None;
         slot.rope_prev[ability_slot + 1] = (Vec2::ZERO, Vec2::ZERO);
-        slot.forms[ability_slot] = FormScale::default();
+        slot.forms[ability_slot] = FormBody::default();
         slot.drill_hitbox_entities[ability_slot] = [usize::MAX; 3];
-        slot.drill_hitbox_scales[ability_slot] = [FormScale::default(); 3];
+        slot.drill_hitbox_scales[ability_slot] = [Fix::ZERO; 3];
         slot.black_hole_castable[ability_slot] = true;
         slot.platform_hurtbox_disabled[ability_slot] = false;
         slot.portal_blue[ability_slot] = None;
@@ -10469,18 +10496,22 @@ impl RolloutWorld {
                             self.entity_inverse_extents[slot.body_entity] / ratio;
                         slot.body_collider_scale = scale;
                     }
-                    slot.frozen_slime = FrozenSlime {
-                        tick: self.tick,
-                        position: frozen.position,
-                        velocity: frozen.velocity + frozen.external_velocity,
-                        external: frozen.external_velocity,
-                        rotation: frozen.rotation(),
-                        state: slot.obs_state,
-                        scale,
-                        ground: frozen.ground.filter(|_| frozen.grounded),
-                        local: frozen.local,
-                    };
+                    slot.slime = frozen;
+                    slot.slime.scale = scale;
+                    slot.slime_tick = self.tick;
+                    slot.inactive_obs_state = slot.obs_state;
                     slot.slime_radius = slot.base.radius;
+                    if !data.abilities[ability as usize].instant {
+                        // Ability.EnterAbility: the form's own PlayerPhysics
+                        // and PlayerBody become the live body.
+                        let form = std::mem::take(&mut slot.forms[s].body);
+                        let slime = std::mem::replace(&mut slot.base, form);
+                        // leak: the form's body is replaced whole by the slime's
+                        // as it was before this pass's Move; only
+                        // SyncPhysicsTo(PlayerInfo) and EnterAbility's writes
+                        // should cross (PlayerPhysics.cs:525-552, Ability.cs:89-112).
+                        slot.base = slime;
+                    }
                     slot.select_form(s);
                     // Ability.EnterAbility scales the enabled form collider
                     // from Player.Scale before invoking its components.
@@ -10928,7 +10959,7 @@ impl RolloutWorld {
                             self.players[index].base.position
                         };
                         if self.players[index].form_entities[s] == usize::MAX {
-                            self.players[index].forms[s] = FormScale::default();
+                            self.players[index].forms[s] = FormBody::default();
                             let id = self.next_id();
                             let entity = self.entities.len();
                             self.push_entity(CEntity {
@@ -11098,7 +11129,7 @@ impl RolloutWorld {
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.base.constants = data.meteor.constants.clone();
-                        let form = slot.forms[s];
+                        let form = &slot.forms[s];
                         let offset = if form.scale == Fix::ZERO { data.meteor.collider_offset } else { form.offset };
                         self.form_enter(index, self.players[index].base.radius, offset);
                         // MeteorSmash.OnEnterAbility then stills and unrotates
@@ -11149,7 +11180,7 @@ impl RolloutWorld {
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
                         let rotation = slot.base.rotation();
-                        let form = slot.forms[s];
+                        let form = &slot.forms[s];
                         let offset = if form.scale == Fix::ZERO { data.mine.collider_offset } else { form.offset };
                         self.form_enter(index, form_radius, offset);
                         // ThrowItem.OnEnterAbility then hands the body PlayerInfo's
@@ -11447,7 +11478,7 @@ impl RolloutWorld {
                             // Duplicator's authored PlayerPhysics radius
                             // differs from the ordinary slime. SyncPhysicsTo
                             // changes Player.Position immediately while the
-                            // disabled SlimeController retains frozen_slime.
+                            // disabled slime keeps its own body.
                             let slot = &mut self.players[index];
                             slot.reported_position = slot.base.position;
                             slot.reported_tick = self.tick;
@@ -20993,7 +21024,7 @@ impl RolloutWorld {
         slot.ability_instantiated = [true; 3];
         slot.beam_orb_slots = [None; 3];
         slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
-        slot.forms = [FormScale::default(); 3];
+        slot.forms = Default::default();
         slot.pending_ability_hierarchy = [u32::MAX; 3];
         slot.base.position = position;
         slot.base.external_velocity = Vec2::ZERO;
@@ -21023,7 +21054,7 @@ impl RolloutWorld {
         slot.empty_prefab_facing();
         slot.timers.fill(Fix::from_f32(-1.5));
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.frozen_slime.scale = slot.player_scale;
+        slot.slime.scale = slot.player_scale;
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
         // strand the dead slime let go keeps hanging, since only the
@@ -21063,7 +21094,7 @@ impl RolloutWorld {
         slot.beam = BeamState::default();
         slot.beam_orb_slots = [None; 3];
         slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
-        slot.drill_hitbox_scales = [[FormScale::default(); 3]; 3];
+        slot.drill_hitbox_scales = [[Fix::ZERO; 3]; 3];
         slot.black_hole_castable = [true; 3];
         slot.spike_attacks = [None; 3];
         slot.platform_hurtbox_disabled = [false; 3];
@@ -21502,7 +21533,7 @@ impl RolloutWorld {
         slot.ability_instantiated = [true; 3];
         slot.beam_orb_slots = [None; 3];
         slot.rope_prev = [(Vec2::ZERO, Vec2::ZERO); 4];
-        slot.forms = [FormScale::default(); 3];
+        slot.forms = Default::default();
         slot.pending_ability_hierarchy = [u32::MAX; 3];
         slot.base.radius = data.player.radius;
         // The empty player prefab's PlayerPhysics (PlayerCollision.cs:249),
@@ -21521,7 +21552,7 @@ impl RolloutWorld {
         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
         slot.empty_prefab_facing();
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.frozen_slime.scale = slot.player_scale;
+        slot.slime.scale = slot.player_scale;
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
         // strand the dead slime let go keeps hanging, since only the
@@ -21561,7 +21592,7 @@ impl RolloutWorld {
         slot.beam = BeamState::default();
         slot.beam_orb_slots = [None; 3];
         slot.drill_hitbox_entities = [[usize::MAX; 3]; 3];
-        slot.drill_hitbox_scales = [[FormScale::default(); 3]; 3];
+        slot.drill_hitbox_scales = [[Fix::ZERO; 3]; 3];
         slot.black_hole_castable = [true; 3];
         slot.spike_attacks = [None; 3];
         slot.platform_hurtbox_disabled = [false; 3];
@@ -26404,7 +26435,8 @@ impl RolloutWorld {
         } else if self.players[victim].active == ActiveAbility::None {
             (source.ground.filter(|_| source.grounded), source.position)
         } else {
-            (self.players[victim].frozen_slime.ground, self.players[victim].frozen_slime.position)
+            let slime = &self.players[victim].slime;
+            (slime.ground.filter(|_| slime.grounded), slime.position)
         };
         let current_normal = slime_ground
             .and_then(|ground| {
@@ -29464,10 +29496,9 @@ impl RolloutWorld {
                 // slime the form left behind.
                 self.frozen_solids[effect_index].active = false;
                 slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-                slot.frozen_slime.velocity =
-                    Vec2::new(Fix::ZERO, Fix::from_int(4)) + slot.frozen_slime.external;
-                slot.frozen_slime.rotation = Vec2::UP.normalized_angle();
-                slot.frozen_slime.state = STATE_RAGDOLL;
+                slot.slime.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
+                slot.slime.set_rotation(Vec2::UP.normalized_angle());
+                slot.inactive_obs_state = STATE_RAGDOLL;
                 slot.timers.fill(Fix::ZERO);
                 continue;
             }
@@ -32299,7 +32330,7 @@ impl RolloutWorld {
         let form = slot.form_entities[slot.active_slot];
         if slot.active != ActiveAbility::None
             && slot.pass_start.0 == self.tick
-            && !(slot.frozen_slime.tick == self.tick && slot.frozen_slime.ground.is_some())
+            && !(slot.slime_tick == self.tick && slot.slime.grounded && slot.slime.ground.is_some())
             && form < self.entities.len()
             && self.entities[form].hierarchy > 100_000_000 + hierarchy
         {
@@ -33202,12 +33233,12 @@ impl RolloutWorld {
             // The victim cast out of the ball: the eject lands on the
             // deactivated slime the form left behind, and the form's exit
             // overwrites it.
-            slot.frozen_slime.position = position;
-            slot.frozen_slime.velocity = velocity + slot.frozen_slime.external;
+            slot.slime.position = position;
+            slot.slime.velocity = velocity;
             if eject_direction != Vec2::ZERO {
-                slot.frozen_slime.rotation = eject_direction.normalized_angle();
+                slot.slime.set_rotation(eject_direction.normalized_angle());
             }
-            slot.frozen_slime.state = STATE_RAGDOLL;
+            slot.inactive_obs_state = STATE_RAGDOLL;
             return;
         }
         slot.base.position = position;
@@ -36719,7 +36750,14 @@ impl RolloutWorld {
             // is on the PlayerPhysics it froze with.
             self.form_returns_slime(index);
             let slot = &mut self.players[index];
-            slot.frozen_slime.wake(&mut slot.base);
+            // The slime's own PlayerBody and PlayerPhysics, enabled again as
+            // they froze.
+            slot.base.set_rotation(slot.slime.rotation());
+            slot.base.external_velocity = slot.slime.external_velocity;
+            slot.base.velocity = slot.slime.velocity;
+            slot.base.ground = slot.slime.ground.filter(|_| slot.slime.grounded);
+            slot.base.grounded = slot.base.ground.is_some();
+            slot.base.local = slot.slime.local;
             slot.base.position = drop_position;
             slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
             return true;
@@ -38257,7 +38295,7 @@ impl RolloutWorld {
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
-            let push_form = slot.forms[slot.active_slot];
+            let push_form = &slot.forms[slot.active_slot];
             // Ability.ExitAbility deactivates the ability body where it
             // ended (Ability.cs:151-152) and DetPhysics still syncs that
             // frozen FixTransform every pass (DetPhysics.cs:2498-2530), so
@@ -38316,7 +38354,7 @@ impl RolloutWorld {
             let (center, angle) = if body_active || slime_teleporting {
                 (synced, rotation)
             } else {
-                (slot.frozen_slime.position, slot.frozen_slime.rotation)
+                (slot.slime.position, slot.slime.rotation())
             };
             let in_form = alive && (dashing || in_ability);
             if body_active || body_was_active || slime_teleporting || in_form {
@@ -38454,7 +38492,7 @@ impl RolloutWorld {
                     // from the normalized angle, but applies `offset` with
                     // FixTransform.right itself; those vectors can differ by
                     // a few Q32 units after the angle round trip.
-                    let mine_form = slot.forms[slot.active_slot];
+                    let mine_form = &slot.forms[slot.active_slot];
                     let offset = if mine_form.scale == Fix::ZERO {
                         data.mine.collider_offset
                     } else {
@@ -38543,7 +38581,7 @@ impl RolloutWorld {
                     // Ability.ExitAbility leaves the hidden form box where the
                     // form stood (Ability.cs:139-153); the slime may already
                     // have moved on, through a portal say.
-                    let form = slot.forms[slot.entity_slot(meteor_e)];
+                    let form = &slot.forms[slot.entity_slot(meteor_e)];
                     let root = if meteoring { form.synced.position } else { exit_position };
                     let rotation = form.synced.orientation.rotation();
                     let basis = Vec2::angle(rotation);
@@ -38787,7 +38825,7 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
-                    let form = slot.forms[slot.active_slot];
+                    let form = &slot.forms[slot.active_slot];
                     let offset = if form.scale == Fix::ZERO {
                         data.spike.collider_offset
                     } else {
@@ -38822,7 +38860,7 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
-                    let form = slot.forms[slot.entity_slot(engine_e)];
+                    let form = &slot.forms[slot.entity_slot(engine_e)];
                     let offset = if form.scale == Fix::ZERO {
                         data.engine.collider_offset
                     } else {
@@ -38857,7 +38895,7 @@ impl RolloutWorld {
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
-                    let form = slot.forms[slot.entity_slot(tesla_e)];
+                    let form = &slot.forms[slot.entity_slot(tesla_e)];
                     let offset = if form.scale == Fix::ZERO {
                         data.tesla.collider_offset
                     } else {
@@ -38894,7 +38932,7 @@ impl RolloutWorld {
                         let position = if casting_black_hole { at_sync.position } else { exit_position };
                         (position, at_sync.orientation.rotation(), at_sync.orientation.up().perp_cw())
                     };
-                    let form = slot.forms[slot.active_slot];
+                    let form = &slot.forms[slot.active_slot];
                     let offset = if form.scale == Fix::ZERO {
                         data.black_hole.collider_offset
                     } else {
@@ -38940,7 +38978,7 @@ impl RolloutWorld {
                         let position = if macho_throwing { at_sync.position } else { exit_position };
                         (position, at_sync.orientation.up().perp_cw(), rotation, Vec2::angle(rotation))
                     };
-                    let form = slot.forms[slot.entity_slot(macho_throw_e)];
+                    let form = &slot.forms[slot.entity_slot(macho_throw_e)];
                     let offset = if form.scale == Fix::ZERO {
                         data.macho_throw.collider_offset
                     } else {
@@ -38969,7 +39007,7 @@ impl RolloutWorld {
                 if sync_form_row(box_row, flags, drilling, entered == drill_e, slot.base.id) {
                     // Drill.ExitAbility leaves the body's rotation
                     // (Drill.cs:125-133), so the out box keeps it.
-                    let form = slot.forms[slot.entity_slot(drill_e)];
+                    let form = &slot.forms[slot.entity_slot(drill_e)];
                     let at_sync = form.synced;
                     let position = if drilling { at_sync.position } else { exit_position };
                     let rotation = at_sync.orientation.rotation();
@@ -39306,10 +39344,10 @@ impl RolloutWorld {
                     )
                 } else if in_ability {
                     (
-                        slot.frozen_slime.position,
-                        slot.frozen_slime.velocity,
-                        slot.frozen_slime.rotation,
-                        slot.frozen_slime.state,
+                        slot.slime.position,
+                        slot.slime.velocity + slot.slime.external_velocity,
+                        slot.slime.rotation(),
+                        slot.inactive_obs_state,
                     )
                 } else {
                     (
@@ -39330,7 +39368,7 @@ impl RolloutWorld {
                 vy: velocity.y.raw(),
                 rotation: rotation.raw(),
                 scale: if in_ability {
-                    slot.frozen_slime.scale.raw()
+                    slot.slime.scale.raw()
                 } else {
                     slot.base.scale.raw()
                 },
@@ -40437,8 +40475,11 @@ mod tests {
         let target_entity = world.players[1].body_entity;
         world.players[0].set_active_form(&mut world.entities, ActiveAbility::Rock);
         world.players[0].rope = Some(0);
-        world.players[0].forms[0] =
-            FormScale { scale: Fix::ONE, circle_radius: data::get().rock.radius, ..FormScale::default() };
+        world.players[0].forms[0] = FormBody {
+            scale: Fix::ONE,
+            circle_radius: data::get().rock.radius,
+            ..FormBody::default()
+        };
         world.players[0].rock.body.force = Vec2::ZERO;
         world.players[0].base.position = Vec2::new(
             Fix::from_raw(world.entities[target_entity].x),
@@ -41788,7 +41829,7 @@ mod tests {
         world.reset(&test_config()).unwrap();
         world.players[0].set_active_form(&mut world.entities, ActiveAbility::Freeze);
         world.players[0].player_scale = Fix::from_int(2);
-        world.players[0].frozen_slime.scale = Fix::from_int(2);
+        world.players[0].slime.scale = Fix::from_int(2);
         world.players[0].base.grounded = false;
         world.players[0].base.ground = None;
 
