@@ -16073,7 +16073,9 @@ impl RolloutWorld {
                             } else {
                                 self.entities[entity].radius
                             };
-                            self.entities[entity].flags & E_ENABLED != 0
+                            // circleCastCircles keeps only DetPhysics.IsActive
+                            // colliders: active in the hierarchy and enabled.
+                            self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
                                 && crate::physics::contact::circle_circle(
                                     flame,
                                     Circle {
