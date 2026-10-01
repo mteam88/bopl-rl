@@ -16185,18 +16185,23 @@ impl RolloutWorld {
                 continue;
             }
             if !self.tesla_nodes[node_index].active
-                || self.tesla_nodes[node_index].macho_carried
                 || self.tesla_nodes[node_index].appended > self.tick
             {
                 self.tesla_orb_step(node_index);
                 continue;
             }
+            // A node MachoThrow2 carries still runs this: it follows the
+            // scale a ScaleChanger gives it (SimpleSparkNode.cs:217-232).
             if self.tesla_nodes[node_index].scale != self.tesla_nodes[node_index].offset_scale {
                 let ratio =
                     self.tesla_nodes[node_index].scale / self.tesla_nodes[node_index].offset_scale;
                 self.tesla_nodes[node_index].surface_offset *= ratio;
                 self.tesla_nodes[node_index].hitbox_offset *= ratio;
                 self.tesla_nodes[node_index].offset_scale = self.tesla_nodes[node_index].scale;
+            }
+            if self.tesla_nodes[node_index].macho_carried {
+                self.tesla_orb_step(node_index);
+                continue;
             }
             // A hidden child deactivates this node's connection, a hidden
             // parent the parent's, whose line it is (SimpleSparkNode.cs:233-240).
