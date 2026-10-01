@@ -41168,12 +41168,9 @@ impl RolloutWorld {
                 let bow_box = &mut self.entities[bow_e];
                 let flags = form_box_flags(alive && bowing);
                 if sync_form_row(bow_box, flags, bowing, entered == bow_e, slot.base.id) {
-                    let center = if alive && bowing { synced } else { exit_position };
-                    let rotation = if bowing {
-                        slot.base.rotation()
-                    } else {
-                        slot.forms[slot.entity_slot(bow_e)].pose.orientation.rotation()
-                    };
+                    let at_sync = slot.forms[slot.entity_slot(bow_e)].synced;
+                    let center = if alive && bowing { at_sync.position } else { exit_position };
+                    let rotation = at_sync.orientation.rotation();
                     let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[bow_e]);
                     bow_box.x = center.x.raw();
                     bow_box.y = center.y.raw();
