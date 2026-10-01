@@ -889,11 +889,11 @@ impl RolloutWorld {
     /// The receiver's collisionCallback.OnCollide, run from DetPhysics' queue
     /// (DetPhysics.cs:3202-3205).
     pub(super) fn on_collide(&mut self, receiver: Part, other: Part, contact: Contact, data: &data::RolloutData) {
-        // Only the Rock form's and the Duplicator copy's pairs with slime,
-        // form and clone colliders run here yet; the others' callbacks are
-        // still queued from their own contact passes.
+        // Only the Rock form's, the Duplicator copy's and the arrows' pairs
+        // with slime, form and clone colliders run here yet; the others'
+        // callbacks are still queued from their own contact passes.
         if matches!(other, Part::Body(_) | Part::Clone(_))
-            && !matches!(receiver, Part::Rock(_) | Part::DuplicatedRock(_))
+            && !matches!(receiver, Part::Rock(_) | Part::DuplicatedRock(_) | Part::Arrow(_))
         {
             return;
         }
@@ -968,6 +968,18 @@ impl RolloutWorld {
             // KillPlayersOnContact Ability, and Rock_noPlayer's Explosion
             // can hurt the slime it was copied from (PlayerCollision.cs:352-458).
             Part::Body(player) => {
+                if let Part::Arrow(arrow) = other {
+                    // An arrow of the victim's own spares it unless it can
+                    // hurt its owner (PlayerCollision.cs:352-372).
+                    let state = self.arrows[arrow];
+                    if self.players[player].base.id == state.owner && !state.can_hurt_owner {
+                        return;
+                    }
+                    let slime = self.players[player].active == ActiveAbility::None;
+                    let hit = CallbackHit::ArrowKill { victim: player, owner: state.owner, arrow, slime };
+                    self.run_callback_hit(hit, data);
+                    return;
+                }
                 let (killer, cause) = match other {
                     Part::Rock(rock) => (self.players[rock].base.id, CAUSE_OTHER),
                     Part::DuplicatedRock(rock) => {
@@ -983,11 +995,24 @@ impl RolloutWorld {
             // The Rock form kills a clone of its own slime too, as an
             // accident.
             Part::Clone(clone) => {
-                let Part::Rock(rock) = other else {
-                    return;
+                let clone_id = self.abilityless_clones[clone].base.id;
+                let (killer, cause) = match other {
+                    Part::Rock(rock) => {
+                        let killer = self.players[rock].base.id;
+                        (killer, if clone_id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER })
+                    }
+                    // A Projectile's PlayerCollision kill credits the row's
+                    // owner.
+                    Part::Arrow(arrow) => {
+                        let state = self.arrows[arrow];
+                        if state.owner == clone_id && !state.can_hurt_owner {
+                            return;
+                        }
+                        let entity = state.entity.expect("registered arrow");
+                        (self.entities[entity].owner, CAUSE_OTHER)
+                    }
+                    _ => return,
                 };
-                let killer = self.players[rock].base.id;
-                let cause = if self.abilityless_clones[clone].base.id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER };
                 self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, data);
             }
             _ => {}

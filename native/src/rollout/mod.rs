@@ -8216,9 +8216,6 @@ impl RolloutWorld {
         {
             self.thrown_item_pair_contacts(data);
         }
-        if has(ABILITY_BOW) {
-            self.arrows_contacts();
-        }
         if has(ABILITY_MISSILE) {
             self.guided_missile_contacts(data);
         }
@@ -34970,124 +34967,6 @@ impl RolloutWorld {
         self.remove_smoke_cloud(cloud_index);
     }
 
-    /// Arrow.OnCollide lands the arrow on its first StickTo callback in
-    /// ToMakeCallBacks order: a wall's Circle/RR pair, then its Circle/Circle
-    /// and Circle/Box pairs, which resolved in circle_circle_group and
-    /// circle_box_group (Arrow.cs:85-131). A PlayerBody hurtbox has no
-    /// BoplBody, so the arrow flies on through it: PlayerCollision callbacks
-    /// queued before the landing kill, and later ones find the Projectile
-    /// destroyed. Landing destroys the components from the callback queue:
-    /// this pass still observes the corrected collider and resolved body,
-    /// flagged destroyed and ownerless; the next pass removes it.
-    fn arrows_contacts(&mut self) {
-        // The arrows' own and the victims' PlayerCollision callbacks.
-        let mut landings: Vec<(CallbackKey, CallbackHit)> = Vec::new();
-        let sweep_x = self.sweep_x();
-        for i in 0..self.arrows.len() {
-            if !self.arrows[i].active
-                || !self.arrows[i].registered
-                || self.blink_object_hidden(self.arrows[i].entity)
-            {
-                continue;
-            }
-            let arrow = self.arrows[i];
-            let circle = Circle {
-                center: arrow.position,
-                radius: arrow.collider_radius,
-            };
-            let arrow_rank = self.part_rank(Part::Arrow(i));
-
-            // The retained rows give every form's collider with the pose
-            // DetPhysics synchronized; a Rock form's circle is a part.
-            for (j, player) in self.players.iter().enumerate() {
-                if !self.hittable(j)
-                    || player.active == ActiveAbility::Rock
-                    || (player.base.id == arrow.owner && !arrow.can_hurt_owner)
-                {
-                    continue;
-                }
-                let entity = match player.active {
-                    ActiveAbility::None => player.body_entity,
-                    ActiveAbility::Dash => player.dash_entity,
-                    ActiveAbility::Bow => player.bow_entity,
-                    ActiveAbility::Grenade
-                    | ActiveAbility::Smoke
-                    | ActiveAbility::Tack
-                    | ActiveAbility::Mjolnir
-                    | ActiveAbility::PokeBall
-                    | ActiveAbility::Missile => player.throw_entity,
-                    ActiveAbility::Mine => player.mine_entity,
-                    ActiveAbility::Rock => player.rock_entity,
-                    ActiveAbility::Roll => player.roll_entity,
-                    ActiveAbility::Meteor => player.meteor_entity,
-                    ActiveAbility::Push => player.push_entity,
-                    ActiveAbility::Freeze => player.freeze_entity,
-                    ActiveAbility::Blink => player.blink_entity,
-                    ActiveAbility::GrowthRay => player.growth_ray_entity,
-                    ActiveAbility::ShrinkRay => player.shrink_ray_entity,
-                    ActiveAbility::Duplicator => player.duplicator_entity,
-                    ActiveAbility::Magnet => player.magnet_entity,
-                    ActiveAbility::Spike => player.spike_entity,
-                    ActiveAbility::Engine => player.engine_entity,
-                    ActiveAbility::Tesla => player.tesla_entity,
-                    ActiveAbility::TimeStop => player.time_stop_entity,
-                    ActiveAbility::Gust => player.gust_entity,
-                    ActiveAbility::Revival => player.revival_entity,
-                    ActiveAbility::BlackHole => player.black_hole_entity,
-                    ActiveAbility::Throw => player.macho_throw_entity,
-                    ActiveAbility::Drill => player.drill_entity,
-                    ActiveAbility::Beam => player.beam_entity,
-                    ActiveAbility::Platform => player.circle_entity,
-                };
-                let Some(row) = self.entities.get(entity).copied() else {
-                    continue;
-                };
-                if !self.collides(entity) {
-                    continue;
-                }
-                let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                let (hit, row_min) = if row.kind == 0 {
-                    let hit = crate::physics::contact::circle_circle(
-                        circle,
-                        Circle {
-                            center,
-                            radius: Fix::from_raw(row.radius),
-                        },
-                    )
-                    .is_some();
-                    (hit, axis(center) - Fix::from_raw(row.radius))
-                } else if row.kind == 1 {
-                    let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                    let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                    let hit = right != Vec2::ZERO
-                        && up != Vec2::ZERO
-                        && crate::physics::contact::circle_box(
-                            circle,
-                            OrientedBox {
-                                center,
-                                right,
-                                up,
-                                inverse_extents: self.entity_inverse_extents[entity],
-                            },
-                        )
-                        .is_some();
-                    (hit, axis(center) - axis(right).abs() - axis(up).abs())
-                } else {
-                    (false, Fix::ZERO)
-                };
-                if hit {
-                    let group = GROUP_BB - 1 - (row.kind == 0) as u8;
-                    let (later, earlier) = sweep_pair(arrow_rank, sweep_rank(&self.entities, row_min, Some(entity)));
-                    let slime = player.active == ActiveAbility::None;
-                    let hit = CallbackHit::ArrowKill { victim: j, owner: arrow.owner, arrow: i, slime };
-                    landings.push(((group, later, earlier), hit));
-                }
-            }
-        }
-        self.scratch.callback_hits.extend(landings);
-    }
-
     /// Arrow.OnCollide: once landed it ignores every later pair, and a
     /// collider an earlier callback destroyed does not take it
     /// (Arrow.cs:85-131).
@@ -38308,13 +38187,11 @@ impl RolloutWorld {
                 {
                     continue;
                 }
+                // An arrow DetPhysics simulates pairs in circle_box_group.
                 if row.layer == LAYER_PROJECTILE
-                    && let Some(arrow) = self
-                        .arrows
-                        .iter()
-                        .find(|arrow| arrow.active && arrow.entity == Some(entity))
-                    && arrow.owner == clone_owner
-                    && !arrow.can_hurt_owner
+                    && let Some(arrow) = self.arrows.iter().position(|arrow| arrow.active && arrow.entity == Some(entity))
+                    && (self.arrow_registered(arrow)
+                        || (self.arrows[arrow].owner == clone_owner && !self.arrows[arrow].can_hurt_owner))
                 {
                     continue;
                 }
