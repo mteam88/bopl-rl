@@ -19270,6 +19270,12 @@ impl RolloutWorld {
         {
             return;
         }
+        // Initialize gets `SurfaceOffset / scale` and multiplies it back
+        // by the scale (MachoThrow2.cs:618, SimpleSparkNode.cs:87-105).
+        let surface_offset =
+            (self.tesla_nodes[node_index].surface_offset / self.tesla_nodes[node_index].scale)
+                * self.tesla_nodes[node_index].scale;
+        self.tesla_nodes[node_index].surface_offset = surface_offset;
         let source = self.tesla_nodes[node_index];
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
@@ -19307,12 +19313,15 @@ impl RolloutWorld {
         node.transform_offset = node.collider_offset;
         node.hitbox_offset = data.tesla.hitbox_offset_y * node.scale;
         node.offset_scale = node.scale;
+        // `hitbox.Scale = startScale` multiplies the radius by `(1 / s) * s`.
+        node.radius *= (Fix::ONE / node.scale) * node.scale;
         node.body = child_body;
         node.connected = false;
         node.lethal = false;
         node.enter_ticks = 0;
         node.orb_ticks = 0;
         if let Some(entity) = node.entity {
+            self.entities[entity].radius = node.radius.raw();
             self.entities[entity].flags = E_ACTIVE | E_ENABLED | E_COMPOSITE;
             self.entities[entity].layer = data.tesla.node_layer;
             self.entities[entity].inverse_mass = child_body.inverse_mass.raw();
