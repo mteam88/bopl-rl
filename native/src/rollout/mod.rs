@@ -7903,7 +7903,7 @@ impl RolloutWorld {
             || has(ABILITY_GRAPPLING_HOOK)
             || has(ABILITY_BLACK_HOLE)
         {
-            self.circle_wall_group();
+            self.circle_wall_group(data);
         }
         let has_pickups = self.ability_spawner_enabled || !self.ability_pickups.is_empty();
         if has_thrown_item
@@ -36196,7 +36196,7 @@ impl RolloutWorld {
     /// the Box/RoundedRect group and before Circle/Circle, with the walls as
     /// its narrow phase sees them. Rigid pairs resolve in sweep order, and
     /// GrenadeExplode observes Player-layer overlaps only after all of them.
-    fn circle_wall_group(&mut self) {
+    fn circle_wall_group(&mut self, data: &data::RolloutData) {
         let mut parts = std::mem::take(&mut self.scratch.wall_parts);
         parts.clear();
         for (i, item) in self.thrown_items.iter().enumerate() {
@@ -36254,7 +36254,7 @@ impl RolloutWorld {
             }
         }
         let walls = std::mem::take(&mut self.scratch.circle_colliders);
-        self.wall_group(GROUP_CIRCLE_RR, &parts, &walls);
+        self.wall_group(GROUP_CIRCLE_RR, &parts, &walls, data);
         self.scratch.circle_colliders = walls;
         self.scratch.wall_parts = parts;
     }
@@ -40076,7 +40076,7 @@ impl RolloutWorld {
             }
         }
         let walls = std::mem::take(&mut self.scratch.box_callback_colliders);
-        self.wall_group(GROUP_BOX_RR, &parts, &walls);
+        self.wall_group(GROUP_BOX_RR, &parts, &walls, data);
         self.scratch.box_callback_colliders = walls;
         self.scratch.wall_parts = parts;
 

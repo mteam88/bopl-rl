@@ -548,18 +548,23 @@ impl RolloutWorld {
     /// DetPhysics.cs:2405-2437), then each pair that is no trigger resolves
     /// with ResolveCollision and PositionalCorrection on each side's own
     /// inverse mass.
-    pub(super) fn wall_group(&mut self, group: u8, parts: &[Part], walls: &[RoundedRect]) {
+    pub(super) fn wall_group(&mut self, group: u8, parts: &[Part], walls: &[RoundedRect], data: &data::RolloutData) {
         let mut contacts = std::mem::take(&mut self.scratch.wall_contacts);
         contacts.clear();
         for &part in parts {
             let collider = self.part_collider(part);
             let bounds = collider.bounds();
             let rank = self.part_rank(part);
+            let layer = self.part_layer(part, data);
             for wall in 0..self.platforms.len() {
                 // SameCompositeAs: a child never meets its own platform. A wall
                 // destroyed before this pass left in RemoveDestroyedColliders.
+                // SortAndSweep pairs only layers the Physics2D matrix lets
+                // collide (DetPhysics.cs:2183).
+                let row = &self.entities[self.platform_entities[wall]];
                 if !self.platforms[wall].active
-                    || self.entities[self.platform_entities[wall]].flags & E_DESTROYED != 0
+                    || row.flags & E_DESTROYED != 0
+                    || !data.layers_collide(layer, row.layer)
                     || self.part_composite(part) == Some(wall)
                     || !self.wall_swept(wall, bounds)
                 {
