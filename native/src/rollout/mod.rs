@@ -36633,9 +36633,13 @@ impl RolloutWorld {
 
     fn thrown_items_contacts(&mut self, data: &data::RolloutData) {
         for item_index in 0..self.thrown_items.len() {
+            // DetPhysics leaves a collider that fails IsActive out of every
+            // pair, so an item a Blink tunnel deactivated calls nothing back.
             if !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].entity.is_none()
                 || self.thrown_items[item_index].callback_registered_tick == self.tick
+                || self.thrown_items[item_index]
+                    .entity
+                    .is_none_or(|entity| self.detphysics_collider(entity).is_none())
             {
                 continue;
             }
