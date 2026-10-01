@@ -23534,10 +23534,9 @@ impl RolloutWorld {
                             && self.spike_attacks[spike].time < data.spike.push_time
                             && self.player_time_scale >= Fix::from_f32(0.01)
                         {
-                            let knock = CallbackHit::SpikeKnock {
+                            let knock = CallbackHit::SpikeShove {
                                 spike,
-                                player: index,
-                                entity: Self::hurtbox_entity(&self.players[index]),
+                                target: Part::Body(index),
                                 point: origin + direction * hit.distance,
                             };
                             self.run_callback_hit(knock, data);
