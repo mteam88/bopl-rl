@@ -671,8 +671,62 @@ impl RolloutWorld {
             .iter()
             .any(|&ability| ability == ABILITY_WEB_SWING || ability == ABILITY_GRAPPLING_HOOK)
         {
-            self.remove_destroyed_colliders();
+            self.circle_cast_closest_players(player, data::get().ropes.grapple_player_cast_radius);
         }
+    }
+
+    /// DetPhysics.CircleCastClosestPlayers (DetPhysics.cs:1851-1880): purges
+    /// destroyed colliders, then keeps the last active Player-layer box but
+    /// the caster's the circle touches, then the last such circle within 1.5
+    /// times the radius.
+    fn circle_cast_closest_players(&mut self, player: usize, radius: Fix) -> Option<RopeTarget> {
+        self.remove_destroyed_colliders();
+        let position = self.players[player].base.position;
+        let player_query = Circle { center: position, radius };
+        let mut nearby_player = None;
+        // A slime in its spawn animation already has its hurtbox enabled. The
+        // cast reads each slime's current collider where DetPhysics holds it:
+        // an ability form's own box or circle, not the slime body's.
+        for candidate in 0..self.players.len() {
+            if candidate != player
+                && self.hittable(candidate)
+                && let Some(DetCollider::Box(collider)) = self.hurtbox_collider(candidate)
+                && crate::physics::contact::circle_box(player_query, collider).is_some()
+            {
+                // CircleCastClosestPlayers retains the final matching box.
+                nearby_player = Some(RopeTarget::Player(candidate));
+            }
+        }
+        // The abilityless clones' boxes registered after every slime's, and
+        // the cast skips only the caster's own instance: the caster's own
+        // clones are in reach.
+        for candidate in self.player_layer_clones() {
+            if crate::physics::contact::circle_box(
+                player_query,
+                self.abilityless_clones[candidate].base.synced,
+            )
+            .is_some()
+            {
+                nearby_player = Some(RopeTarget::Clone(candidate));
+            }
+        }
+        // Circles follow the boxes with the cast radius scaled by 1.5, so a
+        // circle form in reach (a Rock ball, a spell, a platform transform)
+        // wins over any box.
+        let circle_query = Circle {
+            center: position,
+            radius: radius * Fix::from_f64(1.5),
+        };
+        for candidate in 0..self.players.len() {
+            if candidate != player
+                && self.hittable(candidate)
+                && let Some(DetCollider::Circle(collider)) = self.hurtbox_collider(candidate)
+                && crate::physics::contact::circle_circle(circle_query, collider).is_some()
+            {
+                nearby_player = Some(RopeTarget::Player(candidate));
+            }
+        }
+        nearby_player
     }
 
     pub(super) fn web_cooldowns_tick(&mut self, player: usize, action: Action) {
@@ -814,53 +868,7 @@ impl RolloutWorld {
             aim
         };
         let position = self.players[player].base.position;
-        let player_query = Circle {
-            center: position,
-            radius: source.grapple_player_cast_radius,
-        };
-        let mut nearby_player = None;
-        // A slime in its spawn animation already has its hurtbox enabled. The
-        // cast reads each slime's current collider where DetPhysics holds it:
-        // an ability form's own box or circle, not the slime body's.
-        for candidate in 0..self.players.len() {
-            if candidate != player
-                && self.hittable(candidate)
-                && let Some(DetCollider::Box(collider)) = self.hurtbox_collider(candidate)
-                && crate::physics::contact::circle_box(player_query, collider).is_some()
-            {
-                // CircleCastClosestPlayers retains the final matching box.
-                nearby_player = Some(RopeTarget::Player(candidate));
-            }
-        }
-        // The abilityless clones' boxes registered after every slime's, and
-        // the cast skips only the caster's own instance: the caster's own
-        // clones are in reach.
-        for candidate in self.player_layer_clones() {
-            if crate::physics::contact::circle_box(
-                player_query,
-                self.abilityless_clones[candidate].base.synced,
-            )
-            .is_some()
-            {
-                nearby_player = Some(RopeTarget::Clone(candidate));
-            }
-        }
-        // Circles follow the boxes with the cast radius scaled by 1.5, so a
-        // circle form in reach (a Rock ball, a spell, a platform transform)
-        // wins over any box.
-        let circle_query = Circle {
-            center: position,
-            radius: source.grapple_player_cast_radius * Fix::from_f64(1.5),
-        };
-        for candidate in 0..self.players.len() {
-            if candidate != player
-                && self.hittable(candidate)
-                && let Some(DetCollider::Circle(collider)) = self.hurtbox_collider(candidate)
-                && crate::physics::contact::circle_circle(circle_query, collider).is_some()
-            {
-                nearby_player = Some(RopeTarget::Player(candidate));
-            }
-        }
+        let nearby_player = self.circle_cast_closest_players(player, source.grapple_player_cast_radius);
         let rope_end = match nearby_player {
             Some(RopeTarget::Player(target)) => self.players[target].base.position,
             Some(RopeTarget::Clone(clone)) => self.abilityless_clones[clone].base.position,
