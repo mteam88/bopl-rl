@@ -37756,10 +37756,18 @@ impl RolloutWorld {
                 {
                     continue;
                 }
-                // A spike's pairs, and a live node's lightning's, are the groups'.
+                // A spike's, a Duplicator copy's, a grouped node's and a live
+                // node's lightning's pairs are the groups'.
+                let circle_group = self.clone_part_circle(clone_index);
                 if self.spike_attacks.iter().any(|spike| spike.entity == Some(entity))
-                    || (0..self.tesla_nodes.len())
-                        .any(|node| self.tesla_nodes[node].line_entity == Some(entity) && self.line_part(node))
+                    || self.duplicated_rocks.iter().any(|rock| {
+                        rock.active && rock.entity == Some(entity) && !self.blink_object_hidden(rock.entity)
+                    })
+                    || (0..self.tesla_nodes.len()).any(|node| {
+                        (self.tesla_nodes[node].line_entity == Some(entity) && self.line_part(node))
+                            || (self.tesla_nodes[node].entity == Some(entity)
+                                && circle_group.is_some_and(|circle| self.node_part(node, circle)))
+                    })
                 {
                     continue;
                 }
@@ -37802,12 +37810,7 @@ impl RolloutWorld {
                 let category = GROUP_BB - (row.kind == 0) as u8;
                 let (later, earlier) = sweep_pair(row_rank, clone_rank);
                 let key = (category, later, earlier);
-                let killer = self
-                    .duplicated_rocks
-                    .iter()
-                    .find(|rock| rock.active && rock.entity == Some(entity))
-                    .map_or(row.owner, |rock| player_id(&self.players, rock.owner));
-                let hit = CallbackHit::CloneKill { clone: clone_index, killer, cause: CAUSE_OTHER };
+                let hit = CallbackHit::CloneKill { clone: clone_index, killer: row.owner, cause: CAUSE_OTHER };
                 self.scratch.callback_hits.push((key, hit));
             }
         }

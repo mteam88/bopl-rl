@@ -503,7 +503,7 @@ impl RolloutWorld {
     /// of the Circle/Box group. A node whose platform went inactive earlier
     /// in this pass is skipped by DetPhysics' Circle/Circle group, though its
     /// row still shows the last publish.
-    fn node_part(&self, i: usize, circle_group: bool) -> bool {
+    pub(super) fn node_part(&self, i: usize, circle_group: bool) -> bool {
         let node = &self.tesla_nodes[i];
         self.child_registered(node.entity)
             && (!circle_group
@@ -533,7 +533,7 @@ impl RolloutWorld {
 
     /// Whether an abilityless clone's collider is in this Simulate's pairs,
     /// and whether it is a circle.
-    fn clone_part_circle(&self, i: usize) -> Option<bool> {
+    pub(super) fn clone_part_circle(&self, i: usize) -> Option<bool> {
         let clone = &self.abilityless_clones[i];
         let entity = clone.entity.filter(|_| clone.active)?;
         self.collides(entity).then_some(self.entities[entity].kind == 0)
@@ -1267,6 +1267,11 @@ impl RolloutWorld {
                         (self.entities[entity].owner, CAUSE_OTHER)
                     }
                     Part::Spike(_) | Part::Line(_) => (0, CAUSE_OTHER),
+                    Part::Node(node) if self.tesla_nodes[node].lethal => (0, CAUSE_OTHER),
+                    Part::DuplicatedRock(rock) => {
+                        let killer = player_id(&self.players, self.duplicated_rocks[rock].owner);
+                        (killer, if clone_id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER })
+                    }
                     _ => return,
                 };
                 self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, data);
