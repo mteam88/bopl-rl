@@ -26964,6 +26964,31 @@ impl RolloutWorld {
         }
     }
 
+    /// Where a form's own ExitAbility leaves its body: BowTransform,
+    /// GunTransform, MagnetGun, CastSpell and QuickSpell UnGround it first,
+    /// lifting it off the ground it keeps; the other forms leave it in place.
+    fn form_body_after_exit(&self, index: usize) -> Vec2 {
+        let slot = &self.players[index];
+        if !matches!(
+            slot.active,
+            ActiveAbility::Bow
+                | ActiveAbility::Freeze
+                | ActiveAbility::Blink
+                | ActiveAbility::GrowthRay
+                | ActiveAbility::ShrinkRay
+                | ActiveAbility::Duplicator
+                | ActiveAbility::Magnet
+                | ActiveAbility::TimeStop
+                | ActiveAbility::Gust
+                | ActiveAbility::Revival
+        ) {
+            return slot.base.position;
+        }
+        let (mut body, mut lost) = (slot.base.clone(), slot.ground_destroyed.clone());
+        unground_physics(&mut body, &mut lost, &self.platforms, self.tick, true);
+        body.position
+    }
+
     fn magnet_take_target(&mut self, index: usize, held: MagnetHeld, data: &data::RolloutData) {
         // MagnetSteal/OnItemWasStolen pauses the previous holder. BlackHole's
         // shipped Hold method clears its own holder immediately, but the
@@ -27111,10 +27136,13 @@ impl RolloutWorld {
                 let entity = Self::hurtbox_entity(&self.players[i]);
                 let tick = self.tick;
                 let frozen = Some(FrozenForm { tick, entity, posed: false });
-                // The form's FixTransform stops where its body left the slime.
-                let freeze_at = move |slot: &mut PlayerSlot, position: Vec2| {
+                // MagnetGun hands every form its own ExitAbility and moves
+                // only the slime, so the form's FixTransform stops wherever
+                // that exit left its body (MagnetGun.cs:663-678).
+                let body = self.form_body_after_exit(i);
+                let freeze = move |slot: &mut PlayerSlot| {
                     let s = slot.entity_slot(entity);
-                    slot.forms[s].pose.position = position;
+                    slot.forms[s].pose.position = body;
                     slot.form_frozen = frozen;
                 };
                 if self.players[i].active == ActiveAbility::Throw {
@@ -27124,7 +27152,7 @@ impl RolloutWorld {
                     // the slime after that, before UnGround lifts it.
                     let grounded = self.players[i].base.grounded;
                     self.exit_macho_throw(i, grounded, data);
-                    freeze_at(&mut self.players[i], position);
+                    freeze(&mut self.players[i]);
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active == ActiveAbility::Drill {
                     // Drill.ExitAbility hands the packet its body's velocities,
@@ -27139,7 +27167,7 @@ impl RolloutWorld {
                     let slot = &mut self.players[i];
                     slot.facing_right = (velocity + external).x >= Fix::ZERO;
                     slot.base.velocity = Vec2::ZERO;
-                    freeze_at(slot, position);
+                    freeze(slot);
                     // Ability.ExitAbility publishes the drill body's position.
                     // A slime updating after its holder publishes its own.
                     if i < index {
@@ -27175,7 +27203,7 @@ impl RolloutWorld {
                         slot.base.local = local;
                     }
                     slot.base.velocity = Vec2::ZERO;
-                    freeze_at(slot, body);
+                    freeze(slot);
                     self.players[index].magnet.held_position = body;
                 } else if matches!(
                     self.players[i].active,
@@ -27205,14 +27233,13 @@ impl RolloutWorld {
                     self.exit_magnet(i, false, data);
                     let slot = &mut self.players[i];
                     slot.base.velocity = Vec2::ZERO;
-                    let position = slot.base.position;
-                    freeze_at(slot, position);
+                    freeze(slot);
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active != ActiveAbility::None {
                     self.exit_form_for_freeze(i, data);
                     self.players[i].base.position = position;
                     self.players[i].reported_position = position;
-                    freeze_at(&mut self.players[i], position);
+                    freeze(&mut self.players[i]);
                 }
                 let slot = &mut self.players[i];
                 // MagnetGun.cs:687 calls UnGround() with nullRotation.
