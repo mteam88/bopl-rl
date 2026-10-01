@@ -553,7 +553,10 @@ impl RolloutWorld {
         contacts.clear();
         for &part in parts {
             let collider = self.part_collider(part);
-            let bounds = collider.bounds();
+            // SortAndSweep pairs on the bounds it took before any group
+            // corrected anything; a part registered after it meets nothing
+            // this pass (DetPhysics.cs:2169-2231).
+            let Some(bounds) = self.swept_bounds(Swept::Part(part)) else { continue };
             let rank = self.part_rank(part);
             let layer = self.part_layer(part, data);
             for wall in 0..self.platforms.len() {
