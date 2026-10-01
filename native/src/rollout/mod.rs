@@ -4066,6 +4066,23 @@ fn begin_land(obs_state: &mut u32, state_ticks: &mut u32, animator_ran: bool) {
     *state_ticks = LAND_TICKS + 1 + u32::from(animator_ran || after_exit);
 }
 
+/// The forms whose exit already runs through `form_exit_ability`.
+fn exits_through_packet(active: ActiveAbility) -> bool {
+    matches!(
+        active,
+        ActiveAbility::Bow
+            | ActiveAbility::Freeze
+            | ActiveAbility::Blink
+            | ActiveAbility::GrowthRay
+            | ActiveAbility::ShrinkRay
+            | ActiveAbility::Duplicator
+            | ActiveAbility::Magnet
+            | ActiveAbility::TimeStop
+            | ActiveAbility::Gust
+            | ActiveAbility::Revival
+    )
+}
+
 /// Fills `order` with the slots of `pool` in Updater order: by the hierarchy
 /// each object was spawned with, the slot breaking ties. Pools reuse freed
 /// slots, so slot order stops tracking spawn order once one has been freed.
@@ -10027,9 +10044,6 @@ impl RolloutWorld {
         if active == ActiveAbility::Throw {
             self.drop_macho_held_boulder(index, data);
         }
-        if active == ActiveAbility::Magnet {
-            self.drop_magnet_held_item(index);
-        }
 
         let tick = self.tick;
         let slot = &mut self.players[index];
@@ -10041,31 +10055,28 @@ impl RolloutWorld {
         }
         slot.base.velocity += normal * dynamics.drop_force;
         slot.base.position += slot.base.velocity / Fix::from_int(100);
-        if active != ActiveAbility::None {
+        if exits_through_packet(active) {
+            // PlayerPhysics.DropPlatformTest hands the form's IAbilityComponent
+            // a default packet but for self-imposed velocity and position.
+            let handed = ExitInfo {
+                velocity: slot.base.velocity,
+                position: slot.base.position,
+                ..ExitInfo::default()
+            };
+            let info = self.form_exit_ability(index, handed);
+            // Ability.ExitAbility deactivates the form where its exit left
+            // it, and DetPhysics syncs that FixTransform to its box.
+            let slot = &mut self.players[index];
+            let entity = Self::hurtbox_entity(slot);
+            slot.sync_form_pose();
+            slot.form_frozen = Some(FrozenForm { tick, entity, posed: true });
+            self.ability_exit(index, info);
+        } else if active != ActiveAbility::None {
             // PlayerPhysics.DropPlatformTest hands the form's IAbilityComponent
             // a default packet but for self-imposed velocity and position, and
             // each ExitAbility writes its own fields over it before the slime
             // restores from it.
             match active {
-                ActiveAbility::Bow
-                | ActiveAbility::Freeze
-                | ActiveAbility::Blink
-                | ActiveAbility::GrowthRay
-                | ActiveAbility::ShrinkRay
-                | ActiveAbility::Duplicator
-                | ActiveAbility::Magnet => {
-                    // They UnGround again before they read the position
-                    // (BowTransform.cs:120, GunTransform.cs:87, MagnetGun.cs:359),
-                    // and hand on `inputVector.x >= 0` and the body's
-                    // externalVelocity (BowTransform.cs:123-125, GunTransform.cs:90-93).
-                    UngroundBody::Form(slot).unground(&self.platforms, tick, true);
-                    let aim = match active {
-                        ActiveAbility::Bow => slot.bow.aim,
-                        ActiveAbility::Magnet => slot.magnet.aim,
-                        _ => slot.gun.aim,
-                    };
-                    slot.facing_right = aim.x >= Fix::ZERO;
-                }
                 ActiveAbility::Beam => {
                     // Beam.ExitAbility pops the body up and hands on the entry
                     // facing and the body's externalVelocity (Beam.cs:511-522).
@@ -27278,19 +27289,7 @@ impl RolloutWorld {
                     slot.forms[s].pose.position = body;
                     slot.form_frozen = frozen;
                 };
-                if matches!(
-                    self.players[i].active,
-                    ActiveAbility::Bow
-                        | ActiveAbility::Freeze
-                        | ActiveAbility::Blink
-                        | ActiveAbility::GrowthRay
-                        | ActiveAbility::ShrinkRay
-                        | ActiveAbility::Duplicator
-                        | ActiveAbility::Magnet
-                        | ActiveAbility::TimeStop
-                        | ActiveAbility::Gust
-                        | ActiveAbility::Revival
-                ) {
+                if exits_through_packet(self.players[i].active) {
                     let handed =
                         ExitInfo { position: firepoint, facing_right: true, ..ExitInfo::default() };
                     let info = self.form_exit_ability(i, handed);
