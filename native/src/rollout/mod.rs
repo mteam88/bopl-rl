@@ -688,8 +688,6 @@ impl Arrow {
 pub struct AbilityPickup {
     pub active: bool,
     pub appended: u32,
-    /// Last scheduler pass in which DynamicAbilityPickup.UpdateSim ran.
-    pub updater_tick: u32,
     pub hierarchy_base: u32,
     pub entity: Option<usize>,
     /// AbilityIcons index; the full catalog is dense and uses the same ids.
@@ -4258,7 +4256,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 1 | 2 | 3 | 4 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
+    matches!(kind, 1 | 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
 }
 
 /// The place just after `key`.
@@ -6390,10 +6388,6 @@ impl RolloutWorld {
         if self.blink_object_hidden(self.ability_pickups[index].entity) {
             return;
         }
-        if self.ability_pickups[index].updater_tick == self.tick {
-            return;
-        }
-        self.ability_pickups[index].updater_tick = self.tick;
         if !self.ability_pickups[index].active {
             if let Some(entity) = self.ability_pickups[index].entity
                 && self.entities[entity].flags & E_DESTROYED != 0
@@ -6516,7 +6510,11 @@ impl RolloutWorld {
             // copy has shaken.
             let pickup = &self.ability_pickups[index];
             let key = self.updater_key(pickup.appended, 100_000_000 + pickup.hierarchy_base);
+            if self.updater_passed(key) {
+                continue;
+            }
             self.run_spawned_before(data, updater_dt, key);
+            self.updater_take_turn(key);
             self.ability_pickup_tick(index, data, updater_dt, wobble);
         }
         self.scratch.pickup_order = order;
@@ -8531,9 +8529,7 @@ impl RolloutWorld {
             }
         }
         for (i, pickup) in self.ability_pickups.iter().enumerate() {
-            if pickup.updater_tick != tick {
-                push(self.updater_key(pickup.appended, 100_000_000 + pickup.hierarchy_base), 5, i);
-            }
+            push(self.updater_key(pickup.appended, 100_000_000 + pickup.hierarchy_base), 5, i);
         }
         for (i, engine) in self.engines.iter().enumerate() {
             if engine.active {
@@ -8661,12 +8657,7 @@ impl RolloutWorld {
                     self.mjolnirs_tick(data, updater_dt, turn);
                 }
                 4 => self.portals_update(data, updater_dt, turn),
-                5 => {
-                    let base = hierarchy - 100_000_000;
-                    if self.first_live_scale_changer().is_none_or(|changer| base < changer) {
-                        self.ability_pickups_tick_before(base + 1, data, updater_dt);
-                    }
-                }
+                5 => self.ability_pickups_tick_before(hierarchy - 99_999_999, data, updater_dt),
                 6 => self.engines_tick(data, updater_dt, turn),
                 7 => self.grapple_ropes_update(hierarchy - 100_000_000..hierarchy - 99_999_999),
                 8 => self.ropes_update(hierarchy - 100_000_000..hierarchy - 99_999_999),
@@ -8720,14 +8711,6 @@ impl RolloutWorld {
                 0 => self.platform_dynamics[index].updater_ran_tick = tick,
                 7 => self.ropes[index].grapple_ran_tick = tick,
                 8 => self.ropes[index].rope_ran_tick = tick,
-                // A pickup newer than a live ScaleChanger keeps its turn
-                // behind it.
-                5 => {
-                    let base = hierarchy - 100_000_000;
-                    if self.first_live_scale_changer().is_none_or(|changer| base < changer) {
-                        self.ability_pickups[index].updater_tick = self.tick;
-                    }
-                }
                 _ => {}
             }
         }
@@ -27007,7 +26990,6 @@ impl RolloutWorld {
             let mut clone = AbilityPickup {
                 active: true,
                 appended: self.tick + 1,
-                updater_tick: u32::MAX,
                 hierarchy_base,
                 entity: None,
                 ability: source.ability,
