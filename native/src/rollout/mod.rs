@@ -2371,6 +2371,8 @@ pub struct AbilitylessClone {
     pub blink_tunnel_hierarchy: u32,
     pub blink_tunnel_age: Fix,
     pub blink_tunnel_released: bool,
+    /// The pass the clone's tunnel last took its Updater turn.
+    pub blink_tunnel_stepped_tick: Option<u32>,
     pub blink_reactivated_tick: Option<u32>,
     /// Black Hole pull from a hole registered after this clone: it lands
     /// after the clone's PlayerBody.UpdateSim has decayed externalVelocity.
@@ -8405,6 +8407,12 @@ impl RolloutWorld {
             if clone.active && clone.born_tick < tick && clone.updater_ran_tick != Some(tick) {
                 push(100_000_000 + clone.hierarchy_base, 14, i);
             }
+            if clone.blink_tunnel_active
+                && clone.blink_tunnel_born_tick != tick
+                && clone.blink_tunnel_stepped_tick != Some(tick)
+            {
+                push(100_000_000 + clone.blink_tunnel_hierarchy, 23, i);
+            }
         }
         for (i, missile) in self.guided_missiles.iter().enumerate() {
             if missile.active
@@ -8468,6 +8476,7 @@ impl RolloutWorld {
                 20 => self.blink_tunnel_step(index, data, updater_dt),
                 21 => self.teleport_player_effect_step(index, data, updater_dt),
                 22 => self.teleport_object_effect_step(index, data, updater_dt),
+                23 => self.blink_clone_tunnel_step(index, data, updater_dt),
                 // Grenade.UpdateSim: a fuse that runs out detonates at the
                 // item's own turn, before a younger cloud's FlammableSmoke
                 // detonates.
@@ -28077,6 +28086,7 @@ impl RolloutWorld {
             blink_tunnel_hierarchy: 0,
             blink_tunnel_age: Fix::ZERO,
             blink_tunnel_released: false,
+            blink_tunnel_stepped_tick: None,
             blink_reactivated_tick: None,
             late_pull: Vec2::ZERO,
             ground_destroyed: None,
@@ -30620,62 +30630,82 @@ impl RolloutWorld {
         }
     }
 
-    /// QuantumTunnel.UpdateSim for clone victims, in the tunnels' hierarchy
-    /// order (QuantumTunnel.cs:144): each release draws from the shared RNG.
+    /// QuantumTunnel.UpdateSim for clone victims: each tunnel takes its turn
+    /// in hierarchy order (QuantumTunnel.cs:144), after the older updatables;
+    /// each release draws from the shared RNG.
     fn blink_clone_tunnels_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        hierarchy_order(&mut order, &self.abilityless_clones, |clone| clone.blink_tunnel_hierarchy);
-        for &clone_index in &order {
-            if !self.abilityless_clones[clone_index].active {
-                self.abilityless_clones[clone_index].blink_tunnel_active = false;
-                continue;
-            }
-            if !self.abilityless_clones[clone_index].blink_tunnel_active
-                || self.abilityless_clones[clone_index].blink_tunnel_born_tick == self.tick
-            {
-                continue;
-            }
-            if self.abilityless_clones[clone_index].blink_tunnel_age > data.blink.player_duration {
-                let clone = &mut self.abilityless_clones[clone_index];
+        for clone in &mut self.abilityless_clones {
+            if !clone.active {
                 clone.blink_tunnel_active = false;
-                clone.blink_reactivated_tick = Some(self.tick);
-                if let Some(entity) = clone.entity
-                    && self.entities[entity].flags & (E_REMOVED | E_DESTROYED) == 0
-                {
-                    self.entities[entity].flags |= E_ACTIVE;
-                }
-            }
-            self.abilityless_clones[clone_index].blink_tunnel_age += updater_dt;
-            if !self.abilityless_clones[clone_index].blink_tunnel_released
-                && self.abilityless_clones[clone_index].blink_tunnel_age
-                    >= data.blink.player_duration - data.blink.tunnel_release_duration
-            {
-                let owner = self.abilityless_clones[clone_index].owner;
-                std::mem::swap(
-                    &mut self.players[owner].base,
-                    &mut self.abilityless_clones[clone_index].base,
-                );
-                if self.players[owner].base.grounded {
-                    if self.release_grounded_blink_player(owner) {
-                        self.abilityless_clones[clone_index].ground_destroyed = None;
-                    }
-                } else {
-                    self.release_airborne_blink_player(owner);
-                }
-                self.players[owner].base.sync_collider();
-                std::mem::swap(
-                    &mut self.players[owner].base,
-                    &mut self.abilityless_clones[clone_index].base,
-                );
-                self.abilityless_clones[clone_index].blink_tunnel_released = true;
-            }
-            if self.abilityless_clones[clone_index].blink_tunnel_active
-                && let Some(entity) = self.abilityless_clones[clone_index].entity
-            {
-                self.entities[entity].flags &= !E_ACTIVE;
             }
         }
-        self.scratch.item_order = order;
+        loop {
+            let tick = self.tick;
+            let next = (self.abilityless_clones.iter().enumerate())
+                .filter(|(_, clone)| {
+                    clone.blink_tunnel_active
+                        && clone.blink_tunnel_born_tick != tick
+                        && clone.blink_tunnel_stepped_tick != Some(tick)
+                })
+                .map(|(index, clone)| (clone.blink_tunnel_hierarchy, index))
+                .min();
+            let Some((hierarchy, clone_index)) = next else {
+                return;
+            };
+            self.run_spawned_before(data, updater_dt, 100_000_000 + hierarchy);
+            self.blink_clone_tunnel_step(clone_index, data, updater_dt);
+        }
+    }
+
+    /// One clone QuantumTunnel's UpdateSim turn (QuantumTunnel.cs:144-196).
+    fn blink_clone_tunnel_step(&mut self, clone_index: usize, data: &data::RolloutData, updater_dt: Fix) {
+        if self.abilityless_clones[clone_index].blink_tunnel_stepped_tick == Some(self.tick) {
+            return;
+        }
+        self.abilityless_clones[clone_index].blink_tunnel_stepped_tick = Some(self.tick);
+        if !self.abilityless_clones[clone_index].active {
+            self.abilityless_clones[clone_index].blink_tunnel_active = false;
+            return;
+        }
+        if self.abilityless_clones[clone_index].blink_tunnel_age > data.blink.player_duration {
+            let clone = &mut self.abilityless_clones[clone_index];
+            clone.blink_tunnel_active = false;
+            clone.blink_reactivated_tick = Some(self.tick);
+            if let Some(entity) = clone.entity
+                && self.entities[entity].flags & (E_REMOVED | E_DESTROYED) == 0
+            {
+                self.entities[entity].flags |= E_ACTIVE;
+            }
+        }
+        self.abilityless_clones[clone_index].blink_tunnel_age += updater_dt;
+        if !self.abilityless_clones[clone_index].blink_tunnel_released
+            && self.abilityless_clones[clone_index].blink_tunnel_age
+                >= data.blink.player_duration - data.blink.tunnel_release_duration
+        {
+            let owner = self.abilityless_clones[clone_index].owner;
+            std::mem::swap(
+                &mut self.players[owner].base,
+                &mut self.abilityless_clones[clone_index].base,
+            );
+            if self.players[owner].base.grounded {
+                if self.release_grounded_blink_player(owner) {
+                    self.abilityless_clones[clone_index].ground_destroyed = None;
+                }
+            } else {
+                self.release_airborne_blink_player(owner);
+            }
+            self.players[owner].base.sync_collider();
+            std::mem::swap(
+                &mut self.players[owner].base,
+                &mut self.abilityless_clones[clone_index].base,
+            );
+            self.abilityless_clones[clone_index].blink_tunnel_released = true;
+        }
+        if self.abilityless_clones[clone_index].blink_tunnel_active
+            && let Some(entity) = self.abilityless_clones[clone_index].entity
+        {
+            self.entities[entity].flags &= !E_ACTIVE;
+        }
     }
 
     /// QuantumTunnel.UpdateSim for rounded-wall victims. The tunnel updater is
