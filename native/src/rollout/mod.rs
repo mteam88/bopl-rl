@@ -8008,7 +8008,7 @@ impl RolloutWorld {
             self.duplicated_rock_contacts();
         }
         if has(ABILITY_ROCK) {
-            self.rocks_box_contacts(data);
+            self.rocks_box_contacts();
         }
         // DynamicAbilityPickup.OnCollide is a callback: a pickup a slime
         // collects this pass still resolved its Circle/Circle pairs first.
@@ -13164,6 +13164,23 @@ impl RolloutWorld {
         }
     }
 
+    /// BounceBall.OnCollide, the only callback on a Rock's circle: a Rock off
+    /// any rope is kicked along the contact normal by a Player-layer collider
+    /// and a tenth as hard by a Projectile (BounceBall.cs:310-323). The
+    /// Impulse lands as force over the pass's 1/60 s step.
+    fn rock_on_collide(&mut self, index: usize, normal: Vec2, layer: u32) {
+        if self.players[index].rope.is_some() {
+            return;
+        }
+        let bounce = data::get().rock.player_collision_bounce;
+        let impulse = match layer {
+            LAYER_PLAYER => normal * bounce,
+            LAYER_PROJECTILE => normal * bounce * Fix::from_f32(0.1),
+            _ => return,
+        };
+        self.players[index].rock.body.force += impulse * Fix::from_int(60);
+    }
+
     /// The target's collisionCallback.OnCollide with a form's hitbox.
     /// MeteorSmash.Dash and Roll.CollideExtraHurtBoxes call it from their own
     /// UpdateSim, so whatever it kills or destroys there is gone before this
@@ -13188,13 +13205,8 @@ impl RolloutWorld {
             .position(|slot| self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity)
         {
             if self.players[target].active == ActiveAbility::Rock {
-                // Rock.prefab has no PlayerCollision: its DPhysicsCircle hands
-                // the contact to BounceBall.OnCollide, which a Player-layer
-                // collider kicks along the normal (BounceBall.cs:310-317).
-                if self.players[target].rope.is_none() {
-                    self.players[target].rock.body.force +=
-                        normal * data.rock.player_collision_bounce * Fix::from_int(60);
-                }
+                let layer = self.entities[Self::hurtbox_entity(&self.players[caster])].layer;
+                self.rock_on_collide(target, normal, layer);
             } else if self.hittable(target) {
                 // PlayerCollision.OnCollide.
                 self.kill_with(target, killer, CAUSE_OTHER, route, true, true, false);
@@ -23632,12 +23644,9 @@ impl RolloutWorld {
                             // PlayerCollision callback. Its normal is
                             // NormalizedSafe(nearPos - body.position), with
                             // nearPos = origin + nearDist * dir.
-                            if self.players[target].rope.is_none() {
-                                let normal = (direction * hit.distance).normalized_safe();
-                                self.players[target].rock.body.force += normal
-                                    * data.rock.player_collision_bounce
-                                    * Fix::from_int(60);
-                            }
+                            let normal = (direction * hit.distance).normalized_safe();
+                            let layer = self.entities[Self::hurtbox_entity(&self.players[index])].layer;
+                            self.rock_on_collide(target, normal, layer);
                             let slot = &mut self.players[index];
                             slot.base.position = origin + direction * hit.distance;
                             slot.reported_position = slot.base.position;
@@ -38524,7 +38533,7 @@ impl RolloutWorld {
     /// A Rock form's Circle/Box pairs with slimes, forms and clones, which
     /// only call back; its pairs with spikes and missiles resolve in
     /// circle_box_group.
-    fn rocks_box_contacts(&mut self, data: &data::RolloutData) {
+    fn rocks_box_contacts(&mut self) {
         // Every live Player-layer slime/form callback sees Rock's Ability and
         // credits its owner. BounceBall independently queues its bounce force.
         let mut victims = [usize::MAX; MAX_BODIES * MAX_BODIES];
@@ -38555,10 +38564,7 @@ impl RolloutWorld {
                     continue;
                 }
                 if let Some(contact) = self.circle_entity_contact(rock, entity) {
-                    if self.players[rock_index].rope.is_none() {
-                        self.players[rock_index].rock.body.force +=
-                            contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
-                    }
+                    self.rock_on_collide(rock_index, contact.normal, self.entities[entity].layer);
                     victims[victim_count] = victim;
                     killers[victim_count] = self.players[rock_index].base.id;
                     rock_ranks[victim_count] = sweep_rank(
@@ -38583,10 +38589,7 @@ impl RolloutWorld {
                     continue;
                 }
                 if let Some(contact) = self.circle_entity_contact(rock, entity) {
-                    if self.players[rock_index].rope.is_none() {
-                        self.players[rock_index].rock.body.force +=
-                            contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
-                    }
+                    self.rock_on_collide(rock_index, contact.normal, self.entities[entity].layer);
                     // The clone's box callback, in the pair's Circle/Box place.
                     let killer = self.players[rock_index].base.id;
                     let cause = if self.abilityless_clones[clone_index].base.id == killer {
@@ -44012,7 +44015,7 @@ mod tests {
             Fix::from_raw(world.entities[target_entity].y),
         );
 
-        world.rocks_box_contacts(data::get());
+        world.rocks_box_contacts();
 
         assert_eq!(world.players[0].rock.body.force, Vec2::ZERO);
     }
