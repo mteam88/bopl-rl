@@ -10971,15 +10971,7 @@ impl RolloutWorld {
                                 // PlayerPhysics updater keeps it active.
                                 self.players[index].base.collision_rays(terrain!(self));
                                 if self.players[index].base.grounded {
-                                    let slot = &mut self.players[index];
-                                    slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                                    slot.begin_land(true);
-                                    slot.reported_position = slot.base.position;
-                                    slot.reported_tick = self.tick;
-                                    // The `justlanded` exit's SyncPhysicsTo
-                                    // UpdateScales the slime radius and
-                                    // re-places it from the form's local.
-                                    self.sync_exit_to_ground(index);
+                                    self.spark_shot_landing_exit(index);
                                     return;
                                 }
                                 let slot = &mut self.players[index];
@@ -14173,6 +14165,16 @@ impl RolloutWorld {
             facing_right: true,
             ..ExitInfo::default()
         }
+    }
+
+    /// SparkShot's landing hands Ability.ExitAbility a justlanded packet,
+    /// facing right (SparkShot.cs:142-161).
+    fn spark_shot_landing_exit(&mut self, index: usize) {
+        let slot = &mut self.players[index];
+        slot.base.rotation = Fix::ZERO;
+        let mut info = ExitInfo { just_landed: true, facing_right: true, ..ExitInfo::default() };
+        info.take_body(&slot.base);
+        self.ability_exit(index, info);
     }
 
     /// The landing exit BowTransform, GunTransform and MagnetGun make when
@@ -24490,14 +24492,7 @@ impl RolloutWorld {
         } else {
             self.players[index].base.collision_rays(terrain!(self));
             if self.players[index].base.grounded {
-                // SparkShot's landing hands Ability.ExitAbility a justlanded
-                // packet, facing right (SparkShot.cs:142-161).
-                let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
-                let mut info =
-                    ExitInfo { just_landed: true, facing_right: true, ..ExitInfo::default() };
-                info.take_body(&slot.base);
-                self.ability_exit(index, info);
+                self.spark_shot_landing_exit(index);
                 return;
             }
             let slot = &mut self.players[index];
