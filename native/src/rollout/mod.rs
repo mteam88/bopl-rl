@@ -4089,6 +4089,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Beam
             | ActiveAbility::Roll
             | ActiveAbility::Meteor
+            | ActiveAbility::Throw
     )
 }
 
@@ -10050,9 +10051,6 @@ impl RolloutWorld {
         ) {
             self.release_held_throw_item_on_exit(index, false, data);
         }
-        if active == ActiveAbility::Throw {
-            self.drop_macho_held_boulder(index, data);
-        }
 
         let tick = self.tick;
         let slot = &mut self.players[index];
@@ -10081,11 +10079,6 @@ impl RolloutWorld {
             // each ExitAbility writes its own fields over it before the slime
             // restores from it.
             match active {
-                ActiveAbility::Throw => {
-                    // MachoThrow2.cs:785; it leaves externalVelocity default.
-                    slot.facing_right = slot.macho_throw.facing_right;
-                    slot.base.external_velocity = Vec2::ZERO;
-                }
                 // ThrowItem leaves externalVelocity default (ThrowItem.cs:158-174).
                 ActiveAbility::Mine => slot.base.external_velocity = Vec2::ZERO,
                 // The rest hand on the body's velocities and the facing the slot
@@ -14098,6 +14091,17 @@ impl RolloutWorld {
             ActiveAbility::Meteor => {
                 // MeteorSmash.ExitAbility passes the packet on untouched
                 // (MeteorSmash.cs:196-205).
+            }
+            ActiveAbility::Throw => {
+                // MachoThrow2.ExitAbility (MachoThrow2.cs:769-788) drops the
+                // held boulder and leaves the packet's externalVelocity.
+                self.drop_macho_held_boulder(index, data::get());
+                let slot = &mut self.players[index];
+                slot.base.rotation = Fix::ZERO;
+                let external = info.external_velocity;
+                info.take_body(&slot.base);
+                info.external_velocity = external;
+                info.facing_right = slot.macho_throw.facing_right;
             }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
@@ -20644,69 +20648,6 @@ impl RolloutWorld {
         self.macho_boulders[held].dropped = true;
     }
 
-    fn exit_macho_throw(&mut self, index: usize, grounded: bool, data: &data::RolloutData) {
-        self.drop_macho_held_boulder(index, data);
-        let ordinary_ground = if grounded {
-            self.players[index]
-                .base
-                .ground
-                .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
-                .map(|platform| {
-                    // SyncPhysicsTo(AbilityExitInfo) re-derives the pose from
-                    // the form's own perimeter coordinate and radius.
-                    let base = &self.players[index].base;
-                    let position = platform.surface.position(base.local, base.radius);
-                    let local = platform
-                        .surface
-                        .local_position(position, self.players[index].exit_slime_radius())
-                        .ok();
-                    let up = platform.surface.normal(position);
-                    (position, local, up, up.perp_cw().normalized_angle())
-                })
-        } else {
-            None
-        };
-        let slot = &mut self.players[index];
-        // Ability.ExitAbility publishes the form's position before
-        // SyncPhysicsTo moves the slime.
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.facing_right = slot.macho_throw.facing_right;
-        // onExitAbility assigns Player.Scale to the slime's hurtbox, and
-        // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
-        slot.set_ordinary_body_scale(slot.player_scale);
-        slot.restore_slime_radius();
-        if let Some((position, Some(local), up, rotation)) = ordinary_ground {
-            // PlayerPhysics.SyncPhysicsTo converts the form's world pose
-            // back into the ordinary slime's smaller-radius perimeter
-            // coordinate before its same-pass LateUpdateSim.
-            slot.base.position = position;
-            slot.base.velocity = Vec2::ZERO;
-            slot.base.local = local;
-            slot.base.up = up;
-            slot.base.rotation = rotation;
-        }
-        slot.base.constants = data.player.constants.clone();
-        // Every MachoThrow2 exit passes a fresh AbilityExitInfo and ExitAbility
-        // never fills externalVelocity, so SyncPhysicsTo clears the push.
-        slot.base.external_velocity = Vec2::ZERO;
-        if ordinary_ground.is_none() {
-            slot.base.rotation = Fix::ZERO;
-        }
-        if grounded && slot.base.ground.is_some() {
-            // EnterIdle. The slime's OldUpdate already passed this updater
-            // pass, so its state switch waits for the next one.
-            slot.obs_state = STATE_IDLE;
-            slot.state_ticks = 0;
-            slot.obs_state_held_this_tick = true;
-        } else {
-            slot.base.grounded = false;
-            slot.base.up = Vec2::UP;
-            slot.exit_to_fall(terrain!(self));
-        }
-    }
-
     /// Ability.EnterAbility and each Ability.UpdateSim assign Player.Scale to
     /// the Throw form's box, which scales its FixTransform offset; MachoThrow2
     /// reads that FixTransform Scale for the held position, the boulders and
@@ -20786,8 +20727,7 @@ impl RolloutWorld {
                         state.ticks = 0;
                     }
                     7 => {
-                        let grounded = self.players[index].base.grounded;
-                        self.exit_macho_throw(index, grounded, data);
+                        self.exit_form(index);
                         return;
                     }
                     _ => {}
@@ -20892,7 +20832,7 @@ impl RolloutWorld {
                         &self.platforms,
                         data.macho_throw.constants.jump_strength,
                     );
-                    self.exit_macho_throw(index, false, data);
+                    self.exit_form(index);
                     return;
                 }
             }
@@ -27018,11 +26958,6 @@ impl RolloutWorld {
         // MagnetGun exits an ability form with an ungrounded packet placed at
         // its CurrentFirePoint.
         let firepoint = self.magnet_firepoint(index, data);
-        if let MagnetHeld::Player(victim) = held
-            && self.players[victim].active == ActiveAbility::Throw
-        {
-            self.drop_macho_held_boulder(victim, data);
-        }
 
         if self.players[index].magnet.phase == 1 {
             self.players[index].magnet.animation = 2;
@@ -27090,15 +27025,6 @@ impl RolloutWorld {
                     slot.forms[s].pose.position = slot.base.position;
                     slot.form_frozen = frozen;
                     self.ability_exit(i, info);
-                    self.players[index].magnet.held_position = self.players[i].base.position;
-                } else if self.players[i].active == ActiveAbility::Throw {
-                    // MachoThrow2.ExitAbility overwrites the packet with the
-                    // form's own grounding, so SyncPhysicsTo sets the slime
-                    // back on its platform. MagnetGun reads heldPosition from
-                    // the slime after that, before UnGround lifts it.
-                    let grounded = self.players[i].base.grounded;
-                    self.exit_macho_throw(i, grounded, data);
-                    freeze(&mut self.players[i]);
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if matches!(
                     self.players[i].active,
