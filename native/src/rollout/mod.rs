@@ -1114,6 +1114,8 @@ pub struct SpawnedEngine {
     pub scale: Fix,
     /// FixTransform.offset, compounded like SpawnedSpike::collider_offset.
     pub collider_offset: Vec2,
+    /// The FixTransform offset that sync placed it with, as SpawnedTeslaNode's.
+    pub transform_offset: Vec2,
     /// RocketEngine.prevScale: component offsets adopt a DPhysics scale write
     /// on the following RocketEngine updater pass.
     pub offset_scale: Fix,
@@ -1134,7 +1136,7 @@ impl SpawnedEngine {
     /// FixTransform.position as SyncGameObject last set it: the box less its
     /// offset, turned by its right.
     fn transform_position(&self) -> Vec2 {
-        self.transform_center - self.collider_offset.complex_mul(Vec2::angle(self.transform_rotation))
+        self.transform_center - self.transform_offset.complex_mul(Vec2::angle(self.transform_rotation))
     }
 
     /// The box collider's inverseExtents, as in SpawnedSpike.
@@ -8083,6 +8085,7 @@ impl RolloutWorld {
         for engine in &mut self.engines {
             engine.transform_center = engine.collider_center;
             engine.transform_rotation = engine.collider_rotation;
+            engine.transform_offset = engine.collider_offset;
         }
         for node in &mut self.tesla_nodes {
             node.transform_center = node.collider_center;
@@ -9573,6 +9576,7 @@ impl RolloutWorld {
                 let center = position + offset;
                 self.engines[index].collider_center = center;
                 self.engines[index].transform_center = center;
+                self.engines[index].transform_offset = engine.collider_offset;
                 self.platform_dynamics[engine.platform_index].body.velocity =
                     Self::portal_velocity(entry, exit, combined.velocity);
                 let row = &mut self.entities[entity];
@@ -15091,6 +15095,7 @@ impl RolloutWorld {
             surface_offset,
             scale,
             collider_offset,
+            transform_offset: collider_offset,
             offset_scale: scale,
             time: Fix::ZERO,
             phase: 0,
@@ -18838,6 +18843,7 @@ impl RolloutWorld {
         engine.collider_rotation = desired_rotation;
         engine.transform_center = engine.collider_center;
         engine.transform_rotation = desired_rotation;
+        engine.transform_offset = engine.collider_offset;
         engine.offset_scale = engine.scale;
         // RocketEngineInit's two `hitbox.Scale = scale` writes each divide the
         // inverse extents by `(1 / scale) * scale`; the offset keeps `s / s`.
@@ -27149,6 +27155,7 @@ impl RolloutWorld {
             surface_offset,
             scale: source.scale,
             collider_offset: source.collider_offset,
+            transform_offset: source.collider_offset,
             offset_scale: source.scale,
             time: Fix::ZERO,
             phase: 0,
@@ -28270,7 +28277,9 @@ impl RolloutWorld {
             let center =
                 parent_position + relative_center.complex_mul(self.platforms[platform].surface.right);
             self.engines[index].collider_center = center;
-            self.engines[index].transform_center = center;
+            // RocketEngine.RepositionOnParent only sets the child body's
+            // relativePos, so the FixTransform keeps its position until
+            // SyncGameObject (DPhysicsBox.cs:207-208, RocketEngine.cs:180-193).
             let extents = self.engines[index].box_extents(&self.entity_inverse_extents);
             self.entities[entity].right_x = (right * extents.x).x.raw();
             self.entities[entity].right_y = (right * extents.x).y.raw();
@@ -42192,6 +42201,7 @@ mod tests {
             phase: 1,
             scale: Fix::ONE,
             collider_offset: data.engine.rocket_collider_offset,
+            transform_offset: data.engine.rocket_collider_offset,
             offset_scale: Fix::ONE,
             platform_index: 0,
             ..SpawnedEngine::default()
