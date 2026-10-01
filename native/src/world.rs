@@ -200,10 +200,6 @@ pub struct DashState {
     pub radius: Fix,
     #[serde(default)]
     pub inverse_extents: Vec2,
-    /// The slime's radius once onExitAbility has rescaled it, for the
-    /// velocity rays of the handoff. Zero keeps the current radius.
-    #[serde(default)]
-    pub exit_radius: Fix,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[repr(C)]

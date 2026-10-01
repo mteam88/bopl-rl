@@ -4097,6 +4097,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Mjolnir
             | ActiveAbility::PokeBall
             | ActiveAbility::Missile
+            | ActiveAbility::Dash
     )
 }
 
@@ -12688,10 +12689,6 @@ impl RolloutWorld {
             if self.players[index].base.dash.active {
                 self.form_body_move(index, jump_pressed);
             }
-            if !self.players[index].base.dash.active {
-                // Dash finished this tick.
-                self.players[index].set_active_form(&mut self.entities, ActiveAbility::None);
-            }
             return;
         }
 
@@ -13940,6 +13937,27 @@ impl RolloutWorld {
                     slot.gun.aim
                 };
                 info.facing_right = aim.x >= Fix::ZERO;
+            }
+            ActiveAbility::Dash => {
+                // Dash.ExitAbility (Dash.cs:201-242).
+                let leave_speed = data::get().dash.leave_speed;
+                let input = self.players[index].base.dash.input;
+                self.dash_rope_exit(index, input, leave_speed);
+                let slot = &mut self.players[index];
+                info.take_body(&slot.base);
+                info.grounded_speed = Fix::ZERO;
+                info.facing_right = input.x <= Fix::ZERO;
+                info.velocity = input * leave_speed;
+                if slot.base.space {
+                    info.velocity = info.velocity * Fix::from_f32(0.5);
+                }
+                info.external_velocity = Vec2::ZERO;
+                info.grounded = false;
+                info.radius = slot.base.dash.radius;
+                slot.base.dash.active = false;
+                // The slime's own LocalPlatformPos, which the airborne
+                // SyncPhysicsTo leaves alone.
+                slot.base.local = slot.base.dash.saved_local;
             }
             ActiveAbility::Magnet => {
                 // MagnetGun.ExitAbility (MagnetGun.cs:356-373).
@@ -23900,17 +23918,6 @@ impl RolloutWorld {
     }
 
     fn dash_move(&mut self, index: usize, action: Action, movement_input: Vec2) {
-        if self.players[index].active == ActiveAbility::Dash {
-            // onExitAbility sets hurtBox.Scale = Player.Scale, and
-            // SyncPhysicsTo's UpdateScale follows before the exit rays.
-            let slot = &mut self.players[index];
-            let scale = hurtbox_scale(slot.player_scale);
-            slot.base.dash.exit_radius = if scale != slot.physics_scale {
-                slot.base.radius * (scale / slot.physics_scale)
-            } else {
-                slot.base.radius
-            };
-        }
         self.players[index]
             .base
             .move_step(action, movement_input, terrain!(self));
@@ -23927,37 +23934,13 @@ impl RolloutWorld {
         // player position sees Dash's post-update transform on every active
         // pass, including activation and teleport/exit.
         if self.players[index].active == ActiveAbility::Dash {
-            let mut exit_input = None;
             let slot = &mut self.players[index];
             slot.reported_position = slot.base.position;
             slot.reported_tick = self.tick;
             if !slot.base.dash.active {
-                // Dash.ExitAbility hands over an ungrounded body (Dash.cs:234),
-                // so SlimeController.onExitAbility enters Fall and immediately
-                // runs VelocityBasedRaycasts (SlimeController.cs:249, 263-272)
-                // with the leave velocity. Player::dash_step performs that
-                // shared physical handoff; this updates the rollout state.
-                exit_input = Some(slot.base.dash.input);
-                // `Ability.ExitAbility` ran its `SetPosition` before the
-                // handoff, so the pose the slime reaches through
-                // `collision_rays` only becomes public on the next pass.
-                slot.reported_position = slot.base.dash.exit_position;
-            }
-            if let Some(input) = exit_input {
-                let slot = &mut self.players[index];
-                slot.physics_scale = hurtbox_scale(slot.player_scale);
-                slot.set_ordinary_body_scale(slot.player_scale);
-                slot.base.sync_collider();
-                self.dash_rope_exit(index, input, data::get().dash.leave_speed);
-                // Dash.ExitAbility: `isFacingRight = Dot(inputVector, right) <= 0`.
-                // EnterFall aligns it before its raycasts, which dash_step has
-                // already run, so a landed exit is aligned too.
-                let slot = &mut self.players[index];
-                slot.facing_right = input.x <= Fix::ZERO;
-                slot.align_transform_air();
-                // Player::dash_step already ran EnterFall's rays.
-                slot.release_exit_ground();
-                slot.fall_state();
+                // Ability.ExitAbility publishes the raw endpoint before
+                // onExitAbility's EnterFall runs the slime's velocity rays.
+                self.exit_form(index);
             }
         }
         let dash_cast = {
@@ -24236,9 +24219,6 @@ impl RolloutWorld {
                     _ => unreachable!(),
                 }
             }
-        }
-        if !self.players[index].base.dash.active {
-            self.players[index].set_active_form(&mut self.entities, ActiveAbility::None);
         }
     }
 

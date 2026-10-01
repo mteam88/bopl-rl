@@ -120,33 +120,10 @@ impl Player {
                     self.position = position;
                 }
                 self.dash.exit_rotation = self.rotation;
-                // Ability.ExitAbility publishes `potentialCollider.position`
-                // before `onExitAbility` restores the slime, so this raw
-                // endpoint - not the ray-corrected body below - is what
-                // Player.Position carries on the exit pass.
+                // The endpoint the rope exit pins; the rollout's Dash exit
+                // hands the slime over from here.
                 self.dash.exit_position = self.position;
                 self.dash.active = false;
-                self.ground = None;
-                self.grounded = false;
-                self.grounded_speed = Fix::ZERO;
-                self.rotation = Fix::ZERO;
-                self.up = Vec2::UP;
-                self.local = self.dash.saved_local;
-                self.velocity = self.dash.input
-                    * if self.space {
-                        Fix::from_int(30)
-                    } else {
-                        Fix::from_int(60)
-                    };
-                self.external_velocity = Vec2::ZERO;
-                if self.dash.exit_radius != Fix::ZERO {
-                    self.radius = self.dash.exit_radius;
-                }
-                // SlimeController.onExitAbility immediately runs the returned
-                // slime's velocity rays with Dash's leave velocity. Keep this
-                // physical handoff here so both the scalar World and batched
-                // rollout paths can land on the ejection tick.
-                self.collision_rays(terrain);
             }
             self.dash.updates += 1;
         }
