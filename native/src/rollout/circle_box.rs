@@ -601,22 +601,28 @@ impl RolloutWorld {
         contacts.sort_by_key(|&(key, ..)| key);
         for &(key, part, wall, contact) in &contacts {
             // collision.layer is the wall's own layer (DetPhysics.cs:2405-2437).
-            let wall_layer = self.entities[self.platform_entities[wall]].layer == LAYER_WALL;
+            let layer = self.entities[self.platform_entities[wall]].layer;
+            let wall_layer = layer == LAYER_WALL;
             let hit = match part {
-                // SmokeGrenadeExplode2.cs:63-78, Mjolnir.cs:292-318,
-                // BananaPeel.cs:113-138.
+                // A smoke grenade detonates on any collider but a Projectile
+                // that does not ignite explosives, which no rounded rect is
+                // (SmokeGrenadeExplode2.cs:63-78); Mjolnir and the Tack act
+                // only on the wall layer (Mjolnir.cs:292-318,
+                // BananaPeel.cs:113-138).
                 Part::Item(item) => match self.thrown_items[item].ability {
                     ABILITY_SMOKE => CallbackHit::ItemDetonate { item, count: 1 },
-                    ABILITY_MJOLNIR => CallbackHit::MjolnirWall { item, wall },
-                    ABILITY_TACK => CallbackHit::TackWall { item, normal: contact.normal },
+                    ABILITY_MJOLNIR if wall_layer => CallbackHit::MjolnirWall { item, wall },
+                    ABILITY_TACK if wall_layer => CallbackHit::TackWall { item, normal: contact.normal },
                     _ => continue,
                 },
                 // PortalShot.OnCollide lands on the first wall-layer pair to
                 // run, with its normal; the later ones find the shot landed
                 // (PortalShot.cs:78-98).
                 Part::Shot(shot) if wall_layer => CallbackHit::PortalShotLand { shot, normal: -contact.normal },
-                // Arrow.cs:85-131.
-                Part::Arrow(arrow) => CallbackHit::ArrowLand { arrow, wall: Some(wall), part: None },
+                // Arrow.OnCollide lands on a StickTo layer (Arrow.cs:85-131).
+                Part::Arrow(arrow) if ARROW_STICK_TO & (1 << layer) != 0 => {
+                    CallbackHit::ArrowLand { arrow, wall: Some(wall), part: None }
+                }
                 // SpikeAttack.OnCollide knocks with knockAwayWallStr only on the
                 // wall layer (SpikeAttack.cs:116-141).
                 Part::Spike(spike) => CallbackHit::SpikeWallKnock { spike, wall, point: contact.point, wall_layer },
