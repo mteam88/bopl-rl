@@ -15200,8 +15200,17 @@ impl RolloutWorld {
         if synced {
             // SynCompositeToFixTransAndRelativeValues first puts the rounded
             // rect's collider on its FixTransform, which this pass's updaters
-            // may have moved since the last Simulate (DetPhysics.cs:2467-2476).
-            self.platforms[platform_index].collider.inner.center = self.platforms[platform_index].surface.center;
+            // may have moved since the last Simulate, and Box.SetRotation
+            // rebuilds its axes from the retained inverseExtents, dropping
+            // the rounding a resize earlier in the pass left in them
+            // (DetPhysics.cs:2467-2476, RoundedRect.cs:22-26).
+            let dynamics = &self.platform_dynamics[platform_index];
+            let right = Vec2::angle(dynamics.transform_rotation.unwrap_or(dynamics.body.orientation));
+            let platform = &mut self.platforms[platform_index];
+            let inner = &mut platform.collider.inner;
+            inner.center = platform.surface.center;
+            inner.right = (Vec2::RIGHT / inner.inverse_extents.x).complex_mul(right);
+            inner.up = (Vec2::UP / inner.inverse_extents.y).complex_mul(right);
             self.platforms_changed();
         }
         let old = self.platform_dynamics[platform_index].body;
