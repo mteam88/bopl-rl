@@ -4096,6 +4096,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Tack
             | ActiveAbility::Mjolnir
             | ActiveAbility::PokeBall
+            | ActiveAbility::Missile
     )
 }
 
@@ -14125,6 +14126,12 @@ impl RolloutWorld {
                 info.just_landed = info.grounded;
                 info.facing_right = slot.facing_right;
             }
+            ActiveAbility::Missile => {
+                // SparkShot.ExitAbility (SparkShot.cs:278-292).
+                let slot = &self.players[index];
+                info.take_body(&slot.base);
+                info.facing_right = slot.facing_right;
+            }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
         info
@@ -14149,6 +14156,23 @@ impl RolloutWorld {
         let entity = Self::hurtbox_entity(slot);
         slot.sync_form_pose();
         slot.form_frozen = Some(FrozenForm { tick, entity, posed: true });
+    }
+
+    /// The packet a form whose ground went missing hands straight to
+    /// Ability.ExitAbility: its body unrotated, airborne, facing right
+    /// (BlackHoleClap.cs:135-148, SparkShot.cs:164-178).
+    fn lost_ground_packet(&mut self, index: usize) -> ExitInfo {
+        let base = &mut self.players[index].base;
+        base.rotation = Fix::ZERO;
+        base.up = Vec2::UP;
+        ExitInfo {
+            position: base.position,
+            velocity: base.velocity,
+            external_velocity: base.external_velocity,
+            radius: base.radius,
+            facing_right: true,
+            ..ExitInfo::default()
+        }
     }
 
     /// The landing exit BowTransform, GunTransform and MagnetGun make when
@@ -17016,21 +17040,7 @@ impl RolloutWorld {
                     return;
                 }
             } else {
-                // BlackHoleClap's lost-ground exit zeroes the form body's
-                // rotation and hands an airborne packet, isFacingRight true,
-                // straight to Ability.ExitAbility (BlackHoleClap.cs:135-148).
-                let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
-                slot.base.up = Vec2::UP;
-                let base = &slot.base;
-                let info = ExitInfo {
-                    position: base.position,
-                    velocity: base.velocity,
-                    external_velocity: base.external_velocity,
-                    radius: base.radius,
-                    facing_right: true,
-                    ..ExitInfo::default()
-                };
+                let info = self.lost_ground_packet(index);
                 self.freeze_form_pose(index);
                 self.ability_exit(index, info);
                 return;
@@ -24369,29 +24379,8 @@ impl RolloutWorld {
                 state.ticks = 0;
             }
             3 if state.ticks > data.missile.idle_ticks => {
-                let slot = &mut self.players[index];
-                slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                // Ability.ExitAbility publishes the collider DetPhysics last
-                // synced, before the slime's own raycasts can land it.
-                slot.reported_position = slot.base.position;
-                slot.reported_tick = self.tick;
-                // SparkShot.Finish exits without `justlanded`. The ordinary
-                // SlimeController therefore enters Idle when the form is
-                // attached, even if the form originally entered in Fall.
-                // SyncPhysicsTo places the slime from the form's
-                // LocalPlatformPos, not its body, so ground that moved since
-                // the form's last LateUpdateSim carries the slime with it.
-                if slot.base.grounded {
-                    // EnterIdle; the slime's OldUpdate already passed this pass.
-                    slot.obs_state = STATE_IDLE;
-                    slot.state_ticks = 0;
-                    self.sync_exit_to_ground(index);
-                } else {
-                    slot.restore_slime_radius();
-                    slot.exit_to_fall(terrain!(self));
-                    // SlimeController.ExitAbility: hurtBox.Scale = player.Scale.
-                    slot.set_ordinary_body_scale(slot.player_scale);
-                }
+                // SparkShot.Finish exits on a default packet.
+                self.exit_form(index);
                 return;
             }
             _ => {}
@@ -24447,18 +24436,9 @@ impl RolloutWorld {
         });
         let grounded = self.players[index].base.grounded;
         if grounded && ((lost.is_some() && dead.is_none()) || ground_inactive) {
-            let slot = &mut self.players[index];
-            slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            slot.reported_position = slot.base.position;
-            slot.reported_tick = self.tick;
-            slot.facing_right = true;
-            slot.base.grounded = false;
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
-            slot.missile.collider_rotation = Fix::ZERO;
-            slot.restore_slime_radius();
-            slot.exit_to_fall(terrain!(self));
-            slot.set_ordinary_body_scale(slot.player_scale);
+            let info = self.lost_ground_packet(index);
+            self.players[index].missile.collider_rotation = Fix::ZERO;
+            self.ability_exit(index, info);
             return;
         }
 
@@ -24510,16 +24490,14 @@ impl RolloutWorld {
         } else {
             self.players[index].base.collision_rays(terrain!(self));
             if self.players[index].base.grounded {
+                // SparkShot's landing hands Ability.ExitAbility a justlanded
+                // packet, facing right (SparkShot.cs:142-161).
                 let slot = &mut self.players[index];
-                // SparkShot's landing exit hands over isFacingRight true.
-                slot.facing_right = true;
-                slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                slot.begin_land(true);
-                // Ability.ExitAbility publishes the collider DetPhysics
-                // last synced, as Ability.UpdateSim already did this pass.
-                // SyncPhysicsTo UpdateScales the slime radius and re-places
-                // it from the form's local.
-                self.sync_exit_to_ground(index);
+                slot.base.rotation = Fix::ZERO;
+                let mut info =
+                    ExitInfo { just_landed: true, facing_right: true, ..ExitInfo::default() };
+                info.take_body(&slot.base);
+                self.ability_exit(index, info);
                 return;
             }
             let slot = &mut self.players[index];
