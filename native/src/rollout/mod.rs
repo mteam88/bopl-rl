@@ -4277,8 +4277,6 @@ enum CallbackHit {
     ItemDetonate { item: usize, count: usize },
     /// Mine.OnCollide with an igniter: an armed mine starts its anticipation.
     MineIgnite { item: usize },
-    /// BounceBall.OnCollide with a collider of `layer` (BounceBall.cs:310-323).
-    RockBounce { rock: usize, normal: Vec2, layer: u32 },
     /// One side of a narrow-phase manifold: the receiver's
     /// collisionCallback.OnCollide with the other collider, dispatched by the
     /// receiver's kind (DetPhysics.cs:2406-2438, 3202-3205).
@@ -8198,12 +8196,6 @@ impl RolloutWorld {
         {
             self.circle_circle_group(data);
         }
-        if has(ABILITY_DUPLICATOR) {
-            self.duplicated_rock_contacts();
-        }
-        if has(ABILITY_ROCK) {
-            self.rocks_box_contacts();
-        }
         // DynamicAbilityPickup.OnCollide is a callback: a pickup a slime
         // collects this pass still resolved its Circle/Circle pairs first.
         if has_pickups {
@@ -8218,6 +8210,7 @@ impl RolloutWorld {
             || has(ABILITY_TESLA)
             || has(ABILITY_PORTAL_GUN)
             || has(ABILITY_ROCK)
+            || has(ABILITY_DUPLICATOR)
             || has(ABILITY_BOW)
             || has(ABILITY_BLACK_HOLE)
         {
@@ -36358,7 +36351,6 @@ impl RolloutWorld {
                     .apply_impulse(direction * strength, wall_arm);
                 self.spike_attack_self_push(spike, point, strength, data);
             }
-            CallbackHit::RockBounce { rock, normal, layer } => self.rock_on_collide(rock, normal, layer),
             CallbackHit::Collide { receiver, other, contact } => self.on_collide(receiver, other, contact, data),
             CallbackHit::MineIgnite { item } => {
                 let mine = &mut self.thrown_items[item];
@@ -38427,44 +38419,6 @@ impl RolloutWorld {
         }
     }
 
-    /// A Rock_noPlayer's Explosion against slimes' hurtboxes. It carries no
-    /// BounceBall, so only the victim's PlayerCollision reacts, and its
-    /// canHurtOwner lets it kill the slime it was copied from.
-    fn duplicated_rock_contacts(&mut self) {
-        for rock_index in 0..self.duplicated_rocks.len() {
-            let rock = self.duplicated_rocks[rock_index];
-            if !rock.active || self.blink_object_hidden(rock.entity) {
-                continue;
-            }
-            let circle = Circle {
-                center: rock.position,
-                radius: rock.collider_radius,
-            };
-            let killer = player_id(&self.players, rock.owner);
-            for victim in 0..self.players.len() {
-                if !self.hittable(victim) {
-                    continue;
-                }
-                let entity = Self::hurtbox_entity(&self.players[victim]);
-                if entity == usize::MAX
-                    || self.entities[entity].layer != LAYER_PLAYER
-                    || !self.swept_pair(Swept::DuplicatedRock(rock_index), Swept::Player(victim))
-                    || self.circle_entity_contact(circle, entity).is_none()
-                {
-                    continue;
-                }
-                let cause = if self.players[victim].base.id == killer {
-                    CAUSE_ACCIDENT
-                } else {
-                    CAUSE_OTHER
-                };
-                let min = self.swept_min(Swept::DuplicatedRock(rock_index));
-                let rank = sweep_rank(&self.entities, min, rock.entity);
-                self.queue_callback_kill(victim, true, rank, killer, cause);
-            }
-        }
-    }
-
     /// Rounded-platform rigid-body stage. The order matches DetPhysics after
     fn rock_rope_update(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
         let Some(rope_index) = self.players[index].rope else {
@@ -38559,106 +38513,6 @@ impl RolloutWorld {
             slot.base.position += shift;
             slot.base.set_rotation(slot.rock.body.orientation);
             slot.base.velocity = slot.rock.body.velocity;
-        }
-    }
-
-    /// A Rock form's Circle/Box pairs with slimes, forms and clones, which
-    /// only call back; its pairs with spikes and missiles resolve in
-    /// circle_box_group.
-    fn rocks_box_contacts(&mut self) {
-        // Every live Player-layer slime/form callback sees Rock's Ability and
-        // credits its owner. BounceBall independently queues its bounce force.
-        let mut victims = [usize::MAX; MAX_BODIES * MAX_BODIES];
-        let mut killers = [0u32; MAX_BODIES * MAX_BODIES];
-        let mut rock_ranks = [(Fix::ZERO, 0u32, 0usize); MAX_BODIES * MAX_BODIES];
-        let mut bounces = [(0usize, Vec2::ZERO, 0u32); MAX_BODIES * MAX_BODIES];
-        let mut victim_count = 0usize;
-        for rock_index in 0..self.players.len() {
-            if self.players[rock_index].active != ActiveAbility::Rock || !self.playable(rock_index)
-            {
-                continue;
-            }
-            let rock = Circle {
-                center: self.players[rock_index].base.position,
-                radius: self.players[rock_index].rock_circle().circle_radius,
-            };
-            for victim in 0..self.players.len() {
-                if victim == rock_index
-                    || !self.hittable(victim)
-                    || self.players[victim].active == ActiveAbility::Rock
-                {
-                    continue;
-                }
-                let entity = Self::hurtbox_entity(&self.players[victim]);
-                if entity == usize::MAX
-                    || self.entities[entity].layer != LAYER_PLAYER
-                    || !self.swept_pair(Swept::Player(rock_index), Swept::Player(victim))
-                {
-                    continue;
-                }
-                if let Some(contact) = self.circle_entity_contact(rock, entity) {
-                    bounces[victim_count] = (rock_index, contact.normal, self.entities[entity].layer);
-                    victims[victim_count] = victim;
-                    killers[victim_count] = self.players[rock_index].base.id;
-                    rock_ranks[victim_count] = sweep_rank(
-                        &self.entities,
-                        self.swept_min(Swept::Player(rock_index)),
-                        Some(self.players[rock_index].rock_entity),
-                    );
-                    victim_count += 1;
-                }
-            }
-            // The Rock form is a KillPlayersOnContact Ability, which
-            // PlayerCollision lets hurt its owner: a clone of the rock's own
-            // slime dies too, as an accident.
-            for clone_index in 0..self.abilityless_clones.len() {
-                if !self.abilityless_clones[clone_index].active {
-                    continue;
-                }
-                let Some(entity) = self.abilityless_clones[clone_index].entity else {
-                    continue;
-                };
-                if !self.swept_pair(Swept::Player(rock_index), Swept::Clone(clone_index)) {
-                    continue;
-                }
-                if let Some(contact) = self.circle_entity_contact(rock, entity) {
-                    // The Rock's BounceBall callback and the clone's box
-                    // callback, in the pair's Circle/Box place, the circle's
-                    // first.
-                    let killer = self.players[rock_index].base.id;
-                    let cause = if self.abilityless_clones[clone_index].base.id == killer {
-                        CAUSE_ACCIDENT
-                    } else {
-                        CAUSE_OTHER
-                    };
-                    let clone_rank = sweep_rank(&self.entities, self.swept_min(Swept::Clone(clone_index)), Some(entity));
-                    let (later, earlier) = sweep_pair(self.player_sweep_rank(rock_index), clone_rank);
-                    let kill = CallbackHit::CloneKill { clone: clone_index, killer, cause };
-                    let layer = self.entities[entity].layer;
-                    let bounce = CallbackHit::RockBounce { rock: rock_index, normal: contact.normal, layer };
-                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), bounce));
-                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), kill));
-                }
-            }
-        }
-        // The victim's PlayerCollision callback kills it, in DetPhysics'
-        // callback order with every other hitbox kill of this pass, and the
-        // Rock's BounceBall callback bounces it: against a box the circle's
-        // callback runs first, against a circle the earlier-sorted side's
-        // (DetPhysics.cs:3068-3071, 3109-3112).
-        for victim_offset in 0..victim_count {
-            let victim = victims[victim_offset];
-            let rock_rank = rock_ranks[victim_offset];
-            let (rock, normal, layer) = bounces[victim_offset];
-            let bounce = CallbackHit::RockBounce { rock, normal, layer };
-            let rock_first = !self.player_is_circle(victim) || rock_rank < self.player_sweep_rank(victim);
-            if rock_first {
-                self.queue_callback_hit(victim, true, rock_rank, bounce);
-            }
-            self.queue_callback_kill(victim, true, rock_rank, killers[victim_offset], CAUSE_OTHER);
-            if !rock_first {
-                self.queue_callback_hit(victim, true, rock_rank, bounce);
-            }
         }
     }
 
@@ -43874,7 +43728,9 @@ mod tests {
             Fix::from_raw(world.entities[target_entity].y),
         );
 
-        world.rocks_box_contacts();
+        world.circle_circle_group(data::get());
+        world.circle_box_group(data::get());
+        world.run_callback_hits(data::get());
 
         assert_eq!(world.players[0].rock.body.force, Vec2::ZERO);
     }

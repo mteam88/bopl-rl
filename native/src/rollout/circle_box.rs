@@ -28,6 +28,10 @@ pub(super) enum Part {
     Arrow(usize),
     /// A BlackHole's circle.
     Hole(usize),
+    /// A slime's or a non-Rock form's Player-layer collider, by player.
+    Body(usize),
+    /// An abilityless clone's box.
+    Clone(usize),
 }
 
 /// Arrow.StickTo: Player, item, wall, LethalTerrain and NonLethalTerrain
@@ -76,7 +80,22 @@ impl RolloutWorld {
                 center: self.black_holes[i].position,
                 radius: self.black_holes[i].radius,
             }),
+            Part::Body(_) | Part::Clone(_) => self.body_row_collider(self.part_entity(part).expect("registered body")),
         }
+    }
+
+    /// The collider DetPhysics holds for a slime's, form's or clone's row,
+    /// where it last synced it.
+    fn body_row_collider(&self, entity: usize) -> Collider {
+        let row = self.entities[entity];
+        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+        if row.kind == 0 {
+            return Collider::Circle(Circle { center, radius: Fix::from_raw(row.radius) });
+        }
+        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
+        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
+        let inverse_extents = self.box_inverse_extents(entity, right, up);
+        Collider::Box(OrientedBox { center, right, up, inverse_extents })
     }
 
     /// The layer SortAndSweep checks against the collision matrix.
@@ -99,6 +118,7 @@ impl RolloutWorld {
             Part::Hook(r) => self.ropes[r].hook_entity.map_or(LAYER_ROPE, |entity| self.entities[entity].layer),
             Part::Arrow(i) => self.arrows[i].entity.map_or(LAYER_PROJECTILE, |entity| self.entities[entity].layer),
             Part::Hole(_) => LAYER_RIGID_BODY_AFFECTOR,
+            Part::Body(_) | Part::Clone(_) => self.entities[self.part_entity(part).expect("registered body")].layer,
         }
     }
 
@@ -151,6 +171,8 @@ impl RolloutWorld {
             Part::Hook(r) => self.ropes[r].hook_entity,
             Part::Arrow(i) => self.arrows[i].entity,
             Part::Hole(i) => self.black_holes[i].entity,
+            Part::Body(i) => Some(Self::hurtbox_entity(&self.players[i])),
+            Part::Clone(i) => self.abilityless_clones[i].entity,
         }
     }
 
@@ -168,7 +190,9 @@ impl RolloutWorld {
             | Part::DuplicatedRock(_)
             | Part::Hook(_)
             | Part::Arrow(_)
-            | Part::Hole(_) => None,
+            | Part::Hole(_)
+            | Part::Body(_)
+            | Part::Clone(_) => None,
         }
     }
 
@@ -190,6 +214,9 @@ impl RolloutWorld {
             Part::Hook(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
             Part::Arrow(i) => self.arrows[i].body(&data::get().arrow.body),
             Part::Hole(i) => Body { inverse_mass: -Fix::ONE, velocity: self.black_holes[i].body_velocity, ..Body::default() },
+            // A DPhysicsBox with no BoplBody registers inverseMass -1
+            // (DPhysicsBox.cs:339-345), and a form's circle likewise.
+            Part::Body(_) | Part::Clone(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
         }
     }
 
@@ -207,6 +234,8 @@ impl RolloutWorld {
             Part::Hook(r) => self.hook_live(r),
             Part::Arrow(i) => self.arrows[i].active,
             Part::Hole(i) => self.black_holes[i].active,
+            Part::Body(i) => self.hittable(i),
+            Part::Clone(i) => self.abilityless_clones[i].active,
         }
     }
 
@@ -289,6 +318,7 @@ impl RolloutWorld {
             Part::Hook(_) => {}
             Part::Arrow(i) => self.set_arrow_body(i, body, delta),
             Part::Hole(i) => self.black_holes[i].body_velocity = body.velocity,
+            Part::Body(_) | Part::Clone(_) => {}
         }
         if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_) | Part::Arrow(_), Some(entity)) =
             (part, self.part_entity(part))
@@ -325,6 +355,7 @@ impl RolloutWorld {
             Part::Hook(r) => self.ropes[r].hook_position,
             Part::Arrow(i) => self.arrows[i].position,
             Part::Hole(i) => self.black_holes[i].position,
+            Part::Body(_) | Part::Clone(_) => self.part_collider(part).center(),
         }
     }
 
@@ -414,7 +445,7 @@ impl RolloutWorld {
             Part::Arrow(i) => self.arrows[i].force += force,
             // A RopeHook's circle has no BoplBody, so nothing integrates it.
             Part::Hook(_) => {}
-            Part::Node(_) | Part::Engine(_) | Part::Spike(_) | Part::Hole(_) => unreachable!(),
+            Part::Node(_) | Part::Engine(_) | Part::Spike(_) | Part::Hole(_) | Part::Body(_) | Part::Clone(_) => unreachable!(),
         }
     }
 
@@ -424,6 +455,26 @@ impl RolloutWorld {
     /// tunnel holds stays out.
     fn child_registered(&self, entity: Option<usize>) -> bool {
         entity.is_some_and(|entity| self.collides(entity))
+    }
+
+    /// Whether a slime's or non-Rock form's Player-layer collider is in this
+    /// Simulate's pairs, and whether it is a circle.
+    fn body_part_circle(&self, i: usize) -> Option<bool> {
+        let slot = &self.players[i];
+        if slot.active == ActiveAbility::Rock || !self.hittable(i) {
+            return None;
+        }
+        let entity = Self::hurtbox_entity(slot);
+        let row = self.entities.get(entity)?;
+        (row.layer == LAYER_PLAYER && self.collides(entity)).then_some(row.kind == 0)
+    }
+
+    /// Whether an abilityless clone's collider is in this Simulate's pairs,
+    /// and whether it is a circle.
+    fn clone_part_circle(&self, i: usize) -> Option<bool> {
+        let clone = &self.abilityless_clones[i];
+        let entity = clone.entity.filter(|_| clone.active)?;
+        self.collides(entity).then_some(self.entities[entity].kind == 0)
     }
 
     /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
@@ -465,6 +516,21 @@ impl RolloutWorld {
                 parts.push(Part::Hole(i));
             }
         }
+        for (i, rock) in self.duplicated_rocks.iter().enumerate() {
+            if rock.active && !self.blink_object_hidden(rock.entity) {
+                parts.push(Part::DuplicatedRock(i));
+            }
+        }
+        for i in 0..self.players.len() {
+            if self.body_part_circle(i) == Some(true) {
+                parts.push(Part::Body(i));
+            }
+        }
+        for i in 0..self.abilityless_clones.len() {
+            if self.clone_part_circle(i) == Some(true) {
+                parts.push(Part::Clone(i));
+            }
+        }
         let circles = parts.len();
         for (i, engine) in self.engines.iter().enumerate() {
             if self.child_registered(engine.entity) {
@@ -479,6 +545,16 @@ impl RolloutWorld {
         for i in 0..self.guided_missiles.len() {
             if self.guided_missile_live(i) {
                 parts.push(Part::Missile(i));
+            }
+        }
+        for i in 0..self.players.len() {
+            if self.body_part_circle(i) == Some(false) {
+                parts.push(Part::Body(i));
+            }
+        }
+        for i in 0..self.abilityless_clones.len() {
+            if self.clone_part_circle(i) == Some(false) {
+                parts.push(Part::Clone(i));
             }
         }
         let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
@@ -742,6 +818,16 @@ impl RolloutWorld {
                 parts.push(Part::Hole(i));
             }
         }
+        for i in 0..self.players.len() {
+            if self.body_part_circle(i) == Some(true) {
+                parts.push(Part::Body(i));
+            }
+        }
+        for i in 0..self.abilityless_clones.len() {
+            if self.clone_part_circle(i) == Some(true) {
+                parts.push(Part::Clone(i));
+            }
+        }
         parts.sort_by_key(|&part| self.part_rank(part));
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
@@ -785,7 +871,15 @@ impl RolloutWorld {
         for (receiver, other) in [(a, b), (b, a)] {
             if matches!(
                 receiver,
-                Part::Hole(_) | Part::Item(_) | Part::Rock(_) | Part::Arrow(_) | Part::Hook(_) | Part::Spike(_) | Part::Missile(_)
+                Part::Hole(_)
+                    | Part::Item(_)
+                    | Part::Rock(_)
+                    | Part::Arrow(_)
+                    | Part::Hook(_)
+                    | Part::Spike(_)
+                    | Part::Missile(_)
+                    | Part::Body(_)
+                    | Part::Clone(_)
             ) {
                 self.scratch.callback_hits.push((key, CallbackHit::Collide { receiver, other, contact }));
             }
@@ -795,6 +889,14 @@ impl RolloutWorld {
     /// The receiver's collisionCallback.OnCollide, run from DetPhysics' queue
     /// (DetPhysics.cs:3202-3205).
     pub(super) fn on_collide(&mut self, receiver: Part, other: Part, contact: Contact, data: &data::RolloutData) {
+        // Only the Rock form's and the Duplicator copy's pairs with slime,
+        // form and clone colliders run here yet; the others' callbacks are
+        // still queued from their own contact passes.
+        if matches!(other, Part::Body(_) | Part::Clone(_))
+            && !matches!(receiver, Part::Rock(_) | Part::DuplicatedRock(_))
+        {
+            return;
+        }
         match receiver {
             Part::Hole(hole) => self.black_hole_on_collide(hole, other, data),
             Part::Item(item) => match self.thrown_items[item].ability {
@@ -844,7 +946,13 @@ impl RolloutWorld {
                     Part::Arrow(i) => HookTarget::Arrow(i),
                     // A hook on a Duplicator copy has no rope parent here yet.
                     Part::DuplicatedRock(_) => return,
-                    Part::Engine(_) | Part::Spike(_) | Part::Missile(_) | Part::Hook(_) | Part::Hole(_) => return,
+                    Part::Engine(_)
+                    | Part::Spike(_)
+                    | Part::Missile(_)
+                    | Part::Hook(_)
+                    | Part::Hole(_)
+                    | Part::Body(_)
+                    | Part::Clone(_) => return,
                 };
                 self.rope_hook_collide(rope, target);
             }
@@ -855,6 +963,32 @@ impl RolloutWorld {
             // Missile.OnCollide ignores RigidBodyAffector (Missile.cs:183).
             Part::Missile(missile) if self.part_layer(other, data) != LAYER_RIGID_BODY_AFFECTOR => {
                 self.run_callback_hit(CallbackHit::MissileBlast { missile }, data);
+            }
+            // PlayerCollision.OnCollide: the Rock form is a
+            // KillPlayersOnContact Ability, and Rock_noPlayer's Explosion
+            // can hurt the slime it was copied from (PlayerCollision.cs:352-458).
+            Part::Body(player) => {
+                let (killer, cause) = match other {
+                    Part::Rock(rock) => (self.players[rock].base.id, CAUSE_OTHER),
+                    Part::DuplicatedRock(rock) => {
+                        let killer = player_id(&self.players, self.duplicated_rocks[rock].owner);
+                        let cause = if self.players[player].base.id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER };
+                        (killer, cause)
+                    }
+                    _ => return,
+                };
+                let slime = self.players[player].active == ActiveAbility::None;
+                self.run_callback_hit(CallbackHit::Kill { player, killer, cause, slime }, data);
+            }
+            // The Rock form kills a clone of its own slime too, as an
+            // accident.
+            Part::Clone(clone) => {
+                let Part::Rock(rock) = other else {
+                    return;
+                };
+                let killer = self.players[rock].base.id;
+                let cause = if self.abilityless_clones[clone].base.id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER };
+                self.run_callback_hit(CallbackHit::CloneKill { clone, killer, cause }, data);
             }
             _ => {}
         }
@@ -887,7 +1021,7 @@ impl RolloutWorld {
                 };
                 (target, inverse_mass)
             }
-            Part::Hook(_) => return,
+            Part::Hook(_) | Part::Body(_) | Part::Clone(_) => return,
         };
         self.black_hole_collide(hole, target, inverse_mass, data);
     }
