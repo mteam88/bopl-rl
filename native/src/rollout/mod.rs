@@ -2340,9 +2340,6 @@ pub struct ScaleChangerState {
     pub time: Fix,
     pub growth: bool,
     pub hierarchy_base: u32,
-    /// The pass the changer already took its Updater turn in, ahead of a
-    /// newer updatable's.
-    pub early_tick: Option<u32>,
 }
 
 /// DuplicatePlatformEffect keeps the source platform live for its authored
@@ -4274,7 +4271,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 1 | 4 | 6 | 9 | 13 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
+    matches!(kind, 1 | 4 | 6 | 9 | 10 | 13 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
 }
 
 /// The place just after `key`.
@@ -8592,7 +8589,7 @@ impl RolloutWorld {
             }
         }
         for (i, effect) in self.scale_changers.iter().enumerate() {
-            if effect.active && effect.early_tick != Some(tick) {
+            if effect.active {
                 push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 10, i);
             }
         }
@@ -8744,7 +8741,6 @@ impl RolloutWorld {
                 2 | 3 | 18 => self.thrown_items[index].updater_ran_tick = tick,
                 7 => self.ropes[index].grapple_ran_tick = tick,
                 8 => self.ropes[index].rope_ran_tick = tick,
-                10 => self.scale_changers[index].early_tick = tick,
                 11 => self.duplicate_platform_effects[index].stepped_tick = tick,
                 14 => self.abilityless_clones[index].updater_ran_tick = tick,
                 // A pickup newer than a live ScaleChanger keeps its turn
@@ -15630,7 +15626,9 @@ impl RolloutWorld {
         self.scale_changers
             .iter()
             .filter(|effect| {
-                effect.active && effect.appended <= self.tick && effect.early_tick != Some(self.tick)
+                effect.active
+                    && effect.appended <= self.tick
+                    && !self.updater_passed(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base))
             })
             .map(|effect| effect.hierarchy_base)
             .min()
@@ -28547,7 +28545,6 @@ impl RolloutWorld {
             time: Fix::ZERO,
             growth,
             hierarchy_base,
-            early_tick: None,
         };
         if let Some(free) = self.scale_changers.iter().position(|state| !state.active) {
             self.scale_changers[free] = effect;
@@ -28619,7 +28616,6 @@ impl RolloutWorld {
             time: Fix::ZERO,
             growth,
             hierarchy_base,
-            early_tick: None,
         };
         // Retain one inactive record per generic entity so a later ray starts
         // from that object's live FixTransform scale. Active same-entity
@@ -30398,11 +30394,12 @@ impl RolloutWorld {
                 self.shockwaves_update(data, from..effect.hierarchy_base);
                 updaters_from = Some(effect.hierarchy_base);
             }
-            if !effect.active || effect.appended > self.tick || effect.early_tick == Some(self.tick)
+            if !effect.active
+                || effect.appended > self.tick
+                || self.updater_passed(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base))
             {
                 continue;
             }
-            self.scale_changers[index].early_tick = Some(self.tick);
             self.scale_changer_step(index, data, updater_dt);
         }
         if let Some(from) = spikes_from {
@@ -30421,6 +30418,7 @@ impl RolloutWorld {
         let changer = &self.scale_changers[index];
         let key = self.updater_key(changer.appended, 100_000_000 + changer.hierarchy_base);
         self.run_spawned_before(data, updater_dt, key);
+        self.updater_take_turn(key);
         let effect = self.scale_changers[index];
         let ray = if effect.growth {
             &data.scale_rays.growth
