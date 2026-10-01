@@ -428,6 +428,12 @@ const LAYER_RIGID_BODY_AFFECTOR: u32 = 23;
 const LAYER_ROPE: u32 = 24;
 
 const CAUSE_OTHER: u32 = 0;
+/// Constants.MaxClones (Constants.cs:30).
+const MAX_CLONES: i32 = 16;
+/// ReviveStatus.NoRevive, willReviveOnDeath and isbeingRevived.
+const REVIVE_NONE: u8 = 0;
+const REVIVE_ON_DEATH: u8 = 1;
+const REVIVE_BEING: u8 = 2;
 const CAUSE_SQUISHED: u32 = 1;
 const CAUSE_ACCIDENT: u32 = 2;
 const CAUSE_EATEN: u32 = 3;
@@ -2932,6 +2938,14 @@ pub struct PlayerSlot {
     pub stocks: u32,
     pub kills: u32,
     pub deaths: u32,
+    /// Player.playersAndClonesStillAlive: the round starts it at 1, each
+    /// SpawnClone and SpawnAbilityLessClone adds one and each Player.Kill
+    /// takes one, so a second killPlayer on a dead slime leaves it at -1
+    /// (GameSessionHandler.cs:287, PlayerCollision.cs:226-248,
+    /// Player.cs:450-474). Kept on the player's own slot.
+    pub bodies_alive: i32,
+    /// Player.ExtraLife (ReviveStatus.cs), kept on the player's own slot.
+    pub extra_life: u8,
     pub cause_of_death: u32,
     /// Updater.SimulationTicks passed to Player.Kill for the elimination that
     /// removed the player's final body. GameSessionHandler uses this to pick
@@ -3108,9 +3122,14 @@ pub struct PlayerSlot {
     /// counted: every Poke Ball release clears the shared bit even when a
     /// second ball still retains and pins the same victim.
     pub poke_invulnerable: bool,
-    /// PlayerCollision suppresses every later callback after one callback
-    /// reaches its kill path in the same updater pass.
-    pub callback_killed_tick: Option<u32>,
+    /// PlayerCollision.wasKilledThisFrame: set when OnCollide reaches its
+    /// kill, cleared by the slime's next UpdateSim (PlayerCollision.cs:74-77,
+    /// 449-470).
+    pub was_killed_tick: Option<u32>,
+    /// The pass a callback's killPlayer DestroyFix'd this slime. DestroyFix
+    /// leaves the GameObject active, so a later killPlayer this pass still
+    /// reaches it (Updater.cs:89-110, PlayerCollision.cs:111).
+    pub slime_destroyed_tick: Option<u32>,
     /// Where a stock death left the destroyed slime body, with its pass: the
     /// slot itself moves to the respawn point at once.
     pub stock_death: Option<(u32, Vec2)>,
@@ -3597,6 +3616,8 @@ impl PlayerSlot {
         self.stocks = player.stocks;
         self.kills = player.kills;
         self.deaths = player.deaths;
+        self.bodies_alive = player.bodies_alive;
+        self.extra_life = player.extra_life;
         self.cause_of_death = player.cause_of_death;
         self.death_tick = player.death_tick;
         self.won = player.won;
@@ -3867,6 +3888,17 @@ enum PickupTaker {
     Clone(usize),
 }
 
+/// How PlayerCollision.killPlayer is reached. Only PlayerCollision.OnCollide
+/// checks and sets wasKilledThisFrame (PlayerCollision.cs:305-316, 449-470);
+/// any other callback, BlackHole.OnCollide among them, calls killPlayer
+/// directly.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KillRoute {
+    Updater,
+    Callback,
+    OnCollide,
+}
+
 #[derive(Clone, Copy)]
 enum CallbackHit {
     /// RopeHook.OnCollide with the collider the hook met.
@@ -3932,7 +3964,9 @@ enum HoleTarget {
     Engine(usize),
     Node(usize),
     Hole(usize),
-    Player(usize),
+    /// A player's registered collider, and whether it was the slime's own
+    /// box rather than a form's.
+    Player(usize, bool),
     Clone(usize),
 }
 
@@ -5455,6 +5489,8 @@ impl RolloutWorld {
                 stocks: self.stocks,
                 kills: 0,
                 deaths: 0,
+                bodies_alive: 1,
+                extra_life: REVIVE_NONE,
                 cause_of_death: CAUSE_NOT_DEAD_YET,
                 death_tick: 0,
                 won: false,
@@ -5533,7 +5569,8 @@ impl RolloutWorld {
                 obs_input_suppressed_this_tick: false,
                 captured_by_ball: None,
                 poke_invulnerable: false,
-                callback_killed_tick: None,
+                was_killed_tick: None,
+                slime_destroyed_tick: None,
                 stock_death: None,
                 late_obs_tick: u32::MAX,
                 late_obs_position: spawn,
@@ -16656,6 +16693,9 @@ impl RolloutWorld {
                 body_prev_scale: Fix::ONE,
             });
             self.players[index].revival_markers[ability_slot] = Some(marker_index);
+            // Revive.SetReviveFlag (Revive.cs:42).
+            let owner = self.players[index].owner;
+            self.players[owner].extra_life = REVIVE_ON_DEATH;
             self.players[index].revival.phase = 1;
             self.players[index].revival.ticks = 0;
         } else if slot.revival.phase == 1 && slot.revival.ticks > data.revival.exit_ticks {
@@ -17744,7 +17784,7 @@ impl RolloutWorld {
                 };
                 let hit = CallbackHit::BlackHole {
                     hole: hole_index,
-                    target: HoleTarget::Player(player_index),
+                    target: HoleTarget::Player(player_index, player.active == ActiveAbility::None),
                     inverse_mass,
                 };
                 self.queue_callback_hit(player_index, true, rank, hit);
@@ -17797,15 +17837,20 @@ impl RolloutWorld {
                     }
                 }
             }
-            HoleTarget::Player(index) => {
+            HoleTarget::Player(index, slime) => {
                 grow(self, Fix::ZERO);
                 // killPlayer's ignoreInvulnerability also takes a stock clone
                 // that ReSpawnFast is still animating in, and asks for no
                 // death effect. A form gets Ability.ExitAbility at its
                 // FixTransform, not the form's own exit (BlackHole.cs:486-495).
-                if self.hittable(index) {
-                    let killer = hole.killer(&self.players);
-                    self.kill_with(index, killer, CAUSE_OTHER, true, false, false, true);
+                let killer = hole.killer(&self.players);
+                // BlackHole.OnCollide calls killPlayer itself, past
+                // wasKilledThisFrame, so a slime an earlier callback destroyed
+                // this pass dies again (BlackHole.cs:497).
+                if self.hittable(index)
+                    || (slime && self.players[index].slime_destroyed_tick == Some(self.tick))
+                {
+                    self.kill_with(index, killer, CAUSE_OTHER, KillRoute::Callback, false, false, true);
                 }
             }
             HoleTarget::Clone(index) => {
@@ -23323,7 +23368,11 @@ impl RolloutWorld {
             if !revives {
                 continue;
             }
-            // SlimeController.ReSpawn places the clone where the marker is.
+            // SlimeController.ReSpawn sets ExtraLife back to NoRevive
+            // (SlimeController.cs:597) and places the clone at the marker.
+            let owner = slot.owner;
+            self.players[owner].extra_life = REVIVE_NONE;
+            let slot = &mut self.players[index];
             slot.base.position = target;
             slot.base.sync_collider();
             slot.respawn_spawn_ticks = data.player.spawn_anim_ticks + 1;
@@ -28457,17 +28506,18 @@ impl RolloutWorld {
         hit_clone: Option<usize>,
         data: &data::RolloutData,
     ) {
-        // SpawnAbilityLessClone rejects the seventeenth clone for an owner.
+        // SpawnAbilityLessClone spawns only while playersAndClonesStillAlive
+        // is below MaxClones + 1, and counts the clone (PlayerCollision.cs:226-228,
+        // Constants.cs:30).
         let owner = self.players[victim].owner;
-        if self
-            .abilityless_clones
-            .iter()
-            .filter(|clone| clone.active && clone.owner == owner)
-            .count()
-            >= 16
-        {
+        if self.players[owner].bodies_alive >= MAX_CLONES + 1 {
             return;
         }
+        self.players[owner].bodies_alive += 1;
+        // ShootDuplicator ReSpawns and Spawns the clone at once, which leaves
+        // ExtraLife at NoRevive (ShootDuplicator.cs:547-548,
+        // SlimeController.cs:578, 597).
+        self.players[owner].extra_life = REVIVE_NONE;
         let source = self.players[victim].base.clone();
         // SlimeController.CurrentNormal reads the slime's own body, which a
         // form leaves grounded where it was entered.
@@ -36969,7 +37019,7 @@ impl RolloutWorld {
                 // A slime killed by an earlier callback shoves its destroyed
                 // body, not the one a stock respawns.
                 if !self.players[index].base.alive
-                    || self.players[index].callback_killed_tick == Some(self.tick)
+                    || self.players[index].slime_destroyed_tick == Some(self.tick)
                 {
                     return;
                 }
@@ -38243,7 +38293,7 @@ impl RolloutWorld {
             // The slime's boundary kill ignores invulnerability; a form's
             // ExitAbility kills through the slime's killPlayer, which does not.
             let ignore_invulnerability = cause == CAUSE_ACCIDENT;
-            self.kill_with(index, ENVIRONMENT, cause, false, false, false, ignore_invulnerability);
+            self.kill_with(index, ENVIRONMENT, cause, KillRoute::Updater, false, false, ignore_invulnerability);
         }
     }
 
@@ -39086,16 +39136,11 @@ impl RolloutWorld {
         if let Some(entity) = self.abilityless_clones[clone_index].entity {
             self.entities[entity].flags = E_REMOVED;
         }
-        self.players[owner].deaths += 1;
-        // The last body standing takes the player out with it, unless it can
-        // spend a stock: killPlayer's stock branch then respawns an
-        // ability-less clone of it.
-        let last_body = self.players[owner].slime_gone
-            && !self.abilityless_clones.iter().any(|clone| clone.active && clone.owner == owner)
-            && !self.players[self.player_count..]
-                .iter()
-                .any(|body| body.owner == owner && body.base.alive);
-        if last_body
+        // The clone's killPlayer takes the stock branch as the player's last
+        // body, spawning the replacement before Player.Kill
+        // (PlayerCollision.cs:166-189).
+        if self.players[owner].bodies_alive == 1
+            && self.players[owner].extra_life == REVIVE_NONE
             && !self.players[owner].won
             && self.players[owner].stocks > 0
             && !self.sudden_death
@@ -39108,20 +39153,36 @@ impl RolloutWorld {
             slot.abilities = [ABILITY_NULL; 3];
             slot.base.position = self.abilityless_clones[clone_index].base.position;
             self.begin_stock_respawn(owner);
-        } else if last_body {
-            let slot = &mut self.players[owner];
-            slot.out = true;
-            slot.death_tick = self.tick;
-            slot.cause_of_death = cause;
         }
+        self.player_kill(owner, killer, cause);
+    }
+
+    /// Player.Kill (Player.cs:440-481): nothing once the player won, else a
+    /// death, the counter down and the killer's kill; with the last body
+    /// the player is out with its cause of death.
+    fn player_kill(&mut self, owner: usize, killer: u32, cause: u32) {
+        let tick = self.tick;
+        let players = self.player_count as u32;
+        let player = &mut self.players[owner];
+        if player.won {
+            return;
+        }
+        if player.bodies_alive == 1 {
+            player.out = true;
+            player.death_tick = tick;
+            player.cause_of_death = cause;
+        }
+        player.deaths += 1;
+        player.bodies_alive -= 1;
+        // Telemetry mirrors RlTelemetry.Death.
         if killer == ENVIRONMENT {
-            self.players[owner].telemetry.deaths_environment += 1;
-        } else if killer == self.players[owner].base.id {
-            self.players[owner].telemetry.deaths_self += 1;
-        } else if killer >= 1 && killer <= self.player_count as u32 {
-            self.players[owner].telemetry.deaths_opponent += 1;
+            player.telemetry.deaths_environment += 1;
+        } else if killer == player.base.id {
+            player.telemetry.deaths_self += 1;
+        } else if killer >= 1 && killer <= players {
+            player.telemetry.deaths_opponent += 1;
         } else {
-            self.players[owner].telemetry.deaths_other += 1;
+            player.telemetry.deaths_other += 1;
         }
         if killer > 0
             && let Some(killer_index) = self.players.iter().position(|slot| slot.base.id == killer)
@@ -40725,7 +40786,8 @@ impl RolloutWorld {
         // Scene-boundary deaths pass ignoreInvulnerability=true; ordinary
         // collision callbacks do not.
         let ignore_invulnerability = killer == ENVIRONMENT && cause == CAUSE_ACCIDENT;
-        self.kill_with(index, killer, cause, by_callback, spawn_effect, true, ignore_invulnerability)
+        let route = if by_callback { KillRoute::OnCollide } else { KillRoute::Updater };
+        self.kill_with(index, killer, cause, route, spawn_effect, true, ignore_invulnerability)
     }
 
     /// Player.SetPosition from an extra body's SlimeController: with the
@@ -40947,7 +41009,7 @@ impl RolloutWorld {
         index: usize,
         killer: u32,
         cause: u32,
-        by_callback: bool,
+        route: KillRoute,
         spawn_effect: bool,
         form_exit: bool,
         ignore_invulnerability: bool,
@@ -40978,13 +41040,31 @@ impl RolloutWorld {
         if self.players[index].poke_invulnerable && !ignore_invulnerability {
             return false;
         }
-        if by_callback {
-            if self.players[index].callback_killed_tick == Some(self.tick) {
+        let owner = self.players[index].owner;
+        // KillPlayerOnCollision also returns once the player's counter is
+        // spent, before it sets wasKilledThisFrame (PlayerCollision.cs:305-316).
+        if route == KillRoute::OnCollide {
+            if self.players[index].was_killed_tick == Some(self.tick)
+                || self.players[owner].bodies_alive <= 0
+            {
                 return false;
             }
-            self.players[index].callback_killed_tick = Some(self.tick);
+            self.players[index].was_killed_tick = Some(self.tick);
         }
-        if let Some(row) = self.entities.get(self.players[index].body_entity) {
+        let callback = route != KillRoute::Updater;
+        // A killPlayer on a slime a callback already destroyed this pass finds
+        // no ability, no abilities and no RespawnPositions, and its slot may
+        // hold the clone that replaced it: what is left is the branch the
+        // counter picks and Player.Kill.
+        let destroyed = self.players[index].slime_destroyed_tick == Some(self.tick);
+        if callback {
+            self.players[index].slime_destroyed_tick = Some(self.tick);
+        }
+        // No death effect while the player is being revived
+        // (PlayerCollision.cs:115-120).
+        let extra_life = self.players[owner].extra_life;
+        let death_effect = spawn_effect && extra_life != REVIVE_BEING;
+        if !destroyed && let Some(row) = self.entities.get(self.players[index].body_entity) {
             let tag = self.scratch.updater_hierarchy;
             let position = self.body_set_position(index);
             self.scratch.position_calls.push((tag, PositionCall::Gone(Some(position)), row.id, 0));
@@ -41009,7 +41089,6 @@ impl RolloutWorld {
                 row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
             }
         }
-        let players = self.player_count;
         if matches!(
             self.players[index].active,
             ActiveAbility::Grenade
@@ -41018,7 +41097,7 @@ impl RolloutWorld {
                 | ActiveAbility::Mjolnir
                 | ActiveAbility::PokeBall
         ) {
-            self.release_held_throw_item_on_exit(index, by_callback, data::get());
+            self.release_held_throw_item_on_exit(index, callback, data::get());
         }
         if self.players[index].active == ActiveAbility::Throw {
             self.drop_macho_held_boulder(index, data::get());
@@ -41050,7 +41129,7 @@ impl RolloutWorld {
         for orb in self.players[index].beam_orb_slots.into_iter().flatten() {
             self.beam_orbs[orb].holder_destroyed = Some(self.tick);
         }
-        if by_callback
+        if callback
             && self.players[index].active == ActiveAbility::TimeStop
             && self.players[index].time_stop_entity != usize::MAX
         {
@@ -41122,7 +41201,7 @@ impl RolloutWorld {
         }
         // BlackHole hands the form's Ability its exit, skipping
         // Drill.ExitAbility, so nothing turns the hitboxes off this pass.
-        if by_callback
+        if callback
             && !form_exit
             && self.players[index].active == ActiveAbility::Drill
             && self.players[index].drill.phase != 0
@@ -41133,7 +41212,6 @@ impl RolloutWorld {
         }
         // Player.RespawnPositions: the marker of every Revive on the player's
         // bodies, in the order they were set (Revive.SetReviveFlag).
-        let owner = self.players[index].owner;
         let mut markers = [usize::MAX; MAX_BODIES * 3];
         let mut marker_count = 0;
         if !already_won {
@@ -41149,13 +41227,9 @@ impl RolloutWorld {
                 .sort_by_key(|&marker| self.revival_marker_pool[marker].hierarchy_base);
         }
         let revival_marker = markers[..marker_count].first().copied();
-        // Player.Kill only eliminates the player with its last body; a death
-        // while clones live counts but leaves CauseOfDeath and the round alone.
-        let clones_alive = revival_marker.is_none()
-            && (self.abilityless_clones.iter().any(|clone| clone.active && clone.owner == owner)
-                || (0..self.players.len()).any(|body| {
-                    body != index && self.players[body].owner == owner && self.players[body].base.alive
-                }));
+        // playersAndClonesStillAlive == 1: the stock and ability-drop branches
+        // need the dying body to be the player's last (PlayerCollision.cs:166, 194).
+        let last = self.players[owner].bodies_alive == 1;
         // Every branch below destroys the dying body's slime and ability
         // objects, the stock and revival respawns included, and a ScaleChanger
         // whose victim collider is destroyed destroys itself (ScaleChanger.cs:36).
@@ -41167,7 +41241,7 @@ impl RolloutWorld {
         // An extra body that is the player's last goes on in the player's own
         // slot, whose slime is already gone, so the stock, elimination and
         // ability drop below read the dying body there.
-        let index = if index != owner && revival_marker.is_none() && !clones_alive {
+        let index = if !destroyed && index != owner && revival_marker.is_none() && last {
             // A body dying in its own turn has already published its place.
             if self.players[index].reported_tick == self.tick
                 && !self.scratch.clones_positioned[owner]
@@ -41188,27 +41262,9 @@ impl RolloutWorld {
         } else {
             index
         };
-        self.players[index].base.alive = false;
-        self.players[index].set_blink_tunnel(&mut self.entities, false);
-        if !already_won {
-            let player = &mut self.players[owner];
-            player.deaths += 1;
-            // killPlayer's revive branch spawns the marker clones before
-            // Player.Kill, which then finds more than one body alive and
-            // leaves CauseOfDeath alone (PlayerCollision.cs:140-154).
-            if !clones_alive && revival_marker.is_none() {
-                player.cause_of_death = cause;
-            }
-            // Telemetry mirrors RlTelemetry.Death.
-            if killer == ENVIRONMENT {
-                player.telemetry.deaths_environment += 1;
-            } else if killer == player.base.id {
-                player.telemetry.deaths_self += 1;
-            } else if killer >= 1 && killer <= players as u32 {
-                player.telemetry.deaths_opponent += 1;
-            } else {
-                player.telemetry.deaths_other += 1;
-            }
+        if !destroyed {
+            self.players[index].base.alive = false;
+            self.players[index].set_blink_tunnel(&mut self.entities, false);
         }
         let slot = &mut self.players[index];
         // SlimeController.DropAbilities reads the slime body. A death inside
@@ -41242,9 +41298,6 @@ impl RolloutWorld {
                 spawn.buffer = None;
             }
         }
-        if !already_won && killer >= 1 && killer <= players as u32 {
-            self.players[killer as usize - 1].kills += 1;
-        }
         let lift = {
             let slot = &self.players[index];
             let live = self.platforms.iter().find(|p| Some(p.id) == slot.base.ground);
@@ -41258,7 +41311,7 @@ impl RolloutWorld {
             // before SpawnClone. Updatable callers account for their own
             // effect; boundary deaths accounted for the distinct bounds
             // effect before entering kill().
-            if spawn_effect {
+            if death_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
             // SpawnClone copies the dead slime's abilities, then ReviveEffect
@@ -41277,7 +41330,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let row = &mut self.entities[entity];
-                if by_callback {
+                if callback {
                     row.flags = destroyed_flags(row.flags);
                     row.owner = 0;
                 } else {
@@ -41292,6 +41345,10 @@ impl RolloutWorld {
             slot.base.grounded_speed = Fix::ZERO;
             slot.revival_markers = [None; 3];
             slot.revival_clone_pending = true;
+            // SpawnClone for the first marker.
+            self.players[owner].bodies_alive += 1;
+            self.players[owner].extra_life = REVIVE_BEING;
+            let slot = &mut self.players[index];
             slot.revival_target_marker = Some(marker_index);
             slot.revival_clone_position = self.revival_marker_pool[marker_index].position;
             slot.revival_effect_ticks = data::get().revival.effect_wisp_ticks + 1;
@@ -41310,6 +41367,7 @@ impl RolloutWorld {
                 let Some(body) = self.free_extra_body() else {
                     break;
                 };
+                self.players[owner].bodies_alive += 1;
                 let mut clone = self.players[index].clone();
                 clone.owner = owner;
                 clone.telemetry = CTelemetry::default();
@@ -41324,6 +41382,7 @@ impl RolloutWorld {
                 clone.revival_clone_position = self.revival_marker_pool[marker].position;
                 self.players[body] = clone;
             }
+            self.player_kill(owner, killer, cause);
             self.next_spawn_hierarchy += data::get().revival.effect_updatable_count;
             // Player.RespawnPositions.Clear().
             for body in &mut self.players {
@@ -41345,19 +41404,19 @@ impl RolloutWorld {
         // isbeingRevived until ReSpawn, so its death is a plain one
         // (PlayerCollision.cs:166, 190).
         if !already_won
-            && !clones_alive
+            && last
+            && extra_life == REVIVE_NONE
             && slot.stocks > 0
-            && slot.revival_effect_ticks == 0
             && !self.sudden_death
             && self.game_in_progress
         {
-            if spawn_effect {
+            if death_effect {
                 self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
             }
             for entity in slot.owned_rows() {
                 if entity != usize::MAX {
                     let row = &mut self.entities[entity];
-                    row.flags = if by_callback {
+                    row.flags = if callback {
                         destroyed_flags(row.flags)
                     } else {
                         E_REMOVED
@@ -41379,13 +41438,18 @@ impl RolloutWorld {
                 slot.reported_position = slot.base.position;
             }
             slot.reported_tick = self.tick;
+            // SpawnClone copies the slime's ability list, which a destroyed
+            // slime's killPlayer already cleared.
+            if destroyed {
+                slot.ability_count = 0;
+                slot.abilities = [ABILITY_NULL; 3];
+                slot.abilityless = true;
+            }
             self.begin_stock_respawn(index);
+            self.player_kill(owner, killer, cause);
         } else {
-            if !already_won && clones_alive {
+            if !already_won && !last && !destroyed {
                 slot.slime_gone = true;
-            } else if !already_won {
-                slot.out = true;
-                slot.death_tick = self.tick;
             }
             // PlayerCollision destroys the slime and its ability objects
             // (PlayerCollision.cs:201-210). DetPhysics drops updatable-phase
@@ -41394,18 +41458,18 @@ impl RolloutWorld {
             // the next pass (DetPhysics.Simulate's remove-destroyed step).
             let rows = slot.owned_rows();
             for e in rows {
-                if e == usize::MAX {
+                if e == usize::MAX || destroyed {
                     continue;
                 }
                 let row = &mut self.entities[e];
-                if by_callback {
+                if callback {
                     row.flags = destroyed_flags(row.flags);
                     row.owner = 0;
                 } else {
                     row.flags = E_REMOVED;
                 }
             }
-            if spawn_effect {
+            if death_effect {
                 // Water/lethal callbacks request the ordinary death effect;
                 // its two updatables register before DropAbilities creates
                 // the pickup. Boundary deaths pass spawnEffect=false.
@@ -41418,8 +41482,9 @@ impl RolloutWorld {
             // and collection phases remain observable. Once the match has
             // ended it returns before drawing anything. killPlayer only drops
             // for the player's last body.
-            // DropAbilities returns before its draw on an empty ability list.
-            if self.game_in_progress && !clones_alive && slot.ability_count > 0 {
+            // DropAbilities returns before its draw on an empty ability list,
+            // and a destroyed slime's list was cleared.
+            if self.game_in_progress && last && !destroyed && slot.ability_count > 0 {
                 let dropped_ability = slot.abilities[slot.ability_count.min(3) - 1];
                 let horizontal = self.rng.fix_range(Fix::from_f32(-0.3), Fix::from_f32(0.3));
                 let direction = (Vec2::UP + Vec2::new(horizontal, Fix::ZERO)).normalized_safe();
@@ -41428,6 +41493,7 @@ impl RolloutWorld {
                 // (AbilityReadyIndicator.cs:71-79, 155-162).
                 self.spawn_ability_pickup(drop_position, dropped_ability, direction, data::get());
             }
+            self.player_kill(owner, killer, cause);
         }
         true
     }
@@ -41456,6 +41522,10 @@ impl RolloutWorld {
         }
         slot.stocks -= 1;
         slot.stock_clone_pending = true;
+        let owner = slot.owner;
+        self.players[owner].bodies_alive += 1;
+        self.players[owner].extra_life = REVIVE_BEING;
+        let slot = &mut self.players[index];
         slot.clone_player_hierarchy = clone_player_hierarchy;
         slot.clone_ability_hierarchy = clone_ability_hierarchy;
         slot.stock_indicator_hierarchy = stock_indicator_hierarchy;
@@ -41610,6 +41680,9 @@ impl RolloutWorld {
                         self.end_revival_marker(marker);
                     }
                 }
+                // ReSpawnFast's ReSpawn (SlimeController.cs:597).
+                let owner = self.players[index].owner;
+                self.players[owner].extra_life = REVIVE_NONE;
                 let slot = &mut self.players[index];
                 slot.respawn_spawn_ticks = data.player.fast_spawn_anim_ticks;
                 slot.base.position = position;
@@ -41788,7 +41861,6 @@ impl RolloutWorld {
             &mut self.state,
             &self.players,
             self.player_count,
-            &self.abilityless_clones,
             &self.time_stop_protected,
             &self.state_entities,
             &self.slimes,
@@ -41820,7 +41892,6 @@ impl RolloutWorld {
             &mut self.sample,
             &self.players,
             self.player_count,
-            &self.abilityless_clones,
             &self.time_stop_protected,
             &self.sample_entities,
             &self.sample_slimes,
@@ -44318,7 +44389,6 @@ impl RolloutWorld {
         state: &mut CState,
         bodies: &[PlayerSlot],
         player_count: usize,
-        abilityless_clones: &[AbilitylessClone],
         time_stop_protected: &[bool; MAX_BODIES],
         entities: &[CEntity],
         slimes: &[CSlime],
@@ -44401,15 +44471,7 @@ impl RolloutWorld {
                 id: slot.base.id,
                 team: slot.team,
                 flags: player_flags,
-                alive_bodies: u32::from(slime_alive)
-                    + bodies[player_count..]
-                        .iter()
-                        .filter(|body| body.owner == i && body.base.alive)
-                        .count() as u32
-                    + abilityless_clones
-                        .iter()
-                        .filter(|clone| clone.active && clone.owner == i)
-                        .count() as u32,
+                alive_bodies: slot.bodies_alive as u32,
                 stocks: slot.stocks,
                 kills: slot.kills,
                 deaths: slot.deaths,
