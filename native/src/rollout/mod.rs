@@ -23677,6 +23677,25 @@ impl RolloutWorld {
                             continue;
                         }
 
+                        // The hit's own OnCollide with the Dash hitbox comes
+                        // before KillPlayerOnCollision (Dash.cs:157-178): a
+                        // young SpikeAttack knocks the box and pushes itself
+                        // back (SpikeAttack.cs:116-141).
+                        if let Some(spike) = self
+                            .spike_attacks
+                            .iter()
+                            .position(|spike| spike.active && spike.entity == Some(entity))
+                            && self.spike_attacks[spike].time < data.spike.push_time
+                            && self.player_time_scale >= Fix::from_f32(0.01)
+                        {
+                            let knock = CallbackHit::SpikeKnock {
+                                spike,
+                                player: index,
+                                entity: Self::hurtbox_entity(&self.players[index]),
+                                point: origin + direction * hit.distance,
+                            };
+                            self.run_callback_hit(knock, data);
+                        }
                         let mut killer = row.owner;
                         let mut can_hurt_owner = matches!(row.layer, 16 | 18);
                         let mut cause = CAUSE_OTHER;
