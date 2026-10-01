@@ -967,6 +967,8 @@ pub struct TimeStopEffect {
     pub appended: u32,
     pub caster: usize,
     pub seconds_elapsed: f32,
+    /// The TimeStopSphere prefab's base.
+    pub hierarchy_base: u32,
 }
 
 /// SpikeAttack's manually initialized box, attached to a rounded platform as
@@ -4819,9 +4821,10 @@ pub struct RolloutWorld {
     /// Updater.prefabsAdded. Only `register_prefab` advances it.
     pub next_spawn_hierarchy: u32,
     /// Updater.toBeAddedUpdatables: the updatables registered since the last
-    /// pass, in registration order, as (HierarchyNumber, owner), the owner
-    /// being the prefab base (`chooser_owner` for a StockRespawnChooser).
-    pub updater_batch: Vec<(u32, u32)>,
+    /// pass, in registration order, as (HierarchyNumber, owner, IsDestroyed),
+    /// the owner being the prefab base (`chooser_owner` for a
+    /// StockRespawnChooser) and IsDestroyed set by `destroy_fix`.
+    pub updater_batch: Vec<(u32, u32, bool)>,
     /// The runtime part of Updater's list: each pass's batch as it was
     /// sorted and appended, as (pass, HierarchyNumber, owner).
     pub updater_list: Vec<(u32, u32, u32)>,
@@ -6707,6 +6710,8 @@ impl RolloutWorld {
                 if let Some(entity) = state.entity {
                     self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
                 }
+                let (owner, entity) = (state.hierarchy_base, state.entity);
+                self.destroy_fix(owner, None, entity);
             }
             return;
         }
@@ -6796,6 +6801,8 @@ impl RolloutWorld {
             if let Some(entity) = state.entity {
                 self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
             }
+            let (owner, entity) = (state.hierarchy_base, state.entity);
+            self.destroy_fix(owner, None, entity);
         }
     }
 
@@ -8240,7 +8247,7 @@ impl RolloutWorld {
     fn register_members(&mut self, members: impl ExactSizeIterator<Item = (u32, u32)>) -> u32 {
         let base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += members.len() as u32;
-        self.updater_batch.extend(members.map(|(local, owner)| (100_000_000 + base + local, base + owner)));
+        self.updater_batch.extend(members.map(|(local, owner)| (100_000_000 + base + local, base + owner, false)));
         base
     }
 
@@ -8261,18 +8268,61 @@ impl RolloutWorld {
     /// RegisterUpdatable outside a prefab window: StockRespawnChooser joins
     /// the batch with its raw HierarchyNumber 0 (Updater.cs:155-167).
     fn register_chooser(&mut self, player: usize) {
-        self.updater_batch.push((0, chooser_owner(player)));
+        self.updater_batch.push((0, chooser_owner(player), false));
     }
 
-    /// Updater.Update appends the batch registered since the last pass,
-    /// sorted by `x.HierarchyNumber - y.HierarchyNumber` with List.Sort, an
-    /// introsort that does not keep equal numbers in registration order
-    /// (Updater.cs:270, `dotnet_sort`).
+    /// Updater.DestroyFix (Updater.cs:89-123). `member` None is the
+    /// GameObject: every updatable registered by `owner` and its FixTransform,
+    /// `row`'s E_FIX_DESTROYED. Some(number) is the one updatable, and a
+    /// `row` alongside it the FixTransform DestroyFixed on its own. An
+    /// updatable still in this pass's batch is IsDestroyed there, so
+    /// Updater.Update drops it before the sort (Updater.cs:258-264). The
+    /// GameObject's children are its landed arrows, keyed by the row's own
+    /// HierarchyNumber or the object's first.
+    fn destroy_fix(&mut self, owner: u32, member: Option<u32>, row: Option<usize>) {
+        self.destroy_fix_owned(Some(owner), member, row);
+    }
+
+    /// `destroy_fix` on a GameObject known by its row: a platform's collider
+    /// registered with the row's HierarchyNumber, and the batch entry under
+    /// it, if it joined this pass, names the owner.
+    fn destroy_fix_row(&mut self, row: usize) {
+        let key = self.entities[row].hierarchy;
+        let owner = self.updater_batch.iter().find(|entry| key >= 100_000_000 && entry.0 == key).map(|entry| entry.1);
+        self.destroy_fix_owned(owner, None, Some(row));
+    }
+
+    fn destroy_fix_owned(&mut self, owner: Option<u32>, member: Option<u32>, row: Option<usize>) {
+        let key = row.and_then(|row| self.entities.get(row)).map(|row| row.hierarchy);
+        let children: Vec<u32> = if member.is_none() {
+            self.landed_arrows
+                .iter()
+                .filter(|arrow| owner.is_some_and(|owner| arrow.parent.checked_sub(spawned_hierarchy(0)) == Some(owner)) || Some(arrow.parent) == key)
+                .map(|arrow| arrow.hierarchy - 100_000_000 - 1)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        for entry in &mut self.updater_batch {
+            if (Some(entry.1) == owner && member.is_none_or(|number| entry.0 == number)) || children.contains(&entry.1) {
+                entry.2 = true;
+            }
+        }
+        if let Some(row) = row.and_then(|row| self.entities.get_mut(row)) {
+            row.flags |= E_FIX_DESTROYED;
+        }
+    }
+
+    /// Updater.Update drops the updatables destroyed since they registered,
+    /// then appends the rest of the batch, sorted by `x.HierarchyNumber -
+    /// y.HierarchyNumber` with List.Sort, an introsort that does not keep
+    /// equal numbers in registration order (Updater.cs:258-270, `dotnet_sort`).
     fn append_updater_batch(&mut self) {
         let mut batch = std::mem::take(&mut self.updater_batch);
+        batch.retain(|&(_, _, destroyed)| !destroyed);
         dotnet_sort::introspective_sort(&mut batch, |x, y| x.0.cmp(&y.0));
         let pass = self.tick;
-        self.updater_list.extend(batch.iter().map(|&(number, owner)| (pass, number, owner)));
+        self.updater_list.extend(batch.iter().map(|&(number, owner, _)| (pass, number, owner)));
         batch.clear();
         self.updater_batch = batch;
     }
@@ -8377,7 +8427,7 @@ impl RolloutWorld {
             }
         }
         for (i, item) in self.thrown_items.iter().enumerate() {
-            if Self::thrown_item_listed(item) {
+            if self.thrown_item_listed(item) {
                 push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 2, i);
             }
         }
@@ -8637,10 +8687,12 @@ impl RolloutWorld {
         {
             shot.active = false;
             shot.registered = false;
-            if let Some(entity) = shot.entity {
+            let (owner, entity) = (shot.hierarchy_base, shot.entity);
+            if let Some(entity) = entity {
                 self.entities[entity].flags = E_REMOVED;
                 self.entities[entity].owner = 0;
             }
+            self.destroy_fix(owner, None, entity);
         }
     }
 
@@ -8785,15 +8837,18 @@ impl RolloutWorld {
         if gun_alive {
             self.place_portal(shot, outward_normal, data);
         }
+        // PortalShot.cs:97 DestroyFixes the shot.
         let shot = &mut self.portal_shots[shot_index];
         shot.active = false;
         shot.registered = false;
         shot.remove_next_tick = by_callback;
-        if let Some(entity) = shot.entity {
+        let (owner, entity) = (shot.hierarchy_base, shot.entity);
+        if let Some(entity) = entity {
             let row = &mut self.entities[entity];
             row.flags = if by_callback { destroyed_flags(row.flags) } else { E_REMOVED };
             row.owner = 0;
         }
+        self.destroy_fix(owner, None, entity);
     }
 
     fn place_portal(
@@ -8935,6 +8990,7 @@ impl RolloutWorld {
     fn close_portal(&mut self, endpoint: usize) {
         if endpoint < self.portals.len() {
             self.portals[endpoint].active = false;
+            self.destroy_fix(self.portals[endpoint].hierarchy_base, None, None);
         }
     }
 
@@ -13258,7 +13314,8 @@ impl RolloutWorld {
     }
 
     fn meteor_smears_tick(&mut self, data: &data::RolloutData) {
-        for smear in &mut self.meteor_smears {
+        for index in 0..self.meteor_smears.len() {
+            let smear = &mut self.meteor_smears[index];
             if !smear.active || smear.appended > self.tick {
                 continue;
             }
@@ -13268,6 +13325,8 @@ impl RolloutWorld {
                 if let Some(entity) = smear.entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
+                let (owner, entity) = (smear.hierarchy_base, smear.entity);
+                self.destroy_fix(owner, None, entity);
             }
         }
     }
@@ -13872,7 +13931,9 @@ impl RolloutWorld {
             // final elimination ends the effect on its next updater pass.
             if slot.out {
                 effect.active = false;
+                let owner = effect.hierarchy_base;
                 slot.cooldowns[effect_slot] = restored_cooldown;
+                self.destroy_fix(owner, None, None);
                 return;
             }
             effect.time += DT;
@@ -13919,6 +13980,11 @@ impl RolloutWorld {
                     slot.cooldowns[effect_slot] = restored_cooldown;
                 }
             }
+        }
+        // SuperStarEffect.End DestroyFixes it (SuperStarEffect.cs:256).
+        let effect = self.players[index].gold_mushroom[effect_slot];
+        if !effect.active {
+            self.destroy_fix(effect.hierarchy_base, None, None);
         }
     }
 
@@ -14169,11 +14235,12 @@ impl RolloutWorld {
             2 => {
                 self.players[index].cast_spell.ticks += 1;
                 if self.players[index].cast_spell.ticks > data.time_stop.cast_spell_ticks {
-                    self.register_prefab(data::get().prefab("TimeStopSphere"));
+                    let hierarchy_base = self.register_prefab(data::get().prefab("TimeStopSphere"));
                     let effect = TimeStopEffect {
                         active: true,
                         appended: self.tick + 1,
                         caster: index,
+                        hierarchy_base,
                         ..TimeStopEffect::default()
                     };
                     // TimeStop prefabs are instantiated objects, not a pool.
@@ -14763,9 +14830,12 @@ impl RolloutWorld {
 
     /// Updater.DestroyFix: from here the node is IsDestroyed.
     fn mark_tesla_node_destroyed(&mut self, node_index: usize) {
-        if let Some(entity) = self.tesla_nodes[node_index].entity {
-            self.entities[entity].flags = E_DESTROYED | E_COMPOSITE | E_FIX_DESTROYED;
+        let node = &self.tesla_nodes[node_index];
+        let (owner, entity) = (node.hierarchy_base, node.entity);
+        if let Some(entity) = entity {
+            self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
         }
+        self.destroy_fix(owner, None, entity);
     }
 
     /// Updater.DestroyFix on a wall marks every component in its children
@@ -15077,9 +15147,11 @@ impl RolloutWorld {
         }
         self.engines[engine_index].active = false;
         self.engines[engine_index].macho_carried = false;
-        if let Some(entity) = self.engines[engine_index].entity {
+        let (owner, entity) = (self.engines[engine_index].hierarchy_base, self.engines[engine_index].entity);
+        if let Some(entity) = entity {
             self.entities[entity].flags = Self::destroyed_child_flags(self.entities[entity].flags);
         }
+        self.destroy_fix(owner, None, entity);
         self.platforms_changed();
     }
 
@@ -15357,9 +15429,11 @@ impl RolloutWorld {
         }
         self.spike_attacks[spike_index].active = false;
         self.spike_attacks[spike_index].macho_carried = false;
-        if let Some(entity) = self.spike_attacks[spike_index].entity {
+        let (owner, entity) = (self.spike_attacks[spike_index].hierarchy_base, self.spike_attacks[spike_index].entity);
+        if let Some(entity) = entity {
             self.entities[entity].flags = Self::destroyed_child_flags(self.entities[entity].flags);
         }
+        self.destroy_fix(owner, None, entity);
         self.platforms_changed();
     }
 
@@ -15378,7 +15452,8 @@ impl RolloutWorld {
     }
 
     fn time_stop_effects_tick(&mut self, data: &data::RolloutData) {
-        for effect in &mut self.time_stop_effects {
+        for index in 0..self.time_stop_effects.len() {
+            let effect = &mut self.time_stop_effects[index];
             if !effect.active || !effect.registered {
                 continue;
             }
@@ -15389,13 +15464,16 @@ impl RolloutWorld {
             {
                 effect.active = false;
                 effect.registered = false;
+                let owner = effect.hierarchy_base;
                 // TimeStop.End is a no-op after GameSessionHandler has ended
                 // the round. Preserve the frozen scale and protection bits
-                // that its final UpdateSim wrote before destroying itself.
+                // that its final UpdateSim wrote before destroying itself
+                // (TimeStop.cs:50-53).
                 if !self.terminal {
                     self.player_time_scale = Fix::ONE;
                     self.time_stop_protected = [false; MAX_BODIES];
                 }
+                self.destroy_fix(owner, None, None);
             } else {
                 let team = self.players[effect.caster].team;
                 for index in 0..self.players.len() {
@@ -16941,6 +17019,7 @@ impl RolloutWorld {
                     if let Some(entity) = other.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
                     }
+                    self.destroy_fix(other.hierarchy_base, None, other.entity);
                 }
             }
             HoleTarget::Player(index, slime) => {
@@ -17012,6 +17091,8 @@ impl RolloutWorld {
                     if let Some(entity) = pickup.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
                     }
+                    let (owner, entity) = (pickup.hierarchy_base, pickup.entity);
+                    self.destroy_fix(owner, None, entity);
                 }
             }
             HoleTarget::Item(index) => {
@@ -17028,11 +17109,13 @@ impl RolloutWorld {
                     shot.registered = false;
                     shot.remove_next_tick = true;
                     // The destroyed object no longer answers IPlayerIdHolder.
-                    if let Some(entity) = shot.entity {
+                    let (owner, entity) = (shot.hierarchy_base, shot.entity);
+                    if let Some(entity) = entity {
                         let row = &mut self.entities[entity];
                         row.flags = destroyed_flags(row.flags);
                         row.owner = 0;
                     }
+                    self.destroy_fix(owner, None, entity);
                 }
             }
             HoleTarget::DuplicatedRock(index) => {
@@ -17043,6 +17126,8 @@ impl RolloutWorld {
                     if let Some(entity) = rock.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
                     }
+                    let (owner, entity) = (rock.hierarchy_base, rock.entity);
+                    self.destroy_fix(owner, None, entity);
                 }
             }
             HoleTarget::Missile(index) => {
@@ -17060,6 +17145,8 @@ impl RolloutWorld {
                     if let Some(entity) = cloud.entity {
                         self.entities[entity].flags = destroyed_flags(self.entities[entity].flags);
                     }
+                    let (owner, entity) = (cloud.hierarchy_base, cloud.entity);
+                    self.destroy_fix(owner, None, entity);
                 }
             }
             // OnCollide only queues the DestroyFix: a composite child's
@@ -18054,6 +18141,8 @@ impl RolloutWorld {
                 if let Some(entity) = orb.entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
+                let (owner, entity) = (orb.hierarchy_base, orb.entity);
+                self.destroy_fix(owner, None, entity);
             }
         }
     }
@@ -19526,6 +19615,9 @@ impl RolloutWorld {
         }
     }
 
+    /// RevivePositionIndicator.End DestroyFixes the indicator, its body, its
+    /// hurtbox and its FixTransform, every updatable its prefab registers
+    /// (RevivePositionIndicator.cs:67-83).
     fn end_revival_marker(&mut self, marker_index: usize) {
         let marker = &mut self.revival_marker_pool[marker_index];
         marker.active = false;
@@ -19533,6 +19625,8 @@ impl RolloutWorld {
         if let Some(entity) = marker.entity {
             self.entities[entity].flags = E_REMOVED;
         }
+        let (owner, entity) = (marker.hierarchy_base, marker.entity);
+        self.destroy_fix(owner, None, entity);
     }
 
     fn register_revival_marker(&mut self, marker_index: usize, data: &data::RolloutData) {
@@ -20104,7 +20198,8 @@ impl RolloutWorld {
     }
 
     fn grenade_explosions_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        for explosion in &mut self.grenade_explosions {
+        for index in 0..self.grenade_explosions.len() {
+            let explosion = &mut self.grenade_explosions[index];
             if !explosion.active || !explosion.registered {
                 continue;
             }
@@ -20116,6 +20211,8 @@ impl RolloutWorld {
                 explosion.active = false;
                 explosion.registered = false;
                 self.entities[entity].flags = E_REMOVED;
+                let owner = explosion.hierarchy_base;
+                self.destroy_fix(owner, None, Some(entity));
                 continue;
             }
             self.entities[entity].flags = if explosion.age == 0 {
@@ -20132,7 +20229,8 @@ impl RolloutWorld {
     }
 
     fn missile_explosions_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        for explosion in &mut self.missile_explosions {
+        for index in 0..self.missile_explosions.len() {
+            let explosion = &mut self.missile_explosions[index];
             if !explosion.active || !explosion.registered {
                 continue;
             }
@@ -20144,6 +20242,8 @@ impl RolloutWorld {
                 explosion.active = false;
                 explosion.registered = false;
                 self.entities[entity].flags = E_REMOVED;
+                let owner = explosion.hierarchy_base;
+                self.destroy_fix(owner, None, Some(entity));
                 continue;
             }
             self.entities[entity].flags = if explosion.age == 0 {
@@ -20242,7 +20342,8 @@ impl RolloutWorld {
         }
         self.scratch.item_order = order;
 
-        for explosion in &mut self.smoke_explosions {
+        for index in 0..self.smoke_explosions.len() {
+            let explosion = &mut self.smoke_explosions[index];
             if !explosion.active || !explosion.registered {
                 continue;
             }
@@ -20254,6 +20355,8 @@ impl RolloutWorld {
                 explosion.active = false;
                 explosion.registered = false;
                 self.entities[entity].flags = E_REMOVED;
+                let owner = explosion.hierarchy_base;
+                self.destroy_fix(owner, None, Some(entity));
                 continue;
             }
             self.entities[entity].flags = if explosion.age == 0 {
@@ -20349,6 +20452,7 @@ impl RolloutWorld {
                 }
             }
             self.teleport_object_effects[index].active = false;
+            self.destroy_fix(effect.hierarchy, None, None);
         }
         if self.player_time_scale >= Fix::from_f32(0.01) {
             let _ = self.rng.fix_range(Fix::ZERO, Fix::TAU);
@@ -20649,12 +20753,17 @@ impl RolloutWorld {
                     self.teleport_entity(entity, -diff, marker.hierarchy_base, data);
                 }
             }
+            // DestroyFix on the indicator, its body, its hurtbox and its
+            // FixTransform: all of INDICATOR_portal's updatables
+            // (TeleportIndicator.cs:176-182).
             let marker = &mut self.teleport_marker_pool[marker_index];
             marker.active = false;
             marker.registered = false;
             if let Some(entity) = marker.entity {
                 self.entities[entity].flags = E_REMOVED;
             }
+            let (owner, entity) = (marker.hierarchy_base, marker.entity);
+            self.destroy_fix(owner, None, entity);
         }
     }
 
@@ -22002,6 +22111,7 @@ impl RolloutWorld {
         if wave.time > duration {
             wave.active = false;
             self.shockwaves(meteor)[wave_index] = wave;
+            self.destroy_fix(wave.hierarchy_base, None, None);
             return;
         }
         let mut applied = false;
@@ -27341,10 +27451,13 @@ impl RolloutWorld {
             }
             pickup.duplicate_lifespan -= 1;
             if pickup.duplicate_lifespan < 0 {
+                // DeleteDuplicatedObject DestroyFixes the copy (DetPhysics.cs:1301).
                 pickup.active = false;
-                if let Some(entity) = pickup.entity {
+                let (owner, entity) = (pickup.hierarchy_base, pickup.entity);
+                if let Some(entity) = entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
+                self.destroy_fix(owner, None, entity);
             } else if pickup.duplicate_lifespan < 60 {
                 let progress =
                     Fix::ONE - Fix::from_int(pickup.duplicate_lifespan as i64) / Fix::from_int(60);
@@ -27361,10 +27474,13 @@ impl RolloutWorld {
             }
             hole.duplicate_lifespan -= 1;
             if hole.duplicate_lifespan < 0 {
+                // DeleteDuplicatedObject DestroyFixes the copy (DetPhysics.cs:1301).
                 hole.active = false;
-                if let Some(entity) = hole.entity {
+                let (owner, entity) = (hole.hierarchy_base, hole.entity);
+                if let Some(entity) = entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
+                self.destroy_fix(owner, None, entity);
             } else if hole.duplicate_lifespan < 60 {
                 let progress =
                     Fix::ONE - Fix::from_int(hole.duplicate_lifespan as i64) / Fix::from_int(60);
@@ -27381,10 +27497,13 @@ impl RolloutWorld {
             }
             rock.duplicate_lifespan -= 1;
             if rock.duplicate_lifespan < 0 {
+                // DeleteDuplicatedObject DestroyFixes the copy (DetPhysics.cs:1301).
                 rock.active = false;
-                if let Some(entity) = rock.entity {
+                let (owner, entity) = (rock.hierarchy_base, rock.entity);
+                if let Some(entity) = entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
+                self.destroy_fix(owner, None, entity);
             } else if rock.duplicate_lifespan < 60 {
                 let progress =
                     Fix::ONE - Fix::from_int(rock.duplicate_lifespan as i64) / Fix::from_int(60);
@@ -27423,10 +27542,13 @@ impl RolloutWorld {
             }
             item.duplicate_lifespan -= 1;
             if item.duplicate_lifespan < 0 {
+                // DeleteDuplicatedObject DestroyFixes the copy (DetPhysics.cs:1301).
                 item.active = false;
-                if let Some(entity) = item.entity {
+                let (owner, entity) = (item.hierarchy_base, item.entity);
+                if let Some(entity) = entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
+                self.destroy_fix(owner, None, entity);
             } else if item.duplicate_lifespan < 60 {
                 let progress =
                     Fix::ONE - Fix::from_int(item.duplicate_lifespan as i64) / Fix::from_int(60);
@@ -27443,11 +27565,14 @@ impl RolloutWorld {
             }
             missile.duplicate_lifespan -= 1;
             if missile.duplicate_lifespan < 0 {
+                // DeleteDuplicatedObject DestroyFixes the copy (DetPhysics.cs:1301).
                 missile.active = false;
                 missile.registered = false;
-                if let Some(entity) = missile.entity {
+                let (owner, entity) = (missile.hierarchy_base, missile.entity);
+                if let Some(entity) = entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
+                self.destroy_fix(owner, None, entity);
             } else if missile.duplicate_lifespan < 60 {
                 let progress =
                     Fix::ONE - Fix::from_int(missile.duplicate_lifespan as i64) / Fix::from_int(60);
@@ -28932,6 +29057,7 @@ impl RolloutWorld {
                 || self.entities[tunnel.entity].id != tunnel.entity_id
             {
                 self.blink_object_tunnels[index].active = false;
+                self.destroy_fix(tunnel.hierarchy, None, None);
                 continue;
             }
             if tunnel.age > tunnel.duration {
@@ -28940,6 +29066,7 @@ impl RolloutWorld {
                 }
                 self.blink_object_tunnels[index].active = false;
                 self.blink_object_tunnels[index].released_tick = Some(self.tick);
+                self.destroy_fix(tunnel.hierarchy, None, None);
                 continue;
             }
             self.blink_object_tunnels[index].age += updater_dt;
@@ -29465,6 +29592,8 @@ impl RolloutWorld {
     /// it, and the later one's position and release are the ones that stand.
     fn frozen_solids_tick(&mut self, updater_dt: Fix) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
+        // FrozenSolid's release DestroyFixes it (FrozenSolid.cs:156).
+        let mut released = Vec::new();
         updater_order(&mut order, &self.frozen_solids, |effect| self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base));
         for &effect_index in &order {
             let effect = self.frozen_solids[effect_index];
@@ -29473,6 +29602,7 @@ impl RolloutWorld {
             }
             if !self.playable(effect.victim) {
                 self.frozen_solids[effect_index].active = false;
+                released.push(effect.hierarchy_base);
                 let slot = &mut self.players[effect.victim];
                 slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
                 // FrozenSolid.End's ApplyRagDoll (FrozenSolid.cs:137).
@@ -29493,6 +29623,7 @@ impl RolloutWorld {
                 // slime shatters it, and the release ragdoll lands on the
                 // slime the form left behind.
                 self.frozen_solids[effect_index].active = false;
+                released.push(effect.hierarchy_base);
                 slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
                 slot.slime.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
                 slot.slime.set_rotation(Vec2::UP.normalized_angle());
@@ -29514,6 +29645,7 @@ impl RolloutWorld {
             state.freeze_left -= updater_dt;
             if state.freeze_left <= Fix::ZERO {
                 state.active = false;
+                released.push(effect.hierarchy_base);
                 slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
                 slot.ragdoll.duration = Fix::from_f32(0.35);
                 slot.ragdoll.hold_on_ground = slot.base.grounded;
@@ -29524,6 +29656,9 @@ impl RolloutWorld {
             }
         }
         self.scratch.item_order = order;
+        for owner in released {
+            self.destroy_fix(owner, None, None);
+        }
     }
 
     /// One player ScaleChanger's UpdateSim.
@@ -29558,6 +29693,7 @@ impl RolloutWorld {
         };
         if effect.time > duration || victim_gone {
             self.scale_changers[index].active = false;
+            self.destroy_fix(self.scale_changers[index].hierarchy_base, None, None);
             return;
         }
         if self.player_time_scale < Fix::from_f32(0.01) && !self.time_stop_protected[effect.victim] {
@@ -29644,6 +29780,7 @@ impl RolloutWorld {
         }
         if effect.time > duration {
             self.scale_changers[index].active = false;
+            self.destroy_fix(self.scale_changers[index].hierarchy_base, None, None);
             return;
         }
         if effect.target_kind == 5 {
@@ -29652,6 +29789,7 @@ impl RolloutWorld {
                 || self.entities[effect.victim].flags & (E_REMOVED | E_DESTROYED) != 0
             {
                 self.scale_changers[index].active = false;
+            self.destroy_fix(self.scale_changers[index].hierarchy_base, None, None);
                 return;
             }
             if self.player_time_scale < Fix::from_f32(0.01) {
@@ -29813,6 +29951,7 @@ impl RolloutWorld {
                 || !self.guided_missiles[effect.victim].active)
         {
             self.scale_changers[index].active = false;
+            self.destroy_fix(self.scale_changers[index].hierarchy_base, None, None);
             return;
         }
         if effect.target_kind == 3
@@ -29820,6 +29959,7 @@ impl RolloutWorld {
                 || !self.thrown_items[effect.victim].active)
         {
             self.scale_changers[index].active = false;
+            self.destroy_fix(self.scale_changers[index].hierarchy_base, None, None);
             return;
         }
         if effect.target_kind == 4
@@ -29827,6 +29967,7 @@ impl RolloutWorld {
                 || !self.smoke_clouds[effect.victim].active)
         {
             self.scale_changers[index].active = false;
+            self.destroy_fix(self.scale_changers[index].hierarchy_base, None, None);
             return;
         }
         // Non-player ScaleChanger targets are unprotected and pause
@@ -29879,6 +30020,7 @@ impl RolloutWorld {
         if effect.target_kind == 2 {
             if effect.victim >= self.platforms.len() {
                 self.scale_changers[index].active = false;
+            self.destroy_fix(self.scale_changers[index].hierarchy_base, None, None);
                 return;
             }
             let dynamics = &mut self.platform_dynamics[effect.victim];
@@ -29928,9 +30070,13 @@ impl RolloutWorld {
         }
         // StickyRoundedRectangle stores one currentDuplicatePlatformEffect;
         // a new hit destroys the older visual/effect on that source.
-        for effect in &mut self.duplicate_platform_effects {
+        for index in 0..self.duplicate_platform_effects.len() {
+            let effect = &mut self.duplicate_platform_effects[index];
             if effect.active && effect.source == source {
                 effect.active = false;
+                // DuplicatePlatformEffect.SelfDestruct (DuplicatePlatformEffect.cs:397-400).
+                let owner = effect.hierarchy_base;
+                self.destroy_fix(owner, None, None);
             }
         }
         let surface = &self.platforms[source].surface;
@@ -30032,6 +30178,7 @@ impl RolloutWorld {
             }
             if snapshot.source >= self.platforms.len() {
                 self.duplicate_platform_effects[effect_index].active = false;
+                self.destroy_fix(snapshot.hierarchy_base, None, None);
                 continue;
             }
             let loss = data.duplicator.platform_scale_loss_speed;
@@ -30130,6 +30277,7 @@ impl RolloutWorld {
                 // (DuplicatePlatformEffect.cs:282-311), so the overlap cast of
                 // an effect registered later already pushes it.
                 self.duplicate_platform_effects[effect_index].active = false;
+                self.destroy_fix(snapshot.hierarchy_base, None, None);
                 let (source, rotation) = (snapshot.source, snapshot.original_rotation);
                 let spawner = snapshot.spawner_hierarchy;
                 let shape = (extents, collider.radius, effect_scale);
@@ -31225,18 +31373,22 @@ impl RolloutWorld {
             }
         }
         self.entities[entity].flags = E_REMOVED;
+        self.destroy_fix_row(entity);
         // DestroyRoundedRect drops every child its composite holds, one
         // DestroyFix already marked and RemoveDestroyedColliders has not yet
-        // dropped included (DetPhysics.cs:1617-1634).
+        // dropped included (DetPhysics.cs:1617-1634). DestroyFix on the wall
+        // took its spikes and engines with it (Updater.cs:89-100).
         let held = |active: bool, entity: Option<usize>, entities: &[CEntity]| {
             active || entity.is_some_and(|entity| entities[entity].flags & E_REMOVED == 0)
         };
+        let mut children = Vec::new();
         for spike in &mut self.spike_attacks {
             if !held(spike.active, spike.entity, &self.entities) || spike.macho_carried {
                 continue;
             }
             if spike.platform_index == index {
                 spike.active = false;
+                children.push((spike.hierarchy_base, spike.entity));
                 if let Some(entity) = spike.entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
@@ -31250,12 +31402,16 @@ impl RolloutWorld {
             }
             if engine.platform_index == index {
                 engine.active = false;
+                children.push((engine.hierarchy_base, engine.entity));
                 if let Some(entity) = engine.entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
             } else if engine.platform_index > index {
                 engine.platform_index -= 1;
             }
+        }
+        for (owner, entity) in children {
+            self.destroy_fix(owner, None, entity);
         }
         for node_index in 0..self.tesla_nodes.len() {
             let node = self.tesla_nodes[node_index];
@@ -31496,8 +31652,15 @@ impl RolloutWorld {
     }
 
     /// Updater-phase destruction (bounds, arrow cap): the collider is gone
-    /// before this pass's DetPhysics contacts and observation.
+    /// before this pass's DetPhysics contacts and observation, and
+    /// Updater.DestroyFix takes the arrow's GameObject.
     fn destroy_arrow(&mut self, index: usize) {
+        self.retire_arrow(index);
+        let arrow = &self.arrows[index];
+        self.destroy_fix(arrow.hierarchy_base, None, arrow.entity);
+    }
+
+    fn retire_arrow(&mut self, index: usize) {
         let arrow = &mut self.arrows[index];
         arrow.active = false;
         arrow.registered = false;
@@ -31506,9 +31669,22 @@ impl RolloutWorld {
         }
     }
 
+    /// Arrow.OnCollide's landing DestroyFixes the arrow's BoplBody, hitbox,
+    /// Projectile, DestroyIfOutsideSceneBounds and FixTransform, and keeps
+    /// the Arrow (Arrow.cs:124-128).
     #[inline]
     fn destroy_arrow_contact(&mut self, index: usize, position: Vec2, body: Body) {
-        self.destroy_arrow(index);
+        self.retire_arrow(index);
+        let data = data::get();
+        let (owner, entity) = (self.arrows[index].hierarchy_base, self.arrows[index].entity);
+        for &local in data.prefab("Arrow") {
+            if local != data.arrow.arrow_hierarchy {
+                self.destroy_fix(owner, Some(100_000_000 + owner + local), None);
+            }
+        }
+        if let Some(entity) = entity {
+            self.entities[entity].flags |= E_FIX_DESTROYED;
+        }
         if let Some(entity) = self.arrows[index].entity {
             let row = &mut self.entities[entity];
             row.flags = destroyed_flags(row.flags);
@@ -31689,6 +31865,8 @@ impl RolloutWorld {
                 E_REMOVED
             };
         }
+        let missile = &self.guided_missiles[index];
+        self.destroy_fix(missile.hierarchy_base, None, missile.entity);
     }
 
     fn guided_missiles_integrate(&mut self, data: &data::RolloutData, physics_dt: Fix) {
@@ -32373,16 +32551,18 @@ impl RolloutWorld {
         }
     }
 
-    /// Whether Updater lists item `item`'s updatables this pass.
-    fn thrown_item_listed(item: &ThrownItem) -> bool {
-        item.active || matches!(item.ability, ABILITY_POKE_BALL | ABILITY_TACK | ABILITY_MJOLNIR)
+    /// Whether Updater lists item `item`'s updatables this pass: a live item,
+    /// or one DestroyFixed this pass, which stays listed with its UpdateSim
+    /// skipped until the frame's closing removal (Updater.cs:298-303, 329-345).
+    fn thrown_item_listed(&self, item: &ThrownItem) -> bool {
+        item.active || fix_destroyed(&self.entities, item.entity)
     }
 
     /// Each thrown item's turn in Updater's walk (Updater.cs:298-303), after
     /// everything listed before it.
     fn thrown_items_turns(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for item_index in 0..self.thrown_items.len() {
-            if Self::thrown_item_listed(&self.thrown_items[item_index]) && self.take_updater_turn(item_index, data, updater_dt) {
+            if self.thrown_item_listed(&self.thrown_items[item_index]) && self.take_updater_turn(item_index, data, updater_dt) {
                 self.thrown_item_turn(item_index, data, updater_dt);
             }
         }
@@ -33182,14 +33362,17 @@ impl RolloutWorld {
         }
     }
 
+    /// Updater.DestroyFix on the item's GameObject.
     fn remove_thrown_item(&mut self, item_index: usize, by_callback: bool) {
         let item = &mut self.thrown_items[item_index];
         item.active = false;
-        if let Some(entity) = item.entity {
+        let (owner, entity) = (item.hierarchy_base, item.entity);
+        if let Some(entity) = entity {
             let row = &mut self.entities[entity];
             row.flags = if by_callback { destroyed_flags(row.flags) } else { E_REMOVED };
             row.owner = 0;
         }
+        self.destroy_fix(owner, None, entity);
     }
 
     fn release_poke_victim(&mut self, item_index: usize, victim: usize, data: &data::RolloutData) {
@@ -33471,6 +33654,8 @@ impl RolloutWorld {
         if let Some(entity) = cloud.entity {
             self.entities[entity].flags = E_REMOVED;
         }
+        let cloud = &self.smoke_clouds[cloud_index];
+        self.destroy_fix(cloud.hierarchy_base, None, cloud.entity);
     }
 
     fn detonate_smoke_cloud(&mut self, cloud_index: usize, data: &data::RolloutData) {
@@ -33533,6 +33718,8 @@ impl RolloutWorld {
         if authored + arrows > 80 {
             let first = self.landed_arrows.iter_mut().find(|arrow| arrow.parent == parent).unwrap();
             first.trimmed.get_or_insert(tick);
+            let owner = first.hierarchy - 100_000_000 - 1;
+            self.destroy_fix(owner, None, None);
         }
         let arrow = self.arrows[index];
         self.destroy_arrow_contact(index, arrow.position, arrow.body(&data.arrow.body));
@@ -35532,10 +35719,9 @@ impl RolloutWorld {
                 self.kill(body, killer, cause, false, false);
                 // A callback's killPlayer DestroyFixes the clone, which is
                 // the extra body's GameObject.
-                if route.callback()
-                    && let Some(entity) = self.abilityless_clones[clone_index].entity
-                {
-                    self.entities[entity].flags |= E_FIX_DESTROYED;
+                if route.callback() {
+                    let clone = &self.abilityless_clones[clone_index];
+                    self.destroy_fix(clone.hierarchy_base, None, clone.entity);
                 }
                 return;
             }
@@ -35553,10 +35739,9 @@ impl RolloutWorld {
         }
         // A callback's killPlayer DestroyFixes the clone, which stays active
         // until the frame ends.
-        if route.callback()
-            && let Some(entity) = self.abilityless_clones[clone_index].entity
-        {
-            self.entities[entity].flags |= E_FIX_DESTROYED;
+        if route.callback() {
+            let clone = &self.abilityless_clones[clone_index];
+            self.destroy_fix(clone.hierarchy_base, None, clone.entity);
         }
         // The clone's killPlayer takes the stock branch as the player's last
         // body, spawning the replacement before Player.Kill
@@ -35641,6 +35826,8 @@ impl RolloutWorld {
                 if let Some(entity) = rock.entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
+                let (owner, entity) = (rock.hierarchy_base, rock.entity);
+                self.destroy_fix(owner, None, entity);
                 continue;
             }
             let rock = &mut self.duplicated_rocks[rock_index];
@@ -36652,9 +36839,18 @@ impl RolloutWorld {
         let destroyed = fix_destroyed(&self.entities, Some(self.players[index].body_entity));
         if callback
             && !slime_kill_refused
-            && let Some(row) = self.entities.get_mut(self.players[index].body_entity)
+            && let Some(row) = self.entities.get(self.players[index].body_entity)
         {
-            row.flags |= E_FIX_DESTROYED;
+            // The body's DPhysicsBox is the Player prefab's sixth updatable.
+            let owner = row.hierarchy - 100_000_000 - 6;
+            self.destroy_fix(owner, None, Some(self.players[index].body_entity));
+            // Each branch DestroyFixes the slime's abilities with it, one
+            // OnCollide instantiated this pass included (PlayerCollision.cs:159-211).
+            for base in self.players[index].pending_ability_hierarchy {
+                if base != u32::MAX {
+                    self.destroy_fix(base, None, None);
+                }
+            }
         }
         // No death effect while the player is being revived
         // (PlayerCollision.cs:115-120).
@@ -37171,6 +37367,8 @@ impl RolloutWorld {
                     self.end_revival_marker(marker);
                 }
             }
+            // Finish DestroyFixes the chooser (StockRespawn.cs:212).
+            self.destroy_fix(chooser_owner(index), None, None);
             // ReSpawnFast's ReSpawn (SlimeController.cs:597).
             let owner = self.players[index].owner;
             self.players[owner].extra_life = REVIVE_NONE;

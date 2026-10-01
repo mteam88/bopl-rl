@@ -195,6 +195,7 @@ struct RawArrowBody {
 struct RawArrow {
     radius: i64,
     collider_hierarchy: u32,
+    arrow_hierarchy: u32,
     body: RawArrowBody,
 }
 #[derive(Deserialize)]
@@ -335,6 +336,7 @@ struct RawRopes {
     hook_layer: u32,
     hook_radius: i64,
     hook_collider_hierarchy: u32,
+    hook_component_hierarchy: u32,
     hook_segments_affected: usize,
     hook_speed_falloff: i64,
     hook_fall_time: i64,
@@ -1449,6 +1451,9 @@ pub struct BowData {
 pub struct ArrowData {
     pub radius: Fix,
     pub collider_hierarchy: u32,
+    /// The Arrow component's own number, the one updatable a landed arrow
+    /// keeps (Arrow.cs:124-128).
+    pub arrow_hierarchy: u32,
     /// BoplBody.NewPhysicsBody for the Arrow prefab (BoplBody.cs:215-229).
     pub body: crate::physics::Body,
 }
@@ -1658,6 +1663,9 @@ pub struct RopeData {
     pub hook_layer: u32,
     pub hook_radius: Fix,
     pub hook_collider_hierarchy: u32,
+    /// The RopeHook component's, which a hook that attaches DestroyFixes
+    /// with its hitbox (RopeHook.cs:182-189).
+    pub hook_component_hierarchy: u32,
     pub hook_segments_affected: usize,
     pub hook_speed_falloff: Fix,
     pub hook_fall_time: Fix,
@@ -2742,6 +2750,7 @@ pub fn get() -> &'static RolloutData {
             arrow: ArrowData {
                 radius: Fix::from_raw(raw.prefabs.arrow.radius),
                 collider_hierarchy: raw.prefabs.arrow.collider_hierarchy,
+                arrow_hierarchy: raw.prefabs.arrow.arrow_hierarchy,
                 body: {
                     let b = &raw.prefabs.arrow.body;
                     body(
@@ -2995,6 +3004,7 @@ pub fn get() -> &'static RolloutData {
                     hook_layer: ropes.hook_layer,
                     hook_radius: Fix::from_raw(ropes.hook_radius),
                     hook_collider_hierarchy: ropes.hook_collider_hierarchy,
+                    hook_component_hierarchy: ropes.hook_component_hierarchy,
                     hook_segments_affected: ropes.hook_segments_affected,
                     hook_speed_falloff: Fix::from_raw(ropes.hook_speed_falloff),
                     hook_fall_time: Fix::from_raw(ropes.hook_fall_time),

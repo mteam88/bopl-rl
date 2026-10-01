@@ -1094,6 +1094,9 @@ impl RolloutWorld {
                 self.ropes[index].hook_active = false;
                 if let Some(entity) = self.ropes[index].hook_entity {
                     self.entities[entity].flags = E_REMOVED;
+                    // RopeAttachment.Deattach DestroyFixes the GameObject it
+                    // shares with the hook (RopeAttachment.cs:150-163).
+                    self.destroy_fix_hook(index);
                 }
             }
             if self.ropes[index].hook_active {
@@ -1107,6 +1110,10 @@ impl RolloutWorld {
                 }
                 self.ropes[index].hook_time += DT;
                 if self.ropes[index].hook_time > source.hook_fall_time {
+                    // RopeHook.UpdateSim DestroyFixes the rope's GameObject
+                    // and its own (RopeHook.cs:53-56).
+                    self.destroy_fix(self.ropes[index].hierarchy, None, None);
+                    self.destroy_fix_hook(index);
                     self.disable_rope(index);
                     continue;
                 }
@@ -1330,6 +1337,23 @@ impl RolloutWorld {
             rope.physics.force_end = Vec2::ZERO;
         }
         rope.physics.detach(top);
+    }
+
+    /// RopeHook.OnCollide's teardown on attaching: DestroyFix on the hitbox
+    /// and on the RopeHook, leaving its RopeAttachment and FixTransform
+    /// (RopeHook.cs:182-189).
+    fn destroy_fix_hook_parts(&mut self, rope_index: usize) {
+        let ropes = &data::get().ropes;
+        let owner = self.ropes[rope_index].hook_hierarchy;
+        for local in [ropes.hook_collider_hierarchy, ropes.hook_component_hierarchy] {
+            self.destroy_fix(owner, Some(100_000_000 + owner + local), None);
+        }
+    }
+
+    /// Updater.DestroyFix on the hook's GameObject.
+    fn destroy_fix_hook(&mut self, rope_index: usize) {
+        let rope = &self.ropes[rope_index];
+        self.destroy_fix(rope.hook_hierarchy, None, rope.hook_entity);
     }
 
     /// Rope.UpdateSim's timer and its offscreen drop, after the reel.
@@ -1873,6 +1897,7 @@ impl RolloutWorld {
                     self.entities[entity].flags =
                         (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
                 }
+                self.destroy_fix_hook_parts(rope_index);
                 return;
             }
             HookTarget::Pickup => {
@@ -1902,6 +1927,7 @@ impl RolloutWorld {
                     self.entities[entity].flags =
                         (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
                 }
+                self.destroy_fix_hook_parts(rope_index);
                 return;
             }
             HookTarget::Clone(index) => {
@@ -1924,6 +1950,7 @@ impl RolloutWorld {
                 if let Some(entity) = rope.hook_entity {
                     self.entities[entity].flags = (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
                 }
+                self.destroy_fix_hook(rope_index);
                 return;
             }
             HookTarget::Player(victim) if self.players[victim].active != ActiveAbility::Rock => {
@@ -1948,6 +1975,7 @@ impl RolloutWorld {
                     // activeInHierarchy goes with it.
                     self.entities[entity].flags = (self.entities[entity].flags & E_TRIGGER) | E_DESTROYED;
                 }
+                self.destroy_fix_hook(rope_index);
                 return;
             }
             // A BounceBall has no PlayerBody, so the hook attaches to it as to
@@ -2027,6 +2055,7 @@ impl RolloutWorld {
             // Hitbox-only teardown, as for a wall (RopeHook.cs:182-189).
             self.entities[entity].flags = (self.entities[entity].flags & (E_ACTIVE | E_TRIGGER)) | E_DESTROYED;
         }
+        self.destroy_fix_hook_parts(rope_index);
     }
 
     /// The abilityless clones whose Player-layer box DetPhysics holds, in

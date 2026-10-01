@@ -546,6 +546,7 @@ def main():
         "layer": arrow["data"].get("layer"),
         "radius": fix(arrow_circle, "startRadius") if "startRadius.m_rawValue" in arrow_circle else fix(arrow_circle, "radius"),
         "collider_hierarchy": arrow_circle["hierarchyNumber"],
+        "arrow_hierarchy": component(arrow, "Arrow")["hierarchyNumber"],
         "updatable_count": updater_count(arrow),
         "body": {k[:-len(".m_rawValue")]: v for k, v in arrow_body.items()
                  if k.endswith("m_rawValue")},
@@ -2115,6 +2116,7 @@ def main():
         "hook_layer": hook_prefab["data"]["layer"],
         "hook_radius": fix(hook_circle, "startRadius"),
         "hook_collider_hierarchy": hook_circle["hierarchyNumber"],
+        "hook_component_hierarchy": hook["hierarchyNumber"],
         "hook_updatable_count": hierarchy_span(hook_prefab),
         "hook_segments_affected": hook["segmentsAffectedBySpeed"],
         "hook_speed_falloff": fix(hook, "segmentSpeedFalloff01"),
