@@ -676,6 +676,23 @@ pub struct ThrownItem {
     pub magnet_hold_ticks: i8,
 }
 
+impl ThrownItem {
+    /// BoplBody.UpdateSim's rescale: `inverseMass *= prevScale / scale` once
+    /// the collider's scale moved (BoplBody.cs:332-344).
+    fn rescale_mass(&mut self) {
+        if self.scale == self.body_scale
+            || self.body.inverse_mass == Fix::ZERO
+            || self.body.inverse_inertia == Fix::ZERO
+        {
+            return;
+        }
+        let ratio = self.body_scale / self.scale;
+        self.body.inverse_mass *= ratio;
+        self.body.inverse_inertia *= ratio;
+        self.body_scale = self.scale;
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct GrenadeExplosion {
     pub active: bool,
@@ -25423,6 +25440,9 @@ impl RolloutWorld {
                 self.entities.push(CEntity::default());
                 item.entity = Some(self.entities.len() - 1);
             }
+            // ManualInit, then `grenadeBody.UpdateSim(Fix.Zero)` takes the whole
+            // scale change since the prefab in one ratio (ThrowItem2.cs:222-226).
+            item.rescale_mass();
             let entity = item.entity.expect("grenade collider allocated");
             self.entities[entity] = CEntity {
                 id: item.id,
@@ -34768,16 +34788,11 @@ impl RolloutWorld {
         }
         let item = &mut self.thrown_items[item_index];
         item.body_ran_tick = Some(self.tick);
-        if item.scale == item.body_scale
-            || item.body.inverse_mass == Fix::ZERO
-            || item.body.inverse_inertia == Fix::ZERO
-        {
-            return;
+        // A held payload's collider has not run ManualInit, so BoplBody skips
+        // the rescale and keeps prevScale (BoplBody.cs:332).
+        if item.entity.is_some() {
+            item.rescale_mass();
         }
-        let ratio = item.body_scale / item.scale;
-        item.body.inverse_mass *= ratio;
-        item.body.inverse_inertia *= ratio;
-        item.body_scale = item.scale;
     }
 
     /// Mjolnir.UpdateSim, then the Gust Shockwave impulse queued on it.
