@@ -41295,11 +41295,10 @@ impl RolloutWorld {
                 if sync_form_row(circle, flags, rolling, entered == roll_e, slot.base.id) {
                     // Like the slime's box, the row is the collider DetPhysics
                     // synced; a grounded Roll moves after it (PlayerPhysics.cs:138).
-                    let (position, rotation) = if rolling {
-                        (slot.base.collider.center, slot.base.collider_rotation)
-                    } else {
-                        (exit_position, Fix::ZERO)
-                    };
+                    // Roll.ExitAbility zeroes the out box's rotation (Roll.cs:202-236).
+                    let at_sync = slot.forms[slot.entity_slot(roll_e)].synced;
+                    let position = if rolling { at_sync.position } else { exit_position };
+                    let rotation = at_sync.orientation.rotation();
                     circle.x = position.x.raw();
                     circle.y = position.y.raw();
                     circle.vx = 0;
