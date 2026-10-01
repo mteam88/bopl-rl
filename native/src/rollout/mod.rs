@@ -35684,6 +35684,7 @@ impl RolloutWorld {
                 for (entity, group, rank) in contacts {
                     let row = self.entities[entity];
                     if entity == item_entity
+                        || self.grouped_body_entity(entity)
                         || (row.layer == LAYER_PLAYER
                             && ((row.owner == owner_id && !item.detonates_on_owner) || Some(entity) == holder))
                     {
@@ -35706,7 +35707,7 @@ impl RolloutWorld {
                         DetCollider::Circle(circle),
                         MINE_IGNITERS,
                     )
-                    .filter(|&(entity, ..)| Some(entity) != holder)
+                    .filter(|&(entity, ..)| Some(entity) != holder && !self.grouped_body_entity(entity))
                     .map(|(_, group, rank)| {
                         let (later, earlier) = sweep_pair(item_rank, rank);
                         (group, later, earlier)
@@ -36197,6 +36198,17 @@ impl RolloutWorld {
             CallbackHit::ItemDetonate { item, count } => {
                 let state = self.thrown_items[item];
                 if !state.active {
+                    // DetPhysics runs the queue without a destroyed check, so
+                    // a grenade an earlier callback of this pass destroyed
+                    // still Detonates, at its position, with no guard against
+                    // a second call (GrenadeExplode.cs:29-35).
+                    if state.ability == ABILITY_GRENADE
+                        && state.entity.is_some_and(|entity| self.entities[entity].flags & E_DESTROYED != 0)
+                    {
+                        for _ in 0..count {
+                            self.spawn_grenade_explosion(state.position, state.owner, true, state.scale, data);
+                        }
+                    }
                     return;
                 }
                 if state.ability == ABILITY_SMOKE {

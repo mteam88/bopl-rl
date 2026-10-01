@@ -477,6 +477,23 @@ impl RolloutWorld {
         self.collides(entity).then_some(self.entities[entity].kind == 0)
     }
 
+    /// Whether a Player-layer row is a slime's, form's, clone's or Rock's
+    /// collider that the Circle/Circle and Circle/Box groups pair, so its
+    /// pairs' callbacks queue there.
+    pub(super) fn grouped_body_entity(&self, entity: usize) -> bool {
+        (0..self.players.len()).any(|i| {
+            (self.body_part_circle(i).is_some() && Self::hurtbox_entity(&self.players[i]) == entity)
+                || (self.players[i].active == ActiveAbility::Rock
+                    && self.playable(i)
+                    && self.players[i].rock_entity == entity)
+        }) || (0..self.abilityless_clones.len())
+            .any(|i| self.clone_part_circle(i).is_some() && self.abilityless_clones[i].entity == Some(entity))
+            || self
+                .duplicated_rocks
+                .iter()
+                .any(|rock| rock.active && !self.blink_object_hidden(rock.entity) && rock.entity == Some(entity))
+    }
+
     /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
     /// PositionalCorrection on each side's own inverse mass; every pair
     /// queues both sides' OnCollide, which run after the last group.
@@ -893,7 +910,10 @@ impl RolloutWorld {
         // with slime, form and clone colliders run here yet; the others'
         // callbacks are still queued from their own contact passes.
         if matches!(other, Part::Body(_) | Part::Clone(_))
-            && !matches!(receiver, Part::Rock(_) | Part::DuplicatedRock(_) | Part::Arrow(_) | Part::Hole(_))
+            && !matches!(
+                receiver,
+                Part::Rock(_) | Part::DuplicatedRock(_) | Part::Arrow(_) | Part::Hole(_) | Part::Item(_)
+            )
         {
             return;
         }
@@ -913,6 +933,31 @@ impl RolloutWorld {
                 // (Mine.cs:227-235).
                 ABILITY_MINE if matches!(other, Part::Arrow(_)) => {
                     self.run_callback_hit(CallbackHit::MineIgnite { item }, data);
+                }
+                // GrenadeExplode.OnCollide goes off on a Player-layer collider
+                // but its owner's, unless it detonates on its owner, and the
+                // holding MagnetGun's hurtbox; Mine.OnCollide ignites on one
+                // but the holding MagnetGun's (GrenadeExplode.cs:41-68,
+                // Mine.cs:227-235).
+                ability @ (ABILITY_GRENADE | ABILITY_MINE) if self.part_layer(other, data) == LAYER_PLAYER => {
+                    let state = self.thrown_items[item];
+                    let entity = self.part_entity(other).expect("grouped Player-layer part");
+                    if state.magnet_holder.is_some_and(|holder| self.players[holder].magnet_entity == entity) {
+                        return;
+                    }
+                    if ability == ABILITY_MINE {
+                        self.run_callback_hit(CallbackHit::MineIgnite { item }, data);
+                    } else {
+                        // The collider's IPlayerIdHolder: a slime's or form's
+                        // own player, whatever its row last published.
+                        let holder_id = match other {
+                            Part::Body(player) | Part::Rock(player) => self.players[player].base.id,
+                            _ => self.entities[entity].owner,
+                        };
+                        if holder_id != player_id(&self.players, state.owner) || state.detonates_on_owner {
+                            self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
+                        }
+                    }
                 }
                 _ => {}
             },
