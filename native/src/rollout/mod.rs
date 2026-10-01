@@ -2248,6 +2248,8 @@ pub struct PlatformState {
     pub sizing_right: Vec2,
     /// Index into `RolloutWorld::platforms` for the platform being shaped.
     pub platform_index: usize,
+    /// inputVector: the last UpdateSim's aim, kept across uses.
+    pub input: Vec2,
 }
 
 /// One SuperStarEffect spawned by a Gold Mushroom slot. The source cannot
@@ -4098,6 +4100,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::PokeBall
             | ActiveAbility::Missile
             | ActiveAbility::Dash
+            | ActiveAbility::Platform
     )
 }
 
@@ -12434,6 +12437,7 @@ impl RolloutWorld {
                         slot.platform = PlatformState {
                             active_corner: Vec2::new(Fix::ONE, Fix::ONE),
                             platform_index: usize::MAX,
+                            input: slot.platform.input,
                             ..PlatformState::default()
                         };
                         slot.platform_hurtbox_disabled[s] = false;
@@ -13958,6 +13962,15 @@ impl RolloutWorld {
                 // The slime's own LocalPlatformPos, which the airborne
                 // SyncPhysicsTo leaves alone.
                 slot.base.local = slot.base.dash.saved_local;
+            }
+            ActiveAbility::Platform => {
+                // PlatformTransform.ExitAbility (PlatformTransform.cs:456-473).
+                let slot = &mut self.players[index];
+                slot.base.rotation = Fix::ZERO;
+                info.facing_right = slot.platform.input.x >= Fix::ZERO;
+                info.position = slot.base.position;
+                info.velocity = slot.base.velocity;
+                info.external_velocity = slot.base.external_velocity;
             }
             ActiveAbility::Magnet => {
                 // MagnetGun.ExitAbility (MagnetGun.cs:356-373).
@@ -32663,6 +32676,7 @@ impl RolloutWorld {
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
         let aim = action.direction();
+        self.players[index].platform.input = aim;
         if player_dt > Fix::ZERO {
             self.players[index].platform.ticks += 1;
         }
@@ -32787,26 +32801,7 @@ impl RolloutWorld {
                 slot.base.position = center + up * eject;
                 if eject + pd.face_height >= span {
                     slot.base.position += up * pd.ejection_offset;
-                    slot.base.rotation = Fix::ZERO;
-                    slot.base.grounded = false;
-                    slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                    // SyncPhysicsTo's UpdateScale catches the slime's radius
-                    // up with a Player.Scale a ray changed mid-form.
-                    slot.set_ordinary_body_scale(slot.player_scale);
-                    slot.restore_slime_radius();
-                    // Ability.ExitAbility republishes potentialCollider.position
-                    // after PlatformTransform has applied the final ejection.
-                    // SlimeController's synchronous onExitAbility callback then
-                    // enters Fall and immediately performs
-                    // VelocityBasedRaycasts. Preserve both phase boundaries:
-                    // this tick observes the ejected position, while the live
-                    // body may already have reattached for the next tick.
-                    slot.reported_position = slot.base.position;
-                    slot.reported_tick = self.tick;
-                    slot.exit_to_fall(terrain!(self));
-                    // SlimeController.onExitAbility syncs the hurtbox, so later
-                    // updaters this pass (a Dash's raycast) see the exit position.
-                    slot.base.sync_collider();
+                    self.exit_form(index);
                 }
             }
         }
