@@ -889,11 +889,11 @@ impl RolloutWorld {
     /// The receiver's collisionCallback.OnCollide, run from DetPhysics' queue
     /// (DetPhysics.cs:3202-3205).
     pub(super) fn on_collide(&mut self, receiver: Part, other: Part, contact: Contact, data: &data::RolloutData) {
-        // Only the Rock form's, the Duplicator copy's and the arrows' pairs
+        // Only the Rock form's, the Duplicator copy's, the arrows' and the holes' pairs
         // with slime, form and clone colliders run here yet; the others'
         // callbacks are still queued from their own contact passes.
         if matches!(other, Part::Body(_) | Part::Clone(_))
-            && !matches!(receiver, Part::Rock(_) | Part::DuplicatedRock(_) | Part::Arrow(_))
+            && !matches!(receiver, Part::Rock(_) | Part::DuplicatedRock(_) | Part::Arrow(_) | Part::Hole(_))
         {
             return;
         }
@@ -1046,7 +1046,10 @@ impl RolloutWorld {
                 };
                 (target, inverse_mass)
             }
-            Part::Hook(_) | Part::Body(_) | Part::Clone(_) => return,
+            // Grow reads -1 from a collider no BoplBody owns.
+            Part::Body(player) => (HoleTarget::Player(player, self.players[player].active == ActiveAbility::None), -Fix::ONE),
+            Part::Clone(clone) => (HoleTarget::Clone(clone), -Fix::ONE),
+            Part::Hook(_) => return,
         };
         self.black_hole_collide(hole, target, inverse_mass, data);
     }

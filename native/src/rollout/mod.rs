@@ -17489,12 +17489,11 @@ impl RolloutWorld {
         }
     }
 
-    /// BlackHole.OnCollide's pairs with colliders no narrow-phase group moves:
-    /// markers, clouds, slime and form boxes and clones. DetPhysics calls
-    /// every pair back from its queue after all groups resolved, in
-    /// SortAndSweep pair order (DetPhysics.cs:3197-3199). The circles the
-    /// groups correct pair in `circle_circle_group`, and the missile, Spike
-    /// and rocket engine boxes in `circle_box_group`.
+    /// BlackHole.OnCollide's pairs with the markers and clouds, which are not
+    /// group parts yet. DetPhysics calls every pair back from its queue after
+    /// all groups resolved, in SortAndSweep pair order (DetPhysics.cs:3197-3199).
+    /// Every other collider pairs in `circle_circle_group` and
+    /// `circle_box_group`.
     /// The callback reads the hole's mass only then (BlackHole.cs:447), so a
     /// white hole's pairs are queued too.
     fn black_hole_contacts(&mut self) {
@@ -17563,49 +17562,6 @@ impl RolloutWorld {
                     let (other, group) = (row_rank(self, entity), row_group(self, entity));
                     let inverse_mass = data::get().teleport.marker_body.inverse_mass;
                     queue(self, HoleTarget::TeleportMarker(marker_index), inverse_mass, other, group);
-                }
-            }
-
-            // Slimes and abilityless clones, on the Player layer. Grow reads
-            // the collider's inverseMass: -1 unless a BoplBody owns it, as the
-            // Rock form's BounceBall does.
-            for player_index in 0..self.players.len() {
-                let player = &self.players[player_index];
-                // The Rock form's circle pairs in the Circle/Circle group.
-                if !self.playable_slot(player) || player.out || player.active == ActiveAbility::Rock {
-                    continue;
-                }
-                let entity = Self::hurtbox_entity(player);
-                if !self.collides(entity) {
-                    continue;
-                }
-                let row = self.entities[entity];
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                let overlaps = if row.kind == 0 {
-                    let radius = Fix::from_raw(row.radius);
-                    crate::physics::contact::circle_circle(circle, Circle { center, radius }).is_some()
-                } else {
-                    let body = Self::row_box(&self.entity_inverse_extents, entity, row);
-                    crate::physics::contact::circle_box(circle, body).is_some()
-                };
-                if !overlaps {
-                    continue;
-                }
-                let hit = CallbackHit::BlackHole {
-                    hole: hole_index,
-                    target: HoleTarget::Player(player_index, player.active == ActiveAbility::None),
-                    inverse_mass: -Fix::ONE,
-                };
-                self.queue_callback_hit(player_index, true, rank, hit);
-            }
-            for clone_index in 0..self.abilityless_clones.len() {
-                let clone = &self.abilityless_clones[clone_index];
-                if !clone.active || self.abilityless_clone_hidden(clone) {
-                    continue;
-                }
-                if crate::physics::contact::circle_box(circle, clone.base.collider).is_some() {
-                    let other = sweep_rank(&self.entities, self.swept_min(Swept::Clone(clone_index)), clone.entity);
-                    queue(self, HoleTarget::Clone(clone_index), -Fix::ONE, other, GROUP_CB);
                 }
             }
         }
