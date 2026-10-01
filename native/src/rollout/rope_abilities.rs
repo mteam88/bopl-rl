@@ -563,6 +563,7 @@ impl RolloutWorld {
         separation: Fix,
         platform: Option<usize>,
         platform_local: Fix,
+        hierarchy: u32,
     ) -> usize {
         let index = self
             .ropes
@@ -574,7 +575,6 @@ impl RolloutWorld {
         for id in segment_ids.iter_mut().take(SEGMENTS - 1) {
             *id = self.next_id();
         }
-        let hierarchy = self.next_spawn_hierarchy;
         let platform_pull =
             platform.map_or(PLATFORM_PULL, |platform| self.rope_platform_pull(platform));
         let rope = &mut self.ropes[index];
@@ -867,6 +867,9 @@ impl RolloutWorld {
             None => position,
         };
         let hook_position = rope_end + aim * source.grapple_spawn_offset;
+        // The Rope and RopeHook prefabs both count (HookshotInstant.cs:128-132).
+        let rope_hierarchy = self.register_prefab(data::get().prefab("Rope"));
+        let hook_hierarchy = self.register_prefab(data::get().prefab("RopeHook"));
         let hook_id = self.next_id();
         let hook_entity = self.entities.len();
         self.push_entity(CEntity {
@@ -874,10 +877,7 @@ impl RolloutWorld {
             kind: 0,
             layer: source.hook_layer,
             flags: E_ACTIVE | E_ENABLED | E_TRIGGER,
-            hierarchy: 100_000_000
-                + self.next_spawn_hierarchy
-                + 1 // Rope.Awake registers before the RopeHook prefab.
-                + source.hook_collider_hierarchy,
+            hierarchy: 100_000_000 + hook_hierarchy + source.hook_collider_hierarchy,
             x: hook_position.x.raw(),
             y: hook_position.y.raw(),
             radius: source.hook_radius.raw(),
@@ -891,9 +891,8 @@ impl RolloutWorld {
             source.grapple_start_separation,
             None,
             Fix::ZERO,
+            rope_hierarchy,
         );
-        // The Rope and RopeHook prefabs both count (HookshotInstant.cs:128-132).
-        self.next_spawn_hierarchy += 1 + source.hook_updatable_count;
         {
             let rope = &mut self.ropes[rope_index];
             rope.physics.time_since_hook_arrived = -Fix::ONE;
@@ -972,7 +971,7 @@ impl RolloutWorld {
                 continue;
             }
             self.ropes[index].grapple_ran_tick = Some(self.tick);
-            let key = updater_key(self.ropes[index].appended, 100_000_000 + self.ropes[index].hierarchy);
+            let key = self.updater_key(self.ropes[index].appended, 100_000_000 + self.ropes[index].hierarchy);
             self.run_spawned_before(data::get(), DT * self.player_time_scale, key);
             if !self.ropes[index].physics.enabled {
                 continue;
@@ -1120,9 +1119,10 @@ impl RolloutWorld {
             .surface
             .local_position(near, Fix::ZERO)
             .expect("web ray endpoint lies on platform");
-        let rope = self.allocate_rope(player, near, position, separation, Some(platform), local);
         // The Rope and RopeAttachment prefabs both count (WebSwing.cs:149,159).
-        self.next_spawn_hierarchy += 2;
+        let hierarchy = self.register_prefab(data::get().prefab("Rope"));
+        self.register_prefab(data::get().prefab("RopeAttachment"));
+        let rope = self.allocate_rope(player, near, position, separation, Some(platform), local, hierarchy);
         let number = self.ropes[rope].number;
         self.attach_player_rope(player, None, false);
         self.attach_player_rope(player, Some(rope), false);
@@ -1315,7 +1315,7 @@ impl RolloutWorld {
             // asks activeInHierarchy, and a Throw boulder's ShakablePlatform
             // has moved the body it reads.
             let hierarchy = self.ropes[index].hierarchy;
-            let key = updater_key(self.ropes[index].appended, 100_000_000 + hierarchy);
+            let key = self.updater_key(self.ropes[index].appended, 100_000_000 + hierarchy);
             self.run_spawned_before(data::get(), DT * self.player_time_scale, key);
             if !self.ropes[index].physics.enabled {
                 continue;

@@ -3,6 +3,7 @@
 //! raw Q32.32 exactly as serialized in Unity; parsed once per process.
 use crate::{curve::Curve, fixed::Fix, surface::Surface, vector::Vec2};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 #[derive(Deserialize)]
@@ -61,10 +62,11 @@ struct RawPlatform {
     platform_type: u32,
     grow_scale: i64,
     hierarchy: u32,
-    updatable_count: u32,
     updaters: Vec<PlatformUpdater>,
     child_count: u32,
     duplicate_collider_hierarchy: u32,
+    registrations: Vec<u32>,
+    copy_registrations: Vec<u32>,
     animate_velocity: RawAnimateVelocity,
     body: RawBody,
     orbit: Option<RawOrbit>,
@@ -138,7 +140,6 @@ struct RawPlayer {
     hurtbox_extents: RawVec2,
     spawn_anim_ticks: u32,
     fast_spawn_anim_ticks: u32,
-    boundary_effect_updatable_count: u32,
 }
 #[derive(Deserialize)]
 struct RawDash {
@@ -193,7 +194,6 @@ struct RawArrowBody {
 struct RawArrow {
     radius: i64,
     collider_hierarchy: u32,
-    updatable_count: u32,
     body: RawArrowBody,
 }
 #[derive(Deserialize)]
@@ -231,7 +231,6 @@ struct RawResizable {
     min_scale: i64,
     max_scale: i64,
     collider_hierarchy: u32,
-    updatable_count: u32,
     updaters: Vec<PlatformUpdater>,
     mass_per_area: i64,
     remove_curve: Curve,
@@ -244,7 +243,6 @@ struct RawPickup {
     radius: i64,
     offset: RawVec2,
     collider_hierarchy: u32,
-    updatable_count: u32,
     body: RawBody,
     up_force: i64,
     wobble_speed: i64,
@@ -336,7 +334,6 @@ struct RawRopes {
     hook_layer: u32,
     hook_radius: i64,
     hook_collider_hierarchy: u32,
-    hook_updatable_count: u32,
     hook_segments_affected: usize,
     hook_speed_falloff: i64,
     hook_fall_time: i64,
@@ -371,7 +368,6 @@ struct RawDrill {
     max_early_fall_speed: i64,
     hitboxes: Vec<RawDrillHitbox>,
     hitbox_layer: u32,
-    hitbox_updatable_count: u32,
     hitbox_collider_hierarchy: u32,
 }
 
@@ -403,7 +399,6 @@ struct RawBlackHoleAnimations {
 #[derive(Deserialize)]
 struct RawBlackHoleBody {
     layer: u32,
-    updatable_count: u32,
     collider_hierarchy: u32,
     start_radius: i64,
     starting_mass: i64,
@@ -456,7 +451,6 @@ struct RawThrowAnimations {
 #[derive(Deserialize)]
 struct RawGrenadeItem {
     layer: u32,
-    updatable_count: u32,
     child_count: u32,
     collider_hierarchy: u32,
     radius: i64,
@@ -477,7 +471,6 @@ struct RawTack {
 #[derive(Deserialize)]
 struct RawTackItem {
     layer: u32,
-    updatable_count: u32,
     child_count: u32,
     collider_hierarchy: u32,
     radius: i64,
@@ -499,7 +492,6 @@ struct RawPokeBall {
 #[derive(Deserialize)]
 struct RawPokeBallItem {
     layer: u32,
-    updatable_count: u32,
     child_count: u32,
     collider_hierarchy: u32,
     radius: i64,
@@ -522,7 +514,6 @@ struct RawMjolnir {
 #[derive(Deserialize)]
 struct RawMjolnirItem {
     layer: u32,
-    updatable_count: u32,
     child_count: u32,
     collider_hierarchy: u32,
     radius: i64,
@@ -542,7 +533,6 @@ struct RawMjolnirItem {
 #[derive(Deserialize)]
 struct RawGrenadeExplosion {
     layer: u32,
-    updatable_count: u32,
     collider_hierarchy: u32,
     extents: RawVec2,
     animation_ticks: u32,
@@ -570,7 +560,6 @@ struct RawMissileAnimations {
 #[derive(Deserialize)]
 struct RawMissileSpark {
     layer: u32,
-    updatable_count: u32,
     child_count: u32,
     collider_hierarchy: u32,
     extents: RawVec2,
@@ -586,7 +575,6 @@ struct RawMissileSpark {
 #[derive(Deserialize)]
 struct RawMissileExplosion {
     layer: u32,
-    updatable_count: u32,
     collider_hierarchy: u32,
     extents: RawVec2,
     animation_ticks: u32,
@@ -613,7 +601,6 @@ struct RawMachoThrow {
     dummy_positions: Vec<RawVec2>,
     prepare_positions: Vec<RawVec2>,
     force_from_boulder: i64,
-    smoke_updatable_count: u32,
     player_radius_hack: i64,
     move_after_throw_frames: u32,
     jump_after_throw_frames: u32,
@@ -652,7 +639,6 @@ struct RawMachoAnimations {
 #[derive(Deserialize)]
 struct RawMachoBoulder {
     layer: u32,
-    updatable_count: u32,
     updaters: Vec<PlatformUpdater>,
     collider_hierarchy: u32,
     extents: RawVec2,
@@ -661,7 +647,6 @@ struct RawMachoBoulder {
     max_scale: i64,
     body: RawBody,
     dropped_bounciness: i64,
-    down_effect_updatable_count: u32,
 }
 
 #[derive(Deserialize)]
@@ -712,7 +697,6 @@ struct RawFreeze {
     collision_mask: u32,
     collision_mask_no_water: u32,
     freeze_seconds: i64,
-    frozen_updatable_count: u32,
 }
 #[derive(Deserialize)]
 struct RawBlink {
@@ -734,7 +718,6 @@ struct RawBlink {
     wall_shake: i64,
     on_player_hit_cooldown: i64,
     tunnel_release_duration: i64,
-    tunnel_updatable_count: u32,
 }
 #[derive(Deserialize)]
 struct RawRoll {
@@ -751,7 +734,6 @@ struct RawRoll {
     platform_turn_speed: i64,
     early_release_jump_strength: i64,
     short_jump_strength: i64,
-    trail_hierarchy_count: u32,
 }
 #[derive(Deserialize)]
 struct RawMeteor {
@@ -781,7 +763,6 @@ struct RawMeteor {
 }
 #[derive(Deserialize)]
 struct RawMeteorShockwave {
-    updatable_count: u32,
     offset: RawVec2,
     platform_force: i64,
     default_force: i64,
@@ -793,7 +774,6 @@ struct RawMeteorShockwave {
 #[derive(Deserialize)]
 struct RawMeteorSmear {
     layer: u32,
-    updatable_count: u32,
     collider_hierarchy: u32,
     extents: RawVec2,
     offset: RawVec2,
@@ -824,7 +804,6 @@ struct RawScaleRay {
     multiplier: i64,
     small_non_players_multiplier: i64,
     inverse_mass_before_big: i64,
-    changer_updatable_count: u32,
 }
 #[derive(Deserialize)]
 struct RawDuplicator {
@@ -846,7 +825,6 @@ struct RawDuplicator {
     platform_shake: i64,
     platform_overlap_force: i64,
     platform_scale_loss_speed: i64,
-    platform_effect_updatable_count: u32,
 }
 #[derive(Deserialize)]
 struct RawMagnet {
@@ -923,7 +901,6 @@ struct RawMineAnimations {
 #[derive(Deserialize)]
 struct RawMineItem {
     layer: u32,
-    updatable_count: u32,
     child_count: u32,
     collider_hierarchy: u32,
     radius: i64,
@@ -956,7 +933,6 @@ struct RawSmoke {
 #[derive(Deserialize)]
 struct RawSmokeItem {
     layer: u32,
-    updatable_count: u32,
     child_count: u32,
     collider_hierarchy: u32,
     radius: i64,
@@ -969,12 +945,10 @@ struct RawSmokeItem {
     cloud_offsets: Vec<RawVec2>,
     spread: i64,
     noise: i64,
-    burst_updatable_count: u32,
 }
 #[derive(Deserialize)]
 struct RawSmokeCloud {
     layer: u32,
-    updatable_count: u32,
     collider_hierarchy: u32,
     base_radius: i64,
     body: RawBody,
@@ -990,7 +964,6 @@ struct RawSmokeCloud {
 #[derive(Deserialize)]
 struct RawSmokeExplosion {
     layer: u32,
-    updatable_count: u32,
     collider_hierarchy: u32,
     extents: RawVec2,
     collider_offset: RawVec2,
@@ -1005,7 +978,6 @@ struct RawTimeStop {
     hurtbox_radius: i64,
     collider_hierarchy: u32,
     animations: RawTimeStopAnimations,
-    effect_updatable_count: u32,
     duration_f32: f32,
     exit_seconds_f32: f32,
 }
@@ -1036,7 +1008,6 @@ struct RawSpikeAnimations {
 #[derive(Deserialize)]
 struct RawSpikeAttack {
     layer: u32,
-    updatable_count: u32,
     child_count: u32,
     collider_hierarchy: u32,
     extents: RawVec2,
@@ -1062,7 +1033,6 @@ struct RawEngine {
 #[derive(Deserialize)]
 struct RawRocketEngine {
     layer: u32,
-    updatable_count: u32,
     child_count: u32,
     collider_hierarchy: u32,
     extents: RawVec2,
@@ -1090,7 +1060,6 @@ struct RawTesla {
 #[derive(Deserialize)]
 struct RawTeslaNode {
     layer: u32,
-    updatable_count: u32,
     child_count: u32,
     collider_hierarchy: u32,
     radius: i64,
@@ -1102,7 +1071,6 @@ struct RawTeslaNode {
 #[derive(Deserialize)]
 struct RawTeslaLightning {
     layer: u32,
-    updatable_count: u32,
     collider_hierarchy: u32,
     extents: RawVec2,
     minimum_extent: i64,
@@ -1125,7 +1093,6 @@ struct RawGust {
     shockwave_offset: RawVec2,
     collider_offset: RawVec2,
     hurtbox_radius: i64,
-    shockwave_updatable_count: u32,
     platform_force: i64,
     default_force: i64,
     grounded_multiplier: i64,
@@ -1139,14 +1106,12 @@ struct RawTeleport {
     player_radius: i64,
     teleportable_mask: u32,
     marker: RawTeleportMarker,
-    effect_updatable_count: u32,
     effect_duration: i64,
 }
 
 #[derive(Deserialize)]
 struct RawTeleportMarker {
     layer: u32,
-    updatable_count: u32,
     collider_hierarchy: u32,
     offset: RawVec2,
     radius: i64,
@@ -1159,13 +1124,11 @@ struct RawPortalGun {
     shot_speed: i64,
     spawn_offset: i64,
     shot_layer: u32,
-    shot_updatable_count: u32,
     shot_child_count: u32,
     shot_collider_hierarchy: u32,
     shot_radius: i64,
     shot_body: RawBody,
     max_flight_seconds: i64,
-    portal_updatable_count: u32,
     half_width: i64,
     thickness: i64,
     exit_offset: i64,
@@ -1201,7 +1164,6 @@ struct RawBeam {
     shake_duration: i64,
     shake_strength: i64,
     orb_layer: u32,
-    orb_updatable_count: u32,
     orb_collider_hierarchy: u32,
     orb_radius: i64,
     orb_exit_ticks: u32,
@@ -1215,7 +1177,6 @@ struct RawBeam {
     cross_offset: i64,
     hit_mask: u32,
     object_layer: u32,
-    object_updatable_count: u32,
     object_collider_hierarchy: u32,
     base_width: i64,
     extra_length: i64,
@@ -1236,9 +1197,6 @@ struct RawRevival {
     collider_offset: RawVec2,
     hurtbox_radius: i64,
     marker: RawRevivalMarker,
-    death_effect_updatable_count: u32,
-    effect_updatable_count: u32,
-    particle_updatable_count: u32,
     effect_wisp_ticks: u32,
     particle_speed: i64,
 }
@@ -1246,7 +1204,6 @@ struct RawRevival {
 #[derive(Deserialize)]
 struct RawRevivalMarker {
     layer: u32,
-    updatable_count: u32,
     collider_hierarchy: u32,
     offset: RawVec2,
     radius: i64,
@@ -1258,6 +1215,8 @@ struct RawRollout {
     prefabs: RawPrefabs,
     abilities: Vec<RawAbility>,
     collision_matrix: [u32; 32],
+    registrations: HashMap<String, Vec<u32>>,
+    copy_registrations: HashMap<String, Vec<u32>>,
 }
 #[derive(Deserialize)]
 struct RawAbility {
@@ -1271,13 +1230,12 @@ struct RawAbility {
     instant: bool,
     rope: bool,
     offensive: bool,
-    updatable_count: u32,
     effect_cooldown: Option<i64>,
     effect_duration: Option<i64>,
     air_jump_strength: Option<i64>,
     form_jump_speed: Option<i64>,
     form_jump_strength: Option<i64>,
-    effect_updatable_count: Option<u32>,
+    effect_prefab: Option<String>,
 }
 
 /// A platform component whose UpdateSim the rollout runs, as the exporter
@@ -1322,13 +1280,17 @@ pub struct PlatformDef {
     /// retain a different rounding history from `One / inverseExtents`.
     pub collider_axis_extents: Vec2,
     pub hierarchy: u32,
-    pub updatable_count: u32,
     /// The platform's own updaters, in the scene's component order.
     pub updaters: Vec<PlatformUpdater>,
     /// The scene GameObject's own children, which Arrow.OnCollide's
     /// childCount counts with any runtime ones (Arrow.cs:104).
     pub child_count: u32,
     pub duplicate_collider_hierarchy: u32,
+    /// The scene object's updatables in registration order, by the scene's
+    /// own HierarchyNumbers, and those of a copy DuplicateObject renumbers
+    /// (`RolloutData::registrations`).
+    pub registrations: Vec<u32>,
+    pub copy_registrations: Vec<u32>,
     pub min_scale: Fix,
     pub max_scale: Fix,
     pub base_scale: Fix,
@@ -1436,7 +1398,6 @@ pub struct MovementData {
     pub hurtbox_extents: Vec2,
     pub spawn_anim_ticks: u32,
     pub fast_spawn_anim_ticks: u32,
-    pub boundary_effect_updatable_count: u32,
 }
 pub struct BlackHoleData {
     pub hurtbox_extents: Vec2,
@@ -1450,7 +1411,6 @@ pub struct BlackHoleData {
     pub exit_air_ticks: u32,
     pub spawn_offset: Vec2,
     pub layer: u32,
-    pub updatable_count: u32,
     pub hole_collider_hierarchy: u32,
     pub start_radius: Fix,
     pub starting_mass: Fix,
@@ -1485,7 +1445,6 @@ pub struct BowData {
 pub struct ArrowData {
     pub radius: Fix,
     pub collider_hierarchy: u32,
-    pub updatable_count: u32,
     /// BoplBody.NewPhysicsBody for the Arrow prefab (BoplBody.cs:215-229).
     pub body: crate::physics::Body,
 }
@@ -1497,7 +1456,6 @@ pub struct PickupData {
     /// DPhysicsCircle centre offset from the FixTransform (DetPhysics.cs:2513).
     pub offset: Vec2,
     pub collider_hierarchy: u32,
-    pub updatable_count: u32,
     pub body: crate::physics::Body,
     pub up_force: Fix,
     pub wobble_speed: Fix,
@@ -1537,7 +1495,6 @@ pub struct PlatformAbilityData {
     /// DPhysicsRoundedRect's hierarchyNumber on ResizablePlatform.prefab, and
     /// the number of its components that register with the Updater.
     pub spawn_collider_hierarchy: u32,
-    pub spawn_updatable_count: u32,
     /// ResizablePlatform.prefab's updaters, in its component order.
     pub spawn_updaters: Vec<PlatformUpdater>,
     pub spawn_mass_per_area: Fix,
@@ -1564,7 +1521,6 @@ pub struct GustData {
     pub shockwave_offset: Vec2,
     pub collider_offset: Vec2,
     pub hurtbox_radius: Fix,
-    pub shockwave_updatable_count: u32,
     pub platform_force: Fix,
     pub default_force: Fix,
     pub grounded_multiplier: Fix,
@@ -1578,14 +1534,10 @@ pub struct RevivalData {
     pub collider_offset: Vec2,
     pub hurtbox_radius: Fix,
     pub marker_layer: u32,
-    pub marker_updatable_count: u32,
     pub marker_collider_hierarchy: u32,
     pub marker_offset: Vec2,
     pub marker_radius: Fix,
     pub marker_body: crate::physics::Body,
-    pub death_effect_updatable_count: u32,
-    pub effect_updatable_count: u32,
-    pub particle_updatable_count: u32,
     pub effect_wisp_ticks: u32,
     pub particle_speed: Fix,
 }
@@ -1594,20 +1546,17 @@ pub struct TeleportData {
     pub player_radius: Fix,
     pub teleportable_mask: u32,
     pub marker_layer: u32,
-    pub marker_updatable_count: u32,
     pub marker_collider_hierarchy: u32,
     pub marker_offset: Vec2,
     pub marker_radius: Fix,
     pub marker_teleport_radius: Fix,
     pub marker_body: crate::physics::Body,
-    pub effect_updatable_count: u32,
     pub effect_duration: Fix,
 }
 pub struct PortalGunData {
     pub shot_speed: Fix,
     pub spawn_offset: Fix,
     pub shot_layer: u32,
-    pub shot_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub shot_child_count: u32,
@@ -1615,7 +1564,6 @@ pub struct PortalGunData {
     pub shot_radius: Fix,
     pub shot_body: crate::physics::Body,
     pub max_flight_seconds: Fix,
-    pub portal_updatable_count: u32,
     pub half_width: Fix,
     pub thickness: Fix,
     pub exit_offset: Fix,
@@ -1650,7 +1598,6 @@ pub struct BeamData {
     pub shake_duration: Fix,
     pub shake_strength: Fix,
     pub orb_layer: u32,
-    pub orb_updatable_count: u32,
     pub orb_collider_hierarchy: u32,
     pub orb_radius: Fix,
     pub orb_exit_ticks: u32,
@@ -1664,7 +1611,6 @@ pub struct BeamData {
     pub cross_offset: Fix,
     pub hit_mask: u32,
     pub object_layer: u32,
-    pub object_updatable_count: u32,
     pub object_collider_hierarchy: u32,
     pub base_width: Fix,
     pub extra_length: Fix,
@@ -1708,7 +1654,6 @@ pub struct RopeData {
     pub hook_layer: u32,
     pub hook_radius: Fix,
     pub hook_collider_hierarchy: u32,
-    pub hook_updatable_count: u32,
     pub hook_segments_affected: usize,
     pub hook_speed_falloff: Fix,
     pub hook_fall_time: Fix,
@@ -1738,7 +1683,6 @@ pub struct GrenadeData {
     pub air_enter_ticks: u32,
     pub air_exit_ticks: u32,
     pub item_layer: u32,
-    pub item_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub item_child_count: u32,
@@ -1751,7 +1695,6 @@ pub struct GrenadeData {
     pub duplicate_spacing: Fix,
     pub duplicate_angle: Fix,
     pub explosion_layer: u32,
-    pub explosion_updatable_count: u32,
     pub explosion_collider_hierarchy: u32,
     pub explosion_extents: Vec2,
     pub explosion_animation_ticks: u32,
@@ -1768,7 +1711,6 @@ pub struct MissileData {
     pub enter_to_idle_ticks: u32,
     pub idle_ticks: u32,
     pub spark_layer: u32,
-    pub spark_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub spark_child_count: u32,
@@ -1783,7 +1725,6 @@ pub struct MissileData {
     pub duplicate_spacing: Fix,
     pub duplicate_angle: Fix,
     pub explosion_layer: u32,
-    pub explosion_updatable_count: u32,
     pub explosion_collider_hierarchy: u32,
     pub explosion_extents: Vec2,
     pub explosion_animation_ticks: u32,
@@ -1805,7 +1746,6 @@ pub struct MineData {
     pub air_enter_ticks: u32,
     pub air_exit_ticks: u32,
     pub item_layer: u32,
-    pub item_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub item_child_count: u32,
@@ -1827,7 +1767,6 @@ pub struct MineData {
     pub shake_force: Fix,
     pub anticipation_duration: Fix,
     pub explosion_layer: u32,
-    pub explosion_updatable_count: u32,
     pub explosion_collider_hierarchy: u32,
     pub explosion_extents: Vec2,
     pub explosion_animation_ticks: u32,
@@ -1857,7 +1796,6 @@ pub struct MachoThrowData {
     pub prepare_positions: Vec<Vec2>,
     pub exit_frame_ticks: Vec<u32>,
     pub force_from_boulder: Fix,
-    pub smoke_updatable_count: u32,
     pub player_radius_hack: Fix,
     pub move_after_throw_frames: u32,
     pub jump_after_throw_frames: u32,
@@ -1876,7 +1814,6 @@ pub struct MachoThrowData {
     pub ground_to_hands: Fix,
     pub quick_position_swap_frame: u32,
     pub boulder_layer: u32,
-    pub boulder_updatable_count: u32,
     /// Boulder.prefab's updaters, in its component order.
     pub boulder_updaters: Vec<PlatformUpdater>,
     pub boulder_collider_hierarchy: u32,
@@ -1886,7 +1823,6 @@ pub struct MachoThrowData {
     pub boulder_max_scale: Fix,
     pub boulder_body: crate::physics::Body,
     pub boulder_dropped_bounciness: Fix,
-    pub boulder_down_effect_updatable_count: u32,
 }
 
 pub struct DrillData {
@@ -1910,7 +1846,6 @@ pub struct DrillData {
     pub max_early_fall_speed: Fix,
     pub hitboxes: Vec<(Vec2, Vec2)>,
     pub hitbox_layer: u32,
-    pub hitbox_updatable_count: u32,
     pub hitbox_collider_hierarchy: u32,
 }
 
@@ -1962,7 +1897,6 @@ pub struct FreezeData {
     pub collision_mask: u32,
     pub collision_mask_no_water: u32,
     pub freeze_seconds: Fix,
-    pub frozen_updatable_count: u32,
 }
 pub struct BlinkData {
     pub hurtbox_extents: Vec2,
@@ -1983,7 +1917,6 @@ pub struct BlinkData {
     pub wall_shake: Fix,
     pub on_player_hit_cooldown: Fix,
     pub tunnel_release_duration: Fix,
-    pub tunnel_updatable_count: u32,
 }
 pub struct RollData {
     pub physics_radius: Fix,
@@ -2000,7 +1933,6 @@ pub struct RollData {
     pub platform_turn_speed: Fix,
     pub early_release_jump_strength: Fix,
     pub short_jump_strength: Fix,
-    pub trail_hierarchy_count: u32,
 }
 pub struct MeteorData {
     pub hurtbox_extents: Vec2,
@@ -2025,12 +1957,10 @@ pub struct MeteorData {
     pub ground_enter_ticks: u32,
     pub air_ticks: u32,
     pub air_start_hold_ticks: u32,
-    pub shockwave_updatable_count: u32,
     pub shockwave_offset: Vec2,
     pub shockwave: ExplosionShockwaveData,
     pub shockwave_curve: Curve,
     pub smear_layer: u32,
-    pub smear_updatable_count: u32,
     pub smear_collider_hierarchy: u32,
     pub smear_extents: Vec2,
     pub smear_offset: Vec2,
@@ -2059,7 +1989,6 @@ pub struct ScaleRayData {
     pub multiplier: Fix,
     pub small_non_players_multiplier: Fix,
     pub inverse_mass_before_big: Fix,
-    pub changer_updatable_count: u32,
 }
 pub struct DuplicatorData {
     pub hurtbox_extents: Vec2,
@@ -2081,7 +2010,6 @@ pub struct DuplicatorData {
     pub platform_overlap_force: Fix,
     /// DuplicatePlatformEffect.scaleLossSpeed as the prefab serializes it.
     pub platform_scale_loss_speed: Fix,
-    pub platform_effect_updatable_count: u32,
 }
 pub struct MagnetData {
     pub hurtbox_extents: Vec2,
@@ -2148,7 +2076,6 @@ pub struct TackData {
     pub air_enter_ticks: u32,
     pub air_exit_ticks: u32,
     pub item_layer: u32,
-    pub item_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub item_child_count: u32,
@@ -2180,7 +2107,6 @@ pub struct MjolnirData {
     pub air_enter_ticks: u32,
     pub air_exit_ticks: u32,
     pub item_layer: u32,
-    pub item_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub item_child_count: u32,
@@ -2217,7 +2143,6 @@ pub struct PokeBallData {
     pub air_enter_ticks: u32,
     pub air_exit_ticks: u32,
     pub item_layer: u32,
-    pub item_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub item_child_count: u32,
@@ -2250,7 +2175,6 @@ pub struct SmokeData {
     pub air_enter_ticks: u32,
     pub air_exit_ticks: u32,
     pub item_layer: u32,
-    pub item_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub item_child_count: u32,
@@ -2265,9 +2189,7 @@ pub struct SmokeData {
     pub cloud_offsets: Vec<Vec2>,
     pub spread: Fix,
     pub noise: Fix,
-    pub burst_updatable_count: u32,
     pub cloud_layer: u32,
-    pub cloud_updatable_count: u32,
     pub cloud_collider_hierarchy: u32,
     pub cloud_base_radius: Fix,
     pub cloud_body: crate::physics::Body,
@@ -2280,7 +2202,6 @@ pub struct SmokeData {
     pub min_ignition_delay: Fix,
     pub max_ignition_delay: Fix,
     pub explosion_layer: u32,
-    pub explosion_updatable_count: u32,
     pub explosion_collider_hierarchy: u32,
     pub explosion_extents: Vec2,
     pub explosion_collider_offset: Vec2,
@@ -2296,7 +2217,6 @@ pub struct TimeStopData {
     pub idle_to_fall_ticks: u32,
     pub cast_spell_ticks: u32,
     pub ease_out_ticks: u32,
-    pub effect_updatable_count: u32,
     pub duration_f32: f32,
     pub exit_seconds_f32: f32,
 }
@@ -2309,7 +2229,6 @@ pub struct SpikeData {
     pub surface_offset: Fix,
     pub cast_force: Fix,
     pub attack_layer: u32,
-    pub attack_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub attack_child_count: u32,
@@ -2333,7 +2252,6 @@ pub struct EngineData {
     pub cast_force: Fix,
     pub buffer_size: usize,
     pub rocket_layer: u32,
-    pub rocket_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub rocket_child_count: u32,
@@ -2358,7 +2276,6 @@ pub struct TeslaData {
     pub cast_force: Fix,
     pub buffer_size: usize,
     pub node_layer: u32,
-    pub node_updatable_count: u32,
     /// The authored children of its collider's GameObject, which a landed
     /// arrow parents to and counts (Arrow.cs:100-104).
     pub node_child_count: u32,
@@ -2369,7 +2286,6 @@ pub struct TeslaData {
     pub line_length: Fix,
     pub hitbox_offset_y: Fix,
     pub lightning_layer: u32,
-    pub lightning_updatable_count: u32,
     pub lightning_collider_hierarchy: u32,
     pub lightning_extents: Vec2,
     pub lightning_minimum_extent: Fix,
@@ -2396,7 +2312,6 @@ pub struct AbilityData {
     pub instant: bool,
     pub rope: bool,
     pub offensive: bool,
-    pub updatable_count: u32,
     pub effect_cooldown: Option<Fix>,
     pub effect_duration: Option<Fix>,
     pub air_jump_strength: Option<Fix>,
@@ -2404,14 +2319,23 @@ pub struct AbilityData {
     /// The form prefab's PlayerPhysics.jumpStrength, when it has a
     /// PlayerBody and a PlayerPhysics.
     pub form_jump_strength: Option<Fix>,
-    /// Updatables registered by the effect object an instant ability spawns.
-    pub effect_updatable_count: Option<u32>,
+    /// The form prefab's and the effect prefab's registrations
+    /// (`RolloutData::registrations`).
+    pub registrations: Vec<u32>,
+    pub effect_registrations: Vec<u32>,
 }
 pub struct RolloutData {
     pub maps: Vec<MapDef>,
     /// Physics2D's layer collision matrix: bit b of row a is set when layers
     /// a and b collide.
     pub collision_matrix: [u32; 32],
+    /// Each prefab's updatables in the order Updater.RegisterUpdatable sees
+    /// them when it is instantiated, as their local HierarchyNumbers
+    /// (tools/extract_rollout_data.py `registrations`), by file stem.
+    pub registrations: HashMap<String, Vec<u32>>,
+    /// The same for a copy ShootDuplicator.DuplicateObject makes of a live
+    /// instance, renumbered 1.. (ShootDuplicator.cs:709-717).
+    pub copy_registrations: HashMap<String, Vec<u32>>,
     pub player: MovementData,
     pub black_hole: BlackHoleData,
     pub dash: DashData,
@@ -2496,7 +2420,6 @@ fn scale_ray(raw: &RawScaleRay) -> ScaleRayData {
         multiplier: Fix::from_raw(raw.multiplier),
         small_non_players_multiplier: Fix::from_raw(raw.small_non_players_multiplier),
         inverse_mass_before_big: Fix::from_raw(raw.inverse_mass_before_big),
-        changer_updatable_count: raw.changer_updatable_count,
     }
 }
 
@@ -2605,10 +2528,11 @@ fn map_def(raw: &RawMap) -> MapDef {
                 collider_inverse_extents,
                 collider_axis_extents,
                 hierarchy: p.hierarchy,
-                updatable_count: p.updatable_count,
                 updaters: platform_updaters(&p.updaters),
                 child_count: p.child_count,
                 duplicate_collider_hierarchy: p.duplicate_collider_hierarchy,
+                registrations: p.registrations.clone(),
+                copy_registrations: p.copy_registrations.clone(),
                 min_scale: Fix::from_raw(p.min_scale),
                 max_scale: Fix::from_raw(p.max_scale),
                 base_scale,
@@ -2709,6 +2633,24 @@ impl RolloutData {
     }
 }
 
+/// `Assets/GameObject/Name.prefab` -> `Name`.
+fn prefab_stem(path: &str) -> &str {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.strip_suffix(".prefab").unwrap_or(name)
+}
+
+impl RolloutData {
+    /// Prefab `stem`'s registrations.
+    pub fn prefab(&self, stem: &str) -> &[u32] {
+        self.registrations.get(stem).unwrap_or_else(|| panic!("no registrations for prefab {stem}"))
+    }
+
+    /// A DuplicateObject copy of a live `stem` instance's registrations.
+    pub fn copy(&self, stem: &str) -> &[u32] {
+        self.copy_registrations.get(stem).unwrap_or_else(|| panic!("no copy registrations for prefab {stem}"))
+    }
+}
+
 pub fn get() -> &'static RolloutData {
     static DATA: OnceLock<RolloutData> = OnceLock::new();
     DATA.get_or_init(|| {
@@ -2725,13 +2667,14 @@ pub fn get() -> &'static RolloutData {
         RolloutData {
             maps: raw.maps.iter().map(map_def).collect(),
             collision_matrix: raw.collision_matrix,
+            registrations: raw.registrations.clone(),
+            copy_registrations: raw.copy_registrations.clone(),
             player: MovementData {
                 constants: constants(&raw.prefabs.player.physics),
                 radius: Fix::from_raw(raw.prefabs.player.physics.radius),
                 hurtbox_extents: raw.prefabs.player.hurtbox_extents.get(),
                 spawn_anim_ticks: raw.prefabs.player.spawn_anim_ticks,
                 fast_spawn_anim_ticks: raw.prefabs.player.fast_spawn_anim_ticks,
-                boundary_effect_updatable_count: raw.prefabs.player.boundary_effect_updatable_count,
             },
             black_hole: {
                 let black = &raw.prefabs.black_hole;
@@ -2751,7 +2694,6 @@ pub fn get() -> &'static RolloutData {
                     exit_air_ticks: ticks(&black.animations.exit_air),
                     spawn_offset: black.spawn_offset.get(),
                     layer: hole.layer,
-                    updatable_count: hole.updatable_count,
                     hole_collider_hierarchy: hole.collider_hierarchy,
                     start_radius: Fix::from_raw(hole.start_radius),
                     starting_mass: Fix::from_raw(hole.starting_mass),
@@ -2792,7 +2734,6 @@ pub fn get() -> &'static RolloutData {
             arrow: ArrowData {
                 radius: Fix::from_raw(raw.prefabs.arrow.radius),
                 collider_hierarchy: raw.prefabs.arrow.collider_hierarchy,
-                updatable_count: raw.prefabs.arrow.updatable_count,
                 body: {
                     let b = &raw.prefabs.arrow.body;
                     body(
@@ -2819,7 +2760,6 @@ pub fn get() -> &'static RolloutData {
                     radius: Fix::from_raw(p.radius),
                     offset: p.offset.get(),
                     collider_hierarchy: p.collider_hierarchy,
-                    updatable_count: p.updatable_count,
                     body: body(&p.body, Fix::ZERO),
                     up_force: Fix::from_raw(p.up_force),
                     wobble_speed: Fix::from_raw(p.wobble_speed),
@@ -2856,7 +2796,6 @@ pub fn get() -> &'static RolloutData {
                 spawn_min_scale: Fix::from_raw(raw.prefabs.resizable_platform.min_scale),
                 spawn_max_scale: Fix::from_raw(raw.prefabs.resizable_platform.max_scale),
                 spawn_collider_hierarchy: raw.prefabs.resizable_platform.collider_hierarchy,
-                spawn_updatable_count: raw.prefabs.resizable_platform.updatable_count,
                 spawn_updaters: platform_updaters(&raw.prefabs.resizable_platform.updaters),
                 spawn_mass_per_area: Fix::from_raw(raw.prefabs.resizable_platform.mass_per_area),
                 remove_curve: raw.prefabs.resizable_platform.remove_curve.clone(),
@@ -2903,7 +2842,6 @@ pub fn get() -> &'static RolloutData {
                 shockwave_offset: raw.prefabs.gust.shockwave_offset.get(),
                 collider_offset: raw.prefabs.gust.collider_offset.get(),
                 hurtbox_radius: Fix::from_raw(raw.prefabs.gust.hurtbox_radius),
-                shockwave_updatable_count: raw.prefabs.gust.shockwave_updatable_count,
                 platform_force: Fix::from_raw(raw.prefabs.gust.platform_force),
                 default_force: Fix::from_raw(raw.prefabs.gust.default_force),
                 grounded_multiplier: Fix::from_raw(raw.prefabs.gust.grounded_multiplier),
@@ -2919,14 +2857,10 @@ pub fn get() -> &'static RolloutData {
                     collider_offset: revival.collider_offset.get(),
                     hurtbox_radius: Fix::from_raw(revival.hurtbox_radius),
                     marker_layer: revival.marker.layer,
-                    marker_updatable_count: revival.marker.updatable_count,
                     marker_collider_hierarchy: revival.marker.collider_hierarchy,
                     marker_offset: revival.marker.offset.get(),
                     marker_radius: Fix::from_raw(revival.marker.radius),
                     marker_body: body(&revival.marker.body, Fix::ZERO),
-                    death_effect_updatable_count: revival.death_effect_updatable_count,
-                    effect_updatable_count: revival.effect_updatable_count,
-                    particle_updatable_count: revival.particle_updatable_count,
                     effect_wisp_ticks: revival.effect_wisp_ticks,
                     particle_speed: Fix::from_raw(revival.particle_speed),
                 }
@@ -2938,13 +2872,11 @@ pub fn get() -> &'static RolloutData {
                     player_radius: Fix::from_raw(teleport.player_radius),
                     teleportable_mask: teleport.teleportable_mask,
                     marker_layer: teleport.marker.layer,
-                    marker_updatable_count: teleport.marker.updatable_count,
                     marker_collider_hierarchy: teleport.marker.collider_hierarchy,
                     marker_offset: teleport.marker.offset.get(),
                     marker_radius: Fix::from_raw(teleport.marker.radius),
                     marker_teleport_radius: Fix::from_raw(teleport.marker.teleport_radius),
                     marker_body: body(&teleport.marker.body, Fix::ZERO),
-                    effect_updatable_count: teleport.effect_updatable_count,
                     effect_duration: Fix::from_raw(teleport.effect_duration),
                 }
             },
@@ -2954,13 +2886,11 @@ pub fn get() -> &'static RolloutData {
                     shot_speed: Fix::from_raw(portal.shot_speed),
                     spawn_offset: Fix::from_raw(portal.spawn_offset),
                     shot_layer: portal.shot_layer,
-                    shot_updatable_count: portal.shot_updatable_count,
                     shot_child_count: portal.shot_child_count,
                     shot_collider_hierarchy: portal.shot_collider_hierarchy,
                     shot_radius: Fix::from_raw(portal.shot_radius),
                     shot_body: body(&portal.shot_body, Fix::ZERO),
                     max_flight_seconds: Fix::from_raw(portal.max_flight_seconds),
-                    portal_updatable_count: portal.portal_updatable_count,
                     half_width: Fix::from_raw(portal.half_width),
                     thickness: Fix::from_raw(portal.thickness),
                     exit_offset: Fix::from_raw(portal.exit_offset),
@@ -2998,7 +2928,6 @@ pub fn get() -> &'static RolloutData {
                     shake_duration: Fix::from_raw(beam.shake_duration),
                     shake_strength: Fix::from_raw(beam.shake_strength),
                     orb_layer: beam.orb_layer,
-                    orb_updatable_count: beam.orb_updatable_count,
                     orb_collider_hierarchy: beam.orb_collider_hierarchy,
                     orb_radius: Fix::from_raw(beam.orb_radius),
                     orb_exit_ticks: beam.orb_exit_ticks,
@@ -3012,7 +2941,6 @@ pub fn get() -> &'static RolloutData {
                     cross_offset: Fix::from_raw(beam.cross_offset),
                     hit_mask: beam.hit_mask,
                     object_layer: beam.object_layer,
-                    object_updatable_count: beam.object_updatable_count,
                     object_collider_hierarchy: beam.object_collider_hierarchy,
                     base_width: Fix::from_raw(beam.base_width),
                     extra_length: Fix::from_raw(beam.extra_length),
@@ -3059,7 +2987,6 @@ pub fn get() -> &'static RolloutData {
                     hook_layer: ropes.hook_layer,
                     hook_radius: Fix::from_raw(ropes.hook_radius),
                     hook_collider_hierarchy: ropes.hook_collider_hierarchy,
-                    hook_updatable_count: ropes.hook_updatable_count,
                     hook_segments_affected: ropes.hook_segments_affected,
                     hook_speed_falloff: Fix::from_raw(ropes.hook_speed_falloff),
                     hook_fall_time: Fix::from_raw(ropes.hook_fall_time),
@@ -3093,7 +3020,6 @@ pub fn get() -> &'static RolloutData {
                     air_enter_ticks: ticks(&throw.animations.air_enter),
                     air_exit_ticks: ticks(&throw.animations.air_exit),
                     item_layer: grenade.item.layer,
-                    item_updatable_count: grenade.item.updatable_count,
                     item_child_count: grenade.item.child_count,
                     item_collider_hierarchy: grenade.item.collider_hierarchy,
                     item_radius: Fix::from_raw(grenade.item.radius),
@@ -3104,7 +3030,6 @@ pub fn get() -> &'static RolloutData {
                     duplicate_spacing: Fix::from_raw(grenade.item.duplicate_spacing),
                     duplicate_angle: Fix::from_raw(grenade.item.duplicate_angle),
                     explosion_layer: grenade.explosion.layer,
-                    explosion_updatable_count: grenade.explosion.updatable_count,
                     explosion_collider_hierarchy: grenade.explosion.collider_hierarchy,
                     explosion_extents: grenade.explosion.extents.get(),
                     explosion_animation_ticks: grenade.explosion.animation_ticks,
@@ -3134,7 +3059,6 @@ pub fn get() -> &'static RolloutData {
                     enter_to_idle_ticks: ticks(&missile.animations.enter_to_idle),
                     idle_ticks: ticks(&missile.animations.idle),
                     spark_layer: missile.spark.layer,
-                    spark_updatable_count: missile.spark.updatable_count,
                     spark_child_count: missile.spark.child_count,
                     spark_collider_hierarchy: missile.spark.collider_hierarchy,
                     spark_extents: missile.spark.extents.get(),
@@ -3147,7 +3071,6 @@ pub fn get() -> &'static RolloutData {
                     duplicate_spacing: Fix::from_raw(missile.spark.duplicate_spacing),
                     duplicate_angle: Fix::from_raw(missile.spark.duplicate_angle),
                     explosion_layer: missile.explosion.layer,
-                    explosion_updatable_count: missile.explosion.updatable_count,
                     explosion_collider_hierarchy: missile.explosion.collider_hierarchy,
                     explosion_extents: missile.explosion.extents.get(),
                     explosion_animation_ticks: missile.explosion.animation_ticks,
@@ -3181,7 +3104,6 @@ pub fn get() -> &'static RolloutData {
                     air_enter_ticks: ticks(&throw.animations.air_enter),
                     air_exit_ticks: ticks(&throw.animations.air_exit),
                     item_layer: mine.item.layer,
-                    item_updatable_count: mine.item.updatable_count,
                     item_child_count: mine.item.child_count,
                     item_collider_hierarchy: mine.item.collider_hierarchy,
                     item_radius: Fix::from_raw(mine.item.radius),
@@ -3201,7 +3123,6 @@ pub fn get() -> &'static RolloutData {
                     shake_force: Fix::from_raw(mine.item.shake_force),
                     anticipation_duration: Fix::from_raw(mine.item.anticipation_duration),
                     explosion_layer: mine.explosion.layer,
-                    explosion_updatable_count: mine.explosion.updatable_count,
                     explosion_collider_hierarchy: mine.explosion.collider_hierarchy,
                     explosion_extents: mine.explosion.extents.get(),
                     explosion_animation_ticks: mine.explosion.animation_ticks,
@@ -3251,7 +3172,6 @@ pub fn get() -> &'static RolloutData {
                     prepare_positions: macho.prepare_positions.iter().map(RawVec2::get).collect(),
                     exit_frame_ticks: cumulative(&macho.animations.exit),
                     force_from_boulder: Fix::from_raw(macho.force_from_boulder),
-                    smoke_updatable_count: macho.smoke_updatable_count,
                     player_radius_hack: Fix::from_raw(macho.player_radius_hack),
                     move_after_throw_frames: macho.move_after_throw_frames,
                     jump_after_throw_frames: macho.jump_after_throw_frames,
@@ -3270,7 +3190,6 @@ pub fn get() -> &'static RolloutData {
                     ground_to_hands: Fix::from_raw(macho.ground_to_hands),
                     quick_position_swap_frame: macho.quick_position_swap_frame,
                     boulder_layer: macho.boulder.layer,
-                    boulder_updatable_count: macho.boulder.updatable_count,
                     boulder_updaters: platform_updaters(&macho.boulder.updaters),
                     boulder_collider_hierarchy: macho.boulder.collider_hierarchy,
                     boulder_extents: macho.boulder.extents.get(),
@@ -3279,7 +3198,6 @@ pub fn get() -> &'static RolloutData {
                     boulder_max_scale: Fix::from_raw(macho.boulder.max_scale),
                     boulder_body: body(&macho.boulder.body, Fix::ZERO),
                     boulder_dropped_bounciness: Fix::from_raw(macho.boulder.dropped_bounciness),
-                    boulder_down_effect_updatable_count: macho.boulder.down_effect_updatable_count,
                 }
             },
             drill: {
@@ -3313,7 +3231,6 @@ pub fn get() -> &'static RolloutData {
                         .map(|hitbox| (hitbox.offset.get(), hitbox.extents.get()))
                         .collect(),
                     hitbox_layer: drill.hitbox_layer,
-                    hitbox_updatable_count: drill.hitbox_updatable_count,
                     hitbox_collider_hierarchy: drill.hitbox_collider_hierarchy,
                 }
             },
@@ -3354,7 +3271,6 @@ pub fn get() -> &'static RolloutData {
                     raw.prefabs.roll.early_release_jump_strength,
                 ),
                 short_jump_strength: Fix::from_raw(raw.prefabs.roll.short_jump_strength),
-                trail_hierarchy_count: raw.prefabs.roll.trail_hierarchy_count,
             },
             meteor: {
                 let meteor = &raw.prefabs.meteor;
@@ -3381,7 +3297,6 @@ pub fn get() -> &'static RolloutData {
                     ground_enter_ticks: meteor.ground_enter_ticks,
                     air_ticks: meteor.air_ticks,
                     air_start_hold_ticks: meteor.air_start_hold_ticks,
-                    shockwave_updatable_count: meteor.shockwave.updatable_count,
                     shockwave_offset: meteor.shockwave.offset.get(),
                     shockwave: ExplosionShockwaveData {
                         platform_force: Fix::from_raw(meteor.shockwave.platform_force),
@@ -3394,7 +3309,6 @@ pub fn get() -> &'static RolloutData {
                     },
                     shockwave_curve: meteor.shockwave.curve.clone(),
                     smear_layer: meteor.smear.layer,
-                    smear_updatable_count: meteor.smear.updatable_count,
                     smear_collider_hierarchy: meteor.smear.collider_hierarchy,
                     smear_extents: meteor.smear.extents.get(),
                     smear_offset: meteor.smear.offset.get(),
@@ -3430,7 +3344,6 @@ pub fn get() -> &'static RolloutData {
                 collision_mask: raw.prefabs.freeze.collision_mask,
                 collision_mask_no_water: raw.prefabs.freeze.collision_mask_no_water,
                 freeze_seconds: Fix::from_raw(raw.prefabs.freeze.freeze_seconds),
-                frozen_updatable_count: raw.prefabs.freeze.frozen_updatable_count,
             },
             blink: BlinkData {
                 hurtbox_extents: {
@@ -3455,7 +3368,6 @@ pub fn get() -> &'static RolloutData {
                 wall_shake: Fix::from_raw(raw.prefabs.blink.wall_shake),
                 on_player_hit_cooldown: Fix::from_raw(raw.prefabs.blink.on_player_hit_cooldown),
                 tunnel_release_duration: Fix::from_raw(raw.prefabs.blink.tunnel_release_duration),
-                tunnel_updatable_count: raw.prefabs.blink.tunnel_updatable_count,
             },
             scale_rays: ScaleRaysData {
                 growth: scale_ray(&raw.prefabs.scale_rays.growth),
@@ -3489,10 +3401,6 @@ pub fn get() -> &'static RolloutData {
                 platform_scale_loss_speed: Fix::from_raw(
                     raw.prefabs.duplicator.platform_scale_loss_speed,
                 ),
-                platform_effect_updatable_count: raw
-                    .prefabs
-                    .duplicator
-                    .platform_effect_updatable_count,
             },
             magnet: {
                 let magnet = &raw.prefabs.magnet;
@@ -3575,7 +3483,6 @@ pub fn get() -> &'static RolloutData {
                     air_enter_ticks: ticks(&throw.animations.air_enter),
                     air_exit_ticks: ticks(&throw.animations.air_exit),
                     item_layer: smoke.item.layer,
-                    item_updatable_count: smoke.item.updatable_count,
                     item_child_count: smoke.item.child_count,
                     item_collider_hierarchy: smoke.item.collider_hierarchy,
                     item_radius: Fix::from_raw(smoke.item.radius),
@@ -3588,9 +3495,7 @@ pub fn get() -> &'static RolloutData {
                     cloud_offsets: smoke.item.cloud_offsets.iter().map(RawVec2::get).collect(),
                     spread: Fix::from_raw(smoke.item.spread),
                     noise: Fix::from_raw(smoke.item.noise),
-                    burst_updatable_count: smoke.item.burst_updatable_count,
                     cloud_layer: smoke.cloud.layer,
-                    cloud_updatable_count: smoke.cloud.updatable_count,
                     cloud_collider_hierarchy: smoke.cloud.collider_hierarchy,
                     cloud_base_radius: Fix::from_raw(smoke.cloud.base_radius),
                     cloud_body: body(&smoke.cloud.body, Fix::ZERO),
@@ -3609,7 +3514,6 @@ pub fn get() -> &'static RolloutData {
                     min_ignition_delay: Fix::from_raw(smoke.cloud.min_ignition_delay),
                     max_ignition_delay: Fix::from_raw(smoke.cloud.max_ignition_delay),
                     explosion_layer: smoke.explosion.layer,
-                    explosion_updatable_count: smoke.explosion.updatable_count,
                     explosion_collider_hierarchy: smoke.explosion.collider_hierarchy,
                     explosion_extents: smoke.explosion.extents.get(),
                     explosion_collider_offset: smoke.explosion.collider_offset.get(),
@@ -3628,7 +3532,6 @@ pub fn get() -> &'static RolloutData {
                     idle_to_fall_ticks: ticks(&time_stop.animations.idle_to_fall),
                     cast_spell_ticks: ticks(&time_stop.animations.cast_spell),
                     ease_out_ticks: ticks(&time_stop.animations.ease_out),
-                    effect_updatable_count: time_stop.effect_updatable_count,
                     duration_f32: time_stop.duration_f32,
                     exit_seconds_f32: time_stop.exit_seconds_f32,
                 }
@@ -3644,7 +3547,6 @@ pub fn get() -> &'static RolloutData {
                     surface_offset: Fix::from_raw(spike.surface_offset),
                     cast_force: Fix::from_raw(spike.cast_force),
                     attack_layer: spike.attack.layer,
-                    attack_updatable_count: spike.attack.updatable_count,
                     attack_child_count: spike.attack.child_count,
                     attack_collider_hierarchy: spike.attack.collider_hierarchy,
                     attack_extents: spike.attack.extents.get(),
@@ -3669,7 +3571,6 @@ pub fn get() -> &'static RolloutData {
                     cast_force: Fix::from_raw(engine.cast_force),
                     buffer_size: engine.buffer_size,
                     rocket_layer: engine.rocket.layer,
-                    rocket_updatable_count: engine.rocket.updatable_count,
                     rocket_child_count: engine.rocket.child_count,
                     rocket_collider_hierarchy: engine.rocket.collider_hierarchy,
                     rocket_extents: engine.rocket.extents.get(),
@@ -3695,7 +3596,6 @@ pub fn get() -> &'static RolloutData {
                     cast_force: Fix::from_raw(tesla.cast_force),
                     buffer_size: tesla.buffer_size,
                     node_layer: tesla.node.layer,
-                    node_updatable_count: tesla.node.updatable_count,
                     node_child_count: tesla.node.child_count,
                     node_collider_hierarchy: tesla.node.collider_hierarchy,
                     node_radius: Fix::from_raw(tesla.node.radius),
@@ -3704,7 +3604,6 @@ pub fn get() -> &'static RolloutData {
                     line_length: Fix::from_raw(tesla.node.line_length),
                     hitbox_offset_y: Fix::from_raw(tesla.node.hitbox_offset_y),
                     lightning_layer: tesla.lightning.layer,
-                    lightning_updatable_count: tesla.lightning.updatable_count,
                     lightning_collider_hierarchy: tesla.lightning.collider_hierarchy,
                     lightning_extents: tesla.lightning.extents.get(),
                     lightning_minimum_extent: Fix::from_raw(tesla.lightning.minimum_extent),
@@ -3734,7 +3633,6 @@ pub fn get() -> &'static RolloutData {
                     air_enter_ticks: ticks(&throw.animations.air_enter),
                     air_exit_ticks: ticks(&throw.animations.air_exit),
                     item_layer: tack.item.layer,
-                    item_updatable_count: tack.item.updatable_count,
                     item_child_count: tack.item.child_count,
                     item_collider_hierarchy: tack.item.collider_hierarchy,
                     item_radius: Fix::from_raw(tack.item.radius),
@@ -3768,7 +3666,6 @@ pub fn get() -> &'static RolloutData {
                     air_enter_ticks: ticks(&throw.animations.air_enter),
                     air_exit_ticks: ticks(&throw.animations.air_exit),
                     item_layer: mjolnir.item.layer,
-                    item_updatable_count: mjolnir.item.updatable_count,
                     item_child_count: mjolnir.item.child_count,
                     item_collider_hierarchy: mjolnir.item.collider_hierarchy,
                     item_radius: Fix::from_raw(mjolnir.item.radius),
@@ -3807,7 +3704,6 @@ pub fn get() -> &'static RolloutData {
                     air_enter_ticks: ticks(&throw.animations.air_enter),
                     air_exit_ticks: ticks(&throw.animations.air_exit),
                     item_layer: poke.item.layer,
-                    item_updatable_count: poke.item.updatable_count,
                     item_child_count: poke.item.child_count,
                     item_collider_hierarchy: poke.item.collider_hierarchy,
                     item_radius: Fix::from_raw(poke.item.radius),
@@ -3827,6 +3723,11 @@ pub fn get() -> &'static RolloutData {
                 .enumerate()
                 .map(|(index, ability)| {
                     assert_eq!(ability.id as usize, index, "ability catalog must be dense");
+                    let registrations = raw.registrations[prefab_stem(&ability.prefab)].clone();
+                    let effect_registrations = ability
+                        .effect_prefab
+                        .as_deref()
+                        .map_or(Vec::new(), |prefab| raw.registrations[prefab_stem(prefab)].clone());
                     AbilityData {
                         id: ability.id,
                         name: ability.name,
@@ -3838,13 +3739,13 @@ pub fn get() -> &'static RolloutData {
                         instant: ability.instant,
                         rope: ability.rope,
                         offensive: ability.offensive,
-                        updatable_count: ability.updatable_count,
                         effect_cooldown: ability.effect_cooldown.map(Fix::from_raw),
                         effect_duration: ability.effect_duration.map(Fix::from_raw),
                         air_jump_strength: ability.air_jump_strength.map(Fix::from_raw),
                         form_jump_speed: ability.form_jump_speed.map(Fix::from_raw),
                         form_jump_strength: ability.form_jump_strength.map(Fix::from_raw),
-                        effect_updatable_count: ability.effect_updatable_count,
+                        registrations,
+                        effect_registrations,
                     }
                 })
                 .collect(),

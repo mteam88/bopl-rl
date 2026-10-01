@@ -132,6 +132,55 @@ def registering_count(prefab):
     return visit(prefab["data"])
 
 
+EXECUTION_ORDER = json.loads((ROOT.parent / "sim" / "Export" / "execution-order.json").read_text())
+
+
+def registrations(prefab, copy=False, exclude=()):
+    # The prefab's updatables in the order Updater.RegisterUpdatable sees them
+    # when it is instantiated, as their local HierarchyNumbers: Awake runs over
+    # the active behaviours collected depth-first, stable-sorted by script
+    # execution order (UnityShim World.CollectActiveBehaviours and
+    # ScriptExecutionOrder.SortStable). An inactive root still registers:
+    # InstantiateFixed(GameObject) switches it on and off again inside the
+    # prefab window (FixTransform.cs:131-141). SlimeController.Awake registers
+    # itself and then AddComponents the RewindRecorder, whose own Awake
+    # registers it at once with HierarchyNumber 8 (SlimeController.cs:459-466,
+    # RewindRecorder.cs:91-94).
+    #
+    # `copy`: what ShootDuplicator.DuplicateObject instantiates from a live
+    # instance. It first renumbers the source's MonoUpdatables 1.. in
+    # HierarchyNumber order (ShootDuplicator.cs:709-717), and a slime's live
+    # RewindRecorder sits last on its GameObject, so the copy collects it with
+    # the rest and its Awake runs in execution order. `exclude`: components
+    # gone from the live source (GrowOnStart destroys itself).
+    batch = []
+
+    def collect(game_object, root=False):
+        if not root and not game_object.get("active", True):
+            return
+        components = [c for c in game_object.get("components", []) if c["type"] not in exclude]
+        if copy and any(c["type"] == "SlimeController" for c in components):
+            components.append({"type": "RewindRecorder", "properties": {"hierarchyNumber": 8}})
+        batch.extend(components)
+        for child in game_object.get("children", []):
+            collect(child)
+
+    collect(prefab["data"], root=True)
+    number = {id(c): c["properties"]["hierarchyNumber"] for c in batch if "hierarchyNumber" in c.get("properties", {})}
+    if copy:
+        ranked = sorted(number, key=number.get)
+        number = {key: rank + 1 for rank, key in enumerate(ranked)}
+    order = sorted(range(len(batch)), key=lambda i: (EXECUTION_ORDER.get(batch[i]["type"], 0), i))
+    out = []
+    for i in order:
+        c = batch[i]
+        if id(c) in number and registers_with_updater(c["type"]):
+            out.append(number[id(c)])
+            if c["type"] == "SlimeController" and not copy:
+                out.append(8)
+    return out
+
+
 def updater_order(node):
     # The node's own components that register with the Updater, in
     # hierarchyNumber order: the order its UpdateSims run within the prefab's
@@ -298,6 +347,10 @@ def extract_map(metadata):
                     for descendant in walk([node])
                     for c in descendant.get("components", [])
                 ),
+                # The scene's own numbers in registration order, and a copy's
+                # (registrations above).
+                "registrations": registrations({"data": node}, exclude=("GrowOnStart",)),
+                "copy_registrations": registrations({"data": node}, copy=True, exclude=("GrowOnStart",)),
                 "duplicate_collider_hierarchy": 1 + [
                     typ for _, typ in sorted(
                         (c["properties"]["hierarchyNumber"], c["type"])
@@ -2151,6 +2204,7 @@ def main():
             "form_jump_speed": form_jump_speed,
             "form_jump_strength": form_jump_strength,
             "effect_updatable_count": effect_updatable_count,
+            "effect_prefab": effect["path"] if item["name"] == "Gold mushroom" else None,
         })
     out["abilities"] = ability_catalog
 
@@ -2183,6 +2237,13 @@ def main():
     # a is set when layers a and b collide.
     with open(ROOT.parent / "sim" / "Export" / "settings.json") as fh:
         out["collision_matrix"] = json.load(fh)["collisionMatrix"]
+
+    # Every prefab's updatables in registration order, by asset name: what
+    # each instantiation hands Updater's next append batch.
+    prefabs = [entry for entry in sorted(ASSETS.values(), key=lambda entry: entry.get("path", ""))
+               if entry.get("path", "").endswith(".prefab") and registrations(entry)]
+    out["registrations"] = {Path(entry["path"]).stem: registrations(entry) for entry in prefabs}
+    out["copy_registrations"] = {Path(entry["path"]).stem: registrations(entry, copy=True) for entry in prefabs}
 
     target = ROOT / "data" / "rollout.json"
     with open(target, "w") as fh:

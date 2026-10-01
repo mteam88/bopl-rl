@@ -29,6 +29,7 @@ pub mod abi;
 pub mod data;
 pub mod replay;
 mod circle_box;
+mod dotnet_sort;
 mod rope_abilities;
 mod sweep;
 use circle_box::Part;
@@ -963,8 +964,6 @@ pub struct MissileExplosion {
 #[derive(Clone, Copy, Default)]
 pub struct SmokeCloud {
     pub active: bool,
-    /// The Updater pass in which this object last took its UpdateSim turn.
-    pub updater_ran_tick: Option<u32>,
     pub registered: bool,
     pub appended: u32,
     pub hierarchy_base: u32,
@@ -1070,8 +1069,6 @@ pub struct SpawnedSpike {
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
-    /// The pass SpikeAttack.UpdateSim last took its Updater turn.
-    pub stepped_tick: Option<u32>,
 }
 
 impl SpawnedSpike {
@@ -1118,8 +1115,6 @@ pub struct PlantCastState {
 #[derive(Clone, Copy, Default)]
 pub struct SpawnedEngine {
     pub active: bool,
-    /// The Updater pass in which this object last took its UpdateSim turn.
-    pub updater_ran_tick: Option<u32>,
     /// When it joined its platform's composite, in that platform's
     /// `attach_count`. CreateMultiComposite re-attaches in that order.
     pub attach_order: u32,
@@ -1259,8 +1254,6 @@ pub struct SpawnedTeslaNode {
     /// animator still runs it out and its callback makes the node lethal
     /// until the next UpdateSim finds it unconnected.
     pub orb_enter_left: u32,
-    /// The pass whose SimpleSparkNode.UpdateSim this node last ran.
-    pub updated_tick: Option<u32>,
     /// The pass an Updater.DestroyFix took this node mid-pass: IsDestroyed.
     /// DetPhysics drops its circle and the Updater skips its UpdateSim, so it
     /// is no longer `active`, but its GameObject stays in the hierarchy until
@@ -1416,7 +1409,8 @@ struct ThrowConfig<'a> {
     air_enter_ticks: u32,
     air_exit_ticks: u32,
     item_layer: u32,
-    item_updatable_count: u32,
+    /// The item prefab's file stem (`data::RolloutData::registrations`).
+    item_prefab: &'static str,
     item_child_count: u32,
     item_collider_hierarchy: u32,
     item_radius: Fix,
@@ -1498,7 +1492,7 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             air_enter_ticks: d.air_enter_ticks,
             air_exit_ticks: d.air_exit_ticks,
             item_layer: d.item_layer,
-            item_updatable_count: d.item_updatable_count,
+            item_prefab: "SmokeGrenade",
             item_child_count: d.item_child_count,
             item_collider_hierarchy: d.item_collider_hierarchy,
             item_radius: d.item_radius,
@@ -1524,7 +1518,7 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             air_enter_ticks: d.air_enter_ticks,
             air_exit_ticks: d.air_exit_ticks,
             item_layer: d.item_layer,
-            item_updatable_count: d.item_updatable_count,
+            item_prefab: "PokeBall",
             item_child_count: d.item_child_count,
             item_collider_hierarchy: d.item_collider_hierarchy,
             item_radius: d.item_radius,
@@ -1550,7 +1544,7 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             air_enter_ticks: d.air_enter_ticks,
             air_exit_ticks: d.air_exit_ticks,
             item_layer: d.item_layer,
-            item_updatable_count: d.item_updatable_count,
+            item_prefab: "MjolnirItem",
             item_child_count: d.item_child_count,
             item_collider_hierarchy: d.item_collider_hierarchy,
             item_radius: d.item_radius,
@@ -1576,7 +1570,7 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             air_enter_ticks: d.air_enter_ticks,
             air_exit_ticks: d.air_exit_ticks,
             item_layer: d.item_layer,
-            item_updatable_count: d.item_updatable_count,
+            item_prefab: "BananaPeel",
             item_child_count: d.item_child_count,
             item_collider_hierarchy: d.item_collider_hierarchy,
             item_radius: d.item_radius,
@@ -1602,7 +1596,7 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             air_enter_ticks: d.air_enter_ticks,
             air_exit_ticks: d.air_exit_ticks,
             item_layer: d.item_layer,
-            item_updatable_count: d.item_updatable_count,
+            item_prefab: "Grenade",
             item_child_count: d.item_child_count,
             item_collider_hierarchy: d.item_collider_hierarchy,
             item_radius: d.item_radius,
@@ -1798,6 +1792,11 @@ pub struct SpawnedPlatform {
 #[derive(Clone, Copy, Default)]
 pub struct PlatformDynamics {
     pub body: Body,
+    /// Its prefab's registration list (`World::register_prefab`) and its
+    /// collider's number in it. Its row's HierarchyNumber less that one is
+    /// what every number in the list registered offset by, which a copy made
+    /// while it is out of the hierarchy keeps (ShootDuplicator.cs:709-718).
+    pub registered: (&'static [u32], u32),
     /// The Updater pass in which a runtime-spawned platform's updaters last
     /// took their turn.
     pub updater_ran_tick: Option<u32>,
@@ -1907,7 +1906,6 @@ pub struct PlatformDynamics {
     /// The tunnel's updater slot: spawned updaters created after it (a
     /// Black Hole) see the wall it restores on the same pass.
     pub blink_tunnel_hierarchy: u32,
-    pub blink_tunnel_stepped_tick: Option<u32>,
     /// The deactivation pass still receives the rider's scheduled LateUpdate,
     /// but DetPhysics freezes the inactive platform body immediately.
     pub blink_deactivated_tick: Option<u32>,
@@ -2431,8 +2429,6 @@ pub struct BlackHoleState {
     pub velocity: Vec2,
     pub mass: Fix,
     pub time_since_growth: Fix,
-    /// The simulation tick of this hole's last UpdateSim.
-    pub updated_tick: Option<u32>,
     pub previous_target_size: Fix,
     pub target_size: Fix,
     pub radius: Fix,
@@ -2504,8 +2500,6 @@ pub struct AbilitylessClone {
     pub blink_tunnel_hierarchy: u32,
     pub blink_tunnel_age: Fix,
     pub blink_tunnel_released: bool,
-    /// The pass the clone's tunnel last took its Updater turn.
-    pub blink_tunnel_stepped_tick: Option<u32>,
     pub blink_reactivated_tick: Option<u32>,
     /// Black Hole pull from a hole registered after this clone: it lands
     /// after the clone's PlayerBody.UpdateSim has decayed externalVelocity.
@@ -2747,7 +2741,6 @@ pub struct BlinkObjectTunnel {
     pub restore_flags: u32,
     pub released_tick: Option<u32>,
     pub hierarchy: u32,
-    pub stepped_tick: Option<u32>,
 }
 
 /// One `TeleportedObjectEffect` retaining an inactive non-player GameObject.
@@ -2767,8 +2760,6 @@ pub struct TeleportObjectEffect {
     /// Hierarchy of the TeleportIndicator whose UpdateSim hid the object:
     /// the object's own updaters that come earlier ran on the hiding pass.
     pub source_hierarchy: u32,
-    /// The pass the effect last took its Updater turn.
-    pub stepped_tick: Option<u32>,
 }
 
 /// One invisible Portal endpoint. Portals have no DetPhysics collider or
@@ -2789,8 +2780,6 @@ pub struct PortalEndpoint {
     pub tangent: Vec2,
     pub time_alive: Fix,
     pub player_inside: [bool; 8],
-    /// The pass whose UpdateSim already ran, ahead of a newer Black Hole.
-    pub updated_tick: Option<u32>,
 }
 
 /// A Shockwave (AirWave_Shockwave for Gust, meteorShockwave for Meteor) has no
@@ -2833,8 +2822,6 @@ pub struct Shockwave {
     pub black_hole_indices: [usize; 50],
     /// The spawned prefab's first Updater slot.
     pub hierarchy_base: u32,
-    /// The pass Shockwave.UpdateSim last took its Updater turn.
-    pub stepped_tick: Option<u32>,
 }
 impl Default for Shockwave {
     fn default() -> Self {
@@ -2865,7 +2852,6 @@ impl Default for Shockwave {
             black_hole_count: 0,
             black_hole_indices: [usize::MAX; 50],
             hierarchy_base: 0,
-            stepped_tick: None,
         }
     }
 }
@@ -3524,8 +3510,6 @@ pub struct PlayerSlot {
     /// The effect's Updater hierarchy, and the pass its UpdateSim reenabled
     /// the player: updatables below it already saw the player inactive.
     pub teleport_effect_hierarchy: u32,
-    /// The pass the effect last took its Updater turn.
-    pub teleport_effect_stepped_tick: Option<u32>,
     /// (pass, TeleportIndicator hierarchy, position before it moved the
     /// player): an older Mjolnir still finds the slime there, active.
     pub teleported_from: (u32, u32, Vec2),
@@ -3545,8 +3529,6 @@ pub struct PlayerSlot {
     /// Player.Position on it, so Player.SetPosition's tie rule lets only the
     /// first write of the next pass through.
     pub blink_tunnel_end_tick: Option<u32>,
-    /// The pass the tunnel last took its Updater turn.
-    pub blink_tunnel_stepped_tick: Option<u32>,
     /// Player.Position when that tie kept an earlier write of this pass over
     /// the one in `reported_position`, with the pass it belongs to.
     pub tie_position: Option<(u32, Vec2)>,
@@ -3585,8 +3567,6 @@ pub struct PlayerSlot {
     /// HierarchyNumber 0, ahead of everything appended with it
     /// (StockRespawn.cs:67-70).
     pub chooser_appended: u32,
-    /// The pass the chooser last took its Updater turn.
-    pub chooser_ran_tick: Option<u32>,
     /// The pass the chooser called ReSpawnFast.
     pub chooser_finished_tick: Option<u32>,
     /// The chooser's three RevivePositionIndicators: the Revival marker
@@ -4219,13 +4199,17 @@ fn begin_land(obs_state: &mut u32, state_ticks: &mut u32, animator_ran: bool) {
 /// Fills `order` with the slots of `pool` in Updater order: by the hierarchy
 /// each object was spawned with, the slot breaking ties. Pools reuse freed
 /// slots, so slot order stops tracking spawn order once one has been freed.
-/// An updatable's place in Updater's list. Each pass, Updater.Update first
-/// appends the updatables registered since the last one, as a batch sorted
-/// by HierarchyNumber, then runs UpdateSim down the list (Updater.cs:258-303),
-/// so the list runs by the pass an updatable was appended on, then its
-/// HierarchyNumber. An updatable instantiated during pass t is appended at
-/// the start of pass t + 1; one there from the scene at pass 0.
-type UpdaterKey = (u32, u32);
+/// An updatable's place in Updater's list: (pass, position, HierarchyNumber).
+/// Each pass, Updater.Update first appends the updatables registered since
+/// the last one, as a batch it sorts by HierarchyNumber with List.Sort, then
+/// runs UpdateSim down the list (Updater.cs:258-303). So the list runs by the
+/// pass an updatable was appended on, then its index in that pass's batch
+/// as the sort left it (`World::updater_key`); the HierarchyNumber rides along
+/// for the code that picks an object by it. An updatable instantiated during
+/// pass t is appended at the start of pass t + 1; one there from the scene
+/// at pass 0, whose batch is not modeled, has its HierarchyNumber for a
+/// position.
+type UpdaterKey = (u32, u32, u32);
 
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
@@ -4233,8 +4217,16 @@ fn cursor_kind(kind: u8) -> bool {
     matches!(kind, 1 | 4 | 6 | 9 | 13 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
 }
 
-fn updater_key(appended: u32, hierarchy: u32) -> UpdaterKey {
-    (appended, hierarchy)
+/// The place just after `key`.
+fn updater_next(key: UpdaterKey) -> UpdaterKey {
+    (key.0, key.1, key.2 + 1)
+}
+
+/// A StockRespawnChooser's owner in Updater's batches: AddComponent adds it
+/// to its slime outside any prefab window (StockRespawn.cs), so it keeps its
+/// serialized HierarchyNumber 0 and has no prefab base to tell it by.
+fn chooser_owner(player: usize) -> u32 {
+    u32::MAX - player as u32
 }
 
 /// `pool`'s indices in Updater order.
@@ -4713,8 +4705,16 @@ pub struct RolloutWorld {
     /// last one handed out. See `number_observed`.
     pub observed_ids: Vec<u32>,
     pub last_observed_id: u32,
-    /// Base hierarchy for the next prefab instantiated after player spawn.
+    /// Base hierarchy for the next prefab instantiated after player spawn:
+    /// Updater.prefabsAdded. Only `register_prefab` advances it.
     pub next_spawn_hierarchy: u32,
+    /// Updater.toBeAddedUpdatables: the updatables registered since the last
+    /// pass, in registration order, as (HierarchyNumber, owner), the owner
+    /// being the prefab base (`chooser_owner` for a StockRespawnChooser).
+    pub updater_batch: Vec<(u32, u32)>,
+    /// The runtime part of Updater's list: each pass's batch as it was
+    /// sorted and appended, as (pass, HierarchyNumber, owner).
+    pub updater_list: Vec<(u32, u32, u32)>,
     /// Instantiations made during the updater phase by objects this port
     /// updates out of hierarchy order, as (object hierarchy, spawn).
     /// Updater runs them in hierarchy order, so a spawn by a lower object
@@ -4860,6 +4860,8 @@ impl RolloutWorld {
             observed_ids: Vec::with_capacity(256),
             last_observed_id: 0,
             next_spawn_hierarchy: 0,
+            updater_batch: Vec::with_capacity(64),
+            updater_list: Vec::with_capacity(1024),
             queued_spawns: Vec::new(),
             entities: Vec::with_capacity(192),
             entity_inverse_extents: Vec::with_capacity(192),
@@ -4980,6 +4982,8 @@ impl RolloutWorld {
         self.observed_ids.clone_from(&src.observed_ids);
         self.last_observed_id = src.last_observed_id;
         self.next_spawn_hierarchy = src.next_spawn_hierarchy;
+        self.updater_batch.clone_from(&src.updater_batch);
+        self.updater_list.clone_from(&src.updater_list);
         self.entities.clone_from(&src.entities);
         self.entity_inverse_extents.clone_from(&src.entity_inverse_extents);
         self.state_entities.clone_from(&src.state_entities);
@@ -5084,6 +5088,8 @@ impl RolloutWorld {
             observed_ids: _,
             last_observed_id: _,
             next_spawn_hierarchy: _,
+            updater_batch: _,
+            updater_list: _,
             queued_spawns: _,
             entities: _,
             entity_inverse_extents: _,
@@ -5287,14 +5293,16 @@ impl RolloutWorld {
         let mut hierarchy_cursor = 0u32;
         for i in 0..players {
             player_hierarchy[i] = hierarchy_cursor;
-            hierarchy_cursor += 8; // shipped Slime prefab MonoUpdatables
+            hierarchy_cursor += data.prefab("Player").len() as u32;
             for (s, hierarchy) in ability_hierarchy[i].iter_mut().enumerate().take(slots) {
                 *hierarchy = hierarchy_cursor;
                 let ability = resolved_abilities[i][s] as usize;
-                hierarchy_cursor += data.abilities[ability].updatable_count;
+                hierarchy_cursor += data.abilities[ability].registrations.len() as u32;
             }
         }
         self.next_spawn_hierarchy = hierarchy_cursor;
+        self.updater_batch.clear();
+        self.updater_list.clear();
         let mut form_entities = [[usize::MAX; 3]; MAX_BODIES];
         let mut circle_entity = [usize::MAX; MAX_BODIES];
         let mut roll_entity = [usize::MAX; MAX_BODIES];
@@ -5745,6 +5753,7 @@ impl RolloutWorld {
                 p.ice,
             ));
             self.platform_dynamics.push(PlatformDynamics {
+                registered: (&data::get().maps[map].platforms[index].registrations, p.hierarchy),
                 updater_ran_tick: None,
                 body: p.body,
                 scale: p.base_scale,
@@ -5793,7 +5802,6 @@ impl RolloutWorld {
                 blink_tunnel_delay: Fix::ZERO,
                 blink_tunnel_age: Fix::ZERO,
                 blink_tunnel_hierarchy: 0,
-                blink_tunnel_stepped_tick: None,
                 blink_deactivated_tick: None,
                 blink_reactivated_tick: None,
                 basis: None,
@@ -6035,7 +6043,6 @@ impl RolloutWorld {
                 teleport_effect_active: false,
                 teleport_effect_time: Fix::ZERO,
                 teleport_effect_hierarchy: 0,
-                teleport_effect_stepped_tick: None,
                 teleported_from: (u32::MAX, 0, Vec2::ZERO),
                 teleport_effect_released_tick: None,
                 teleport_effect_appended: 0,
@@ -6045,7 +6052,6 @@ impl RolloutWorld {
                 blink_tunnel_age: Fix::ZERO,
                 blink_tunnel_released: false,
                 blink_tunnel_end_tick: None,
-                blink_tunnel_stepped_tick: None,
                 tie_position: None,
                 position_setter_last: u32::MAX,
                 position_override: None,
@@ -6061,7 +6067,6 @@ impl RolloutWorld {
                 respawn_spawn_ticks: 0,
                 respawn_selected: 1,
                 chooser_appended: 0,
-                chooser_ran_tick: None,
                 chooser_finished_tick: None,
                 stock_indicator_markers: [None; 3],
                 input_jump_was_down: false,
@@ -6253,8 +6258,7 @@ impl RolloutWorld {
         data: &data::RolloutData,
     ) {
         let pickup = &data.pickup;
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += pickup.updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("AbilityPickup_Dynamic"));
         let id = self.next_id();
         let mut body = pickup.body;
         // BoplBody.AddForce(..., Impulse) multiplies by 60; the collider is
@@ -6503,14 +6507,14 @@ impl RolloutWorld {
             (0..self.ability_pickups.len())
                 .filter(|&index| self.ability_pickups[index].hierarchy_base < hierarchy),
         );
-        order.sort_unstable_by_key(|&index| (updater_key(self.ability_pickups[index].appended, 100_000_000 + self.ability_pickups[index].hierarchy_base), index));
+        order.sort_unstable_by_key(|&index| (self.updater_key(self.ability_pickups[index].appended, 100_000_000 + self.ability_pickups[index].hierarchy_base), index));
         for &index in &order {
             // The updatables instantiated before this pickup have taken their
             // turns: an older wall QuantumTunnel has hidden or restored its
             // wall for the pickup's ground raycast, and an older Duplicator
             // copy has shaken.
             let pickup = &self.ability_pickups[index];
-            let key = updater_key(pickup.appended, 100_000_000 + pickup.hierarchy_base);
+            let key = self.updater_key(pickup.appended, 100_000_000 + pickup.hierarchy_base);
             self.run_spawned_before(data, updater_dt, key);
             self.ability_pickup_tick(index, data, updater_dt, wobble);
         }
@@ -6629,8 +6633,8 @@ impl RolloutWorld {
         // the origin.
         if self.entities[body].flags & E_DESTROYED != 0 {
             for _ in 0..2 {
-                self.pending_orphan_abilities.push((self.next_spawn_hierarchy, ability));
-                self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+                let base = self.register_prefab(&data.abilities[ability as usize].registrations);
+                self.pending_orphan_abilities.push((base, ability));
             }
             let state = &mut self.ability_pickups[pickup_index];
             if state.active {
@@ -6670,7 +6674,7 @@ impl RolloutWorld {
         } else if count > 0 {
             (count, Fix::from_int(100_000))
         } else {
-            self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+            self.register_prefab(&data.abilities[ability as usize].registrations);
             (0, Fix::from_int(100))
         };
         // OnCollide instantiated the slot's previous pickup this pass too.
@@ -6717,8 +6721,8 @@ impl RolloutWorld {
                 spawn.buffer = None;
             }
         }
-        slot.pending_ability_hierarchy[ability_slot] = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.abilities[ability as usize].updatable_count;
+        let base = self.register_prefab(&data.abilities[ability as usize].registrations);
+        self.players[player_index].pending_ability_hierarchy[ability_slot] = base;
         let state = &mut self.ability_pickups[pickup_index];
         if state.active {
             state.active = false;
@@ -7544,7 +7548,8 @@ impl RolloutWorld {
                 }
             }
         }
-        self.scratch.updater_cursor = (self.tick, (0, 0));
+        self.scratch.updater_cursor = (self.tick, (0, 0, 0));
+        self.append_updater_batch();
         self.register_pending_objects(data);
         self.init_pending_grenade_fuses(data);
         if has(ABILITY_TIME_STOP) {
@@ -7637,7 +7642,7 @@ impl RolloutWorld {
         for (index, value) in player_order[..player_count].iter_mut().enumerate() {
             *value = index;
         }
-        let mut player_key = [(0, 0); MAX_BODIES];
+        let mut player_key = [(0, 0, 0); MAX_BODIES];
         for (index, value) in player_key[..player_count].iter_mut().enumerate() {
             *value = self.player_turn_key(index);
         }
@@ -7722,7 +7727,7 @@ impl RolloutWorld {
             .map(|i| self.platform_turn_key(i))
             .max();
         if let Some(newest) = newest_copy {
-            self.run_spawned_before(data, updater_dt, (newest.0, newest.1 + 1));
+            self.run_spawned_before(data, updater_dt, updater_next(newest));
         }
         if has(ABILITY_MAGNET) {
             self.magnet_parries_tick(data);
@@ -7854,7 +7859,7 @@ impl RolloutWorld {
             .map(|i| self.platform_turn_key(i))
             .max();
         if let Some(newest) = newest_spawned {
-            self.run_spawned_before(data, updater_dt, (newest.0, newest.1 + 1));
+            self.run_spawned_before(data, updater_dt, updater_next(newest));
         }
         self.spawned_platforms_tick(data, updater_dt, 0..u32::MAX);
         if has(ABILITY_THROW) {
@@ -7936,10 +7941,10 @@ impl RolloutWorld {
                 .filter(|effect| {
                     effect.active && effect.appended <= self.tick && effect.stepped_tick != Some(self.tick)
                 })
-                .map(|effect| updater_key(effect.appended, 100_000_000 + effect.hierarchy_base))
+                .map(|effect| self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base))
                 .max();
             if let Some(newest) = newest_effect {
-                self.run_spawned_before(data, updater_dt, (newest.0, newest.1 + 1));
+                self.run_spawned_before(data, updater_dt, updater_next(newest));
             }
             self.duplicate_platform_effects_tick(data, updater_dt, None);
         }
@@ -8405,8 +8410,7 @@ impl RolloutWorld {
             .is_none_or(|portal| !self.portals[portal].active)
             || self.players[owner].portal_orange[ability_slot]
                 .is_some_and(|portal| self.portals[portal].active);
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.portal_gun.shot_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("PortalShot"));
         let position = self.players[owner].base.position + direction * data.portal_gun.spawn_offset;
         let mut body = data.portal_gun.shot_body;
         body.velocity = direction * data.portal_gun.shot_speed;
@@ -8464,19 +8468,114 @@ impl RolloutWorld {
         }
     }
 
+    /// FixTransform.InstantiateFixed's Begin/EndRegisterPrefab window around
+    /// a prefab whose updatables register with these local HierarchyNumbers,
+    /// in this order: each becomes 100_000_000 + prefabsAdded + its own and
+    /// joins this pass's batch, and prefabsAdded advances by their count
+    /// (Updater.cs:138-153). Returns the prefab's base (prefabsAdded before).
+    fn register_prefab(&mut self, registrations: &[u32]) -> u32 {
+        self.register_members(registrations.iter().map(|&local| (local, 0)))
+    }
+
+    /// `register_prefab` for a prefab holding several objects, a Duplicator
+    /// copy and the arrows stuck in it: each updatable is its local number
+    /// and the offset from the prefab's base of the object it belongs to.
+    /// The one place the numbering advances.
+    fn register_members(&mut self, members: impl ExactSizeIterator<Item = (u32, u32)>) -> u32 {
+        let base = self.next_spawn_hierarchy;
+        self.next_spawn_hierarchy += members.len() as u32;
+        self.updater_batch.extend(members.map(|(local, owner)| (100_000_000 + base + local, base + owner)));
+        base
+    }
+
+    /// SpawnClone's block: the empty player prefab, then a copy of each of
+    /// `abilities`' prefabs (PlayerCollision.cs:244-270). Returns their
+    /// bases; a slot past `abilities` gets the place after them.
+    fn register_slime_clone(&mut self, abilities: &[u32]) -> (u32, [u32; 3]) {
+        let data = data::get();
+        let player = self.register_prefab(data.prefab("Player"));
+        let mut bases = [0; 3];
+        for (base, &ability) in bases.iter_mut().zip(abilities) {
+            *base = self.register_prefab(&data.abilities[ability as usize].registrations);
+        }
+        bases[abilities.len()..].fill(self.next_spawn_hierarchy);
+        (player, bases)
+    }
+
+    /// RegisterUpdatable outside a prefab window: StockRespawnChooser joins
+    /// the batch with its raw HierarchyNumber 0 (Updater.cs:155-167).
+    fn register_chooser(&mut self, player: usize) {
+        self.updater_batch.push((0, chooser_owner(player)));
+    }
+
+    /// Updater.Update appends the batch registered since the last pass,
+    /// sorted by `x.HierarchyNumber - y.HierarchyNumber` with List.Sort, an
+    /// introsort that does not keep equal numbers in registration order
+    /// (Updater.cs:270, `dotnet_sort`).
+    fn append_updater_batch(&mut self) {
+        let mut batch = std::mem::take(&mut self.updater_batch);
+        dotnet_sort::introspective_sort(&mut batch, |x, y| x.0.cmp(&y.0));
+        let pass = self.tick;
+        self.updater_list.extend(batch.iter().map(|&(number, owner)| (pass, number, owner)));
+        batch.clear();
+        self.updater_batch = batch;
+    }
+
+    /// The updatables Updater appended on pass `pass`, in list order: the
+    /// batch as `append_updater_batch`'s sort left it.
+    fn updater_pass_batch(&self, pass: u32) -> &[(u32, u32, u32)] {
+        let start = self.updater_list.partition_point(|entry| entry.0 < pass);
+        let end = self.updater_list.partition_point(|entry| entry.0 <= pass);
+        &self.updater_list[start..end]
+    }
+
+    /// The place of the first updatable registered by `owner` (a prefab's
+    /// base, or a chooser's `chooser_owner`) in pass `pass`'s sorted batch.
+    /// A pass whose batch is not modeled (the scene's) places it by `number`.
+    fn updater_owner_position(&self, pass: u32, owner: u32, number: u32) -> u32 {
+        let batch = self.updater_pass_batch(pass);
+        let position = batch.iter().position(|entry| entry.2 == owner);
+        position.map_or(number, |position| position as u32)
+    }
+
+    /// The key of the object whose prefab registered its updatables at
+    /// `hierarchy` = 100_000_000 + base on pass `appended`: its first
+    /// updatable's place in that pass's sorted batch.
+    fn updater_key(&self, appended: u32, hierarchy: u32) -> UpdaterKey {
+        let position = self.updater_owner_position(appended, hierarchy - 100_000_000, hierarchy);
+        (appended, position, hierarchy)
+    }
+
+    /// The key of the updatable numbered `hierarchy` appended on pass
+    /// `appended`: its place in that pass's sorted batch.
+    fn updater_member_key(&self, appended: u32, hierarchy: u32) -> UpdaterKey {
+        let batch = self.updater_pass_batch(appended);
+        let position = batch.iter().position(|entry| entry.1 == hierarchy);
+        (appended, position.map_or(hierarchy, |position| position as u32), hierarchy)
+    }
+
+    /// Player `player`'s StockRespawnChooser's key.
+    fn chooser_key(&self, player: usize) -> UpdaterKey {
+        let appended = self.players[player].chooser_appended;
+        (appended, self.updater_owner_position(appended, chooser_owner(player), 0), 0)
+    }
+
     /// Whether Updater has passed `key` this pass.
     fn updater_passed(&self, key: UpdaterKey) -> bool {
         let (tick, cursor) = self.scratch.updater_cursor;
         tick == self.tick && key < cursor
     }
 
+    /// The updatable at `key` takes its turn: Updater moves past it.
+    fn updater_take_turn(&mut self, key: UpdaterKey) {
+        self.updater_pass_to(updater_next(key));
+    }
+
     /// Moves Updater's place up to `key`: everything below it has had its
-    /// turn. Only `run_spawned_before(key)` moves it, having run the turns
-    /// below; an updatable sharing `key` keeps its turn, and each one marks
-    /// its own turn taken, run or skipped. It stops short of the updatables
-    /// appended this pass, which take no turn in it.
+    /// turn. It stops short of the updatables appended this pass, which take
+    /// no turn in it.
     fn updater_pass_to(&mut self, key: UpdaterKey) {
-        let key = key.min((self.tick + 1, 0));
+        let key = key.min((self.tick + 1, 0, 0));
         let cursor = &mut self.scratch.updater_cursor;
         if cursor.0 != self.tick {
             *cursor = (self.tick, key);
@@ -8505,10 +8604,9 @@ impl RolloutWorld {
         // Updater's place: the kinds that keep it pass a turn they skip,
         // hidden or disabled, for the rest of the pass. The others still
         // mark the turn they ran.
-        let cursor = if self.scratch.updater_cursor.0 == tick { self.scratch.updater_cursor.1 } else { (0, 0) };
-        let mut push = |appended: u32, hierarchy: u32, kind: u8, index: usize| {
-            let key = updater_key(appended, hierarchy);
-            if appended <= tick && key < before && (!cursor_kind(kind) || key >= cursor) {
+        let cursor = if self.scratch.updater_cursor.0 == tick { self.scratch.updater_cursor.1 } else { (0, 0, 0) };
+        let mut push = |key: UpdaterKey, kind: u8, index: usize| {
+            if key.0 <= tick && key < before && (!cursor_kind(kind) || key >= cursor) {
                 queue.push((key, kind, index));
             }
         };
@@ -8516,25 +8614,24 @@ impl RolloutWorld {
             if self.platform_dynamics[i].updater_ran_tick != Some(tick)
                 && self.platform_pass(i) != PlatformPass::Authored
             {
-                let (appended, hierarchy) = self.platform_turn_key(i);
-                push(appended, hierarchy, 0, i);
+                push(self.platform_turn_key(i), 0, i);
             }
         }
         for (i, hole) in self.black_holes.iter().enumerate() {
             if hole.active {
-                push(hole.appended, 100_000_000 + hole.hierarchy_base, 1, i);
+                push(self.updater_key(hole.appended, 100_000_000 + hole.hierarchy_base), 1, i);
             }
         }
         for (i, item) in self.thrown_items.iter().enumerate() {
             if item.updater_ran_tick != Some(tick) {
                 match item.ability {
-                    ABILITY_POKE_BALL | ABILITY_TACK => push(item.appended, 100_000_000 + item.hierarchy_base, 2, i),
-                    ABILITY_MJOLNIR => push(item.appended, 100_000_000 + item.hierarchy_base, 3, i),
+                    ABILITY_POKE_BALL | ABILITY_TACK => push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 2, i),
+                    ABILITY_MJOLNIR => push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 3, i),
                     ABILITY_GRENADE | ABILITY_SMOKE if item.active => {
-                        push(item.appended, 100_000_000 + item.hierarchy_base, 18, i)
+                        push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 18, i)
                     }
                     _ if item.active && item.body_ran_tick != Some(tick) => {
-                        push(item.appended, 100_000_000 + item.hierarchy_base, 15, i)
+                        push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 15, i)
                     }
                     _ => {}
                 }
@@ -8542,21 +8639,21 @@ impl RolloutWorld {
         }
         for (i, portal) in self.portals.iter().enumerate() {
             if portal.active {
-                push(portal.appended, 100_000_000 + portal.hierarchy_base, 4, i);
+                push(self.updater_key(portal.appended, 100_000_000 + portal.hierarchy_base), 4, i);
             }
         }
         for (i, pickup) in self.ability_pickups.iter().enumerate() {
             if pickup.updater_tick != tick {
-                push(pickup.appended, 100_000_000 + pickup.hierarchy_base, 5, i);
+                push(self.updater_key(pickup.appended, 100_000_000 + pickup.hierarchy_base), 5, i);
             }
         }
         for (i, engine) in self.engines.iter().enumerate() {
             if engine.active {
-                push(engine.appended, 100_000_000 + engine.hierarchy_base, 6, i);
+                push(self.updater_key(engine.appended, 100_000_000 + engine.hierarchy_base), 6, i);
             }
         }
         for (i, node) in self.tesla_nodes.iter().enumerate() {
-            push(node.appended, 100_000_000 + node.hierarchy_base, 16, i);
+            push(self.updater_key(node.appended, 100_000_000 + node.hierarchy_base), 16, i);
         }
         // A rope newer than a live abilityless clone waits for the clone's
         // PlayerBody, which moves the rope end it holds, in the clone pass;
@@ -8567,79 +8664,79 @@ impl RolloutWorld {
                 && rope.after_changer == self.scratch.ropes_changer_pass
             {
                 if rope.grapple_ran_tick != Some(tick) && rope.hook_entity.is_some() {
-                    push(rope.appended, 100_000_000 + rope.hierarchy, 7, i);
+                    push(self.updater_key(rope.appended, 100_000_000 + rope.hierarchy), 7, i);
                 }
                 if rope.rope_ran_tick != Some(tick) {
-                    push(rope.appended, 100_000_000 + rope.hierarchy, 8, i);
+                    push(self.updater_key(rope.appended, 100_000_000 + rope.hierarchy), 8, i);
                 }
             }
         }
         for (i, cloud) in self.smoke_clouds.iter().enumerate() {
             if cloud.active {
-                push(cloud.appended, 100_000_000 + cloud.hierarchy_base, 9, i);
+                push(self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), 9, i);
             }
         }
         for (i, effect) in self.scale_changers.iter().enumerate() {
             if effect.active && effect.early_tick != Some(tick) {
-                push(effect.appended, 100_000_000 + effect.hierarchy_base, 10, i);
+                push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 10, i);
             }
         }
         for (i, effect) in self.duplicate_platform_effects.iter().enumerate() {
             if effect.active && effect.stepped_tick != Some(tick) {
-                push(effect.appended, 100_000_000 + effect.hierarchy_base, 11, i);
+                push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 11, i);
             }
         }
         for (owner, slot) in self.players.iter().enumerate() {
             if let Some(marker) = slot.teleport_pending_marker {
-                push(self.teleport_marker_pool[marker].appended, 100_000_000 + self.teleport_marker_pool[marker].hierarchy_base, 12, owner);
+                push(self.updater_key(self.teleport_marker_pool[marker].appended, 100_000_000 + self.teleport_marker_pool[marker].hierarchy_base), 12, owner);
             }
         }
         for (i, state) in self.platform_dynamics.iter().enumerate() {
             if state.blink_tunnel_active {
-                push(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy, 13, i);
+                push(self.updater_key(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy), 13, i);
             }
         }
         for (i, tunnel) in self.blink_object_tunnels.iter().enumerate() {
             if tunnel.active {
-                push(tunnel.appended, 100_000_000 + tunnel.hierarchy, 17, i);
+                push(self.updater_key(tunnel.appended, 100_000_000 + tunnel.hierarchy), 17, i);
             }
         }
         for (i, slot) in self.players.iter().enumerate() {
             if slot.blink_tunnel_active {
-                push(slot.blink_tunnel_appended, 100_000_000 + slot.blink_tunnel_hierarchy, 20, i);
+                push(self.updater_key(slot.blink_tunnel_appended, 100_000_000 + slot.blink_tunnel_hierarchy), 20, i);
             }
             if slot.teleport_effect_active {
-                push(slot.teleport_effect_appended, 100_000_000 + slot.teleport_effect_hierarchy, 21, i);
+                push(self.updater_key(slot.teleport_effect_appended, 100_000_000 + slot.teleport_effect_hierarchy), 21, i);
             }
         }
         for (i, effect) in self.teleport_object_effects.iter().enumerate() {
             if effect.active {
-                push(effect.appended, 100_000_000 + effect.hierarchy, 22, i);
+                push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy), 22, i);
             }
         }
         for (i, clone) in self.abilityless_clones.iter().enumerate() {
             if clone.active && clone.updater_ran_tick != Some(tick) {
-                push(clone.appended, 100_000_000 + clone.hierarchy_base, 14, i);
+                push(self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base), 14, i);
             }
             if clone.blink_tunnel_active {
-                push(clone.blink_tunnel_appended, 100_000_000 + clone.blink_tunnel_hierarchy, 23, i);
+                push(self.updater_key(clone.blink_tunnel_appended, 100_000_000 + clone.blink_tunnel_hierarchy), 23, i);
             }
         }
         for (i, spike) in self.spike_attacks.iter().enumerate() {
             if spike.active && !spike.macho_carried {
-                push(spike.appended, 100_000_000 + spike.hierarchy_base, 24, i);
+                push(self.updater_key(spike.appended, 100_000_000 + spike.hierarchy_base), 24, i);
             }
         }
         for (kind, waves) in [(25, &self.gust_waves[..]), (26, &self.meteor_waves[..])] {
             for (i, wave) in waves.iter().enumerate() {
                 if wave.active {
-                    push(wave.appended, 100_000_000 + wave.hierarchy_base, kind, i);
+                    push(self.updater_key(wave.appended, 100_000_000 + wave.hierarchy_base), kind, i);
                 }
             }
         }
         for (i, slot) in self.players.iter().enumerate() {
             if slot.respawn_ticks > 0 {
-                push(slot.chooser_appended, 0, 27, i);
+                push(self.chooser_key(i), 27, i);
             }
         }
         for (i, missile) in self.guided_missiles.iter().enumerate() {
@@ -8647,11 +8744,12 @@ impl RolloutWorld {
                 && missile.updater_ran_tick != Some(tick)
                 && !self.blink_object_hidden(missile.entity)
             {
-                push(missile.appended, 100_000_000 + missile.hierarchy_base, 19, i);
+                push(self.updater_key(missile.appended, 100_000_000 + missile.hierarchy_base), 19, i);
             }
         }
         queue.sort_unstable();
-        for &((_, hierarchy), kind, index) in &queue {
+        for &(key, kind, index) in &queue {
+            let hierarchy = key.2;
             let turn = hierarchy..hierarchy + 1;
             match kind {
                 0 => {
@@ -8724,6 +8822,7 @@ impl RolloutWorld {
             }
             // Updater never returns to a turn it has passed: one skipped here,
             // hidden or disabled, waits for the next pass.
+            self.updater_take_turn(key);
             let tick = Some(tick);
             match kind {
                 0 => self.platform_dynamics[index].updater_ran_tick = tick,
@@ -8756,7 +8855,7 @@ impl RolloutWorld {
             // landing closes has passed the slimes in its mouth through.
             if self.portal_shots[shot_index].active {
                 let shot = &self.portal_shots[shot_index];
-                let key = updater_key(shot.appended, 100_000_000 + shot.hierarchy_base);
+                let key = self.updater_key(shot.appended, 100_000_000 + shot.hierarchy_base);
                 self.run_spawned_before(data, updater_dt, key);
             }
             if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
@@ -9019,7 +9118,7 @@ impl RolloutWorld {
         };
         let endpoint = PortalEndpoint {
             active: true,
-            hierarchy_base: self.next_spawn_hierarchy,
+            hierarchy_base: self.register_prefab(data.prefab("Portal")),
             appended: self.tick + 1,
             owner,
             ability_slot,
@@ -9068,7 +9167,6 @@ impl RolloutWorld {
             }
             self.portals[endpoint_index] = endpoint;
         }
-        self.next_spawn_hierarchy += data.portal_gun.portal_updatable_count;
         if shot.blue {
             blue = Some(endpoint_index);
         } else {
@@ -9775,21 +9873,20 @@ impl RolloutWorld {
             let Some(endpoint_index) = (0..self.portals.len())
                 .filter(|&index| {
                     self.portals[index].active
-                        && self.portals[index].updated_tick != Some(self.tick)
                         && hierarchy.contains(&(100_000_000 + self.portals[index].hierarchy_base))
-                        && !self.updater_passed(updater_key(self.portals[index].appended, 100_000_000 + self.portals[index].hierarchy_base))
+                        && !self.updater_passed(self.updater_key(self.portals[index].appended, 100_000_000 + self.portals[index].hierarchy_base))
                 })
-                .min_by_key(|&index| updater_key(self.portals[index].appended, 100_000_000 + self.portals[index].hierarchy_base))
+                .min_by_key(|&index| self.updater_key(self.portals[index].appended, 100_000_000 + self.portals[index].hierarchy_base))
             else {
                 break;
             };
-            self.portals[endpoint_index].updated_tick = Some(self.tick);
             // The older updatables have taken their turns: a Tack's
             // BananaPeel.UpdateSim can impale a slime, whose DropAbilities
             // pickup this endpoint then teleports.
             let endpoint = &self.portals[endpoint_index];
-            let key = updater_key(endpoint.appended, 100_000_000 + endpoint.hierarchy_base);
+            let key = self.updater_key(endpoint.appended, 100_000_000 + endpoint.hierarchy_base);
             self.run_spawned_before(data, updater_dt, key);
+            self.updater_take_turn(key);
             if !self.portals[endpoint_index].active {
                 continue;
             }
@@ -10768,9 +10865,7 @@ impl RolloutWorld {
                     ABILITY_GOLD_MUSHROOM => {
                         // SuperStar.UseAbility instantiates the SuperStarEffect
                         // prefab (SuperStar.cs:33).
-                        self.next_spawn_hierarchy += data.abilities[ability as usize]
-                            .effect_updatable_count
-                            .expect("Gold Mushroom effect updatables");
+                        self.register_prefab(&data.abilities[ability as usize].effect_registrations);
                         let slime_id = self.entities[self.players[index].body_entity].id;
                         let slot = &mut self.players[index];
                         slot.gold_mushroom[s] = GoldMushroomState {
@@ -10800,8 +10895,7 @@ impl RolloutWorld {
                             slot.teleport_markers[s] = None;
                             slot.teleport_ignore_cooldown[s] = false;
                         } else {
-                            let hierarchy_base = self.next_spawn_hierarchy;
-                            self.next_spawn_hierarchy += data.teleport.marker_updatable_count;
+                            let hierarchy_base = self.register_prefab(data::get().prefab("INDICATOR_portal"));
                             let marker_index = self.teleport_marker_pool.len();
                             self.teleport_marker_pool.push(TeleportMarker {
                                 active: true,
@@ -11164,7 +11258,7 @@ impl RolloutWorld {
                         // entry pass too, and sees the placement above: a slime
                         // casting Push on a platform sunk below the water drowns.
                         if self.players[index].base.outside_bounds() {
-                            self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                            self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                             self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
                             return;
                         }
@@ -12280,7 +12374,7 @@ impl RolloutWorld {
             // before its BoplBody, observing the previous physics pass's
             // position. Exiting an ability body uses cause Other.
             if self.players[index].base.alive && self.players[index].base.outside_bounds() {
-                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                 self.players[index].reported_position = self.players[index].base.position;
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
             } else {
@@ -12301,7 +12395,7 @@ impl RolloutWorld {
                 return;
             }
             if self.players[index].base.alive && self.players[index].base.outside_bounds() {
-                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                 self.players[index].reported_position = self.players[index].base.position;
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
                 return;
@@ -12319,7 +12413,7 @@ impl RolloutWorld {
             // it observes the position left by the preceding pass. A player
             // pushing its own platform under the water drowns with it.
             if self.players[index].base.alive && self.players[index].base.outside_bounds() {
-                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                 self.players[index].reported_position = self.players[index].base.position;
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
                 return;
@@ -12439,7 +12533,7 @@ impl RolloutWorld {
             {
                 // The slime takes over the ability body's position
                 // (DestroyIfOutsideSceneBounds.cs:137, SlimeController.cs:217).
-                self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                 let slot = &mut self.players[index];
                 slot.reported_position = slot.base.position;
                 self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
@@ -12602,7 +12696,6 @@ impl RolloutWorld {
         if self.players[index].roll.waiting_to_release && self.players[index].base.grounded {
             if !self.players[index].roll.trail_spawned {
                 self.players[index].roll.trail_spawned = true;
-                self.next_spawn_hierarchy += data.roll.trail_hierarchy_count;
             }
             let st = &mut self.players[index].roll;
             st.waiting_to_release = false;
@@ -13514,8 +13607,7 @@ impl RolloutWorld {
             Fix::ONE / (Fix::ONE / extents.x),
             Fix::ONE / (Fix::ONE / extents.y),
         );
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.meteor.smear_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("MeteorSmear_explo"));
         let entity_index = self.entities.len();
         let id = self.next_id();
         self.push_entity(CEntity {
@@ -13567,8 +13659,7 @@ impl RolloutWorld {
         force_scale: Fix,
         data: &data::RolloutData,
     ) {
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.meteor.shockwave_updatable_count;
+        let hierarchy_base = self.register_prefab(data.prefab("meteorShockwave"));
         self.meteor_waves.push(Shockwave {
             active: true,
             hierarchy_base,
@@ -14390,7 +14481,7 @@ impl RolloutWorld {
         if !self.players[index].base.alive || !self.players[index].base.outside_bounds() {
             return false;
         }
-        self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+        self.register_prefab(data.prefab("WaterDeathEffect 1"));
         self.players[index].reported_position = self.players[index].base.position;
         self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
         true
@@ -14419,12 +14510,12 @@ impl RolloutWorld {
     }
 
     fn gust_tick(&mut self, index: usize, data: &data::RolloutData) {
-        let slot = &mut self.players[index];
-        slot.gust.ticks += 1;
-        if slot.gust.phase == 0 && slot.gust.ticks > data.gust.cast_ticks {
+        self.players[index].gust.ticks += 1;
+        let gust = self.players[index].gust;
+        if gust.phase == 0 && gust.ticks > data.gust.cast_ticks {
+            let hierarchy_base = self.register_prefab(data.prefab("AirWave_Shockwave"));
+            let slot = &mut self.players[index];
             let wave = index * 3 + slot.active_slot;
-            let hierarchy_base = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.gust.shockwave_updatable_count;
             self.gust_waves[wave] = Shockwave {
                 active: true,
                 hierarchy_base,
@@ -14436,12 +14527,13 @@ impl RolloutWorld {
             };
             slot.gust.phase = 1;
             slot.gust.ticks = 0;
-        } else if slot.gust.phase == 1 && slot.gust.ticks > data.gust.exit_ticks {
+        } else if gust.phase == 1 && gust.ticks > data.gust.exit_ticks {
             self.exit_form(index);
             return;
         }
         // Ability.UpdateSim follows QuickSpell in the prefab and publishes
         // the live collider position on entry and every active pass.
+        let slot = &mut self.players[index];
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
     }
@@ -14509,7 +14601,7 @@ impl RolloutWorld {
             2 => {
                 self.players[index].cast_spell.ticks += 1;
                 if self.players[index].cast_spell.ticks > data.time_stop.cast_spell_ticks {
-                    self.next_spawn_hierarchy += data.time_stop.effect_updatable_count;
+                    self.register_prefab(data::get().prefab("TimeStopSphere"));
                     let effect = TimeStopEffect {
                         active: true,
                         appended: self.tick + 1,
@@ -14898,8 +14990,7 @@ impl RolloutWorld {
                     && node.ability_generation == ability_generation
             })
             .map(|(node, _)| node);
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.tesla.node_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("simple_SparkNode"));
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
         let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
@@ -15151,7 +15242,7 @@ impl RolloutWorld {
     /// for the nodes DestroyFix took mid-pass (Updater.cs:329-337).
     fn tesla_nodes_destroyed_drain(&mut self) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.tesla_nodes, |node| updater_key(node.appended, 100_000_000 + node.hierarchy_base));
+        updater_order(&mut order, &self.tesla_nodes, |node| self.updater_key(node.appended, 100_000_000 + node.hierarchy_base));
         for &node_index in order.iter().rev() {
             if self.tesla_nodes[node_index].destroyed_tick == Some(self.tick) {
                 self.tesla_node_destroyed(node_index, true);
@@ -15217,8 +15308,7 @@ impl RolloutWorld {
                 }
             }
         }
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.engine.rocket_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("RocketEngine"));
         let parent_position = self.platforms[platform_index].surface.center;
         let parent_rotation = self.platform_dynamics[platform_index].body.orientation;
         let inverse_basis = Vec2::angle(Fix::TAU - parent_rotation);
@@ -15265,7 +15355,6 @@ impl RolloutWorld {
             ..CEntity::default()
         }, inverse_extents);
         let engine = SpawnedEngine {
-            updater_ran_tick: None,
             attach_order,
             active: true,
             macho_carried: false,
@@ -15537,8 +15626,7 @@ impl RolloutWorld {
             self.remove_spike(old);
         }
 
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.spike.attack_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("SpikeAttack"));
         let local = self.platforms[platform_index]
             .surface
             .local_position(surface_position, Fix::ZERO)
@@ -15630,7 +15718,6 @@ impl RolloutWorld {
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
-            stepped_tick: None,
         };
         let attack_index = if let Some(free) = self.spike_attacks.iter().position(|s| self.child_slot_free(s.active, s.entity)) {
             // A pooled collider receives a fresh DetPhysics id on ManualInit;
@@ -15747,7 +15834,7 @@ impl RolloutWorld {
             (0..self.spike_attacks.len())
                 .filter(|&index| (from..to).contains(&self.spike_attacks[index].hierarchy_base)),
         );
-        order.sort_unstable_by_key(|&index| (updater_key(self.spike_attacks[index].appended, 100_000_000 + self.spike_attacks[index].hierarchy_base), index));
+        order.sort_unstable_by_key(|&index| (self.updater_key(self.spike_attacks[index].appended, 100_000_000 + self.spike_attacks[index].hierarchy_base), index));
         for &index in &order {
             self.spike_attack_step(data, updater_dt, index);
         }
@@ -15756,7 +15843,7 @@ impl RolloutWorld {
 
     fn spike_attack_step(&mut self, data: &data::RolloutData, updater_dt: Fix, index: usize) {
         let attack = &self.spike_attacks[index];
-        let key = updater_key(attack.appended, 100_000_000 + attack.hierarchy_base);
+        let key = self.updater_key(attack.appended, 100_000_000 + attack.hierarchy_base);
         if self.updater_passed(key) {
             return;
         }
@@ -15768,10 +15855,6 @@ impl RolloutWorld {
             .expect("authored SpikeAttack curve")
             .time;
         let attack = &mut self.spike_attacks[index];
-        if attack.stepped_tick == Some(self.tick) {
-            return;
-        }
-        attack.stepped_tick = Some(self.tick);
         if !attack.active || attack.macho_carried || attack.placed_tick >= self.tick {
             attack.pushed_this_frame = false;
             return;
@@ -15780,6 +15863,7 @@ impl RolloutWorld {
         // DuplicatePlatformEffect has rescaled the platform, and so re-seated
         // this spike, before its UpdatePosition.
         self.run_spawned_before(data, updater_dt, key);
+        self.updater_take_turn(key);
         if self.attached_hidden(self.spike_attacks[index].platform_index, self.spike_attacks[index].entity) {
             return;
         }
@@ -15912,12 +15996,11 @@ impl RolloutWorld {
         // RocketEngine.UpdateSim in hierarchy order: each flame lights the first
         // cloud it touches that no earlier engine has lit.
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.engines, |engine| updater_key(engine.appended, 100_000_000 + engine.hierarchy_base));
+        updater_order(&mut order, &self.engines, |engine| self.updater_key(engine.appended, 100_000_000 + engine.hierarchy_base));
         for &engine_index in &order {
             let engine = &self.engines[engine_index];
-            let key = updater_key(engine.appended, 100_000_000 + engine.hierarchy_base);
+            let key = self.updater_key(engine.appended, 100_000_000 + engine.hierarchy_base);
             if !engine.active
-                || engine.updater_ran_tick == Some(self.tick)
                 || !hierarchy.contains(&(100_000_000 + engine.hierarchy_base))
                 || engine.macho_carried
                 || engine.appended > self.tick
@@ -15929,7 +16012,7 @@ impl RolloutWorld {
             // their turns: a DuplicatePlatformEffect has rescaled its source
             // and spawned its copy, and a ScaleChanger has rescaled its victim.
             self.run_spawned_before(data, updater_dt, key);
-            self.engines[engine_index].updater_ran_tick = Some(self.tick);
+            self.updater_take_turn(key);
             let engine = &self.engines[engine_index];
             if !engine.active
                 || self.attached_hidden(engine.platform_index, engine.entity)
@@ -15949,7 +16032,6 @@ impl RolloutWorld {
                 self.remove_destroyed_colliders();
             }
             let engine = &mut self.engines[engine_index];
-            engine.updater_ran_tick = Some(self.tick);
             // RocketEngine.UpdateSim observes DPhysicsBox.Scale after the
             // ScaleChanger updater which wrote it. The collider was already
             // repositioned with the old SurfaceOffset on that write; this
@@ -16093,8 +16175,7 @@ impl RolloutWorld {
         child_index: usize,
         data: &data::RolloutData,
     ) {
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.tesla.lightning_updatable_count;
+        let hierarchy_base = self.register_prefab(data.prefab("Chain_Lightning"));
         self.tesla_nodes[node_index].connected = true;
         self.tesla_nodes[node_index].enter_ticks = 0;
         self.tesla_nodes[node_index].orb_enter_left = 0;
@@ -16236,15 +16317,15 @@ impl RolloutWorld {
     /// have not.
     fn tesla_nodes_update(&mut self, data: &data::RolloutData, updater_dt: Fix, before: u32) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.tesla_nodes, |node| updater_key(node.appended, 100_000_000 + node.hierarchy_base));
+        updater_order(&mut order, &self.tesla_nodes, |node| self.updater_key(node.appended, 100_000_000 + node.hierarchy_base));
         for &node_index in &order {
             let node = &self.tesla_nodes[node_index];
-            let key = updater_key(node.appended, 100_000_000 + node.hierarchy_base);
-            if node.hierarchy_base >= before || node.updated_tick == Some(self.tick) || self.updater_passed(key) {
+            let key = self.updater_key(node.appended, 100_000_000 + node.hierarchy_base);
+            if node.hierarchy_base >= before || self.updater_passed(key) {
                 continue;
             }
-            self.tesla_nodes[node_index].updated_tick = Some(self.tick);
             self.run_spawned_before(data, updater_dt, key);
+            self.updater_take_turn(key);
             // IsDestroyed skips its UpdateSim and its orb's.
             if self.tesla_nodes[node_index].destroyed_tick == Some(self.tick) {
                 continue;
@@ -16765,8 +16846,7 @@ impl RolloutWorld {
                 self.end_revival_marker(old);
             }
             let marker_index = self.revival_marker_pool.len();
-            let hierarchy_base = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.revival.marker_updatable_count;
+            let hierarchy_base = self.register_prefab(data::get().prefab("RevivePositionIndicator"));
             self.revival_marker_pool.push(RevivalMarker {
                 active: true,
                 registered: false,
@@ -16921,8 +17001,8 @@ impl RolloutWorld {
             );
             let scale = (slot.player_scale / Fix::from_int(3)).clamp(Fix::ONE, Fix::from_int(2));
             let position = slot.base.position + scale * slot.base.up().perp_cw().complex_mul(local);
-            slot.pending_black_hole = Some((position, self.next_spawn_hierarchy));
-            self.next_spawn_hierarchy += data.black_hole.updatable_count;
+            let base = self.register_prefab(data.prefab("BlackHole2"));
+            self.players[index].pending_black_hole = Some((position, base));
         }
         let cast = &mut self.players[index].black_hole_cast;
         if animates
@@ -17027,7 +17107,6 @@ impl RolloutWorld {
             velocity: Vec2::ZERO,
             mass: data.black_hole.starting_mass,
             time_since_growth: Fix::ZERO,
-            updated_tick: None,
             previous_target_size: Fix::from_int(100),
             target_size,
             radius: initial_radius,
@@ -17158,9 +17237,8 @@ impl RolloutWorld {
         for hole_index in 0..self.black_holes.len() {
             let hole = &self.black_holes[hole_index];
             if !hole.active
-                || hole.updated_tick == Some(self.tick)
                 || !hierarchy.contains(&(100_000_000 + hole.hierarchy_base))
-                || self.updater_passed(updater_key(hole.appended, 100_000_000 + hole.hierarchy_base))
+                || self.updater_passed(self.updater_key(hole.appended, 100_000_000 + hole.hierarchy_base))
             {
                 continue;
             }
@@ -17172,12 +17250,12 @@ impl RolloutWorld {
             // runtime-spawned platform's BoplBody, such as a Macho boulder's,
             // has rescaled the mass this hole pulls with.
             let hole = &self.black_holes[hole_index];
-            let key = updater_key(hole.appended, 100_000_000 + hole.hierarchy_base);
+            let key = self.updater_key(hole.appended, 100_000_000 + hole.hierarchy_base);
             self.run_spawned_before(data, dt, key);
             // The older updaters above may spawn a Duplicator copy, which
             // this hole then pulls itself. A hole hidden at its turn misses
             // this pass.
-            self.black_holes[hole_index].updated_tick = Some(self.tick);
+            self.updater_take_turn(key);
             if !self.black_holes[hole_index].active || self.blink_object_hidden(self.black_holes[hole_index].entity) {
                 continue;
             }
@@ -17839,8 +17917,7 @@ impl RolloutWorld {
         let owner = self.players[index].base.id;
         let mut entities = [usize::MAX; 3];
         for (entity_slot, &(_, extents)) in entities.iter_mut().zip(&data.drill.hitboxes) {
-            let hierarchy_base = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.drill.hitbox_updatable_count;
+            let hierarchy_base = self.register_prefab(data::get().prefab("invisibleHitbox"));
             let entity = self.entities.len();
             let id = self.next_id();
             self.push_entity(CEntity {
@@ -18204,8 +18281,7 @@ impl RolloutWorld {
             self.players[owner].beam.orb = Some(orb);
             return;
         }
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.beam.orb_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("orbAnim"));
         let entity = self.entities.len();
         let id = self.next_id();
         self.push_entity(CEntity {
@@ -19046,8 +19122,7 @@ impl RolloutWorld {
                     &data.beam.width_curve,
                 );
                 hitbox.initialize(hitbox_config);
-                let hierarchy_base = self.next_spawn_hierarchy;
-                self.next_spawn_hierarchy += data.beam.object_updatable_count;
+                let hierarchy_base = self.register_prefab(data::get().prefab("BeamObject"));
                 let entity = self.entities.len();
                 let id = self.next_id();
                 self.push_entity(CEntity {
@@ -19944,8 +20019,7 @@ impl RolloutWorld {
         );
         let extents = data.macho_throw.boulder_extents * scale;
         let radius = data.macho_throw.boulder_radius * scale;
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.macho_throw.boulder_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("Boulder"));
         let entity = self.entities.len();
         let id = self.next_id();
         self.push_entity(CEntity {
@@ -19970,6 +20044,7 @@ impl RolloutWorld {
         self.platforms.push(make_platform(self.next_platform_id, &surface, extents, ice));
         self.next_platform_id += 1;
         self.platform_dynamics.push(PlatformDynamics {
+            registered: (data::get().prefab("Boulder"), data.macho_throw.boulder_collider_hierarchy),
             updater_ran_tick: None,
             body: data.macho_throw.boulder_body,
             scale,
@@ -20020,7 +20095,6 @@ impl RolloutWorld {
             blink_tunnel_delay: Fix::ZERO,
             blink_tunnel_age: Fix::ZERO,
             blink_tunnel_hierarchy: 0,
-            blink_tunnel_stepped_tick: None,
             blink_deactivated_tick: None,
             blink_reactivated_tick: None,
             basis: None,
@@ -20221,7 +20295,7 @@ impl RolloutWorld {
             if finished {
                 match phase {
                     0 => {
-                        self.next_spawn_hierarchy += data.macho_throw.smoke_updatable_count;
+                        self.register_prefab(data::get().prefab("MachoSmokeEffect"));
                         self.macho_pick_up_attachable(index, data);
                         let state = &mut self.players[index].macho_throw;
                         state.phase = 1;
@@ -20478,7 +20552,7 @@ impl RolloutWorld {
         // In space the floor exit instantiates UpEffect, which Boulder.prefab
         // leaves empty; only the water exit splashes.
         if !data.maps[self.map].is_space() {
-            self.next_spawn_hierarchy += data.macho_throw.boulder_down_effect_updatable_count;
+            self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
         }
         true
     }
@@ -20842,7 +20916,9 @@ impl RolloutWorld {
 
     fn spawn_bounds_effect(&mut self, effect: BoundsEffect, data: &data::RolloutData) {
         match effect {
-            BoundsEffect::Splash => self.next_spawn_hierarchy += 2,
+            BoundsEffect::Splash => {
+                self.register_prefab(data.prefab("WaterDeathEffect 1"));
+            }
             BoundsEffect::MineExplosion { position, owner } => {
                 self.spawn_missile_explosion(position, owner, false, Fix::ONE, data);
             }
@@ -21315,16 +21391,15 @@ impl RolloutWorld {
     /// in `spawned`.
     fn smoke_clouds_update_early(&mut self, data: &data::RolloutData, updater_dt: Fix, spawned: std::ops::Range<u32>) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.smoke_clouds, |cloud| updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base));
+        updater_order(&mut order, &self.smoke_clouds, |cloud| self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base));
         for &cloud_index in &order {
             let cloud = &self.smoke_clouds[cloud_index];
-            let key = updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base);
+            let key = self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base);
             if spawned.contains(&(100_000_000 + cloud.hierarchy_base))
                 && cloud.active
-                && cloud.updater_ran_tick != Some(self.tick)
                 && !self.updater_passed(key)
             {
-                self.smoke_clouds[cloud_index].updater_ran_tick = Some(self.tick);
+                self.updater_take_turn(key);
                 self.smoke_cloud_update(cloud_index, data, updater_dt);
             }
         }
@@ -21333,16 +21408,16 @@ impl RolloutWorld {
 
     fn smoke_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.smoke_clouds, |cloud| updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base));
+        updater_order(&mut order, &self.smoke_clouds, |cloud| self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base));
         for &cloud_index in &order {
             let cloud = &self.smoke_clouds[cloud_index];
-            let key = updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base);
-            if cloud.updater_ran_tick != Some(self.tick) && !self.updater_passed(key) {
+            let key = self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base);
+            if !self.updater_passed(key) {
                 self.run_spawned_before(data, updater_dt, key);
-                if self.smoke_clouds[cloud_index].updater_ran_tick == Some(self.tick) {
+                if self.updater_passed(key) {
                     continue;
                 }
-                self.smoke_clouds[cloud_index].updater_ran_tick = Some(self.tick);
+                self.updater_take_turn(key);
                 self.smoke_cloud_update(cloud_index, data, updater_dt);
             }
         }
@@ -21381,20 +21456,16 @@ impl RolloutWorld {
             let tick = self.tick;
             let players = (self.players.iter().enumerate())
                 .filter(|(_, slot)| {
-                    slot.teleport_effect_active
-                        && slot.teleport_effect_appended <= tick
-                        && slot.teleport_effect_stepped_tick != Some(tick)
+                    slot.teleport_effect_active && slot.teleport_effect_appended <= tick
                 })
                 .map(|(index, slot)| {
                     let hierarchy = 100_000_000 + slot.teleport_effect_hierarchy;
-                    (updater_key(slot.teleport_effect_appended, hierarchy), false, index)
+                    (self.updater_key(slot.teleport_effect_appended, hierarchy), false, index)
                 });
             let objects = (self.teleport_object_effects.iter().enumerate())
-                .filter(|(_, effect)| {
-                    effect.active && effect.appended <= tick && effect.stepped_tick != Some(tick)
-                })
+                .filter(|(_, effect)| effect.active && effect.appended <= tick)
                 .map(|(index, effect)| {
-                    (updater_key(effect.appended, 100_000_000 + effect.hierarchy), true, index)
+                    (self.updater_key(effect.appended, 100_000_000 + effect.hierarchy), true, index)
                 });
             let Some((key, object, index)) = players.chain(objects).filter(|&(key, _, _)| !self.updater_passed(key)).min() else {
                 return;
@@ -21411,11 +21482,11 @@ impl RolloutWorld {
     /// TeleportedObjectEffect.UpdateSim for the effect holding a slime.
     fn teleport_player_effect_step(&mut self, index: usize, data: &data::RolloutData, updater_dt: Fix) {
         let slot = &self.players[index];
-        let key = updater_key(slot.teleport_effect_appended, 100_000_000 + slot.teleport_effect_hierarchy);
-        if slot.teleport_effect_stepped_tick == Some(self.tick) || self.updater_passed(key) {
+        let key = self.updater_key(slot.teleport_effect_appended, 100_000_000 + slot.teleport_effect_hierarchy);
+        if self.updater_passed(key) {
             return;
         }
-        self.players[index].teleport_effect_stepped_tick = Some(self.tick);
+        self.updater_take_turn(key);
         self.players[index].teleport_effect_time += updater_dt;
         if self.players[index].teleport_effect_time > data.teleport.effect_duration {
             self.players[index].set_teleport_hidden(&mut self.entities, false);
@@ -21435,11 +21506,11 @@ impl RolloutWorld {
     /// TeleportedObjectEffect.UpdateSim for the effect holding an object.
     fn teleport_object_effect_step(&mut self, index: usize, data: &data::RolloutData, updater_dt: Fix) {
         let effect = &self.teleport_object_effects[index];
-        let key = updater_key(effect.appended, 100_000_000 + effect.hierarchy);
-        if effect.stepped_tick == Some(self.tick) || self.updater_passed(key) {
+        let key = self.updater_key(effect.appended, 100_000_000 + effect.hierarchy);
+        if self.updater_passed(key) {
             return;
         }
-        self.teleport_object_effects[index].stepped_tick = Some(self.tick);
+        self.updater_take_turn(key);
         let effect = self.teleport_object_effects[index];
         self.teleport_object_effects[index].age += updater_dt;
         if self.teleport_object_effects[index].age > data.teleport.effect_duration {
@@ -21626,9 +21697,8 @@ impl RolloutWorld {
             }
             self.players[player_index].set_teleport_hidden(&mut self.entities, true);
             self.players[player_index].teleport_effect_time = Fix::ZERO;
-            self.players[player_index].teleport_effect_hierarchy = self.next_spawn_hierarchy;
+            self.players[player_index].teleport_effect_hierarchy = self.register_prefab(data.prefab("teleportingObjectEffect"));
             self.players[player_index].teleport_effect_appended = self.tick + 1;
-            self.next_spawn_hierarchy += data.teleport.effect_updatable_count;
             self.entities[entity].x += shift.x.raw();
             self.entities[entity].y += shift.y.raw();
             self.entities[entity].flags &= !E_ACTIVE;
@@ -21777,7 +21847,7 @@ impl RolloutWorld {
             }
             // The older updatables have taken their turns: a burning smoke
             // cloud has detonated, and instantiated its explosion, first.
-            let key = updater_key(marker.appended, 100_000_000 + marker.hierarchy_base);
+            let key = self.updater_key(marker.appended, 100_000_000 + marker.hierarchy_base);
             self.run_spawned_before(data, updater_dt, key);
             let from = self.players[owner].teleport_pending_position;
             let diff = marker.position - from;
@@ -22868,7 +22938,7 @@ impl RolloutWorld {
                     let distance = (target - slot.revival_effect_position).length();
                     slot.revival_particle = Some((distance, Fix::ZERO));
                     slot.revival_effect_ticks = 1;
-                    self.next_spawn_hierarchy += data.revival.particle_updatable_count;
+                    self.register_prefab(data::get().prefab("ReviveParticle 1"));
                 }
                 continue;
             };
@@ -23202,9 +23272,10 @@ impl RolloutWorld {
         let mut order = std::mem::take(&mut self.scratch.wave_order);
         order.clear();
         for meteor in [false, true] {
-            for (index, wave) in self.shockwaves(meteor).iter().enumerate() {
+            let waves: &[Shockwave] = if meteor { &self.meteor_waves } else { &self.gust_waves };
+            for (index, wave) in waves.iter().enumerate() {
                 if wave.active && wave.registered && hierarchy.contains(&wave.hierarchy_base) {
-                    order.push((updater_key(wave.appended, 100_000_000 + wave.hierarchy_base), meteor, index));
+                    order.push((self.updater_key(wave.appended, 100_000_000 + wave.hierarchy_base), meteor, index));
                 }
             }
         }
@@ -23217,19 +23288,18 @@ impl RolloutWorld {
 
     /// One wave's Shockwave.UpdateSim turn.
     fn shockwave_step(&mut self, meteor: bool, wave_index: usize, data: &data::RolloutData) {
-        let tick = self.tick;
-        let wave = &self.shockwaves(meteor)[wave_index];
-        let key = updater_key(wave.appended, 100_000_000 + wave.hierarchy_base);
-        if !wave.active || !wave.registered || wave.stepped_tick == Some(tick) || self.updater_passed(key) {
+        let wave = if meteor { &self.meteor_waves[wave_index] } else { &self.gust_waves[wave_index] };
+        let key = self.updater_key(wave.appended, 100_000_000 + wave.hierarchy_base);
+        if !wave.active || !wave.registered || self.updater_passed(key) {
             return;
         }
-        self.shockwaves(meteor)[wave_index].stepped_tick = Some(tick);
         // The older updatables have taken their turns: a Poke Ball's
         // capture hop has set its velocity, and a DuplicatePlatformEffect
         // has rescaled its source, whose live radius the wave reads. A newer
         // Tack or hammer takes the impulse at its own turn.
         let dt = DT * self.player_time_scale;
         self.run_spawned_before(data, dt, key);
+        self.updater_take_turn(key);
         // Shockwave uses Updater's raw simDeltaTime for its curve clock; it
         // never opts into GameTime.FixedDeltaTime.
         self.shockwave_apply(meteor, wave_index, DT, true, data);
@@ -23788,8 +23858,7 @@ impl RolloutWorld {
         let right = Vec2::angle(rotation);
         let mut transform = Orientation::ZERO;
         transform.set_rotation(rotation);
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.missile.spark_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("Spark"));
         let mut body = data.missile.spark_body;
         body.orientation = rotation;
         body.velocity = self.players[index].base.up() * data.missile.projectile_start_speed;
@@ -24246,8 +24315,7 @@ impl RolloutWorld {
         } else {
             Vec2::UP * data.mine.aerial_throw_strength
         };
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.mine.item_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("Mine_0"));
         let item = ThrownItem {
             active: true,
             id: 0,
@@ -24604,8 +24672,7 @@ impl RolloutWorld {
         let config = throw_config(data, ability);
         // SpawnGrenade(dummyPos()).
         let position = self.throw_dummy_position(index, config);
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += config.item_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab(config.item_prefab));
         let item = ThrownItem {
             active: true,
             // Stable collider IDs are assigned when ManualInit joins
@@ -27539,8 +27606,7 @@ impl RolloutWorld {
                 clone_index,
             );
             let velocity = (position - source.position).normalized_safe() * speed;
-            let hierarchy_base = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.arrow.updatable_count;
+            let hierarchy_base = self.register_prefab(data::get().copy("Arrow"));
             let free = self.arrows.iter().position(|arrow| !arrow.active);
             self.release_arrow_row(free);
             let id = self.next_id();
@@ -27603,8 +27669,7 @@ impl RolloutWorld {
                 Fix::ONE,
                 clone_index,
             );
-            let hierarchy_base = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.pickup.updatable_count;
+            let hierarchy_base = self.register_prefab(data::get().copy("AbilityPickup_Dynamic"));
             let mut body = data.pickup.body;
             body.velocity = (position - source.position).normalized_safe() * speed;
             body.orientation = source.body.orientation;
@@ -27650,8 +27715,7 @@ impl RolloutWorld {
     ) {
         let source = self.black_holes[source_index];
         let position = source.position + direction * source.radius * Fix::from_int(2);
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.black_hole.updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().copy("BlackHole2"));
         let target_size = Fix::from_int(100) + source.mass.abs() * data.black_hole.growth;
         // The clone's BlackHole.Init runs with the next pass's new updatables,
         // which is when its circle registers (register_pending_black_holes).
@@ -27672,7 +27736,6 @@ impl RolloutWorld {
             velocity,
             mass: source.mass,
             time_since_growth: Fix::ZERO,
-            updated_tick: None,
             previous_target_size: Fix::from_int(100),
             target_size,
             radius: Fix::ZERO,
@@ -27733,6 +27796,7 @@ impl RolloutWorld {
             body.orientation = source.body.orientation;
             // The Rock_noPlayer copy is a new GameObject, so its circle
             // registers with next pass's queued objects.
+            let hierarchy_base = self.register_prefab(data.prefab("Rock_noPlayer"));
             self.pending_duplicated_rocks.push(DuplicatedRock {
                 active: true,
                 appended: self.tick + 1,
@@ -27744,10 +27808,9 @@ impl RolloutWorld {
                 collider_radius: data.rock.radius * source_scale,
                 duplicate_lifespan: 1800,
                 duplicate_shake_offset: Vec2::ZERO,
-                hierarchy_base: self.next_spawn_hierarchy,
+                hierarchy_base,
                 mass_scale: Fix::ONE,
             });
-            self.next_spawn_hierarchy += 4;
             return;
         }
         let position = self.players[victim].base.position;
@@ -27798,8 +27861,9 @@ impl RolloutWorld {
         } else {
             slerp(direction, current_normal, Fix::from_f32(0.3))
         };
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += 8;
+        // SpawnAbilityLessClone instantiates the empty player prefab
+        // (PlayerCollision.cs:224-242).
+        let hierarchy_base = self.register_prefab(data.prefab("Player"));
         let collider = OrientedBox::from_basis(position, Vec2::RIGHT, data.player.hurtbox_extents);
         let base = Player {
             alive: true,
@@ -27854,7 +27918,6 @@ impl RolloutWorld {
             blink_tunnel_hierarchy: 0,
             blink_tunnel_age: Fix::ZERO,
             blink_tunnel_released: false,
-            blink_tunnel_stepped_tick: None,
             blink_reactivated_tick: None,
             late_pull: Vec2::ZERO,
             ground_destroyed: None,
@@ -27897,7 +27960,7 @@ impl RolloutWorld {
         body.velocity = (position - source.position).normalized_safe()
             * (source.body.velocity.length() + Fix::from_int(15));
         body.orientation = source.body.orientation;
-        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, 4, 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("Rock_noPlayer")), 1);
         self.pending_duplicated_rocks.push(DuplicatedRock {
             active: true,
             appended: self.tick + 1,
@@ -28017,7 +28080,7 @@ impl RolloutWorld {
         let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, data.spike.attack_updatable_count, 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("SpikeAttack")), 1);
         let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
@@ -28068,7 +28131,6 @@ impl RolloutWorld {
             duplicated: true,
             duplicate_lifespan: 1800,
             duplicate_shake_offset: Vec2::ZERO,
-            stepped_tick: None,
         };
         if let Some(free) = self.spike_attacks.iter().position(|spike| self.child_slot_free(spike.active, spike.entity)) {
             self.spike_attacks[free] = clone;
@@ -28123,7 +28185,7 @@ impl RolloutWorld {
         let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, data.engine.rocket_updatable_count, 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("RocketEngine")), 1);
         let attach_order = self.attach_child_body(platform_index, data.engine.rocket_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
@@ -28150,7 +28212,6 @@ impl RolloutWorld {
             ..CEntity::default()
         }, inverse_extents);
         let clone = SpawnedEngine {
-            updater_ran_tick: None,
             attach_order,
             active: true,
             macho_carried: false,
@@ -28229,7 +28290,7 @@ impl RolloutWorld {
         let root_position = surface_position + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, data.tesla.node_updatable_count, 1);
+        let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("simple_SparkNode")), 1);
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
         let id = self.next_id();
@@ -28299,12 +28360,12 @@ impl RolloutWorld {
         data: &data::RolloutData,
     ) {
         let source = self.thrown_items[source_index];
-        let (clone_count, spacing, angle, updatable_count) = if source.ability == ABILITY_MINE {
+        let (clone_count, spacing, angle, copy) = if source.ability == ABILITY_MINE {
             (
                 data.mine.clone_count,
                 data.mine.duplicate_spacing,
                 data.mine.duplicate_angle,
-                data.mine.item_updatable_count,
+                data.copy("Mine_0"),
             )
         } else {
             let item = throw_config(data, source.ability);
@@ -28335,7 +28396,7 @@ impl RolloutWorld {
                     data.grenade.duplicate_angle,
                 ),
             };
-            (clone_count, spacing, angle, item.item_updatable_count)
+            (clone_count, spacing, angle, data.copy(item.item_prefab))
         };
         let speed = source.body.velocity.length() + Fix::from_int(10);
         let prefab_body = if source.ability == ABILITY_MINE {
@@ -28355,7 +28416,7 @@ impl RolloutWorld {
                 angle,
                 clone_index,
             );
-            let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, updatable_count, 1);
+            let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, copy), 1);
             let mut clone = source;
             clone.active = true;
             clone.id = 0;
@@ -28440,7 +28501,7 @@ impl RolloutWorld {
                 clone_index,
             );
             let up = (position - source.position).normalized_safe();
-            let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, data.missile.spark_updatable_count, 1);
+            let hierarchy_base = self.duplicate_hierarchy(spawned_hierarchy(source.hierarchy_base), true, (0, data.copy("Spark")), 1);
             let mut body = data.missile.spark_body;
             body.velocity = up * speed;
             // duplicateBoplBody first copies the live rotation, then the
@@ -28485,8 +28546,7 @@ impl RolloutWorld {
         let source = self.smoke_clouds[source_index];
         for _ in 0..data.smoke.cloud_clone_count {
             let direction = Vec2::angle(self.rng.fix_range(Fix::ZERO, Fix::TAU));
-            let hierarchy_base = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.smoke.cloud_updatable_count;
+            let hierarchy_base = self.register_prefab(data::get().prefab("SmokeCircle"));
             let clone = SmokeCloud {
                 active: true,
                 appended: self.tick + 1,
@@ -29013,7 +29073,7 @@ impl RolloutWorld {
         });
 
         if !already_hit_water && origin.y <= data.maps[self.map].scene_water_height() {
-            self.begin_scale_change(caster, 0, growth, ray.changer_updatable_count);
+            self.begin_scale_change(caster, 0, growth);
             return;
         }
         let Some(hit) = hit else {
@@ -29063,7 +29123,7 @@ impl RolloutWorld {
             .iter()
             .position(|slot| self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity)
         {
-            self.begin_scale_change(victim, 0, growth, ray.changer_updatable_count);
+            self.begin_scale_change(victim, 0, growth);
             return;
         }
         // A clone's SlimeController hands the changer its Player; the clone's
@@ -29072,7 +29132,7 @@ impl RolloutWorld {
             .find(|clone| clone.active && clone.entity == Some(entity))
         {
             let owner = clone.owner;
-            let changer = self.begin_scale_change(owner, 0, growth, ray.changer_updatable_count);
+            let changer = self.begin_scale_change(owner, 0, growth);
             self.scale_changers[changer].entity_id = self.entities[entity].id;
             return;
         }
@@ -29081,7 +29141,7 @@ impl RolloutWorld {
             .iter()
             .position(|target| target.active && target.entity == Some(entity))
         {
-            self.begin_scale_change(victim, 1, growth, ray.changer_updatable_count);
+            self.begin_scale_change(victim, 1, growth);
             return;
         }
         if let Some(victim) = self
@@ -29089,7 +29149,7 @@ impl RolloutWorld {
             .iter()
             .position(|&target| target == entity)
         {
-            self.begin_scale_change(victim, 2, growth, ray.changer_updatable_count);
+            self.begin_scale_change(victim, 2, growth);
             return;
         }
         if let Some(victim) = self
@@ -29097,7 +29157,7 @@ impl RolloutWorld {
             .iter()
             .position(|target| target.active && target.entity == Some(entity))
         {
-            self.begin_scale_change(victim, 3, growth, ray.changer_updatable_count);
+            self.begin_scale_change(victim, 3, growth);
             return;
         }
         if let Some(victim) = self
@@ -29105,10 +29165,10 @@ impl RolloutWorld {
             .iter()
             .position(|target| target.active && target.entity == Some(entity))
         {
-            self.begin_scale_change(victim, 4, growth, ray.changer_updatable_count);
+            self.begin_scale_change(victim, 4, growth);
             return;
         }
-        self.begin_scale_change_entity(entity, growth, ray.changer_updatable_count);
+        self.begin_scale_change_entity(entity, growth);
     }
 
     fn begin_scale_change(
@@ -29116,10 +29176,8 @@ impl RolloutWorld {
         victim: usize,
         target_kind: u8,
         growth: bool,
-        updatable_count: u32,
     ) -> usize {
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab(if growth { "GrowRayEffect" } else { "ShrinkRayEffect" }));
         let effect = ScaleChangerState {
             active: true,
             appended: self.tick + 1,
@@ -29141,7 +29199,7 @@ impl RolloutWorld {
         }
     }
 
-    fn begin_scale_change_entity(&mut self, entity: usize, growth: bool, updatable_count: u32) {
+    fn begin_scale_change_entity(&mut self, entity: usize, growth: bool) {
         if entity >= self.entities.len() || self.entities[entity].flags & E_ACTIVE == 0 {
             return;
         }
@@ -29191,8 +29249,7 @@ impl RolloutWorld {
                     .map(|state| state.current_scale)
             })
             .unwrap_or(Fix::ONE);
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab(if growth { "GrowRayEffect" } else { "ShrinkRayEffect" }));
         let effect = ScaleChangerState {
             active: true,
             appended: self.tick + 1,
@@ -29472,10 +29529,10 @@ impl RolloutWorld {
             // delay keeps its registered tunnel, whose DelayedInit restarts
             // the delay and still counts it later this pass.
             if !self.platform_dynamics[platform_index].blink_tunnel_active {
+                let base = self.register_prefab(data.prefab("QuantumTunnel"));
                 let dynamics = &mut self.platform_dynamics[platform_index];
-                dynamics.blink_tunnel_hierarchy = self.next_spawn_hierarchy;
+                dynamics.blink_tunnel_hierarchy = base;
                 dynamics.blink_tunnel_appended = self.tick + 1;
-                self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
             }
             let dynamics = &mut self.platform_dynamics[platform_index];
             dynamics.shake_time = Fix::ZERO;
@@ -29987,8 +30044,7 @@ impl RolloutWorld {
         let caster_slot = self.players[caster].active_slot;
         self.players[caster].cooldowns[caster_slot] = data.blink.on_player_hit_cooldown;
         if !self.players[victim].blink_tunnel_active {
-            self.players[victim].blink_tunnel_hierarchy = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
+            self.players[victim].blink_tunnel_hierarchy = self.register_prefab(data.prefab("QuantumTunnel"));
         }
         let rope_top = self.players[victim].rope_top;
         self.attach_player_rope(victim, None, rope_top);
@@ -30027,11 +30083,11 @@ impl RolloutWorld {
     ) {
         let caster_slot = self.players[caster].active_slot;
         self.players[caster].cooldowns[caster_slot] = data.blink.on_player_hit_cooldown;
-        let clone = &mut self.abilityless_clones[clone_index];
-        if !clone.blink_tunnel_active {
-            clone.blink_tunnel_hierarchy = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
+        if !self.abilityless_clones[clone_index].blink_tunnel_active {
+            let base = self.register_prefab(data.prefab("QuantumTunnel"));
+            self.abilityless_clones[clone_index].blink_tunnel_hierarchy = base;
         }
+        let clone = &mut self.abilityless_clones[clone_index];
         clone.blink_tunnel_active = true;
         clone.blink_tunnel_appended = self.tick + 1;
         clone.blink_tunnel_age = Fix::ZERO;
@@ -30079,11 +30135,9 @@ impl RolloutWorld {
                 restore_flags,
                 released_tick: None,
                 hierarchy,
-                stepped_tick: None,
             };
         } else {
-            let hierarchy = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.blink.tunnel_updatable_count;
+            let hierarchy = self.register_prefab(data.prefab("QuantumTunnel"));
             let tunnel = BlinkObjectTunnel {
                 active: true,
                 appended: self.tick + 1,
@@ -30094,7 +30148,6 @@ impl RolloutWorld {
                 restore_flags: self.entities[entity].flags,
                 released_tick: None,
                 hierarchy,
-                stepped_tick: None,
             };
             if let Some(index) = self
                 .blink_object_tunnels
@@ -30126,10 +30179,9 @@ impl RolloutWorld {
             entity_id,
             age: Fix::ZERO,
             restore_flags: self.entities[entity].flags,
-            hierarchy: self.next_spawn_hierarchy,
+            hierarchy: self.register_prefab(data.prefab("teleportingObjectEffect")),
             revealed_tick: None,
             source_hierarchy,
-            stepped_tick: None,
         };
         if let Some(index) = self
             .teleport_object_effects
@@ -30140,7 +30192,6 @@ impl RolloutWorld {
         } else {
             self.teleport_object_effects.push(effect);
         }
-        self.next_spawn_hierarchy += data.teleport.effect_updatable_count;
         self.entities[entity].flags &= !E_ACTIVE;
         if let Some(platform_index) = self
             .platform_entities
@@ -30304,17 +30355,16 @@ impl RolloutWorld {
     ) {
         for index in 0..self.blink_object_tunnels.len() {
             let tunnel = self.blink_object_tunnels[index];
-            let key = updater_key(tunnel.appended, 100_000_000 + tunnel.hierarchy);
+            let key = self.updater_key(tunnel.appended, 100_000_000 + tunnel.hierarchy);
             if !tunnel.active
                 || tunnel.appended > self.tick
-                || tunnel.stepped_tick == Some(self.tick)
                 || before.is_some_and(|before| tunnel.hierarchy >= before)
                 || self.updater_passed(key)
             {
                 continue;
             }
             self.run_spawned_before(data, updater_dt, key);
-            self.blink_object_tunnels[index].stepped_tick = Some(self.tick);
+            self.updater_take_turn(key);
             if tunnel.entity >= self.entities.len()
                 || self.entities[tunnel.entity].id != tunnel.entity_id
             {
@@ -30344,12 +30394,10 @@ impl RolloutWorld {
             let tick = self.tick;
             let next = (self.players.iter().enumerate())
                 .filter(|(_, slot)| {
-                    slot.blink_tunnel_active
-                        && slot.blink_tunnel_appended <= tick
-                        && slot.blink_tunnel_stepped_tick != Some(tick)
+                    slot.blink_tunnel_active && slot.blink_tunnel_appended <= tick
                 })
                 .map(|(victim, slot)| {
-                    (updater_key(slot.blink_tunnel_appended, 100_000_000 + slot.blink_tunnel_hierarchy), victim)
+                    (self.updater_key(slot.blink_tunnel_appended, 100_000_000 + slot.blink_tunnel_hierarchy), victim)
                 })
                 .filter(|&(key, _)| !self.updater_passed(key))
                 .min();
@@ -30364,11 +30412,11 @@ impl RolloutWorld {
     /// One slime QuantumTunnel's UpdateSim turn (QuantumTunnel.cs:144-196).
     fn blink_tunnel_step(&mut self, victim: usize, data: &data::RolloutData, updater_dt: Fix) {
         let slot = &self.players[victim];
-        let key = updater_key(slot.blink_tunnel_appended, 100_000_000 + slot.blink_tunnel_hierarchy);
-        if slot.blink_tunnel_stepped_tick == Some(self.tick) || self.updater_passed(key) {
+        let key = self.updater_key(slot.blink_tunnel_appended, 100_000_000 + slot.blink_tunnel_hierarchy);
+        if self.updater_passed(key) {
             return;
         }
-        self.players[victim].blink_tunnel_stepped_tick = Some(self.tick);
+        self.updater_take_turn(key);
         let hierarchy = self.players[victim].blink_tunnel_hierarchy;
         if self.players[victim].blink_tunnel_age > data.blink.player_duration {
             let slot = &mut self.players[victim];
@@ -30432,12 +30480,10 @@ impl RolloutWorld {
             let tick = self.tick;
             let next = (self.abilityless_clones.iter().enumerate())
                 .filter(|(_, clone)| {
-                    clone.blink_tunnel_active
-                        && clone.blink_tunnel_appended <= tick
-                        && clone.blink_tunnel_stepped_tick != Some(tick)
+                    clone.blink_tunnel_active && clone.blink_tunnel_appended <= tick
                 })
                 .map(|(index, clone)| {
-                    (updater_key(clone.blink_tunnel_appended, 100_000_000 + clone.blink_tunnel_hierarchy), index)
+                    (self.updater_key(clone.blink_tunnel_appended, 100_000_000 + clone.blink_tunnel_hierarchy), index)
                 })
                 .filter(|&(key, _)| !self.updater_passed(key))
                 .min();
@@ -30452,11 +30498,11 @@ impl RolloutWorld {
     /// One clone QuantumTunnel's UpdateSim turn (QuantumTunnel.cs:144-196).
     fn blink_clone_tunnel_step(&mut self, clone_index: usize, data: &data::RolloutData, updater_dt: Fix) {
         let clone = &self.abilityless_clones[clone_index];
-        let key = updater_key(clone.blink_tunnel_appended, 100_000_000 + clone.blink_tunnel_hierarchy);
-        if clone.blink_tunnel_stepped_tick == Some(self.tick) || self.updater_passed(key) {
+        let key = self.updater_key(clone.blink_tunnel_appended, 100_000_000 + clone.blink_tunnel_hierarchy);
+        if self.updater_passed(key) {
             return;
         }
-        self.abilityless_clones[clone_index].blink_tunnel_stepped_tick = Some(self.tick);
+        self.updater_take_turn(key);
         if !self.abilityless_clones[clone_index].active {
             self.abilityless_clones[clone_index].blink_tunnel_active = false;
             return;
@@ -30519,10 +30565,9 @@ impl RolloutWorld {
     ) {
         for platform_index in 0..self.platforms.len() {
             let state = &self.platform_dynamics[platform_index];
-            let key = updater_key(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy);
+            let key = self.updater_key(state.blink_tunnel_appended, 100_000_000 + state.blink_tunnel_hierarchy);
             if !state.blink_tunnel_active
                 || state.blink_tunnel_appended > self.tick
-                || state.blink_tunnel_stepped_tick == Some(self.tick)
                 || before.is_some_and(|before| state.blink_tunnel_hierarchy >= before)
                 || self.updater_passed(key)
             {
@@ -30532,8 +30577,8 @@ impl RolloutWorld {
             // the older updatables have taken their turns: a pickup raycasts
             // for ground before the wall goes.
             self.run_spawned_before(data, updater_dt, key);
+            self.updater_take_turn(key);
             let state = &mut self.platform_dynamics[platform_index];
-            state.blink_tunnel_stepped_tick = Some(self.tick);
             if !state.blink_tunnel_initialized {
                 let delay = state.blink_tunnel_delay + updater_dt;
                 self.platform_dynamics[platform_index].blink_tunnel_delay = delay;
@@ -30768,8 +30813,7 @@ impl RolloutWorld {
 
     fn begin_freeze(&mut self, victim: usize, duration: Fix) {
         let freeze_position = self.players[victim].base.position;
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data::get().freeze.frozen_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("FrozenSolid"));
         let state = FrozenSolidState {
             active: true,
             appended: self.tick + 1,
@@ -30894,7 +30938,7 @@ impl RolloutWorld {
     /// it, and the later one's position and release are the ones that stand.
     fn frozen_solids_tick(&mut self, updater_dt: Fix) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.frozen_solids, |effect| updater_key(effect.appended, 100_000_000 + effect.hierarchy_base));
+        updater_order(&mut order, &self.frozen_solids, |effect| self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base));
         for &effect_index in &order {
             let effect = self.frozen_solids[effect_index];
             if !effect.active || self.tick < effect.appended {
@@ -31017,7 +31061,7 @@ impl RolloutWorld {
     ) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         updater_order(&mut order, &self.scale_changers, |effect| {
-            updater_key(effect.appended, 100_000_000 + effect.hierarchy_base)
+            self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base)
         });
         let mut spikes_from = deferred_spikes;
         let mut updaters_from = deferred_updaters;
@@ -31053,7 +31097,7 @@ impl RolloutWorld {
     /// before it, such as a DuplicatePlatformEffect, update before it.
     fn scale_changer_step(&mut self, index: usize, data: &data::RolloutData, updater_dt: Fix) {
         let changer = &self.scale_changers[index];
-        let key = updater_key(changer.appended, 100_000_000 + changer.hierarchy_base);
+        let key = self.updater_key(changer.appended, 100_000_000 + changer.hierarchy_base);
         self.run_spawned_before(data, updater_dt, key);
         let effect = self.scale_changers[index];
         let ray = if effect.growth {
@@ -31416,7 +31460,7 @@ impl RolloutWorld {
             effect_scale: scale,
             spawn_position,
             spawner_hierarchy,
-            hierarchy_base: self.next_spawn_hierarchy,
+            hierarchy_base: self.register_prefab(data.prefab("DuplicatePlatformEffect")),
             stepped_tick: None,
         };
         if let Some(slot) = self
@@ -31428,7 +31472,6 @@ impl RolloutWorld {
         } else {
             self.duplicate_platform_effects.push(effect);
         }
-        self.next_spawn_hierarchy += data.duplicator.platform_effect_updatable_count;
         let dynamics = &mut self.platform_dynamics[source];
         dynamics.shake_time = Fix::ZERO;
         dynamics.shake_duration = data.duplicator.platform_shake_duration;
@@ -31595,7 +31638,7 @@ impl RolloutWorld {
             // come pulls the copy itself.
             if !hole.active
                 || hole.hierarchy_base < effect_hierarchy
-                || hole.updated_tick != Some(self.tick)
+                || !self.updater_passed(self.updater_key(hole.appended, 100_000_000 + hole.hierarchy_base))
                 || self.blink_object_hidden(hole.entity)
             {
                 continue;
@@ -31647,26 +31690,31 @@ impl RolloutWorld {
         // now, as SetActive takes effect at once; the clone then keeps the
         // source's own numbers, offset like any prefab's.
         let hidden = self.wall_deactivated(source);
-        let (updatable_count, collider_hierarchy) = if definition != usize::MAX {
-            let def = &data.maps[self.map].platforms[definition];
-            (def.updatable_count, def.duplicate_collider_hierarchy)
+        let lists = data::get();
+        let (registrations, collider_hierarchy) = if definition != usize::MAX {
+            let def = &lists.maps[self.map].platforms[definition];
+            if hidden {
+                (def.registrations.as_slice(), def.hierarchy)
+            } else {
+                (def.copy_registrations.as_slice(), def.duplicate_collider_hierarchy)
+            }
         } else if self.platform_dynamics[source].body_resizable {
             // A Platform ability's ResizablePlatform: six updatables, the
             // DPhysicsRoundedRect sixth.
-            (data.platform.spawn_updatable_count, data.platform.spawn_collider_hierarchy)
+            (lists.copy("ResizablePlatform"), data.platform.spawn_collider_hierarchy)
         } else {
             // A Macho boulder, or a copy of one: the Boulder prefab's six
             // updatables all sit on its root in prefab order, so DuplicateObject
             // renumbers them 1-6 and its DPhysicsRoundedRect stays second.
-            (
-                data.macho_throw.boulder_updatable_count,
-                data.macho_throw.boulder_collider_hierarchy,
-            )
+            (lists.copy("Boulder"), data.macho_throw.boulder_collider_hierarchy)
         };
-        // A hidden source's collider keeps its own number in the copy.
+        // A hidden source's collider keeps its own number in the copy, and
+        // its updatables the numbers they registered with.
         let source_hierarchy = self.entities[self.platform_entities[source]].hierarchy;
         let collider_hierarchy = if hidden { source_hierarchy } else { collider_hierarchy };
-        let hierarchy_base = self.duplicate_hierarchy(source_hierarchy, !hidden, updatable_count, collider_hierarchy);
+        let registered = if hidden { self.platform_dynamics[source].registered } else { (registrations, collider_hierarchy) };
+        let own = if hidden { (source_hierarchy - registered.1, registered.0) } else { (0, registrations) };
+        let hierarchy_base = self.duplicate_hierarchy(source_hierarchy, !hidden, own, collider_hierarchy);
 
         let mut platform = self.platforms[source].clone();
         platform.id = self.next_platform_id;
@@ -31728,6 +31776,7 @@ impl RolloutWorld {
         }
 
         let mut dynamics = self.platform_dynamics[source];
+        dynamics.registered = registered;
         // Updater adds an updatable registered mid-pass to its list only at
         // the start of the next pass (Updater.cs:258-282), so the copy's
         // updaters first run then, wherever this effect's turn fell.
@@ -32383,7 +32432,7 @@ impl RolloutWorld {
         rope.platform_top = top;
         rope.platform_attach_tick = self.tick;
         // RopeAttachment is the prefab's only MonoUpdatable.
-        self.next_spawn_hierarchy += 1;
+        self.register_prefab(data::get().prefab("RopeAttachment"));
         let slot = &mut self.players[owner];
         slot.rope_prev[slot.rope_body()] = (slot.base.velocity, slot.base.external_velocity);
         slot.rope = None;
@@ -32517,8 +32566,7 @@ impl RolloutWorld {
         // synthetic 300_000_000 + id stood here instead, which both mismatched
         // the exported value and left the cursor un-advanced for whatever spawns
         // next.
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += pd.spawn_updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("ResizablePlatform"));
         self.push_entity(CEntity {
             id,
             kind: 2,
@@ -32546,6 +32594,7 @@ impl RolloutWorld {
             false,
         ));
         self.platform_dynamics.push(PlatformDynamics {
+            registered: (data::get().prefab("ResizablePlatform"), pd.spawn_collider_hierarchy),
             updater_ran_tick: None,
             body: pd.spawn_body,
             scale,
@@ -32594,7 +32643,6 @@ impl RolloutWorld {
             blink_tunnel_delay: Fix::ZERO,
             blink_tunnel_age: Fix::ZERO,
             blink_tunnel_hierarchy: 0,
-            blink_tunnel_stepped_tick: None,
             blink_deactivated_tick: None,
             blink_reactivated_tick: None,
             basis: None,
@@ -32896,8 +32944,7 @@ impl RolloutWorld {
         let free = self.arrows.iter().position(|a| !a.active);
         self.release_arrow_row(free);
         let id = self.next_id();
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data::get().arrow.updatable_count;
+        let hierarchy_base = self.register_prefab(data::get().prefab("Arrow"));
         let arrow = Arrow {
             active: true,
             registered: false,
@@ -33099,8 +33146,7 @@ impl RolloutWorld {
         scale: Fix,
         data: &data::RolloutData,
     ) {
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.missile.explosion_updatable_count;
+        let hierarchy_base = self.register_prefab(data.prefab("MineExplosion"));
         let explosion = MissileExplosion {
             active: true,
             appended: self.tick + 1,
@@ -33167,7 +33213,7 @@ impl RolloutWorld {
                 if map.is_space() {
                     boundary_explosion = Some(Vec2::new(position.x, map.lower_boundary()));
                 } else {
-                    self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                    self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                     self.destroy_guided_missile(index, false);
                     continue;
                 }
@@ -33539,7 +33585,7 @@ impl RolloutWorld {
         let mut order: Vec<usize> = (0..self.thrown_items.len())
             .filter(|&index| self.thrown_items[index].ability == ABILITY_MINE)
             .collect();
-        order.sort_unstable_by_key(|&index| updater_key(self.thrown_items[index].appended, 100_000_000 + self.thrown_items[index].hierarchy_base));
+        order.sort_unstable_by_key(|&index| self.updater_key(self.thrown_items[index].appended, 100_000_000 + self.thrown_items[index].hierarchy_base));
         for item_index in order {
             if self.blink_object_hidden(self.thrown_items[item_index].entity) {
                 continue;
@@ -33884,7 +33930,7 @@ impl RolloutWorld {
                 _ => false,
             }
         }));
-        order.sort_unstable_by_key(|&index| (updater_key(self.thrown_items[index].appended, 100_000_000 + self.thrown_items[index].hierarchy_base), index));
+        order.sort_unstable_by_key(|&index| (self.updater_key(self.thrown_items[index].appended, 100_000_000 + self.thrown_items[index].hierarchy_base), index));
         for &item_index in &order {
             // The TeleportedObjectEffect that reactivates an item is newer, so
             // the item's own UpdateSim was skipped this pass.
@@ -34174,7 +34220,7 @@ impl RolloutWorld {
             // updater with the default CauseOfDeath.Other, its own thrower
             // included: it creates the normal death effect, while
             // DetPhysics removes all killed colliders before contacts.
-            self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+            self.register_prefab(data::get().prefab("deathEffect"));
             if victim_is_clone {
                 self.kill_abilityless_clone(victim, killer, CAUSE_OTHER, KillRoute::UPDATER, false);
             } else {
@@ -34239,7 +34285,7 @@ impl RolloutWorld {
             let item = &self.thrown_items[index];
             item.ability == ABILITY_MJOLNIR && window.contains(&(100_000_000 + item.hierarchy_base))
         }));
-        order.sort_unstable_by_key(|&index| (updater_key(self.thrown_items[index].appended, 100_000_000 + self.thrown_items[index].hierarchy_base), index));
+        order.sort_unstable_by_key(|&index| (self.updater_key(self.thrown_items[index].appended, 100_000_000 + self.thrown_items[index].hierarchy_base), index));
         for &item_index in &order {
             if self.take_updater_turn(item_index)
                 && !self.teleport_revealed_this_pass(self.thrown_items[item_index].entity)
@@ -34280,7 +34326,7 @@ impl RolloutWorld {
         // the pass after (Mjolnir.cs:126-131). The ropes older than an item
         // update before it.
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.thrown_items, |item| updater_key(item.appended, 100_000_000 + item.hierarchy_base));
+        updater_order(&mut order, &self.thrown_items, |item| self.updater_key(item.appended, 100_000_000 + item.hierarchy_base));
         for &item_index in &order {
             if self.teleport_revealed_this_pass(self.thrown_items[item_index].entity) {
                 continue;
@@ -34483,7 +34529,7 @@ impl RolloutWorld {
         self.thrown_items[item_index].killed_players |= victims;
         // killPlayer runs as each is found.
         for &victim in &killed[..killed_count] {
-            self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
+            self.register_prefab(data::get().prefab("deathEffect"));
             match victim {
                 MjolnirVictim::Body(body) => {
                     // DropAbilities reads the body before the later ice pins it.
@@ -34649,7 +34695,7 @@ impl RolloutWorld {
                 let position = Vec2::new(item.position.x, map.lower_boundary());
                 self.spawn_missile_explosion(position, item.owner, false, Fix::ONE, data);
             } else if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE) {
-                self.next_spawn_hierarchy += 2;
+                self.register_prefab(data.prefab("WaterDeathEffect 1"));
             }
             self.remove_thrown_item(item_index, false);
             return;
@@ -34825,8 +34871,7 @@ impl RolloutWorld {
         scale: Fix,
         data: &data::RolloutData,
     ) {
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.grenade.explosion_updatable_count;
+        let hierarchy_base = self.register_prefab(data.prefab("XGunExplosion"));
         let explosion = GrenadeExplosion {
             active: true,
             appended: self.tick + 1,
@@ -34910,8 +34955,7 @@ impl RolloutWorld {
                 }
             }
 
-            let hierarchy_base = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.smoke.cloud_updatable_count;
+            let hierarchy_base = self.register_prefab(data::get().prefab("SmokeCircle"));
             let cloud = SmokeCloud {
                 active: true,
                 appended: self.tick + 1,
@@ -34937,7 +34981,7 @@ impl RolloutWorld {
             }
             // SmokeGrenadeExplode2 instantiates the presentation burst after
             // each cloud; it has updatables but no observed collider.
-            self.next_spawn_hierarchy += data.smoke.burst_updatable_count;
+            self.register_prefab(data::get().prefab("SmokeExplosion 1"));
         }
         self.remove_thrown_item(item_index, by_callback);
     }
@@ -34956,8 +35000,7 @@ impl RolloutWorld {
         if !cloud.active {
             return;
         }
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.smoke.explosion_updatable_count;
+        let hierarchy_base = self.register_prefab(data.prefab("SmokeExplosion"));
         let explosion = SmokeExplosion {
             active: true,
             appended: self.tick + 1,
@@ -35054,12 +35097,14 @@ impl RolloutWorld {
     /// HierarchyNumber and renumbered from one; a source out of it is found
     /// empty and keeps its numbers. InstantiateFixed then wakes an inactive
     /// copy for a moment, so either way every updatable, arrows included,
-    /// registers inside the prefab and has prefabsAdded added. Reserves the
-    /// copy's numbers and returns the base of its own; each copied arrow is
+    /// registers inside the prefab and has prefabsAdded added. `own` is the
+    /// source's updatables as an offset and a list: the copy's ranks for a
+    /// source in the hierarchy, the numbers they registered with for one out
+    /// of it. Registers the copy and returns the base of its own; each copied arrow is
     /// a new child of the copy, whose own HierarchyNumber `key_offset` past
     /// that base names it (ShootDuplicator.cs:707-753, FixTransform.cs:160-168,
     /// Arrow.cs:33-45, Updater.cs:143-152).
-    fn duplicate_hierarchy(&mut self, source: u32, in_hierarchy: bool, own: u32, key_offset: u32) -> u32 {
+    fn duplicate_hierarchy(&mut self, source: u32, in_hierarchy: bool, own: (u32, &[u32]), key_offset: u32) -> u32 {
         let next = self.next_spawn_hierarchy;
         let arrows: Vec<u32> = self
             .landed_arrows
@@ -35071,17 +35116,23 @@ impl RolloutWorld {
         sorted.sort_unstable();
         let earlier = if in_hierarchy { sorted.partition_point(|&hierarchy| hierarchy < source) as u32 } else { 0 };
         let base = next + earlier;
-        self.next_spawn_hierarchy += own + arrows.len() as u32;
         let parent = 100_000_000 + base + key_offset;
+        // The copy registers its own updatables, then each copied arrow's,
+        // with the numbers DuplicateObject gave them; each belongs to the
+        // copy or to its arrow.
+        let (offset, own) = own;
+        let mut members: Vec<(u32, u32)> = own.iter().map(|&local| (earlier + offset + local, earlier)).collect();
         for hierarchy in arrows {
-            let hierarchy = if in_hierarchy {
+            let local = if in_hierarchy {
                 let rank = sorted.binary_search(&hierarchy).unwrap() as u32;
-                spawned_hierarchy(next + if rank < earlier { rank } else { rank + own })
+                (if rank < earlier { rank } else { rank + own.len() as u32 }) + 1
             } else {
-                100_000_000 + next + hierarchy
+                hierarchy
             };
-            self.landed_arrows.push(LandedArrow { parent, hierarchy, trimmed: None });
+            members.push((local, local - 1));
+            self.landed_arrows.push(LandedArrow { parent, hierarchy: 100_000_000 + next + local, trimmed: None });
         }
+        self.register_members(members.into_iter());
         base
     }
 
@@ -36925,7 +36976,7 @@ impl RolloutWorld {
             if spawn.removal_time >= end {
                 spawn.destroy_pending = true;
                 // A newer RopeAttachment on it sees IsDestroyed this pass.
-                let hierarchy = self.platform_turn_key(i).1 - 100_000_000;
+                let hierarchy = self.platform_turn_key(i).2 - 100_000_000;
                 for rope in &mut self.ropes {
                     if rope.platform == Some(i) {
                         rope.platform_destroyed_at = (self.tick, hierarchy);
@@ -36996,7 +37047,7 @@ impl RolloutWorld {
     /// order (`game_tick`).
     fn player_turn(&mut self, data: &data::RolloutData, turn: usize) {
         let index = self.scratch.turn_order[turn];
-        self.scratch.updater_hierarchy = self.scratch.turn_key[index].1;
+        self.scratch.updater_hierarchy = self.scratch.turn_key[index].2;
         if index >= self.player_count && !self.players[index].base.alive {
             return;
         }
@@ -37108,7 +37159,7 @@ impl RolloutWorld {
                 self.platform_ability_tick(index, retained, data, Fix::ZERO);
                 self.players[index].base.external_velocity *= Fix::from_f64(0.95);
                 if self.players[index].base.alive && self.players[index].base.outside_bounds() {
-                    self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                    self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                     self.players[index].reported_position = self.players[index].base.position;
                     self.players[index].reported_tick = self.tick;
                     self.kill(index, ENVIRONMENT, CAUSE_OTHER, false, false);
@@ -37240,7 +37291,7 @@ impl RolloutWorld {
             self.players[index].base.out_of_bounds = false;
             // DestroyIfOutsideSceneBounds instantiates the water/bounds
             // effect before it calls killPlayer with spawnEffect=false.
-            self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+            self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
             // The ordinary slime's boundary component kills with
             // Accident (DestroyIfOutsideSceneBounds.cs:148); an ability
             // body's exits through Ability.ExitAbility with a default
@@ -37357,7 +37408,7 @@ impl RolloutWorld {
     /// so a rope registered right after the platform is still newer.
     fn platform_turn_key(&self, i: usize) -> UpdaterKey {
         let hierarchy = self.entities[self.platform_entities[i]].hierarchy - 1;
-        updater_key(self.platform_dynamics[i].appended, hierarchy)
+        self.updater_member_key(self.platform_dynamics[i].appended, hierarchy)
     }
 
     /// Player `index`'s turn this pass: that of whichever object holds it,
@@ -37372,7 +37423,7 @@ impl RolloutWorld {
         };
         self.entities
             .get(entity)
-            .map_or((u32::MAX, u32::MAX), |row| updater_key(appended, row.hierarchy))
+            .map_or((u32::MAX, u32::MAX, u32::MAX), |row| self.updater_member_key(appended, row.hierarchy))
     }
 
     /// Whether platform `i` updates in this run of `pass`.
@@ -37778,7 +37829,7 @@ impl RolloutWorld {
     /// clone may fill a slot freed below an older one.
     fn abilityless_clones_tick(&mut self) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
-        updater_order(&mut order, &self.abilityless_clones, |clone| updater_key(clone.appended, 100_000_000 + clone.hierarchy_base));
+        updater_order(&mut order, &self.abilityless_clones, |clone| self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base));
         for clone in &mut self.abilityless_clones {
             if clone.pass_start.0 != self.tick {
                 clone.pass_start = (self.tick, clone.base.position);
@@ -37992,7 +38043,7 @@ impl RolloutWorld {
         if !self.abilityless_clones[clone_index].base.alive {
             // The clone's DestroyIfOutsideSceneBounds instantiates the
             // water/bounds effect too.
-            self.next_spawn_hierarchy += data::get().player.boundary_effect_updatable_count;
+            self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
             self.abilityless_clones[clone_index].drowned_tick = self.tick;
             self.kill_abilityless_clone(clone_index, ENVIRONMENT, CAUSE_ACCIDENT, KillRoute::UPDATER, false);
             return;
@@ -38104,7 +38155,7 @@ impl RolloutWorld {
             self.abilityless_clones[clone_index].destroyed_tick = Some(tick);
         }
         if spawn_effect && self.players[owner].extra_life != REVIVE_BEING {
-            self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+            self.register_prefab(data::get().prefab("deathEffect"));
         }
         if !destroyed {
             if let Some(row) = self.abilityless_clones[clone_index].entity.and_then(|entity| self.entities.get(entity)) {
@@ -38284,7 +38335,7 @@ impl RolloutWorld {
                 || position.x.abs() > Fix::from_f64(131.25)
             {
                 if below && !map.is_space() {
-                    self.next_spawn_hierarchy += data.player.boundary_effect_updatable_count;
+                    self.register_prefab(data::get().prefab("WaterDeathEffect 1"));
                 }
                 let rock = &mut self.duplicated_rocks[rock_index];
                 rock.active = false;
@@ -39609,25 +39660,24 @@ impl RolloutWorld {
                 .or(slot.dead_ground(self.tick))
                 .map_or(Vec2::ZERO, |surface| surface.normal(drop_position) * Fix::from_f32(0.05))
         };
+        // Collision callbacks instantiate the ordinary death effect before
+        // SpawnClone. Updatable callers account for their own effect;
+        // boundary deaths accounted for the distinct bounds effect before
+        // entering kill().
+        if revival_marker.is_some() && death_effect {
+            self.register_prefab(data::get().prefab("deathEffect"));
+        }
         let slot = &mut self.players[index];
         if let Some(marker_index) = revival_marker {
-            // Collision callbacks instantiate the ordinary death effect
-            // before SpawnClone. Updatable callers account for their own
-            // effect; boundary deaths accounted for the distinct bounds
-            // effect before entering kill().
-            if death_effect {
-                self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
-            }
             // SpawnClone copies the dead slime's abilities, then ReviveEffect
             // is instantiated; it has no collider but consumes hierarchy
             // (PlayerCollision.cs:140-158).
-            slot.clone_player_hierarchy = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += 8;
-            for ability_slot in 0..slot.ability_count {
-                slot.clone_ability_hierarchy[ability_slot] = self.next_spawn_hierarchy;
-                self.next_spawn_hierarchy +=
-                    data::get().abilities[slot.abilities[ability_slot] as usize].updatable_count;
-            }
+            let abilities = slot.abilities;
+            let count = slot.ability_count;
+            let (player_base, ability_bases) = self.register_slime_clone(&abilities[..count]);
+            let slot = &mut self.players[index];
+            slot.clone_player_hierarchy = player_base;
+            slot.clone_ability_hierarchy[..count].copy_from_slice(&ability_bases[..count]);
             let rows = slot.owned_rows();
             for entity in rows {
                 if entity == usize::MAX {
@@ -39675,19 +39725,16 @@ impl RolloutWorld {
                 let mut clone = self.players[index].clone();
                 clone.owner = owner;
                 clone.telemetry = CTelemetry::default();
-                clone.clone_player_hierarchy = self.next_spawn_hierarchy;
-                self.next_spawn_hierarchy += 8;
-                for ability_slot in 0..clone.ability_count {
-                    clone.clone_ability_hierarchy[ability_slot] = self.next_spawn_hierarchy;
-                    self.next_spawn_hierarchy +=
-                        data::get().abilities[clone.abilities[ability_slot] as usize].updatable_count;
-                }
+                let count = clone.ability_count;
+                let (player_base, ability_bases) = self.register_slime_clone(&clone.abilities[..count]);
+                clone.clone_player_hierarchy = player_base;
+                clone.clone_ability_hierarchy[..count].copy_from_slice(&ability_bases[..count]);
                 clone.revival_target_marker = Some(marker);
                 clone.revival_clone_position = self.revival_marker_pool[marker].position;
                 self.players[body] = clone;
             }
             self.player_kill(owner, killer, cause);
-            self.next_spawn_hierarchy += data::get().revival.effect_updatable_count;
+            self.register_prefab(data::get().prefab("ReviveEffect"));
             // Player.RespawnPositions.Clear().
             for body in &mut self.players {
                 if body.owner == owner {
@@ -39715,8 +39762,9 @@ impl RolloutWorld {
             && self.game_in_progress
         {
             if death_effect {
-                self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+                self.register_prefab(data::get().prefab("deathEffect"));
             }
+            let slot = &mut self.players[index];
             for entity in slot.owned_rows() {
                 if entity != usize::MAX {
                     let row = &mut self.entities[entity];
@@ -39777,8 +39825,9 @@ impl RolloutWorld {
                 // Water/lethal callbacks request the ordinary death effect;
                 // its two updatables register before DropAbilities creates
                 // the pickup. Boundary deaths pass spawnEffect=false.
-                self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
+                self.register_prefab(data::get().prefab("deathEffect"));
             }
+            let slot = &mut self.players[index];
             // DropAbilities samples the horizontal launch perturbation before
             // it reads the final ability icon, then initializes the same live
             // DynamicAbilityPickup used by the map spawner. With three or
@@ -39808,22 +39857,17 @@ impl RolloutWorld {
     /// BeginChoice the chooser's three indicators.
     fn begin_stock_respawn(&mut self, index: usize) {
         let data = data::get();
-        let slot = &mut self.players[index];
-        let clone_player_hierarchy = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += 8;
-        let mut clone_ability_hierarchy = [0u32; 3];
-        for (ability_slot, hierarchy) in clone_ability_hierarchy.iter_mut().enumerate() {
-            *hierarchy = self.next_spawn_hierarchy;
-            if ability_slot < slot.ability_count {
-                self.next_spawn_hierarchy +=
-                    data.abilities[slot.abilities[ability_slot] as usize].updatable_count;
-            }
-        }
+        let slot = &self.players[index];
+        let abilities = slot.abilities;
+        let (clone_player_hierarchy, clone_ability_hierarchy) = self.register_slime_clone(&abilities[..slot.ability_count]);
+        // BeginChoice AddComponents the chooser before Setup instantiates
+        // its indicators (StockRespawn.cs:66-71, 101-112).
+        self.register_chooser(index);
         let mut stock_indicator_hierarchy = [0u32; 3];
         for hierarchy in &mut stock_indicator_hierarchy {
-            *hierarchy = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.revival.marker_updatable_count;
+            *hierarchy = self.register_prefab(data.prefab("RevivePositionIndicator"));
         }
+        let slot = &mut self.players[index];
         slot.stocks -= 1;
         slot.stock_clone_pending = true;
         let owner = slot.owner;
@@ -39906,15 +39950,15 @@ impl RolloutWorld {
     fn stock_chooser_step(&mut self, index: usize, data: &data::RolloutData) {
         let tick = self.tick;
         let slot = &self.players[index];
-        let key = updater_key(slot.chooser_appended, 0);
-        if slot.respawn_ticks == 0 || slot.chooser_ran_tick == Some(tick) || self.updater_passed(key) {
+        let key = self.chooser_key(index);
+        if slot.respawn_ticks == 0 || self.updater_passed(key) {
             return;
         }
+        self.updater_take_turn(key);
         let slot = &self.players[index];
         let input_direction = self.scratch.clone_actions[slot.owner].input_direction(slot.keyboard);
         let jump_pressed = self.scratch.clone_jump_pressed[index];
         let slot = &mut self.players[index];
-        slot.chooser_ran_tick = Some(tick);
         let threshold = Fix::from_f32(0.3);
         if input_direction.x < -threshold {
             slot.respawn_selected = 0;
@@ -43219,13 +43263,13 @@ mod tests {
             ..CEntity::default()
         }, Vec2::ZERO);
 
-        world.begin_scale_change_entity(entity, true, 1);
+        world.begin_scale_change_entity(entity, true);
         world.scale_changers[0].active = false;
         world.scale_changers[0].current_scale = Fix::from_int(2);
-        world.begin_scale_change_entity(entity, true, 1);
+        world.begin_scale_change_entity(entity, true);
         assert_eq!(world.scale_changers[0].current_scale, Fix::from_int(2));
 
-        world.begin_scale_change_entity(entity, false, 1);
+        world.begin_scale_change_entity(entity, false);
         assert_eq!(world.scale_changers.len(), 2);
         world.tick += 1;
         world.scale_changers_tick(data::get(), DT, None, None);
@@ -43756,7 +43800,7 @@ mod tests {
             scale: Fix::ONE,
             ..TeleportMarker::default()
         });
-        world.begin_scale_change_entity(entity, true, 1);
+        world.begin_scale_change_entity(entity, true);
         for _ in 0..10 {
             world.tick += 1;
             world.scale_changers_tick(data::get(), DT, None, None);
@@ -44951,7 +44995,7 @@ mod tests {
         }
         assert_eq!(
             world.next_spawn_hierarchy,
-            hierarchy + data::get().abilities[ABILITY_MINE as usize].updatable_count * 2
+            hierarchy + data::get().abilities[ABILITY_MINE as usize].registrations.len() as u32 * 2
         );
         assert!(!world.ability_pickups[pickup_index].active);
     }
