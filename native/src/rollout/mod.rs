@@ -32787,6 +32787,7 @@ impl RolloutWorld {
         };
         // Mine_0.prefab scans for the Player layer into a four-entry buffer
         // (Mine.cs:63,131).
+        let mine_key = self.updater_key(mine.appended, 100_000_000 + mine.hierarchy_base);
         let mut hits = [0usize; 4];
         let count = self.circle_cast_all(query, 1 << LAYER_PLAYER, |_, _| false, &mut hits);
         let owner_team = self.players[mine.owner].team;
@@ -32796,9 +32797,11 @@ impl RolloutWorld {
             let (player_index, position) = if let Some(player_index) =
                 self.players.iter().position(|slot| self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity)
             {
-                // Mine.LateUpdateSim runs before a newer slime's
-                // PlayerPhysics.LateUpdateSim moves it with its ground.
-                let position = if 100_000_000 + mine.hierarchy_base < self.entities[entity].hierarchy {
+                // Updater's LateUpdateSim walk takes the same sorted list
+                // (Updater.cs:318-323), so Mine.LateUpdateSim runs before
+                // the PlayerPhysics.LateUpdateSim of a slime listed after it
+                // moves it with its ground.
+                let position = if mine_key < self.player_turn_key(player_index) {
                     self.scratch.before_ground_follow[player_index]
                 } else {
                     self.players[player_index].base.position
