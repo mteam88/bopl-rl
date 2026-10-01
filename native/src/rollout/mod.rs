@@ -17983,9 +17983,15 @@ impl RolloutWorld {
             purge |= slot.beam.glow && (space || fire.y >= Fix::from_f32(-11.22));
         }
         if purge {
-            // RaycastBeam's RaycastToClosest (DetPhysics.cs:1126).
-            self.remove_destroyed_colliders();
+            self.raycast_beam();
         }
+    }
+
+    /// DetPhysics.RaycastBeam (DetPhysics.cs:1124-1164): its RaycastToClosest
+    /// purges destroyed colliders. Beam's glow is all that reads the lengths
+    /// it returns (Beam.cs:612-624), so the purge is all the simulation keeps.
+    fn raycast_beam(&mut self) {
+        self.remove_destroyed_colliders();
     }
 
     fn stop_beam(&mut self, index: usize) {
