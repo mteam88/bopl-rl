@@ -14059,9 +14059,23 @@ impl RolloutWorld {
     /// own PlayerPhysics and radius.
     fn form_returns_slime(&mut self, index: usize) {
         let tick = self.tick;
+        let key = self.entities.get(self.players[index].body_entity).map_or(u32::MAX, |row| row.id);
+        let last = self.players[self.players[index].owner].position_setter_last;
         let slot = &mut self.players[index];
         if slot.active != ActiveAbility::None {
             slot.keep_form_rotation();
+        }
+        // Player.SetPosition: a controller that already set Player.Position
+        // this pass ties with itself, so its ExitAbility call only lands when
+        // it was the last pass's setter too. On the pass after a teleport or
+        // tunnel showed the form again, Ability.UpdateSim's keeps it
+        // (Player.cs:311-322).
+        if slot.reported_tick == tick
+            && slot.unpublished_tick != Some(tick)
+            && last != key
+            && slot.tie_position.is_none_or(|(set, _)| set != tick)
+        {
+            slot.tie_position = Some((tick, slot.reported_position));
         }
         slot.reported_position = slot.base.position;
         slot.reported_tick = tick;
