@@ -3904,6 +3904,15 @@ impl PlayerSlot {
         begin_land(&mut self.obs_state, &mut self.state_ticks, animator_ran);
     }
 
+    /// The empty player prefab SpawnClone instantiates (PlayerCollision.cs:
+    /// 229, 249) has a new FlippingTransform facing right and a new
+    /// SlimeController with no pending wasUpsideDown (FlippingTransform.cs:9,
+    /// SlimeController.cs:100); PrepareToRevive, ReSpawn and Spawn leave both.
+    fn empty_prefab_facing(&mut self) {
+        self.facing_right = true;
+        self.base.was_upside_down = false;
+    }
+
     /// SlimeController.ExitAbility enters Fall and raycasts at once
     /// (SlimeController.cs:249, 263-272). A landing on this pass begins the
     /// land animation after the slime's SpriteAnimator (hierarchy 100000007,
@@ -22702,6 +22711,7 @@ impl RolloutWorld {
         slot.reported_position = position;
         slot.reported_tick = self.tick;
         slot.obs_state = STATE_NOTHING;
+        slot.empty_prefab_facing();
         slot.timers.fill(Fix::from_f32(-1.5));
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.ability_origin_scale = slot.player_scale;
@@ -23210,6 +23220,7 @@ impl RolloutWorld {
             slot.base.collider_inverse_extents = slot.body_inverse_extents;
             slot.base.scale = Fix::ONE;
             slot.base.sync_collider();
+            slot.empty_prefab_facing();
             slot.set_active_form(&mut self.entities, ActiveAbility::None);
             slot.ability_origin_scale = slot.player_scale;
             slot.rock = RockState::default();
