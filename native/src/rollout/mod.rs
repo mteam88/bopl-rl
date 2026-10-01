@@ -7209,6 +7209,7 @@ impl RolloutWorld {
             }
         }
         let drowned_clouds = self.register_pending_objects(data);
+        self.init_pending_grenade_fuses(data);
         if has(ABILITY_REVIVAL) {
             self.register_pending_revival_clones(data);
         }
@@ -21306,6 +21307,24 @@ impl RolloutWorld {
         drowned
     }
 
+    /// Grenade.Init on the pass after a held Grenade or Smoke payload was
+    /// instantiated: `timedExplosion` overwrites selfDestructDelay with
+    /// detonationTime, whatever the spawn pass left on the -1 sentinel
+    /// (Grenade.cs:36-42). Duplicator copies clear timedExplosion and set
+    /// their delay directly (ShootDuplicator.cs:300-301).
+    fn init_pending_grenade_fuses(&mut self, data: &data::RolloutData) {
+        let tick = self.tick;
+        for item in &mut self.thrown_items {
+            if item.active && !item.duplicated && item.born_tick.wrapping_add(1) == tick {
+                match item.ability {
+                    ABILITY_GRENADE => item.fuse = data.grenade.detonation_time,
+                    ABILITY_SMOKE => item.fuse = data.smoke.detonation_time,
+                    _ => {}
+                }
+            }
+        }
+    }
+
     /// Register a grenade explosion and execute both Shockwave.Init calls.
     fn register_grenade_explosion(&mut self, explosion_index: usize, data: &data::RolloutData) {
         let explosion = self.grenade_explosions[explosion_index];
@@ -25240,9 +25259,10 @@ impl RolloutWorld {
             body_scale: Fix::ONE,
             body_ran_tick: None,
             collider_radius: config.item_radius * self.players[index].player_scale,
+            // Grenade.selfDestructDelay holds its authored -1 until
+            // Grenade.Init (Grenade.cs:27; init_pending_grenade_fuses).
             fuse: match ability {
-                ABILITY_GRENADE => data.grenade.detonation_time,
-                ABILITY_SMOKE => data.smoke.detonation_time,
+                ABILITY_GRENADE | ABILITY_SMOKE => -Fix::ONE,
                 _ => Fix::MAX,
             },
             hurt_owner_delay: Fix::ZERO,
@@ -27429,6 +27449,15 @@ impl RolloutWorld {
                 item.body.velocity = Vec2::ZERO;
                 item.magnet_holder = Some(index);
                 item.magnet_hold_ticks = 2;
+                // Each locked pass hands a Grenade (the Smoke payload carries
+                // one too) back the time its own UpdateSim takes, so the fuse
+                // runs again from the first pass the Magnet lets go
+                // (MagnetGun.cs:1111-1117, Grenade.cs:68-70). On the spawn pass
+                // the time lands on the -1 sentinel that Grenade.Init then
+                // overwrites with detonationTime (Grenade.cs:27, 40).
+                if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.fuse != Fix::MAX {
+                    item.fuse += DT * self.player_time_scale;
+                }
             }
             MagnetHeld::Missile(i) => {
                 let velocity = self.guided_missiles[i].body.velocity;
@@ -35105,10 +35134,12 @@ impl RolloutWorld {
         // bounds detonates it before DestroyIfOutsideSceneBounds sees it.
         let timed_out = {
             let item = &mut self.thrown_items[item_index];
+            let mut timed_out = false;
             if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.born_tick < self.tick
             {
-                if item.magnet_holder.is_none() {
+                if item.fuse > Fix::ZERO {
                     item.fuse -= updater_dt;
+                    timed_out = item.fuse <= Fix::ZERO;
                 }
                 if item.hurt_owner_delay > Fix::ZERO {
                     item.hurt_owner_delay -= updater_dt;
@@ -35117,7 +35148,7 @@ impl RolloutWorld {
                     }
                 }
             }
-            matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE) && item.fuse <= Fix::ZERO
+            timed_out
         };
         if timed_out {
             if ability == ABILITY_SMOKE {
