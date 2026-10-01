@@ -144,6 +144,11 @@ pub struct Player {
     pub synced: OrientedBox,
     #[serde(default)]
     pub collider_rotation: Fix,
+    /// FixTransform.up as `collider` last took it. A form box applies its
+    /// offset with FixTransform.right itself, which the angle round trip to
+    /// `collider_rotation` can miss by a few Q32 units.
+    #[serde(default)]
+    pub collider_up: Vec2,
     /// `Box.inverseExtents` of the Player-layer hurtbox as
     /// `DPhysicsBox.Scale` has accumulated it. The setter rescales the
     /// stored reciprocal by `(One / oldScale) * newScale`
@@ -1137,6 +1142,7 @@ impl Player {
             self.collider_basis = Vec2::angle(self.rotation());
             self.collider_rotation = self.rotation();
         }
+        self.collider_up = self.up();
         let basis = self.collider_basis;
         self.collider = OrientedBox {
             center: self.position,

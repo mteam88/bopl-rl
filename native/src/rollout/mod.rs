@@ -1291,11 +1291,6 @@ pub struct ThrowItemState {
     /// Which payload `item` held. Another spawn can take the pool slot once
     /// it is destroyed, when ThrowItem2's grenade reads null.
     pub item_hierarchy: u32,
-    pub collider_rotation: Fix,
-    /// FixTransform.right used for the collider offset. Ground alignment
-    /// assigns this vector directly, while DPhysicsBox derives its axes from
-    /// `collider_rotation`; keep both because the angle round trip is lossy.
-    pub collider_right: Vec2,
     /// Mine's PlayerPhysics.gravity_modifier: zero for a form entered on the
     /// ground until an airborne Fire (ThrowItem.cs:124-131, 225-228).
     pub gravity_modifier: Fix,
@@ -3741,21 +3736,12 @@ impl PlayerSlot {
         self.sync_slime_row(entities);
     }
 
-    /// UnGround(nullRotation) zeroes a ThrowItem or SparkShot form's body
-    /// rotation too (PlayerPhysics.cs:372-376); its box takes it at the next
-    /// sync. A gun form's box offset turns with the FixTransform, which
-    /// UnGround set to identity.
+    /// UnGround(nullRotation) zeroes a SparkShot form's body rotation too
+    /// (PlayerPhysics.cs:372-376); its box takes it at the next sync. A gun
+    /// form's box offset turns with the FixTransform, which UnGround set to
+    /// identity.
     fn null_form_box_rotation(&mut self) {
         match self.active {
-            ActiveAbility::Grenade
-            | ActiveAbility::Smoke
-            | ActiveAbility::Tack
-            | ActiveAbility::Mjolnir
-            | ActiveAbility::PokeBall
-            | ActiveAbility::Mine => {
-                self.throw_item.collider_rotation = Fix::ZERO;
-                self.throw_item.collider_right = Vec2::RIGHT;
-            }
             ActiveAbility::Missile => self.missile.collider_rotation = Fix::ZERO,
             ActiveAbility::Freeze
             | ActiveAbility::Blink
@@ -5679,6 +5665,7 @@ impl RolloutWorld {
                         inverse_extents: Vec2::new(Fix::ONE, Fix::ONE),
                     },
                     collider_rotation: Fix::ZERO,
+                    collider_up: Vec2::UP,
                     collider_inverse_extents: Vec2::ZERO,
                     collider_basis: Vec2::ZERO,
                     aligned: None,
@@ -10787,7 +10774,6 @@ impl RolloutWorld {
                         slot.throw_item = ThrowItemState {
                             grounded,
                             direction: Vec2::UP,
-                            collider_rotation: slot.base.rotation(),
                             ..ThrowItemState::default()
                         };
                         if !grounded {
@@ -11233,7 +11219,7 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        let (rotation, up) = (slot.base.rotation(), slot.base.up());
+                        let rotation = slot.base.rotation();
                         let form = slot.forms[s];
                         let offset = if form.scale == Fix::ZERO { data.mine.collider_offset } else { form.offset };
                         let extents = data::surface_extents(data.mine.hurtbox_extents);
@@ -11245,8 +11231,6 @@ impl RolloutWorld {
                         slot.throw_item = ThrowItemState {
                             grounded,
                             direction: Vec2::UP,
-                            collider_rotation: rotation,
-                            collider_right: up.perp_cw(),
                             gravity_modifier: if grounded { Fix::ZERO } else { Fix::ONE },
                             ..ThrowItemState::default()
                         };
@@ -13830,8 +13814,6 @@ impl RolloutWorld {
                 // packet's velocities. The frozen form keeps the pose the
                 // landing or a moving ground left it with.
                 let slot = &mut self.players[index];
-                slot.throw_item.collider_rotation = slot.base.rotation();
-                slot.throw_item.collider_right = slot.base.up().perp_cw();
                 let (velocity, external) = (info.velocity, info.external_velocity);
                 info.take_body(&slot.base);
                 info.velocity = velocity;
@@ -13848,7 +13830,6 @@ impl RolloutWorld {
                 // payload still held; the frozen form keeps its rotation.
                 self.release_held_throw_item_on_exit(index, false, data::get());
                 let slot = &mut self.players[index];
-                slot.throw_item.collider_rotation = slot.base.rotation();
                 info.take_body(&slot.base);
                 info.just_landed = info.grounded;
                 info.facing_right = slot.facing_right;
@@ -24255,7 +24236,6 @@ impl RolloutWorld {
             data.mine.collider_offset,
         );
         slot.base.radius = form.physics_radius();
-        self.players[index].throw_item.collider_rotation = self.players[index].base.rotation();
         // Mine.prefab is boundary/ability 5/6 - DestroyIfOutsideSceneBounds 5,
         // ThrowItem 6, PlayerBody 8 - so the boundary runs *before* ThrowItem's
         // own update. This comment used to claim the reverse, which is the same
@@ -24338,8 +24318,6 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             slot.base.position += slot.base.external_velocity * slot.base.fixed_delta_time;
             slot.base.external_velocity *= Fix::from_f64(0.95);
-            slot.throw_item.collider_rotation = slot.base.rotation();
-            slot.throw_item.collider_right = slot.base.up().perp_cw();
         } else {
             let this = &mut *self;
             let slot = &mut this.players[index];
@@ -24372,13 +24350,10 @@ impl RolloutWorld {
                     let slot = &mut self.players[index];
                     slot.base.position += slot.base.external_velocity * slot.base.fixed_delta_time;
                     slot.base.external_velocity *= Fix::from_f64(0.95);
-                    slot.throw_item.collider_rotation = slot.base.rotation();
-                    slot.throw_item.collider_right = slot.base.up().perp_cw();
                     return;
                 }
                 self.exit_mine(index);
             } else {
-                slot.throw_item.collider_right = slot.base.up().perp_cw();
                 self.form_body_step(index);
             }
         }
@@ -24558,7 +24533,6 @@ impl RolloutWorld {
     }
 
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
-        self.players[index].throw_item.collider_rotation = self.players[index].base.rotation();
         let ability = active_throw_ability(self.players[index].active);
         let gd = throw_config(data, ability);
         let aim = action.direction();
@@ -24704,8 +24678,6 @@ impl RolloutWorld {
                     return;
                 }
             }
-            let slot = &mut self.players[index];
-            slot.throw_item.collider_rotation = slot.base.rotation();
             self.form_body_step(index);
         } else {
             // ThrowItem2 keeps its own PlayerBody live throughout the aerial
@@ -28033,6 +28005,7 @@ impl RolloutWorld {
             collider,
             synced: collider,
             collider_rotation: Fix::ZERO,
+            collider_up: Vec2::UP,
             collider_inverse_extents: Vec2::new(
                 Fix::ONE / data.player.hurtbox_extents.x,
                 Fix::ONE / data.player.hurtbox_extents.y,
@@ -30930,18 +30903,6 @@ impl RolloutWorld {
             slot.gun.forced_exit_tick = self.tick;
             slot.gun.forced_exit_basis = (slot.base.up().perp_cw(), slot.base.rotation());
             slot.gun.forced_exit_entity = Self::hurtbox_entity(slot);
-        }
-        if matches!(
-            slot.active,
-            ActiveAbility::Grenade
-                | ActiveAbility::Smoke
-                | ActiveAbility::Tack
-                | ActiveAbility::Mjolnir
-                | ActiveAbility::PokeBall
-        ) {
-            // The throw form's box syncs once more from its FixTransform,
-            // which LateUpdateSim last turned onto the surface.
-            slot.throw_item.collider_rotation = slot.base.rotation();
         }
         if slot.active == ActiveAbility::Throw {
             let throw = &mut slot.macho_throw;
@@ -41654,8 +41615,8 @@ impl RolloutWorld {
                         (synced, slot.missile.collider_rotation)
                     } else if throwing {
                         // A grounded form's box keeps this pass's recoil
-                        // drift; LateUpdateSim snaps only the body.
-                        (synced, slot.throw_item.collider_rotation)
+                        // drift and turn; LateUpdateSim moves only the body.
+                        (synced, rotation)
                     } else if let Some((position, rotation, _)) = frozen_pose(throw_e) {
                         (position, rotation)
                     } else {
@@ -41664,7 +41625,7 @@ impl RolloutWorld {
                         let rotation = if missile_row {
                             slot.missile.collider_rotation
                         } else {
-                            slot.throw_item.collider_rotation
+                            slot.forms[slot.entity_slot(throw_e)].pose.orientation.rotation()
                         };
                         (exit_position, rotation)
                     };
@@ -41702,8 +41663,12 @@ impl RolloutWorld {
                     mine_box.flags = E_ENABLED | E_TRIGGER;
                 }
                 if (alive && mining) || was_active {
-                    let root = if mining { synced } else { exit_position };
-                    let rotation = slot.throw_item.collider_rotation;
+                    let pose = slot.forms[slot.entity_slot(mine_e)].pose;
+                    let (root, rotation, offset_basis) = if mining {
+                        (synced, rotation, slot.base.collider_up.perp_cw())
+                    } else {
+                        (exit_position, pose.orientation.rotation(), pose.orientation.up().perp_cw())
+                    };
                     let basis = Vec2::angle(rotation);
                     // PlayerPhysics.Move aligns the FixTransform by assigning
                     // its exact surface normal. DPhysicsBox derives its axes
@@ -41716,7 +41681,7 @@ impl RolloutWorld {
                     } else {
                         mine_form.offset
                     };
-                    let center = root + slot.throw_item.collider_right.complex_mul(offset);
+                    let center = root + offset_basis.complex_mul(offset);
                     let hurtbox = mine_form.hurtbox(
                         center,
                         basis,
