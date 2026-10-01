@@ -95,8 +95,8 @@ pub struct Player {
     /// PlayerPhysics and PlayerBody scale only these steps by it.
     #[serde(default = "default_fixed_delta_time")]
     pub(crate) fixed_delta_time: Fix,
-    /// PlayerPhysics.jumpedThisFrame: set by Jump, cleared once the tick's
-    /// state machine has seen it.
+    /// The slime's PlayerPhysics.jumpedThisFrame: set by its Jump, cleared
+    /// once the tick's state machine has seen it.
     #[serde(default)]
     pub(crate) jumped_this_frame: bool,
     /// SlimeController.OldUpdate returns as soon as it has entered an ability
@@ -797,9 +797,14 @@ impl Player {
         false
     }
 
-    fn jump(&mut self, platforms: &[Platform]) {
+    /// SlimeController.Jump (SlimeController.cs:897-901) on the slime's own
+    /// PlayerPhysics, whose jumpedThisFrame the state switch reads
+    /// (PlayerPhysics.cs:330-332). A form jumps on its own PlayerPhysics
+    /// (Roll.cs:534-544, Machoman.cs:97) and leaves the slime's flag alone.
+    pub(crate) fn jump(&mut self, platforms: &[Platform]) {
         self.record_upside_down_jump(platforms);
         self.jump_with_strength(platforms, self.constants.jump_strength);
+        self.jumped_this_frame = true;
     }
     /// `SlimeController.Jump` reads the normal of the ground it is leaving and
     /// stores it in `wasUpsideDown` before calling PlayerPhysics.Jump
@@ -833,7 +838,6 @@ impl Player {
         self.velocity =
             normal.perp_cw() * self.grounded_speed * self.constants.jump_momentum + up * strength;
         self.position += self.velocity * self.constants.jump_teleport;
-        self.jumped_this_frame = true;
         self.unground(retained.map(|p| &p.surface), true);
     }
     /// PlayerPhysics.Move's ground input direction: -1, 0 or 1 along the

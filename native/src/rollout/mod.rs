@@ -14026,9 +14026,7 @@ impl RolloutWorld {
                 }
             }
             if info.enter_jump {
-                let strength = slot.base.constants.jump_strength;
-                slot.base.record_upside_down_jump(&self.platforms);
-                slot.base.jump_with_strength(&self.platforms, strength);
+                slot.base.jump(&self.platforms);
             }
         } else {
             slot.enter_fall(terrain!(self));
