@@ -2360,8 +2360,6 @@ pub struct DuplicatePlatformState {
     pub spawn_position: Vec2,
     pub spawner_hierarchy: u32,
     pub hierarchy_base: u32,
-    /// The pass a later Blink release already stepped this effect in.
-    pub stepped_tick: Option<u32>,
 }
 
 /// Per-player platform ability state (PlatformTransform.cs).
@@ -4271,7 +4269,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 1 | 4 | 6 | 9 | 10 | 13 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
+    matches!(kind, 1 | 4 | 6 | 9 | 10 | 11 | 13 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
 }
 
 /// The place just after `key`.
@@ -7948,19 +7946,6 @@ impl RolloutWorld {
             }
         }
         if has(ABILITY_DUPLICATOR) {
-            // Each DuplicatePlatformEffect takes its own Updater turn, in
-            // hierarchy order rather than the order of the slots they reuse,
-            // after everything instantiated before it: an older clone moves
-            // before the copy the effect spawns joins DetPhysics.
-            let newest_effect = (self.duplicate_platform_effects.iter())
-                .filter(|effect| {
-                    effect.active && effect.appended <= self.tick && effect.stepped_tick != Some(self.tick)
-                })
-                .map(|effect| self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base))
-                .max();
-            if let Some(newest) = newest_effect {
-                self.run_spawned_before(data, updater_dt, updater_next(newest));
-            }
             self.duplicate_platform_effects_tick(data, updater_dt, None);
         }
         if has(ABILITY_METEOR) {
@@ -8594,7 +8579,7 @@ impl RolloutWorld {
             }
         }
         for (i, effect) in self.duplicate_platform_effects.iter().enumerate() {
-            if effect.active && effect.stepped_tick != Some(tick) {
+            if effect.active {
                 push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 11, i);
             }
         }
@@ -8661,6 +8646,11 @@ impl RolloutWorld {
         }
         queue.sort_unstable();
         for &(key, kind, index) in &queue {
+            // A turn an earlier updatable's own walk already passed is not
+            // taken again.
+            if cursor_kind(kind) && self.updater_passed(key) {
+                continue;
+            }
             let hierarchy = key.2;
             let turn = hierarchy..hierarchy + 1;
             match kind {
@@ -8741,7 +8731,6 @@ impl RolloutWorld {
                 2 | 3 | 18 => self.thrown_items[index].updater_ran_tick = tick,
                 7 => self.ropes[index].grapple_ran_tick = tick,
                 8 => self.ropes[index].rope_ran_tick = tick,
-                11 => self.duplicate_platform_effects[index].stepped_tick = tick,
                 14 => self.abilityless_clones[index].updater_ran_tick = tick,
                 // A pickup newer than a live ScaleChanger keeps its turn
                 // behind it.
@@ -30781,7 +30770,6 @@ impl RolloutWorld {
             spawn_position,
             spawner_hierarchy,
             hierarchy_base: self.register_prefab(data.prefab("DuplicatePlatformEffect")),
-            stepped_tick: None,
         };
         if let Some(slot) = self
             .duplicate_platform_effects
@@ -30810,15 +30798,25 @@ impl RolloutWorld {
             return;
         }
         for effect_index in 0..self.duplicate_platform_effects.len() {
-            let snapshot = self.duplicate_platform_effects[effect_index];
-            if !snapshot.active
-                || snapshot.appended > self.tick
-                || snapshot.stepped_tick == Some(self.tick)
-                || before.is_some_and(|before| snapshot.hierarchy_base >= before)
+            let effect = &self.duplicate_platform_effects[effect_index];
+            let key = self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base);
+            if !effect.active
+                || effect.appended > self.tick
+                || self.updater_passed(key)
+                || before.is_some_and(|before| effect.hierarchy_base >= before)
             {
                 continue;
             }
-            self.duplicate_platform_effects[effect_index].stepped_tick = Some(self.tick);
+            // Each DuplicatePlatformEffect takes its own Updater turn, in list
+            // order rather than the order of the slots they reuse, after
+            // everything instantiated before it: an older clone moves before
+            // the copy the effect spawns joins DetPhysics.
+            self.run_spawned_before(data, updater_dt, key);
+            self.updater_take_turn(key);
+            let snapshot = self.duplicate_platform_effects[effect_index];
+            if !snapshot.active {
+                continue;
+            }
             if snapshot.source >= self.platforms.len() {
                 self.duplicate_platform_effects[effect_index].active = false;
                 continue;
