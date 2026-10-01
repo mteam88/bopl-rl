@@ -41462,11 +41462,9 @@ impl RolloutWorld {
                     // it magnetizes, then the one its exit left, which a
                     // drop's UpdateSim may aim again (MagnetGun.cs:358, 1256).
                     let form = &slot.forms[slot.entity_slot(magnet_e)];
-                    let (root, rotation, offset_basis) = if magnetizing {
-                        (synced, slot.base.rotation(), slot.base.up().perp_cw())
-                    } else {
-                        (exit_position, form.pose.orientation.rotation(), form.pose.orientation.up().perp_cw())
-                    };
+                    let root = if magnetizing { form.synced.position } else { exit_position };
+                    let rotation = form.synced.orientation.rotation();
+                    let offset_basis = form.synced.orientation.up().perp_cw();
                     let basis = Vec2::angle(rotation);
                     let center = root + offset_basis.complex_mul(form.offset);
                     let collider = stored_box(
