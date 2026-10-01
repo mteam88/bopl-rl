@@ -458,7 +458,7 @@ const LAYER_EXPLOSION: u32 = 18;
 /// (IgnitesExplosives 0 on Arrow, MeteorSmear, PortalShot, ...).
 const GRENADE_DETONATORS: u32 = 1 << LAYER_PLAYER | 1 << LAYER_EXPLOSION;
 /// What sets off a thrown Smoke here: SmokeGrenadeExplode2.OnCollide goes off
-/// on every layer but those Projectiles (SmokeGrenadeExplode2.cs:63-78).
+/// on every layer but those Projectiles (SmokeGrenadeExplode2.cs:63-77).
 /// Water and walls are called back from their own groups.
 const SMOKE_DETONATORS: u32 = !(1 << LAYER_PROJECTILE
     | 1 << LAYER_WATER
@@ -12996,7 +12996,7 @@ impl RolloutWorld {
                 2 => {
                     let entity = hit.index;
                     self.players[index].base.position = near;
-                    self.player_form_target_callback(entity, near, index, data);
+                    self.player_form_target_callback(entity, near, index, KillRoute::Updater, data);
                     let row = self.entities[entity];
                     if row.flags & E_DESTROYED == 0
                         && matches!(row.layer, LAYER_PROJECTILE | 16 | 18 | 26)
@@ -13150,13 +13150,19 @@ impl RolloutWorld {
         }
     }
 
+    /// The target's OnCollide with a form's hitbox. MeteorSmash.Dash and
+    /// Roll.CollideExtraHurtBoxes call it from their own UpdateSim, so an item
+    /// it destroys there is gone before this pass's DetPhysics
+    /// (MeteorSmash.cs:408, Roll.cs:298, 332).
     fn player_form_target_callback(
         &mut self,
         entity: usize,
         near: Vec2,
         caster: usize,
+        route: KillRoute,
         data: &data::RolloutData,
     ) {
+        let by_callback = route != KillRoute::Updater;
         if let Some(arrow_index) = self
             .arrows
             .iter()
@@ -13185,7 +13191,11 @@ impl RolloutWorld {
             let item = self.thrown_items[item_index];
             if item.ability == ABILITY_GRENADE && (item.owner != caster || item.detonates_on_owner)
             {
-                self.detonate_grenade(item_index, true, data);
+                self.detonate_grenade(item_index, by_callback, data);
+            } else if item.ability == ABILITY_SMOKE && item.detonates_on_owner {
+                // SmokeGrenadeExplode2.OnCollide asks only DetonatesOnOwner,
+                // whoever hit it (SmokeGrenadeExplode2.cs:63-77).
+                self.detonate_smoke(item_index, by_callback, data);
             } else if item.ability == ABILITY_MINE && matches!(item.phase, 1 | 2) {
                 let mine = &mut self.thrown_items[item_index];
                 mine.phase = 3;
@@ -17409,7 +17419,7 @@ impl RolloutWorld {
                 }
                 // SmokeGrenadeExplode2.OnCollide takes the hole like any other
                 // non-projectile collider, unless the hole's callback already
-                // destroyed it (SmokeGrenadeExplode2.cs:63-78). A pair calls
+                // destroyed it (SmokeGrenadeExplode2.cs:63-77). A pair calls
                 // back its earlier-sorted collider first (DetPhysics.cs:2186, 3070).
                 let other = self.part_rank(Part::Item(item_index));
                 let (later, earlier) = sweep_pair(rank, other);
@@ -36338,7 +36348,7 @@ impl RolloutWorld {
                 CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
                 CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
                 CallbackHit::FormTarget { entity, near, caster } => {
-                    self.player_form_target_callback(entity, near, caster, data);
+                    self.player_form_target_callback(entity, near, caster, KillRoute::Callback, data);
                 }
                 CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
                 CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
@@ -38973,7 +38983,7 @@ impl RolloutWorld {
                     self.kill_abilityless_clone(clone, roller_id, CAUSE_OTHER, KillRoute::OnCollide, true);
                     continue;
                 }
-                self.player_form_target_callback(entity, center, roller, data);
+                self.player_form_target_callback(entity, center, roller, KillRoute::Updater, data);
             }
 
             for hit_offset in 0..hit_count {
