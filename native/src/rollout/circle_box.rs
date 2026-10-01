@@ -963,6 +963,18 @@ impl RolloutWorld {
                 Part::Spike(spike) => CallbackHit::SpikeWallKnock { spike, wall, point: contact.point, wall_layer },
                 // Missile.cs:181-192.
                 Part::Missile(missile) => CallbackHit::MissileBlast { missile },
+                // PlayerCollision.OnCollide's squish acts only on the wall
+                // layer (PlayerCollision.cs:326).
+                Part::Body(index) if wall_layer => CallbackHit::Squish {
+                    slime: Slime::Player(index),
+                    wall,
+                    collider: walls.get(wall).copied().unwrap_or(self.platforms[wall].collider),
+                },
+                Part::Clone(index) if wall_layer => CallbackHit::Squish {
+                    slime: Slime::Clone(index),
+                    wall,
+                    collider: walls.get(wall).copied().unwrap_or(self.platforms[wall].collider),
+                },
                 // RopeHook.OnCollide tests the collider the manifold copied
                 // (RopeHook.cs:86-131).
                 Part::Hook(rope) => {

@@ -4438,9 +4438,10 @@ enum CallbackHit {
     /// with another Player-layer collider; `lower` is whether the slime's
     /// collider is the earlier in the hierarchy.
     SlimeCollide { slime: Slime, other: Slime, lower: bool },
-    /// PlayerCollision.OnCollide's wall branch squishing a grounded slime,
-    /// a player's or an abilityless clone's (PlayerCollision.cs:327-347).
-    Squish { clone: bool, index: usize },
+    /// PlayerCollision.OnCollide of a slime's, form's or abilityless clone's
+    /// collider with a wall-layer rounded rect, whose collider the manifold
+    /// copied (PlayerCollision.cs:326-347).
+    Squish { slime: Slime, wall: usize, collider: RoundedRect },
     /// A young SpikeAttack.OnCollide with a rounded rect, on the wall layer
     /// or not (SpikeAttack.cs:116-141).
     SpikeWallKnock { spike: usize, wall: usize, point: Vec2, wall_layer: bool },
@@ -4549,9 +4550,6 @@ struct PlatformScratch {
     /// This pass's Player.Scale changes by a ScaleChanger, in hierarchy order:
     /// (player, changer hierarchy, scale before).
     player_scale_changes: Vec<(usize, u32, Fix)>,
-    /// Grounded slimes a wall squished this pass: (abilityless clone,
-    /// player or clone index).
-    squished: Vec<(bool, usize)>,
     /// The row hierarchies of the Duplicator copies the current Duplicated
     /// platform pass runs; None runs them all.
     duplicates_window: Option<std::ops::Range<u32>>,
@@ -33932,6 +33930,16 @@ impl RolloutWorld {
                 parts.push(Part::Hole(i));
             }
         }
+        for i in 0..self.players.len() {
+            if self.body_part_circle(i) == Some(true) {
+                parts.push(Part::Body(i));
+            }
+        }
+        for i in 0..self.abilityless_clones.len() {
+            if self.clone_part_circle(i) == Some(true) {
+                parts.push(Part::Clone(i));
+            }
+        }
         let walls = std::mem::take(&mut self.scratch.circle_colliders);
         self.wall_group(GROUP_CIRCLE_RR, &parts, &walls, data);
         self.scratch.circle_colliders = walls;
@@ -34304,7 +34312,7 @@ impl RolloutWorld {
             CallbackHit::SlimeCollide { slime, other, lower } => {
                 self.slime_collide(slime, other, lower);
             }
-            CallbackHit::Squish { clone, index } => self.squish(clone, index),
+            CallbackHit::Squish { slime, wall, collider } => self.squish(slime, wall, collider),
             CallbackHit::BlackHole { hole, target, inverse_mass } => {
                 self.black_hole_collide(hole, target, inverse_mass, data);
             }
@@ -36406,109 +36414,44 @@ impl RolloutWorld {
         }
     }
 
-    /// the updater pass: resize, integration, broad phase, narrow phase,
-    /// collision impulse, positional correction, and transform sync.
-    /// PlayerCollision kills a grounded slime when a different wall's
-    /// rounded rectangle contains its squish point (the stock player prefab
-    /// uses the body centre). Player boxes are triggers, so this is a
-    /// callback effect rather than a rigid-body response: the kill is a
-    /// Squish hit in the callback queue.
-    fn squish_grounded(&mut self, colliders: &[RoundedRect]) {
-        let mut squished = std::mem::take(&mut self.scratch.squished);
-        squished.clear();
-        for (index, slot) in self.players.iter().enumerate() {
-            // Roll enables PlayerCollision.isSquishable on entry, then
-            // ReleaseDash disables it for the lethal rolling form.
-            if slot.base.alive
-                && slot.respawn_ticks == 0
-                && slot.base.grounded
-                && (slot.active != ActiveAbility::Roll || !slot.roll.lethal)
-                && self.squishing_walls(colliders, false, index).next().is_some()
-            {
-                squished.push((false, index));
+    /// PlayerCollision.OnCollide with a wall-layer rounded rect
+    /// (PlayerCollision.cs:320-347), from the callback queue: past the
+    /// ignored colliders (a locked Magnet's boulder), a squishable slime
+    /// grounded on a live wall other than this one dies when the collider the
+    /// manifold copied contains its squish point, the body centre on the
+    /// stock prefab. Roll enables isSquishable on entry, then ReleaseDash
+    /// disables it for the lethal rolling form. DetPhysics runs every
+    /// OnCollide after Simulate has stepped the ropes and every group
+    /// resolved (DetPhysics.cs:2926, 3197), so a squished slime's killPlayer
+    /// detaches its rope only after this pass's rope step.
+    fn squish(&mut self, slime: Slime, wall: usize, collider: RoundedRect) {
+        let (ignored, squishable, ground_destroyed) = match slime {
+            Slime::Player(index) => {
+                let slot = &self.players[index];
+                (
+                    self.magnet_locked_platform(slot) == Some(wall),
+                    slot.active != ActiveAbility::Roll || !slot.roll.lethal,
+                    slot.ground_destroyed.is_some(),
+                )
             }
-        }
-        // An abilityless clone is the same Player.prefab, squishable with the
-        // centre squish point, and PlayerCollision asks that its own ground
-        // is not IsDestroyed (PlayerCollision.cs:327-336).
-        for (index, clone) in self.abilityless_clones.iter().enumerate() {
-            if clone.active
-                && clone.base.alive
-                && clone.entity.is_some()
-                && clone.base.grounded
-                && clone.ground_destroyed.is_none()
-                && !self.abilityless_clone_hidden(clone)
-                && self.squishing_walls(colliders, true, index).next().is_some()
-            {
-                squished.push((true, index));
-            }
-        }
-        // The squish queues in the Box/RoundedRect group at its first wall
-        // pair in SortAndSweep order.
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
-        for &(clone, index) in &squished {
-            // A player in a form is squished through the form's own
-            // PlayerCollision, so its pair is the form's box (PlayerCollision.cs:327).
-            let body = if clone {
-                let clone = &self.abilityless_clones[index];
-                sweep_rank(&self.entities, min(clone.base.collider), clone.entity)
-            } else {
-                self.player_sweep_rank(index)
-            };
-            let first = self
-                .squishing_walls(colliders, clone, index)
-                .map(|wall| {
-                    let collider = colliders[wall];
-                    let wall_min = min(collider.inner) - collider.radius;
-                    let wall = Some(self.platform_entities[wall]);
-                    sweep_pair(body, sweep_rank(&self.entities, wall_min, wall))
-                })
-                .min();
-            if let Some((later, earlier)) = first {
-                let hit = CallbackHit::Squish { clone, index };
-                self.scratch.callback_hits.push(((GROUP_BOX_RR, later, earlier), hit));
-            }
-        }
-        squished.clear();
-        self.scratch.squished = squished;
-    }
-
-    /// The walls squishing a grounded slime (a player, or an abilityless
-    /// clone): other active walls whose rounded rectangle contains its centre.
-    fn squishing_walls<'a>(
-        &'a self,
-        colliders: &'a [RoundedRect],
-        clone: bool,
-        index: usize,
-    ) -> impl Iterator<Item = usize> + 'a {
-        let (base, locked) = if clone {
-            (&self.abilityless_clones[index].base, None)
-        } else {
-            let slot = &self.players[index];
-            (&slot.base, self.magnet_locked_platform(slot))
+            Slime::Clone(index) => (false, true, self.abilityless_clones[index].ground_destroyed.is_some()),
         };
-        colliders.iter().enumerate().filter_map(move |(i, collider)| {
-            (self.platforms[i].active
-                && Some(self.platforms[i].id) != base.ground
-                && locked != Some(i)
-                && collider.overlaps(base.position))
-            .then_some(i)
-        })
-    }
-
-    /// PlayerCollision.OnCollide's squish kill (PlayerCollision.cs:327-347),
-    /// from the callback queue. DetPhysics runs every OnCollide callback after
-    /// Simulate has stepped the ropes and every group resolved
-    /// (DetPhysics.cs:2926, 3197), so a squished slime's killPlayer detaches
-    /// its rope only after this pass's rope step.
-    fn squish(&mut self, clone: bool, index: usize) {
-        if !clone {
-            self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
+        let base = self.slime_base(slime);
+        if ignored
+            || !squishable
+            || !base.grounded
+            || ground_destroyed
+            || base.ground == Some(self.platforms[wall].id)
+            || !collider.overlaps(base.position)
+        {
             return;
         }
-        self.clone_collision_kill(index, ENVIRONMENT, CAUSE_SQUISHED);
+        match slime {
+            Slime::Player(index) => {
+                self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
+            }
+            Slime::Clone(index) => self.clone_collision_kill(index, ENVIRONMENT, CAUSE_SQUISHED),
+        }
     }
 
     /// An abilityless clone's PlayerCollision.OnCollide kill, from the
@@ -36834,16 +36777,20 @@ impl RolloutWorld {
                 parts.push(Part::Missile(i));
             }
         }
+        for i in 0..self.players.len() {
+            if self.body_part_circle(i) == Some(false) {
+                parts.push(Part::Body(i));
+            }
+        }
+        for i in 0..self.abilityless_clones.len() {
+            if self.clone_part_circle(i) == Some(false) {
+                parts.push(Part::Clone(i));
+            }
+        }
         let walls = std::mem::take(&mut self.scratch.box_callback_colliders);
         self.wall_group(GROUP_BOX_RR, &parts, &walls, data);
         self.scratch.box_callback_colliders = walls;
         self.scratch.wall_parts = parts;
-
-        // The Box/RR group runs after the RR/RR corrections, so its copy of
-        // the wall already carries them.
-        let colliders = std::mem::take(&mut self.scratch.box_callback_colliders);
-        self.squish_grounded(&colliders);
-        self.scratch.box_callback_colliders = colliders;
 
         // Riders follow in game_tick's late phase. PlatformTransform itself is
         // intentionally not synchronized: its UpdateSim copied the platform's
