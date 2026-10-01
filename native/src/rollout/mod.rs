@@ -2510,6 +2510,9 @@ pub struct AbilitylessClone {
     pub prev_input_align: Fix,
     pub captured_by_ball: Option<usize>,
     pub poke_invulnerable: bool,
+    /// Its SlimeController's ragdoll, as a slime's; the body's
+    /// `skip_next_gravity` is its PlayerPhysics.skipNextUpdate.
+    pub ragdoll: RagdollState,
     pub blink_tunnel_active: bool,
     pub blink_tunnel_appended: u32,
     pub blink_tunnel_hierarchy: u32,
@@ -3187,6 +3190,7 @@ impl UngroundBody<'_> {
                 );
                 clone.obs_state = STATE_FALL;
                 clone.state_ticks = 0;
+                clone.ragdoll = RagdollState::default();
                 rotation
             }
         }
@@ -4217,6 +4221,46 @@ fn begin_land(obs_state: &mut u32, state_ticks: &mut u32, animator_ran: bool) {
     let after_exit = *obs_state == STATE_FALL && *state_ticks == 1;
     *obs_state = STATE_LAND;
     *state_ticks = LAND_TICKS + 1 + u32::from(animator_ran || after_exit);
+}
+
+/// What a ragdolled SlimeController's pass did with its ragdoll.
+enum RagdollPass {
+    /// It goes on: OldUpdate returns before Move (SlimeController.cs:787).
+    Ragdolled,
+    /// AttachToGround already switched it to the land state, before
+    /// SlimeController.UpdateSim.
+    Landed,
+    /// It timed out; the caller's EnterFall follows.
+    FellOut,
+}
+
+/// SlimeController.UpdateSim's ragdoll, a slime's or a clone's
+/// (SlimeController.cs:1050-1059): timeInRagdoll takes FixedDeltaTime and,
+/// past ragdollDuration, selfImposedVelocity moves into externalVelocity and
+/// EnterFall straightens the body (SlimeController.cs:263-272). A frozen
+/// slime or a ragdoll applied on the ground does not end on a landing.
+fn ragdoll_pass(
+    ragdoll: &mut RagdollState,
+    base: &mut Player,
+    obs_state: &mut u32,
+    state_ticks: &mut u32,
+    frozen: bool,
+) -> RagdollPass {
+    if base.grounded && !frozen && !ragdoll.hold_on_ground {
+        ragdoll.active = false;
+        *obs_state = STATE_FALL;
+        *state_ticks = 0;
+        return RagdollPass::Landed;
+    }
+    ragdoll.time += base.fixed_delta_time;
+    if ragdoll.time <= ragdoll.duration {
+        return RagdollPass::Ragdolled;
+    }
+    ragdoll.active = false;
+    base.external_velocity += base.velocity;
+    base.velocity = Vec2::ZERO;
+    base.set_rotation(Fix::ZERO);
+    RagdollPass::FellOut
 }
 
 /// Fills `order` with the slots of `pool` in Updater order: by the hierarchy
@@ -6794,6 +6838,7 @@ impl RolloutWorld {
         slot.base = clone.base;
         slot.base.alive = true;
         slot.obs_state = clone.obs_state;
+        slot.ragdoll = clone.ragdoll;
         slot.state_ticks = clone.state_ticks;
         slot.facing_right = clone.facing_right;
         slot.prev_input_align = clone.prev_input_align;
@@ -27810,6 +27855,7 @@ impl RolloutWorld {
             prev_input_align: Fix::ZERO,
             captured_by_ball: None,
             poke_invulnerable: false,
+            ragdoll: RagdollState::default(),
             blink_tunnel_active: false,
             blink_tunnel_appended: 0,
             blink_tunnel_hierarchy: 0,
@@ -30742,31 +30788,25 @@ impl RolloutWorld {
         // landing ray can move the body before that publication.
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
-        if slot.base.grounded && slot.frozen_solid_count == 0 && !slot.ragdoll.hold_on_ground {
-            // AttachToGround switches a ragdoll straight into the land state
-            // before SlimeController.UpdateSim.
-            slot.ragdoll.active = false;
-            slot.obs_state = STATE_FALL;
-            slot.state_ticks = 0;
-            return false;
-        }
-        // timeInRagdoll takes FixedDeltaTime (SlimeController.cs:1052).
-        slot.ragdoll.time += slot.base.fixed_delta_time;
-        if slot.ragdoll.time > slot.ragdoll.duration {
-            let held_on_ground = slot.ragdoll.hold_on_ground && slot.base.grounded;
-            slot.ragdoll.active = false;
-            slot.base.external_velocity += slot.base.velocity;
-            slot.base.velocity = Vec2::ZERO;
-            // SlimeController.EnterFall always straightens the ordinary
-            // FixTransform when a timed ragdoll expires in mid-air.
-            slot.base.set_rotation(Fix::ZERO);
-            if slot.base.grounded {
-                // This EnterFall re-aims even on the ground.
-                slot.align_transform_air();
+        match ragdoll_pass(
+            &mut slot.ragdoll,
+            &mut slot.base,
+            &mut slot.obs_state,
+            &mut slot.state_ticks,
+            slot.frozen_solid_count != 0,
+        ) {
+            RagdollPass::Ragdolled => {}
+            RagdollPass::Landed => return false,
+            RagdollPass::FellOut => {
+                if slot.base.grounded {
+                    // This EnterFall re-aims even on the ground.
+                    slot.align_transform_air();
+                }
+                let held_on_ground = slot.ragdoll.hold_on_ground && slot.base.grounded;
+                slot.enter_fall(terrain!(self));
+                slot.ragdoll_grounded_fall = held_on_ground;
+                return false;
             }
-            slot.enter_fall(terrain!(self));
-            slot.ragdoll_grounded_fall = held_on_ground;
-            return false;
         }
         // OldUpdate runs its whole cooldown loop, the rope abilities'
         // UpdateCooldowns included, before its ragdoll-state early return
@@ -33630,6 +33670,7 @@ impl RolloutWorld {
         // UnGround's OnNoLongerGrounded overwrites BeginCapture's ragdoll
         // with fall, as for a player victim.
         UngroundBody::Clone(clone).unground(&self.platforms, self.tick, false);
+        clone.base.skip_next_gravity = true;
         clone.base.position = capture_position;
         clone.base.velocity = Vec2::ZERO;
         clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
@@ -33889,6 +33930,14 @@ impl RolloutWorld {
                 clone.base.velocity = Vec2::ZERO;
                 clone.base.move_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
                 clone.obs_state = STATE_RAGDOLL;
+                clone.ragdoll = RagdollState {
+                    active: true,
+                    skip_physics: false,
+                    hold_on_ground: clone.base.grounded,
+                    time: Fix::ZERO,
+                    duration: Fix::ONE,
+                };
+                clone.base.skip_next_gravity = true;
                 // The pin writes the transform (PokeBall.cs:196), so the row reads
                 // it, not the body its PlayerBody integrated earlier.
                 self.sync_abilityless_clone_entity(victim);
@@ -34718,6 +34767,13 @@ impl RolloutWorld {
         clone.base.ground = None;
         clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
         clone.obs_state = STATE_RAGDOLL;
+        clone.ragdoll = RagdollState {
+            active: true,
+            skip_physics: clone.ragdoll.skip_physics,
+            hold_on_ground: clone.base.grounded,
+            time: Fix::ZERO,
+            duration: Fix::from_f32(0.45),
+        };
         self.players[owner].invisible = false;
         // The eject writes the transform's position and ApplyRagDoll its
         // right (PokeBall.cs:227-228, SlimeController.cs:1031-1035), so the
@@ -37766,6 +37822,8 @@ impl RolloutWorld {
             if stopped {
                 base.external_velocity *= Fix::from_f64(0.95);
             } else {
+                // PlayerPhysics returns on the pin's skipNextUpdate.
+                base.skip_next_gravity = false;
                 base.integrate();
             }
             let clone = &mut self.abilityless_clones[clone_index];
@@ -37860,8 +37918,34 @@ impl RolloutWorld {
                 self.abilityless_clones[clone_index].base.position;
             self.players[owner].reported_tick = self.tick;
         }
+        // A ragdoll that goes on makes OldUpdate return before Move
+        // (SlimeController.cs:787), so only PlayerBody moves the clone.
+        let mut ragdolled = false;
+        if !stopped && self.abilityless_clones[clone_index].ragdoll.active {
+            let clone = &mut self.abilityless_clones[clone_index];
+            match ragdoll_pass(
+                &mut clone.ragdoll,
+                &mut clone.base,
+                &mut clone.obs_state,
+                &mut clone.state_ticks,
+                false,
+            ) {
+                RagdollPass::Ragdolled => ragdolled = true,
+                RagdollPass::Landed => {}
+                RagdollPass::FellOut => {
+                    // EnterFall (SlimeController.cs:263-272).
+                    clone.obs_state = STATE_FALL;
+                    clone.state_ticks = 0;
+                    if !clone.base.grounded {
+                        clone.base.collision_rays(terrain);
+                    }
+                }
+            }
+        }
         if stopped {
             self.abilityless_clones[clone_index].base.external_velocity *= Fix::from_f64(0.95);
+        } else if ragdolled {
+            self.abilityless_clones[clone_index].base.integrate();
         } else if self.abilityless_clones[clone_index].obs_state == STATE_BITING {
             self.clone_biting_tick(clone_index);
         } else {
