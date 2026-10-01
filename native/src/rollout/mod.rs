@@ -24732,10 +24732,8 @@ impl RolloutWorld {
         }
 
         if self.players[index].base.grounded {
-            let before_player_physics = self.players[index].base.position;
             // Move's UnGround off a destroyed ground lifts the body itself.
-            let lifted = self.players[index].move_off_destroyed(self.tick);
-            if !lifted {
+            if !self.players[index].move_off_destroyed(self.tick) {
                 self.players[index]
                     .base
                     .move_only(Vec2::ZERO, terrain!(self));
@@ -24745,11 +24743,6 @@ impl RolloutWorld {
                 }
             }
             let slot = &mut self.players[index];
-            // ThrowItem's PlayerPhysics.Move advances the surface local and
-            // rotation, but PlayerBody owns the later world-position move.
-            if !lifted {
-                slot.base.position = before_player_physics;
-            }
             slot.base.velocity = Vec2::ZERO;
             slot.base.position += slot.base.external_velocity * slot.base.fixed_delta_time;
             slot.base.external_velocity *= Fix::from_f64(0.95);
