@@ -2209,9 +2209,10 @@ impl FrozenSlime {
     }
 }
 
+/// SlimeController's ragdoll timer, which runs while its currentState
+/// (`obs_state`) is State.ragdoll.
 #[derive(Clone, Copy, Default)]
 pub struct RagdollState {
-    pub active: bool,
     /// The effect applied ragdoll while the slime was already grounded, so
     /// no AttachToGround callback may replace it with Land before timeout.
     pub hold_on_ground: bool,
@@ -4215,7 +4216,6 @@ fn ragdoll_pass(
     frozen: bool,
 ) -> RagdollPass {
     if base.grounded && !frozen && !ragdoll.hold_on_ground {
-        ragdoll.active = false;
         *obs_state = STATE_FALL;
         *state_ticks = 0;
         return RagdollPass::Landed;
@@ -4224,7 +4224,6 @@ fn ragdoll_pass(
     if ragdoll.time <= ragdoll.duration {
         return RagdollPass::Ragdolled;
     }
-    ragdoll.active = false;
     base.external_velocity += base.velocity;
     base.velocity = Vec2::ZERO;
     base.set_rotation(Fix::ZERO);
@@ -10269,7 +10268,7 @@ impl RolloutWorld {
                 slot.physics_scale = slot.base.scale;
             }
         }
-        let ragdoll_ended = self.players[index].ragdoll.active;
+        let ragdoll_ended = self.players[index].obs_state == STATE_RAGDOLL;
         if ragdoll_ended && self.ragdoll_player_tick(index, action, jump_pressed) {
             // A ragdoll's OldUpdate returns after its cooldown loop.
             self.players[index].slime_updated = true;
@@ -14091,7 +14090,6 @@ impl RolloutWorld {
                 // over any ragdoll taken during the playback.
                 slot.obs_state = STATE_FALL;
                 slot.state_ticks = 0;
-                slot.ragdoll.active = false;
                 slot.ragdoll_grounded_fall = false;
                 // FinishRewind overwrites the cooldowns outright and adds
                 // nothing (RewindRecorder.cs:325-333). SlimeController already
@@ -25144,7 +25142,6 @@ impl RolloutWorld {
                 // ApplyRagDoll's zero speed is the new selfImposedVelocity.
                 slot.base.velocity = Vec2::ZERO;
                 slot.ragdoll = RagdollState {
-                    active: true,
                     hold_on_ground: false,
                     time: Fix::ZERO,
                     duration: data.magnet.small_ragdoll_duration,
@@ -25507,7 +25504,6 @@ impl RolloutWorld {
                 slot.base.velocity = Vec2::ZERO;
                 slot.base.skip_next_gravity = true;
                 slot.ragdoll = RagdollState {
-                    active: true,
                     hold_on_ground: false,
                     time: Fix::ZERO,
                     duration: data.magnet.small_ragdoll_duration,
@@ -25717,7 +25713,6 @@ impl RolloutWorld {
                     // ApplyRagDoll leaves the skipNextUpdate this pass's hold
                     // already set (MagnetGun.cs:1127-1128).
                     slot.ragdoll = RagdollState {
-                        active: true,
                         hold_on_ground: false,
                         time: Fix::ZERO,
                         duration: data.magnet.fire_ragdoll_duration,
@@ -25734,7 +25729,6 @@ impl RolloutWorld {
                         self.slot_physics(i, |slot, world| slot.base.collision_rays_over(world, Fix::from_f64(0.0001)));
                     let slot = &mut self.players[i];
                     if attached && slot.pass_start.0 == self.tick {
-                        slot.ragdoll.active = false;
                         if slot.base.attach_upside_down == Some(true) {
                             slot.facing_right = !slot.facing_right;
                         }
@@ -29812,8 +29806,9 @@ impl RolloutWorld {
                 self.frozen_solids[effect_index].active = false;
                 let slot = &mut self.players[effect.victim];
                 slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
+                // FrozenSolid.End's ApplyRagDoll (FrozenSolid.cs:137).
+                slot.obs_state = STATE_RAGDOLL;
                 slot.ragdoll = RagdollState {
-                    active: true,
                     hold_on_ground: slot.base.grounded,
                     time: Fix::ZERO,
                     duration: Fix::from_f32(0.35),
@@ -29842,7 +29837,6 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             slot.obs_state = STATE_RAGDOLL;
             slot.ragdoll = RagdollState {
-                active: true,
                 hold_on_ground: false,
                 time: Fix::ZERO,
                 duration: Fix::ONE,
@@ -32856,7 +32850,6 @@ impl RolloutWorld {
                 clone.base.move_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
                 clone.obs_state = STATE_RAGDOLL;
                 clone.ragdoll = RagdollState {
-                    active: true,
                     hold_on_ground: clone.base.grounded,
                     time: Fix::ZERO,
                     duration: Fix::ONE,
@@ -32880,7 +32873,6 @@ impl RolloutWorld {
                 // stays attached: this ragdoll keeps it on the ground, and
                 // PlayerPhysics.LateUpdateSim puts it back on its platform.
                 slot.ragdoll = RagdollState {
-                    active: true,
                     hold_on_ground: slot.base.grounded,
                     time: Fix::ZERO,
                     duration: Fix::ONE,
@@ -33619,7 +33611,6 @@ impl RolloutWorld {
         // this pass, while a Burst over a victim that vanished returns before
         // the pin (PokeBall.cs:93-104).
         slot.ragdoll = RagdollState {
-            active: true,
             hold_on_ground: slot.base.grounded,
             time: Fix::ZERO,
             duration: Fix::from_f32(0.45),
@@ -33666,7 +33657,6 @@ impl RolloutWorld {
         clone.base.sync_collider(clone.hurtbox_inverse_extents(&self.entity_inverse_extents));
         clone.obs_state = STATE_RAGDOLL;
         clone.ragdoll = RagdollState {
-            active: true,
             hold_on_ground: clone.base.grounded,
             time: Fix::ZERO,
             duration: Fix::from_f32(0.45),
@@ -35850,7 +35840,7 @@ impl RolloutWorld {
         // A ragdoll that goes on makes OldUpdate return before Move
         // (SlimeController.cs:787), so only PlayerBody moves the clone.
         let mut ragdolled = false;
-        if !stopped && self.abilityless_clones[clone_index].ragdoll.active {
+        if !stopped && self.abilityless_clones[clone_index].obs_state == STATE_RAGDOLL {
             let clone = &mut self.abilityless_clones[clone_index];
             match ragdoll_pass(
                 &mut clone.ragdoll,
@@ -41469,7 +41459,7 @@ mod tests {
 
         assert!(!world.frozen_solids[0].active);
         assert_eq!(world.players[0].frozen_solid_count, 0);
-        assert!(world.players[0].ragdoll.active);
+        assert_eq!(world.players[0].obs_state, STATE_RAGDOLL);
         assert_eq!(world.players[0].ragdoll.duration, Fix::from_f32(0.35));
         assert_eq!(
             world.players[0].base.velocity,
