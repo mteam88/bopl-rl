@@ -8141,9 +8141,6 @@ impl RolloutWorld {
                 self.roll_hurtbox_contacts(roller, data);
             }
         }
-        if has_clones {
-            self.abilityless_clone_contacts();
-        }
         // DetPhysics.SyncGameObject: each child's FixTransform takes its
         // collider's pose before the collision callbacks (DetPhysics.cs:3172-3192).
         for spike in &mut self.spike_attacks {
@@ -36244,86 +36241,6 @@ impl RolloutWorld {
             && let Some(killer_index) = self.players.iter().position(|slot| slot.base.id == killer)
         {
             self.players[killer_index].kills += 1;
-        }
-    }
-
-    /// Queues each lethal hitbox touching an abilityless clone: the first to
-    /// run in DetPhysics' callback order kills it and takes the credit.
-    fn abilityless_clone_contacts(&mut self) {
-        let sweep_x = self.sweep_x();
-        for clone_index in 0..self.abilityless_clones.len() {
-            if !self.abilityless_clones[clone_index].active
-                || self.abilityless_clone_hidden(&self.abilityless_clones[clone_index])
-            {
-                continue;
-            }
-            let clone_entity = self.abilityless_clones[clone_index].entity;
-            let clone_owner = self.abilityless_clones[clone_index].base.id;
-            let clone_box = self.abilityless_clones[clone_index].base.collider;
-            let clone_min = self.swept_min(Swept::Clone(clone_index));
-            for (entity, row) in self.entities.iter().copied().enumerate() {
-                if Some(entity) == clone_entity
-                    || !self.collides(entity)
-                    || !matches!(row.layer, LAYER_PROJECTILE | 16)
-                {
-                    continue;
-                }
-                // A spike's, a Duplicator copy's and a grouped node's pairs
-                // are the groups'.
-                let circle_group = self.clone_part_circle(clone_index);
-                if self.spike_attacks.iter().any(|spike| spike.entity == Some(entity))
-                    || self.duplicated_rocks.iter().any(|rock| {
-                        rock.active && rock.entity == Some(entity) && !self.blink_object_hidden(rock.entity)
-                    })
-                    || (0..self.tesla_nodes.len()).any(|node| {
-                        self.tesla_nodes[node].entity == Some(entity)
-                            && circle_group.is_some_and(|circle| self.node_part(node, circle))
-                    })
-                {
-                    continue;
-                }
-                // An arrow DetPhysics simulates pairs in circle_box_group.
-                if row.layer == LAYER_PROJECTILE
-                    && let Some(arrow) = self.arrows.iter().position(|arrow| arrow.active && arrow.entity == Some(entity))
-                    && (self.arrow_registered(arrow)
-                        || (self.arrows[arrow].owner == clone_owner && !self.arrows[arrow].can_hurt_owner))
-                {
-                    continue;
-                }
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-                let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-                let row_min = if row.kind == 0 {
-                    axis(center) - Fix::from_raw(row.radius)
-                } else {
-                    axis(center) - axis(right).abs() - axis(up).abs()
-                };
-                let row_rank = sweep_rank(&self.entities, row_min, Some(entity));
-                let clone_rank = sweep_rank(&self.entities, clone_min, clone_entity);
-                let overlaps = if row.kind == 0 {
-                    crate::physics::contact::circle_box(
-                        Circle {
-                            center,
-                            radius: Fix::from_raw(row.radius),
-                        },
-                        clone_box,
-                    )
-                    .is_some()
-                } else {
-                    right != Vec2::ZERO
-                        && up != Vec2::ZERO
-                        && swept_box_box(Self::row_box(&self.entity_inverse_extents, entity, row), row_rank, clone_box, clone_rank).is_some()
-                };
-                if !overlaps {
-                    continue;
-                }
-                let category = GROUP_BB - (row.kind == 0) as u8;
-                let (later, earlier) = sweep_pair(row_rank, clone_rank);
-                let key = (category, later, earlier);
-                let hit = CallbackHit::CloneKill { clone: clone_index, killer: row.owner, cause: CAUSE_OTHER };
-                self.scratch.callback_hits.push((key, hit));
-            }
         }
     }
 
