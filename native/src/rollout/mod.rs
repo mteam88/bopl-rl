@@ -15829,15 +15829,6 @@ impl RolloutWorld {
             {
                 continue;
             }
-            // A running engine's BlowUpSmokeTouchingTheFire casts through
-            // DetPhysics.circleCastCircles (RocketEngine.cs:69), which runs
-            // RemoveDestroyedColliders first.
-            let turning_off = engine.phase == 2
-                && updater_dt != Fix::ZERO
-                && engine.ticks + 1 > data.engine.end_ticks;
-            if matches!(engine.phase, 1 | 2) && !turning_off {
-                self.remove_destroyed_colliders();
-            }
             let engine = &mut self.engines[engine_index];
             // RocketEngine.UpdateSim observes DPhysicsBox.Scale after the
             // ScaleChanger updater which wrote it. The collider was already
@@ -15899,36 +15890,34 @@ impl RolloutWorld {
                         radius: data.engine.fire_radius * engine.scale,
                     };
                     let engine_hierarchy = engine.hierarchy_base;
-                    let smoke_hit = self
-                        .smoke_clouds
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, cloud)| {
-                            if !cloud.active || !cloud.registered {
-                                return false;
-                            }
-                            let entity = cloud.entity.expect("registered smoke cloud");
+                    // BlowUpSmokeTouchingTheFire (RocketEngine.cs:66-73).
+                    let mut hits = [0; 1];
+                    let count = self.circle_cast_circles(
+                        flame,
+                        data.engine.smoke_mask,
+                        |world, entity| {
+                            let Some(cloud) = world.smoke_clouds.iter().find(|cloud| cloud.entity == Some(entity)) else {
+                                let row = world.entities[entity];
+                                return Some(Circle {
+                                    center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
+                                    radius: Fix::from_raw(row.radius),
+                                });
+                            };
                             // A cloud whose FlammableSmoke updater comes later
                             // in the pass has not resized itself yet.
-                            let radius = if engine_hierarchy < cloud.hierarchy_base
-                                && cloud.radius_tick == self.tick
-                            {
+                            let radius = if engine_hierarchy < cloud.hierarchy_base && cloud.radius_tick == world.tick {
                                 cloud.radius_before
                             } else {
-                                self.entities[entity].radius
+                                world.entities[entity].radius
                             };
-                            self.collides(entity)
-                                && crate::physics::contact::circle_circle(
-                                    flame,
-                                    Circle {
-                                        center: cloud.position,
-                                        radius: Fix::from_raw(radius),
-                                    },
-                                )
-                                .is_some()
-                        })
-                        .min_by_key(|(_, cloud)| cloud.entity.expect("registered smoke cloud"))
-                        .map(|(index, _)| index);
+                            (cloud.active && cloud.registered)
+                                .then_some(Circle { center: cloud.position, radius: Fix::from_raw(radius) })
+                        },
+                        &mut hits,
+                    );
+                    let smoke_hit = (count > 0)
+                        .then(|| self.smoke_clouds.iter().position(|cloud| cloud.entity == Some(hits[0])))
+                        .flatten();
                     if let Some(cloud_index) = smoke_hit {
                         let cloud = &mut self.smoke_clouds[cloud_index];
                         cloud.ignition_time = Fix::ZERO;
@@ -26704,6 +26693,44 @@ impl RolloutWorld {
             }
         }
         position
+    }
+
+    /// DetPhysics.circleCastCircles (DetPhysics.cs:1926-1948): purges
+    /// destroyed colliders, then writes each active circle on a `mask` layer
+    /// the query touches, by PhysTools' boolean test, in registration order
+    /// until `hits` is full. Returns the count. `circle_of` gives where a
+    /// circle stands for the caller's turn, None for one out of the registry.
+    fn circle_cast_circles(
+        &mut self,
+        query: Circle,
+        mask: u32,
+        circle_of: impl Fn(&Self, usize) -> Option<Circle>,
+        hits: &mut [usize],
+    ) -> usize {
+        self.remove_destroyed_colliders();
+        let mut count = 0;
+        for (entity, row) in self.entities.iter().enumerate() {
+            if row.kind != 0
+                || row.layer >= 32
+                || mask & (1u32 << row.layer) == 0
+                || row.flags & (E_REMOVED | E_DESTROYED) != 0
+                || !self.collides(entity)
+            {
+                continue;
+            }
+            let Some(circle) = circle_of(self, entity) else {
+                continue;
+            };
+            let radius = query.radius + circle.radius;
+            if (circle.center - query.center).length_squared() < radius * radius {
+                hits[count] = entity;
+                count += 1;
+                if count == hits.len() {
+                    break;
+                }
+            }
+        }
+        count
     }
 
     /// DetPhysics.circleCastRoundedRect (DetPhysics.cs:1882-1904): purges
@@ -43304,12 +43331,14 @@ mod tests {
         let fire = data.engine.fire_offset - data.engine.rocket_collider_offset;
         let older = world.entities.len();
         world.push_entity(CEntity {
+            layer: data.smoke.cloud_layer,
             flags: E_ACTIVE | E_ENABLED,
             radius: data.smoke.cloud_base_radius.raw(),
             ..CEntity::default()
         }, Vec2::ZERO);
         let newer = world.entities.len();
         world.push_entity(CEntity {
+            layer: data.smoke.cloud_layer,
             flags: E_ACTIVE | E_ENABLED,
             radius: data.smoke.cloud_base_radius.raw(),
             ..CEntity::default()
