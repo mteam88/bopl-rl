@@ -27423,6 +27423,14 @@ impl RolloutWorld {
                 let velocity = self.thrown_items[i].body.velocity;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
                 let radius = thrown_item_radius(data, self.thrown_items[i]);
+                // MoveObjectOutOfWalls first syncs the collider to the held
+                // position, where the rest of this pass's queries meet it
+                // (DetPhysics.cs:2535).
+                if let Some(entity) = self.thrown_items[i].entity {
+                    self.entities[entity].x = position.x.raw();
+                    self.entities[entity].y = position.y.raw();
+                }
+                self.thrown_items[i].synced_center = position;
                 let moved = self.magnet_circle_out_of_walls(position, Circle {
                     center: position,
                     radius,
@@ -27597,6 +27605,7 @@ impl RolloutWorld {
                     radius,
                 });
                 let pickup = &mut self.ability_pickups[i];
+                pickup.synced_center = position + offset;
                 pickup.position = moved;
                 pickup.body.velocity = Vec2::ZERO;
             }
