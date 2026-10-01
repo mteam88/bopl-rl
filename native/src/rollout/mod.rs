@@ -30448,22 +30448,32 @@ impl RolloutWorld {
     /// `is_body_collider`
     /// says whether the entity is a slime's, form's or clone's at all.
     fn detphysics_collider(&self, entity: usize) -> Option<DetCollider> {
-        // A spark node's circle is a child of its wall's CompositeBody, and a
-        // wall a QuantumTunnel hid takes it out of the hierarchy.
+        // A spark node, rocket engine or spike box is a child of its wall's
+        // CompositeBody. A wall a QuantumTunnel hid takes it out of the
+        // hierarchy, and MachoThrow2 deactivates the one it carries
+        // (MachoThrow2.cs:508-509).
         if let Some(node) =
             self.tesla_nodes.iter().find(|node| node.active && node.entity == Some(entity))
         {
-            let live = node.platform_index < self.platforms.len()
-                && !self.attached_hidden(node.platform_index, node.entity);
+            let live = !node.macho_carried && self.attached_live(node.platform_index, node.entity);
             return live.then_some(DetCollider::Circle(Circle {
                 center: node.collider_center,
                 radius: node.radius,
             }));
         }
-        // A rocket's box is likewise a composite child: present while its
-        // row is, at the collider pose its wall last synced.
-        if let Some(engine) = self.engines.iter().find(|engine| engine.active && engine.entity == Some(entity)) {
-            return self.row_collider(entity).map(|_| DetCollider::Box(engine.rocket_box()));
+        // A rocket's box is likewise a composite child, at the collider pose
+        // its wall last synced.
+        if let Some(engine) =
+            self.engines.iter().find(|engine| engine.active && engine.entity == Some(entity))
+        {
+            let live = !engine.macho_carried && self.attached_live(engine.platform_index, engine.entity);
+            return live.then(|| DetCollider::Box(engine.rocket_box()));
+        }
+        if let Some(spike) =
+            self.spike_attacks.iter().find(|spike| spike.active && spike.entity == Some(entity))
+        {
+            let live = !spike.macho_carried && self.attached_live(spike.platform_index, spike.entity);
+            return live.then(|| DetCollider::Box(Self::spike_attack_box_in(&self.platform_dynamics, *spike)));
         }
         if let Some(clone) =
             self.abilityless_clones.iter().find(|clone| clone.active && clone.entity == Some(entity))
@@ -30917,6 +30927,14 @@ impl RolloutWorld {
     /// spark node hit directly goes inactive the same way.
     fn attached_hidden(&self, platform_index: usize, entity: Option<usize>) -> bool {
         self.platform_hidden(platform_index) || self.blink_object_hidden(entity)
+    }
+
+    /// DetPhysics.IsActive for a platform child: its wall and its own object
+    /// are in the live hierarchy, which a QuantumTunnel changes mid-pass and
+    /// the published rows only follow at the next refresh
+    /// (DetPhysics.cs:1658-1665).
+    fn attached_live(&self, platform_index: usize, entity: Option<usize>) -> bool {
+        platform_index < self.platforms.len() && !self.attached_hidden(platform_index, entity)
     }
 
     /// A platform child's row. DestroyFix on the platform destroys its children

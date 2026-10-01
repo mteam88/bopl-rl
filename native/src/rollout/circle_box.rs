@@ -411,14 +411,11 @@ impl RolloutWorld {
         }
     }
 
-    /// A platform child DetPhysics still simulates: not carried off by
-    /// MachoThrow2, its platform and GameObject active.
-    fn child_registered(&self, active: bool, carried: bool, platform: usize, entity: Option<usize>) -> bool {
-        active
-            && !carried
-            && platform < self.platforms.len()
-            && !self.attached_hidden(platform, entity)
-            && entity.is_none_or(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+    /// A platform child in this Simulate's pairs: DetPhysics.IsActive on the
+    /// live hierarchy, so a wall a QuantumTunnel showed again this pass brings
+    /// its children back before their rows are republished.
+    fn child_registered(&self, entity: Option<usize>) -> bool {
+        entity.is_some_and(|entity| self.collides(entity))
     }
 
     /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
@@ -441,7 +438,7 @@ impl RolloutWorld {
             }
         }
         for (i, node) in self.tesla_nodes.iter().enumerate() {
-            if self.child_registered(node.active, node.macho_carried, node.platform_index, node.entity) {
+            if self.child_registered(node.entity) {
                 parts.push(Part::Node(i));
             }
         }
@@ -462,12 +459,12 @@ impl RolloutWorld {
         }
         let circles = parts.len();
         for (i, engine) in self.engines.iter().enumerate() {
-            if self.child_registered(engine.active, engine.macho_carried, engine.platform_index, engine.entity) {
+            if self.child_registered(engine.entity) {
                 parts.push(Part::Engine(i));
             }
         }
         for (i, spike) in self.spike_attacks.iter().enumerate() {
-            if self.child_registered(spike.active, spike.macho_carried, spike.platform_index, spike.entity) {
+            if self.child_registered(spike.entity) {
                 parts.push(Part::Spike(i));
             }
         }
