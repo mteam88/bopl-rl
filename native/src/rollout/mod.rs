@@ -41459,6 +41459,13 @@ impl RolloutWorld {
             return;
         }
         let data = data::get();
+        // The HitboxCombo boxes belong to the Drill, not the slime: killPlayer
+        // only deactivates them and they keep the pose Drill.UpdateSim last
+        // gave them (HitboxCombo.UpdateHitBoxPositionsAndScale), so SyncAll
+        // places them whether or not their slime was destroyed this pass.
+        for slot in &self.players {
+            place_drill_hitbox_rows(&mut self.entities, slot, data);
+        }
         for index in 0..self.players.len() {
             let (
                 body_e,
@@ -42695,7 +42702,6 @@ impl RolloutWorld {
                     E_ENABLED | E_TRIGGER
                 };
             }
-            place_drill_hitbox_rows(&mut self.entities, slot, data);
             if time_stop_e != usize::MAX {
                 let circle = &mut self.entities[time_stop_e];
                 let was_active = circle.flags & E_ACTIVE != 0;
