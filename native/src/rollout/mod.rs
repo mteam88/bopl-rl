@@ -4247,7 +4247,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28)
+    matches!(kind, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 40)
 }
 
 /// The place just after `key`.
@@ -8548,6 +8548,11 @@ impl RolloutWorld {
                 }
             }
         }
+        for (i, shot) in self.portal_shots.iter().enumerate() {
+            if shot.active {
+                push(self.updater_key(shot.appended, 100_000_000 + shot.hierarchy_base), 40, i);
+            }
+        }
         for (i, cloud) in self.smoke_clouds.iter().enumerate() {
             if cloud.active {
                 push(self.updater_key(cloud.appended, 100_000_000 + cloud.hierarchy_base), 9, i);
@@ -8696,6 +8701,7 @@ impl RolloutWorld {
                         self.thrown_item_update(index, data, updater_dt);
                     }
                 }
+                40 => self.portal_shot_step(index, data, updater_dt),
                 19 => {
                     let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
                     self.guided_missile_update_sim(index, DT * self.player_time_scale, being_held, data);
@@ -8716,80 +8722,89 @@ impl RolloutWorld {
         self.updater_pass_to(before);
     }
 
+    /// The Updater key of Portal Gun shot `shot_index`.
+    fn portal_shot_key(&self, shot_index: usize) -> UpdaterKey {
+        let shot = &self.portal_shots[shot_index];
+        self.updater_key(shot.appended, 100_000_000 + shot.hierarchy_base)
+    }
+
+    /// Each Portal Gun shot's turn in Updater's walk (Updater.cs:298-303),
+    /// after everything listed before it: a TeleportIndicator has moved and
+    /// disabled the shots it catches (TeleportIndicator.cs:165-166), and a
+    /// Portal of the pair a landing closes has passed the slimes in its mouth
+    /// through. A hook's RopeAttachment listed after an older shot then sees
+    /// the shot its own UpdateSim landed this pass gone.
     fn portal_shots_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         for shot_index in 0..self.portal_shots.len() {
-            // The older updatables have taken their turns: a TeleportIndicator
-            // has moved and disabled the shots it catches
-            // (TeleportIndicator.cs:165-166), and a Portal of the pair a
-            // landing closes has passed the slimes in its mouth through.
-            if self.portal_shots[shot_index].active {
-                let shot = &self.portal_shots[shot_index];
-                let key = self.updater_key(shot.appended, 100_000_000 + shot.hierarchy_base);
-                self.run_spawned_before(data, updater_dt, key);
+            let shot = &self.portal_shots[shot_index];
+            if shot.active && shot.appended <= self.tick {
+                let key = self.portal_shot_key(shot_index);
+                if !self.updater_passed(key) {
+                    self.run_spawned_before(data, updater_dt, key);
+                    self.updater_take_turn(key);
+                    self.portal_shot_step(shot_index, data, updater_dt);
+                }
             }
-            if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
-                continue;
-            }
-            if self.portal_shots[shot_index].remove_next_tick {
+            if self.portal_shots[shot_index].remove_next_tick
+                && !self.blink_object_hidden(self.portal_shots[shot_index].entity)
+            {
                 if let Some(entity) = self.portal_shots[shot_index].entity {
                     self.entities[entity].flags = E_REMOVED;
                 }
                 self.portal_shots[shot_index].remove_next_tick = false;
-                continue;
             }
-            if !self.portal_shots[shot_index].active {
-                continue;
+        }
+    }
+
+    /// Shot `shot_index`'s updatables at its turn: BoplBody.UpdateSim,
+    /// PortalShot.UpdateSim and DestroyIfOutsideSceneBounds.
+    fn portal_shot_step(&mut self, shot_index: usize, data: &data::RolloutData, updater_dt: Fix) {
+        if self.blink_object_hidden(self.portal_shots[shot_index].entity)
+            || !self.portal_shots[shot_index].active
+        {
+            return;
+        }
+        // BoplBody.UpdateSim (BoplBody.cs:332-344): the shot's body is
+        // older than any ray's ScaleChanger on it, so its mass follows
+        // the collider's rescale one pass late.
+        let shot = &mut self.portal_shots[shot_index];
+        if shot.body_prev_scale != Fix::ZERO && shot.body_prev_scale != shot.scale {
+            let ratio = shot.body_prev_scale / shot.scale;
+            shot.body.inverse_mass = shot.body.inverse_mass * ratio;
+            shot.body.inverse_inertia = shot.body.inverse_inertia * ratio;
+            shot.body_prev_scale = shot.scale;
+            if let Some(entity) = shot.entity {
+                self.entities[entity].inverse_mass = shot.body.inverse_mass.raw();
             }
-            // BoplBody.UpdateSim (BoplBody.cs:332-344): the shot's body is
-            // older than any ray's ScaleChanger on it, so its mass follows
-            // the collider's rescale one pass late.
-            let shot = &mut self.portal_shots[shot_index];
-            if shot.body_prev_scale != Fix::ZERO && shot.body_prev_scale != shot.scale {
-                let ratio = shot.body_prev_scale / shot.scale;
-                shot.body.inverse_mass = shot.body.inverse_mass * ratio;
-                shot.body.inverse_inertia = shot.body.inverse_inertia * ratio;
-                shot.body_prev_scale = shot.scale;
-                if let Some(entity) = shot.entity {
-                    self.entities[entity].inverse_mass = shot.body.inverse_mass.raw();
-                }
+        }
+        if !self.portal_shots[shot_index].fire_applied {
+            self.portal_shots[shot_index].fire_applied = true;
+            self.portal_shots[shot_index].body.velocity = self.portal_shots[shot_index].fire_velocity;
+        }
+        self.portal_shots[shot_index].time_alive += updater_dt;
+        if self.portal_shots[shot_index].time_alive > data.portal_gun.max_flight_seconds {
+            let mut outward = -self.portal_shots[shot_index]
+                .body
+                .velocity
+                .normalized_safe();
+            if outward.length_squared() < Fix::from_f32(0.01) {
+                outward = Vec2::UP;
             }
-            // Updater snapshots the updatable list for the pass. ManualInit
-            // registers DetPhysics immediately, so a cast-pass shot moves but
-            // PortalShot.UpdateSim does not start its flight clock until the
-            // following pass.
-            if self.portal_shots[shot_index].appended > self.tick {
-                continue;
-            }
-            if !self.portal_shots[shot_index].fire_applied {
-                self.portal_shots[shot_index].fire_applied = true;
-                self.portal_shots[shot_index].body.velocity =
-                    self.portal_shots[shot_index].fire_velocity;
-            }
-            self.portal_shots[shot_index].time_alive += updater_dt;
-            if self.portal_shots[shot_index].time_alive > data.portal_gun.max_flight_seconds {
-                let mut outward = -self.portal_shots[shot_index]
-                    .body
-                    .velocity
-                    .normalized_safe();
-                if outward.length_squared() < Fix::from_f32(0.01) {
-                    outward = Vec2::UP;
-                }
-                self.land_portal_shot(shot_index, outward, false, data);
-            }
-            // The shot prefab's DestroyIfOutsideSceneBounds (DoNotDestroyUp)
-            // runs after PortalShot and drops it below the water or past the
-            // side blast zones, with no portal.
-            let shot = &mut self.portal_shots[shot_index];
-            if shot.active
-                && (shot.position.y < data.maps[self.map].lower_boundary()
-                    || shot.position.x.abs() > Fix::from_f64(131.25))
-            {
-                shot.active = false;
-                shot.registered = false;
-                if let Some(entity) = shot.entity {
-                    self.entities[entity].flags = E_REMOVED;
-                    self.entities[entity].owner = 0;
-                }
+            self.land_portal_shot(shot_index, outward, false, data);
+        }
+        // The shot prefab's DestroyIfOutsideSceneBounds (DoNotDestroyUp)
+        // runs after PortalShot and drops it below the water or past the
+        // side blast zones, with no portal.
+        let shot = &mut self.portal_shots[shot_index];
+        if shot.active
+            && (shot.position.y < data.maps[self.map].lower_boundary()
+                || shot.position.x.abs() > Fix::from_f64(131.25))
+        {
+            shot.active = false;
+            shot.registered = false;
+            if let Some(entity) = shot.entity {
+                self.entities[entity].flags = E_REMOVED;
+                self.entities[entity].owner = 0;
             }
         }
     }
