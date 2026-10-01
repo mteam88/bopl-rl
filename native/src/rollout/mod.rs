@@ -4080,6 +4080,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::TimeStop
             | ActiveAbility::Gust
             | ActiveAbility::Revival
+            | ActiveAbility::Push
     )
 }
 
@@ -13940,7 +13941,7 @@ impl RolloutWorld {
         // UnGround (a grounded rope's pull, PlayerPhysics.cs:156) keeps
         // attachedGround; ControlPlatform exits on IsGrounded alone.
         let Some(ground_id) = self.players[index].base.ground else {
-            self.exit_push(index);
+            self.exit_form(index);
             return;
         };
         if !self.players[index].base.grounded {
@@ -13949,7 +13950,7 @@ impl RolloutWorld {
             if let Some(platform) = self.platforms.iter().position(|platform| platform.id == ground_id) {
                 self.platform_dynamics[platform].being_controlled = false;
             }
-            self.exit_push(index);
+            self.exit_form(index);
             return;
         }
         let Some(platform_index) = self
@@ -13957,7 +13958,7 @@ impl RolloutWorld {
             .iter()
             .position(|platform| platform.id == ground_id)
         else {
-            self.exit_push(index);
+            self.exit_form(index);
             return;
         };
 
@@ -14018,39 +14019,10 @@ impl RolloutWorld {
             // OldUpdate's button release goes through the same ExitAbility
             // (ControlPlatform.cs:201-204).
             self.platform_dynamics[platform_index].being_controlled = false;
-            self.exit_push(index);
+            self.exit_form(index);
         }
     }
 
-    fn exit_push(&mut self, index: usize) {
-        let slot = &mut self.players[index];
-        // Ability.ExitAbility publishes the form collider's position through
-        // Player.SetPosition before the slime is re-placed.
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
-        slot.obs_state = STATE_IDLE;
-        slot.state_ticks = 0;
-        // exitInfo.isGrounded is IsGrounded(): a form a rope ungrounded still
-        // names its attachedGround but exits airborne where it stands.
-        if !slot.base.grounded {
-            slot.base.ground = None;
-        }
-        if !self.sync_exit_to_ground(index) {
-            let slot = &mut self.players[index];
-            slot.base.grounded = false;
-            slot.exit_to_fall(terrain!(self));
-        }
-    }
-
-    /// PlayerPhysics.SyncPhysicsTo(AbilityExitInfo) for a grounded form: the
-    /// slime is placed from the form's LocalPlatformPos at the form's radius
-    /// and re-derives its own local at the slime radius. The slime's
-    /// SlimeController already ran (disabled) earlier in this updater pass, so
-    /// its state switch does not run again until the next one. Returns false
-    /// when the form has no live ground.
     /// The active form's IAbilityComponent.ExitAbility(info) up to the
     /// `ability.ExitAbility(info)` it ends with: the form's own exit effects
     /// on its body, and the fields it writes over the packet it was handed.
@@ -14121,6 +14093,13 @@ impl RolloutWorld {
                 slot.base.rotation = Fix::ZERO;
                 slot.base.unground(surface, true);
                 info.take_body(&slot.base);
+            }
+            ActiveAbility::Push => {
+                // ControlPlatform.ExitAbility (ControlPlatform.cs:104-118).
+                let slot = &mut self.players[index];
+                slot.base.rotation = Fix::ZERO;
+                info.take_body(&slot.base);
+                info.facing_right = slot.facing_right;
             }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
@@ -14221,6 +14200,12 @@ impl RolloutWorld {
         slot.base.sync_collider();
     }
 
+    /// PlayerPhysics.SyncPhysicsTo(AbilityExitInfo) for a grounded form: the
+    /// slime is placed from the form's LocalPlatformPos at the form's radius
+    /// and re-derives its own local at the slime radius. The slime's
+    /// SlimeController already ran (disabled) earlier in this updater pass, so
+    /// its state switch does not run again until the next one. Returns false
+    /// when the form has no live ground.
     fn sync_exit_to_ground(&mut self, index: usize) -> bool {
         let slot = &mut self.players[index];
         slot.obs_state_held_this_tick = true;
