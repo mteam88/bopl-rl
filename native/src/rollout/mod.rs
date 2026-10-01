@@ -10737,63 +10737,45 @@ impl RolloutWorld {
                             );
                             form.physics_radius()
                         };
-                        // SparkShot.OnEnterAbility syncs the hurtbox after
-                        // SyncPhysicsTo aligned (grounded) or zeroed (airborne)
-                        // the rotation, and only then restores PlayerInfo's.
-                        let (form_position, entry_rotation) = if grounded {
-                            let base = &self.players[index].base;
-                            base.ground
-                                .and_then(|ground| {
-                                    self.platforms.iter().find(|platform| platform.id == ground)
-                                })
-                                .map_or((base.position, base.rotation), |platform| {
-                                    let position = platform.surface.position(base.local, form_radius);
-                                    let right = platform.surface.normal(position).perp_cw();
-                                    (position, right.normalized_angle())
-                                })
-                        } else {
-                            (self.players[index].base.position, Fix::ZERO)
-                        };
                         self.enter_form_flags(index);
-                        {
-                            let slot = &mut self.players[index];
-                            slot.timers[s] = Fix::ZERO;
-                            slot.set_active_form(&mut self.entities, ActiveAbility::Missile);
-                            slot.active_slot = s;
-                            slot.ability_entry_action = action;
-                            slot.telemetry.ability_activations[s] += 1;
-                            slot.missile = MissileFormState {
-                                collider_rotation: entry_rotation,
-                                ..MissileFormState::default()
-                            };
-                            // The form's Ability.UpdateSim assigns Player.Scale
-                            // again on the entry pass.
-                            let scale = slot.player_scale;
-                            slot.forms[s].set_scale(
-                                scale,
-                                data.missile.hurtbox_extents,
-                                data.missile.physics_radius,
-                            );
-                            let collider = slot.forms[s].hurtbox(
-                                form_position,
-                                Vec2::angle(entry_rotation),
-                                data.missile.hurtbox_extents,
-                            );
-                            Self::sync_form_row(&mut self.entities, slot.throw_entity, DetCollider::Box(collider));
-                            slot.base.position = form_position;
-                            slot.base.radius = form_radius;
-                            // The form's Ability.UpdateSim runs on the entry
-                            // pass ahead of its PlayerPhysics and PlayerBody,
-                            // publishing the collider SparkShot just synced.
-                            slot.reported_position = form_position;
-                            slot.reported_tick = self.tick;
-                            if grounded {
-                                // PlayerPhysics.SyncPhysicsTo clears only the
-                                // self-imposed velocity. PlayerInfo's external
-                                // velocity survives into the enabled form.
-                                slot.base.velocity = Vec2::ZERO;
-                            }
-                        }
+                        let slot = &mut self.players[index];
+                        slot.timers[s] = Fix::ZERO;
+                        slot.set_active_form(&mut self.entities, ActiveAbility::Missile);
+                        slot.active_slot = s;
+                        slot.ability_entry_action = action;
+                        slot.telemetry.ability_activations[s] += 1;
+                        // The form's Ability.UpdateSim assigns Player.Scale
+                        // again on the entry pass.
+                        let scale = slot.player_scale;
+                        slot.forms[s].set_scale(
+                            scale,
+                            data.missile.hurtbox_extents,
+                            data.missile.physics_radius,
+                        );
+                        // SparkShot.OnEnterAbility syncs the hurtbox after
+                        // SyncPhysicsTo, then restores PlayerInfo's rotation
+                        // (SparkShot.cs:6-8).
+                        let entry = (slot.base.rotation, slot.base.up);
+                        self.sync_physics_to_player_info(index, form_radius);
+                        let slot = &mut self.players[index];
+                        let entry_rotation = slot.base.rotation;
+                        slot.missile = MissileFormState {
+                            collider_rotation: entry_rotation,
+                            ..MissileFormState::default()
+                        };
+                        let collider = slot.forms[s].hurtbox(
+                            slot.base.position,
+                            Vec2::angle(entry_rotation),
+                            data.missile.hurtbox_extents,
+                        );
+                        let collider = DetCollider::Box(collider);
+                        Self::sync_form_row(&mut self.entities, slot.throw_entity, collider);
+                        (slot.base.rotation, slot.base.up) = entry;
+                        // The form's Ability.UpdateSim runs on the entry
+                        // pass ahead of its PlayerPhysics and PlayerBody,
+                        // publishing the collider SparkShot just synced.
+                        slot.reported_position = slot.base.position;
+                        slot.reported_tick = self.tick;
                         self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds runs on
                         // the entry pass too: OldUpdate enters the ability
@@ -11063,7 +11045,8 @@ impl RolloutWorld {
                         // SyncPhysicsTo's UpdateScale its PlayerPhysics radius.
                         let scale = slot.player_scale;
                         let form = &mut slot.forms[s];
-                        form.set_circle_scale_physics(scale, data.roll.radius, data.roll.physics_radius);
+                        let radius = data.roll.radius;
+                        form.set_circle_scale_physics(scale, radius, data.roll.physics_radius);
                         let physics = form.physics_radius();
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Roll);
@@ -11615,7 +11598,8 @@ impl RolloutWorld {
                         slot.scale_form_circle(data.gust.hurtbox_radius, data.gust.collider_offset);
                         let (radius, offset) =
                             slot.form_circle(slot.gust_entity, data.gust.hurtbox_radius, data.gust.collider_offset);
-                        let (physics, position) = (slot.forms[s].physics_radius(), slot.base.position);
+                        let physics = slot.forms[s].physics_radius();
+                        let position = slot.base.position;
                         // QuickSpell.OnEnterAbility (QuickSpell.cs:79-85): the
                         // sync places the circle, then the body returns to
                         // PlayerInfo's position (EnterAbilityOffset is zero).
@@ -11662,7 +11646,8 @@ impl RolloutWorld {
                         slot.scale_form_circle(data.revival.hurtbox_radius, data.revival.collider_offset);
                         let (radius, offset) =
                             slot.form_circle(slot.revival_entity, data.revival.hurtbox_radius, data.revival.collider_offset);
-                        let (physics, position) = (slot.forms[s].physics_radius(), slot.base.position);
+                        let physics = slot.forms[s].physics_radius();
+                        let position = slot.base.position;
                         // QuickSpell.OnEnterAbility (QuickSpell.cs:79-85): the
                         // sync places the circle, then the body returns to
                         // PlayerInfo's position (EnterAbilityOffset is zero).
@@ -29783,7 +29768,8 @@ impl RolloutWorld {
         let slot = &self.players[index];
         let center = slot.base.position + slot.base.up.perp_cw().complex_mul(offset);
         let entity = Self::hurtbox_entity(slot);
-        Self::sync_form_row(&mut self.entities, entity, DetCollider::Circle(Circle { center, radius }));
+        let circle = DetCollider::Circle(Circle { center, radius });
+        Self::sync_form_row(&mut self.entities, entity, circle);
     }
 
     fn sync_form_entry(
