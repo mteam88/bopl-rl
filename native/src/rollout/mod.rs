@@ -1629,6 +1629,11 @@ pub struct PlatformDynamics {
     /// Arrow updatable (Arrow.cs:100, 124-128), so DuplicateObject copies
     /// and numbers it along with the platform.
     pub stuck_arrows: u32,
+    /// The pass in which a landing past 80 children DestroyFix'd this
+    /// platform's first stuck arrow. That arrow stays a child until the
+    /// Updater's end-of-pass DestroyImmediate, so a later landing in the same
+    /// pass finds it first again (Arrow.cs:104-118, Updater.cs:339-344).
+    pub arrow_trim_tick: Option<u32>,
     /// StickyRoundedRectangle.UpdateBounds follows its collider updater on
     /// the pass after a later MachoThrow2 scale write.
     pub surface_shape_dirty: bool,
@@ -5427,6 +5432,7 @@ impl RolloutWorld {
                 base_scale: p.base_scale,
                 time_since_scaled_up: Fix::ZERO,
                 stuck_arrows: 0,
+                arrow_trim_tick: None,
                 surface_shape_dirty: false,
                 root_body: p.body,
                 attached_children: 0,
@@ -20522,6 +20528,7 @@ impl RolloutWorld {
             base_scale: Fix::ONE,
             time_since_scaled_up: Fix::ZERO,
             stuck_arrows: 0,
+            arrow_trim_tick: None,
             surface_shape_dirty: false,
             root_body: data.macho_throw.boulder_body,
             attached_children: 0,
@@ -33329,6 +33336,7 @@ impl RolloutWorld {
             base_scale: Fix::ONE,
             time_since_scaled_up: Fix::ZERO,
             stuck_arrows: 0,
+            arrow_trim_tick: None,
             surface_shape_dirty: false,
             root_body: pd.spawn_body,
             attached_children: 0,
@@ -35890,12 +35898,31 @@ impl RolloutWorld {
                 return;
             }
             self.platform_dynamics[p].stuck_arrows += 1;
+            // Past 80 children it DestroyFixes the platform's first Arrow
+            // child (Arrow.cs:104-118).
+            if self.platform_dynamics[p].arrow_trim_tick != Some(self.tick) && self.platform_child_count(p) > 80 {
+                self.platform_dynamics[p].stuck_arrows -= 1;
+                self.platform_dynamics[p].arrow_trim_tick = Some(self.tick);
+            }
         }
         if part.is_some_and(|part| self.part_destroyed(part)) {
             return;
         }
         let arrow = self.arrows[index];
         self.destroy_arrow_contact(index, arrow.position, arrow.body(&data.arrow.body));
+    }
+
+    /// The platform transform's childCount: its scene children (the Platform
+    /// ability's ResizablePlatform and the Boulder prefab have none), stuck
+    /// arrows, and the spikes, engines and spark nodes parented to it, less
+    /// the one MachoThrow2 has unparented.
+    fn platform_child_count(&self, p: usize) -> u32 {
+        let definition = self.platform_defs[p];
+        let authored = if definition != usize::MAX { data::get().maps[self.map].platforms[definition].child_count } else { 0 };
+        let spikes = self.spike_attacks.iter().filter(|c| c.active && !c.macho_carried && c.platform_index == p).count();
+        let engines = self.engines.iter().filter(|c| c.active && !c.macho_carried && c.platform_index == p).count();
+        let nodes = self.tesla_nodes.iter().filter(|c| c.active && !c.macho_carried && c.platform_index == p).count();
+        authored + self.platform_dynamics[p].stuck_arrows + (spikes + engines + nodes) as u32
     }
 
     /// PlayerCollision.OnCollide with an arrow, run from the callback queue

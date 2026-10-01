@@ -276,6 +276,9 @@ def extract_map(metadata):
                 "layer": node.get("layer"),
                 "hierarchy": rr["hierarchyNumber"],
                 "updaters": updater_order(node),
+                # Arrow.OnCollide's childCount > 80 counts the platform's own
+                # authored children too (Arrow.cs:104).
+                "child_count": len(node.get("children", [])),
                 # What DuplicateObject instantiates: GrowOnStart.Init destroys
                 # itself before any Duplicator can copy the platform.
                 "updatable_count": sum(

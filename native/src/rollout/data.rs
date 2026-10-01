@@ -63,6 +63,7 @@ struct RawPlatform {
     hierarchy: u32,
     updatable_count: u32,
     updaters: Vec<PlatformUpdater>,
+    child_count: u32,
     duplicate_collider_hierarchy: u32,
     animate_velocity: RawAnimateVelocity,
     body: RawBody,
@@ -1311,6 +1312,9 @@ pub struct PlatformDef {
     pub updatable_count: u32,
     /// The platform's own updaters, in the scene's component order.
     pub updaters: Vec<PlatformUpdater>,
+    /// The scene GameObject's own children, which Arrow.OnCollide's
+    /// childCount counts with any runtime ones (Arrow.cs:104).
+    pub child_count: u32,
     pub duplicate_collider_hierarchy: u32,
     pub min_scale: Fix,
     pub max_scale: Fix,
@@ -2552,6 +2556,7 @@ fn map_def(raw: &RawMap) -> MapDef {
                 hierarchy: p.hierarchy,
                 updatable_count: p.updatable_count,
                 updaters: platform_updaters(&p.updaters),
+                child_count: p.child_count,
                 duplicate_collider_hierarchy: p.duplicate_collider_hierarchy,
                 min_scale: Fix::from_raw(p.min_scale),
                 max_scale: Fix::from_raw(p.max_scale),
