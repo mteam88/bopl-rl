@@ -2100,6 +2100,11 @@ pub struct MagnetState {
     pub animation_ticks: u32,
     pub time_spent_pulling: Fix,
     pub aim: Vec2,
+    /// The ability FixTransform's right and stored rotation, which the form's
+    /// exported row reads, also after the form is disabled. While the form
+    /// is active they match `base.up`.
+    pub body_right: Vec2,
+    pub body_rotation: Fix,
     pub has_fired: bool,
     pub held: MagnetHeld,
     pub held_position: Vec2,
@@ -2107,6 +2112,21 @@ pub struct MagnetState {
     /// allocation-free StaticUpdate parry sweep.
     pub parry_registered: bool,
     pub parry_circle: Circle,
+}
+
+impl MagnetState {
+    /// FixTransform.up's setter: right from up, the rotation its
+    /// NormalizedVectorAngle (FixTransform.cs:56-61).
+    fn aim_body(&mut self, right: Vec2) {
+        self.body_right = right;
+        self.body_rotation = right.normalized_angle();
+    }
+
+    /// `body.rotation = Fix.Zero`: the setter stores zero and rebuilds right.
+    fn null_body_rotation(&mut self) {
+        self.body_right = Vec2::RIGHT;
+        self.body_rotation = Fix::ZERO;
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -11838,6 +11858,7 @@ impl RolloutWorld {
                         // tail of UpdateSim turns the body to the aim
                         // (MagnetGun.cs:1256).
                         self.players[index].base.up = Vec2::UP;
+                        self.players[index].magnet.null_body_rotation();
                         self.form_entry_turn(data, index);
                         self.magnet_tick(index, action, movement_input, data, false);
                         return;
@@ -26234,6 +26255,7 @@ impl RolloutWorld {
             // UnGround(nullRotation: true) resets body.right (MagnetGun.cs:1215).
             let slot = &mut self.players[index];
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
+            slot.magnet.null_body_rotation();
         }
 
         if !self.players[index].base.grounded {
@@ -26278,9 +26300,17 @@ impl RolloutWorld {
             self.players[index]
                 .base
                 .move_only(Vec2::ZERO, terrain!(self));
-            // Move ends in DropPlatformTest; the rest of MagnetGun.UpdateSim
-            // only writes the disabled form's body.
+            // Move ends in DropPlatformTest, whose MagnetGun.ExitAbility
+            // zeroes the rotation; the rest of MagnetGun.UpdateSim only writes
+            // the disabled form's body, aiming it again unless it has fired,
+            // and the exit row publishes that basis (MagnetGun.cs:358, 1253-1256).
             if self.apply_platform_drop(index, data) {
+                let slot = &mut self.players[index];
+                if slot.magnet.has_fired {
+                    slot.magnet.null_body_rotation();
+                } else {
+                    slot.magnet.aim_body(slot.magnet.aim);
+                }
                 return;
             }
         }
@@ -26289,6 +26319,7 @@ impl RolloutWorld {
         if !slot.magnet.has_fired {
             slot.base.up = slot.magnet.aim.perp();
             slot.base.rotation = slot.magnet.aim.normalized_angle();
+            slot.magnet.aim_body(slot.magnet.aim);
             if slot.base.velocity.length() > magnet.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * magnet.max_slow_mo_speed;
             }
@@ -27204,6 +27235,7 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 if slot.base.grounded && slot.base.ground == Some(self.platforms[platform].id) {
                     UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
+                    slot.magnet.null_body_rotation();
                 }
             }
             MagnetHeld::AbilityPickup(i) => {
@@ -27868,12 +27900,14 @@ impl RolloutWorld {
         slot.magnet.phase = 5;
         slot.magnet.animation = 3;
         slot.magnet.animation_ticks = 0;
+        slot.magnet.aim_body(facing);
         slot.base.up = facing.perp();
         slot.base.rotation = facing.normalized_angle();
         if grounded {
             slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.magnet.knockback);
             // UnGround(nullRotation) resets the FixTransform (MagnetGun.cs:408).
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
+            slot.magnet.null_body_rotation();
         } else {
             slot.base.velocity = -(aim * data.magnet.knockback);
         }
@@ -27904,6 +27938,7 @@ impl RolloutWorld {
         // MagnetGun.ExitAbility: `isFacingRight = inputVector.x >= 0`.
         slot.facing_right = slot.magnet.aim.x >= Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
+        slot.magnet.null_body_rotation();
         slot.base.up = Vec2::UP;
         if !landed {
             UngroundBody::Form(slot).unground(terrain.platforms, self.tick, true);
@@ -42841,15 +42876,9 @@ impl RolloutWorld {
                     row.owner = slot.base.id;
                 }
                 if (alive && magnetizing) || was_active {
-                    let (root, rotation, offset_basis) = if magnetizing {
-                        (
-                            synced,
-                            slot.base.up.perp_cw().normalized_angle(),
-                            slot.base.up.perp_cw(),
-                        )
-                    } else {
-                        (exit_position, Fix::ZERO, Vec2::RIGHT)
-                    };
+                    let root = if magnetizing { synced } else { exit_position };
+                    let (rotation, offset_basis) =
+                        (slot.magnet.body_rotation, slot.magnet.body_right);
                     let basis = Vec2::angle(rotation);
                     let form = &slot.forms[slot.entity_slot(magnet_e)];
                     let center = root + offset_basis.complex_mul(form.offset);
