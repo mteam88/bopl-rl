@@ -849,8 +849,12 @@ pub struct GuidedMissile {
     pub entity: Option<usize>,
     pub owner: usize,
     pub position: Vec2,
+    /// The PhysicsBody; its orientation is the DetPhysics box's.
     pub body: Body,
-    pub up: Vec2,
+    /// The FixTransform's orientation. SparkShot and MagnetGun write it
+    /// through BoplBody.up, which leaves the PhysicsBody and box alone until
+    /// DetPhysics next syncs them to it.
+    pub transform: Orientation,
     pub scale: Fix,
     /// The Spark DPhysicsBox's |One / startExtents|, which Init copies into
     /// its row's inverseExtents. A Scale write before Init lands here
@@ -870,6 +874,13 @@ pub struct GuidedMissile {
 }
 
 impl GuidedMissile {
+    /// The box and PhysicsBody take the FixTransform's rotation
+    /// (DPhysicsBox.UpdatePhysicsPositions, DPhysicsBox.cs:276-291; the same
+    /// as SyncAllPhysicsObjectsToFixTransformPosition, DetPhysics.cs:2519-2527).
+    fn sync_body_to_transform(&mut self) {
+        self.body.orientation = self.transform.rotation();
+    }
+
     /// The Spark box, rebuilt from the inverseExtents its row holds, or from
     /// startExtents before Init.
     fn collider(&self, table: &[Vec2]) -> OrientedBox {
@@ -23828,7 +23839,8 @@ impl RolloutWorld {
     fn spawn_guided_missile(&mut self, index: usize, data: &data::RolloutData) -> usize {
         let rotation = self.players[index].base.rotation();
         let right = Vec2::angle(rotation);
-        let up = right.perp();
+        let mut transform = Orientation::ZERO;
+        transform.set_rotation(rotation);
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.missile.spark_updatable_count;
         let mut body = data.missile.spark_body;
@@ -23846,7 +23858,7 @@ impl RolloutWorld {
             position: self.players[index].base.position
                 + (data.missile.projectile_offset * scale).complex_mul(right),
             body,
-            up,
+            transform,
             scale,
             // SparkShot.Fire writes Scale before DPhysicsBox.Init, so it
             // lands in startExtents.
@@ -23899,13 +23911,12 @@ impl RolloutWorld {
         } else {
             -turn_dt * data.missile.rotation_speed
         };
-        let mut next_up = Vec2::angle(signed_turn).complex_mul(missile.up);
+        let mut next_up = Vec2::angle(signed_turn).complex_mul(missile.transform.up());
         if aim.length_squared() < Fix::from_f32(0.4) * Fix::from_f32(0.4) {
-            next_up = missile.up;
+            next_up = missile.transform.up();
         }
         missile.body.velocity = next_up * missile.body.velocity.length();
-        missile.up = next_up;
-        missile.body.orientation = next_up.perp_cw().normalized_angle();
+        missile.transform.set_up(next_up);
     }
 
     fn missile_form_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
@@ -26834,6 +26845,7 @@ impl RolloutWorld {
                 missile.body.velocity = Vec2::ZERO;
                 missile.magnet_holder = Some(index);
                 missile.magnet_hold_ticks = 2;
+                missile.sync_body_to_transform();
                 let (shape, own) = (missile.collider(&self.entity_inverse_extents), missile.entity);
                 if let Some(correction) = self.move_object_out_of_walls(WallMover::Box(shape), own) {
                     self.guided_missiles[i].position = shape.center + correction;
@@ -27041,9 +27053,8 @@ impl RolloutWorld {
             }
             MagnetHeld::Missile(i) => {
                 if let Some(missile) = self.guided_missiles.get_mut(i) {
-                    missile.up = direction;
+                    missile.transform.set_up(direction);
                     missile.body.velocity = direction * data.magnet.fire_missile_force;
-                    missile.body.orientation = direction.perp_cw().normalized_angle();
                 }
             }
             MagnetHeld::ThrownItem(i) => {
@@ -28505,7 +28516,9 @@ impl RolloutWorld {
             body.velocity = up * speed;
             // duplicateBoplBody first copies the live rotation, then the
             // Missile-specific branch assigns `up` from the fan velocity.
-            body.orientation = up.perp_cw().normalized_angle();
+            let mut transform = Orientation::ZERO;
+            transform.set_up(up);
+            body.orientation = transform.rotation();
             let clone = GuidedMissile {
                 active: true,
                 appended: self.tick + 1,
@@ -28513,7 +28526,7 @@ impl RolloutWorld {
                 owner: source.owner,
                 position,
                 body,
-                up,
+                transform,
                 // duplicateBoplBody hands the copy the source's Scale
                 // (ShootDuplicator.cs:280, 694).
                 scale: source.scale,
@@ -33227,13 +33240,14 @@ impl RolloutWorld {
                 self.guided_missile_update_sim(index, physics_dt, being_held, data);
             }
             let missile = &mut self.guided_missiles[index];
+            missile.sync_body_to_transform();
             missile.position += missile.body.integrate(physics_dt, Fix::from_int(-40));
             self.sync_guided_missile_entity(index);
             // DetPhysics writes PhysicsBody.orientation back through the
             // FixTransform rotation setter after simulation, rebuilding the
             // basis that SparkShot reads on the following updater pass.
             let missile = &mut self.guided_missiles[index];
-            missile.up = Vec2::angle(missile.body.orientation).perp();
+            missile.transform.set_rotation(missile.body.orientation);
         }
     }
 
@@ -33256,9 +33270,11 @@ impl RolloutWorld {
         // leave thrust queued for the first unfrozen DetPhysics pass.
         if physics_dt > Fix::ZERO && !being_held {
             if missile.instability_ticks >= 3 {
-                missile.body.force += missile.up * data.missile.instability_accel;
-            } else if missile.up.dot(missile.body.velocity) < data.missile.minimum_forward_speed {
-                missile.body.force += missile.up * data.missile.accel;
+                missile.body.force += missile.transform.up() * data.missile.instability_accel;
+            } else if missile.transform.up().dot(missile.body.velocity)
+                < data.missile.minimum_forward_speed
+            {
+                missile.body.force += missile.transform.up() * data.missile.accel;
             }
         }
     }
@@ -43767,7 +43783,7 @@ mod tests {
                 velocity: Vec2::UP,
                 ..Body::default()
             },
-            up: Vec2::UP,
+            transform: Orientation::ZERO,
             scale: Fix::ONE,
             entity: Some(world.entities.len()),
             ..GuidedMissile::default()
