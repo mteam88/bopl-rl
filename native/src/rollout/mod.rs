@@ -30440,6 +30440,11 @@ impl RolloutWorld {
                 radius: node.radius,
             }));
         }
+        // A rocket's box is likewise a composite child: present while its
+        // row is, at the collider pose its wall last synced.
+        if let Some(engine) = self.engines.iter().find(|engine| engine.active && engine.entity == Some(entity)) {
+            return self.row_collider(entity).map(|_| DetCollider::Box(engine.rocket_box()));
+        }
         if let Some(clone) =
             self.abilityless_clones.iter().find(|clone| clone.active && clone.entity == Some(entity))
         {
