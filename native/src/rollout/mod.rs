@@ -32834,7 +32834,25 @@ impl RolloutWorld {
             .expect("valid bow gravity constants");
             slot.base.collision_rays(terrain);
             if slot.base.grounded {
-                exit = true;
+                // The landing exit is followed by UpdateSim's grounded
+                // Move(zero), whose DropPlatformTest exits the form a second
+                // time off a dropping platform, and that exit is the one the
+                // slime keeps (BowTransform.cs:222-243, PlayerPhysics.cs:285-301).
+                let drops = slot
+                    .base
+                    .ground
+                    .and_then(|ground| platforms.iter().position(|p| p.id == ground && p.active))
+                    .is_some_and(|p| {
+                        let dynamics = &this.platform_dynamics[p];
+                        dynamics.drop_players_frames > 0
+                            && dynamics.dont_drop_player_id != slot.base.id
+                    });
+                if drops {
+                    slot.base.move_only(Vec2::ZERO, terrain);
+                    drop_test = true;
+                } else {
+                    exit = true;
+                }
             } else {
                 // The modified velocity is then consumed by PlayerBody's
                 // later integration in the same updater pass.
