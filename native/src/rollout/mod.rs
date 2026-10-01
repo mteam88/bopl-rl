@@ -2172,10 +2172,6 @@ pub struct GunState {
     pub aim: Vec2,
     pub has_fired: bool,
     pub fire_ticks: u32,
-    pub collider_up: Vec2,
-    /// The hurtbox centre GunTransform.OnEnterAbility synced. DetPhysics
-    /// moves it again only at the end of the pass.
-    pub hurtbox_center: Vec2,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -3881,20 +3877,6 @@ impl PlayerSlot {
         self.forms[self.entity_slot(frozen.entity)].pose
     }
 
-    /// GunTransform.OnEnterAbility syncs the hurtbox after SyncPhysicsTo has
-    /// zeroed an airborne rotation or aligned a grounded one to the surface
-    /// normal at the re-snapped position (alignRotation).
-    fn sync_gun_hurtbox(&mut self, offset: Vec2, platforms: &[Platform]) {
-        self.gun.collider_up = if !self.base.grounded {
-            Vec2::UP
-        } else if let Some(platform) = self.base.platform(platforms) {
-            platform.surface.normal(self.base.position)
-        } else {
-            self.base.up()
-        };
-        self.gun.hurtbox_center = self.base.position
-            + self.gun.collider_up.perp_cw().complex_mul(self.gun_offset(self.active_slot, offset));
-    }
 
     /// The per-ability field that aliases the selected form row.
     fn form_alias(&mut self, ability: u32) -> Option<&mut usize> {
@@ -3959,18 +3941,10 @@ impl PlayerSlot {
     }
 
     /// UnGround(nullRotation) zeroes a SparkShot form's body rotation too
-    /// (PlayerPhysics.cs:372-376); its box takes it at the next sync. A gun
-    /// form's box offset turns with the FixTransform, which UnGround set to
-    /// identity.
+    /// (PlayerPhysics.cs:372-376); its box takes it at the next sync.
     fn null_form_box_rotation(&mut self) {
-        match self.active {
-            ActiveAbility::Missile => self.missile.collider_rotation = Fix::ZERO,
-            ActiveAbility::Freeze
-            | ActiveAbility::Blink
-            | ActiveAbility::GrowthRay
-            | ActiveAbility::ShrinkRay
-            | ActiveAbility::Duplicator => self.gun.collider_up = Vec2::UP,
-            _ => {}
+        if self.active == ActiveAbility::Missile {
+            self.missile.collider_rotation = Fix::ZERO;
         }
     }
 
@@ -8048,16 +8022,6 @@ impl RolloutWorld {
             let swallowed =
                 self.players[index].base.alive && self.players[index].blink_tunnel_active;
             if (self.playable(index) || swallowed) && !frozen {
-                if matches!(
-                    self.players[index].active,
-                    ActiveAbility::Freeze
-                        | ActiveAbility::Blink
-                        | ActiveAbility::GrowthRay
-                        | ActiveAbility::ShrinkRay
-                        | ActiveAbility::Duplicator
-                ) {
-                    self.players[index].gun.collider_up = self.players[index].base.up();
-                }
                 self.sync_hurtbox(index);
             } else if !frozen
                 && self.players[index].base.alive
@@ -29648,8 +29612,7 @@ impl RolloutWorld {
         slot.scale_form(radius, offset, &mut self.entity_inverse_extents);
         let radius = slot.forms[slot.active_slot].physics_radius();
         self.sync_physics_to_player_info(index, radius);
-        self.players[index].sync_gun_hurtbox(offset, &self.platforms);
-        self.sync_gun_entry(index);
+        self.sync_gun_entry(index, offset);
         self.aim_form_entry_tail(index);
     }
 
@@ -29707,13 +29670,22 @@ impl RolloutWorld {
         }
     }
 
-    /// GunTransform.OnEnterAbility's sync, from `sync_gun_hurtbox`.
-    fn sync_gun_entry(&mut self, index: usize) {
+    /// GunTransform.OnEnterAbility syncs the hurtbox after SyncPhysicsTo has
+    /// zeroed an airborne rotation or aligned a grounded one to the surface
+    /// normal at the re-snapped position (alignRotation).
+    fn sync_gun_entry(&mut self, index: usize, offset: Vec2) {
         let slot = &self.players[index];
-        let basis = Vec2::angle(slot.gun.collider_up.perp_cw().normalized_angle());
+        let up = if !slot.base.grounded {
+            Vec2::UP
+        } else if let Some(platform) = slot.base.platform(&self.platforms) {
+            platform.surface.normal(slot.base.position)
+        } else {
+            slot.base.up()
+        };
+        let center = slot.base.position + up.perp_cw().complex_mul(slot.gun_offset(slot.active_slot, offset));
         let collider = stored_box(
-            slot.gun.hurtbox_center,
-            basis,
+            center,
+            Vec2::angle(up.perp_cw().normalized_angle()),
             self.entity_inverse_extents[slot.form_entities[slot.active_slot]],
         );
         self.sync_form_box(index, collider);
@@ -41528,16 +41500,13 @@ impl RolloutWorld {
                     // (FreezeRayGun.cs:128), turned again by a Fire that follows
                     // DropPlatformTest's exit (GunTransform.cs:147-151).
                     let s = slot.entity_slot(gun_e);
-                    let pose = slot.forms[s].pose;
                     // DPhysicsBox translates its authored offset with the
                     // exact FixTransform basis copied/assigned by GunTransform,
                     // while its axes are rebuilt from the scalar angle.
-                    let (root, rotation, offset_basis) = if active {
-                        (synced, rotation, slot.gun.collider_up.perp_cw())
-                    } else {
-                        let orientation = pose.orientation;
-                        (exit_position, orientation.rotation(), orientation.up().perp_cw())
-                    };
+                    let at_sync = slot.forms[s].synced;
+                    let root = if active { at_sync.position } else { exit_position };
+                    let rotation = at_sync.orientation.rotation();
+                    let offset_basis = at_sync.orientation.up().perp_cw();
                     let basis = Vec2::angle(rotation);
                     let offset = slot.gun_offset(s, offset);
                     let center = root + offset_basis.complex_mul(offset);
