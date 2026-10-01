@@ -16405,6 +16405,7 @@ impl RolloutWorld {
             // LethalTerrain layer never pairs with Smoke, so the attack does
             // not light a cloud.
             let attack_box = self.spike_attack_box(spike);
+            let hitbox_rank = sweep_rank(&self.entities, self.box_sweep_min(attack_box), spike.entity);
             let mut victims = [None; MAX_BODIES];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 if !self.hittable(player_index) {
@@ -16470,11 +16471,17 @@ impl RolloutWorld {
                                     .length(),
                         ),
                     };
-                    crate::physics::contact::box_box(player_box, attack_box)
+                    // A Box/Box pair's A is the box SortAndSweep reached
+                    // first, which the contact point depends on
+                    // (DetPhysics.cs:2203-2205, 3131-3135).
+                    if hitbox_rank < self.player_sweep_rank(player_index) {
+                        crate::physics::contact::box_box(attack_box, player_box)
+                    } else {
+                        crate::physics::contact::box_box(player_box, attack_box)
+                    }
                 };
                 *victim = contact.map(|contact| (entity, contact.point));
             }
-            let hitbox_min = self.box_sweep_min(attack_box);
             for (player_index, &victim) in victims.iter().enumerate().take(self.players.len()) {
                 let Some((entity, point)) = victim else {
                     continue;
@@ -16487,7 +16494,6 @@ impl RolloutWorld {
                 // Spike's Explosion.PlayerOwnerId is never assigned and
                 // therefore remains zero, which is neither a live player id
                 // nor the game's environmental sentinel.
-                let hitbox_rank = sweep_rank(&self.entities, hitbox_min, spike.entity);
                 let knock = (self.players[player_index].active != ActiveAbility::Rock
                     && spike.time < data.spike.push_time
                     && self.player_time_scale >= Fix::from_f32(0.01))
