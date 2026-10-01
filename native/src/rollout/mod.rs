@@ -24640,6 +24640,25 @@ impl RolloutWorld {
             }
         }
 
+        // aEnter and gLoop end in SpriteAnimator.UpdateSim, whose Fire
+        // callback runs before Ability.UpdateSim and DestroyIfOutsideSceneBounds
+        // (ThrowItem.cs:143, 150), so a form leaving the scene that pass still
+        // throws its mine.
+        let animates = self.animates(index);
+        let state = self.players[index].throw_item;
+        let anim_fire = animates
+            && match state.phase {
+                0 => !state.grounded && state.ticks + 1 > data.mine.air_enter_ticks,
+                1 => state.ticks + 1 > data.mine.ground_loop_ticks,
+                _ => false,
+            };
+        // The gLoop animation's Fire callback runs before ThrowItem.UpdateSim,
+        // so on the pass the loop runs out this pass's input is never read.
+        let loop_ends = anim_fire && state.phase == 1;
+        if anim_fire {
+            self.fire_mine(index, data);
+        }
+
         // Ability.UpdateSim assigns Player.Scale to the box every pass, the
         // entering one included, and PlayerPhysics UpdateScales the radius.
         let slot = &mut self.players[index];
@@ -24679,12 +24698,7 @@ impl RolloutWorld {
         } else {
             Vec2::UP
         };
-        let animates = self.animates(index);
         let state = &mut self.players[index].throw_item;
-        // The gLoop animation's Fire callback runs before ThrowItem.UpdateSim,
-        // so on the pass the loop runs out this pass's input is never read.
-        let loop_ends =
-            animates && state.phase == 1 && state.ticks + 1 > data.mine.ground_loop_ticks;
         if !state.has_inputted_fire && !loop_ends {
             // ThrowItem.OldUpdate follows the live stick until the button is
             // released. The release pass always replaces that direction with
@@ -24703,29 +24717,23 @@ impl RolloutWorld {
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
         let state = &mut self.players[index].throw_item;
-        if animates {
+        // Fire restarted the animator on its exit clip at zero.
+        if animates && !anim_fire {
             state.ticks += 1;
         }
         state.time_passed += DT;
 
+        // gEnter's OnGroundedPickupDone starts the anticipation loop; from
+        // then on OldUpdate fires on the released button (ThrowItem.cs:147-151, 381-384).
         let mut fire = false;
         if state.phase == 0 {
-            let enter_ticks = if state.grounded {
-                data.mine.ground_enter_ticks
-            } else {
-                data.mine.air_enter_ticks
-            };
-            if state.ticks > enter_ticks {
-                if state.grounded {
-                    state.phase = 1;
-                    state.ticks = 0;
-                    fire = state.has_inputted_fire;
-                } else {
-                    fire = true;
-                }
+            if state.grounded && state.ticks > data.mine.ground_enter_ticks {
+                state.phase = 1;
+                state.ticks = 0;
+                fire = state.has_inputted_fire;
             }
         } else if state.phase == 1 {
-            fire = state.has_inputted_fire || state.ticks > data.mine.ground_loop_ticks;
+            fire = state.has_inputted_fire;
         }
         if fire {
             self.fire_mine(index, data);
