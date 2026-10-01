@@ -14002,28 +14002,31 @@ impl RolloutWorld {
         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
     }
 
+    /// Ability.ExitAbility's Player.SetPosition (Ability.cs:151): a controller
+    /// that already set Player.Position this pass ties with itself, so the call
+    /// only lands when it was the last pass's setter too. On the pass after a
+    /// teleport or tunnel showed the form again, Ability.UpdateSim's keeps it
+    /// (Player.cs:311-322).
+    fn exit_position_lands(&self, index: usize) -> bool {
+        let key = self.entities.get(self.players[index].body_entity).map_or(u32::MAX, |row| row.id);
+        let last = self.players[self.players[index].owner].position_setter_last;
+        let slot = &self.players[index];
+        slot.reported_tick != self.tick || slot.unpublished_tick == Some(self.tick) || last == key
+    }
+
     /// Ability.ExitAbility's own part (Ability.cs:139-152) and the head of the
     /// slime's onExitAbility (SlimeController.cs:198): the form publishes its
     /// position and goes inactive, and the body is the slime's again, on its
     /// own PlayerPhysics and radius.
     fn form_returns_slime(&mut self, index: usize) {
-        let tick = self.tick;
-        let key = self.entities.get(self.players[index].body_entity).map_or(u32::MAX, |row| row.id);
-        let last = self.players[self.players[index].owner].position_setter_last;
         let slot = &mut self.players[index];
         if slot.active != ActiveAbility::None {
             slot.keep_form_rotation();
         }
-        // Player.SetPosition: a controller that already set Player.Position
-        // this pass ties with itself, so its ExitAbility call only lands when
-        // it was the last pass's setter too. On the pass after a teleport or
-        // tunnel showed the form again, Ability.UpdateSim's keeps it
-        // (Player.cs:311-322).
-        if slot.reported_tick == tick
-            && slot.unpublished_tick != Some(tick)
-            && last != key
-            && slot.tie_position.is_none_or(|(set, _)| set != tick)
-        {
+        let tick = self.tick;
+        let lands = self.exit_position_lands(index);
+        let slot = &mut self.players[index];
+        if !lands && slot.tie_position.is_none_or(|(set, _)| set != tick) {
             slot.tie_position = Some((tick, slot.reported_position));
         }
         slot.reported_position = slot.base.position;
@@ -37603,11 +37606,13 @@ impl RolloutWorld {
             self.players[index].base.alive = false;
             self.players[index].set_blink_tunnel(&mut self.entities, false);
         }
-        let slot = &mut self.players[index];
-        if slot.active != ActiveAbility::None {
-            slot.reported_position = slot.base.position;
-            slot.reported_tick = self.tick;
+        // A form dies through its ExitAbility (PlayerCollision.cs:122-133),
+        // and a losing SetPosition leaves the Player where this pass put it.
+        if self.players[index].active != ActiveAbility::None && self.exit_position_lands(index) {
+            self.players[index].reported_position = self.players[index].base.position;
+            self.players[index].reported_tick = self.tick;
         }
+        let slot = &mut self.players[index];
         slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.dash.active = false;
         // Teleport's marker reference belongs to the destroyed ability
