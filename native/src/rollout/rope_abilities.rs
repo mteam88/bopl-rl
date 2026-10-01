@@ -3,21 +3,9 @@
 use super::*;
 use crate::physics::rope::{Rope, RopeConfig};
 
-/// Where a RopeAttachment on an object updates relative to its parent.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum RopeParentPass {
-    /// The parent is a Portal Gun shot fired after the hook.
-    NewerShot,
-    /// The parent is a tack or Poke Ball thrown before the hook.
-    OlderTackOrBall,
-    /// The rope updates in the hammer loop, so its attachment pulls after it.
-    AfterHammers,
-    /// The rope is newer than a TeleportIndicator firing this pass, whose
-    /// teleportObject has let its player's rope go before the attachment
-    /// looks (TeleportIndicator.cs:129-137, RopeAttachment.cs:103).
-    AfterTeleport,
-    Other,
-}
+/// RopeHook.prefab's RopeAttachment is its updatable numbered 1, ahead of
+/// the DPhysicsCircle (2) and the RopeHook (3).
+const HOOK_ATTACHMENT_LOCAL: u32 = 1;
 
 const ROPE_POOL: usize = 128;
 const MAX_SEGMENTS: usize = 40;
@@ -86,6 +74,8 @@ pub(crate) struct RolloutRope {
     /// Mjolnir hammers interleave with its UpdateSim by this number.
     pub hierarchy: u32,
     pub appended: u32,
+    /// The RopeHook prefab's registered base, for a grappling hook's rope.
+    pub hook_hierarchy: u32,
     pub disabled_this_frame: bool,
     pub time_air_start: Fix,
     pub time_air_end: Fix,
@@ -476,6 +466,7 @@ fn empty_rope() -> RolloutRope {
         number: 0,
         hierarchy: 0,
         appended: 0,
+        hook_hierarchy: 0,
         disabled_this_frame: false,
         time_air_start: Fix::ZERO,
         time_air_end: Fix::ZERO,
@@ -586,6 +577,7 @@ impl RolloutWorld {
         rope.number = self.next_rope_number;
         rope.hierarchy = hierarchy;
         rope.appended = self.tick + 1;
+        rope.hook_hierarchy = 0;
         rope.disabled_this_frame = false;
         rope.time_air_start = Fix::ZERO;
         rope.time_air_end = if self.players[owner].base.grounded {
@@ -907,6 +899,7 @@ impl RolloutWorld {
         );
         {
             let rope = &mut self.ropes[rope_index];
+            rope.hook_hierarchy = hook_hierarchy;
             rope.physics.time_since_hook_arrived = -Fix::ONE;
             rope.physics.mass_start = source.non_platform_mass;
             rope.time_air_start = Fix::ONE;
@@ -1383,7 +1376,7 @@ impl RolloutWorld {
                 }
                 continue;
             }
-            // RopeAttachment on an object runs in rope_parents_update.
+            // RopeAttachment on an object takes its own turn: rope_parent_step.
             if self.ropes[index].parent.is_some() {
                 continue;
             }
@@ -1485,16 +1478,6 @@ impl RolloutWorld {
         }
     }
 
-    /// RopeAttachment.UpdateSim for a hook caught on an object. The
-    /// attachment sits on the hook prefab, so it updates in the hook's
-    /// Updater place: after a Portal Gun shot fired before the hook, which
-    /// is already gone when the attachment looks if it landed this pass, and
-    /// before one fired after it, whose first UpdateSim then resets the
-    /// velocity the pull added (PortalShot.cs:60-64). A tack thrown before
-    /// the hook pins itself in its own BananaPeel.UpdateSim first, so the pull
-    /// on it waits for the tacks; a Poke Ball thrown before it may release
-    /// its catch and go first, and the attachment then lets go on that pass.
-    /// `pass` picks the attachments of one place.
     /// A SpikeAttack or SparkNode hangs under its platform's GameObject
     /// (Spike.cs:122, PlaceSparkNode.cs:40), so it leaves the hierarchy with
     /// the platform, and RopeAttachment.UpdateSim's activeInHierarchy test
@@ -1508,33 +1491,28 @@ impl RolloutWorld {
         self.platforms[platform].active
     }
 
-    pub(super) fn rope_parents_update(&mut self, pass: RopeParentPass) {
+    /// The Updater key of the RopeAttachment on rope `index`'s hook: the
+    /// hook prefab's member numbered HOOK_ATTACHMENT_LOCAL.
+    pub(super) fn rope_attachment_key(&self, index: usize) -> UpdaterKey {
+        let rope = &self.ropes[index];
+        self.updater_member_key(rope.appended, 100_000_000 + rope.hook_hierarchy + HOOK_ATTACHMENT_LOCAL)
+    }
+
+    /// RopeAttachment.UpdateSim for a hook caught on an object, at the
+    /// attachment's own turn in Updater's walk: it sits on the hook prefab,
+    /// so a Portal Gun shot, tack, Poke Ball or hammer listed before it has
+    /// taken its turn and one listed after it has not, and a form listed
+    /// after it still holds the rope's other end (RopeAttachment.cs:68-151).
+    pub(super) fn rope_parent_step(&mut self, index: usize) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
-        for index in 0..self.ropes.len() {
+        {
             if !self.ropes[index].physics.enabled || self.ropes[index].appended > self.tick {
-                continue;
+                return;
             }
             let Some(parent) = self.ropes[index].parent else {
-                continue;
+                return;
             };
             let hierarchy = self.ropes[index].hierarchy;
-            let parent_pass = match parent {
-                RopeParent::Shot(shot, _) if self.portal_shots[shot].hierarchy_base > hierarchy => {
-                    RopeParentPass::NewerShot
-                }
-                RopeParent::Item(item, _)
-                    if matches!(self.thrown_items[item].ability, ABILITY_TACK | ABILITY_POKE_BALL)
-                        && self.thrown_items[item].hierarchy_base < hierarchy =>
-                {
-                    RopeParentPass::OlderTackOrBall
-                }
-                _ if hierarchy >= self.scratch.ropes_deferred_from => RopeParentPass::AfterHammers,
-                _ if hierarchy > self.scratch.ropes_teleported_from => RopeParentPass::AfterTeleport,
-                _ => RopeParentPass::Other,
-            };
-            if parent_pass != pass {
-                continue;
-            }
             let Some(position) = parent_position(
                 &self.players,
                 &self.thrown_items,
@@ -1546,7 +1524,7 @@ impl RolloutWorld {
             .filter(|_| self.parent_platform_active(parent)) else {
                 self.deattach_rope(index, true);
                 self.ropes[index].parent = None;
-                continue;
+                return;
             };
             let physics = &self.ropes[index].physics;
             if physics.time_since_hook_arrived > Fix::ZERO && !physics.detached && !stopped {

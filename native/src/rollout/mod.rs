@@ -4247,7 +4247,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 40)
+    matches!(kind, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 40)
 }
 
 /// The place just after `key`.
@@ -4489,12 +4489,6 @@ struct PlatformScratch {
     squished: Vec<(bool, usize)>,
     /// Ropes below this hierarchy have run their UpdateSim this pass.
     ropes_updated_below: u32,
-    /// The oldest hammer's hierarchy: ropes from here up update in the hammer
-    /// loop, and their attachments pull after them.
-    ropes_deferred_from: u32,
-    /// The oldest TeleportIndicator firing this pass: the attachments of the
-    /// ropes newer than it pull after it.
-    ropes_teleported_from: u32,
     /// The row hierarchies of the Duplicator copies the current Duplicated
     /// platform pass runs; None runs them all.
     duplicates_window: Option<std::ops::Range<u32>>,
@@ -4572,7 +4566,6 @@ impl PlatformScratch {
             ray_hits: Vec::with_capacity(192),
             duplicate_shake_order: Vec::with_capacity(64),
             duplicate_shake_offsets: Vec::with_capacity(64),
-            ropes_deferred_from: u32::MAX,
             ropes_walk_limit: u32::MAX,
             ..PlatformScratch::default()
         }
@@ -7769,7 +7762,6 @@ impl RolloutWorld {
             .min()
             .unwrap_or(u32::MAX);
         self.scratch.ropes_updated_below = if has_rope { first_hammer } else { u32::MAX };
-        self.scratch.ropes_deferred_from = self.scratch.ropes_updated_below;
         // A TeleportIndicator firing this pass detaches the teleported
         // players' ropes at its own turn, so a rope newer than it already
         // sees the rope released and its RopeAttachment stops pulling.
@@ -7782,7 +7774,6 @@ impl RolloutWorld {
             .map(|marker| marker.hierarchy_base)
             .min()
             .unwrap_or(u32::MAX);
-        self.scratch.ropes_teleported_from = first_teleport;
         let ropes_before_clones = first_clone.min(first_hammer);
         // A rope hanging from a platform that an older Shrink or Growth Ray
         // ScaleChanger resizes this pass hangs from, and collides with, the
@@ -7818,14 +7809,27 @@ impl RolloutWorld {
         if has(ABILITY_BLACK_HOLE) {
             self.black_holes_tick(data, updater_dt);
         }
-        if has_rope {
-            self.rope_parents_update(rope_abilities::RopeParentPass::NewerShot);
-        }
         if has(ABILITY_PORTAL_GUN) {
             self.portal_shots_tick(data, updater_dt);
         }
+        // A RopeAttachment on an object takes its turn in Updater's one walk
+        // at its place on the hook prefab (Updater.cs:298-303).
         if has_rope {
-            self.rope_parents_update(rope_abilities::RopeParentPass::Other);
+            for index in 0..self.ropes.len() {
+                if !self.ropes[index].physics.enabled
+                    || self.ropes[index].appended > self.tick
+                    || self.ropes[index].parent.is_none()
+                {
+                    continue;
+                }
+                let key = self.rope_attachment_key(index);
+                if self.updater_passed(key) {
+                    continue;
+                }
+                self.run_spawned_before(data, updater_dt, key);
+                self.updater_take_turn(key);
+                self.rope_parent_step(index);
+            }
         }
         // Pickups and shockwaves newer than a live ScaleChanger see what it
         // rescaled; scale_changers_tick steps them in turn.
@@ -7901,9 +7905,6 @@ impl RolloutWorld {
         }
         if has_rope && first_teleport < ropes_before_clones {
             self.ropes_update(first_teleport..ropes_before_clones);
-        }
-        if has_rope && first_teleport < u32::MAX {
-            self.rope_parents_update(rope_abilities::RopeParentPass::AfterTeleport);
         }
         if has(ABILITY_BLINK) {
             self.blink_tunnels_tick(data, updater_dt);
@@ -8547,6 +8548,9 @@ impl RolloutWorld {
                     push(self.updater_key(rope.appended, 100_000_000 + rope.hierarchy), 8, i);
                 }
             }
+            if rope.physics.enabled && rope.parent.is_some() {
+                push(self.rope_attachment_key(i), 29, i);
+            }
         }
         for (i, shot) in self.portal_shots.iter().enumerate() {
             if shot.active {
@@ -8692,6 +8696,7 @@ impl RolloutWorld {
                 25 | 26 => self.shockwave_step(kind == 26, index, data),
                 27 => self.stock_chooser_step(index, data),
                 28 => self.gold_mushroom_step(index / 3, index % 3, data),
+                29 => self.rope_parent_step(index),
                 // Grenade.UpdateSim: a fuse that runs out detonates at the
                 // item's own turn, before a younger cloud's FlammableSmoke
                 // detonates.
@@ -33285,21 +33290,11 @@ impl RolloutWorld {
             self.thrown_item_update(item_index, data, updater_dt);
         }
         self.scratch.item_order = order;
-        // The ropes newer than every hammer, then the RopeAttachments of every
-        // rope the hammers held back: a hook that landed last pass pulls once
-        // its Rope.UpdateSim has counted the time since it arrived, still
-        // ahead of DetPhysics.
+        // The ropes newer than every hammer, still ahead of DetPhysics.
         if self.scratch.ropes_updated_below < u32::MAX {
             self.ropes_update(self.scratch.ropes_updated_below..u32::MAX);
             self.scratch.ropes_updated_below = u32::MAX;
         }
-        if self.scratch.ropes_deferred_from < u32::MAX {
-            self.rope_parents_update(rope_abilities::RopeParentPass::AfterHammers);
-        }
-        // A hook on a tack or Poke Ball thrown before it updates after the
-        // item's last updater, its DestroyIfOutsideSceneBounds, so a ball that
-        // drowned this pass is already gone when the attachment looks.
-        self.rope_parents_update(rope_abilities::RopeParentPass::OlderTackOrBall);
 
         // DetPhysics then integrates each body on its own.
         for item_index in 0..self.thrown_items.len() {
