@@ -3875,6 +3875,11 @@ enum CallbackHit {
     ArrowKill { victim: usize, owner: u32 },
     /// PortalShot.OnCollide with a wall, with the surface's outward normal.
     PortalShotLand { shot: usize, normal: Vec2 },
+    /// A lethal Roll's target-side callback on a collider that is no player:
+    /// an arrow, a missile, a grenade or a mine.
+    FormTarget { entity: usize, near: Vec2, caster: usize },
+    /// The lethal Roll's own PlayerCollision.OnCollide with a pair's collider.
+    RollerHit { roller: usize, entity: usize },
     /// PlayerCollision.OnCollide with a lethal hitbox.
     Kill { player: usize, killer: u32, cause: u32 },
     /// Missile.OnCollide with anything but a RigidBodyAffector or Rope.
@@ -7793,7 +7798,7 @@ impl RolloutWorld {
         }
         if has(ABILITY_ROLL) {
             for roller in 0..self.players.len() {
-                self.roll_contacts_for(roller, true, data);
+                self.roll_hurtbox_contacts(roller, data);
             }
         }
         if has(ABILITY_GRENADE) {
@@ -37010,6 +37015,10 @@ impl RolloutWorld {
             match hit {
                 CallbackHit::ArrowKill { victim, owner } => self.arrow_kill(victim, owner),
                 CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
+                CallbackHit::FormTarget { entity, near, caster } => {
+                    self.player_form_target_callback(entity, near, caster, data);
+                }
+                CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
                 CallbackHit::Kill { player, killer, cause } => {
                     if self.hittable(player) {
                         self.kill(player, killer, cause, true, true);
@@ -38165,7 +38174,7 @@ impl RolloutWorld {
             self.players[index].base.sync_collider();
         }
         if self.players[index].active == ActiveAbility::Roll {
-            self.roll_contacts_for(index, false, data);
+            self.roll_contacts_for(index, data);
         }
         // The shared movement slice marks a body dead when its previous
         // position is beyond a blast boundary. Convert that marker into
@@ -39729,13 +39738,94 @@ impl RolloutWorld {
         }
     }
 
-    /// Roll.CollideExtraHurtBoxes plus the live circle/circle-or-box contact.
-    /// The source dispatches every swept centre, but PlayerCollision accepts
-    /// only the first kill in a frame; a fixed victim bitset has that result.
-    /// Roll.Move's CollideExtraHurtBoxes walks the substep hurtboxes during
-    /// the updater pass; the hurtbox itself is a `main` DetPhysics contact at
-    /// its synced collider.
-    fn roll_contacts_for(&mut self, roller: usize, main: bool, data: &data::RolloutData) {
+    /// The lethal Roll hurtbox's DetPhysics pairs. Each pair queues both
+    /// PlayerCollision callbacks in its Circle/Circle or Circle/Box place,
+    /// the circle's (the Roll's) first unless a Circle/Circle partner sorts
+    /// earlier (DetPhysics.cs:2405-2437, 3197-3199).
+    fn roll_hurtbox_contacts(&mut self, roller: usize, data: &data::RolloutData) {
+        if self.players[roller].active != ActiveAbility::Roll
+            || !self.players[roller].roll.lethal
+            || !self.playable(roller)
+        {
+            return;
+        }
+        let center = self.players[roller].base.collider.center;
+        let query = Circle {
+            center,
+            radius: self.players[roller].forms[self.players[roller].active_slot].circle_radius,
+        };
+        let roller_entity = self.players[roller].roll_entity;
+        let roller_id = self.players[roller].base.id;
+        let roller_rank = self.player_sweep_rank(roller);
+        for entity in 0..self.entities.len() {
+            let row = self.entities[entity];
+            if entity == roller_entity
+                || row.kind > 1
+                || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                || data.roll.collision_mask & (1u32 << row.layer) == 0
+                || !self.circle_overlaps_entity(query, entity)
+            {
+                continue;
+            }
+            let target = if let Some(target) = self.players.iter().position(|slot| {
+                self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity
+            }) {
+                CallbackHit::Kill { player: target, killer: roller_id, cause: CAUSE_OTHER }
+            } else if let Some(clone) = self
+                .abilityless_clones
+                .iter()
+                .position(|clone| clone.active && clone.entity == Some(entity))
+            {
+                CallbackHit::CloneKill { clone, killer: roller_id, cause: CAUSE_OTHER }
+            } else {
+                CallbackHit::FormTarget { entity, near: center, caster: roller }
+            };
+            let own = CallbackHit::RollerHit { roller, entity };
+            let other = sweep_rank(&self.entities, self.swept_min(Swept::Row(entity)), Some(entity));
+            let (later, earlier) = sweep_pair(roller_rank, other);
+            let key = (if row.kind == 0 { GROUP_CC } else { GROUP_CB }, later, earlier);
+            let roller_first = row.kind == 1 || earlier == roller_rank;
+            let (first, second) = if roller_first { (own, target) } else { (target, own) };
+            self.scratch.callback_hits.push((key, first));
+            self.scratch.callback_hits.push((key, second));
+        }
+    }
+
+    /// The Roll's own PlayerCollision.OnCollide with one of its pairs: a Rock
+    /// or another lethal Roll, or a projectile or explosion, kills it
+    /// (PlayerCollision.cs:352-445).
+    fn roller_hit(&mut self, roller: usize, entity: usize) {
+        if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll {
+            return;
+        }
+        let roller_id = self.players[roller].base.id;
+        if let Some(target) = self.players.iter().position(|slot| {
+            self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity
+        }) {
+            if self.players[target].active == ActiveAbility::Rock
+                || (self.players[target].active == ActiveAbility::Roll && self.players[target].roll.lethal)
+            {
+                let killer = self.players[target].base.id;
+                self.kill(roller, killer, CAUSE_OTHER, true, true);
+            }
+            return;
+        }
+        let row = self.entities[entity];
+        if row.flags & E_DESTROYED != 0 || !matches!(row.layer, LAYER_PROJECTILE | 16 | 18) {
+            return;
+        }
+        let (killer, can_hurt_owner, cause) = self.projectile_credit(entity);
+        if killer != roller_id || can_hurt_owner {
+            let cause = if killer == roller_id { CAUSE_ACCIDENT } else { cause };
+            self.kill(roller, killer, cause, true, true);
+        }
+    }
+
+    /// Roll.CollideExtraHurtBoxes: the updater's CircleCastAll over the
+    /// substep hurtboxes, which calls OnCollide itself (Roll.cs:302-358).
+    /// PlayerCollision accepts only the first kill in a frame; a fixed victim
+    /// bitset has that result.
+    fn roll_contacts_for(&mut self, roller: usize, data: &data::RolloutData) {
         if self.players[roller].active != ActiveAbility::Roll
             || !self.players[roller].roll.lethal
             || !self.playable(roller)
@@ -39743,22 +39833,14 @@ impl RolloutWorld {
             return;
         }
         let mut centers = [Vec2::ZERO; 30];
-        let count = if main {
-            centers[0] = self.players[roller].base.collider.center;
-            1
-        } else {
-            let swept_len = usize::from(self.players[roller].roll.swept_len);
-            centers[..swept_len].copy_from_slice(&self.players[roller].roll.swept[..swept_len]);
-            swept_len
-        };
+        let count = usize::from(self.players[roller].roll.swept_len);
+        centers[..count].copy_from_slice(&self.players[roller].roll.swept[..count]);
         let roller_entity = self.players[roller].roll_entity;
         let roller_id = self.players[roller].base.id;
 
         for &center in &centers[..count] {
-            if !main {
-                // CollideExtraHurtBoxes' CircleCastAll (Roll.cs:314).
-                self.remove_destroyed_colliders();
-            }
+            // CollideExtraHurtBoxes' CircleCastAll (Roll.cs:314).
+            self.remove_destroyed_colliders();
             self.scratch.ray_hits.clear();
             let query = Circle {
                 center,
