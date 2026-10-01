@@ -27260,16 +27260,19 @@ impl RolloutWorld {
     }
 
     /// DetPhysics.MoveObjectOutOfWalls corrects with inverse masses 1 and 0
-    /// whatever the body's own mass.
-    fn magnet_circle_out_of_walls(&mut self, circle: Circle) -> Vec2 {
+    /// whatever the body's own mass, and on a hit puts the FixTransform at the
+    /// collider's centre plus the correction, offset and all
+    /// (DetPhysics.cs:2567). Without a hit `position` stays.
+    fn magnet_circle_out_of_walls(&mut self, position: Vec2, circle: Circle) -> Vec2 {
         self.remove_destroyed_colliders();
         self.platforms
             .iter()
             .find_map(|platform| {
-                crate::physics::contact::circle_rounded(circle, platform.collider)
-                    .map(|contact| positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0])
+                crate::physics::contact::circle_rounded(circle, platform.collider).map(|contact| {
+                    circle.center + positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0]
+                })
             })
-            .unwrap_or(Vec2::ZERO)
+            .unwrap_or(position)
     }
 
     /// DetPhysics.SynCompositeToFixTransAndRelativeValues for the children of
@@ -27402,12 +27405,12 @@ impl RolloutWorld {
                 let velocity = self.thrown_items[i].body.velocity;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
                 let radius = thrown_item_radius(data, self.thrown_items[i]);
-                let correction = self.magnet_circle_out_of_walls(Circle {
+                let moved = self.magnet_circle_out_of_walls(position, Circle {
                     center: position,
                     radius,
                 });
                 let item = &mut self.thrown_items[i];
-                item.position = position + correction;
+                item.position = moved;
                 item.body.velocity = Vec2::ZERO;
                 item.magnet_holder = Some(index);
                 item.magnet_hold_ticks = 2;
@@ -27445,12 +27448,12 @@ impl RolloutWorld {
                 let velocity = self.arrows[i].velocity;
                 let radius = self.arrows[i].collider_radius;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
-                let correction = self.magnet_circle_out_of_walls(Circle {
+                let moved = self.magnet_circle_out_of_walls(position, Circle {
                     center: position,
                     radius,
                 });
                 let arrow = &mut self.arrows[i];
-                arrow.position = position + correction;
+                arrow.position = moved;
                 arrow.velocity = Vec2::ZERO;
                 arrow.magnet_holder = Some(index);
                 arrow.magnet_hold_ticks = 2;
@@ -27489,12 +27492,12 @@ impl RolloutWorld {
                 // The item branch compensates BounceBall.LateUpdateSim's
                 // activation clock so a held player Rock does not expire.
                 self.players[i].rock.time -= holder_dt;
-                let correction = self.magnet_circle_out_of_walls(Circle {
+                let moved = self.magnet_circle_out_of_walls(position, Circle {
                     center: position,
                     radius: self.players[i].rock_circle().circle_radius,
                 });
                 let rock = &mut self.players[i];
-                rock.base.position = position + correction;
+                rock.base.position = moved;
                 rock.rock.body.velocity = Vec2::ZERO;
                 rock.base.velocity = Vec2::ZERO;
             }
@@ -27571,23 +27574,23 @@ impl RolloutWorld {
                 let offset = Vec2::angle(pickup.body.orientation).complex_mul(pickup.offset);
                 let radius = pickup.radius;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
-                let correction = self.magnet_circle_out_of_walls(Circle {
+                let moved = self.magnet_circle_out_of_walls(position, Circle {
                     center: position + offset,
                     radius,
                 });
                 let pickup = &mut self.ability_pickups[i];
-                pickup.position = position + correction;
+                pickup.position = moved;
                 pickup.body.velocity = Vec2::ZERO;
             }
             MagnetHeld::PortalShot(i) => {
                 let velocity = self.portal_shots[i].body.velocity;
                 self.players[index].base.external_velocity += velocity / Fix::from_int(10);
-                let correction = self.magnet_circle_out_of_walls(Circle {
+                let moved = self.magnet_circle_out_of_walls(position, Circle {
                     center: position,
                     radius: self.portal_shots[i].collider_radius,
                 });
                 let shot = &mut self.portal_shots[i];
-                shot.position = position + correction;
+                shot.position = moved;
                 shot.body.velocity = Vec2::ZERO;
             }
             MagnetHeld::RevivalMarker(i) => {
