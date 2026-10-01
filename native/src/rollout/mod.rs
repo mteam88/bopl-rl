@@ -2622,9 +2622,6 @@ pub struct BeamState {
     pub current_ground: Option<u32>,
     pub orb: Option<usize>,
     pub entry_facing_right: bool,
-    pub collider_position: Vec2,
-    pub collider_up: Vec2,
-    pub collider_rotation: Fix,
     /// preGlowRen is active: shown by the enter pass, hidden by the loop pass.
     pub glow: bool,
 }
@@ -8066,12 +8063,6 @@ impl RolloutWorld {
             let swallowed =
                 self.players[index].base.alive && self.players[index].blink_tunnel_active;
             if (self.playable(index) || swallowed) && !frozen {
-                if self.players[index].active == ActiveAbility::Beam {
-                    let slot = &mut self.players[index];
-                    slot.beam.collider_position = slot.base.position;
-                    slot.beam.collider_up = slot.base.up();
-                    slot.beam.collider_rotation = slot.base.rotation();
-                }
                 if matches!(
                     self.players[index].active,
                     ActiveAbility::Freeze
@@ -12313,9 +12304,6 @@ impl RolloutWorld {
                                 relative_staff_dir,
                                 current_ground: if grounded { slot.base.ground } else { None },
                                 entry_facing_right,
-                                collider_position: form_position,
-                                collider_up: slot.base.up(),
-                                collider_rotation: slot.base.rotation(),
                                 ..BeamState::default()
                             };
                             let entry_rotation = if grounded { slot.base.rotation() } else { Fix::ZERO };
@@ -18777,9 +18765,6 @@ impl RolloutWorld {
         }
 
         self.players[index].base.previous_jump = action.buttons & 1 != 0;
-        self.players[index].beam.collider_position = self.players[index].base.position;
-        self.players[index].beam.collider_up = self.players[index].base.up();
-        self.players[index].beam.collider_rotation = self.players[index].base.rotation();
     }
 
     /// Beam.OnLeftFirstFrame: SetFacingDirection, then UpdateSim(Fix.Zero)
@@ -41999,17 +41984,16 @@ impl RolloutWorld {
                 let flags = form_box_flags(alive && beaming);
                 let publish = sync_form_row(box_row, flags, beaming, entered == beam_e, slot.base.id);
                 if publish {
-                    let state = slot.beam;
-                    let (position, up, rotation) = if beaming {
-                        (state.collider_position, state.collider_up, state.collider_rotation)
-                    } else {
-                        (exit_position, Vec2::UP, Fix::ZERO)
-                    };
                     // OnEnterAbility and StartBeam write the authored offset and
                     // extents after Ability scaled the box, so they stay unscaled
                     // until Player.Scale itself changes (Beam.cs:221-235, 345).
                     let form = &slot.forms[slot.entity_slot(slot.beam_entity)];
-                    let basis = up.perp_cw();
+                    // Beam.ExitAbility zeroes the form's rotation before its
+                    // box syncs out (Beam.cs:509-538).
+                    let at_sync = form.synced;
+                    let position = if beaming { at_sync.position } else { exit_position };
+                    let rotation = at_sync.orientation.rotation();
+                    let basis = at_sync.orientation.up().perp_cw();
                     let center = position + form.offset.complex_mul(basis);
                     let collider = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[beam_e]);
                     box_row.x = center.x.raw();
