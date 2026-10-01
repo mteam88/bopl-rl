@@ -158,6 +158,18 @@ def walk(nodes):
         yield from walk(n.get("children", [])) 
 
 
+def collider_child_count(prefab):
+    # Arrow.OnCollide parents a landed arrow to the hit collider's own
+    # FixTransform and counts that transform's children (Arrow.cs:100-104):
+    # the authored children of the one GameObject holding the prefab's collider.
+    holders = [
+        n for n in [prefab["data"], *walk(prefab["data"].get("children", []))]
+        if any(c["type"] in ("DPhysicsBox", "DPhysicsCircle") for c in n.get("components", []))
+    ]
+    assert len(holders) == 1, prefab.get("path")
+    return len(holders[0].get("children", []))
+
+
 def raw(props, key):
     v = props[key]
     if isinstance(v, dict):
@@ -715,6 +727,7 @@ def main():
         "spawn_offset": fix(portal_gun, "spawnOffset"),
         "shot_layer": portal_shot_prefab["data"].get("layer"),
         "shot_updatable_count": updater_count(portal_shot_prefab),
+        "shot_child_count": collider_child_count(portal_shot_prefab),
         "shot_collider_hierarchy": portal_shot_circle["hierarchyNumber"],
         "shot_radius": fix(portal_shot_circle, "startRadius"),
         "shot_body": physics_body(portal_shot_body),
@@ -780,6 +793,7 @@ def main():
         "item": {
             "layer": grenade_item["data"].get("layer"),
             "updatable_count": updater_count(grenade_item),
+            "child_count": collider_child_count(grenade_item),
             "collider_hierarchy": grenade_circle["hierarchyNumber"],
             "radius": fix(grenade_circle, "startRadius"),
             "body": physics_body(grenade_body),
@@ -854,6 +868,7 @@ def main():
                 for c in node.get("components", [])
             ),
             "collider_hierarchy": spark_box["hierarchyNumber"],
+            "child_count": collider_child_count(spark),
             "extents": vec2(spark_box, "startExtents"),
             "body": physics_body(spark_body),
             "minimum_forward_speed": fix(spark_missile, "minimumForwardsSpeed"),
@@ -934,6 +949,7 @@ def main():
         "item": {
             "layer": mine_item["data"].get("layer"),
             "updatable_count": updater_count(mine_item),
+            "child_count": collider_child_count(mine_item),
             "collider_hierarchy": mine_circle["hierarchyNumber"],
             "radius": fix(mine_circle, "startRadius"),
             "body": physics_body(mine_body),
@@ -1089,7 +1105,11 @@ def main():
     rock = component(rock_ability, "BounceBall")
     rock_circle = component(rock_ability, "DPhysicsCircle")
     rock_body = component(rock_ability, "BoplBody")
+    _, rock_no_player = find_prefab("Assets/GameObject/Rock_noPlayer.prefab")
     out["prefabs"]["rock"] = {
+        "child_count": collider_child_count(rock_ability),
+        # ShootDuplicator.bounceBallPrefab, the Duplicator's copy of a Rock.
+        "no_player_child_count": collider_child_count(rock_no_player),
         "radius": fix(rock_circle, "startRadius"),
         "collider_hierarchy": rock_circle["hierarchyNumber"],
         "body": physics_body(rock_body),
@@ -1526,6 +1546,7 @@ def main():
         "item": {
             "layer": tack_item["data"].get("layer"),
             "updatable_count": updater_count(tack_item),
+            "child_count": collider_child_count(tack_item),
             "collider_hierarchy": tack_circle["hierarchyNumber"],
             "radius": fix(tack_circle, "startRadius"),
             "body": physics_body(tack_body),
@@ -1584,6 +1605,7 @@ def main():
         "item": {
             "layer": poke_item["data"].get("layer"),
             "updatable_count": updater_count(poke_item),
+            "child_count": collider_child_count(poke_item),
             "collider_hierarchy": poke_circle["hierarchyNumber"],
             "radius": fix(poke_circle, "startRadius"),
             "body": physics_body(poke_body),
@@ -1643,6 +1665,7 @@ def main():
         "item": {
             "layer": mjolnir_item["data"].get("layer"),
             "updatable_count": updater_count(mjolnir_item),
+            "child_count": collider_child_count(mjolnir_item),
             "collider_hierarchy": mjolnir_circle["hierarchyNumber"],
             "radius": fix(mjolnir_circle, "startRadius"),
             "body": physics_body(mjolnir_body),
@@ -1718,6 +1741,7 @@ def main():
         "item": {
             "layer": smoke_item["data"].get("layer"),
             "updatable_count": updater_count(smoke_item),
+            "child_count": collider_child_count(smoke_item),
             "collider_hierarchy": smoke_circle["hierarchyNumber"],
             "radius": fix(smoke_circle, "startRadius"),
             "body": physics_body(smoke_body),
@@ -1803,6 +1827,7 @@ def main():
         "attack": {
             "layer": spike_attack["data"].get("layer"),
             "updatable_count": updater_count(spike_attack),
+            "child_count": collider_child_count(spike_attack),
             "collider_hierarchy": spike_attack_box["hierarchyNumber"],
             "extents": vec2(spike_attack_box, "startExtents"),
             "collider_offset": vec2(spike_attack_fix, "offset"),
@@ -1839,6 +1864,7 @@ def main():
         "rocket": {
             "layer": rocket["data"].get("layer"),
             "updatable_count": updater_count(rocket),
+            "child_count": collider_child_count(rocket),
             "collider_hierarchy": rocket_box["hierarchyNumber"],
             "extents": vec2(rocket_box, "startExtents"),
             "collider_offset": vec2(rocket_fix, "offset"),
@@ -1881,6 +1907,7 @@ def main():
             # SpriteAnimator receives hierarchy 5 even though the normalized
             # runtime inventory does not classify it as an updatable here.
             "updatable_count": hierarchy_span(spark),
+            "child_count": collider_child_count(spark),
             "collider_hierarchy": spark_circle["hierarchyNumber"],
             "radius": fix(spark_circle, "startRadius"),
             "collider_offset": vec2(spark_fix, "offset"),
