@@ -33205,11 +33205,14 @@ impl RolloutWorld {
                 // PlayerPhysics.LateUpdateSim puts it back on its platform.
                 slot.ragdoll = RagdollState {
                     active: true,
-                    skip_physics: true,
+                    skip_physics: false,
                     hold_on_ground: slot.base.grounded,
                     time: Fix::ZERO,
                     duration: Fix::ONE,
                 };
+                // skipNextUpdate is PlayerPhysics' own (PokeBall.cs:104): a
+                // teleport's UnGround that ends the ragdoll leaves it pending.
+                slot.base.skip_next_gravity = true;
             }
             self.thrown_items[item_index].capture_left -= updater_dt;
             if self.thrown_items[item_index].capture_left <= Fix::ZERO {
