@@ -27264,15 +27264,33 @@ impl RolloutWorld {
     /// collider's centre plus the correction, offset and all
     /// (DetPhysics.cs:2567). Without a hit `position` stays.
     fn magnet_circle_out_of_walls(&mut self, position: Vec2, circle: Circle) -> Vec2 {
+        use crate::physics::contact::{circle_box, circle_circle, circle_rounded};
         self.remove_destroyed_colliders();
-        self.platforms
-            .iter()
-            .find_map(|platform| {
-                crate::physics::contact::circle_rounded(circle, platform.collider).map(|contact| {
-                    circle.center + positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0]
+        let moved = |contact| circle.center + positional_correction(contact, Fix::ONE, Fix::ZERO, true)[0];
+        if let Some(contact) =
+            self.platforms.iter().find_map(|platform| circle_rounded(circle, platform.collider))
+        {
+            return moved(contact);
+        }
+        // Failing a rounded rect, the first wall, LethalTerrain or
+        // NonLethalTerrain circle in registration order, such as a Tesla
+        // node, then the first such box (DetPhysics.cs:2572-2606).
+        const TERRAIN: u32 = 1 << LAYER_WALL | 1 << LAYER_LETHAL_TERRAIN | 1 << LAYER_NON_LETHAL_TERRAIN;
+        let first_hit = |boxes: bool| {
+            (0..self.entities.len())
+                .filter(|&entity| TERRAIN & (1 << self.entities[entity].layer) != 0)
+                .filter_map(|entity| {
+                    let contact = match self.detphysics_collider(entity)? {
+                        DetCollider::Circle(wall) if !boxes => circle_circle(circle, wall),
+                        DetCollider::Box(wall) if boxes => circle_box(circle, wall),
+                        _ => None,
+                    }?;
+                    Some((self.entities[entity].id, contact))
                 })
-            })
-            .unwrap_or(position)
+                .min_by_key(|&(id, _)| id)
+                .map(|(_, contact)| contact)
+        };
+        first_hit(false).or_else(|| first_hit(true)).map_or(position, moved)
     }
 
     /// DetPhysics.SynCompositeToFixTransAndRelativeValues for the children of
