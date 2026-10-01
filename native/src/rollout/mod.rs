@@ -30486,8 +30486,11 @@ impl RolloutWorld {
         if let Some(clone) =
             self.abilityless_clones.iter().find(|clone| clone.active && clone.entity == Some(entity))
         {
-            let row_active = self.entities[entity].flags & E_ACTIVE != 0;
-            return (row_active && !clone.blink_tunnel_active).then_some(DetCollider::Box(clone.base.synced));
+            // ShootDuplicator's ReSpawn and Spawn leave its hurtbox enabled
+            // for good (ShootDuplicator.cs:547-548, SlimeController.cs:571,590);
+            // only a Blink tunnel's SetActive takes it out.
+            return (row_is_active(&self.entities[entity]) && !clone.blink_tunnel_active)
+                .then_some(DetCollider::Box(clone.base.synced));
         }
         // A pickup's hitbox stays disabled for its first disabledSeconds, and
         // a Blink tunnel holding it deactivates its GameObject.
@@ -37133,20 +37136,13 @@ impl RolloutWorld {
                 if player_index == smear.owner || !self.hittable(player_index) {
                     continue;
                 }
-                let row = self.entities[Self::hurtbox_entity(&self.players[player_index])];
-                if !self.collides(Self::hurtbox_entity(&self.players[player_index])) {
-                    continue;
-                }
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                // A DetPhysics pair like `slime_pairs`: the smear's box against
+                // the Player-layer collider Simulate holds, into
+                // PlayerCollision.OnCollide's Explosion branch.
                 let hitbox_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), smear.entity);
-                let hit = if row.kind == 0 {
-                    let circle = Circle { center, radius: Fix::from_raw(row.radius) };
-                    crate::physics::contact::circle_box(circle, hitbox).is_some()
-                } else {
-                    let rank = self.player_sweep_rank(player_index);
-                    swept_box_box(Self::row_box(row), rank, hitbox, hitbox_rank).is_some()
-                };
-                if hit {
+                if self.collides(Self::hurtbox_entity(&self.players[player_index]))
+                    && self.player_hit_by_box(player_index, hitbox, hitbox_rank)
+                {
                     let killer = player_id(&self.players, smear.owner);
                     self.queue_callback_kill(player_index, false, hitbox_rank, killer, CAUSE_OTHER);
                 }
