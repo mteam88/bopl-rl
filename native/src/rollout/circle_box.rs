@@ -38,6 +38,8 @@ pub(super) enum Part {
     Cloud(usize),
     /// An Explosion-layer collider but the Tesla lightning.
     Explosion(Blast),
+    /// The scene's water DPhysicsBox, a layer-4 trigger.
+    Water,
 }
 
 /// The Explosion-layer colliders, by the collection that owns them; the
@@ -133,6 +135,10 @@ impl RolloutWorld {
                     return Collider::Circle(Circle { center, radius: Fix::from_raw(row.radius) });
                 }
                 Collider::Box(Self::row_box(&self.entity_inverse_extents, entity, row))
+            }
+            Part::Water => {
+                let (position, extents, _) = data::get().maps[self.map].water.expect("a map with water");
+                Collider::Box(OrientedBox::from_basis(position, Vec2::RIGHT, data::surface_extents(extents)))
             }
         }
     }
@@ -248,6 +254,7 @@ impl RolloutWorld {
             Part::Line(_) => data.tesla.lightning_layer,
             Part::Cloud(i) => self.entities[self.smoke_clouds[i].entity.expect("registered smoke cloud")].layer,
             Part::Explosion(blast) => self.entities[self.blast_entity(blast)].layer,
+            Part::Water => LAYER_WATER,
             Part::Body(_) | Part::Clone(_) => self.entities[self.part_entity(part).expect("registered body")].layer,
         }
     }
@@ -291,6 +298,7 @@ impl RolloutWorld {
             Part::Line(i) => self.tesla_nodes[i].line_entity,
             Part::Cloud(i) => self.smoke_clouds[i].entity,
             Part::Explosion(blast) => Some(self.blast_entity(blast)),
+            Part::Water => None,
         }
     }
 
@@ -313,7 +321,8 @@ impl RolloutWorld {
             | Part::Clone(_)
             | Part::Line(_)
             | Part::Cloud(_)
-            | Part::Explosion(_) => None,
+            | Part::Explosion(_)
+            | Part::Water => None,
         }
     }
 
@@ -343,6 +352,7 @@ impl RolloutWorld {
             Part::Cloud(i) => self.smoke_clouds[i].body,
             // An Explosion's box has no BoplBody.
             Part::Explosion(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
+            Part::Water => Body { inverse_mass: -Fix::ONE, ..Body::default() },
         }
     }
 
@@ -365,6 +375,7 @@ impl RolloutWorld {
             Part::Line(i) => self.tesla_nodes[i].line_entity.is_some(),
             Part::Cloud(i) => self.smoke_clouds[i].active,
             Part::Explosion(blast) => self.blast_part(blast),
+            Part::Water => data::get().maps[self.map].water.is_some(),
         }
     }
 
@@ -452,7 +463,7 @@ impl RolloutWorld {
                 self.smoke_clouds[i].body = body;
                 self.smoke_clouds[i].position += delta;
             }
-            Part::Body(_) | Part::Clone(_) | Part::Line(_) | Part::Explosion(_) => {}
+            Part::Body(_) | Part::Clone(_) | Part::Line(_) | Part::Explosion(_) | Part::Water => {}
         }
         if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_) | Part::Arrow(_), Some(entity)) =
             (part, self.part_entity(part))
@@ -492,7 +503,7 @@ impl RolloutWorld {
             Part::Body(_) | Part::Clone(_) => self.part_collider(part).center(),
             Part::Line(i) => self.tesla_nodes[i].line_center,
             Part::Cloud(i) => self.smoke_clouds[i].position,
-            Part::Explosion(_) => self.part_collider(part).center(),
+            Part::Explosion(_) | Part::Water => self.part_collider(part).center(),
         }
     }
 
@@ -600,7 +611,8 @@ impl RolloutWorld {
             | Part::Body(_)
             | Part::Clone(_)
             | Part::Line(_)
-            | Part::Explosion(_) => unreachable!(),
+            | Part::Explosion(_)
+            | Part::Water => unreachable!(),
         }
     }
 
@@ -765,6 +777,9 @@ impl RolloutWorld {
             }
         }
         self.push_blasts(&mut parts, false);
+        if !self.part_destroyed(Part::Water) {
+            parts.push(Part::Water);
+        }
         let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
         contacts.clear();
         for &circle in &parts[..circles] {
@@ -1110,6 +1125,9 @@ impl RolloutWorld {
             }
         }
         self.push_blasts(&mut parts, false);
+        if !self.part_destroyed(Part::Water) {
+            parts.push(Part::Water);
+        }
         parts.sort_by_key(|&part| self.part_rank(part));
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
@@ -1318,7 +1336,8 @@ impl RolloutWorld {
                     | Part::Clone(_)
                     | Part::Line(_)
                     | Part::Cloud(_)
-                    | Part::Explosion(_) => return,
+                    | Part::Explosion(_)
+                    | Part::Water => return,
                 };
                 self.rope_hook_collide(rope, target);
             }
@@ -1448,7 +1467,7 @@ impl RolloutWorld {
             // Smoke (layer 22) pairs with RigidBodyAffector, so an unlit
             // cloud is eaten like any other positive-mass circle.
             Part::Cloud(i) => (HoleTarget::Cloud(i), self.smoke_clouds[i].body.inverse_mass),
-            Part::Hook(_) | Part::Line(_) | Part::Explosion(_) => return,
+            Part::Hook(_) | Part::Line(_) | Part::Explosion(_) | Part::Water => return,
         };
         self.black_hole_collide(hole, target, inverse_mass, data);
     }

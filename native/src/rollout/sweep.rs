@@ -19,7 +19,6 @@ pub(super) enum Swept {
     Pickup(usize),
     /// A row with no other owner here, such as an Explosion or an orb.
     Row(usize),
-    Water,
 }
 
 /// Each collider's bounding box as SortAndSweep took it this pass.
@@ -182,10 +181,6 @@ impl RolloutWorld {
                 let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
                 bounds(center, box_half(right, up))
             }
-            Swept::Water => {
-                let (position, extents, _) = data.maps[self.map].water.unwrap_or_default();
-                bounds(position, data::surface_extents(extents))
-            }
         }
     }
 
@@ -215,7 +210,7 @@ impl RolloutWorld {
             }
             Swept::Part(Part::Explosion(blast)) => sweep.rows.get(self.blast_entity(blast)),
             // A trigger no group moves: SortAndSweep bounded it where it is.
-            Swept::Part(Part::Hook(_) | Part::Hole(_) | Part::Line(_)) => {
+            Swept::Part(Part::Hook(_) | Part::Hole(_) | Part::Line(_) | Part::Water) => {
                 return Some(self.current_bounds(collider, data::get()));
             }
             Swept::Player(i) => sweep.players.get(i),
@@ -224,7 +219,6 @@ impl RolloutWorld {
             Swept::DuplicatedRock(i) => sweep.duplicated_rocks.get(i),
             Swept::Pickup(i) => sweep.pickups.get(i),
             Swept::Row(i) => sweep.rows.get(i),
-            Swept::Water => return Some(self.current_bounds(collider, data::get())),
         };
         list.copied()
     }

@@ -8135,7 +8135,7 @@ impl RolloutWorld {
         self.thrown_item_pair_contacts(data);
         self.box_box_group(data);
         if has(ABILITY_MISSILE) {
-            self.guided_missile_contacts(data);
+            self.sync_guided_missile_rows();
         }
         if has_thrown_item {
             self.thrown_items_contacts(data);
@@ -34250,7 +34250,8 @@ impl RolloutWorld {
             | Part::Clone(_)
             | Part::Line(_)
             | Part::Cloud(_)
-            | Part::Explosion(_) => {
+            | Part::Explosion(_)
+            | Part::Water => {
                 unreachable!()
             }
         }
@@ -34332,47 +34333,18 @@ impl RolloutWorld {
         }
     }
 
-    /// Missile.OnCollide for one pair of its box, queued at the pair's place.
-    /// DestroyFix only marks the missile, so every pair of the pass calls it
-    /// (Missile.cs:181-192, Updater.cs:89-110).
-    fn queue_missile_blast(&mut self, missile: usize, group: u8, other: SweepRank) {
-        let rank = self.part_rank(Part::Missile(missile));
-        let (later, earlier) = sweep_pair(rank, other);
-        self.scratch.callback_hits.push(((group, later, earlier), CallbackHit::MissileBlast { missile }));
-    }
-
     fn guided_missile_live(&self, index: usize) -> bool {
         let missile = &self.guided_missiles[index];
         missile.active && missile.registered && !self.blink_object_hidden(missile.entity)
     }
 
-    /// The Guided Missile's trigger pairs that only call back: water and
-    /// explosions. Each pair queues
-    /// Missile.OnCollide; a held missile suppresses it after DetPhysics
-    /// resolved the pair.
-    fn guided_missile_contacts(&mut self, data: &data::RolloutData) {
+    /// Publishes each live Guided Missile's resolved body to its row.
+    fn sync_guided_missile_rows(&mut self) {
         for missile_index in 0..self.guided_missiles.len() {
             if !self.guided_missile_live(missile_index) {
                 continue;
             }
             let missile = self.guided_missiles[missile_index];
-            let missile_box = missile.collider(&self.entity_inverse_extents);
-            let swept = Swept::Part(Part::Missile(missile_index));
-            let missile_rank = self.part_rank(Part::Missile(missile_index));
-            // Water is a trigger box, so it does not resolve the body.
-            if let Some((water_position, water_extents, _)) = data.maps[self.map].water {
-                let water = OrientedBox::from_basis(
-                    water_position,
-                    Vec2::RIGHT,
-                    data::surface_extents(water_extents),
-                );
-                let rank = sweep_rank(&self.entities, self.box_sweep_min(water), None);
-                if self.swept_pair(swept, Swept::Water)
-                    && swept_box_box(missile_box, missile_rank, water, rank).is_some()
-                {
-                    self.queue_missile_blast(missile_index, GROUP_BB, rank);
-                }
-            }
             if let Some(entity) = missile.entity {
                 let row = &mut self.entities[entity];
                 row.x = missile.position.x.raw();
@@ -34580,24 +34552,6 @@ impl RolloutWorld {
                     self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
                 }
                 continue;
-            }
-            // SmokeGrenadeExplode2.OnCollide with the scene water.
-            if item.ability == ABILITY_SMOKE
-                && item.detonates_on_owner
-                && let Some((water_position, water_extents, _)) = data.maps[self.map].water
-            {
-                let water = OrientedBox::from_basis(
-                    water_position,
-                    Vec2::RIGHT,
-                    data::surface_extents(water_extents),
-                );
-                if crate::physics::contact::circle_box(circle, water).is_some() {
-                    let item_rank = self.part_rank(Part::Item(item_index));
-                    let rank = sweep_rank(&self.entities, self.box_sweep_min(water), None);
-                    let (later, earlier) = sweep_pair(item_rank, rank);
-                    let hit = CallbackHit::ItemDetonate { item: item_index, count: 1 };
-                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
-                }
             }
         }
     }
