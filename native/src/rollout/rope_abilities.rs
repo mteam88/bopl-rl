@@ -1771,14 +1771,17 @@ impl RolloutWorld {
             let end_player = self.ropes[rope].hook_end_player;
             for player in 0..self.players.len() {
                 let body_player = self.players[player].owner;
-                if body_player == owner || body_player == end_player || !self.playable(player) {
+                if body_player == owner || body_player == end_player {
                     continue;
                 }
-                // A Rock form's circle meets the hook in circle_circle_group.
-                // A form's own Player-layer collider carries its PlayerBody,
-                // so the hook meets the form's box.
-                if self.players[player].active != ActiveAbility::Rock && self.player_hit_by_circle(player, circle) {
-                    let group = GROUP_CB - self.player_is_circle(player) as u8;
+                // The Player-layer collider DetPhysics holds, a spawning
+                // slime's included. A Rock form's circle meets the hook in
+                // circle_circle_group. A form's own Player-layer collider
+                // carries its PlayerBody, so the hook meets the form's box.
+                if let Some(circle_body) = self.body_part_circle(player)
+                    && self.player_hit_by_circle(player, circle)
+                {
+                    let group = GROUP_CB - circle_body as u8;
                     hits.push((rope, group, self.player_sweep_rank(player), HookTarget::Player(player)));
                 }
             }
