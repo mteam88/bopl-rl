@@ -41244,12 +41244,10 @@ impl RolloutWorld {
                 let mine_box = &mut self.entities[mine_e];
                 let flags = form_box_flags(alive && mining);
                 if sync_form_row(mine_box, flags, mining, entered == mine_e, slot.base.id) {
-                    let pose = slot.forms[slot.entity_slot(mine_e)].pose;
-                    let (root, rotation, offset_basis) = if mining {
-                        (synced, rotation, slot.base.collider_up.perp_cw())
-                    } else {
-                        (exit_position, pose.orientation.rotation(), pose.orientation.up().perp_cw())
-                    };
+                    let at_sync = slot.forms[slot.entity_slot(mine_e)].synced;
+                    let root = if mining { at_sync.position } else { exit_position };
+                    let rotation = at_sync.orientation.rotation();
+                    let offset_basis = at_sync.orientation.up().perp_cw();
                     let basis = Vec2::angle(rotation);
                     // PlayerPhysics.Move aligns the FixTransform by assigning
                     // its exact surface normal. DPhysicsBox derives its axes
