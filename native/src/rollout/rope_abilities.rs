@@ -220,10 +220,9 @@ fn parent_position(
             if !node.active || node.placed_tick != born {
                 return None;
             }
-            // SyncGameObject places the FixTransform its collider offset
-            // back from the collider (DetPhysics.cs:1652-1656).
+            // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
             let right = Vec2::angle(node.transform_rotation);
-            let root = node.transform_center - node.collider_offset.complex_mul(right);
+            let root = node.transform_position();
             Some(root + right.perp() * offset.y * node.scale + right * offset.x * node.scale)
         }
         RopeParent::Arrow(index, id) => {
@@ -1523,12 +1522,16 @@ impl RolloutWorld {
                 // only a hook landing on its cast tick leaves off the parent's
                 // centre (DPhysicsCircle.cs:377-393).
                 let force = (physics.segment[0] - physics.segment[1]) * ATTACHMENT_PULL;
-                // A SpikeAttack's box is a composite child: DPhysicsBox hands
-                // the pull to its platform's combined body, about the box's
-                // own centre (DPhysicsBox.cs:436-451).
+                // The arm runs from the collider's FixTransform position, not
+                // the collider. A SpikeAttack's box and a SparkNode's circle
+                // are composite children, so DPhysicsBox and DPhysicsCircle
+                // hand the pull to the platform's combined body
+                // (DPhysicsBox.cs:436-451, DPhysicsCircle.cs:377-393).
                 let centre = match parent {
-                    RopeParent::Spike(spike, _) => self.spike_attacks[spike].collider_center,
-                    RopeParent::Node(node, _) => self.tesla_nodes[node].collider_center,
+                    RopeParent::Spike(spike, _) => {
+                        spike_transform(&self.spike_attacks[spike], &self.platform_dynamics).0
+                    }
+                    RopeParent::Node(node, _) => self.tesla_nodes[node].transform_position(),
                     _ => position,
                 };
                 let arm = (self.ropes[index].platform_anchor - centre).normalized_safe();

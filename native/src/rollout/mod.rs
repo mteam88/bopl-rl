@@ -1270,6 +1270,14 @@ pub struct SpawnedTeslaNode {
     pub duplicate_shake_offset: Vec2,
 }
 
+impl SpawnedTeslaNode {
+    /// FixTransform.position as SyncGameObject last set it: the circle less
+    /// the offset it synced with, turned by its right (DetPhysics.cs:1652-1656).
+    fn transform_position(&self) -> Vec2 {
+        self.transform_center - self.transform_offset.complex_mul(Vec2::angle(self.transform_rotation))
+    }
+}
+
 /// The collider DetPhysics.MoveObjectOutOfWalls moves, as its opening
 /// UpdatePhysicsPositions placed it.
 #[derive(Clone, Copy)]
@@ -9304,9 +9312,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let right = Vec2::angle(node.transform_rotation);
-            let position = node.transform_center
-                - node.transform_offset.complex_mul(right);
+            let position = node.transform_position();
             let combined = self.platform_dynamics[node.platform_index].body;
             if let Some(entity) = node
                 .entity
@@ -9633,7 +9639,7 @@ impl RolloutWorld {
             }
             let right = Vec2::angle(node.transform_rotation);
             let offset = node.collider_offset.complex_mul(right);
-            let root = node.transform_center - node.transform_offset.complex_mul(right);
+            let root = node.transform_position();
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
             {
@@ -16222,10 +16228,8 @@ impl RolloutWorld {
         // that operation order matters for negative Q32 products by one raw
         // unit; `right.perp() * offset.y` is algebraically equivalent but not
         // bit-identical.
-        let node_root = node.transform_center
-            - node.transform_offset.complex_mul(node_right);
-        let child_root = child_node.transform_center
-            - child_node.transform_offset.complex_mul(child_right);
+        let node_root = node.transform_position();
+        let child_root = child_node.transform_position();
         let from = node_root + node_right.perp() * node.hitbox_offset;
         let to = child_root + child_right.perp() * child_node.hitbox_offset;
         let delta = to - from;
