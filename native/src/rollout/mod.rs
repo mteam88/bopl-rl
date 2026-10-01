@@ -3880,7 +3880,7 @@ enum CallbackHit {
     /// Missile.OnCollide with anything but a RigidBodyAffector or Rope.
     MissileBlast { missile: usize },
     /// An abilityless clone's PlayerCollision.OnCollide with a lethal hitbox.
-    CloneKill { clone: usize, killer: u32 },
+    CloneKill { clone: usize, killer: u32, cause: u32 },
     /// GrenadeExplode or SmokeGrenadeExplode2.OnCollide with a Tesla line or
     /// Meteor smear, once per pair.
     ItemDetonate { item: usize, count: usize },
@@ -37034,9 +37034,7 @@ impl RolloutWorld {
                         self.destroy_guided_missile(missile, true);
                     }
                 }
-                CallbackHit::CloneKill { clone, killer } => {
-                    self.kill_abilityless_clone(clone, killer, CAUSE_OTHER);
-                }
+                CallbackHit::CloneKill { clone, killer, cause } => self.clone_collision_kill(clone, killer, cause),
                 CallbackHit::SpikeKnock { spike, player, entity, point } => {
                     if !self.hittable(player) {
                         continue;
@@ -39166,7 +39164,7 @@ impl RolloutWorld {
                     .iter()
                     .find(|rock| rock.active && rock.entity == Some(entity))
                     .map_or(row.owner, |rock| player_id(&self.players, rock.owner));
-                let hit = CallbackHit::CloneKill { clone: clone_index, killer };
+                let hit = CallbackHit::CloneKill { clone: clone_index, killer, cause: CAUSE_OTHER };
                 self.scratch.callback_hits.push((key, hit));
             }
         }
@@ -39550,9 +39548,6 @@ impl RolloutWorld {
         let mut killers = [0u32; MAX_BODIES * MAX_BODIES];
         let mut rock_ranks = [(Fix::ZERO, 0u32, 0usize); MAX_BODIES * MAX_BODIES];
         let mut victim_count = 0usize;
-        let mut clone_victims = [usize::MAX; MAX_PLAYERS * 16];
-        let mut clone_killers = [0u32; MAX_PLAYERS * 16];
-        let mut clone_victim_count = 0usize;
         for rock_index in 0..self.players.len() {
             if self.players[rock_index].active != ActiveAbility::Rock || !self.playable(rock_index)
             {
@@ -39609,11 +39604,17 @@ impl RolloutWorld {
                         self.players[rock_index].rock.body.force +=
                             contact.normal * data.rock.player_collision_bounce * Fix::from_int(60);
                     }
-                    if !clone_victims[..clone_victim_count].contains(&clone_index) {
-                        clone_victims[clone_victim_count] = clone_index;
-                        clone_killers[clone_victim_count] = self.players[rock_index].base.id;
-                        clone_victim_count += 1;
-                    }
+                    // The clone's box callback, in the pair's Circle/Box place.
+                    let killer = self.players[rock_index].base.id;
+                    let cause = if self.abilityless_clones[clone_index].base.id == killer {
+                        CAUSE_ACCIDENT
+                    } else {
+                        CAUSE_OTHER
+                    };
+                    let clone_rank = sweep_rank(&self.entities, self.swept_min(Swept::Clone(clone_index)), Some(entity));
+                    let (later, earlier) = sweep_pair(self.player_sweep_rank(rock_index), clone_rank);
+                    let hit = CallbackHit::CloneKill { clone: clone_index, killer, cause };
+                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
                 }
             }
         }
@@ -39627,25 +39628,6 @@ impl RolloutWorld {
                 killers[victim_offset],
                 CAUSE_OTHER,
             );
-        }
-        for clone_offset in 0..clone_victim_count {
-            let clone = clone_victims[clone_offset];
-            if self.abilityless_clones[clone].active {
-                let killer = clone_killers[clone_offset];
-                let cause = if self.abilityless_clones[clone].base.id == killer {
-                    CAUSE_ACCIDENT
-                } else {
-                    CAUSE_OTHER
-                };
-                self.next_spawn_hierarchy += data.revival.death_effect_updatable_count;
-                self.kill_abilityless_clone(clone, killer, cause);
-                // A callback casualty stays visible as destroyed until the
-                // next pass's DetPhysics.Simulate drops it.
-                if let Some(entity) = self.abilityless_clones[clone].entity {
-                    self.entities[entity].flags = E_DESTROYED | E_TRIGGER;
-                    self.entities[entity].owner = 0;
-                }
-            }
         }
     }
 
@@ -39986,14 +39968,19 @@ impl RolloutWorld {
             self.kill(index, ENVIRONMENT, CAUSE_SQUISHED, true, true);
             return;
         }
+        self.clone_collision_kill(index, ENVIRONMENT, CAUSE_SQUISHED);
+    }
+
+    /// An abilityless clone's PlayerCollision.OnCollide kill, from the
+    /// callback queue: killPlayer(spawnEffect: true) creates the death effect
+    /// (PlayerCollision.cs:457).
+    fn clone_collision_kill(&mut self, index: usize, killer: u32, cause: u32) {
         let entity = self.abilityless_clones[index].entity;
         let alive = self.abilityless_clones[index].active;
-        // killPlayer(spawnEffect: true) creates the death effect
-        // (PlayerCollision.cs:457).
         if alive {
             self.next_spawn_hierarchy += data::get().revival.death_effect_updatable_count;
         }
-        self.kill_abilityless_clone(index, ENVIRONMENT, CAUSE_SQUISHED);
+        self.kill_abilityless_clone(index, killer, cause);
         // A callback casualty stays visible as destroyed until the next
         // pass's DetPhysics.Simulate drops it.
         if let Some(entity) = entity.filter(|_| alive) {
