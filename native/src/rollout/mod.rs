@@ -18994,7 +18994,9 @@ impl RolloutWorld {
             let beam = &self.players[index].beam;
             let fire = self.players[index].base.position
                 + beam.staff_dir * Fix::from_f64(2.8) * self.players[index].player_scale;
-            if fire.y >= Fix::from_f32(-11.22) {
+            // A space level registers the beam body wherever the staff
+            // is; elsewhere only above the water (Beam.cs:446).
+            if fire.y >= Fix::from_f32(-11.22) || data.maps[self.map].is_space() {
                 let ability_hierarchy = self.entities[self.players[index].beam_entity]
                     .hierarchy
                     .wrapping_sub(100_000_000)
