@@ -3987,7 +3987,7 @@ enum CallbackHit {
     /// RopeHook.OnCollide with the collider the hook met.
     RopeHook { rope: usize, target: HookTarget },
     /// PlayerCollision.OnCollide with a player's own or another's arrow.
-    ArrowKill { victim: usize, owner: u32, arrow: usize },
+    ArrowKill { victim: usize, owner: u32, arrow: usize, slime: bool },
     /// Arrow.OnCollide with a StickTo collider: a wall, or a Circle/Circle
     /// or Circle/Box part with a BoplBody.
     ArrowLand { arrow: usize, wall: Option<usize>, part: Option<Part> },
@@ -4007,7 +4007,7 @@ enum CallbackHit {
     /// The lethal Roll's own PlayerCollision.OnCollide with a pair's collider.
     RollerHit { roller: usize, entity: usize },
     /// PlayerCollision.OnCollide with a lethal hitbox.
-    Kill { player: usize, killer: u32, cause: u32 },
+    Kill { player: usize, killer: u32, cause: u32, slime: bool },
     /// Missile.OnCollide with anything but a RigidBodyAffector or Rope.
     MissileBlast { missile: usize },
     /// An abilityless clone's PlayerCollision.OnCollide with a lethal hitbox.
@@ -9749,6 +9749,14 @@ impl RolloutWorld {
         self.entities
             .get(self.players[index].body_entity)
             .is_some_and(|row| row.flags & E_ACTIVE != 0)
+    }
+
+    /// Whether the PlayerCollision a queued callback met is still activeSelf:
+    /// a hittable body, or a slime whose killPlayer DestroyFix'd it earlier
+    /// this pass, which stays active until the pass ends (Updater.cs:89-110).
+    /// A form's collider goes inactive with its ExitAbility.
+    fn player_collision_active(&self, index: usize, slime: bool) -> bool {
+        self.hittable(index) || (slime && self.players[index].slime_destroyed_tick == Some(self.tick))
     }
 
     /// Whether DetPhysics tests the slime's hurtbox. A respawned slime is
@@ -16785,7 +16793,8 @@ impl RolloutWorld {
                 // Explosion.PlayerOwnerId. PlayerCollision therefore uses
                 // its zero default for kill attribution even though the RL
                 // entity row publishes the holder's actual owner.
-                let hit = CallbackHit::Kill { player: player_index, killer: 0, cause: CAUSE_OTHER };
+                let slime = self.players[player_index].active == ActiveAbility::None;
+                let hit = CallbackHit::Kill { player: player_index, killer: 0, cause: CAUSE_OTHER, slime };
                 self.scratch.callback_hits.push((key, hit));
             }
         }
@@ -17967,9 +17976,7 @@ impl RolloutWorld {
                 // BlackHole.OnCollide calls killPlayer itself, past
                 // wasKilledThisFrame, so a slime an earlier callback destroyed
                 // this pass dies again (BlackHole.cs:497).
-                if self.hittable(index)
-                    || (slime && self.players[index].slime_destroyed_tick == Some(self.tick))
-                {
+                if self.player_collision_active(index, slime) {
                     self.kill_with(index, killer, CAUSE_OTHER, KillRoute::Callback, false, false, true);
                 }
             }
@@ -18529,7 +18536,8 @@ impl RolloutWorld {
                     };
                     if hit {
                         let group = if row.kind == 0 { GROUP_CB } else { GROUP_BB };
-                        let kill = CallbackHit::Kill { player: victim, killer, cause: CAUSE_OTHER };
+                        let slime = self.players[victim].active == ActiveAbility::None;
+                        let kill = CallbackHit::Kill { player: victim, killer, cause: CAUSE_OTHER, slime };
                         self.scratch.callback_hits.push(((group, key.0, key.1), kill));
                     }
                 }
@@ -19902,7 +19910,8 @@ impl RolloutWorld {
                     );
                     let group = if row.kind == 0 { GROUP_CB } else { GROUP_BB };
                     let killer = slot.contact_owner_id as u32;
-                    let kill = CallbackHit::Kill { player: victim, killer, cause: CAUSE_BEAMED };
+                    let slime = self.players[victim].active == ActiveAbility::None;
+                    let kill = CallbackHit::Kill { player: victim, killer, cause: CAUSE_BEAMED, slime };
                     self.scratch.callback_hits.push(((group, later, earlier), kill));
                 }
             }
@@ -35851,7 +35860,8 @@ impl RolloutWorld {
                 if hit {
                     let group = GROUP_BB - 1 - (row.kind == 0) as u8;
                     let (later, earlier) = sweep_pair(arrow_rank, sweep_rank(&self.entities, row_min, Some(entity)));
-                    let hit = CallbackHit::ArrowKill { victim: j, owner: arrow.owner, arrow: i };
+                    let slime = player.active == ActiveAbility::None;
+                    let hit = CallbackHit::ArrowKill { victim: j, owner: arrow.owner, arrow: i, slime };
                     landings.push(((group, later, earlier), hit));
                 }
             }
@@ -35884,8 +35894,8 @@ impl RolloutWorld {
     /// in its pair's place; an arrow that landed earlier in the queue has a
     /// destroyed FixTransform and kills no one (PlayerCollision.cs:313-316,
     /// 352-458, 465).
-    fn arrow_kill(&mut self, victim: usize, owner: u32, arrow: usize) {
-        if !self.players[victim].base.alive || !self.arrows[arrow].active {
+    fn arrow_kill(&mut self, victim: usize, owner: u32, arrow: usize, slime: bool) {
+        if !self.player_collision_active(victim, slime) || !self.arrows[arrow].active {
             return;
         }
         let victim_id = self.players[victim].base.id;
@@ -36963,7 +36973,8 @@ impl RolloutWorld {
         killer: u32,
         cause: u32,
     ) {
-        let hit = CallbackHit::Kill { player: player_index, killer, cause };
+        let slime = self.players[player_index].active == ActiveAbility::None;
+        let hit = CallbackHit::Kill { player: player_index, killer, cause, slime };
         self.queue_callback_hit(player_index, hitbox_is_circle, hitbox, hit);
     }
 
@@ -37137,7 +37148,7 @@ impl RolloutWorld {
         hits.sort_by_key(|&(key, _)| key);
         for &(_, hit) in &hits {
             match hit {
-                CallbackHit::ArrowKill { victim, owner, arrow } => self.arrow_kill(victim, owner, arrow),
+                CallbackHit::ArrowKill { victim, owner, arrow, slime } => self.arrow_kill(victim, owner, arrow, slime),
                 CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
                 CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
                 CallbackHit::FormTarget { entity, near, caster } => {
@@ -37160,8 +37171,8 @@ impl RolloutWorld {
                         self.capture_poke_victim(item, victim, data, false);
                     }
                 }
-                CallbackHit::Kill { player, killer, cause } => {
-                    if self.hittable(player) {
+                CallbackHit::Kill { player, killer, cause, slime } => {
+                    if self.player_collision_active(player, slime) {
                         self.kill(player, killer, cause, true, true);
                     }
                 }
@@ -39869,7 +39880,8 @@ impl RolloutWorld {
             let target = if let Some(target) = self.players.iter().position(|slot| {
                 self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity
             }) {
-                CallbackHit::Kill { player: target, killer: roller_id, cause: CAUSE_OTHER }
+                let slime = self.players[target].active == ActiveAbility::None;
+                CallbackHit::Kill { player: target, killer: roller_id, cause: CAUSE_OTHER, slime }
             } else if let Some(clone) = self
                 .abilityless_clones
                 .iter()
