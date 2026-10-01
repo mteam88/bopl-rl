@@ -749,12 +749,6 @@ pub struct ThrownItem {
     /// reflected in mass on the following updater pass, as in the source.
     pub scale: Fix,
     pub body_scale: Fix,
-    /// The pass whose Updater turn this item's BoplBody.UpdateSim has taken.
-    pub body_ran_tick: Option<u32>,
-    /// Last pass Grenade.UpdateSim and DestroyIfOutsideSceneBounds ran: once
-    /// a pass, from whichever of the hierarchy walk, the item pass or a
-    /// TeleportMarker's early turn reaches them first.
-    pub update_ran_tick: Option<u32>,
     /// DPhysicsCircle's live radius. Scale mutates this incrementally through
     /// `(1 / old_scale) * new_scale`, retaining its fixed-point history.
     pub collider_radius: Fix,
@@ -4247,7 +4241,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 40)
+    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 40)
 }
 
 /// The place just after `key`.
@@ -7884,13 +7878,7 @@ impl RolloutWorld {
             self.frozen_solids_tick(updater_dt);
         }
         if has_thrown_item {
-            // Spawned item BoplBody updaters precede ScaleChanger instances in
-            // the global hierarchy. They therefore adopt the preceding pass's
-            // collider scale before the later ray effect writes its next value.
-            self.thrown_item_scale_mass_tick();
-        }
-        if has(ABILITY_POKE_BALL) || has(ABILITY_TACK) {
-            self.poke_balls_and_tacks_tick(data, updater_dt, 0..u32::MAX, 0..u32::MAX);
+            self.thrown_items_turns(data, updater_dt);
         }
         if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
             self.scale_changers_tick(data, updater_dt, deferred_spikes, deferred_updaters);
@@ -8439,13 +8427,8 @@ impl RolloutWorld {
             }
         }
         for (i, item) in self.thrown_items.iter().enumerate() {
-            let key = self.updater_key(item.appended, 100_000_000 + item.hierarchy_base);
-            match item.ability {
-                ABILITY_POKE_BALL | ABILITY_TACK => push(key, 2, i),
-                ABILITY_MJOLNIR => push(key, 3, i),
-                ABILITY_GRENADE | ABILITY_SMOKE if item.active => push(key, 18, i),
-                _ if item.active && item.body_ran_tick != Some(tick) => push(key, 15, i),
-                _ => {}
+            if Self::thrown_item_listed(item) {
+                push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 2, i);
             }
         }
         for (i, portal) in self.portals.iter().enumerate() {
@@ -8575,14 +8558,7 @@ impl RolloutWorld {
                     }
                 }
                 1 => self.black_holes_update(data, updater_dt, turn),
-                2 => {
-                    self.thrown_item_body_step(index);
-                    self.poke_balls_and_tacks_tick(data, updater_dt, turn.clone(), turn);
-                }
-                3 => {
-                    self.thrown_item_body_step(index);
-                    self.mjolnirs_tick(data, updater_dt, turn);
-                }
+                2 => self.thrown_item_turn(index, data, updater_dt),
                 4 => self.portals_update(data, updater_dt, turn),
                 5 => self.ability_pickups_tick_before(hierarchy - 99_999_999, data, updater_dt),
                 6 => self.engines_tick(data, updater_dt, turn),
@@ -8616,21 +8592,12 @@ impl RolloutWorld {
                 27 => self.stock_chooser_step(index, data),
                 28 => self.gold_mushroom_step(index / 3, index % 3, data),
                 29 => self.rope_parent_step(index),
-                // Grenade.UpdateSim: a fuse that runs out detonates at the
-                // item's own turn, before a younger cloud's FlammableSmoke
-                // detonates.
-                18 => {
-                    self.thrown_item_body_step(index);
-                    if !self.teleport_revealed_this_pass(self.thrown_items[index].entity) {
-                        self.thrown_item_update(index, data, updater_dt);
-                    }
-                }
                 40 => self.portal_shot_step(index, data, updater_dt),
                 19 => {
                     let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
                     self.guided_missile_update_sim(index, DT * self.player_time_scale, being_held, data);
                 }
-                _ => self.thrown_item_body_step(index),
+                _ => unreachable!(),
             }
             // Updater never returns to a turn it has passed: one skipped here,
             // hidden or disabled, waits for the next pass.
@@ -20827,19 +20794,13 @@ impl RolloutWorld {
                     && !self.blink_object_hidden(Some(entity))
                 {
                     if self.take_updater_turn(item_index, data, updater_dt) {
-                        match self.thrown_items[item_index].ability {
-                            ABILITY_TACK => self.tack_tick(item_index, data, updater_dt),
-                            ABILITY_POKE_BALL => self.poke_ball_tick(item_index, data, updater_dt),
-                            ABILITY_MJOLNIR => self.mjolnir_tick(item_index, data, updater_dt),
-                            _ => {}
-                        }
+                        self.thrown_item_turn(item_index, data, updater_dt);
                     }
                     let item = &mut self.thrown_items[item_index];
                     if item.active && item.pending_gust_impulse != Vec2::ZERO {
                         item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
                         item.pending_gust_impulse = Vec2::ZERO;
                     }
-                    self.thrown_item_update(item_index, data, updater_dt);
                 }
             }
             for &entity in &player_hits[..player_count] {
@@ -23166,8 +23127,6 @@ impl RolloutWorld {
             },
             scale,
             body_scale: Fix::ONE,
-            body_ran_tick: None,
-            update_ran_tick: None,
             collider_radius: data.mine.item_radius * scale,
             fuse: Fix::MAX,
             hurt_owner_delay: Fix::ZERO,
@@ -23520,8 +23479,6 @@ impl RolloutWorld {
             },
             scale: self.players[index].player_scale,
             body_scale: Fix::ONE,
-            body_ran_tick: None,
-            update_ran_tick: None,
             collider_radius: config.item_radius * self.players[index].player_scale,
             // Grenade.selfDestructDelay holds its authored -1 until
             // Grenade.Init (Grenade.cs:27; init_pending_grenade_fuses).
@@ -32759,36 +32716,36 @@ impl RolloutWorld {
         }
     }
 
-    fn poke_balls_and_tacks_tick(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        balls: std::ops::Range<u32>,
-        tacks: std::ops::Range<u32>,
-    ) {
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        order.clear();
-        order.extend((0..self.thrown_items.len()).filter(|&index| {
-            let item = &self.thrown_items[index];
-            let hierarchy = 100_000_000 + item.hierarchy_base;
-            match item.ability {
-                ABILITY_POKE_BALL => balls.contains(&hierarchy),
-                ABILITY_TACK => tacks.contains(&hierarchy),
-                _ => false,
+    /// Whether Updater lists item `item`'s updatables this pass.
+    fn thrown_item_listed(item: &ThrownItem) -> bool {
+        item.active || matches!(item.ability, ABILITY_POKE_BALL | ABILITY_TACK | ABILITY_MJOLNIR)
+    }
+
+    /// Each thrown item's turn in Updater's walk (Updater.cs:298-303), after
+    /// everything listed before it.
+    fn thrown_items_turns(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        for item_index in 0..self.thrown_items.len() {
+            if Self::thrown_item_listed(&self.thrown_items[item_index]) && self.take_updater_turn(item_index, data, updater_dt) {
+                self.thrown_item_turn(item_index, data, updater_dt);
             }
-        }));
-        order.sort_unstable_by_key(|&index| (self.updater_key(self.thrown_items[index].appended, 100_000_000 + self.thrown_items[index].hierarchy_base), index));
-        for &item_index in &order {
-            // The TeleportedObjectEffect that reactivates an item is newer, so
-            // the item's own UpdateSim was skipped this pass.
-            if !self.take_updater_turn(item_index, data, updater_dt)
-                || self.teleport_revealed_this_pass(self.thrown_items[item_index].entity)
-            {
-                continue;
-            }
-            if self.thrown_items[item_index].ability == ABILITY_POKE_BALL {
-                self.poke_ball_tick(item_index, data, updater_dt);
-            } else {
+        }
+    }
+
+    /// Item `item_index`'s updatables at its Updater turn: BoplBody.UpdateSim,
+    /// the item's own UpdateSim (a Poke Ball's, a Tack's BananaPeel or a
+    /// Mjolnir's), then Grenade.UpdateSim and DestroyIfOutsideSceneBounds. A
+    /// fuse that runs out detonates at the item's own turn, before a younger
+    /// cloud's FlammableSmoke detonates. The TeleportedObjectEffect that
+    /// reactivates an item is newer, so the item's own updatables were
+    /// skipped this pass.
+    fn thrown_item_turn(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
+        self.thrown_item_body_step(item_index);
+        if self.teleport_revealed_this_pass(self.thrown_items[item_index].entity) {
+            return;
+        }
+        match self.thrown_items[item_index].ability {
+            ABILITY_POKE_BALL => self.poke_ball_tick(item_index, data, updater_dt),
+            ABILITY_TACK => {
                 self.tack_tick(item_index, data, updater_dt);
                 let item = &mut self.thrown_items[item_index];
                 if item.active && item.pending_gust_impulse != Vec2::ZERO {
@@ -32796,8 +32753,10 @@ impl RolloutWorld {
                 }
                 item.pending_gust_impulse = Vec2::ZERO;
             }
+            ABILITY_MJOLNIR => self.mjolnir_hammer_update(item_index, data, updater_dt),
+            _ => {}
         }
-        self.scratch.item_order = order;
+        self.thrown_item_update(item_index, data, updater_dt);
     }
 
     fn poke_ball_tick(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) {
@@ -33088,25 +33047,17 @@ impl RolloutWorld {
         }
     }
 
-    fn thrown_item_scale_mass_tick(&mut self) {
-        for item_index in 0..self.thrown_items.len() {
-            self.thrown_item_body_step(item_index);
-        }
-    }
-
     /// The item's BoplBody.UpdateSim, once per pass: the mass follows the
     /// scale its collider had when this turn came.
     fn thrown_item_body_step(&mut self, item_index: usize) {
         // A tunnel's release comes after this updater's turn.
         if !self.thrown_items[item_index].active
-            || self.thrown_items[item_index].body_ran_tick == Some(self.tick)
             || self.blink_object_hidden(self.thrown_items[item_index].entity)
             || self.blink_object_released(self.thrown_items[item_index].entity)
         {
             return;
         }
         let item = &mut self.thrown_items[item_index];
-        item.body_ran_tick = Some(self.tick);
         // A held payload's collider has not run ManualInit, so BoplBody skips
         // the rescale and keeps prevScale (BoplBody.cs:332).
         if item.entity.is_some() {
@@ -33127,31 +33078,6 @@ impl RolloutWorld {
             item.body.apply_impulse(item.pending_gust_impulse, Vec2::ZERO);
             item.pending_gust_impulse = Vec2::ZERO;
         }
-    }
-
-    /// The Mjolnir hammers whose row hierarchy lies in `window`, in hierarchy
-    /// order.
-    fn mjolnirs_tick(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        window: std::ops::Range<u32>,
-    ) {
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        order.clear();
-        order.extend((0..self.thrown_items.len()).filter(|&index| {
-            let item = &self.thrown_items[index];
-            item.ability == ABILITY_MJOLNIR && window.contains(&(100_000_000 + item.hierarchy_base))
-        }));
-        order.sort_unstable_by_key(|&index| (self.updater_key(self.thrown_items[index].appended, 100_000_000 + self.thrown_items[index].hierarchy_base), index));
-        for &item_index in &order {
-            if self.take_updater_turn(item_index, data, updater_dt)
-                && !self.teleport_revealed_this_pass(self.thrown_items[item_index].entity)
-            {
-                self.mjolnir_hammer_update(item_index, data, updater_dt);
-            }
-        }
-        self.scratch.item_order = order;
     }
 
     fn thrown_items_integrate(
@@ -33176,16 +33102,14 @@ impl RolloutWorld {
                 }
             }
         }
-        // Each item's updaters in Updater hierarchy order: Mjolnir.UpdateSim,
-        // Grenade.UpdateSim and DestroyIfOutsideSceneBounds. A hammer's kills
-        // and a fuse or the bounds setting off an item claim spawn hierarchy, a
-        // smoke detonation draws from the shared RNG, and an older hammer still
-        // sees its owner alive when a newer one kills that owner, only vanishing
-        // the pass after (Mjolnir.cs:126-131).
+        // The items spawned this pass, which Updater lists from the next.
         let mut order = std::mem::take(&mut self.scratch.item_order);
         updater_order(&mut order, &self.thrown_items, |item| self.updater_key(item.appended, 100_000_000 + item.hierarchy_base));
         for &item_index in &order {
-            if self.teleport_revealed_this_pass(self.thrown_items[item_index].entity) {
+            let item = &self.thrown_items[item_index];
+            if self.updater_passed(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base))
+                || self.teleport_revealed_this_pass(item.entity)
+            {
                 continue;
             }
             let ability = self.thrown_items[item_index].ability;
@@ -33433,12 +33357,9 @@ impl RolloutWorld {
         if self.blink_object_hidden(entity) || self.blink_object_released(entity) {
             return;
         }
-        if !self.thrown_items[item_index].active
-            || self.thrown_items[item_index].update_ran_tick == Some(self.tick)
-        {
+        if !self.thrown_items[item_index].active {
             return;
         }
-        self.thrown_items[item_index].update_ran_tick = Some(self.tick);
         let ability = self.thrown_items[item_index].ability;
         // Grenade.UpdateSim lets go of a payload whose ThrowItem2 form was
         // deactivated without its ExitAbility, as a freeze ray does, or as a
@@ -41380,7 +41301,7 @@ mod tests {
         });
         world.tick = 2;
 
-        world.poke_balls_and_tacks_tick(data::get(), DT, 0..u32::MAX, 0..u32::MAX);
+        world.thrown_items_turns(data::get(), DT);
 
         assert!(world.thrown_items[0].capture_victim_is_clone);
         assert_eq!(world.thrown_items[0].capture_victim, Some(0));
