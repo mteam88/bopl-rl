@@ -580,6 +580,15 @@ impl RolloutWorld {
                 .any(|rock| rock.active && !self.blink_object_hidden(rock.entity) && rock.entity == Some(entity))
     }
 
+    /// Whether a row is a collider the groups pair, a slime's, form's,
+    /// clone's or Rock's or a Tesla node's lightning, so its pairs' callbacks
+    /// queue there rather than from a trigger pass.
+    pub(super) fn grouped_entity(&self, entity: usize) -> bool {
+        self.grouped_body_entity(entity)
+            || (0..self.tesla_nodes.len())
+                .any(|i| self.tesla_nodes[i].line_entity == Some(entity) && self.line_part(i))
+    }
+
     /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
     /// PositionalCorrection on each side's own inverse mass; every pair
     /// queues both sides' OnCollide, which run after the last group.
@@ -1131,6 +1140,11 @@ impl RolloutWorld {
                 // holding MagnetGun's hurtbox; Mine.OnCollide ignites on one
                 // but the holding MagnetGun's (GrenadeExplode.cs:41-68,
                 // Mine.cs:227-235).
+                // GrenadeExplode.OnCollide goes off on the Explosion layer,
+                // the lightning's (GrenadeExplode.cs:78-81).
+                ABILITY_GRENADE if self.part_layer(other, data) == LAYER_EXPLOSION => {
+                    self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
+                }
                 ability @ (ABILITY_GRENADE | ABILITY_MINE) if self.part_layer(other, data) == LAYER_PLAYER => {
                     let state = self.thrown_items[item];
                     let entity = collider.expect("grouped Player-layer part");

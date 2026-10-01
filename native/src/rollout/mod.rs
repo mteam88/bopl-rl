@@ -29200,6 +29200,7 @@ impl RolloutWorld {
     /// narrow phase finds them touching, each at the shape
     /// `detphysics_collider` gives, which is DetPhysics.IsActive. Yields the
     /// other collider's entity, the pair's callback group and its sweep rank.
+    /// The colliders the groups pair queue their callbacks there.
     fn layer_contacts(
         &self,
         swept: Swept,
@@ -29211,7 +29212,11 @@ impl RolloutWorld {
         let own_rank = self.swept_rank(swept);
         (0..self.entities.len()).filter_map(move |entity| {
             let other_layer = self.entities[entity].layer;
-            if other_layer >= 32 || mask & (1 << other_layer) == 0 || !data.layers_collide(layer, other_layer) {
+            if other_layer >= 32
+                || mask & (1 << other_layer) == 0
+                || !data.layers_collide(layer, other_layer)
+                || self.grouped_entity(entity)
+            {
                 return None;
             }
             let other = self.detphysics_collider(entity)?;
@@ -34713,7 +34718,6 @@ impl RolloutWorld {
                 for (entity, group, rank) in contacts {
                     let row = self.entities[entity];
                     if entity == item_entity
-                        || self.grouped_body_entity(entity)
                         || (row.layer == LAYER_PLAYER
                             && ((row.owner == owner_id && !item.detonates_on_owner) || Some(entity) == holder))
                     {
@@ -34736,7 +34740,7 @@ impl RolloutWorld {
                         DetCollider::Circle(circle),
                         MINE_IGNITERS,
                     )
-                    .filter(|&(entity, ..)| Some(entity) != holder && !self.grouped_body_entity(entity))
+                    .filter(|&(entity, ..)| Some(entity) != holder)
                     .map(|(_, group, rank)| {
                         let (later, earlier) = sweep_pair(item_rank, rank);
                         (group, later, earlier)
