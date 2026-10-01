@@ -14411,6 +14411,11 @@ impl RolloutWorld {
         self.players[index].scale_time_stop_circle(data);
         self.players[index].reported_position = published_position;
         self.players[index].reported_tick = self.tick;
+        // PlayerPhysics follows Ability in the prefab: UpdateScale brings the
+        // radius to this pass's scale, and LateUpdateSim seats a grounded form
+        // at it (PlayerPhysics.cs:106-114, 123, 142).
+        let slot = &mut self.players[index];
+        slot.base.radius = slot.forms[slot.active_slot].physics_radius();
         // PlayerBody follows CastSpell in the prefab. It carries the rope
         // Ability.EnterAbility handed it, grounded or not, so a jump pressed
         // while hanging lets go with the rope end's velocity
