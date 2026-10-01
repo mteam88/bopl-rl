@@ -563,9 +563,6 @@ impl RolloutWorld {
                 if let Some(contact) = contact {
                     let (later, earlier) = sweep_pair(rank, self.wall_rank(wall));
                     contacts.push(((group, later, earlier), part, wall, contact));
-                    if matches!(part, Part::Shot(_)) {
-                        break;
-                    }
                 }
             }
         }
@@ -580,7 +577,9 @@ impl RolloutWorld {
                     ABILITY_TACK => CallbackHit::TackWall { item, normal: contact.normal },
                     _ => continue,
                 },
-                // PortalShot.cs:78-87.
+                // PortalShot.OnCollide lands on the first wall pair to run, with
+                // its normal; the later ones find the shot landed
+                // (PortalShot.cs:78-98).
                 Part::Shot(shot) => CallbackHit::PortalShotLand { shot, normal: -contact.normal },
                 // Arrow.cs:85-131.
                 Part::Arrow(arrow) => CallbackHit::ArrowLand { arrow, wall: Some(wall), part: None },
