@@ -1162,10 +1162,7 @@ impl RolloutWorld {
             self.players[player].base.jump(&self.platforms);
         }
         self.players[player].base.previous_jump = action.buttons & 1 != 0;
-        self.players[player].base.move_only(
-            input,
-            self.platforms.terrain(),
-        );
+        self.slot_physics(player, |slot, world| slot.base.move_only(input, world));
         if self.players[player].base.outside_bounds() {
             self.players[player].base.alive = false;
             self.players[player].base.out_of_bounds = true;

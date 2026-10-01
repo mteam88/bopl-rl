@@ -6,21 +6,20 @@ impl Player {
         &mut self,
         action: Action,
         movement_input: Vec2,
-        terrain: Terrain,
+        walls: &mut impl Walls,
         inverse_extents: Vec2,
     ) {
-        let platforms = terrain.platforms;
         let mut old = self.clone();
         // OldUpdate enters the ability, but SlimeController.UpdateSim still calls
         // Move once on its now-inactive original body before returning.
         if old.grounded {
-            old.move_grounded(movement_input, terrain);
+            old.move_grounded(movement_input, walls);
         } else {
             old.velocity += Vec2::new(movement_input.x * old.constants.air_accel, Fix::ZERO);
             old.velocity += (-Vec2::RIGHT)
                 * (old.constants.air_accel / (old.constants.max_speed + old.constants.air_accel))
                 * old.velocity.x;
-            old.collision_rays(terrain);
+            old.collision_rays(walls);
         }
         self.dash.saved_local = old.local;
         // Dash.OnEnterAbility syncs its hitbox to the slime's pose before
@@ -31,7 +30,7 @@ impl Player {
         // readyDash's UnGround (Dash.cs:109).
         if self.grounded {
             self.dash.local = self.local;
-            let surface = &self.platform(platforms).unwrap().surface;
+            let surface = &self.platform(walls.platforms()).unwrap().surface;
             self.position = surface.position(self.local, self.dash.radius);
             self.unground(Some(surface), true);
         } else {
@@ -47,8 +46,7 @@ impl Player {
         self.dash.input = action.direction();
         self.cooldown = Fix::ZERO;
     }
-    pub(super) fn dash_step(&mut self, action: Action, terrain: Terrain) {
-        let platforms = terrain.platforms;
+    pub(super) fn dash_step(&mut self, action: Action, walls: &mut impl Walls) {
         // timePassed += GameTime.FixedDeltaTime (Dash.cs:246): the
         // anticipation holds under Time Stop, while updatesPassedInDash
         // below counts raw passes, so a dash already under way lands.
@@ -80,14 +78,10 @@ impl Player {
             self.dash.updates = 0;
             self.velocity = Vec2::ZERO;
             self.external_velocity = Vec2::ZERO;
-            if let Some((index, _, position)) = closest(
-                terrain,
-                self.position,
-                self.dash.input,
-                Fix::from_int(13),
-                None,
-            ) {
-                let platform = &platforms[index];
+            if let Some((index, _, position)) =
+                walls.raycast_to_closest_rounded_rect(self.position, self.dash.input, Fix::from_int(13), None)
+            {
+                let platform = &walls.platforms()[index];
                 self.dash.hit_ground = Some(platform.id);
                 self.dash.hit_local = platform
                     .surface
@@ -106,7 +100,7 @@ impl Player {
                 let landing = self
                     .dash
                     .hit_ground
-                    .and_then(|id| platforms.iter().find(|p| p.id == id));
+                    .and_then(|id| walls.platforms().iter().find(|p| p.id == id));
                 if let Some(platform) = landing {
                     self.position =
                         platform.surface.position(self.dash.hit_local, self.dash.radius);
