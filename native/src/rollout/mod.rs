@@ -11305,11 +11305,6 @@ impl RolloutWorld {
                     }
                     ABILITY_SPIKE => {
                         let slot = &mut self.players[index];
-                        if slot.base.grounded {
-                            // PlayerPhysics.SyncPhysicsTo clears grounded
-                            // self-imposed velocity but retains external force.
-                            slot.base.velocity = Vec2::ZERO;
-                        }
                         slot.timers[s] = Fix::ZERO;
                         slot.set_active_form(&mut self.entities, ActiveAbility::Spike);
                         slot.active_slot = s;
@@ -11319,31 +11314,15 @@ impl RolloutWorld {
                         slot.sync_form_pose();
                         // Ability.EnterAbility scales the box, then
                         // PlayerPhysics.SyncPhysicsTo(PlayerInfo) UpdateScales
-                        // the form's radius. Spike.OnEnterAbility puts the
-                        // body back at the slime's position after the sync,
-                        // so only the radius carries over.
+                        // the form's radius. Spike.OnEnterAbility syncs its
+                        // hitbox there and puts the body back at the slime's
+                        // position (Spike.cs:78-82).
                         self.scale_spike_form(index, data);
                         let slot = &mut self.players[index];
-                        slot.base.radius = slot.forms[s].physics_radius();
-                        let mut synced = slot.base.clone();
-                        match synced.platform(&self.platforms).filter(|_| synced.grounded) {
-                            Some(platform) => {
-                                synced.position =
-                                    platform.surface.position(synced.local, synced.radius);
-                                synced.align(platform);
-                            }
-                            None => {
-                                synced.up = Vec2::UP;
-                                synced.rotation = Fix::ZERO;
-                            }
-                        }
-                        let form = slot.forms[s];
-                        let collider = form.hurtbox(
-                            synced.position + synced.up.perp_cw().complex_mul(form.offset),
-                            Vec2::angle(synced.rotation),
-                            data.spike.hurtbox_extents,
-                        );
-                        self.sync_form_box(index, collider);
+                        let radius = slot.forms[s].physics_radius();
+                        let (position, offset) = (slot.base.position, slot.forms[s].offset);
+                        self.form_enter(index, radius, offset, data.spike.hurtbox_extents);
+                        self.players[index].base.position = position;
                         self.form_entry_turn(data, index);
                         // The entry pass's Ability.UpdateSim.
                         self.scale_spike_form(index, data);
@@ -11372,18 +11351,12 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        if slot.base.grounded {
-                            // SyncPhysicsTo clears a grounded self-imposed
-                            // velocity; the external one survives.
-                            slot.base.velocity = Vec2::ZERO;
-                        }
                         slot.plant_cast = PlantCastState::default();
                         slot.sync_form_pose();
                         // Ability.EnterAbility, then the entry pass's UpdateSim.
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
-                        self.plant_form_radius(index);
-                        self.plant_entry_box(index, data);
+                        self.plant_form_enter(index, data);
                         self.form_entry_turn(data, index);
                         // The form's DestroyIfOutsideSceneBounds takes its
                         // turn on the entry pass, ahead of the Move below.
@@ -11410,17 +11383,11 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        if slot.base.grounded {
-                            // SyncPhysicsTo clears a grounded self-imposed
-                            // velocity; the external one survives.
-                            slot.base.velocity = Vec2::ZERO;
-                        }
                         slot.plant_cast = PlantCastState::default();
                         slot.sync_form_pose();
                         self.scale_plant_form(index, data);
                         self.scale_plant_form(index, data);
-                        self.plant_form_radius(index);
-                        self.plant_entry_box(index, data);
+                        self.plant_form_enter(index, data);
                         self.form_entry_turn(data, index);
                         if self.form_bounds_kill(index, data) {
                             return;
@@ -14691,34 +14658,22 @@ impl RolloutWorld {
         );
     }
 
-    /// PlantObjectOnPlatform.OnEnterAbility syncs its box at the pose
-    /// PlayerPhysics.SyncPhysicsTo gave the body and then puts the body back
-    /// at the slime's position; the box stays there until DetPhysics syncs it.
-    fn plant_entry_box(&mut self, index: usize, data: &data::RolloutData) {
+    /// PlantObjectOnPlatform.OnEnterAbility (PlantObjectOnPlatform.cs:80-85):
+    /// SyncPhysicsTo at the radius UpdateScale gives the form, the hitbox at
+    /// that pose, then the body back at PlayerInfo's position.
+    fn plant_form_enter(&mut self, index: usize, data: &data::RolloutData) {
         let extents = if self.players[index].active == ActiveAbility::Engine {
             data.engine.hurtbox_extents
         } else {
             data.tesla.hurtbox_extents
         };
         let slot = &mut self.players[index];
-        let mut synced = slot.base.clone();
-        match synced.platform(&self.platforms).filter(|_| synced.grounded) {
-            Some(platform) => {
-                synced.position = platform.surface.position(synced.local, synced.radius);
-                synced.align(platform);
-            }
-            None => {
-                synced.up = Vec2::UP;
-                synced.rotation = Fix::ZERO;
-            }
-        }
-        let form = slot.forms[slot.active_slot];
-        let collider = form.hurtbox(
-            synced.position + synced.up.perp_cw().complex_mul(form.offset),
-            Vec2::angle(synced.rotation),
-            data::surface_extents(extents),
-        );
-        self.sync_form_box(index, collider);
+        let position = slot.base.position;
+        let s = slot.active_slot;
+        let radius = slot.forms[s].physics_radius();
+        let offset = slot.forms[s].offset;
+        self.form_enter(index, radius, offset, data::surface_extents(extents));
+        self.players[index].base.position = position;
     }
 
     /// PlayerPhysics.UpdateScale on a PlantObjectOnPlatform form.
