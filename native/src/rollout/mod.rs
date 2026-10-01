@@ -4121,7 +4121,7 @@ enum CallbackHit {
     SmokeIgnite { cloud: usize, entity: usize },
     /// A lethal Roll's target-side callback on a collider that is no player:
     /// an arrow, a missile, a grenade or a mine.
-    FormTarget { entity: usize, near: Vec2, caster: usize },
+    FormTarget { entity: usize, caster: usize },
     /// The lethal Roll's own PlayerCollision.OnCollide with a pair's collider.
     RollerHit { roller: usize, entity: usize },
     /// PlayerCollision.OnCollide with a lethal hitbox.
@@ -13003,7 +13003,7 @@ impl RolloutWorld {
                     let entity = hit.index;
                     let target = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity);
                     self.players[index].base.position = near;
-                    self.form_target_on_collide(entity, near, index, PassPhase::Updater, data);
+                    self.form_target_on_collide(entity, index, PassPhase::Updater, data);
                     // hitbox.OnCollide: the Meteor's own PlayerCollision, from
                     // its UpdateSim. A Rock (no PlayerCollision) or an
                     // invulnerable target survives, and can still kill the
@@ -13171,7 +13171,6 @@ impl RolloutWorld {
     fn form_target_on_collide(
         &mut self,
         entity: usize,
-        near: Vec2,
         caster: usize,
         phase: PassPhase,
         data: &data::RolloutData,
@@ -13204,9 +13203,13 @@ impl RolloutWorld {
             .iter()
             .position(|arrow| arrow.active && arrow.entity == Some(entity))
         {
-            let arrow = self.arrows[arrow_index];
-            let body = arrow.body(&data.arrow.body);
-            self.destroy_arrow_contact(arrow_index, near, body);
+            // Arrow.OnCollide: BoplBody.Drop lets go of a Magnet's hold, and a
+            // Player-layer collider without a BoplBody is nothing to stick
+            // to. Meteor and Roll are both (Arrow.cs:87-98, Meteor.prefab,
+            // Roll.prefab), so the arrow flies on.
+            let arrow = &mut self.arrows[arrow_index];
+            arrow.magnet_holder = None;
+            arrow.magnet_hold_ticks = -1;
             return;
         }
         if let Some(missile_index) = self
@@ -36198,8 +36201,8 @@ impl RolloutWorld {
                 CallbackHit::ArrowKill { victim, owner, arrow, slime } => self.arrow_kill(victim, owner, arrow, slime),
                 CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
                 CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
-                CallbackHit::FormTarget { entity, near, caster } => {
-                    self.form_target_on_collide(entity, near, caster, PassPhase::Callback, data);
+                CallbackHit::FormTarget { entity, caster } => {
+                    self.form_target_on_collide(entity, caster, PassPhase::Callback, data);
                 }
                 CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
                 CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
@@ -38722,7 +38725,7 @@ impl RolloutWorld {
             {
                 CallbackHit::CloneKill { clone, killer: roller_id, cause: CAUSE_OTHER }
             } else {
-                CallbackHit::FormTarget { entity, near: center, caster: roller }
+                CallbackHit::FormTarget { entity, caster: roller }
             };
             let own = CallbackHit::RollerHit { roller, entity };
             let other = sweep_rank(&self.entities, self.swept_min(Swept::Row(entity)), Some(entity));
@@ -38818,7 +38821,7 @@ impl RolloutWorld {
             // it begins the reciprocal Roll hurtbox callback walk.
             for hit_offset in 0..hit_count {
                 let entity = self.scratch.ray_hits[hit_offset].index;
-                self.form_target_on_collide(entity, center, roller, PassPhase::Updater, data);
+                self.form_target_on_collide(entity, roller, PassPhase::Updater, data);
             }
 
             for hit_offset in 0..hit_count {
