@@ -4081,6 +4081,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Gust
             | ActiveAbility::Revival
             | ActiveAbility::Push
+            | ActiveAbility::Spike
     )
 }
 
@@ -14101,6 +14102,16 @@ impl RolloutWorld {
                 info.take_body(&slot.base);
                 info.facing_right = slot.facing_right;
             }
+            ActiveAbility::Spike => {
+                // Spike.ExitAbility (Spike.cs:132-154). Its groundedSpeed is
+                // |selfImposedVelocity|, zero on the ground, and only a
+                // grounded packet reads it.
+                let slot = &mut self.players[index];
+                slot.base.rotation = Fix::ZERO;
+                info.take_body(&slot.base);
+                info.grounded_speed = Fix::ZERO;
+                info.facing_right = slot.facing_right;
+            }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
         info
@@ -14758,7 +14769,7 @@ impl RolloutWorld {
                 self.players[index].spike_cast.phase = 1;
                 self.players[index].spike_cast.ticks = 0;
             } else {
-                self.exit_spike_cast(index);
+                self.exit_form(index);
                 return;
             }
         }
@@ -14768,7 +14779,7 @@ impl RolloutWorld {
         if self.players[index].spike_cast.phase == 1
             && self.players[index].spike_cast.ticks > data.spike.recover_ticks
         {
-            self.exit_spike_cast(index);
+            self.exit_form(index);
             return;
         }
         // PlayerPhysics.UpdateScale.
@@ -14813,40 +14824,6 @@ impl RolloutWorld {
         slot.sync_form_pose();
         slot.reported_position = published;
         slot.reported_tick = self.tick;
-    }
-
-    fn exit_spike_cast(&mut self, index: usize) {
-        // The slime's SyncPhysicsTo(AbilityExitInfo) re-places it from the
-        // form's surface local. Spike reports the magnitude of its
-        // self-imposed velocity as groundedSpeed, which is zero on the ground.
-        self.players[index].base.grounded_speed = Fix::ZERO;
-        if self.players[index].base.grounded {
-            self.sync_exit_to_ground(index);
-        }
-        let grounded_pose = self.players[index].base.ground.and_then(|ground| {
-            self.platforms
-                .iter()
-                .find(|platform| platform.id == ground)
-                .map(|platform| platform.surface.normal(self.players[index].base.position))
-        });
-        let slot = &mut self.players[index];
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        if slot.base.grounded
-            && let Some(up) = grounded_pose
-        {
-            slot.base.up = up;
-            slot.base.rotation = up.perp_cw().normalized_angle();
-            slot.obs_state = STATE_IDLE;
-            slot.state_ticks = 0;
-        } else {
-            // onExitAbility assigns Player.Scale to the slime's hurtbox, and
-            // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
-            slot.set_ordinary_body_scale(slot.player_scale);
-            slot.restore_slime_radius();
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
-            slot.exit_to_fall(terrain!(self));
-        }
     }
 
     fn engine_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
