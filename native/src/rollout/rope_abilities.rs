@@ -2118,10 +2118,10 @@ impl RolloutWorld {
                 let rope = &mut self.ropes[rope_index];
                 pin_grounded_rope_end(body, rope, top, &self.platforms, self.tick);
             }
-            // Push.prefab's PlayerBody is authored with simulated off, so its
-            // late update (stretch check, end force) never runs; the form's
+            // An unsimulated PlayerBody (Push.prefab's, a spawning slime's)
+            // skips its late update (stretch check, end force); the
             // PlayerPhysics above still pins a grounded end.
-            if self.players[player].active == ActiveAbility::Push {
+            if !self.player_body_simulated(player) {
                 continue;
             }
             if overstretched(&self.ropes[rope_index]) {

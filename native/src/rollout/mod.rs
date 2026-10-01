@@ -9867,6 +9867,21 @@ impl RolloutWorld {
         self.hittable(index) && self.players[index].respawn_spawn_ticks == 0
     }
 
+    /// PlayerBody.IsEnabled's `body.simulated`: Push.prefab authors it off,
+    /// and a slime clears it from BeforeSpawnInit until Spawn sets it again
+    /// (SlimeController.cs:499-591), so neither body's UpdateSim nor
+    /// LateUpdateSim runs.
+    fn player_body_simulated(&self, index: usize) -> bool {
+        let slot = &self.players[index];
+        match slot.active {
+            ActiveAbility::Push => false,
+            ActiveAbility::None => {
+                slot.respawn_ticks == 0 && slot.respawn_spawn_ticks == 0 && slot.revival_effect_ticks == 0
+            }
+            _ => true,
+        }
+    }
+
     /// GameTime.IsTimeStopped: some Time Stop holds the global scale down.
     fn is_time_stopped(&self) -> bool {
         self.player_time_scale < Fix::from_f32(0.01)
