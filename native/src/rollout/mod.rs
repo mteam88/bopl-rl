@@ -2234,7 +2234,6 @@ impl FrozenSlime {
 #[derive(Clone, Copy, Default)]
 pub struct RagdollState {
     pub active: bool,
-    pub skip_physics: bool,
     /// The effect applied ragdoll while the slime was already grounded, so
     /// no AttachToGround callback may replace it with Land before timeout.
     pub hold_on_ground: bool,
@@ -10351,7 +10350,7 @@ impl RolloutWorld {
             && !self.players[index].rewind.rewinding
         {
             let slot = &mut self.players[index];
-            let skipped = slot.base.skip_next_gravity || slot.ragdoll.skip_physics;
+            let skipped = slot.base.skip_next_gravity;
             if slot.base.scale != slot.physics_scale && !skipped {
                 slot.base.radius *= slot.base.scale / slot.physics_scale;
                 slot.physics_scale = slot.base.scale;
@@ -25431,7 +25430,6 @@ impl RolloutWorld {
                 slot.base.velocity = Vec2::ZERO;
                 slot.ragdoll = RagdollState {
                     active: true,
-                    skip_physics: true,
                     hold_on_ground: false,
                     time: Fix::ZERO,
                     duration: data.magnet.small_ragdoll_duration,
@@ -25795,7 +25793,6 @@ impl RolloutWorld {
                 slot.base.skip_next_gravity = true;
                 slot.ragdoll = RagdollState {
                     active: true,
-                    skip_physics: true,
                     hold_on_ground: false,
                     time: Fix::ZERO,
                     duration: data.magnet.small_ragdoll_duration,
@@ -26006,7 +26003,6 @@ impl RolloutWorld {
                     // already set (MagnetGun.cs:1127-1128).
                     slot.ragdoll = RagdollState {
                         active: true,
-                        skip_physics: slot.ragdoll.skip_physics,
                         hold_on_ground: false,
                         time: Fix::ZERO,
                         duration: data.magnet.fire_ragdoll_duration,
@@ -30037,13 +30033,10 @@ impl RolloutWorld {
     /// other pass, with PlayerPhysics.UpdateSim already done here.
     fn ragdoll_player_tick(&mut self, index: usize, action: Action, jump_pressed: bool) -> bool {
         let slot = &mut self.players[index];
-        // Both flags stand for PlayerPhysics.skipNextUpdate, which the
-        // ragdolled slime's PlayerPhysics still consumes every pass, unless a
-        // rewind has disabled it (RewindRecorder.cs:155).
+        // The ragdolled slime's PlayerPhysics still consumes skipNextUpdate
+        // every pass, unless a rewind has disabled it (RewindRecorder.cs:155).
         let physics = !slot.rewind.rewinding;
-        let skip = physics
-            && (std::mem::take(&mut slot.ragdoll.skip_physics)
-                | std::mem::take(&mut slot.base.skip_next_gravity));
+        let skip = physics && std::mem::take(&mut slot.base.skip_next_gravity);
         if physics && !skip && !slot.base.grounded {
             let space = slot.base.space;
             crate::player_physics::apply_gravity(
@@ -30138,7 +30131,6 @@ impl RolloutWorld {
                 slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
                 slot.ragdoll = RagdollState {
                     active: true,
-                    skip_physics: false,
                     hold_on_ground: slot.base.grounded,
                     time: Fix::ZERO,
                     duration: Fix::from_f32(0.35),
@@ -30168,11 +30160,11 @@ impl RolloutWorld {
             slot.obs_state = STATE_RAGDOLL;
             slot.ragdoll = RagdollState {
                 active: true,
-                skip_physics: true,
                 hold_on_ground: false,
                 time: Fix::ZERO,
                 duration: Fix::ONE,
             };
+            slot.base.skip_next_gravity = true;
             let state = &mut self.frozen_solids[effect_index];
             state.freeze_left -= updater_dt;
             if state.freeze_left <= Fix::ZERO {
@@ -33180,7 +33172,6 @@ impl RolloutWorld {
                 clone.obs_state = STATE_RAGDOLL;
                 clone.ragdoll = RagdollState {
                     active: true,
-                    skip_physics: false,
                     hold_on_ground: clone.base.grounded,
                     time: Fix::ZERO,
                     duration: Fix::ONE,
@@ -33205,13 +33196,10 @@ impl RolloutWorld {
                 // PlayerPhysics.LateUpdateSim puts it back on its platform.
                 slot.ragdoll = RagdollState {
                     active: true,
-                    skip_physics: false,
                     hold_on_ground: slot.base.grounded,
                     time: Fix::ZERO,
                     duration: Fix::ONE,
                 };
-                // skipNextUpdate is PlayerPhysics' own (PokeBall.cs:104): a
-                // teleport's UnGround that ends the ragdoll leaves it pending.
                 slot.base.skip_next_gravity = true;
             }
             self.thrown_items[item_index].capture_left -= updater_dt;
@@ -33972,7 +33960,6 @@ impl RolloutWorld {
         // the pin (PokeBall.cs:93-104).
         slot.ragdoll = RagdollState {
             active: true,
-            skip_physics: slot.ragdoll.skip_physics,
             hold_on_ground: slot.base.grounded,
             time: Fix::ZERO,
             duration: Fix::from_f32(0.45),
@@ -34020,7 +34007,6 @@ impl RolloutWorld {
         clone.obs_state = STATE_RAGDOLL;
         clone.ragdoll = RagdollState {
             active: true,
-            skip_physics: clone.ragdoll.skip_physics,
             hold_on_ground: clone.base.grounded,
             time: Fix::ZERO,
             duration: Fix::from_f32(0.45),
