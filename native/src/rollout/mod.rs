@@ -4280,7 +4280,9 @@ enum CallbackHit {
     /// One side of a narrow-phase manifold: the receiver's
     /// collisionCallback.OnCollide with the other collider, dispatched by the
     /// receiver's kind (DetPhysics.cs:2406-2438, 3202-3205).
-    Collide { receiver: Part, other: Part, contact: Contact },
+    /// `collider` is the other collider's row, which the entry holds
+    /// whatever becomes of its owner before it runs.
+    Collide { receiver: Part, other: Part, collider: Option<usize>, contact: Contact },
     /// DynamicAbilityPickup.OnCollide with a slime's or an abilityless
     /// clone's box, whose hurtbox row was `body` when the pair was found.
     Pickup { pickup: usize, taker: PickupTaker, body: usize },
@@ -6549,79 +6551,6 @@ impl RolloutWorld {
         variance.x > variance.y
     }
 
-    /// DynamicAbilityPickup.OnCollide only accepts the FixTransform carrying
-    /// SlimeController itself. Ability-form hurtboxes are also on the player
-    /// layer, but do not have that component and therefore cannot collect.
-    fn ability_pickups_contacts(&mut self) {
-        if !self
-            .ability_pickups
-            .iter()
-            .any(|pickup| pickup.active && pickup.enabled)
-        {
-            return;
-        }
-        // Circle/Box callbacks follow DetPhysics' global sort-and-sweep order,
-        // not prefab registration order. This matters when two death drops
-        // overlap one slime on the same pass: AddAdditionalAbility replaces
-        // the third slot twice, so the later callback wins.
-        let clones = self.player_layer_clones();
-        let mut hits = Vec::new();
-        for (pickup_index, pickup) in self.ability_pickups.iter().enumerate() {
-            let Some(DetCollider::Circle(circle)) =
-                pickup.entity.and_then(|entity| self.detphysics_collider(entity))
-            else {
-                continue;
-            };
-            let swept = Swept::Pickup(pickup_index);
-            let pickup_rank = sweep_rank(&self.entities, self.swept_min(swept), pickup.entity);
-            for player_index in 0..self.players.len() {
-                let slot = &self.players[player_index];
-                if !self.playable(player_index)
-                    || slot.active != ActiveAbility::None
-                    || !self.collides(slot.body_entity)
-                    || !self.swept_pair(swept, Swept::Player(player_index))
-                {
-                    continue;
-                }
-                let row = self.entities[slot.body_entity];
-                let body = Self::row_box(&self.entity_inverse_extents, slot.body_entity, row);
-                if crate::physics::contact::circle_box(circle, body).is_some() {
-                    let (later, earlier) = sweep_pair(pickup_rank, self.player_sweep_rank(player_index));
-                    hits.push((later, earlier, pickup_index, PickupTaker::Body(player_index)));
-                }
-            }
-            // An abilityless clone is a SlimeController too, and its
-            // hurtbox takes the pickup like a slime's.
-            for &clone_index in &clones {
-                let clone = &self.abilityless_clones[clone_index];
-                let entity = clone.entity.expect("player-layer clone has a row");
-                if self.swept_pair(swept, Swept::Clone(clone_index))
-                    && crate::physics::contact::circle_box(circle, clone.base.collider).is_some()
-                {
-                    let min = self.swept_min(Swept::Clone(clone_index));
-                    let (later, earlier) =
-                        sweep_pair(pickup_rank, sweep_rank(&self.entities, min, Some(entity)));
-                    hits.push((later, earlier, pickup_index, PickupTaker::Clone(clone_index)));
-                }
-            }
-        }
-        // PrepareCollisionCallBacks queues every overlapping Circle/Box
-        // callback before any of them run. DestroyFix in the first pickup
-        // callback therefore does not prevent the same pickup from being
-        // granted to another overlapping slime later in that queue, and a
-        // lethal Circle/Box pair ahead of it kills the slime first.
-        for (later, earlier, pickup, taker) in hits {
-            let body = match taker {
-                PickupTaker::Body(player) => self.players[player].body_entity,
-                PickupTaker::Clone(clone) => {
-                    self.abilityless_clones[clone].entity.expect("player-layer clone has a row")
-                }
-            };
-            let hit = CallbackHit::Pickup { pickup, taker, body };
-            self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
-        }
-    }
-
     /// DynamicAbilityPickup.OnCollide: instantiate the ability prefab, hand it
     /// to AddAdditionalAbility and destroy the pickup. `body` is the taker's
     /// hurtbox row when the pair was found.
@@ -8196,11 +8125,6 @@ impl RolloutWorld {
         {
             self.circle_circle_group(data);
         }
-        // DynamicAbilityPickup.OnCollide is a callback: a pickup a slime
-        // collects this pass still resolved its Circle/Circle pairs first.
-        if has_pickups {
-            self.ability_pickups_contacts();
-        }
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_pairs();
         }
@@ -8213,6 +8137,7 @@ impl RolloutWorld {
             || has(ABILITY_DUPLICATOR)
             || has(ABILITY_BOW)
             || has(ABILITY_BLACK_HOLE)
+            || has_pickups
         {
             self.thrown_item_pair_contacts(data);
         }
@@ -36187,7 +36112,9 @@ impl RolloutWorld {
                     .apply_impulse(direction * strength, wall_arm);
                 self.spike_attack_self_push(spike, point, strength, data);
             }
-            CallbackHit::Collide { receiver, other, contact } => self.on_collide(receiver, other, contact, data),
+            CallbackHit::Collide { receiver, other, collider, contact } => {
+                self.on_collide(receiver, other, collider, contact, data);
+            }
             CallbackHit::MineIgnite { item } => {
                 let mine = &mut self.thrown_items[item];
                 if mine.active && matches!(mine.phase, 1 | 2) {
@@ -45036,7 +44963,7 @@ mod tests {
         world.entities[pickup_entity].flags |= E_ENABLED;
         let hierarchy = world.next_spawn_hierarchy;
 
-        world.ability_pickups_contacts();
+        world.circle_box_group(data::get());
         world.run_callback_hits(data::get());
 
         for player in &world.players {

@@ -538,6 +538,11 @@ impl RolloutWorld {
                 parts.push(Part::DuplicatedRock(i));
             }
         }
+        for (i, pickup) in self.ability_pickups.iter().enumerate() {
+            if pickup.active && pickup.enabled && !self.blink_object_hidden(pickup.entity) {
+                parts.push(Part::Pickup(i));
+            }
+        }
         for i in 0..self.players.len() {
             if self.body_part_circle(i) == Some(true) {
                 parts.push(Part::Body(i));
@@ -890,6 +895,7 @@ impl RolloutWorld {
                 receiver,
                 Part::Hole(_)
                     | Part::Item(_)
+                    | Part::Pickup(_)
                     | Part::Rock(_)
                     | Part::Arrow(_)
                     | Part::Hook(_)
@@ -898,21 +904,34 @@ impl RolloutWorld {
                     | Part::Body(_)
                     | Part::Clone(_)
             ) {
-                self.scratch.callback_hits.push((key, CallbackHit::Collide { receiver, other, contact }));
+                let collider = self.part_entity(other);
+                self.scratch.callback_hits.push((key, CallbackHit::Collide { receiver, other, collider, contact }));
             }
         }
     }
 
     /// The receiver's collisionCallback.OnCollide, run from DetPhysics' queue
     /// (DetPhysics.cs:3202-3205).
-    pub(super) fn on_collide(&mut self, receiver: Part, other: Part, contact: Contact, data: &data::RolloutData) {
+    pub(super) fn on_collide(
+        &mut self,
+        receiver: Part,
+        other: Part,
+        collider: Option<usize>,
+        contact: Contact,
+        data: &data::RolloutData,
+    ) {
         // Only the Rock form's, the Duplicator copy's, the arrows' and the holes' pairs
         // with slime, form and clone colliders run here yet; the others'
         // callbacks are still queued from their own contact passes.
         if matches!(other, Part::Body(_) | Part::Clone(_))
             && !matches!(
                 receiver,
-                Part::Rock(_) | Part::DuplicatedRock(_) | Part::Arrow(_) | Part::Hole(_) | Part::Item(_)
+                Part::Rock(_)
+                    | Part::DuplicatedRock(_)
+                    | Part::Arrow(_)
+                    | Part::Hole(_)
+                    | Part::Item(_)
+                    | Part::Pickup(_)
             )
         {
             return;
@@ -941,7 +960,7 @@ impl RolloutWorld {
                 // Mine.cs:227-235).
                 ability @ (ABILITY_GRENADE | ABILITY_MINE) if self.part_layer(other, data) == LAYER_PLAYER => {
                     let state = self.thrown_items[item];
-                    let entity = self.part_entity(other).expect("grouped Player-layer part");
+                    let entity = collider.expect("grouped Player-layer part");
                     if state.magnet_holder.is_some_and(|holder| self.players[holder].magnet_entity == entity) {
                         return;
                     }
@@ -962,6 +981,21 @@ impl RolloutWorld {
                 _ => {}
             },
             Part::Rock(rock) => self.rock_on_collide(rock, contact.normal, self.part_layer(other, data)),
+            // DynamicAbilityPickup.OnCollide hands its ability to the
+            // SlimeController on the collider's FixTransform, a slime's own
+            // box or an abilityless clone's, and to nothing else, whatever an
+            // earlier callback made of the slime (DynamicAbilityPickup.cs:158-170).
+            Part::Pickup(pickup) => {
+                let Some(body) = collider else {
+                    return;
+                };
+                let taker = match other {
+                    Part::Body(player) if body == self.players[player].body_entity => PickupTaker::Body(player),
+                    Part::Clone(clone) => PickupTaker::Clone(clone),
+                    _ => return,
+                };
+                self.run_callback_hit(CallbackHit::Pickup { pickup, taker, body }, data);
+            }
             // Arrow.OnCollide lands on a StickTo layer, but not on a
             // Player-layer collider without a BoplBody (Arrow.cs:87-96): of
             // the Player-layer parts only a Rock form has one.
