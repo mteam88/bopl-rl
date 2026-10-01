@@ -4082,6 +4082,8 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Revival
             | ActiveAbility::Push
             | ActiveAbility::Spike
+            | ActiveAbility::Engine
+            | ActiveAbility::Tesla
     )
 }
 
@@ -10091,11 +10093,6 @@ impl RolloutWorld {
                     slot.facing_right = false;
                     slot.base.external_velocity = Vec2::ZERO;
                 }
-                ActiveAbility::Engine | ActiveAbility::Tesla => {
-                    // PlantObjectOnPlatform.cs:136-137 zeroes both velocities.
-                    slot.base.velocity = Vec2::ZERO;
-                    slot.base.external_velocity = Vec2::ZERO;
-                }
                 ActiveAbility::Throw => {
                     // MachoThrow2.cs:785; it leaves externalVelocity default.
                     slot.facing_right = slot.macho_throw.facing_right;
@@ -14112,6 +14109,31 @@ impl RolloutWorld {
                 info.grounded_speed = Fix::ZERO;
                 info.facing_right = slot.facing_right;
             }
+            ActiveAbility::Engine | ActiveAbility::Tesla => {
+                // PlantObjectOnPlatform.ExitAbility (PlantObjectOnPlatform.cs:
+                // 112-141); both ModifyExitInfo return the packet unchanged.
+                // InputGroundAlignment reads the form's attachedGround, a
+                // destroyed one's surface until it drains, else Vec2.right
+                // (PlayerPhysics.cs:392-396).
+                let tick = self.tick;
+                let slot = &mut self.players[index];
+                slot.base.rotation = Fix::ZERO;
+                let position = slot.base.position;
+                let forwards = (slot.base.attached_ground(&self.platforms).map(|p| &p.surface))
+                    .or_else(|| slot.dead_ground(tick))
+                    .map_or(Vec2::RIGHT, |surface| surface.normal(position).perp_cw());
+                let alignment = slot.last_movement_input.normalized_safe().dot(forwards);
+                // OnEnterAbility set localScale.x to -1 while facing right, so
+                // `Sign2(alignment) * localScale.x >= 0` is a held direction
+                // opposing the facing.
+                info.enter_turn = alignment.abs() >= Fix::from_f32(0.2)
+                    && (alignment >= Fix::ZERO) != slot.facing_right;
+                info.take_body(&slot.base);
+                info.grounded_speed = Fix::ZERO;
+                info.velocity = Vec2::ZERO;
+                info.external_velocity = Vec2::ZERO;
+                info.facing_right = slot.facing_right;
+            }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
         info
@@ -14844,7 +14866,7 @@ impl RolloutWorld {
                 self.players[index].plant_cast.phase = 1;
                 self.players[index].plant_cast.ticks = 0;
             } else {
-                self.exit_engine_cast(index);
+                self.exit_form(index);
                 return;
             }
         }
@@ -14853,7 +14875,7 @@ impl RolloutWorld {
         if self.players[index].plant_cast.phase == 1
             && self.players[index].plant_cast.ticks > data.engine.recover_ticks
         {
-            self.exit_engine_cast(index);
+            self.exit_form(index);
             return;
         }
         self.plant_form_radius(index);
@@ -14940,74 +14962,6 @@ impl RolloutWorld {
         slot.reported_tick = self.tick;
     }
 
-    fn exit_engine_cast(&mut self, index: usize) {
-        // PlantObjectOnPlatform.ExitAbility reads the held input's ground
-        // alignment off the form's own body, before the slime's
-        // SyncPhysicsTo re-places it on a corner's differing normal.
-        let form_forwards = self.players[index]
-            .base
-            .ground
-            .filter(|_| self.players[index].base.grounded)
-            .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
-            .map(|platform| platform.surface.normal(self.players[index].base.position).perp_cw());
-        // A form whose ground was destroyed still exits grounded, and its
-        // InputGroundAlignment reads the dead ground's forwards, or Vec2.right
-        // once it has drained (PlayerPhysics.cs:392-396).
-        let dead_up = {
-            let slot = &self.players[index];
-            slot.dead_ground(self.tick)
-                .map_or(Vec2::UP, |surface| surface.normal(slot.base.position))
-        };
-        // PlantObjectOnPlatform.ExitAbility hands over its surface local like
-        // Spike; the slime's SyncPhysicsTo re-places it from there. Off a
-        // destroyed ground it takes the airborne arm but stays grounded.
-        let mut alignment_up = dead_up;
-        if self.players[index].base.grounded && self.sync_exit_to_ground(index) {
-            let slot = &self.players[index];
-            if let Some(platform) =
-                slot.base.ground.and_then(|ground| self.platforms.iter().find(|p| p.id == ground))
-            {
-                alignment_up = platform.surface.normal(slot.base.position);
-            }
-        }
-        let live_ground = self.players[index].base.ground.is_some();
-        let slot = &mut self.players[index];
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        // ExitAbility hands over groundedSpeed and both velocities zero.
-        slot.base.grounded_speed = Fix::ZERO;
-        slot.base.velocity = Vec2::ZERO;
-        slot.base.external_velocity = Vec2::ZERO;
-        slot.base.rotation = Fix::ZERO;
-        if slot.base.grounded {
-            let up = alignment_up;
-            if live_ground {
-                slot.base.up = up;
-                slot.base.rotation = up.perp_cw().normalized_angle();
-            }
-            let forwards = form_forwards.unwrap_or(up.perp_cw());
-            let alignment = slot.last_movement_input.normalized_safe().dot(forwards);
-            // PlantObjectOnPlatform.ExitAbility: enterTurn (SlimeController
-            // EnterStop) needs `Sign2(alignment) * transform.localScale.x >= 0`
-            // and OnEnterAbility set localScale.x to -1 while facing right, so
-            // the stop is entered when the held direction opposes the facing.
-            let enter_stop = alignment.abs() >= Fix::from_f32(0.2)
-                && (alignment >= Fix::ZERO) != slot.facing_right;
-            slot.obs_state = if enter_stop { STATE_STOP } else { STATE_IDLE };
-            // The ability exits after this pass's SpriteAnimator, so the stop
-            // animation runs its STOP_TICKS + 1 passes from the next tick on;
-            // the held update_obs_state below still counts this one.
-            slot.state_ticks = if enter_stop { STOP_TICKS + 2 } else { 0 };
-            slot.obs_state_held_this_tick = true;
-        } else {
-            slot.base.up = Vec2::UP;
-            // onExitAbility assigns Player.Scale to the slime's hurtbox, and
-            // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
-            slot.set_ordinary_body_scale(slot.player_scale);
-            slot.restore_slime_radius();
-            slot.exit_to_fall(terrain!(self));
-        }
-    }
-
     fn tesla_cast_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
         self.scale_plant_form(index, data);
         let published_position = self.players[index].base.position;
@@ -15026,7 +14980,7 @@ impl RolloutWorld {
                 self.players[index].plant_cast.phase = 1;
                 self.players[index].plant_cast.ticks = 0;
             } else {
-                self.exit_engine_cast(index);
+                self.exit_form(index);
                 return;
             }
         }
@@ -15035,7 +14989,7 @@ impl RolloutWorld {
         if self.players[index].plant_cast.phase == 1
             && self.players[index].plant_cast.ticks > data.tesla.recover_ticks
         {
-            self.exit_engine_cast(index);
+            self.exit_form(index);
             return;
         }
         self.plant_form_radius(index);
@@ -46102,14 +46056,14 @@ mod tests {
         world.players[0].facing_right = true;
         world.players[0].last_movement_input = -Vec2::RIGHT;
 
-        world.exit_engine_cast(0);
+        world.exit_form(0);
 
         assert_eq!(world.players[0].obs_state, STATE_STOP);
         assert_eq!(world.players[0].state_ticks, STOP_TICKS + 2);
 
         world.players[0].set_active_form(&mut world.entities, ActiveAbility::Tesla);
         world.players[0].last_movement_input = Vec2::RIGHT;
-        world.exit_engine_cast(0);
+        world.exit_form(0);
         assert_eq!(world.players[0].obs_state, STATE_IDLE);
     }
 
