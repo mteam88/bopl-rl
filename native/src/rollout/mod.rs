@@ -14186,13 +14186,8 @@ impl RolloutWorld {
                 let destination = self.players[index].rewind.destination;
                 let preserved = self.players[index].timers[self.players[index].rewind.ability_slot];
                 let radius = self.players[index].base.radius + Fix::from_f32(0.05);
-                // PushCircleOutOfRoundedRects (RewindRecorder.cs:316).
-                self.remove_destroyed_colliders();
-                let position = push_circle_out_of_platforms(
-                    &self.platforms,
-                    self.players[index].base.position,
-                    radius,
-                );
+                // RewindRecorder.cs:316.
+                let position = self.push_circle_out_of_rounded_rects(self.players[index].base.position, radius);
                 let slot = &mut self.players[index];
                 slot.base.position = position;
                 slot.base.velocity = destination.velocity;
@@ -26663,6 +26658,52 @@ impl RolloutWorld {
             return None;
         }
         self.raycast_entity_row(entity, row, origin, direction).map(|hit| hit.near)
+    }
+
+    /// DetPhysics.PushCircleOutOfRoundedRects (DetPhysics.cs:1788-1824):
+    /// purges destroyed colliders, then moves a circle centre out of every
+    /// active rounded rect it overlaps, up to six passes. The reference divides
+    /// `vec / magnitude` even on the not-overlapping branch, where a centre
+    /// sitting exactly on a corner's rounding arc can give closest == pos
+    /// (magnitude zero): .NET throws DivideByZero there and the game would crash.
+    /// A rewind arrival hit that on 2026-09-20 (any-3, seed 137851958, map 2),
+    /// so a zero delta pushes straight up instead, as the overlapping branch does.
+    fn push_circle_out_of_rounded_rects(&mut self, mut position: Vec2, radius: Fix) -> Vec2 {
+        self.remove_destroyed_colliders();
+        for _ in 0..6 {
+            let mut changed = false;
+            for platform in self.platforms.iter().filter(|platform| platform.active) {
+                let shape = platform.collider;
+                let Ok(closest) = shape.closest_point(position) else {
+                    continue;
+                };
+                let delta = position - closest;
+                let magnitude = delta.length();
+                if shape.overlaps(position) {
+                    let direction = if magnitude > Fix::ZERO {
+                        (closest - position) / magnitude
+                    } else {
+                        note_zero_delta_push();
+                        Vec2::UP
+                    };
+                    position = closest + direction * radius;
+                    changed = true;
+                } else if magnitude < radius {
+                    let direction = if magnitude > Fix::ZERO {
+                        delta / magnitude
+                    } else {
+                        note_zero_delta_push();
+                        Vec2::UP
+                    };
+                    position = closest + direction * radius;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        position
     }
 
     /// DetPhysics.circleCastRoundedRect (DetPhysics.cs:1882-1904): purges
@@ -41686,12 +41727,12 @@ impl RolloutWorld {
     }
 }
 
-// Entries into the zero-delta branch of `push_circle_out_of_platforms`,
+// Entries into the zero-delta branch of `push_circle_out_of_rounded_rects`,
 // counted only in test builds.
 //
 // `delta == 0` means `closest_point` returned the centre itself. That is the
 // geometry the reference divides by zero on, and it is the whole reason
-// `push_circle_out_of_platforms` carries a fallback direction at all. A test
+// `push_circle_out_of_rounded_rects` carries a fallback direction at all. A test
 // that never enters the branch does not cover it, however green it looks, so
 // `a_centre_on_a_corner_arc_depenetrates_without_dividing_by_zero` reads this
 // counter to prove it reached the branch rather than passing vacuously.
@@ -41713,50 +41754,6 @@ fn take_zero_delta_pushes() -> u32 {
 
 #[cfg(not(test))]
 fn note_zero_delta_push() {}
-
-/// DetPhysics.PushCircleOutOfRoundedRects: moves a circle centre out of every
-/// active platform it overlaps, up to six passes. The reference divides
-/// `vec / magnitude` even on the not-overlapping branch, where a centre
-/// sitting exactly on a corner's rounding arc can give closest == pos
-/// (magnitude zero): .NET throws DivideByZero there and the game would crash.
-/// A rewind arrival hit that on 2026-09-20 (any-3, seed 137851958, map 2),
-/// so a zero delta pushes straight up instead, as the overlapping branch does.
-fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radius: Fix) -> Vec2 {
-    for _ in 0..6 {
-        let mut changed = false;
-        for platform in platforms.iter().filter(|platform| platform.active) {
-            let shape = platform.collider;
-            let Ok(closest) = shape.closest_point(position) else {
-                continue;
-            };
-            let delta = position - closest;
-            let magnitude = delta.length();
-            if shape.overlaps(position) {
-                let direction = if magnitude > Fix::ZERO {
-                    (closest - position) / magnitude
-                } else {
-                    note_zero_delta_push();
-                    Vec2::UP
-                };
-                position = closest + direction * radius;
-                changed = true;
-            } else if magnitude < radius {
-                let direction = if magnitude > Fix::ZERO {
-                    delta / magnitude
-                } else {
-                    note_zero_delta_push();
-                    Vec2::UP
-                };
-                position = closest + direction * radius;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-    position
-}
 
 #[cfg(test)]
 mod tests {
@@ -41873,7 +41870,7 @@ mod tests {
         // centre exactly on a corner's rounding arc is outside the collider,
         // yet closest_point returns the centre, so `delta` is zero and the
         // reference's `vec / magnitude` on the not-overlapping branch throws
-        // DivideByZero. push_circle_out_of_platforms must take the Vec2::UP
+        // DivideByZero. push_circle_out_of_rounded_rects must take the Vec2::UP
         // branch and push the centre out by exactly the circle's radius.
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
@@ -41891,7 +41888,7 @@ mod tests {
         // settle it on the arc's real normal, clear of the collider.
         let radius = Fix::from_f32(0.5);
         take_zero_delta_pushes();
-        let pushed = push_circle_out_of_platforms(&[platform.clone()], arc, radius);
+        let pushed = world.push_circle_out_of_rounded_rects(arc, radius);
         // This test is the project's only cover for the zero-delta branch, so
         // it has to prove it actually entered it. The geometry above is exact
         // in both backends - `closest_point(arc) == arc` is asserted, not
@@ -41905,10 +41902,7 @@ mod tests {
         );
         assert!(pushed.y > arc.y);
         assert!(!platform.collider.overlaps(pushed));
-        assert_eq!(
-            push_circle_out_of_platforms(&[platform], pushed, radius),
-            pushed
-        );
+        assert_eq!(world.push_circle_out_of_rounded_rects(pushed, radius), pushed);
     }
 
     #[test]
