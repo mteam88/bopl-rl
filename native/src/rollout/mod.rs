@@ -21325,10 +21325,18 @@ impl RolloutWorld {
             && self.smoke_clouds[cloud_index].position.y
                 < data::get().maps[self.map].lower_boundary()
         {
-            // SmokeCircle's DestroyIfOutsideSceneBounds also instantiates
-            // the two-updatable water splash (or, in space, the
-            // two-updatable UpEffect).
-            self.next_spawn_hierarchy += 2;
+            // SmokeCircle's DestroyIfOutsideSceneBounds instantiates the
+            // two-updatable water splash, or past the space floor its
+            // UpEffect, an unowned MineExplosion set on Camera_YMin
+            // (DestroyIfOutsideSceneBounds.cs:69-80, SmokeCircle.prefab).
+            let map = &data::get().maps[self.map];
+            if map.is_space() {
+                let cloud = self.smoke_clouds[cloud_index];
+                let position = Vec2::new(cloud.position.x, map.lower_boundary());
+                self.spawn_missile_explosion(position, cloud.owner, false, Fix::ONE, data);
+            } else {
+                self.next_spawn_hierarchy += 2;
+            }
             self.remove_smoke_cloud(cloud_index);
             return;
         }
@@ -34644,7 +34652,9 @@ impl RolloutWorld {
         // Below the water Grenade, Smoke and Mine instantiate the
         // two-updatable splash. Past the space floor or the sides the
         // grenade's UpEffect/XEffect is XGunExplosion, its own unowned
-        // detonation; Smoke's is a two-updatable animation. The other
+        // detonation; Smoke's is a two-updatable animation. Past the space
+        // floor a Mine's UpEffect is MineExplosion, set on Camera_YMin
+        // (DestroyIfOutsideSceneBounds.cs:69-80, Mine_0.prefab). The other
         // thrown items have no effect. An item instantiated this pass is
         // registered for the next one (Updater.RegisterUpdatable), so its
         // DestroyIfOutsideSceneBounds first runs after the older updatables.
@@ -34664,6 +34674,9 @@ impl RolloutWorld {
                     Vec2::new(x, item.position.y)
                 };
                 self.spawn_grenade_explosion(position, item.owner, false, Fix::ONE, data);
+            } else if ability == ABILITY_MINE && map.is_space() {
+                let position = Vec2::new(item.position.x, map.lower_boundary());
+                self.spawn_missile_explosion(position, item.owner, false, Fix::ONE, data);
             } else if matches!(ability, ABILITY_GRENADE | ABILITY_SMOKE | ABILITY_MINE) {
                 self.next_spawn_hierarchy += 2;
             }
