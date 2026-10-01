@@ -1364,6 +1364,16 @@ impl RolloutWorld {
                 // The attached end stays where the last LateUpdateSim put it
                 // (RopeAttachment.cs:166-178): DetPhysics simulates the rope
                 // from there, not from where the older hole moved this pass.
+                // A rope stretched past its break length lets go of the hole
+                // (RopeAttachment.cs:143-150).
+                let physics = &self.ropes[index].physics;
+                if (0..physics.count.saturating_sub(2)).any(|segment| {
+                    (physics.segment[segment] - physics.segment[segment + 1]).length_squared()
+                        > PLATFORM_BREAK_STRETCH
+                }) {
+                    self.deattach_rope(index, true);
+                    self.ropes[index].black_hole = None;
+                }
                 continue;
             }
             // RopeAttachment on an object runs in rope_parents_update.
