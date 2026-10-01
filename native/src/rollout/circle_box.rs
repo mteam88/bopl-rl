@@ -1381,6 +1381,7 @@ impl RolloutWorld {
                     return;
                 }
                 let kill = match other {
+                    Part::Body(_) => self.lethal_roll(other, collider).map(|killer| (killer, CAUSE_OTHER)),
                     Part::Spike(_) => Some((0, CAUSE_OTHER)),
                     Part::Node(node) if self.tesla_nodes[node].lethal => Some((0, CAUSE_OTHER)),
                     Part::Explosion(_) | Part::Line(_) => self.blast_kill(other, Some(rock), self.players[rock].base.id),
@@ -1406,13 +1407,21 @@ impl RolloutWorld {
                 };
                 self.run_callback_hit(CallbackHit::Pickup { pickup, taker, body }, data);
             }
-            // Arrow.OnCollide lands on a StickTo layer, but not on a
-            // Player-layer collider without a BoplBody (Arrow.cs:87-96): of
-            // the Player-layer parts only a Rock form has one.
+            // Arrow.OnCollide on a StickTo layer Drops the arrow out of a
+            // Magnet's hold, then lands, but not on a Player-layer collider
+            // without a BoplBody (Arrow.cs:87-96): of the Player-layer parts
+            // only a Rock form has one.
             Part::Arrow(arrow) => {
                 let layer = self.part_layer(other, data);
-                if ARROW_STICK_TO & (1 << layer) != 0 && (layer != LAYER_PLAYER || matches!(other, Part::Rock(_))) {
+                if ARROW_STICK_TO & (1 << layer) == 0 || !self.arrows[arrow].active {
+                    return;
+                }
+                if layer != LAYER_PLAYER || matches!(other, Part::Rock(_)) {
                     self.arrow_land(arrow, None, Some(other), data);
+                } else {
+                    let state = &mut self.arrows[arrow];
+                    state.magnet_holder = None;
+                    state.magnet_hold_ticks = -1;
                 }
             }
             Part::Hook(rope) => {
@@ -1499,6 +1508,10 @@ impl RolloutWorld {
                     // Nor does a SpikeAttack's.
                     Part::Spike(_) => (0, CAUSE_OTHER),
                     Part::Rock(rock) => (self.players[rock].base.id, CAUSE_OTHER),
+                    Part::Body(_) => match self.lethal_roll(other, collider) {
+                        Some(killer) => (killer, CAUSE_OTHER),
+                        None => return,
+                    },
                     Part::DuplicatedRock(rock) => {
                         let killer = player_id(&self.players, self.duplicated_rocks[rock].owner);
                         let cause = if self.players[player].base.id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER };
@@ -1534,6 +1547,10 @@ impl RolloutWorld {
                     }
                     Part::Spike(_) => (0, CAUSE_OTHER),
                     Part::Node(node) if self.tesla_nodes[node].lethal => (0, CAUSE_OTHER),
+                    Part::Body(_) => match self.lethal_roll(other, collider) {
+                        Some(killer) => (killer, if clone_id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER }),
+                        None => return,
+                    },
                     Part::DuplicatedRock(rock) => {
                         let killer = player_id(&self.players, self.duplicated_rocks[rock].owner);
                         (killer, if clone_id == killer { CAUSE_ACCIDENT } else { CAUSE_OTHER })
@@ -1550,6 +1567,18 @@ impl RolloutWorld {
             }
             _ => {}
         }
+    }
+
+    /// The player whose Roll form's circle a Player-layer collider is, while
+    /// its Ability KillPlayersOnContact: Roll sets it on release and clears
+    /// it only on the next OnEnterAbility, so a Roll an earlier callback
+    /// killed still kills (Roll.cs:187, 527, PlayerCollision.cs:410-445).
+    fn lethal_roll(&self, other: Part, collider: Option<usize>) -> Option<u32> {
+        let Part::Body(player) = other else {
+            return None;
+        };
+        let slot = &self.players[player];
+        (collider == Some(slot.roll_entity) && slot.roll.lethal).then_some(slot.base.id)
     }
 
     /// BlackHole.OnCollide with a collider of a narrow-phase group. It reads

@@ -4391,11 +4391,6 @@ enum CallbackHit {
     TackWall { item: usize, normal: Vec2 },
     /// FlammableSmoke.OnCollide with an igniteFlammables Explosion.
     SmokeIgnite { cloud: usize, entity: usize },
-    /// A lethal Roll's target-side callback on a collider that is no player:
-    /// an arrow, a missile, a grenade or a mine.
-    FormTarget { entity: usize, caster: usize },
-    /// The lethal Roll's own PlayerCollision.OnCollide with a pair's collider.
-    RollerHit { roller: usize, entity: usize },
     /// PlayerCollision.OnCollide with a lethal hitbox.
     Kill { player: usize, killer: u32, cause: u32, slime: bool },
     /// Missile.OnCollide with anything but a RigidBodyAffector or Rope.
@@ -7997,9 +7992,6 @@ impl RolloutWorld {
         self.thrown_item_pair_contacts(data);
         self.box_box_group(data);
         self.sync_guided_missile_rows();
-        for roller in 0..self.players.len() {
-            self.roll_hurtbox_contacts(roller, data);
-        }
         // DetPhysics.SyncGameObject: each child's FixTransform takes its
         // collider's pose before the collision callbacks (DetPhysics.cs:3172-3192).
         for spike in &mut self.spike_attacks {
@@ -31874,32 +31866,6 @@ impl RolloutWorld {
         }
     }
 
-    #[inline]
-    fn circle_entity_contact(&self, query: Circle, entity: usize) -> Option<Contact> {
-        let row = self.entities[entity];
-        // DetPhysics.IsActive: the object is active and its collider enabled.
-        if !self.collides(entity) {
-            return None;
-        }
-        if row.kind == 0 {
-            crate::physics::contact::circle_circle(
-                query,
-                Circle {
-                    center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                    radius: Fix::from_raw(row.radius),
-                },
-            )
-        } else {
-            crate::physics::contact::circle_box(query, Self::row_box(&self.entity_inverse_extents, entity, row))
-        }
-    }
-
-
-    #[inline]
-    fn circle_overlaps_entity(&self, query: Circle, entity: usize) -> bool {
-        self.circle_entity_contact(query, entity).is_some()
-    }
-
     /// `!attachedGround.isActiveAndEnabled` on a ground still stored: a Blink
     /// tunnel or a teleport SetActive(false)s it, while DestroyFix only flags
     /// it destroyed and leaves it active (Updater.cs:89-110).
@@ -33888,10 +33854,6 @@ impl RolloutWorld {
             CallbackHit::ArrowKill { victim, owner, arrow, slime } => self.arrow_kill(victim, owner, arrow, slime),
             CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
             CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
-            CallbackHit::FormTarget { entity, caster } => {
-                self.form_target_on_collide(entity, caster, Vec2::ZERO, PassPhase::Callback, data);
-            }
-            CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
             CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
             CallbackHit::MjolnirWall { item, wall } => self.mjolnir_wall_callback(item, wall, data),
             CallbackHit::TackWall { item, normal } => self.tack_wall_callback(item, normal),
@@ -35845,87 +35807,6 @@ impl RolloutWorld {
                 st.scale_sum += amount;
             }
             st.scale_last_frame = circle.scale;
-        }
-    }
-
-    /// The lethal Roll hurtbox's DetPhysics pairs. Each pair queues both
-    /// PlayerCollision callbacks in its Circle/Circle or Circle/Box place,
-    /// the circle's (the Roll's) first unless a Circle/Circle partner sorts
-    /// earlier (DetPhysics.cs:2405-2437, 3197-3199).
-    fn roll_hurtbox_contacts(&mut self, roller: usize, data: &data::RolloutData) {
-        if self.players[roller].active != ActiveAbility::Roll
-            || !self.players[roller].roll.lethal
-            || !self.playable(roller)
-        {
-            return;
-        }
-        let form = self.players[roller].forms[self.players[roller].active_slot];
-        let query = Circle { center: form.synced.position, radius: form.circle_radius };
-        let roller_entity = self.players[roller].roll_entity;
-        let roller_id = self.players[roller].base.id;
-        let roller_rank = self.player_sweep_rank(roller);
-        for entity in 0..self.entities.len() {
-            let row = self.entities[entity];
-            if entity == roller_entity
-                || row.kind > 1
-                || !self.collides(entity)
-                || data.roll.collision_mask & (1u32 << row.layer) == 0
-                || !self.circle_overlaps_entity(query, entity)
-            {
-                continue;
-            }
-            let target = if let Some(target) = self.players.iter().position(|slot| {
-                self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity
-            }) {
-                let slime = self.players[target].active == ActiveAbility::None;
-                CallbackHit::Kill { player: target, killer: roller_id, cause: CAUSE_OTHER, slime }
-            } else if let Some(clone) = self
-                .abilityless_clones
-                .iter()
-                .position(|clone| clone.active && clone.entity == Some(entity))
-            {
-                CallbackHit::CloneKill { clone, killer: roller_id, cause: CAUSE_OTHER }
-            } else {
-                CallbackHit::FormTarget { entity, caster: roller }
-            };
-            let own = CallbackHit::RollerHit { roller, entity };
-            let other = sweep_rank(&self.entities, self.swept_min(Swept::Row(entity)), Some(entity));
-            let (later, earlier) = sweep_pair(roller_rank, other);
-            let key = (if row.kind == 0 { GROUP_CC } else { GROUP_CB }, later, earlier);
-            let roller_first = row.kind == 1 || earlier == roller_rank;
-            let (first, second) = if roller_first { (own, target) } else { (target, own) };
-            self.scratch.callback_hits.push((key, first));
-            self.scratch.callback_hits.push((key, second));
-        }
-    }
-
-    /// The Roll's own PlayerCollision.OnCollide with one of its pairs: a Rock
-    /// or another lethal Roll, or a projectile or explosion, kills it
-    /// (PlayerCollision.cs:352-445).
-    fn roller_hit(&mut self, roller: usize, entity: usize) {
-        if !self.playable(roller) || self.players[roller].active != ActiveAbility::Roll {
-            return;
-        }
-        let roller_id = self.players[roller].base.id;
-        if let Some(target) = self.players.iter().position(|slot| {
-            self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity
-        }) {
-            if self.players[target].active == ActiveAbility::Rock
-                || (self.players[target].active == ActiveAbility::Roll && self.players[target].roll.lethal)
-            {
-                let killer = self.players[target].base.id;
-                self.kill(roller, killer, CAUSE_OTHER, true, true);
-            }
-            return;
-        }
-        let row = self.entities[entity];
-        if row.flags & E_DESTROYED != 0 || !matches!(row.layer, LAYER_PROJECTILE | 16 | 18) {
-            return;
-        }
-        let (killer, can_hurt_owner, cause) = self.projectile_credit(entity);
-        if killer != roller_id || can_hurt_owner {
-            let cause = if killer == roller_id { CAUSE_ACCIDENT } else { cause };
-            self.kill(roller, killer, cause, true, true);
         }
     }
 
