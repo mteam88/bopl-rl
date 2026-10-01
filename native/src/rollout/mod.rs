@@ -2525,8 +2525,6 @@ pub struct AbilitylessClone {
     /// The pass this clone left the scene bounds in its own update: an
     /// older Updater on that pass still found it alive.
     pub drowned_tick: u32,
-    /// The Updater pass in which the clone's updaters last took their turn.
-    pub updater_ran_tick: Option<u32>,
     /// Its PlayerCollision.wasKilledThisFrame (PlayerCollision.cs:449-470).
     pub was_killed_tick: Option<u32>,
     /// The pass a callback's killPlayer DestroyFix'd the clone, which leaves
@@ -4269,7 +4267,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 1 | 4 | 6 | 9 | 10 | 11 | 13 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
+    matches!(kind, 1 | 4 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
 }
 
 /// The place just after `key`.
@@ -7752,7 +7750,9 @@ impl RolloutWorld {
         let first_clone = self
             .abilityless_clones
             .iter()
-            .filter(|clone| clone.active && clone.updater_ran_tick != Some(self.tick))
+            .filter(|clone| {
+                clone.active && !self.updater_passed(self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base))
+            })
             .map(|clone| clone.hierarchy_base)
             .min()
             .unwrap_or(u32::MAX);
@@ -7996,7 +7996,7 @@ impl RolloutWorld {
             }
         }
         if has_clones {
-            self.abilityless_clones_tick();
+            self.abilityless_clones_tick(data, updater_dt);
         }
         if has(ABILITY_GRAPPLING_HOOK) && first_clone < u32::MAX {
             self.grapple_ropes_update(first_clone..u32::MAX);
@@ -8612,7 +8612,7 @@ impl RolloutWorld {
             }
         }
         for (i, clone) in self.abilityless_clones.iter().enumerate() {
-            if clone.active && clone.updater_ran_tick != Some(tick) {
+            if clone.active {
                 push(self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base), 14, i);
             }
             if clone.blink_tunnel_active {
@@ -8731,7 +8731,6 @@ impl RolloutWorld {
                 2 | 3 | 18 => self.thrown_items[index].updater_ran_tick = tick,
                 7 => self.ropes[index].grapple_ran_tick = tick,
                 8 => self.ropes[index].rope_ran_tick = tick,
-                14 => self.abilityless_clones[index].updater_ran_tick = tick,
                 // A pickup newer than a live ScaleChanger keeps its turn
                 // behind it.
                 5 => {
@@ -27272,7 +27271,6 @@ impl RolloutWorld {
             eating: EatingState::default(),
             pass_start: (u32::MAX, Vec2::ZERO),
             drowned_tick: u32::MAX,
-            updater_ran_tick: None,
             was_killed_tick: None,
             destroyed_tick: None,
         };
@@ -36813,7 +36811,7 @@ impl RolloutWorld {
     /// The clones' PlayerPhysics and SlimeController.UpdateSim in hierarchy
     /// order: the first clone to update reports the player's position, and a
     /// clone may fill a slot freed below an older one.
-    fn abilityless_clones_tick(&mut self) {
+    fn abilityless_clones_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         updater_order(&mut order, &self.abilityless_clones, |clone| self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base));
         for clone in &mut self.abilityless_clones {
@@ -36822,8 +36820,11 @@ impl RolloutWorld {
             }
         }
         for &clone_index in &order {
-            if self.abilityless_clones[clone_index].updater_ran_tick != Some(self.tick) {
-                self.abilityless_clones[clone_index].updater_ran_tick = Some(self.tick);
+            let clone = &self.abilityless_clones[clone_index];
+            let key = self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base);
+            if clone.active && !self.updater_passed(key) {
+                self.run_spawned_before(data, updater_dt, key);
+                self.updater_take_turn(key);
                 self.abilityless_clone_update_tagged(clone_index);
             }
         }
