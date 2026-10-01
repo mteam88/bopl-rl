@@ -4087,6 +4087,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::BlackHole
             | ActiveAbility::Drill
             | ActiveAbility::Beam
+            | ActiveAbility::Roll
     )
 }
 
@@ -12786,7 +12787,7 @@ impl RolloutWorld {
             // An inactive ground, such as a tunnelled wall, is still
             // attachedGround, so UnGround lifts the body off its surface.
             UngroundBody::Form(&mut self.players[index]).unground(&self.platforms, self.tick, true);
-            self.exit_roll(index, false, data);
+            self.exit_form(index);
             return;
         }
 
@@ -12800,7 +12801,7 @@ impl RolloutWorld {
                 if slot.roll.jump_button_has_been_up && jump_down {
                     slot.base
                         .jump_with_strength(&self.platforms, data.roll.constants.jump_strength);
-                    self.exit_roll(index, false, data);
+                    self.exit_form(index);
                     return;
                 }
             } else {
@@ -12810,7 +12811,7 @@ impl RolloutWorld {
                     let velocity = right * slot.roll.grounded_speed * Fix::from_f32(0.75);
                     UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
                     slot.base.velocity = velocity;
-                    self.exit_roll(index, false, data);
+                    self.exit_form(index);
                     return;
                 }
             }
@@ -12821,7 +12822,7 @@ impl RolloutWorld {
             if charged {
                 self.players[index].roll.waiting_to_release = true;
             } else if self.players[index].base.grounded {
-                self.exit_roll(index, true, data);
+                self.exit_form_with(index, ExitInfo { just_landed: true, ..ExitInfo::default() });
                 return;
             } else {
                 let slot = &mut self.players[index];
@@ -12833,7 +12834,7 @@ impl RolloutWorld {
             }
         }
         if self.players[index].roll.time_since_release > data.roll.dash_time {
-            self.exit_roll(index, false, data);
+            self.exit_form(index);
             return;
         }
         if !self.players[index].roll.has_charged
@@ -12907,11 +12908,11 @@ impl RolloutWorld {
         .expect("valid Roll gravity constants");
         self.players[index].base.collision_rays(terrain!(self));
         if self.players[index].base.grounded && short {
-            self.exit_roll(index, true, data);
+            self.exit_form_with(index, ExitInfo { just_landed: true, ..ExitInfo::default() });
             return;
         }
         if short && self.players[index].base.velocity.y < Fix::ZERO {
-            self.exit_roll(index, false, data);
+            self.exit_form(index);
         }
     }
 
@@ -13051,68 +13052,6 @@ impl RolloutWorld {
             self.players[index].base.align(&self.platforms[blocking]);
             speed = (movement.abs() - allowed.abs()) * Fix::from_int(sign);
         }
-    }
-
-    fn exit_roll(&mut self, index: usize, just_landed: bool, data: &data::RolloutData) {
-        let grounded = self.players[index].base.grounded;
-        let ground = self.players[index].base.ground;
-        let grounded_speed = (self.players[index].base.velocity
-            + self.players[index].base.external_velocity)
-            .length();
-        // Ability.ExitAbility publishes the form's own collider position.
-        let form_position = self.players[index].base.position;
-        let mut exit_position = form_position;
-        if grounded
-            && let Some(platform) =
-                ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
-        {
-            // SyncPhysicsTo(AbilityExitInfo) places the slime at the form's
-            // own perimeter coordinate and radius (PlayerPhysics.cs:563);
-            // Roll's radius-adjusted exitInfo.position is only read airborne.
-            let base = &self.players[index].base;
-            exit_position = platform.surface.position(base.local, base.radius);
-        }
-        let slot = &mut self.players[index];
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        // Roll.ExitAbility leaves Ability.KillPlayersOnContact unchanged on
-        // the now-inactive prefab; the next OnEnterAbility clears it.
-        slot.base.constants = data.player.constants.clone();
-        slot.set_ordinary_body_scale(slot.player_scale);
-        slot.restore_slime_radius();
-        slot.base.rotation = Fix::ZERO;
-        if grounded {
-            // Roll.ExitAbility publishes |PlayerBody.Velocity|, not the
-            // private Roll travel speed or the pre-entry slime speed.
-            slot.base.grounded_speed = grounded_speed;
-            slot.base.position = exit_position;
-            if let Some(platform) =
-                ground.and_then(|id| self.platforms.iter().find(|platform| platform.id == id))
-            {
-                if let Ok(local) = platform
-                    .surface
-                    .local_position(exit_position, slot.base.radius)
-                {
-                    slot.base.local = local;
-                }
-                slot.base.align(platform);
-            }
-            // Roll runs after the slime's OldUpdate and SpriteAnimator: the
-            // state switch waits for the next pass, and a landing animation
-            // counts its LAND_TICKS + 1 passes from there.
-            slot.obs_state = STATE_IDLE;
-            slot.state_ticks = 0;
-            slot.obs_state_held_this_tick = true;
-            if just_landed {
-                slot.begin_land(true);
-            }
-        } else {
-            slot.base.position = exit_position;
-            slot.base.up = Vec2::UP;
-            slot.base.grounded = false;
-            slot.exit_to_fall(terrain!(self));
-        }
-        slot.reported_position = form_position;
-        slot.reported_tick = self.tick;
     }
 
     fn meteor_time_stop_tick(&mut self, index: usize, data: &data::RolloutData) {
@@ -14154,6 +14093,27 @@ impl RolloutWorld {
                 slot.base.rotation = Fix::ZERO;
                 info.take_body(&slot.base);
                 info.facing_right = slot.beam.entry_facing_right;
+            }
+            ActiveAbility::Roll => {
+                // Roll.ExitAbility (Roll.cs:202-236), which leaves
+                // KillPlayersOnContact for the next OnEnterAbility to clear.
+                // A grounded packet's position, read only once its ground has
+                // died, sits PlayerAbilityRadiusDiff inside the form's.
+                let tick = self.tick;
+                let slot = &mut self.players[index];
+                slot.base.rotation = Fix::ZERO;
+                info.take_body(&slot.base);
+                info.grounded_speed = (slot.base.velocity + slot.base.external_velocity).length();
+                info.facing_right = slot.facing_right;
+                let position = slot.base.position;
+                let normal = (slot.base.attached_ground(&self.platforms).map(|p| &p.surface))
+                    .or_else(|| slot.dead_ground(tick))
+                    .map(|surface| surface.normal(position));
+                if slot.base.grounded
+                    && let Some(normal) = normal
+                {
+                    info.position = position - normal * (slot.base.radius - slot.slime_radius);
+                }
             }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
@@ -44355,7 +44315,7 @@ mod tests {
         world.players[0].base.external_velocity = Vec2::ZERO;
         world.players[0].base.grounded_speed = Fix::from_int(99);
 
-        world.exit_roll(0, false, data::get());
+        world.exit_form(0);
 
         assert_eq!(world.players[0].base.grounded_speed, Fix::from_int(5));
     }
