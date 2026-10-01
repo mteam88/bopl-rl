@@ -969,9 +969,16 @@ impl RolloutWorld {
     /// the body it reads, an abilityless clone's PlayerBody has moved the
     /// rope end it holds, a ScaleChanger has resized its platform, a hammer
     /// has killed and a TeleportIndicator has detached its holder.
+    /// They run in the order Updater lists them: Rope.UpdateSim (the reel, the timer
+    /// and the offscreen drop), the hook's RopeAttachment (or the separate
+    /// RopeAttachment prefab WebSwing instantiates after the Rope), then the
+    /// RopeHook (Rope.cs:171-236, HookshotInstant.cs:128-132,
+    /// WebSwing.cs:149,159).
     pub(super) fn rope_turn(&mut self, index: usize) {
         self.grapple_rope_step(index);
         self.rope_step(index);
+        self.grapple_hook_step(index);
+        self.rope_attachment_step(index);
     }
 
     fn grapple_rope_step(&mut self, rope: usize) {
@@ -1043,9 +1050,23 @@ impl RolloutWorld {
                     }
                 }
             }
-            // The flying hook's RopeAttachment updates between Rope and
-            // RopeHook. A rope stretched past its break length is let go and
-            // the hook destroyed; the Rope keeps reeling out until it times out.
+        }
+    }
+
+    /// The flying hook's RopeAttachment, then its RopeHook: the hook prefab
+    /// lists them after the Rope (RopeHook.prefab: RopeAttachment 1,
+    /// DPhysicsCircle 2, RopeHook 3). A rope stretched past its break length
+    /// is let go and the hook destroyed; the Rope keeps reeling out until it
+    /// times out.
+    fn grapple_hook_step(&mut self, rope: usize) {
+        let source = &data::get().ropes;
+        for index in [rope] {
+            if !self.ropes[index].physics.enabled
+                || self.ropes[index].appended > self.tick
+                || self.ropes[index].hook_entity.is_none()
+            {
+                continue;
+            }
             let physics = &self.ropes[index].physics;
             if self.ropes[index].hook_active
                 && (0..physics.count - 2).any(|segment| {
@@ -1295,17 +1316,13 @@ impl RolloutWorld {
         rope.physics.detach(top);
     }
 
-    /// Rope.UpdateSim's own part and a platform or Black Hole
-    /// RopeAttachment's UpdateSim for rope `rope`.
+    /// Rope.UpdateSim's timer and its offscreen drop, after the reel.
     fn rope_step(&mut self, rope: usize) {
-        let stopped = self.player_time_scale < Fix::from_f32(0.01);
-        let mut moved_platform = false;
         let water = data::get().maps[self.map].scene_water_height();
         for index in [rope] {
             if !self.ropes[index].physics.enabled || self.ropes[index].appended > self.tick {
                 continue;
             }
-            let hierarchy = self.ropes[index].hierarchy;
             if self.ropes[index].physics.time_since_hook_arrived >= Fix::ZERO {
                 self.ropes[index].physics.time_since_hook_arrived += DT * self.player_time_scale;
             }
@@ -1319,8 +1336,19 @@ impl RolloutWorld {
                 || offscreen(last, water, Fix::from_int(2))
             {
                 self.disable_rope(index);
+            }
+        }
+    }
+
+    /// A Black Hole's or platform's RopeAttachment on rope `rope`.
+    fn rope_attachment_step(&mut self, rope: usize) {
+        let stopped = self.player_time_scale < Fix::from_f32(0.01);
+        let mut moved_platform = false;
+        for index in [rope] {
+            if !self.ropes[index].physics.enabled || self.ropes[index].appended > self.tick {
                 continue;
             }
+            let hierarchy = self.ropes[index].hierarchy;
             if let Some(hole_index) = self.ropes[index].black_hole {
                 if hole_index >= self.black_holes.len()
                     || !self.black_holes[hole_index].active
