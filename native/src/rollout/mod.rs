@@ -41713,7 +41713,11 @@ impl RolloutWorld {
                 // SlimeController.Spawn pops the clone upward at 1/4 jump
                 // strength, then reenables simulation and input. It keeps the
                 // external velocity overlap shoves gave the body during the
-                // animation.
+                // animation, and sets ExtraLife back to NoRevive
+                // (SlimeController.cs:567-585).
+                let owner = slot.owner;
+                self.players[owner].extra_life = REVIVE_NONE;
+                let slot = &mut self.players[index];
                 slot.base.velocity =
                     Vec2::UP * data.player.constants.jump_strength * Fix::from_f32(0.25);
                 slot.base.grounded = false;
