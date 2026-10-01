@@ -2092,14 +2092,6 @@ pub struct BowState {
     /// Remaining ticks of the fireGround/fireAir animation before exit.
     pub fire_ticks_left: u32,
     pub loading_frame: u32,
-    /// The form's FixTransform rotation. `body.up = inputVector`
-    /// (BowTransform.cs:246) sits after Fire in UpdateSim, so the firing pass
-    /// never applies its own aim and every later pass leaves this alone:
-    /// the bow keeps the orientation the last pre-shot pass wrote. Zero from
-    /// OnEnterAbility (BowTransform.cs:102) and from the form's own exits
-    /// (BowTransform.cs:119, 225); an exit straight to Ability.ExitAbility
-    /// leaves it, and the inactive form's box keeps syncing it.
-    pub form_rotation: Fix,
 }
 
 /// BounceBall.cs state for the Rock player form. The rigid body is kept here
@@ -11933,6 +11925,9 @@ impl RolloutWorld {
                         // synced hurtbox.
                         let slot = &mut self.players[index];
                         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
+                        // OnEnterAbility turns the body to zero after the
+                        // hurtbox took SyncPhysicsTo's pose (BowTransform.cs:86-102).
+                        slot.base.set_rotation(Fix::ZERO);
                         self.aim_form_entry_tail(index);
                         let slot = &mut self.players[index];
                         // Ability.UpdateSim publishes the body SyncPhysicsTo
@@ -13886,7 +13881,6 @@ impl RolloutWorld {
                 // leaves groundedLocalPosition as it came.
                 let slot = &mut self.players[index];
                 slot.base.set_rotation(Fix::ZERO);
-                slot.bow.form_rotation = Fix::ZERO;
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
                 let local = info.local;
                 info.take_body(&slot.base);
@@ -14182,9 +14176,6 @@ impl RolloutWorld {
         // `body.rotation = 0`: the FixTransform setter rebuilds up too.
         let slot = &mut self.players[index];
         slot.base.set_rotation(Fix::ZERO);
-        if slot.active == ActiveAbility::Bow {
-            slot.bow.form_rotation = Fix::ZERO;
-        }
         let aim = match slot.active {
             ActiveAbility::Bow => slot.bow.aim,
             ActiveAbility::Magnet => slot.magnet.aim,
@@ -30477,12 +30468,7 @@ impl RolloutWorld {
                 if self.release_grounded_blink_player(victim) {
                     self.players[victim].ground_destroyed = None;
                 }
-                // AttachToGround aligns the swallowed form's own body,
-                // which for a Bow is the rotation its box reads.
                 let slot = &mut self.players[victim];
-                if slot.active == ActiveAbility::Bow {
-                    slot.bow.form_rotation = slot.base.rotation();
-                }
                 if slot.active == ActiveAbility::BlackHole {
                     slot.black_hole_cast.collider_up = slot.base.up();
                     slot.black_hole_cast.collider_rotation = slot.base.rotation();
@@ -32195,9 +32181,9 @@ impl RolloutWorld {
         // UpdateSim. It is skipped once the arrow is away, so the form's
         // rotation latches on the pass before the shot. It follows Move, so
         // it turns back a form that DropPlatformTest's exit just zeroed.
-        let b = &mut self.players[index].bow;
-        if !b.has_fired {
-            b.form_rotation = b.aim.perp_cw().normalized_angle();
+        let slot = &mut self.players[index];
+        if !slot.bow.has_fired {
+            slot.set_form_up(slot.bow.aim);
         }
         if dropped {
             return;
@@ -32243,7 +32229,7 @@ impl RolloutWorld {
         // 184), which this pass's aim has not yet turned. Its first
         // Arrow.UpdateSim turns it to the flight, unless a Teleport or a
         // Blink tunnel takes it first.
-        let rotation = slot.bow.form_rotation;
+        let rotation = slot.base.rotation();
         self.spawn_arrow(
             owner,
             ring,
@@ -41223,7 +41209,6 @@ impl RolloutWorld {
             let in_ability = slot.active != ActiveAbility::None;
             let anticipating = slot.active == ActiveAbility::Platform
                 && slot.platform.phase == PLATFORM_ANTICIPATION;
-            let bow_form_rotation = slot.bow.form_rotation;
             let push_form = slot.forms[slot.active_slot];
             // Ability.ExitAbility deactivates the ability body where it
             // ended (Ability.cs:151-152) and DetPhysics still syncs that
@@ -41361,7 +41346,11 @@ impl RolloutWorld {
                 let flags = form_box_flags(alive && bowing);
                 if sync_form_row(bow_box, flags, bowing, entered == bow_e, slot.base.id) {
                     let center = if alive && bowing { synced } else { exit_position };
-                    let rotation = bow_form_rotation;
+                    let rotation = if bowing {
+                        slot.base.rotation()
+                    } else {
+                        slot.forms[slot.entity_slot(bow_e)].pose.orientation.rotation()
+                    };
                     let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[bow_e]);
                     bow_box.x = center.x.raw();
                     bow_box.y = center.y.raw();
