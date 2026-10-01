@@ -26974,7 +26974,7 @@ impl RolloutWorld {
                     self.ability_exit(i, info);
                     self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active != ActiveAbility::None {
-                    self.exit_form_for_freeze(i, data);
+                    self.exit_form_for_freeze(i);
                     self.players[i].base.position = position;
                     self.players[i].reported_position = position;
                     freeze(&mut self.players[i]);
@@ -31157,31 +31157,21 @@ impl RolloutWorld {
             if self.players[victim].active != ActiveAbility::None
                 || self.players[victim].base.dash.active
             {
-                self.exit_form_for_freeze(victim, data);
+                self.exit_form_for_freeze(victim);
             }
             self.begin_freeze(victim, data.freeze.freeze_seconds);
         }
     }
 
-    fn exit_form_for_freeze(&mut self, victim: usize, data: &data::RolloutData) {
-        let position = self.players[victim].base.position;
-        self.exit_form_for_freeze_at(victim, position, Vec2::ZERO, Vec2::ZERO, data);
-    }
-
-    fn exit_form_for_freeze_at(
-        &mut self,
-        victim: usize,
-        position: Vec2,
-        velocity: Vec2,
-        external_velocity: Vec2,
-        data: &data::RolloutData,
-    ) {
+    /// FreezeRayGun calls the form's Ability.ExitAbility directly with a
+    /// default packet holding only the form position and facing right
+    /// (FreezeRayGun.cs:128-132); the form's own ExitAbility does not run.
+    /// EnterFall's zero-velocity rays then miss the surface Bow's discarded
+    /// grounding stood on; the slime attaches in its later PlayerPhysics pass.
+    fn exit_form_for_freeze(&mut self, victim: usize) {
         let was_bow = self.players[victim].active == ActiveAbility::Bow;
         let deferred = was_bow && self.players[victim].base.grounded;
         let slot = &mut self.players[victim];
-        // FreezeRayGun calls Ability.ExitAbility directly with a default
-        // packet containing only the form position and facing-right flag.
-        // The concrete form's normal exit callback does not run.
         if matches!(
             slot.active,
             ActiveAbility::Freeze
@@ -31216,29 +31206,11 @@ impl RolloutWorld {
                 throw.collider_basis = Vec2::angle(slot.base.rotation);
             }
         }
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.dash.active = false;
-        slot.set_ordinary_body_scale(slot.player_scale);
-        slot.restore_slime_radius();
-        // The slime's own PlayerPhysics never took the form's movement
-        // constants (MachoThrow2 has its own).
-        slot.base.constants = data.player.constants.clone();
-        slot.base.position = position;
-        slot.base.velocity = velocity;
-        slot.base.external_velocity = external_velocity;
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
-        slot.base.grounded = false;
-        slot.facing_right = true;
-        // EnterFall issues its zero-velocity landing rays after the default
-        // exit packet has discarded Bow's grounding information. They do not
-        // reach the old surface; the restored slime attaches in its later
-        // PlayerPhysics pass instead.
-        slot.exit_to_fall(terrain!(self));
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
+        let position = slot.base.position;
+        self.ability_exit(victim, ExitInfo { position, facing_right: true, ..ExitInfo::default() });
         if deferred {
-            slot.freeze_form_exit_tick = self.tick;
+            self.players[victim].freeze_form_exit_tick = self.tick;
         }
     }
 
