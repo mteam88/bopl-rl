@@ -568,12 +568,14 @@ impl RolloutWorld {
             let layer = self.part_layer(part, data);
             for wall in 0..self.platforms.len() {
                 // SameCompositeAs: a child never meets its own platform. A wall
-                // destroyed before this pass left in RemoveDestroyedColliders.
+                // meets parts only while DetPhysics.IsActive, which a wall
+                // destroyed before this pass also fails, having left in
+                // RemoveDestroyedColliders (DetPhysics.cs:1658-1665, 2731).
                 // SortAndSweep pairs only layers the Physics2D matrix lets
                 // collide (DetPhysics.cs:2183).
-                let row = &self.entities[self.platform_entities[wall]];
-                if !self.platforms[wall].active
-                    || row.flags & E_DESTROYED != 0
+                let entity = self.platform_entities[wall];
+                let row = &self.entities[entity];
+                if !self.collides(entity)
                     || !data.layers_collide(layer, row.layer)
                     || self.part_composite(part) == Some(wall)
                     || !self.wall_swept(wall, bounds)
