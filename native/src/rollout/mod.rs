@@ -4328,7 +4328,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 40)
+    matches!(kind, 0 | 1 | 2 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 32 | 40)
 }
 
 /// The place just after `key`.
@@ -7891,7 +7891,7 @@ impl RolloutWorld {
         let deferred_spikes = self.spike_attacks_tick(data, updater_dt);
         self.engines_tick(data, updater_dt, 0..u32::MAX);
         self.tesla_nodes_tick(data, updater_dt);
-        self.frozen_solids_tick(updater_dt);
+        self.frozen_solids_tick(data, updater_dt);
         self.thrown_items_turns(data, updater_dt);
         self.scale_changers_tick(data, updater_dt, deferred_spikes, deferred_updaters);
         self.duplicate_platform_effects_tick(data, updater_dt, None);
@@ -8573,6 +8573,11 @@ impl RolloutWorld {
                 }
             }
         }
+        for (i, effect) in self.frozen_solids.iter().enumerate() {
+            if effect.active {
+                push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 32, i);
+            }
+        }
         for (i, missile) in self.guided_missiles.iter().enumerate() {
             if missile.active
                 && !self.blink_object_hidden(missile.entity)
@@ -8633,6 +8638,7 @@ impl RolloutWorld {
                 28 => self.gold_mushroom_step(index / 3, index % 3, data),
                 29 => self.rope_parent_step(index),
                 30 => self.rope_end_attachment_step(index / 2, index % 2),
+                32 => self.frozen_solid_step(index, updater_dt),
                 40 => self.portal_shot_step(index, data, updater_dt),
                 19 => {
                     let being_held = self.guided_missiles[index].magnet_hold_ticks >= 0;
@@ -29405,76 +29411,87 @@ impl RolloutWorld {
         }
     }
 
-    /// FrozenSolid.UpdateSim in hierarchy order: two ices on one slime each pin
-    /// it, and the later one's position and release are the ones that stand.
-    fn frozen_solids_tick(&mut self, updater_dt: Fix) {
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        // FrozenSolid's release DestroyFixes it (FrozenSolid.cs:156).
-        let mut released = Vec::new();
-        updater_order(&mut order, &self.frozen_solids, |effect| self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base));
-        for &effect_index in &order {
+    /// Each FrozenSolid's turn in Updater's walk (Updater.cs:298-303), after
+    /// everything listed before it: a TeleportIndicator older than the ice
+    /// has hidden its victim, and one newer moves the slime the ice pinned.
+    /// Two ices on one slime each pin it, and the later one's position and
+    /// release are the ones that stand.
+    fn frozen_solids_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        for effect_index in 0..self.frozen_solids.len() {
             let effect = self.frozen_solids[effect_index];
             if !effect.active || self.tick < effect.appended {
                 continue;
             }
-            if !self.hittable(effect.victim) {
-                self.frozen_solids[effect_index].active = false;
-                released.push(effect.hierarchy_base);
-                let slot = &mut self.players[effect.victim];
-                slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-                // FrozenSolid.End's ApplyRagDoll (FrozenSolid.cs:137).
-                slot.obs_state = STATE_RAGDOLL;
-                slot.ragdoll = RagdollState {
-                    hold_on_ground: slot.base.grounded,
-                    time: Fix::ZERO,
-                    duration: Fix::from_f32(0.35),
-                };
-                slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
-                slot.base.set_right(Vec2::UP);
-                slot.timers.fill(Fix::ZERO);
+            let key = self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base);
+            if self.updater_passed(key) {
                 continue;
             }
+            self.run_spawned_before(data, updater_dt, key);
+            self.updater_take_turn(key);
+            self.frozen_solid_step(effect_index, updater_dt);
+        }
+    }
+
+    /// FrozenSolid.UpdateSim (FrozenSolid.cs:68-89). Its release DestroyFixes
+    /// it (FrozenSolid.cs:156).
+    fn frozen_solid_step(&mut self, effect_index: usize, updater_dt: Fix) {
+        let effect = self.frozen_solids[effect_index];
+        if !effect.active {
+            return;
+        }
+        if !self.hittable(effect.victim) {
+            self.frozen_solids[effect_index].active = false;
             let slot = &mut self.players[effect.victim];
-            if slot.active != ActiveAbility::None || slot.base.dash.active {
-                // Cast out of the ice before its first pass: the inactive
-                // slime shatters it, and the release ragdoll lands on the
-                // slime the form left behind.
-                self.frozen_solids[effect_index].active = false;
-                released.push(effect.hierarchy_base);
-                slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-                slot.slime.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
-                slot.slime.set_rotation(Vec2::UP.normalized_angle());
-                slot.inactive_obs_state = STATE_RAGDOLL;
-                slot.timers.fill(Fix::ZERO);
-                continue;
-            }
-            slot.pinned_from = (self.tick, effect.hierarchy_base, slot.base.position);
-            slot.base.position = effect.freeze_position;
-            slot.base.velocity = Vec2::ZERO;
+            slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
+            // FrozenSolid.End's ApplyRagDoll (FrozenSolid.cs:137).
             slot.obs_state = STATE_RAGDOLL;
             slot.ragdoll = RagdollState {
-                hold_on_ground: false,
+                hold_on_ground: slot.base.grounded,
                 time: Fix::ZERO,
-                duration: Fix::ONE,
+                duration: Fix::from_f32(0.35),
             };
-            slot.base.skip_next_gravity = true;
-            let state = &mut self.frozen_solids[effect_index];
-            state.freeze_left -= updater_dt;
-            if state.freeze_left <= Fix::ZERO {
-                state.active = false;
-                released.push(effect.hierarchy_base);
-                slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
-                slot.ragdoll.duration = Fix::from_f32(0.35);
-                slot.ragdoll.hold_on_ground = slot.base.grounded;
-                slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
-                // FixTransform.right = normalized release speed.
-                slot.base.set_right(Vec2::UP);
-                slot.timers.fill(Fix::ZERO);
-            }
+            slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
+            slot.base.set_right(Vec2::UP);
+            slot.timers.fill(Fix::ZERO);
+            self.destroy_fix(effect.hierarchy_base, None, None);
+            return;
         }
-        self.scratch.item_order = order;
-        for owner in released {
-            self.destroy_fix(owner, None, None);
+        let slot = &mut self.players[effect.victim];
+        if slot.active != ActiveAbility::None || slot.base.dash.active {
+            // Cast out of the ice before its first pass: the inactive
+            // slime shatters it, and the release ragdoll lands on the
+            // slime the form left behind.
+            self.frozen_solids[effect_index].active = false;
+            slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
+            slot.slime.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
+            slot.slime.set_rotation(Vec2::UP.normalized_angle());
+            slot.inactive_obs_state = STATE_RAGDOLL;
+            slot.timers.fill(Fix::ZERO);
+            self.destroy_fix(effect.hierarchy_base, None, None);
+            return;
+        }
+        slot.pinned_from = (self.tick, effect.hierarchy_base, slot.base.position);
+        slot.base.position = effect.freeze_position;
+        slot.base.velocity = Vec2::ZERO;
+        slot.obs_state = STATE_RAGDOLL;
+        slot.ragdoll = RagdollState {
+            hold_on_ground: false,
+            time: Fix::ZERO,
+            duration: Fix::ONE,
+        };
+        slot.base.skip_next_gravity = true;
+        let state = &mut self.frozen_solids[effect_index];
+        state.freeze_left -= updater_dt;
+        if state.freeze_left <= Fix::ZERO {
+            state.active = false;
+            slot.frozen_solid_count = slot.frozen_solid_count.saturating_sub(1);
+            slot.ragdoll.duration = Fix::from_f32(0.35);
+            slot.ragdoll.hold_on_ground = slot.base.grounded;
+            slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
+            // FixTransform.right = normalized release speed.
+            slot.base.set_right(Vec2::UP);
+            slot.timers.fill(Fix::ZERO);
+            self.destroy_fix(effect.hierarchy_base, None, None);
         }
     }
 
@@ -40669,7 +40686,7 @@ mod tests {
         world.players[0].base.alive = false;
         world.tick += 1;
 
-        world.frozen_solids_tick(DT);
+        world.frozen_solids_tick(data::get(), DT);
 
         assert!(!world.frozen_solids[0].active);
         assert_eq!(world.players[0].frozen_solid_count, 0);
