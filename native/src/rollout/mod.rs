@@ -9228,9 +9228,7 @@ impl RolloutWorld {
             {
                 continue;
             }
-            let right = Vec2::angle(engine.transform_rotation);
-            let position = engine.transform_center
-                - engine.collider_offset.complex_mul(right);
+            let position = engine.transform_position();
             let combined = self.platform_dynamics[engine.platform_index].body;
             if let Some(entity) = engine.entity.filter(|_| {
                 engine.active && !engine.macho_carried && combined.inverse_mass > Fix::ZERO
@@ -9569,7 +9567,7 @@ impl RolloutWorld {
             }
             let right = Vec2::angle(engine.transform_rotation);
             let offset = engine.collider_offset.complex_mul(right);
-            let root = engine.transform_center - offset;
+            let root = engine.transform_position();
             if let Some((exit, position)) =
                 self.portal_body_exit(endpoint_index, entity, root, data)
             {
@@ -15801,9 +15799,7 @@ impl RolloutWorld {
                         .position(engine.local, Fix::ZERO);
                     let normal = self.platforms[platform].surface.normal(surface_position);
                     let rocket_right = Vec2::angle(engine.transform_rotation);
-                    let root = engine.transform_center
-                        - engine.collider_offset
-                            .complex_mul(rocket_right);
+                    let root = engine.transform_position();
                     // RocketEngine.BlowUpSmokeTouchingTheFire (RocketEngine.cs:70)
                     // is `position + up * (offset.y * Scale) + right * (offset.x
                     // * Scale)`, and FixTransform.up is MulByI(right) = (-r.y,
@@ -18820,9 +18816,7 @@ impl RolloutWorld {
             };
         let desired_right = Vec2::angle(desired_rotation);
         let desired_up = desired_right.perp();
-        let old_right = Vec2::angle(source.transform_rotation);
-        let old_root = source.transform_center
-            - source.collider_offset.complex_mul(old_right);
+        let old_root = source.transform_position();
         let probe = old_root + desired_up * Fix::from_int(1000);
         let Ok(closest) = self.platforms[platform_index].surface.closest_point(probe) else {
             return;
@@ -27092,9 +27086,7 @@ impl RolloutWorld {
         let platform_index = source.platform_index;
         // LocalPlayerPosFromPos reads the hit child's FixTransform, which
         // SyncGameObject placed at the collider less its rotated offset.
-        let source_position = source.transform_center
-            - source.collider_offset
-                .complex_mul(Vec2::angle(source.transform_rotation));
+        let source_position = source.transform_position();
         let local = self.duplicate_attached_local(
             platform_index,
             source_position,
@@ -27203,8 +27195,7 @@ impl RolloutWorld {
         let platform_index = source.platform_index;
         // LocalPlayerPosFromPos reads the hit child's FixTransform, which
         // SyncGameObject placed at the collider less its rotated offset.
-        let source_position = source.transform_center
-            - source.collider_offset.complex_mul(Vec2::angle(source.transform_rotation));
+        let source_position = source.transform_position();
         let local = self.duplicate_attached_local(
             platform_index,
             source_position,
@@ -41804,9 +41795,7 @@ mod tests {
         world.reset(&test_config()).unwrap();
         assert!(world.spawn_engine(0, data::get()));
         let source = world.engines[0];
-        let source_position = source.transform_center
-            - source.collider_offset
-                .complex_mul(Vec2::angle(source.transform_rotation));
+        let source_position = source.transform_position();
         let local = world.duplicate_attached_local(
             source.platform_index,
             source_position,
