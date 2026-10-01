@@ -7916,6 +7916,16 @@ impl RolloutWorld {
                 platform.collider.inner.center = platform.surface.center;
             }
         }
+        // The CastSpell circle takes its FixTransform's pose here and keeps it
+        // through the callbacks and the late ground follow until the next
+        // Simulate, a callback kill's UnGround included.
+        for slot in &mut self.players {
+            if slot.active == ActiveAbility::TimeStop {
+                slot.cast_spell.collider_position = slot.base.position;
+                slot.cast_spell.collider_right = slot.base.up.perp_cw();
+                slot.cast_spell.collider_rotation = slot.base.rotation;
+            }
+        }
         self.refresh_actor_entities();
         if self.intro_phase == 3 {
             self.platforms_tick(data, physics_dt);
@@ -8062,15 +8072,6 @@ impl RolloutWorld {
         // StickyRoundedRectangle riders from their surface local after
         // physics; their Player-layer box keeps the position DetPhysics
         // synced above until the next Simulate.
-        for slot in &mut self.players {
-            // The CastSpell circle likewise keeps the pose Simulate synced
-            // from its FixTransform before the late ground follow.
-            if slot.active == ActiveAbility::TimeStop {
-                slot.cast_spell.collider_position = slot.base.position;
-                slot.cast_spell.collider_right = slot.base.up.perp_cw();
-                slot.cast_spell.collider_rotation = slot.base.rotation;
-            }
-        }
         for (position, slot) in self.scratch.before_ground_follow.iter_mut().zip(&self.players) {
             *position = slot.base.position;
         }
@@ -39944,21 +39945,6 @@ impl RolloutWorld {
         // orb loses its holder.
         for orb in self.players[index].beam_orb_slots.into_iter().flatten() {
             self.beam_orbs[orb].holder_destroyed = Some(self.tick);
-        }
-        if callback
-            && self.players[index].active == ActiveAbility::TimeStop
-            && self.players[index].time_stop_entity != usize::MAX
-        {
-            // Simulate synced the CastSpell circle from the form's
-            // FixTransform before this callback destroyed it, and the
-            // destroyed circle keeps that pose.
-            let slot = &self.players[index];
-            let (_, offset) = slot.time_stop_circle(data::get());
-            let center = slot.base.position + slot.base.up.perp_cw().complex_mul(offset);
-            let row = &mut self.entities[slot.time_stop_entity];
-            row.x = center.x.raw();
-            row.y = center.y.raw();
-            row.rotation = slot.base.rotation.raw();
         }
         // killPlayer hands the form's own ExitAbility a dead packet at its
         // body (PlayerCollision.cs:121-131), and onExitAbility moves the slime
