@@ -28830,10 +28830,11 @@ impl RolloutWorld {
             row.flags &= !E_ACTIVE;
             row.x = body.position.x.raw();
             row.y = body.position.y.raw();
-            row.right_x = (body.collider.right * body.scale).x.raw();
-            row.right_y = (body.collider.right * body.scale).y.raw();
-            row.up_x = (body.collider.up * body.scale).x.raw();
-            row.up_y = (body.collider.up * body.scale).y.raw();
+            // The hurtbox already carries Player.Scale (SlimeController.cs:1078).
+            row.right_x = body.collider.right.x.raw();
+            row.right_y = body.collider.right.y.raw();
+            row.up_x = body.collider.up.x.raw();
+            row.up_y = body.collider.up.y.raw();
             row.rotation = body.rotation().raw();
         }
     }
