@@ -11253,6 +11253,12 @@ impl RolloutWorld {
                             }
                         }
                         self.form_entry_turn(data, index);
+                        // The form's Ability.UpdateSim runs on the entry pass
+                        // too and assigns Player.Scale again (Ability.cs:135):
+                        // the circle takes (1 / scale) * scale's Q32 residue.
+                        let slot = &mut self.players[index];
+                        let scale = slot.player_scale;
+                        slot.forms[s].set_circle_scale(scale, data.rock.radius);
                         // BounceBall sits after SlimeController in the player
                         // prefab, so its UpdateSim runs on the entry pass too.
                         self.rock_rope_update(index, jump_pressed, data);
