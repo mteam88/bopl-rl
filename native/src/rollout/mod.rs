@@ -4091,6 +4091,11 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Meteor
             | ActiveAbility::Throw
             | ActiveAbility::Mine
+            | ActiveAbility::Grenade
+            | ActiveAbility::Smoke
+            | ActiveAbility::Tack
+            | ActiveAbility::Mjolnir
+            | ActiveAbility::PokeBall
     )
 }
 
@@ -10042,16 +10047,6 @@ impl RolloutWorld {
             .surface
             .normal(self.players[index].base.position);
         let active = self.players[index].active;
-        if matches!(
-            active,
-            ActiveAbility::Grenade
-                | ActiveAbility::Smoke
-                | ActiveAbility::Tack
-                | ActiveAbility::Mjolnir
-                | ActiveAbility::PokeBall
-        ) {
-            self.release_held_throw_item_on_exit(index, false, data);
-        }
 
         let tick = self.tick;
         let slot = &mut self.players[index];
@@ -14113,6 +14108,20 @@ impl RolloutWorld {
                 info.take_body(&slot.base);
                 info.velocity = velocity;
                 info.external_velocity = external;
+                info.just_landed = info.grounded;
+                info.facing_right = slot.facing_right;
+            }
+            ActiveAbility::Grenade
+            | ActiveAbility::Smoke
+            | ActiveAbility::Tack
+            | ActiveAbility::Mjolnir
+            | ActiveAbility::PokeBall => {
+                // ThrowItem2.ExitAbility (ThrowItem2.cs:177-208) tosses a
+                // payload still held; the frozen form keeps its rotation.
+                self.release_held_throw_item_on_exit(index, false, data::get());
+                let slot = &mut self.players[index];
+                slot.throw_item.collider_rotation = slot.base.rotation;
+                info.take_body(&slot.base);
                 info.just_landed = info.grounded;
                 info.facing_right = slot.facing_right;
             }
@@ -24918,27 +24927,7 @@ impl RolloutWorld {
                 gd.air_exit_ticks
             };
             if self.players[index].throw_item.ticks >= exit_ticks {
-                let slot = &mut self.players[index];
-                slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                let grounded = slot.base.grounded;
-                if grounded {
-                    // ThrowItem2 marks a grounded exit as `justlanded`.
-                    // SlimeController starts `land` after the slime's own
-                    // animator has already updated in this pass.
-                    slot.begin_land(true);
-                } else {
-                    slot.base.rotation = Fix::ZERO;
-                    slot.base.up = Vec2::UP;
-                    slot.restore_slime_radius();
-                    slot.exit_to_fall(terrain!(self));
-                    slot.set_ordinary_body_scale(slot.player_scale);
-                }
-                // The exit callback leaves Player.Position where
-                // Ability.UpdateSim published it, and a slime that EnterFall's
-                // raycasts land is attached where it hit, not re-synced.
-                if grounded {
-                    self.sync_exit_to_ground(index);
-                }
+                self.exit_form(index);
                 return;
             }
         }
@@ -25026,14 +25015,7 @@ impl RolloutWorld {
         // through ExitAbility, which tosses a still-held item straight up
         // (ThrowItem2.cs:179-191, 298-302).
         if self.players[index].throw_item.grounded && !self.players[index].base.grounded {
-            self.release_held_throw_item_on_exit(index, false, data);
-            let slot = &mut self.players[index];
-            slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
-            slot.restore_slime_radius();
-            slot.exit_to_fall(terrain!(self));
-            slot.set_ordinary_body_scale(slot.player_scale);
+            self.exit_form(index);
             return;
         }
 
@@ -25115,16 +25097,8 @@ impl RolloutWorld {
             }
             slot.base.collision_rays(terrain);
             if slot.base.grounded {
-                // VelocityBasedRaycasts immediately exits the aerial ability,
-                // and ExitAbility tosses a still-held item straight up.
-                self.release_held_throw_item_on_exit(index, false, data);
-                let slot = &mut self.players[index];
-                slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                slot.begin_land(true);
-                // The form's own body attached, so its box turns with it.
-                slot.throw_item.collider_rotation = slot.base.rotation;
-                slot.reported_position = slot.base.position;
-                self.sync_exit_to_ground(index);
+                // VelocityBasedRaycasts immediately exits the aerial ability.
+                self.exit_form(index);
             } else {
                 self.form_body_step(index);
             }
@@ -27020,37 +26994,6 @@ impl RolloutWorld {
                     slot.form_frozen = frozen;
                     self.ability_exit(i, info);
                     self.players[index].magnet.held_position = self.players[i].base.position;
-                } else if matches!(
-                    self.players[i].active,
-                    ActiveAbility::Grenade
-                        | ActiveAbility::Smoke
-                        | ActiveAbility::Tack
-                        | ActiveAbility::Mjolnir
-                        | ActiveAbility::PokeBall
-                ) {
-                    // ThrowItem2.ExitAbility overwrites the packet with its
-                    // body's position, velocities, facing and grounding
-                    // (ThrowItem2.cs:196-205), so MagnetGun holds the slime
-                    // where the form stood, and UnGround below lifts a grounded
-                    // one. ApplyRagDoll then zeroes only the self-imposed part.
-                    // Its unfired payload is released first.
-                    self.release_held_throw_item_on_exit(i, false, data);
-                    let slot = &self.players[i];
-                    let (body, velocity, external) =
-                        (slot.base.position, slot.base.velocity, slot.base.external_velocity);
-                    let (facing_right, grounded, ground, local) =
-                        (slot.facing_right, slot.base.grounded, slot.base.ground, slot.base.local);
-                    self.exit_form_for_freeze_at(i, body, velocity, external, data);
-                    let slot = &mut self.players[i];
-                    slot.facing_right = facing_right;
-                    if grounded {
-                        slot.base.grounded = true;
-                        slot.base.ground = ground;
-                        slot.base.local = local;
-                    }
-                    slot.base.velocity = Vec2::ZERO;
-                    freeze(slot);
-                    self.players[index].magnet.held_position = body;
                 } else if self.players[i].active != ActiveAbility::None {
                     self.exit_form_for_freeze(i, data);
                     self.players[i].base.position = position;
