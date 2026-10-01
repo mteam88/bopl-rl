@@ -4507,7 +4507,6 @@ struct PlatformScratch {
     turns_recorded: usize,
     /// The walk's Updater delta, and whether a Rewind is in play.
     turn_dt: Fix,
-    turn_rewind: bool,
     /// Bodies whose form entry recorded the Player's form flags before the
     /// turns ahead of the form's own.
     form_flags_taken: u16,
@@ -6487,6 +6486,9 @@ impl RolloutWorld {
         data: &data::RolloutData,
         updater_dt: Fix,
     ) {
+        if self.ability_pickups.is_empty() {
+            return;
+        }
         // DynamicAbilityPickup.UpdateSim runs in hierarchy order, and each swap
         // and vibration draws from the shared RNG; a Duplicator copy can take a
         // freed slot below an older pickup.
@@ -7551,13 +7553,9 @@ impl RolloutWorld {
         // A Duplicator copy's item collider registers at its Init, ahead of
         // the walk in which its Grenade.UpdateSim lets the copy go
         // (Updater.cs:271-279).
-        if has(ABILITY_DUPLICATOR) {
-            self.register_pending_duplicated_items(data);
-        }
+        self.register_pending_duplicated_items(data);
         self.init_pending_grenade_fuses(data);
-        if has(ABILITY_TIME_STOP) {
-            self.register_pending_time_stops();
-        }
+        self.register_pending_time_stops();
         // Updater initializes every prefab queued during the prior pass
         // before DetPhysics.UpdateDuplicatedObjects and before it invokes any
         // existing MonoUpdatable (Updater.cs:264-287). A newly spawned Gust
@@ -7575,15 +7573,9 @@ impl RolloutWorld {
                 self.update_surface_bounds(i);
             }
         }
-        if has(ABILITY_GUST) {
-            self.shockwaves_init(false, data);
-        }
-        if has(ABILITY_METEOR) {
-            self.shockwaves_init(true, data);
-        }
-        if has(ABILITY_DUPLICATOR) {
-            self.duplicated_objects_tick();
-        }
+        self.shockwaves_init(false, data);
+        self.shockwaves_init(true, data);
+        self.duplicated_objects_tick();
         // Updatables earlier than a TimeStop effect observe the scale from
         // the start of the pass. DetPhysics observes any scale written by the
         // effect later in this same pass.
@@ -7677,7 +7669,6 @@ impl RolloutWorld {
             self.scratch.clone_actions[index] = self.players[index].input_packet;
         }
         self.scratch.turn_dt = updater_dt;
-        self.scratch.turn_rewind = has(ABILITY_REWIND);
         // Updater updates every Player's frame-dependent button edges before
         // any MonoUpdatable, time stopped for it or not, and with its slime
         // parked for a stock choice (Updater.cs:248-257): a clone whose turn
@@ -7716,9 +7707,7 @@ impl RolloutWorld {
         // so it updates with the player prefab, ahead of every spawned
         // updater: a Portal or a Black Hole acting this pass sees the
         // rewind's velocity, and the sample is taken before they act.
-        if has(ABILITY_REWIND) {
-            self.rewind_recorders_tick(&player_order[recorded..player_count]);
-        }
+        self.rewind_recorders_tick(&player_order[recorded..player_count]);
         // Each Duplicator copy's prefab updates as one block at its own
         // Updater turn, after everything instantiated before it: an older
         // pickup's vibration draws ahead of the copy's shake, and an older
@@ -7730,97 +7719,70 @@ impl RolloutWorld {
         if let Some(newest) = newest_copy {
             self.run_spawned_before(data, updater_dt, updater_next(newest));
         }
-        if has(ABILITY_MAGNET) {
-            self.magnet_parries_tick(data);
-        }
+        self.magnet_parries_tick(data);
         // Each Rope's turn in Updater's walk (Updater.cs:298-303): the
         // updatables listed before it, an abilityless clone, a Mjolnir hammer,
         // a TeleportIndicator or a ScaleChanger among them, take theirs first.
-        if has_rope {
-            for index in 0..self.ropes.len() {
-                let rope = &self.ropes[index];
-                if !rope.physics.enabled || rope.appended > self.tick {
-                    continue;
-                }
-                let key = self.rope_key(index);
-                if self.updater_passed(key) {
-                    continue;
-                }
-                self.run_spawned_before(data, updater_dt, key);
-                self.updater_take_turn(key);
-                self.rope_turn(index);
+        for index in 0..self.ropes.len() {
+            let rope = &self.ropes[index];
+            if !rope.physics.enabled || rope.appended > self.tick {
+                continue;
             }
+            let key = self.rope_key(index);
+            if self.updater_passed(key) {
+                continue;
+            }
+            self.run_spawned_before(data, updater_dt, key);
+            self.updater_take_turn(key);
+            self.rope_turn(index);
         }
-        if has(ABILITY_BEAM) {
-            self.beam_orbs_tick(data);
-        }
+        self.beam_orbs_tick(data);
         // Spawned BlackHole prefabs are registered after every authored
         // player prefab. A hole fired by BlackHoleClap therefore receives its
         // time-zero UpdateSim later in this same updater pass.
-        if has(ABILITY_BLACK_HOLE) {
-            self.black_holes_tick(data, updater_dt);
-        }
-        if has(ABILITY_PORTAL_GUN) {
-            self.portal_shots_tick(data, updater_dt);
-        }
+        self.black_holes_tick(data, updater_dt);
+        self.portal_shots_tick(data, updater_dt);
         // A RopeAttachment on an object takes its turn in Updater's one walk
         // at its place on the hook prefab (Updater.cs:298-303).
-        if has_rope {
-            for index in 0..self.ropes.len() {
-                if !self.ropes[index].physics.enabled
-                    || self.ropes[index].appended > self.tick
-                    || self.ropes[index].parent.is_none()
-                {
-                    continue;
-                }
-                let key = self.rope_attachment_key(index);
-                if self.updater_passed(key) {
-                    continue;
-                }
-                self.run_spawned_before(data, updater_dt, key);
-                self.updater_take_turn(key);
-                self.rope_parent_step(index);
+        for index in 0..self.ropes.len() {
+            if !self.ropes[index].physics.enabled
+                || self.ropes[index].appended > self.tick
+                || self.ropes[index].parent.is_none()
+            {
+                continue;
             }
+            let key = self.rope_attachment_key(index);
+            if self.updater_passed(key) {
+                continue;
+            }
+            self.run_spawned_before(data, updater_dt, key);
+            self.updater_take_turn(key);
+            self.rope_parent_step(index);
         }
         // Pickups and shockwaves newer than a live ScaleChanger see what it
         // rescaled; scale_changers_tick steps them in turn.
-        let deferred_updaters = if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
-            self.first_live_scale_changer()
-        } else {
-            None
-        };
+        let deferred_updaters = self.first_live_scale_changer();
         let deferred_to = deferred_updaters.unwrap_or(u32::MAX);
-        // DynamicAbilityPickup shares the updater-order walk implemented by
-        // portals_tick, but authored map spawners can create pickups without
-        // any player owning Portal Gun. Keep that walk map/pickup-gated rather
-        // than ability-gated so the pickup enables, rerolls, and moves.
-        if has(ABILITY_PORTAL_GUN) || !self.ability_pickups.is_empty() {
-            self.portals_tick(data, updater_dt, deferred_to);
-        } else if self.ability_spawner_enabled || !self.ability_pickups.is_empty() {
-            // Portal endpoints interleave pickup updaters by hierarchy when
-            // present. Without Portal Gun, the same global updater tail must
-            // still advance DynamicAbilityPickup.
-            self.ability_pickups_tick_before(deferred_to, data, updater_dt);
-        }
+        // Portal endpoints interleave the DynamicAbilityPickup updaters by
+        // hierarchy.
+        self.portals_tick(data, updater_dt, deferred_to);
         // A SuperStarEffect takes its turn in Updater's one walk: the
         // slime that cast it appended it the next pass (Updater.cs:258-282),
         // and the walk runs it at its place in the list, ahead of a form
         // listed after it (Updater.cs:298-303).
-        if has(ABILITY_GOLD_MUSHROOM) {
-            for index in 0..self.players.len() {
-                for effect_slot in 0..3 {
-                    let effect = self.players[index].gold_mushroom[effect_slot];
-                    if !effect.active || effect.appended > self.tick {
-                        continue;
-                    }
-                    let key = self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base);
-                    if self.updater_passed(key) {
-                        continue;
-                    }
-                    self.run_spawned_before(data, updater_dt, key);
-                    self.updater_take_turn(key);
-                    self.gold_mushroom_step(index, effect_slot, data);
+        for index in 0..self.players.len() {
+            for effect_slot in 0..3 {
+                let effect = self.players[index].gold_mushroom[effect_slot];
+                if !effect.active || effect.appended > self.tick {
+                    continue;
                 }
+                let key = self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base);
+                if self.updater_passed(key) {
+                    continue;
+                }
+                self.run_spawned_before(data, updater_dt, key);
+                self.updater_take_turn(key);
+                self.gold_mushroom_step(index, effect_slot, data);
             }
         }
         // Runtime-spawned platforms register behind the player/ability
@@ -7840,60 +7802,27 @@ impl RolloutWorld {
             self.run_spawned_before(data, updater_dt, updater_next(newest));
         }
         self.spawned_platforms_tick(data, updater_dt, 0..u32::MAX);
-        if has(ABILITY_THROW) {
-            self.macho_boulders_remove_drowned();
-        }
-        if has(ABILITY_GUST) || has(ABILITY_METEOR) {
-            self.shockwaves_update(data, 0..deferred_to);
-        }
-        if has(ABILITY_REVIVAL) {
-            self.revival_marker_bodies_tick();
-            self.revival_effects_tick(data);
-        }
-        if has(ABILITY_TELEPORT) {
-            self.teleport_effects_tick(data, updater_dt);
-            self.teleport_pending_tick(data, updater_dt, u32::MAX);
-        }
-        if has(ABILITY_BLINK) {
-            self.blink_tunnels_tick(data, updater_dt);
-            self.blink_platform_tunnels_tick(data, updater_dt, None);
-            self.blink_object_tunnels_tick(data, updater_dt, None);
-        }
-        if has(ABILITY_GRENADE) {
-            self.grenade_explosions_tick(data, updater_dt);
-        }
+        self.macho_boulders_remove_drowned();
+        self.shockwaves_update(data, 0..deferred_to);
+        self.revival_marker_bodies_tick();
+        self.revival_effects_tick(data);
+        self.teleport_effects_tick(data, updater_dt);
+        self.teleport_pending_tick(data, updater_dt, u32::MAX);
+        self.blink_tunnels_tick(data, updater_dt);
+        self.blink_platform_tunnels_tick(data, updater_dt, None);
+        self.blink_object_tunnels_tick(data, updater_dt, None);
+        self.grenade_explosions_tick(data, updater_dt);
         self.missile_explosions_tick(data, updater_dt);
-        if has(ABILITY_SMOKE) {
-            self.smoke_tick(data, updater_dt);
-        }
-        if has(ABILITY_TIME_STOP) {
-            self.time_stop_effects_tick(data);
-        }
-        let mut deferred_spikes = None;
-        if has(ABILITY_SPIKE) {
-            deferred_spikes = self.spike_attacks_tick(data, updater_dt);
-        }
-        if has(ABILITY_ENGINE) {
-            self.engines_tick(data, updater_dt, 0..u32::MAX);
-        }
-        if has(ABILITY_TESLA) {
-            self.tesla_nodes_tick(data, updater_dt);
-        }
-        if has(ABILITY_FREEZE) {
-            self.frozen_solids_tick(updater_dt);
-        }
-        if has_thrown_item {
-            self.thrown_items_turns(data, updater_dt);
-        }
-        if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
-            self.scale_changers_tick(data, updater_dt, deferred_spikes, deferred_updaters);
-        }
-        if has(ABILITY_DUPLICATOR) {
-            self.duplicate_platform_effects_tick(data, updater_dt, None);
-        }
-        if has(ABILITY_METEOR) {
-            self.meteor_smears_tick(data);
-        }
+        self.smoke_tick(data, updater_dt);
+        self.time_stop_effects_tick(data);
+        let deferred_spikes = self.spike_attacks_tick(data, updater_dt);
+        self.engines_tick(data, updater_dt, 0..u32::MAX);
+        self.tesla_nodes_tick(data, updater_dt);
+        self.frozen_solids_tick(updater_dt);
+        self.thrown_items_turns(data, updater_dt);
+        self.scale_changers_tick(data, updater_dt, deferred_spikes, deferred_updaters);
+        self.duplicate_platform_effects_tick(data, updater_dt, None);
+        self.meteor_smears_tick(data);
         // Updater's walk reaches the end of its list before DetPhysics
         // simulates (Updater.cs:298-303): every updatable no earlier turn
         // brought it to takes its turn now, in list order, once.
@@ -7925,18 +7854,12 @@ impl RolloutWorld {
                 self.update_obs_state(index, input);
             }
         }
-        if has_clones {
-            self.abilityless_clones_tick(data, updater_dt);
-        }
-        if has_clones && has(ABILITY_BLINK) {
-            self.blink_clone_tunnels_tick(data, updater_dt);
-        }
-        if has_clones {
-            // DetPhysics.Simulate syncs the clones' boxes to where their
-            // updates left them.
-            for clone in &mut self.abilityless_clones {
-                clone.base.synced = clone.base.collider;
-            }
+        self.abilityless_clones_tick(data, updater_dt);
+        self.blink_clone_tunnels_tick(data, updater_dt);
+        // DetPhysics.Simulate syncs the clones' boxes to where their
+        // updates left them.
+        for clone in &mut self.abilityless_clones {
+            clone.base.synced = clone.base.collider;
         }
         let physics_dt = DT * self.player_time_scale;
         if has(ABILITY_BOW) {
@@ -34949,11 +34872,9 @@ impl RolloutWorld {
         // (RewindRecorder.cs:93), so each slime already updated took its
         // sample before anything later acts: spawned updaters, and another
         // player's Magnet pull, which that recorder sees only next pass.
-        if self.scratch.turn_rewind {
-            let order = self.scratch.turn_order;
-            self.rewind_recorders_tick(&order[self.scratch.turns_recorded..turn]);
-            self.scratch.turns_recorded = turn;
-        }
+        let order = self.scratch.turn_order;
+        self.rewind_recorders_tick(&order[self.scratch.turns_recorded..turn]);
+        self.scratch.turns_recorded = turn;
         let key = self.scratch.turn_key[index];
         self.run_spawned_before(data, self.scratch.turn_dt, key);
         let packet = self.scratch.clone_actions[self.players[index].owner];
