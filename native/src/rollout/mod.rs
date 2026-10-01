@@ -3875,6 +3875,8 @@ enum CallbackHit {
     ArrowKill { victim: usize, owner: u32 },
     /// PortalShot.OnCollide with a wall, with the surface's outward normal.
     PortalShotLand { shot: usize, normal: Vec2 },
+    /// PokeBall.OnCollide with a slime's or an abilityless clone's box.
+    PokeCapture { item: usize, victim: usize, clone: bool },
     /// A lethal Roll's target-side callback on a collider that is no player:
     /// an arrow, a missile, a grenade or a mine.
     FormTarget { entity: usize, near: Vec2, caster: usize },
@@ -36378,54 +36380,41 @@ impl RolloutWorld {
                 // callback, so retain the synchronized collider position for
                 // the rest of this contact pass. BeginCapture only moves the
                 // live PlayerBody; the box is synchronized next pass.
+                // PokeBall.OnCollide with each Player-layer box, queued at its
+                // Circle/Box pair; the first in callback order captures
+                // (PokeBall.cs:122-141).
                 let owner = item.owner;
-                let mut victim = None;
-                let mut victim_is_clone = false;
+                let ball = self.part_rank(Part::Item(item_index));
                 // A slime in its spawn animation already has its hurtbox.
                 for player_index in 0..self.players.len() {
                     if player_index == owner
                         || !self.hittable(player_index)
                         || self.players[player_index].active != ActiveAbility::None
                         || self.players[player_index].base.dash.active
+                        || crate::physics::contact::circle_box(circle, self.players[player_index].base.collider).is_none()
                     {
                         continue;
                     }
-                    if crate::physics::contact::circle_box(
-                        circle,
-                        self.players[player_index].base.collider,
-                    )
-                    .is_some()
+                    let (later, earlier) = sweep_pair(ball, self.player_sweep_rank(player_index));
+                    let hit = CallbackHit::PokeCapture { item: item_index, victim: player_index, clone: false };
+                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
+                }
+                for clone_index in 0..self.abilityless_clones.len() {
+                    let clone = &self.abilityless_clones[clone_index];
+                    if !clone.active
+                        || !clone.base.alive
+                        || clone.owner == owner
+                        || self.abilityless_clone_hidden(clone)
+                        || crate::physics::contact::circle_box(circle, clone.base.collider).is_none()
                     {
-                        victim = Some(player_index);
-                        break;
+                        continue;
                     }
+                    let rank = sweep_rank(&self.entities, self.swept_min(Swept::Clone(clone_index)), clone.entity);
+                    let (later, earlier) = sweep_pair(ball, rank);
+                    let hit = CallbackHit::PokeCapture { item: item_index, victim: clone_index, clone: true };
+                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
                 }
-                if victim.is_none() {
-                    for (clone_index, clone) in self.abilityless_clones.iter().enumerate() {
-                        if !clone.active
-                            || !clone.base.alive
-                            || clone.owner == owner
-                            || self.abilityless_clone_hidden(clone)
-                        {
-                            continue;
-                        }
-                        if crate::physics::contact::circle_box(circle, clone.base.collider)
-                            .is_some()
-                        {
-                            victim = Some(clone_index);
-                            victim_is_clone = true;
-                            break;
-                        }
-                    }
-                }
-                if let Some(victim) = victim {
-                    if victim_is_clone {
-                        self.capture_poke_clone(item_index, victim, data);
-                    } else {
-                        self.capture_poke_victim(item_index, victim, data, false);
-                    }
-                    continue;
-                }
+                continue;
             }
             // DetPhysics calls GrenadeExplode.OnCollide and
             // SmokeGrenadeExplode2.OnCollide back after every contact group,
@@ -37019,6 +37008,19 @@ impl RolloutWorld {
                     self.player_form_target_callback(entity, near, caster, data);
                 }
                 CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
+                CallbackHit::PokeCapture { item, victim, clone } => {
+                    let ball = self.thrown_items[item];
+                    if !ball.active || !ball.launched || ball.capture_victim.is_some() {
+                        continue;
+                    }
+                    if clone {
+                        if self.abilityless_clones[victim].active && self.abilityless_clones[victim].base.alive {
+                            self.capture_poke_clone(item, victim, data);
+                        }
+                    } else if self.players[victim].base.alive {
+                        self.capture_poke_victim(item, victim, data, false);
+                    }
+                }
                 CallbackHit::Kill { player, killer, cause } => {
                     if self.hittable(player) {
                         self.kill(player, killer, cause, true, true);
