@@ -21915,10 +21915,12 @@ impl RolloutWorld {
 
     fn shockwaves_init(&mut self, meteor: bool, data: &data::RolloutData) {
         for wave_index in 0..self.shockwaves(meteor).len() {
-            let mut wave = self.shockwaves(meteor)[wave_index];
-            if !wave.active || wave.registered || wave.appended > self.tick {
+            let tick = self.tick;
+            let wave = &self.shockwaves(meteor)[wave_index];
+            if !wave.active || wave.registered || wave.appended > tick {
                 continue;
             }
+            let mut wave = *wave;
             wave.registered = true;
             let config = wave.config(data);
             let query = Circle {
