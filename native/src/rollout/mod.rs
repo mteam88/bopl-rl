@@ -77,11 +77,6 @@ pub const ABILITY_FREEZE: u32 = 36;
 pub const ABILITY_MJOLNIR: u32 = 37;
 pub const ABILITY_PORTAL_GUN: u32 = 38;
 
-#[inline(always)]
-const fn ability_bit(ability: u32) -> u64 {
-    1u64 << ability
-}
-
 // ---- C ABI mirror types (bopl_rl.h, verified against NativeApi.cs) ----
 
 #[repr(C)]
@@ -4711,7 +4706,6 @@ pub struct RolloutWorld {
     /// Abilities which can still own an updater in this episode. Bits are
     /// retained after a pickup replaces a loadout slot because already-fired
     /// projectiles and effects remain in Unity's updater list.
-    active_subsystems: u64,
     /// AntiLockPlatform runtime: platform index and current waypoint.
     pub orbits: Vec<(usize, usize)>,
     /// Authored VectorFieldPlatform indices. Empty on maps without the component.
@@ -4873,7 +4867,6 @@ impl RolloutWorld {
             sudden_death_tick: 0,
             ability_spawner_enabled: false,
             ability_spawner_state: Vec::with_capacity(2),
-            active_subsystems: 0,
             orbits: Vec::with_capacity(4),
             vector_fields: Vec::with_capacity(32),
             intro_random_delays: Vec::with_capacity(50),
@@ -4993,7 +4986,6 @@ impl RolloutWorld {
         self.ability_spawner_enabled = src.ability_spawner_enabled;
         self.ability_spawner_state
             .clone_from(&src.ability_spawner_state);
-        self.active_subsystems = src.active_subsystems;
         self.orbits.clone_from(&src.orbits);
         self.vector_fields.clone_from(&src.vector_fields);
         self.intro_random_delays
@@ -5100,7 +5092,6 @@ impl RolloutWorld {
             sudden_death_tick: _,
             ability_spawner_enabled: _,
             ability_spawner_state: _,
-            active_subsystems: _,
             orbits: _,
             vector_fields: _,
             intro_random_delays: _,
@@ -5212,7 +5203,6 @@ impl RolloutWorld {
         self.ability_spawner_enabled =
             std::env::var_os("BOPL_RL_ABILITY_SPAWNS").is_some_and(|value| value == "1");
         self.ability_spawner_state.clear();
-        self.active_subsystems = 0;
         self.player_time_scale = Fix::ONE;
         self.time_stop_protected = [false; MAX_BODIES];
         self.spawned.clear();
@@ -5286,9 +5276,6 @@ impl RolloutWorld {
                     resolved = self.rng.uint_range(2, ABILITY_COUNT);
                 }
                 *ability = resolved;
-            }
-            for &ability in abilities.iter().take(slots) {
-                self.active_subsystems |= ability_bit(ability);
             }
         }
         // A round restart is a LoadSceneMode.Single load of the next level
@@ -6656,7 +6643,6 @@ impl RolloutWorld {
                 }
             }
         };
-        self.active_subsystems |= ability_bit(ability);
         // AddAdditionalAbility (SlimeController.cs:332-394): a full
         // list replaces the third reference, a shorter one appends, and
         // an empty one starts a new list on a second, inactive instance
@@ -21273,8 +21259,6 @@ impl RolloutWorld {
             self.entities[*target].id = id;
         }
 
-        // The indicators are Revival marker bodies.
-        self.active_subsystems |= ability_bit(ABILITY_REVIVAL);
         let mut indicator_markers = [None; 3];
         for (indicator, target) in indicator_markers.iter_mut().enumerate() {
             let hierarchy_base = stock_indicator_hierarchy[indicator];
@@ -38047,8 +38031,8 @@ impl RolloutWorld {
         // Detect the uncommon out-of-order append while copying and restart
         // through the stable shape partitions in that case. Rope rows are an
         // independent pool inserted between rounded rectangles and metadata.
-        let rope_mask = ability_bit(ABILITY_GRAPPLING_HOOK) | ability_bit(ABILITY_WEB_SWING);
-        if self.active_subsystems & rope_mask == 0 && !self.ability_pickups.is_empty() {
+        let no_rope_rows = !self.ropes.iter().any(|rope| rope.physics.enabled);
+        if no_rope_rows && !self.ability_pickups.is_empty() {
             // Dynamic pickups are circles appended after the authored boxes
             // and rounded rectangles. Once one has existed, the optimistic
             // ordered copy above would fail on every later observation and
@@ -38076,7 +38060,7 @@ impl RolloutWorld {
             }
             return;
         }
-        if self.active_subsystems & rope_mask == 0 {
+        if no_rope_rows {
             let mut last_kind = 0;
             let mut ordered = true;
             for &entity in &self.entities {
@@ -38127,15 +38111,9 @@ impl RolloutWorld {
     /// Update the entity table from live state (positions, flags).
     fn refresh_entities(&mut self) {
         self.refresh_actor_entities();
-        if self.active_subsystems & ability_bit(ABILITY_SPIKE) != 0 {
-            self.refresh_spike_entities();
-        }
-        if self.active_subsystems & ability_bit(ABILITY_ENGINE) != 0 {
-            self.refresh_engine_entities();
-        }
-        if self.active_subsystems & ability_bit(ABILITY_TESLA) != 0 {
-            self.refresh_tesla_entities();
-        }
+        self.refresh_spike_entities();
+        self.refresh_engine_entities();
+        self.refresh_tesla_entities();
         self.refresh_platform_entities();
         self.refresh_entity_metadata();
     }
@@ -38273,52 +38251,6 @@ impl RolloutWorld {
     }
 
     fn refresh_entity_metadata(&mut self) {
-        let simple_mask = ability_bit(ABILITY_DASH)
-            | ability_bit(ABILITY_GUST)
-            | ability_bit(ABILITY_INVISIBILITY);
-        if self.active_subsystems & !simple_mask == 0 {
-            for slot in &self.players {
-                for (entity, ability) in [
-                    (slot.dash_entities[0], ABILITY_DASH),
-                    (slot.dash_entities[1], ABILITY_DASH),
-                    (slot.dash_entities[2], ABILITY_DASH),
-                    (slot.gust_entity, ABILITY_GUST),
-                ] {
-                    if entity != usize::MAX {
-                        let row = &mut self.entities[entity];
-                        if row.flags & E_DESTROYED != 0 {
-                            continue;
-                        }
-                        row.flags =
-                            (row.flags & !E_COMPONENT_METADATA) | ability_collider_flags(ability);
-                        row.reserved[1] = 0;
-                        row.clock_rate = 0;
-                    }
-                }
-            }
-            let pickup_clock = if self.player_time_scale < Fix::from_f32(0.01) {
-                Fix::ZERO
-            } else {
-                Fix::ONE
-            };
-            let swap_period = data::get().pickup.swap_period;
-            for pickup in &self.ability_pickups {
-                let Some(entity) = pickup.entity else {
-                    continue;
-                };
-                let row = &mut self.entities[entity];
-                if row.flags & E_DESTROYED != 0 {
-                    continue;
-                }
-                row.flags |= E_PICKUP | E_TIMER_KNOWN;
-                row.reserved = [
-                    pickup.ability,
-                    remaining_ticks(swap_period - pickup.time_since_swap),
-                ];
-                row.clock_rate = pickup_clock.raw();
-            }
-            return;
-        }
         let held = self.live_slime_abilities();
         let drill_hitbox_layer = data::get().drill.hitbox_layer;
         for row in &mut self.entities {
@@ -38773,13 +38705,6 @@ impl RolloutWorld {
                     self.entities[row].flags |= E_ENABLED;
                 }
             }
-        }
-        let simple_mask = ability_bit(ABILITY_DASH)
-            | ability_bit(ABILITY_GUST)
-            | ability_bit(ABILITY_INVISIBILITY);
-        if self.active_subsystems & !simple_mask == 0 {
-            self.refresh_simple_actor_entities();
-            return;
         }
         let data = data::get();
         // The HitboxCombo boxes belong to the Drill, not the slime: killPlayer
@@ -39742,118 +39667,6 @@ impl RolloutWorld {
         }
     }
 
-    /// Refresh the only actor rows populated by the default loadout without
-    /// walking the other twenty-four empty ability slots. The formulas and
-    /// exit-pass handling are identical to `refresh_actor_entities` above.
-    fn refresh_simple_actor_entities(&mut self) {
-        let data = data::get();
-        for index in 0..self.players.len() {
-            let entered = std::mem::replace(&mut self.players[index].form_entered, usize::MAX);
-            let slot = &self.players[index];
-            if slot.slime_destroyed() || slot.revival_clone_pending || slot.stock_clone_pending {
-                continue;
-            }
-
-            let alive = slot.base.alive && slot.unspawned == 0;
-            let choosing_respawn = slot.respawn_ticks > 0 || slot.revival_effect_ticks > 0;
-            let teleporting = slot.teleport_effect_active || slot.blink_tunnel_active;
-            let dashing = slot.base.dash.active;
-            let in_ability = slot.active != ActiveAbility::None;
-            let synced = slot.base.collider.center;
-            let rotation = slot.base.collider_rotation;
-            let exit_position = slot
-                .form_frozen
-                .filter(|frozen| frozen.tick == self.tick)
-                .map_or(slot.reported_position, |frozen| slot.frozen_pose(frozen).position);
-
-            let body = &mut self.entities[slot.body_entity];
-            let body_was_active = body.flags & E_ACTIVE != 0;
-            if !alive {
-                body.flags = E_ENABLED | E_TRIGGER | E_DESTROYED;
-            } else if teleporting {
-                body.flags = E_ENABLED | E_TRIGGER;
-            } else if choosing_respawn {
-                body.flags = E_ACTIVE | E_TRIGGER;
-            } else if dashing || in_ability {
-                body.flags = E_ENABLED | E_TRIGGER;
-            } else {
-                body.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-            }
-            let body_active = body.flags & E_ACTIVE != 0;
-            let (center, angle) = if body_active || (teleporting && !in_ability) {
-                (synced, rotation)
-            } else {
-                (slot.frozen_slime.position, slot.frozen_slime.rotation)
-            };
-            let in_form = alive && (dashing || in_ability);
-            if body_active || body_was_active || teleporting || in_form {
-                body.x = center.x.raw();
-                body.y = center.y.raw();
-                let (right, up) = if body_active || teleporting {
-                    (slot.base.collider.right, slot.base.collider.up)
-                } else {
-                    let collider = stored_box(center, Vec2::angle(angle), self.entity_inverse_extents[slot.body_entity]);
-                    (collider.right, collider.up)
-                };
-                                body.right_x = right.x.raw();
-                body.right_y = right.y.raw();
-                body.up_x = up.x.raw();
-                body.up_y = up.y.raw();
-                body.rotation = angle.raw();
-            }
-
-            if slot.dash_entity != usize::MAX {
-                let dash_box = &mut self.entities[slot.dash_entity];
-                let flags = form_box_flags(alive && dashing);
-                let entered = entered == slot.dash_entity;
-                if sync_form_row(dash_box, flags, dashing, entered, slot.base.id) {
-                    let (center, angle) = if alive && dashing {
-                        (synced, rotation)
-                    } else {
-                        (exit_position, slot.base.dash.exit_rotation)
-                    };
-                    let collider = stored_box(
-                        center,
-                        Vec2::angle(angle),
-                        self.entity_inverse_extents[slot.dash_entity],
-                    );
-                    dash_box.x = center.x.raw();
-                    dash_box.y = center.y.raw();
-                    dash_box.vx = 0;
-                    dash_box.vy = 0;
-                    dash_box.right_x = collider.right.x.raw();
-                    dash_box.right_y = collider.right.y.raw();
-                    dash_box.up_x = collider.up.x.raw();
-                    dash_box.up_y = collider.up.y.raw();
-                    dash_box.rotation = angle.raw();
-                }
-            }
-
-            if slot.gust_entity != usize::MAX {
-                let circle = &mut self.entities[slot.gust_entity];
-                let gusting = alive && slot.active == ActiveAbility::Gust;
-                let flags = form_box_flags(gusting);
-                let entered = entered == slot.gust_entity;
-                if sync_form_row(circle, flags, gusting, entered, slot.base.id) {
-                    let (position, rotation) = if gusting {
-                        (slot.base.position, slot.base.rotation())
-                    } else {
-                        (exit_position, Fix::ZERO)
-                    };
-                    let (radius, offset) = slot.form_circle(
-                        slot.gust_entity,
-                        data.gust.hurtbox_radius,
-                        data.gust.collider_offset,
-                    );
-                    let offset = Vec2::angle(rotation).complex_mul(offset);
-                    circle.x = (position + offset).x.raw();
-                    circle.y = (position + offset).y.raw();
-                    circle.rotation = rotation.raw();
-                    circle.radius = radius.raw();
-                }
-            }
-        }
-    }
 
     fn refresh_platform_entities(&mut self) {
         // The rows below are pure functions of platform state, which only
