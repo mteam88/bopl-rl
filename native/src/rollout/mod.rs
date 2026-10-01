@@ -12943,34 +12943,13 @@ impl RolloutWorld {
                 index: platform_index,
             });
         }
-        for (target, player) in self.players.iter().enumerate() {
-            if target == index || !self.playable_slot(player) {
-                continue;
-            }
-            let entity = Self::hurtbox_entity(player);
-            let Some(row) = self.entities.get(entity).copied() else {
-                continue;
-            };
-            if !self.collides(entity)
-                || data.meteor.raycast_mask & (1u32 << row.layer) == 0
-            {
-                continue;
-            }
-            let Some(hit) = self.raycast_entity_row(entity, row, ray_start, direction)
-                .filter(|hit| hit.near <= distance_limit)
-            else {
-                continue;
-            };
-            self.scratch.ray_hits.push(SortedRayHit {
-                distance: hit.near.max(Fix::ZERO),
-                hierarchy: row.hierarchy,
-                kind: 1,
-                index: target,
-            });
-        }
+        // Every other registered collider on the mask, the Meteor's own box
+        // aside: players, clones and items alike.
+        let own = Self::hurtbox_entity(&self.players[index]);
         for (entity, row) in self.entities.iter().copied().enumerate() {
-            if !self.collides(entity)
-                || matches!(row.layer, LAYER_PLAYER | LAYER_WALL | LAYER_WATER)
+            if entity == own
+                || !self.collides(entity)
+                || matches!(row.layer, LAYER_WALL | LAYER_WATER)
                 || data.meteor.raycast_mask & (1u32 << row.layer) == 0
             {
                 continue;
@@ -13020,53 +12999,36 @@ impl RolloutWorld {
                     self.meteor_land(index, hit.index, start, near, data);
                     return;
                 }
-                1 => {
-                    let target = hit.index;
-                    if !self.hittable(target) {
-                        continue;
-                    }
-                    self.players[index].base.position = near;
-                    let entity = Self::hurtbox_entity(&self.players[target]);
-                    self.form_target_on_collide(entity, near, index, PassPhase::Updater, data);
-                    // A Rock (no PlayerCollision) or an invulnerable target
-                    // survives, and the reciprocal PlayerCollision callback
-                    // can still kill the Meteor against a lethal form.
-                    if self.playable(target)
-                        && (self.players[target].active == ActiveAbility::Rock
-                            || (self.players[target].active == ActiveAbility::Roll
-                                && self.players[target].roll.lethal))
-                    {
-                        let killer = self.players[target].base.id;
-                        self.kill(index, killer, CAUSE_OTHER, false, true);
-                    }
-                    if !self.playable(index) || self.players[index].active != ActiveAbility::Meteor
-                    {
-                        self.spawn_meteor_smear(start, near, index, data);
-                        return;
-                    }
-                }
                 2 => {
                     let entity = hit.index;
+                    let target = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity);
                     self.players[index].base.position = near;
                     self.form_target_on_collide(entity, near, index, PassPhase::Updater, data);
-                    let row = self.entities[entity];
-                    if row.flags & E_DESTROYED == 0
-                        && matches!(row.layer, LAYER_PROJECTILE | 16 | 18 | 26)
-                    {
-                        let (killer, can_hurt_owner, cause) = self.projectile_credit(entity);
-                        let caster_id = self.players[index].base.id;
-                        if killer != caster_id || can_hurt_owner {
-                            self.kill(
-                                index,
-                                killer,
-                                if killer == caster_id {
-                                    CAUSE_ACCIDENT
-                                } else {
-                                    cause
-                                },
-                                true,
-                                true,
-                            );
+                    // hitbox.OnCollide: the Meteor's own PlayerCollision, from
+                    // its UpdateSim. A Rock (no PlayerCollision) or an
+                    // invulnerable target survives, and can still kill the
+                    // Meteor as a lethal form.
+                    let route = KillRoute { phase: PassPhase::Updater, on_collide: true };
+                    if let Some(target) = target {
+                        if self.playable(target)
+                            && (self.players[target].active == ActiveAbility::Rock
+                                || (self.players[target].active == ActiveAbility::Roll
+                                    && self.players[target].roll.lethal))
+                        {
+                            let killer = self.players[target].base.id;
+                            self.kill_with(index, killer, CAUSE_OTHER, route, true, true, false);
+                        }
+                    } else {
+                        let row = self.entities[entity];
+                        if row.flags & E_DESTROYED == 0
+                            && matches!(row.layer, LAYER_PROJECTILE | 16 | 18 | 26)
+                        {
+                            let (killer, can_hurt_owner, cause) = self.projectile_credit(entity);
+                            let caster_id = self.players[index].base.id;
+                            if killer != caster_id || can_hurt_owner {
+                                let cause = if killer == caster_id { CAUSE_ACCIDENT } else { cause };
+                                self.kill_with(index, killer, cause, route, true, true, false);
+                            }
                         }
                     }
                     if !self.playable(index) || self.players[index].active != ActiveAbility::Meteor
@@ -13224,7 +13186,7 @@ impl RolloutWorld {
         {
             // PlayerCollision.OnCollide. Rock.prefab has none: only its
             // BounceBall hears the contact.
-            if self.players[target].active != ActiveAbility::Rock {
+            if self.players[target].active != ActiveAbility::Rock && self.hittable(target) {
                 self.kill_with(target, killer, CAUSE_OTHER, route, true, true, false);
             }
             return;
