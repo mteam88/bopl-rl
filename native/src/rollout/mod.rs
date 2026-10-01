@@ -2891,6 +2891,42 @@ pub struct FrozenForm {
     pub posed: bool,
 }
 
+/// AbilityExitInfo (AbilityExitInfo.cs): what a form's exit hands the slime.
+/// `Default` is `default(AbilityExitInfo)`.
+#[derive(Clone, Copy, Default)]
+struct ExitInfo {
+    position: Vec2,
+    external_velocity: Vec2,
+    /// selfImposedVelocity.
+    velocity: Vec2,
+    facing_right: bool,
+    grounded: bool,
+    grounded_speed: Fix,
+    /// currentlyAttachedGround.
+    ground: Option<u32>,
+    /// groundedLocalPosition.
+    local: Fix,
+    just_landed: bool,
+    radius: Fix,
+    enter_turn: bool,
+    enter_jump: bool,
+}
+
+impl ExitInfo {
+    /// The body fields most exits write over the packet: position, both
+    /// velocities, grounding, ground, local and radius.
+    fn take_body(&mut self, base: &Player) {
+        self.position = base.position;
+        self.velocity = base.velocity;
+        self.external_velocity = base.external_velocity;
+        self.grounded = base.grounded;
+        self.grounded_speed = base.grounded_speed;
+        self.ground = base.ground;
+        self.local = base.local;
+        self.radius = base.radius;
+    }
+}
+
 impl DestroyedGround {
     /// attachedGround as a rider's updater sees it on `tick`'s pass: the dead
     /// body before the drain, null after.
@@ -14004,6 +14040,119 @@ impl RolloutWorld {
     /// SlimeController already ran (disabled) earlier in this updater pass, so
     /// its state switch does not run again until the next one. Returns false
     /// when the form has no live ground.
+    /// The active form's IAbilityComponent.ExitAbility(info) up to the
+    /// `ability.ExitAbility(info)` it ends with: the form's own exit effects
+    /// on its body, and the fields it writes over the packet it was handed.
+    fn form_exit_ability(&mut self, index: usize, mut info: ExitInfo) -> ExitInfo {
+        let tick = self.tick;
+        let active = self.players[index].active;
+        match active {
+            ActiveAbility::Bow => {
+                // BowTransform.ExitAbility (BowTransform.cs:117-130) leaves
+                // groundedLocalPosition as it came.
+                let slot = &mut self.players[index];
+                slot.base.rotation = Fix::ZERO;
+                UngroundBody::Form(slot).unground(&self.platforms, tick, true);
+                let local = info.local;
+                info.take_body(&slot.base);
+                info.local = local;
+                info.facing_right = slot.bow.aim.x >= Fix::ZERO;
+            }
+            _ => unreachable!("form_exit_ability: {}", active as u8),
+        }
+        info
+    }
+
+    /// A form's parameterless ExitAbility(): ExitAbility(default(AbilityExitInfo)).
+    fn exit_form(&mut self, index: usize) {
+        let info = self.form_exit_ability(index, ExitInfo::default());
+        self.ability_exit(index, info);
+    }
+
+    /// The landing exit BowTransform, GunTransform and MagnetGun make when
+    /// their raycast attaches a form that has fired, straight to
+    /// Ability.ExitAbility (BowTransform.cs:222-237, GunTransform.cs:166-181,
+    /// MagnetGun.cs:1225-1246).
+    fn landing_exit(&mut self, index: usize) {
+        let slot = &mut self.players[index];
+        slot.base.rotation = Fix::ZERO;
+        let aim = match slot.active {
+            ActiveAbility::Bow => slot.bow.aim,
+            ActiveAbility::Magnet => slot.magnet.aim,
+            _ => slot.gun.aim,
+        };
+        let mut info = ExitInfo { just_landed: true, facing_right: aim.x >= Fix::ZERO, ..ExitInfo::default() };
+        info.take_body(&slot.base);
+        self.ability_exit(index, info);
+    }
+
+    /// Ability.ExitAbility (Ability.cs:139-153) and the slime's onExitAbility
+    /// (SlimeController.cs:193-252): the form publishes its position and goes
+    /// inactive, and the slime takes the packet through
+    /// PlayerPhysics.SyncPhysicsTo (PlayerPhysics.cs:554-582). The slime's
+    /// OldUpdate already passed this updater pass, so its state switch waits
+    /// for the next one.
+    fn ability_exit(&mut self, index: usize, info: ExitInfo) {
+        let tick = self.tick;
+        let slot = &mut self.players[index];
+        slot.reported_position = slot.base.position;
+        slot.reported_tick = tick;
+        slot.set_active_form(&mut self.entities, ActiveAbility::None);
+        slot.base.constants = data::get().player.constants.clone();
+        slot.set_ordinary_body_scale(slot.player_scale);
+        slot.facing_right = info.facing_right;
+        slot.base.grounded = info.grounded;
+        slot.restore_slime_radius();
+        let ground = (info.ground.filter(|_| info.grounded))
+            .and_then(|id| self.platforms.iter().find(|platform| platform.id == id));
+        if let Some(platform) = ground {
+            let position = platform.surface.position(info.local, info.radius);
+            if let Ok(local) = platform.surface.local_position(position, slot.base.radius) {
+                slot.base.local = local;
+            }
+            slot.base.grounded_speed = info.grounded_speed;
+            slot.base.ground = info.ground;
+            slot.base.position = position;
+            slot.base.external_velocity = info.external_velocity;
+            slot.base.velocity = Vec2::ZERO;
+            slot.base.align(platform);
+        } else {
+            slot.base.external_velocity = info.external_velocity;
+            slot.base.velocity = info.velocity;
+            slot.base.position = info.position;
+            slot.base.ground = None;
+            slot.ground_destroyed = None;
+            slot.base.grounded_speed = Fix::ZERO;
+            slot.base.rotation = Fix::ZERO;
+            slot.base.up = Vec2::UP;
+        }
+        if slot.base.grounded {
+            // EnterStop or EnterIdle; attachToGround starts the land and turns
+            // a slime set down on a ceiling (SlimeController.cs:1126-1134).
+            slot.obs_state_held_this_tick = true;
+            (slot.obs_state, slot.state_ticks) =
+                if info.enter_turn { (STATE_STOP, STOP_TICKS + 2) } else { (STATE_IDLE, 0) };
+            if info.just_landed
+                && let Some(platform) = ground
+            {
+                slot.obs_state = STATE_LAND;
+                slot.state_ticks = LAND_TICKS + 2;
+                if platform.surface.normal(slot.base.position).y < Fix::ZERO {
+                    slot.facing_right = !slot.facing_right;
+                }
+            }
+            if info.enter_jump {
+                let strength = slot.base.constants.jump_strength;
+                slot.base.record_upside_down_jump(&self.platforms);
+                slot.base.jump_with_strength(&self.platforms, strength);
+            }
+        } else {
+            slot.enter_fall(terrain!(self));
+        }
+        // hurtBox.UpdatePhysicsPositions: later updaters this pass see the slime.
+        slot.base.sync_collider();
+    }
+
     fn sync_exit_to_ground(&mut self, index: usize) -> bool {
         let slot = &mut self.players[index];
         slot.obs_state_held_this_tick = true;
@@ -25577,7 +25726,7 @@ impl RolloutWorld {
             .expect("valid freeze-ray gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, &mut self.entities, terrain!(self), self.tick, true);
+                self.landing_exit(index);
                 return;
             }
         }
@@ -25751,7 +25900,7 @@ impl RolloutWorld {
             .expect("valid Blink gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, &mut self.entities, terrain!(self), self.tick, true);
+                self.landing_exit(index);
                 return;
             }
         }
@@ -25917,7 +26066,7 @@ impl RolloutWorld {
             .expect("valid scale-ray gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded && slot.gun.has_fired {
-                bow_exit(slot, &mut self.entities, terrain!(self), self.tick, true);
+                self.landing_exit(index);
                 return;
             }
         }
@@ -27230,12 +27379,11 @@ impl RolloutWorld {
                     // hand over that body's position, velocities and aim's
                     // facing (BowTransform.cs:116-130, GunTransform.cs:84-98).
                     // ApplyRagDoll then zeroes only the self-imposed part.
-                    bow_exit(&mut self.players[i], &mut self.entities, terrain!(self), self.tick, false);
+                    self.exit_form(i);
                     let slot = &mut self.players[i];
                     slot.base.velocity = Vec2::ZERO;
-                    let position = slot.base.position;
-                    freeze_at(slot, position);
-                    self.players[index].magnet.held_position = position;
+                    freeze(slot);
+                    self.players[index].magnet.held_position = self.players[i].base.position;
                 } else if self.players[i].active == ActiveAbility::Magnet {
                     // The held form's own MagnetGun.ExitAbility ungrounds it
                     // and hands over its body's position and velocities
@@ -32746,7 +32894,7 @@ impl RolloutWorld {
         let b = &mut self.players[index].bow;
         if b.has_fired && animates {
             if b.fire_ticks_left == 0 {
-                bow_exit(&mut self.players[index], &mut self.entities, terrain!(self), self.tick, false);
+                self.exit_form(index);
                 return;
             }
             b.fire_ticks_left -= 1;
@@ -32963,9 +33111,10 @@ impl RolloutWorld {
             slot.bow.form_rotation = slot.bow.aim.perp_cw().normalized_angle();
         }
         if exit {
-            bow_exit(slot, &mut this.entities, terrain, this.tick, true);
+            self.landing_exit(index);
             // The first pass after a tunnel: Ability.UpdateSim's publish wins
             // the tie against ExitAbility's (Player.cs:311-322).
+            let slot = &mut self.players[index];
             if slot.blink_tunnel_end_tick.is_some_and(|end| end + 1 == tick) {
                 slot.tie_position = Some((tick, ability_publish));
             }
@@ -44236,60 +44385,6 @@ fn push_circle_out_of_platforms(platforms: &[Platform], mut position: Vec2, radi
         }
     }
     position
-}
-
-/// Leaves the bow ability: a landing exit (BowTransform.cs:225-239) or the
-/// fire animation's end (BowTransform.cs:116-130).
-fn bow_exit(slot: &mut PlayerSlot, entities: &mut [CEntity], terrain: Terrain, tick: u32, landed: bool) {
-    let platforms = terrain.platforms;
-    // BowTransform and GunTransform exit facing their aim's side
-    // (`isFacingRight = inputVector.x >= 0`).
-    let aim = if slot.active == ActiveAbility::Bow { slot.bow.aim } else { slot.gun.aim };
-    slot.facing_right = aim.x >= Fix::ZERO;
-    slot.set_active_form(entities, ActiveAbility::None);
-    if landed {
-        // Landing exit (BowTransform.cs:225-239): the slime's
-        // SyncPhysicsTo(AbilityExitInfo) (PlayerPhysics.cs:556-570)
-        // re-derives its surface local from the exit position;
-        // LocalPlayerPosFromPos does not invert
-        // PositionFromLocalPlayerPos exactly, so the rider shifts.
-        let platform = slot
-            .base
-            .platform(platforms)
-            .expect("grounded bow has a platform");
-        let position = platform.surface.position(slot.base.local, slot.base.radius);
-        slot.restore_slime_radius();
-        slot.base.local = platform
-            .surface
-            .local_position(position, slot.base.radius)
-            .expect("exit position lies on the platform");
-        slot.base.position = position;
-        slot.base.velocity = Vec2::ZERO;
-        slot.base.align(platform);
-        // Ability.ExitAbility publishes the collider position
-        // (Ability.cs:151) before the slime's LateUpdateSim slides.
-        slot.reported_position = position;
-        slot.exit_to_fall(terrain);
-    } else {
-        // ExitAbility (BowTransform.cs:116-130), which the animation end
-        // and a Magnet's grab call: UnGround
-        // nudges the body off any retained ground and zeroes the
-        // rotation; the slime then enters fall and immediately
-        // raycasts for a landing (SlimeController.cs:251-259), its
-        // own attached ground cleared first (PlayerPhysics.cs:577).
-        // ExitAbility zeroes the rotation itself (BowTransform.cs:119), so an
-        // airborne Bow with no retained ground leaves unrotated too.
-        UngroundBody::Form(slot).unground(platforms, tick, true);
-        slot.reported_position = slot.base.position; // Ability.cs:151
-        slot.base.ground = None;
-        slot.restore_slime_radius();
-        slot.exit_to_fall(terrain);
-    }
-    slot.reported_tick = tick;
-    slot.set_ordinary_body_scale(slot.player_scale);
-    // SlimeController.onExitAbility syncs the hurtbox, so later updaters
-    // this pass (BlackHole's pull) see the exit position.
-    slot.base.sync_collider();
 }
 
 #[cfg(test)]
