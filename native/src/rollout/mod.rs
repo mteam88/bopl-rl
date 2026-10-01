@@ -10325,7 +10325,7 @@ impl RolloutWorld {
             self.players[index].slime_updated = true;
             self.players[index].slime_input = movement_input;
             // attachToGround's flip on a ceiling landing in this pass's Move,
-            // which an instant cast aiming by the facing reads before.
+            // which the cast reads the facing before.
             let mut landing_flip = false;
             for s in 0..3 {
                 let button_down = action.buttons & (2 << s) as u8 != 0;
@@ -10408,17 +10408,11 @@ impl RolloutWorld {
                         slot.obs_state = STATE_FALL;
                         slot.state_ticks = 0;
                     } else if slot.obs_state == STATE_FALL && frozen.grounded && !resting_fall {
-                        // Move runs after OldUpdate's EnterAbility, where an
-                        // instant ability has already cast (SlimeController.cs:
-                        // 1068, 1084, 1134): Web Swing and Portal Gun aim from
-                        // the facing before this flip.
-                        if frozen.attach_upside_down == Some(true) {
-                            if matches!(ability, ABILITY_WEB_SWING | ABILITY_PORTAL_GUN) {
-                                landing_flip = true;
-                            } else {
-                                slot.facing_right = !slot.facing_right;
-                            }
-                        }
+                        // Move runs after OldUpdate's EnterAbility built
+                        // PlayerInfo (SlimeController.cs:672, 1068, 1084), so
+                        // its attachToGround flips the slime's sprite after
+                        // the cast read the facing (:1131-1134).
+                        landing_flip = frozen.attach_upside_down == Some(true);
                         slot.obs_state = STATE_LAND;
                         // An instant ability leaves the state machine running
                         // this pass, and it counts the pass off the land.
@@ -10475,7 +10469,6 @@ impl RolloutWorld {
                     ABILITY_WEB_SWING => {
                         self.fire_web(index, s);
                         self.players[index].base.instant_cast_this_pass = true;
-                        self.players[index].facing_right ^= landing_flip;
                         break;
                     }
                     ABILITY_INVISIBILITY => {
@@ -10567,7 +10560,6 @@ impl RolloutWorld {
                         self.players[index].telemetry.ability_activations[s] += 1;
                         self.spawn_portal_shot(index, s, direction, data);
                         self.players[index].base.instant_cast_this_pass = true;
-                        self.players[index].facing_right ^= landing_flip;
                         break;
                     }
                     ABILITY_REWIND => {
@@ -12386,6 +12378,14 @@ impl RolloutWorld {
                     // Other catalog abilities are never simulated here.
                     _ => {}
                 }
+            }
+            // The flip lands on the slime's own flipTrans. A form took
+            // PlayerInfo.isFacingRight for its localScale before it, and
+            // onExitAbility realigns the slime's sprite to the exit's
+            // isFacingRight (SlimeController.cs:223-226), so only a slime
+            // still in charge of its body keeps it.
+            if landing_flip && self.players[index].active == ActiveAbility::None {
+                self.players[index].facing_right = !self.players[index].facing_right;
             }
         }
 
