@@ -563,6 +563,29 @@ const TIMER_START: Fix = Fix::from_raw(-6_442_450_944); // -1.5s
 /// keeps flying after killing a slime. A stuck arrow's collider is destroyed
 /// in the .NET sim, so it vanishes from the observation; here the slot is
 /// simply freed.
+/// A landed arrow. Arrow.OnCollide parents it to the hit collider's own
+/// FixTransform and destroys all of it but its Arrow updatable, which stays
+/// a child of that GameObject (Arrow.cs:100, 124-128).
+#[derive(Clone, Copy)]
+pub struct LandedArrow {
+    /// A HierarchyNumber of the parent's own: a wall's row, or the first of
+    /// a spawned object's updatables.
+    pub parent: u32,
+    /// Its Arrow updatable's HierarchyNumber.
+    pub hierarchy: u32,
+    /// The pass in which a landing past 80 children DestroyFix'd it. It
+    /// stays a child until the Updater's end-of-pass DestroyImmediate
+    /// (Arrow.cs:104-118, Updater.cs:339-344).
+    pub trimmed: Option<u32>,
+}
+
+/// The first HierarchyNumber of an object whose prefab registered after
+/// `base` others: EndRegisterPrefab numbers its updatables from one past
+/// prefabsAdded (Updater.cs:143-152).
+fn spawned_hierarchy(base: u32) -> u32 {
+    100_000_000 + base + 1
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct Arrow {
     pub active: bool,
@@ -1371,6 +1394,7 @@ struct ThrowConfig<'a> {
     air_exit_ticks: u32,
     item_layer: u32,
     item_updatable_count: u32,
+    item_child_count: u32,
     item_collider_hierarchy: u32,
     item_radius: Fix,
     item_body: Body,
@@ -1452,6 +1476,7 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             air_exit_ticks: d.air_exit_ticks,
             item_layer: d.item_layer,
             item_updatable_count: d.item_updatable_count,
+            item_child_count: d.item_child_count,
             item_collider_hierarchy: d.item_collider_hierarchy,
             item_radius: d.item_radius,
             item_body: d.item_body,
@@ -1477,6 +1502,7 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             air_exit_ticks: d.air_exit_ticks,
             item_layer: d.item_layer,
             item_updatable_count: d.item_updatable_count,
+            item_child_count: d.item_child_count,
             item_collider_hierarchy: d.item_collider_hierarchy,
             item_radius: d.item_radius,
             item_body: d.item_body,
@@ -1502,6 +1528,7 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             air_exit_ticks: d.air_exit_ticks,
             item_layer: d.item_layer,
             item_updatable_count: d.item_updatable_count,
+            item_child_count: d.item_child_count,
             item_collider_hierarchy: d.item_collider_hierarchy,
             item_radius: d.item_radius,
             item_body: d.item_body,
@@ -1527,6 +1554,7 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             air_exit_ticks: d.air_exit_ticks,
             item_layer: d.item_layer,
             item_updatable_count: d.item_updatable_count,
+            item_child_count: d.item_child_count,
             item_collider_hierarchy: d.item_collider_hierarchy,
             item_radius: d.item_radius,
             item_body: d.item_body,
@@ -1552,6 +1580,7 @@ fn throw_config(data: &data::RolloutData, ability: u32) -> ThrowConfig<'_> {
             air_exit_ticks: d.air_exit_ticks,
             item_layer: d.item_layer,
             item_updatable_count: d.item_updatable_count,
+            item_child_count: d.item_child_count,
             item_collider_hierarchy: d.item_collider_hierarchy,
             item_radius: d.item_radius,
             item_body: d.item_body,
@@ -1768,15 +1797,6 @@ pub struct PlatformDynamics {
     /// base shrinks back ten seconds after its last growth.
     pub base_scale: Fix,
     pub time_since_scaled_up: Fix,
-    /// Arrows stuck to this platform. Each stays parented to it with its
-    /// Arrow updatable (Arrow.cs:100, 124-128), so DuplicateObject copies
-    /// and numbers it along with the platform.
-    pub stuck_arrows: u32,
-    /// The pass in which a landing past 80 children DestroyFix'd this
-    /// platform's first stuck arrow. That arrow stays a child until the
-    /// Updater's end-of-pass DestroyImmediate, so a later landing in the same
-    /// pass finds it first again (Arrow.cs:104-118, Updater.cs:339-344).
-    pub arrow_trim_tick: Option<u32>,
     /// StickyRoundedRectangle.UpdateBounds follows its collider updater on
     /// the pass after a later MachoThrow2 scale write.
     pub surface_shape_dirty: bool,
@@ -4518,6 +4538,9 @@ pub struct RolloutWorld {
     /// Parallel to `platforms`: index into the entity table.
     pub platform_entities: Vec<usize>,
     pub arrows: Vec<Arrow>,
+    /// Every landed arrow still a child of its collider, in landing order,
+    /// which is each parent's child order.
+    pub landed_arrows: Vec<LandedArrow>,
     pub ability_pickups: Vec<AbilityPickup>,
     /// Pure tick-indexed DynamicAbilityPickup wobble values. Kept across
     /// episode resets so repeated matches do not redo identical Q32 sine
@@ -4704,6 +4727,7 @@ impl RolloutWorld {
             platform_defs: Vec::with_capacity(64),
             platform_entities: Vec::with_capacity(64),
             arrows: Vec::with_capacity(64),
+            landed_arrows: Vec::new(),
             ability_pickups: Vec::with_capacity(4),
             pickup_wobble_cache: Vec::with_capacity(2048),
             black_holes: Vec::with_capacity(16),
@@ -4815,6 +4839,7 @@ impl RolloutWorld {
         self.platform_defs.clone_from(&src.platform_defs);
         self.platform_entities.clone_from(&src.platform_entities);
         self.arrows.clone_from(&src.arrows);
+        self.landed_arrows.clone_from(&src.landed_arrows);
         self.ability_pickups.clone_from(&src.ability_pickups);
         self.black_holes.clone_from(&src.black_holes);
         self.pending_black_holes.clone_from(&src.pending_black_holes);
@@ -4926,6 +4951,7 @@ impl RolloutWorld {
             platform_defs: _,
             platform_entities: _,
             arrows: _,
+            landed_arrows: _,
             ability_pickups: _,
             pickup_wobble_cache: _,
             black_holes: _,
@@ -5063,6 +5089,7 @@ impl RolloutWorld {
         self.sudden_death_latched = false;
         self.game_in_progress = true;
         self.arrows.clear();
+        self.landed_arrows.clear();
         self.ability_pickups.clear();
         self.black_holes.clear();
         self.pending_black_holes.clear();
@@ -5662,8 +5689,6 @@ impl RolloutWorld {
                 max_scale: p.max_scale,
                 base_scale: p.base_scale,
                 time_since_scaled_up: Fix::ZERO,
-                stuck_arrows: 0,
-                arrow_trim_tick: None,
                 surface_shape_dirty: false,
                 root_body: p.body,
                 attached_children: 0,
@@ -19996,8 +20021,6 @@ impl RolloutWorld {
             max_scale: data.macho_throw.boulder_max_scale,
             base_scale: Fix::ONE,
             time_since_scaled_up: Fix::ZERO,
-            stuck_arrows: 0,
-            arrow_trim_tick: None,
             surface_shape_dirty: false,
             root_body: data.macho_throw.boulder_body,
             attached_children: 0,
@@ -27958,6 +27981,7 @@ impl RolloutWorld {
         body.velocity = (position - source.position).normalized_safe()
             * (source.body.velocity.length() + Fix::from_int(15));
         body.orientation = source.body.orientation;
+        let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), 4, 1);
         self.pending_duplicated_rocks.push(DuplicatedRock {
             active: true,
             appended: self.tick + 1,
@@ -27969,10 +27993,9 @@ impl RolloutWorld {
             collider_radius: data.rock.radius * source.scale,
             duplicate_lifespan: 1800,
             duplicate_shake_offset: Vec2::ZERO,
-            hierarchy_base: self.next_spawn_hierarchy,
+            hierarchy_base,
             mass_scale: Fix::ONE,
         });
-        self.next_spawn_hierarchy += 4;
     }
 
     /// The copy's circle joins DetPhysics. Its row reads no owner, since
@@ -28078,8 +28101,7 @@ impl RolloutWorld {
         let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.spike.attack_updatable_count;
+        let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), data.spike.attack_updatable_count, 1);
         let attach_order = self.attach_child_body(platform_index, data.spike.attack_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
@@ -28185,8 +28207,7 @@ impl RolloutWorld {
         let root_position = surface.position(local, Fix::ZERO) + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.engine.rocket_updatable_count;
+        let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), data.engine.rocket_updatable_count, 1);
         let attach_order = self.attach_child_body(platform_index, data.engine.rocket_body);
         let collider_center = self.platform_dynamics[platform_index].composite_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
@@ -28292,8 +28313,7 @@ impl RolloutWorld {
         let root_position = surface_position + up * surface_offset;
         let relative_center = (root_position - parent_position).complex_mul(inverse_basis)
             + source.collider_offset.complex_mul(relative_right);
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += data.tesla.node_updatable_count;
+        let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), data.tesla.node_updatable_count, 1);
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
         let id = self.next_id();
@@ -28419,8 +28439,7 @@ impl RolloutWorld {
                 angle,
                 clone_index,
             );
-            let hierarchy_base = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += updatable_count;
+            let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), updatable_count, 1);
             let mut clone = source;
             clone.active = true;
             clone.id = 0;
@@ -28505,8 +28524,7 @@ impl RolloutWorld {
                 clone_index,
             );
             let up = (position - source.position).normalized_safe();
-            let hierarchy_base = self.next_spawn_hierarchy;
-            self.next_spawn_hierarchy += data.missile.spark_updatable_count;
+            let hierarchy_base = self.duplicate_hierarchy(Some(spawned_hierarchy(source.hierarchy_base)), data.missile.spark_updatable_count, 1);
             let mut body = data.missile.spark_body;
             body.velocity = up * speed;
             // duplicateBoplBody first copies the live rotation, then the
@@ -31733,9 +31751,8 @@ impl RolloutWorld {
                 data.macho_throw.boulder_collider_hierarchy,
             )
         };
-        let updatable_count = updatable_count + self.platform_dynamics[source].stuck_arrows;
-        let hierarchy_base = self.next_spawn_hierarchy;
-        self.next_spawn_hierarchy += updatable_count;
+        let source_hierarchy = (!hidden).then(|| self.entities[self.platform_entities[source]].hierarchy);
+        let hierarchy_base = self.duplicate_hierarchy(source_hierarchy, updatable_count, collider_hierarchy);
 
         let mut platform = self.platforms[source].clone();
         platform.id = self.next_platform_id;
@@ -32617,8 +32634,6 @@ impl RolloutWorld {
             max_scale: pd.spawn_max_scale,
             base_scale: Fix::ONE,
             time_since_scaled_up: Fix::ZERO,
-            stuck_arrows: 0,
-            arrow_trim_tick: None,
             surface_shape_dirty: false,
             root_body: pd.spawn_body,
             attached_children: 0,
@@ -35132,39 +35147,106 @@ impl RolloutWorld {
     /// collider an earlier callback destroyed does not take it
     /// (Arrow.cs:85-131).
     fn arrow_land(&mut self, index: usize, wall: Option<usize>, part: Option<Part>, data: &data::RolloutData) {
-        if !self.arrows[index].active {
+        if !self.arrows[index].active
+            || wall.is_some_and(|p| self.entities[self.platform_entities[p]].flags & E_DESTROYED != 0)
+            || part.is_some_and(|part| self.part_destroyed(part))
+        {
             return;
         }
-        if let Some(p) = wall {
-            if self.entities[self.platform_entities[p]].flags & E_DESTROYED != 0 {
-                return;
-            }
-            self.platform_dynamics[p].stuck_arrows += 1;
-            // Past 80 children it DestroyFixes the platform's first Arrow
-            // child (Arrow.cs:104-118).
-            if self.platform_dynamics[p].arrow_trim_tick != Some(self.tick) && self.platform_child_count(p) > 80 {
-                self.platform_dynamics[p].stuck_arrows -= 1;
-                self.platform_dynamics[p].arrow_trim_tick = Some(self.tick);
-            }
-        }
-        if part.is_some_and(|part| self.part_destroyed(part)) {
-            return;
+        let (parent, authored) = match (wall, part) {
+            (Some(p), _) => (self.entities[self.platform_entities[p]].hierarchy, self.platform_child_count(p)),
+            (None, Some(part)) => self.arrow_parent(part, data),
+            (None, None) => unreachable!(),
+        };
+        // It becomes the parent's last child. Past 80 children it
+        // DestroyFixes the parent's first Arrow child, which may be one this
+        // pass already destroyed (Arrow.cs:100-118).
+        let tick = self.tick;
+        self.landed_arrows.retain(|arrow| arrow.trimmed.is_none_or(|trimmed| trimmed == tick));
+        self.landed_arrows.push(LandedArrow {
+            parent,
+            hierarchy: spawned_hierarchy(self.arrows[index].hierarchy_base),
+            trimmed: None,
+        });
+        let arrows = self.landed_arrows.iter().filter(|arrow| arrow.parent == parent).count() as u32;
+        if authored + arrows > 80 {
+            let first = self.landed_arrows.iter_mut().find(|arrow| arrow.parent == parent).unwrap();
+            first.trimmed.get_or_insert(tick);
         }
         let arrow = self.arrows[index];
         self.destroy_arrow_contact(index, arrow.position, arrow.body(&data.arrow.body));
     }
 
-    /// The platform transform's childCount: its scene children (the Platform
-    /// ability's ResizablePlatform and the Boulder prefab have none), stuck
-    /// arrows, and the spikes, engines and spark nodes parented to it, less
-    /// the one MachoThrow2 has unparented.
+    /// The GameObject holding a part's collider, by a HierarchyNumber of its
+    /// own, and its prefab's children.
+    fn arrow_parent(&self, part: Part, data: &data::RolloutData) -> (u32, u32) {
+        match part {
+            Part::Item(i) => {
+                let item = &self.thrown_items[i];
+                let children = if item.ability == ABILITY_MINE {
+                    data.mine.item_child_count
+                } else {
+                    throw_config(data, item.ability).item_child_count
+                };
+                (spawned_hierarchy(item.hierarchy_base), children)
+            }
+            Part::Shot(i) => (spawned_hierarchy(self.portal_shots[i].hierarchy_base), data.portal_gun.shot_child_count),
+            Part::Missile(i) => {
+                (spawned_hierarchy(self.guided_missiles[i].hierarchy_base), data.missile.spark_child_count)
+            }
+            Part::Spike(i) => (spawned_hierarchy(self.spike_attacks[i].hierarchy_base), data.spike.attack_child_count),
+            Part::Engine(i) => (spawned_hierarchy(self.engines[i].hierarchy_base), data.engine.rocket_child_count),
+            Part::Node(i) => (spawned_hierarchy(self.tesla_nodes[i].hierarchy_base), data.tesla.node_child_count),
+            Part::Rock(i) => (self.entities[self.players[i].rock_entity].hierarchy, data.rock.child_count),
+            Part::DuplicatedRock(i) => {
+                (spawned_hierarchy(self.duplicated_rocks[i].hierarchy_base), data.rock.no_player_child_count)
+            }
+            // Not on a StickTo layer.
+            Part::Pickup(_) | Part::Hook(_) | Part::Arrow(_) | Part::Hole(_) => unreachable!(),
+        }
+    }
+
+    /// DuplicateObject's GetComponentsInChildren: a source in the hierarchy
+    /// (`source`, by a HierarchyNumber of its own) brings its Arrow
+    /// children, sorted with its `own` updatables by HierarchyNumber and the
+    /// whole set renumbered for the copy. Reserves the copy's numbers and
+    /// returns the base of its own; each copied arrow is a new child of the
+    /// copy, whose own HierarchyNumber `key_offset` past that base names it
+    /// (ShootDuplicator.cs:707-753, Updater.cs:143-152).
+    fn duplicate_hierarchy(&mut self, source: Option<u32>, own: u32, key_offset: u32) -> u32 {
+        let next = self.next_spawn_hierarchy;
+        let arrows: Vec<u32> = source.map_or(Vec::new(), |source| {
+            self.landed_arrows
+                .iter()
+                .filter(|arrow| arrow.parent == source && arrow.trimmed.is_none())
+                .map(|arrow| arrow.hierarchy)
+                .collect()
+        });
+        let mut sorted = arrows.clone();
+        sorted.sort_unstable();
+        let earlier = source.map_or(0, |source| sorted.partition_point(|&hierarchy| hierarchy < source)) as u32;
+        let base = next + earlier;
+        self.next_spawn_hierarchy += own + arrows.len() as u32;
+        let parent = 100_000_000 + base + key_offset;
+        for hierarchy in arrows {
+            let rank = sorted.binary_search(&hierarchy).unwrap() as u32;
+            let rank = if rank < earlier { rank } else { rank + own };
+            self.landed_arrows.push(LandedArrow { parent, hierarchy: spawned_hierarchy(next + rank), trimmed: None });
+        }
+        base
+    }
+
+    /// The platform transform's childCount less its arrows: its scene
+    /// children (the Platform ability's ResizablePlatform and the Boulder
+    /// prefab have none), and the spikes, engines and spark nodes parented to
+    /// it, less the one MachoThrow2 has unparented.
     fn platform_child_count(&self, p: usize) -> u32 {
         let definition = self.platform_defs[p];
         let authored = if definition != usize::MAX { data::get().maps[self.map].platforms[definition].child_count } else { 0 };
         let spikes = self.spike_attacks.iter().filter(|c| c.active && !c.macho_carried && c.platform_index == p).count();
         let engines = self.engines.iter().filter(|c| c.active && !c.macho_carried && c.platform_index == p).count();
         let nodes = self.tesla_nodes.iter().filter(|c| c.active && !c.macho_carried && c.platform_index == p).count();
-        authored + self.platform_dynamics[p].stuck_arrows + (spikes + engines + nodes) as u32
+        authored + (spikes + engines + nodes) as u32
     }
 
     /// PlayerCollision.OnCollide with an arrow, run from the callback queue
