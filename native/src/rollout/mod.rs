@@ -1932,6 +1932,11 @@ pub struct FormScale {
     /// The FixTransform the form's box took at the last SyncAll: the body's
     /// while the form is live, `pose` once it is out (DetPhysics.cs:2517-2524).
     pub synced: FormPose,
+    /// The form's PlayerPhysics.jumpedThisFrame. Only its own LateUpdateSim
+    /// clears it, so a form that jumps out keeps it until its next entry
+    /// pass, whose PlayerBody then refuses a jump release of the rope
+    /// (PlayerPhysics.cs:163, 332; PlayerBody.cs:167).
+    pub jumped_this_frame: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -3673,6 +3678,12 @@ fn rock_scale_bounds() -> (Fix, Fix) {
 }
 
 impl PlayerSlot {
+    /// The active form's PlayerPhysics.Jump.
+    fn form_jump(&mut self, platforms: &[Platform], strength: Fix) {
+        self.base.jump_with_strength(platforms, strength);
+        self.forms[self.active_slot].jumped_this_frame = true;
+    }
+
     /// HitboxCombo.UpdateHitBoxPositionsAndScale: the boxes take the Drill's
     /// pose, and its Scale only when it differs (HitboxCombo.cs:87-98).
     fn update_drill_hitboxes(&mut self, inverse_extents: &mut [Vec2]) {
@@ -8182,6 +8193,14 @@ impl RolloutWorld {
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_callbacks();
         }
+        // The live form's PlayerPhysics.LateUpdateSim ends clearing its
+        // jumpedThisFrame (PlayerPhysics.cs:163); one that jumped out is
+        // inactive by now and keeps it.
+        for slot in &mut self.players {
+            if slot.active != ActiveAbility::None {
+                slot.forms[slot.active_slot].jumped_this_frame = false;
+            }
+        }
         // PlayerPhysics.LateUpdateSim (PlayerPhysics.cs:138-146) positions
         // StickyRoundedRectangle riders from their surface local after
         // physics; their Player-layer box keeps the position DetPhysics
@@ -12551,8 +12570,7 @@ impl RolloutWorld {
             if slot.roll.charging {
                 slot.roll.seconds_charged += slot.base.fixed_delta_time;
                 if slot.roll.jump_button_has_been_up && jump_down {
-                    slot.base
-                        .jump_with_strength(&self.platforms, data.roll.constants.jump_strength);
+                    slot.form_jump(&self.platforms, data.roll.constants.jump_strength);
                     self.exit_form(index);
                     return;
                 }
@@ -12582,7 +12600,7 @@ impl RolloutWorld {
                 slot.roll.short_jumping = true;
                 // Roll.ShortJump is PlayerPhysics.Jump at shortJumpStr, whose
                 // UnGround lifts off the attachedGround it keeps (Roll.cs:534-544).
-                slot.base.jump_with_strength(&self.platforms, data.roll.short_jump_strength);
+                slot.form_jump(&self.platforms, data.roll.short_jump_strength);
             }
         }
         if self.players[index].roll.time_since_release > data.roll.dash_time {
@@ -19779,10 +19797,7 @@ impl RolloutWorld {
                 }
                 if frame > data.macho_throw.jump_after_throw_frames && jump_pressed {
                     // PlayerPhysics.Jump runs airborne too, off world up.
-                    self.players[index].base.jump_with_strength(
-                        &self.platforms,
-                        data.macho_throw.constants.jump_strength,
-                    );
+                    self.players[index].form_jump(&self.platforms, data.macho_throw.constants.jump_strength);
                     self.exit_form(index);
                     return;
                 }
