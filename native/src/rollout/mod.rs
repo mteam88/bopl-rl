@@ -357,6 +357,12 @@ const E_EXPLOSIVE: u32 = 1 << 11;
 const E_HITBOX: u32 = 1 << 12;
 const E_CONTACT_DAMAGE: u32 = 1 << 13;
 const E_CONTACT_DAMAGE_KNOWN: u32 = 1 << 14;
+/// Internal marker: FixTransform.IsDestroyed of the row's object.
+/// Updater.DestroyFix sets it, and it holds until the frame's closing
+/// OnDestroyUpdatable loop and DestroyImmediate (Updater.cs:89-110, 329-345),
+/// whatever DetPhysics does with the collider meanwhile: rewriting a row as
+/// destroyed or removed keeps it. Cleared before any observation.
+const E_FIX_DESTROYED: u32 = 1 << 15;
 /// Internal marker: DetPhysics dropped this collider. Objects destroyed by an
 /// updatable are removed before the same pass's contacts and never observed;
 /// one destroyed by a collision callback is observed once, flagged
@@ -372,6 +378,11 @@ fn row_is_active(row: &CEntity) -> bool {
     row.flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
 }
 
+/// Whether the object on the row is IsDestroyed (`E_FIX_DESTROYED`).
+fn fix_destroyed(entities: &[CEntity], entity: Option<usize>) -> bool {
+    entity.and_then(|entity| entities.get(entity)).is_some_and(|row| row.flags & E_FIX_DESTROYED != 0)
+}
+
 /// A platform row's flags, from the platform's own state: DetPhysics.IsActive's
 /// two halves, the GameObject and its collider, and whether children make it
 /// a composite.
@@ -385,7 +396,13 @@ fn platform_row_flags(platform: &Platform, dynamics: &PlatformDynamics) -> u32 {
 /// the oracle reports as `E_TRIGGER`.
 #[inline]
 const fn destroyed_flags(flags: u32) -> u32 {
-    (flags & E_TRIGGER) | E_DESTROYED
+    (flags & (E_TRIGGER | E_FIX_DESTROYED)) | E_DESTROYED
+}
+
+/// A row DetPhysics dropped. Its object may still be IsDestroyed.
+#[inline]
+const fn removed_flags(flags: u32) -> u32 {
+    E_REMOVED | (flags & E_FIX_DESTROYED)
 }
 
 #[inline]
@@ -1239,12 +1256,6 @@ pub struct SpawnedTeslaNode {
     /// animator still runs it out and its callback makes the node lethal
     /// until the next UpdateSim finds it unconnected.
     pub orb_enter_left: u32,
-    /// The pass an Updater.DestroyFix took this node mid-pass: IsDestroyed.
-    /// DetPhysics drops its circle and the Updater skips its UpdateSim, so it
-    /// is no longer `active`, but its GameObject stays in the hierarchy until
-    /// the frame's DestroyImmediate, and its OnDestroyUpdatable runs at the end
-    /// of the pass (Updater.cs:89-110).
-    pub destroyed_tick: Option<u32>,
     pub line_hierarchy_base: u32,
     pub line_appended: u32,
     pub line_entity: Option<usize>,
@@ -2520,9 +2531,6 @@ pub struct AbilitylessClone {
     pub drowned_tick: u32,
     /// Its PlayerCollision.wasKilledThisFrame (PlayerCollision.cs:449-470).
     pub was_killed_tick: Option<u32>,
-    /// The pass a callback's killPlayer DestroyFix'd the clone, which leaves
-    /// it active until the pass ends (Updater.cs:89-110).
-    pub destroyed_tick: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3433,10 +3441,6 @@ pub struct PlayerSlot {
     /// kill, cleared by the slime's next UpdateSim (PlayerCollision.cs:74-77,
     /// 449-470).
     pub was_killed_tick: Option<u32>,
-    /// The pass a callback's killPlayer DestroyFix'd this slime. DestroyFix
-    /// leaves the GameObject active, so a later killPlayer this pass still
-    /// reaches it (Updater.cs:89-110, PlayerCollision.cs:111).
-    pub slime_destroyed_tick: Option<u32>,
     /// Where a stock death left the destroyed slime body, with its pass: the
     /// slot itself moves to the respawn point at once.
     pub stock_death: Option<(u32, Vec2)>,
@@ -6044,7 +6048,6 @@ impl RolloutWorld {
                 captured_by_ball: None,
                 poke_invulnerable: false,
                 was_killed_tick: None,
-                slime_destroyed_tick: None,
                 stock_death: None,
                 late_obs_tick: u32::MAX,
                 late_obs_position: spawn,
@@ -6188,6 +6191,7 @@ impl RolloutWorld {
         let mut spawn_anim = 0u32;
         for i in 0..self.warmup {
             self.tick = i;
+            self.destroy_marked_objects();
             // Authored map components run throughout the level warmup too.
             // This is observable on VectorFieldPlatform maps whose one- to
             // three-second delays expire before the standard 240-tick reset.
@@ -6254,6 +6258,7 @@ impl RolloutWorld {
             self.recording.push(RecordedActions::default());
         }
         self.tick = self.warmup;
+        self.destroy_marked_objects();
         self.started = true;
         self.observe_main();
         self.valid = true;
@@ -8053,7 +8058,7 @@ impl RolloutWorld {
             if slot.slime_destroyed() {
                 for e in slot.owned_rows() {
                     if e != usize::MAX {
-                        self.entities[e].flags = E_REMOVED;
+                        self.entities[e].flags = removed_flags(self.entities[e].flags);
                     }
                 }
             }
@@ -8062,7 +8067,7 @@ impl RolloutWorld {
             if let Some(e) = clone.entity.filter(|_| !clone.active)
                 && self.entities[e].flags & E_DESTROYED != 0
             {
-                self.entities[e].flags = E_REMOVED;
+                self.entities[e].flags = removed_flags(self.entities[e].flags);
             }
         }
         // Includes a Tesla line an updater (SimpleSparkNode.UpdateSim) destroyed
@@ -8286,6 +8291,7 @@ impl RolloutWorld {
         }
 
         self.tesla_nodes_destroyed_drain();
+        self.destroy_marked_objects();
         for line in &mut self.destroyed_tesla_lines {
             if std::mem::take(&mut line.pending) {
                 let row = &mut self.entities[line.entity];
@@ -10023,7 +10029,7 @@ impl RolloutWorld {
     /// this pass, which stays active until the pass ends (Updater.cs:89-110).
     /// A form's collider goes inactive with its ExitAbility.
     fn player_collision_active(&self, index: usize, slime: bool) -> bool {
-        self.hittable(index) || (slime && self.players[index].slime_destroyed_tick == Some(self.tick))
+        self.hittable(index) || (slime && fix_destroyed(&self.entities, Some(self.players[index].body_entity)))
     }
 
     /// Whether DetPhysics tests the slime's hurtbox. A respawned slime is
@@ -14864,7 +14870,7 @@ impl RolloutWorld {
         let node_index = if let Some(free) = self
             .tesla_nodes
             .iter()
-            .position(|node| self.child_slot_free(node.active, node.entity) && node.destroyed_tick != Some(self.tick))
+            .position(|node| self.child_slot_free(node.active, node.entity) && !fix_destroyed(&self.entities, node.entity))
         {
             self.tesla_nodes[free] = node;
             free
@@ -14936,7 +14942,7 @@ impl RolloutWorld {
     /// Deactivate's return to NonLethalTerrain, which it skips for a node
     /// DestroyFix took this pass (SimpleSparkNode.cs:159-167, 177-185).
     fn tesla_node_unlit(&mut self, node_index: usize) {
-        if self.tesla_nodes[node_index].destroyed_tick != Some(self.tick) {
+        if !fix_destroyed(&self.entities, self.tesla_nodes[node_index].entity) {
             self.tesla_nodes[node_index].lethal = false;
         }
     }
@@ -14996,9 +15002,8 @@ impl RolloutWorld {
 
     /// Updater.DestroyFix mid-pass: from here the node is IsDestroyed.
     fn mark_tesla_node_destroyed(&mut self, node_index: usize) {
-        self.tesla_nodes[node_index].destroyed_tick = Some(self.tick);
         if let Some(entity) = self.tesla_nodes[node_index].entity {
-            self.entities[entity].flags = E_DESTROYED | E_COMPOSITE;
+            self.entities[entity].flags = E_DESTROYED | E_COMPOSITE | E_FIX_DESTROYED;
         }
     }
 
@@ -15046,14 +15051,19 @@ impl RolloutWorld {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         updater_order(&mut order, &self.tesla_nodes, |node| self.updater_key(node.appended, 100_000_000 + node.hierarchy_base));
         for &node_index in order.iter().rev() {
-            if self.tesla_nodes[node_index].destroyed_tick == Some(self.tick) {
+            if fix_destroyed(&self.entities, self.tesla_nodes[node_index].entity) {
                 self.tesla_node_destroyed(node_index, true);
             }
         }
-        for node in &mut self.tesla_nodes {
-            node.destroyed_tick = None;
-        }
         self.scratch.item_order = order;
+    }
+
+    /// The frame's closing DestroyImmediate takes every object DestroyFix
+    /// marked, so none is IsDestroyed past the frame (Updater.cs:339-344).
+    fn destroy_marked_objects(&mut self) {
+        for row in &mut self.entities {
+            row.flags &= !E_FIX_DESTROYED;
+        }
     }
 
     fn spawn_engine(&mut self, index: usize, data: &data::RolloutData) -> bool {
@@ -16029,7 +16039,7 @@ impl RolloutWorld {
         self.tesla_nodes_update(data, updater_dt, u32::MAX);
 
         for node_index in 0..self.tesla_nodes.len() {
-            let destroyed = self.tesla_nodes[node_index].destroyed_tick == Some(self.tick);
+            let destroyed = fix_destroyed(&self.entities, self.tesla_nodes[node_index].entity);
             if !(self.tesla_nodes[node_index].active || destroyed)
                 || self.tesla_nodes[node_index].macho_carried
                 || !self.tesla_nodes[node_index].connected
@@ -16120,7 +16130,7 @@ impl RolloutWorld {
             self.run_spawned_before(data, updater_dt, key);
             self.updater_take_turn(key);
             // IsDestroyed skips its UpdateSim and its orb's.
-            if self.tesla_nodes[node_index].destroyed_tick == Some(self.tick) {
+            if fix_destroyed(&self.entities, self.tesla_nodes[node_index].entity) {
                 continue;
             }
             if !self.tesla_nodes[node_index].active
@@ -16198,7 +16208,7 @@ impl RolloutWorld {
             return false;
         };
         // A node DestroyFix took this pass is still in the hierarchy.
-        let present = node.active || node.destroyed_tick == Some(self.tick);
+        let present = node.active || fix_destroyed(&self.entities, node.entity);
         present
             && !node.macho_carried
             && !self.wall_deactivated(node.platform_index)
@@ -17165,8 +17175,9 @@ impl RolloutWorld {
                 // A callback casualty stays visible as destroyed until the
                 // next pass's DetPhysics.Simulate drops it.
                 if let Some(entity) = entity.filter(|_| alive) {
-                    self.entities[entity].flags = E_DESTROYED | E_TRIGGER;
-                    self.entities[entity].owner = 0;
+                    let row = &mut self.entities[entity];
+                    row.flags = E_DESTROYED | E_TRIGGER | (row.flags & E_FIX_DESTROYED);
+                    row.owner = 0;
                 }
             }
             HoleTarget::Wall(platform_index) => {
@@ -27176,7 +27187,6 @@ impl RolloutWorld {
             pass_start: (u32::MAX, Vec2::ZERO),
             drowned_tick: u32::MAX,
             was_killed_tick: None,
-            destroyed_tick: None,
         };
         if let Some(free) = self
             .abilityless_clones
@@ -29126,7 +29136,7 @@ impl RolloutWorld {
         // A Tesla line's box is on its node; its row carries only the centre.
         // A node evicted this tick keeps its lightning until the pass ends.
         if let Some((node_index, node)) = self.tesla_nodes.iter().enumerate().find(|(_, node)| {
-            (node.active || node.destroyed_tick == Some(self.tick)) && node.line_entity == Some(entity)
+            (node.active || fix_destroyed(&self.entities, node.entity)) && node.line_entity == Some(entity)
         }) {
             return self.line_part(node_index).then_some(DetCollider::Box(OrientedBox {
                 center: node.line_center,
@@ -31962,7 +31972,7 @@ impl RolloutWorld {
         }
         for node_index in 0..self.tesla_nodes.len() {
             let node = self.tesla_nodes[node_index];
-            if (held(node.active, node.entity, &self.entities) || node.destroyed_tick == Some(self.tick))
+            if (held(node.active, node.entity, &self.entities) || fix_destroyed(&self.entities, node.entity))
                 && !node.macho_carried
                 && node.platform_index == index
             {
@@ -31971,13 +31981,12 @@ impl RolloutWorld {
                 self.remove_tesla_node(node_index, deferred);
                 self.tesla_nodes[node_index].platform_index = usize::MAX;
                 if let Some(entity) = node.entity {
-                    self.entities[entity].flags = E_REMOVED;
+                    self.entities[entity].flags = removed_flags(self.entities[entity].flags);
                 }
             }
         }
-        let tick = self.tick;
         for node in &mut self.tesla_nodes {
-            if (held(node.active, node.entity, &self.entities) || node.destroyed_tick == Some(tick))
+            if (held(node.active, node.entity, &self.entities) || fix_destroyed(&self.entities, node.entity))
                 && !node.macho_carried
                 && node.platform_index != usize::MAX
                 && node.platform_index > index
@@ -32670,7 +32679,7 @@ impl RolloutWorld {
                     hidden = true;
                     continue;
                 }
-                self.entities[entity].flags = E_REMOVED;
+                self.entities[entity].flags = removed_flags(row.flags);
                 // A composite already gone with its wall is not touched.
                 if row.flags & E_COMPOSITE != 0
                     && let Some(platform) = self.destroyed_child_wall(entity)
@@ -32694,7 +32703,7 @@ impl RolloutWorld {
     /// CompositeBody holds there, destroyed, until RemoveDestroyedColliders
     /// drops it; one MachoThrow2 carries is out of the composite already.
     fn destroyed_child_flags(flags: u32) -> u32 {
-        if flags & E_COMPOSITE != 0 { E_DESTROYED | E_COMPOSITE } else { E_REMOVED }
+        if flags & E_COMPOSITE != 0 { E_DESTROYED | E_COMPOSITE | (flags & E_FIX_DESTROYED) } else { removed_flags(flags) }
     }
 
     /// The wall whose composite still holds destroyed child `entity`: its
@@ -35079,7 +35088,7 @@ impl RolloutWorld {
                 // A slime killed by an earlier callback shoves its destroyed
                 // body, not the one a stock respawns.
                 if !self.players[index].base.alive
-                    || self.players[index].slime_destroyed_tick == Some(self.tick)
+                    || fix_destroyed(&self.entities, Some(self.players[index].body_entity))
                 {
                     return;
                 }
@@ -37070,7 +37079,7 @@ impl RolloutWorld {
         let owner = self.abilityless_clones[clone_index].owner;
         // activeSelf: a live clone, or one a callback's killPlayer destroyed
         // earlier this pass, which then has nothing left to tear down.
-        let destroyed = self.abilityless_clones[clone_index].destroyed_tick == Some(tick);
+        let destroyed = fix_destroyed(&self.entities, self.abilityless_clones[clone_index].entity);
         if !self.abilityless_clones[clone_index].active && !destroyed {
             return;
         }
@@ -37082,9 +37091,6 @@ impl RolloutWorld {
                 return;
             }
             self.abilityless_clones[clone_index].was_killed_tick = Some(tick);
-        }
-        if route.callback() {
-            self.abilityless_clones[clone_index].destroyed_tick = Some(tick);
         }
         if spawn_effect && self.players[owner].extra_life != REVIVE_BEING {
             self.register_prefab(data::get().prefab("deathEffect"));
@@ -37119,6 +37125,13 @@ impl RolloutWorld {
             if let Some(entity) = self.abilityless_clones[clone_index].entity {
                 self.entities[entity].flags = E_REMOVED;
             }
+        }
+        // A callback's killPlayer DestroyFixes the clone, which stays active
+        // until the frame ends. A promoted clone's row went to its body.
+        if route.callback()
+            && let Some(entity) = self.abilityless_clones[clone_index].entity
+        {
+            self.entities[entity].flags |= E_FIX_DESTROYED;
         }
         // The clone's killPlayer takes the stock branch as the player's last
         // body, spawning the replacement before Player.Kill
@@ -37785,8 +37798,9 @@ impl RolloutWorld {
         // A callback casualty stays visible as destroyed until the next
         // pass's DetPhysics.Simulate drops it.
         if let Some(entity) = entity.filter(|_| alive) {
-            self.entities[entity].flags = E_DESTROYED | E_TRIGGER;
-            self.entities[entity].owner = 0;
+            let row = &mut self.entities[entity];
+            row.flags = E_DESTROYED | E_TRIGGER | (row.flags & E_FIX_DESTROYED);
+            row.owner = 0;
         }
     }
 
@@ -38428,9 +38442,12 @@ impl RolloutWorld {
         // no ability, no abilities and no RespawnPositions, and its slot may
         // hold the clone that replaced it: what is left is the branch the
         // counter picks and Player.Kill.
-        let destroyed = self.players[index].slime_destroyed_tick == Some(self.tick);
-        if callback && !slime_kill_refused {
-            self.players[index].slime_destroyed_tick = Some(self.tick);
+        let destroyed = fix_destroyed(&self.entities, Some(self.players[index].body_entity));
+        if callback
+            && !slime_kill_refused
+            && let Some(row) = self.entities.get_mut(self.players[index].body_entity)
+        {
+            row.flags |= E_FIX_DESTROYED;
         }
         // No death effect while the player is being revived
         // (PlayerCollision.cs:115-120).
@@ -38642,7 +38659,7 @@ impl RolloutWorld {
                     row.flags = destroyed_flags(row.flags);
                     row.owner = 0;
                 } else {
-                    row.flags = E_REMOVED;
+                    row.flags = removed_flags(row.flags);
                 }
             }
             slot.base.alive = true;
@@ -38725,7 +38742,7 @@ impl RolloutWorld {
                     row.flags = if callback {
                         destroyed_flags(row.flags)
                     } else {
-                        E_REMOVED
+                        removed_flags(row.flags)
                     };
                     row.owner = 0;
                 }
@@ -38772,7 +38789,7 @@ impl RolloutWorld {
                     row.flags = destroyed_flags(row.flags);
                     row.owner = 0;
                 } else {
-                    row.flags = E_REMOVED;
+                    row.flags = removed_flags(row.flags);
                 }
             }
             if death_effect {

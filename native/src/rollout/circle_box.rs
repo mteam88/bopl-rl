@@ -543,7 +543,7 @@ impl RolloutWorld {
         let present = if node.active {
             !node.macho_carried && !self.attached_hidden(node.platform_index, node.entity)
         } else {
-            node.destroyed_tick == Some(self.tick)
+            fix_destroyed(&self.entities, node.entity)
         };
         present && node.lethal && node.line_entity.is_some_and(|entity| row_is_active(&self.entities[entity]))
     }
@@ -1244,13 +1244,10 @@ impl RolloutWorld {
                 // (SpikeAttack.cs:118): a killPlayer earlier in the queue
                 // DestroyFix'd the slime's box, while one through a form only
                 // exits it (PlayerCollision.cs:121-132, 211).
-                if let (Part::Body(player), Some(entity)) = (other, collider) {
-                    let slot = &self.players[player];
-                    if (entity == slot.body_entity && slot.slime_destroyed_tick == Some(self.tick))
-                        || self.entities[entity].flags & (E_DESTROYED | E_REMOVED) != 0
-                    {
-                        return;
-                    }
+                if let (Part::Body(_), Some(entity)) = (other, collider)
+                    && self.entities[entity].flags & (E_FIX_DESTROYED | E_DESTROYED | E_REMOVED) != 0
+                {
+                    return;
                 }
                 let hit = CallbackHit::SpikeShove { spike, target: other, point: contact.point };
                 self.run_callback_hit(hit, data);
