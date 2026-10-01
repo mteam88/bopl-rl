@@ -20824,6 +20824,10 @@ impl RolloutWorld {
     }
 
     fn apply_explosion_shockwave(&mut self, position: Vec2, wave: data::ExplosionShockwaveData) {
+        // Shockwave.Init's CircleCastAll (Shockwave.cs:53-56, 82) first drops
+        // the colliders DestroyFix marked and rebuilds the composites that
+        // lost one (DetPhysics.cs:1952).
+        self.remove_destroyed_colliders();
         let query = Circle {
             center: position,
             radius: wave.radius,
