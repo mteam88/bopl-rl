@@ -2577,14 +2577,6 @@ pub struct MachoThrowState {
     pub picked_tesla: Option<usize>,
     pub picked_spike: Option<usize>,
     pub picked_rope: Option<usize>,
-    pub collider_position: Vec2,
-    pub collider_right: Vec2,
-    pub collider_rotation: Fix,
-    pub collider_basis: Vec2,
-    /// The pass a freeze ray forced the form out. That bypass skips
-    /// MachoThrow2.ExitAbility's rotation reset (FreezeRayGun.cs:128), so the
-    /// form's box stays synced where and as it stood.
-    pub forced_exit_tick: Option<u32>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -8071,22 +8063,6 @@ impl RolloutWorld {
                     self.players[index].gun.collider_up = self.players[index].base.up();
                 }
                 self.sync_hurtbox(index);
-                if self.players[index].active == ActiveAbility::Throw {
-                    let (position, right, rotation, basis) = {
-                        let base = &self.players[index].base;
-                        (
-                            base.position,
-                            base.up().perp_cw(),
-                            base.collider_rotation,
-                            base.collider_basis,
-                        )
-                    };
-                    let collider = &mut self.players[index].macho_throw;
-                    collider.collider_position = position;
-                    collider.collider_right = right;
-                    collider.collider_rotation = rotation;
-                    collider.collider_basis = basis;
-                }
             } else if !frozen
                 && self.players[index].base.alive
                 && (self.players[index].respawn_ticks > 0 || self.players[index].respawn_spawn_ticks > 0)
@@ -10064,15 +10040,14 @@ impl RolloutWorld {
     /// Player-layer trigger. The active ability has no
     /// SlimeController callback; the ordinary slime on the other
     /// side still receives its one-sided overlap push.
-    /// The Throw form's hurtbox as DetPhysics last synced it.
-    fn macho_throw_box(&self, index: usize, data: &data::RolloutData) -> OrientedBox {
+    /// The Throw form's hurtbox synced to the FixTransform at `position`, `up`.
+    fn macho_throw_box(&self, index: usize, position: Vec2, up: Vec2, data: &data::RolloutData) -> OrientedBox {
         let slot = &self.players[index];
-        let throw = &slot.macho_throw;
         let form = &slot.forms[slot.active_slot];
         let offset = if form.scale == Fix::ZERO { data.macho_throw.collider_offset } else { form.offset };
         stored_box(
-            throw.collider_position + throw.collider_right.complex_mul(offset),
-            throw.collider_basis,
+            position + up.perp_cw().complex_mul(offset),
+            Vec2::angle(up.perp_cw().normalized_angle()),
             self.entity_inverse_extents[slot.macho_throw_entity],
         )
     }
@@ -12150,16 +12125,12 @@ impl RolloutWorld {
                             // receives the entry tick after OnEnterAbility.
                             ticks: 1,
                             facing_right,
-                            // OnEnterAbility's hurtbox.UpdatePhysicsPositions.
-                            collider_position: form_position,
-                            collider_right: form_up.perp_cw(),
-                            collider_rotation: form_up.perp_cw().normalized_angle(),
-                            collider_basis: Vec2::angle(form_up.perp_cw().normalized_angle()),
                             ..MachoThrowState::default()
                         };
                         slot.base.velocity = self_imposed;
                         slot.base.constants = data.macho_throw.constants.clone();
-                        let collider = self.macho_throw_box(index, data);
+                        // OnEnterAbility's hurtbox.UpdatePhysicsPositions.
+                        let collider = self.macho_throw_box(index, form_position, form_up, data);
                         self.sync_form_box(index, collider);
                         self.form_entry_turn(data, index);
                         self.macho_throw_tick(index, action, false, false, data);
@@ -30804,16 +30775,6 @@ impl RolloutWorld {
         let was_bow = self.players[victim].active == ActiveAbility::Bow;
         let deferred = was_bow && self.players[victim].base.grounded;
         let slot = &mut self.players[victim];
-        if slot.active == ActiveAbility::Throw {
-            let throw = &mut slot.macho_throw;
-            throw.forced_exit_tick = Some(self.tick);
-            throw.collider_position = slot.base.position;
-            throw.collider_right = slot.base.up().perp_cw();
-            if throw.collider_rotation != slot.base.rotation() {
-                throw.collider_rotation = slot.base.rotation();
-                throw.collider_basis = Vec2::angle(slot.base.rotation());
-            }
-        }
         slot.base.dash.active = false;
         let position = slot.base.position;
         self.ability_exit(victim, ExitInfo { position, facing_right: true, ..ExitInfo::default() });
@@ -41887,7 +41848,6 @@ impl RolloutWorld {
                 let box_row = &mut self.entities[macho_throw_e];
                 let flags = form_box_flags(alive && macho_throwing);
                 let publish = sync_form_row(box_row, flags, macho_throwing, entered == macho_throw_e, slot.base.id);
-                let forced_exit = slot.macho_throw.forced_exit_tick == Some(self.tick);
                 if publish {
                     let (position, center_basis, rotation, collider_basis) = if let Some((
                         position,
@@ -41896,15 +41856,14 @@ impl RolloutWorld {
                     )) = frozen_pose(macho_throw_e)
                     {
                         (position, up.perp_cw(), rotation, Vec2::angle(rotation))
-                    } else if macho_throwing || forced_exit {
-                        (
-                            slot.macho_throw.collider_position,
-                            slot.macho_throw.collider_right,
-                            slot.macho_throw.collider_rotation,
-                            slot.macho_throw.collider_basis,
-                        )
                     } else {
-                        (exit_position, Vec2::RIGHT, Fix::ZERO, Vec2::RIGHT)
+                        // MachoThrow2.ExitAbility zeroes the form's rotation
+                        // (MachoThrow2.cs:776); a freeze ray's direct
+                        // Ability.ExitAbility leaves it (FreezeRayGun.cs:128).
+                        let at_sync = slot.forms[slot.entity_slot(macho_throw_e)].synced;
+                        let rotation = at_sync.orientation.rotation();
+                        let position = if macho_throwing { at_sync.position } else { exit_position };
+                        (position, at_sync.orientation.up().perp_cw(), rotation, Vec2::angle(rotation))
                     };
                     let form = slot.forms[slot.entity_slot(macho_throw_e)];
                     let offset = if form.scale == Fix::ZERO {
