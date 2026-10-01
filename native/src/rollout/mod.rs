@@ -30446,7 +30446,9 @@ impl RolloutWorld {
             return None;
         }
         if slot.active == ActiveAbility::None {
-            return (!slot.base.dash.active).then_some(DetCollider::Box(slot.base.synced));
+            // A slime choosing where to respawn has its box disabled.
+            let choosing_respawn = slot.respawn_ticks > 0 || slot.revival_effect_ticks > 0;
+            return (!slot.base.dash.active && !choosing_respawn).then_some(DetCollider::Box(slot.base.synced));
         }
         let entity = Self::hurtbox_entity(slot);
         // BounceBall moves only the Rock's FixTransform, even on entry, so its
