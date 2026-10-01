@@ -7289,7 +7289,7 @@ impl RolloutWorld {
                 }
             }
         }
-        let drowned_clouds = self.register_pending_objects(data);
+        self.register_pending_objects(data);
         self.init_pending_grenade_fuses(data);
         if has(ABILITY_REVIVAL) {
             self.register_pending_revival_clones(data);
@@ -7699,9 +7699,6 @@ impl RolloutWorld {
         if has(ABILITY_METEOR) {
             self.meteor_smears_tick(data);
         }
-        // A cloud born under water is appended to the updatables, so its
-        // bounds check spawns the two-updatable splash after every older one.
-        self.next_spawn_hierarchy += 2 * drowned_clouds;
         if has(ABILITY_DUPLICATOR) {
             self.register_pending_duplicated_items(data);
         }
@@ -21109,9 +21106,8 @@ impl RolloutWorld {
     /// updater loop begins. Updater initializes new updatables sorted by
     /// hierarchy (Updater.cs:258-282), so their colliders join DetPhysics and
     /// take their ids in the order they were instantiated, whatever their
-    /// kind. Returns how many new clouds drowned before their collider
-    /// appeared.
-    fn register_pending_objects(&mut self, data: &data::RolloutData) -> u32 {
+    /// kind.
+    fn register_pending_objects(&mut self, data: &data::RolloutData) {
         for item in &self.thrown_items {
             if !item.active
                 && let Some(entity) = item.entity
@@ -21242,7 +21238,6 @@ impl RolloutWorld {
             }
         }
         pending.sort_unstable_by_key(|&(hierarchy_base, _, index)| (hierarchy_base, index));
-        let mut drowned = 0;
         for &(_, kind, index) in &pending {
             match kind {
                 PendingObject::Arrow => self.register_arrow(index),
@@ -21269,11 +21264,7 @@ impl RolloutWorld {
                 PendingObject::TeleportMarker => self.register_teleport_marker(index, data),
                 PendingObject::TeslaLine => self.register_tesla_line(index, data),
                 PendingObject::GrenadeExplosion => self.register_grenade_explosion(index, data),
-                PendingObject::SmokeCloud => {
-                    if !self.register_smoke_cloud(index, data) {
-                        drowned += 1;
-                    }
-                }
+                PendingObject::SmokeCloud => self.register_smoke_cloud(index, data),
                 PendingObject::SmokeExplosion => self.register_smoke_explosion(index, data),
             }
         }
@@ -21281,7 +21272,6 @@ impl RolloutWorld {
         self.pending_duplicated_rocks.clear();
         self.pending_orphan_abilities.clear();
         self.scratch.pending_objects = pending;
-        drowned
     }
 
     /// Grenade.Init on the pass after a held Grenade or Smoke payload was
@@ -21336,9 +21326,7 @@ impl RolloutWorld {
         }
     }
 
-    /// Register a smoke cloud. Returns false when it drowned before its
-    /// collider appeared.
-    fn register_smoke_cloud(&mut self, cloud_index: usize, data: &data::RolloutData) -> bool {
+    fn register_smoke_cloud(&mut self, cloud_index: usize, data: &data::RolloutData) {
         let cloud = self.smoke_clouds[cloud_index];
         let delay = self
             .rng
@@ -21346,11 +21334,14 @@ impl RolloutWorld {
         // Newly instantiated cloud prefabs run Init (including the RNG
         // draw above) before their bounds updater in the same pass. A
         // cloud born below WaterHeight is destroyed before its collider
-        // can appear in the public entity rows, instantiating the
-        // two-updatable water splash at the end of the pass.
+        // can appear in the public entity rows. It joined the updatables
+        // last, so its two-updatable water splash comes after whatever an
+        // older updater spawns this pass, such as a Mine's MineExplosion
+        // at the top bound (DestroyIfOutsideSceneBounds.cs).
         if cloud.position.y < data::get().maps[self.map].lower_boundary() {
             self.remove_smoke_cloud(cloud_index);
-            return false;
+            self.queued_spawns.push((100_000_000 + cloud.hierarchy_base, 2));
+            return;
         }
         let entity = self.pooled_row(cloud.entity);
         self.smoke_clouds[cloud_index].entity = Some(entity);
@@ -21375,7 +21366,6 @@ impl RolloutWorld {
         cloud.registered = true;
         cloud.ignition_time = -Fix::ONE;
         cloud.ignition_delay = delay;
-        true
     }
 
     fn register_smoke_explosion(&mut self, explosion_index: usize, data: &data::RolloutData) {
