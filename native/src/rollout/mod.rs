@@ -30907,13 +30907,6 @@ impl RolloutWorld {
     /// other pass, with PlayerPhysics.UpdateSim already done here.
     fn ragdoll_player_tick(&mut self, index: usize, action: Action, jump_pressed: bool) -> bool {
         let slot = &mut self.players[index];
-        // The slime's DestroyIfOutsideSceneBounds runs whatever its state,
-        // ahead of PlayerPhysics, on the position the last pass left.
-        if slot.base.outside_bounds() {
-            slot.base.alive = false;
-            slot.base.out_of_bounds = true;
-            return true;
-        }
         // Both flags stand for PlayerPhysics.skipNextUpdate, which the
         // ragdolled slime's PlayerPhysics still consumes every pass, unless a
         // rewind has disabled it (RewindRecorder.cs:155).
