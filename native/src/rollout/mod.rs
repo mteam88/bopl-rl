@@ -6305,7 +6305,7 @@ impl RolloutWorld {
                 let slot = &self.players[player_index];
                 if !self.playable(player_index)
                     || slot.active != ActiveAbility::None
-                    || self.entities[slot.body_entity].flags & E_ACTIVE == 0
+                    || !self.collides(slot.body_entity)
                     || !self.swept_pair(swept, Swept::Player(player_index))
                 {
                     continue;
@@ -16022,9 +16022,7 @@ impl RolloutWorld {
                             } else {
                                 self.entities[entity].radius
                             };
-                            // circleCastCircles keeps only DetPhysics.IsActive
-                            // colliders: active in the hierarchy and enabled.
-                            self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
+                            self.collides(entity)
                                 && crate::physics::contact::circle_circle(
                                     flame,
                                     Circle {
@@ -16048,6 +16046,7 @@ impl RolloutWorld {
                         let entity = cloud.entity.expect("registered smoke cloud");
                         self.entities[entity].flags = E_ACTIVE;
                     }
+                    let engine = &mut self.engines[engine_index];
                     // SceneBounds.WaterHeight, not the map's own water collider.
                     let below_water =
                         surface_position.y < data.maps[self.map].scene_water_height();
@@ -16601,7 +16600,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
-                if self.entities[entity].flags & E_ENABLED == 0 {
+                if !self.collides(entity) {
                     continue;
                 }
                 let smoke = Circle {
@@ -17342,15 +17341,14 @@ impl RolloutWorld {
             // BlackHole.UpdateSim walks the registered circle array before
             // DetPhysics integrates it. Projectile circles therefore receive
             // this force in the same pass, including the hole's spawn pass.
-            for arrow in &mut self.arrows {
-                if !arrow.active
-                    || !arrow.registered
-                    || arrow
-                        .entity
-                        .is_some_and(|entity| self.entities[entity].flags & E_ACTIVE == 0)
+            for arrow_index in 0..self.arrows.len() {
+                if !self.arrows[arrow_index].active
+                    || !self.arrows[arrow_index].registered
+                    || self.arrows[arrow_index].entity.is_some_and(|entity| !self.collides(entity))
                 {
                     continue;
                 }
+                let arrow = &mut self.arrows[arrow_index];
                 let vector = position - arrow.position;
                 let squared = vector.length_squared();
                 if squared == Fix::ZERO {
@@ -17449,9 +17447,7 @@ impl RolloutWorld {
                 };
                 if !cloud.active
                     || !cloud.registered
-                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED)
-                        != (E_ACTIVE | E_ENABLED)
-                    || self.blink_object_hidden(cloud.entity)
+                    || !self.collides(entity)
                 {
                     continue;
                 }
@@ -17666,7 +17662,7 @@ impl RolloutWorld {
                     continue;
                 };
                 if !item.active
-                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                    || !self.collides(entity)
                     || !self.circle_overlaps_entity(circle, entity)
                 {
                     continue;
@@ -17739,7 +17735,7 @@ impl RolloutWorld {
                 };
                 if cloud.active
                     && cloud.registered
-                    && self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == (E_ACTIVE | E_ENABLED)
+                    && self.collides(entity)
                     && self.circle_overlaps_entity(circle, entity)
                 {
                     let (other, group) = (row_rank(self, entity), row_group(self, entity));
@@ -18359,7 +18355,7 @@ impl RolloutWorld {
             let hitboxes = slot.drill_hitbox_entities[slot.active_slot];
             let killer = slot.base.id;
             for hitbox_entity in hitboxes {
-                if hitbox_entity == usize::MAX || self.entities[hitbox_entity].flags & E_ACTIVE == 0
+                if !self.collides(hitbox_entity)
                 {
                     continue;
                 }
@@ -19705,7 +19701,7 @@ impl RolloutWorld {
             let Some(entity) = slot.entity else {
                 continue;
             };
-            if self.entities[entity].flags & E_ACTIVE == 0 {
+            if !self.collides(entity) {
                 continue;
             }
             // DetPhysics sweeps the bounding boxes before UpdateBeams, then
@@ -19820,7 +19816,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
-                if self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
+                if !self.collides(entity) {
                     continue;
                 }
                 let radius = Fix::from_raw(self.entities[entity].radius);
@@ -21446,15 +21442,12 @@ impl RolloutWorld {
             }
         }
         if wave.collision_mask & (1 << LAYER_ITEM) != 0 {
-            for item in &mut self.thrown_items {
-                // CircleCastAll skips a collider a TeleportedObjectEffect
-                // disabled.
-                let Some(entity) = item.entity else { continue };
-                if !item.active
-                    || self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
-                {
+            for item_index in 0..self.thrown_items.len() {
+                let Some(entity) = self.thrown_items[item_index].entity else { continue };
+                if !self.thrown_items[item_index].active || !self.collides(entity) {
                     continue;
                 }
+                let item = &mut self.thrown_items[item_index];
                 let radius = thrown_item_radius(data::get(), *item);
                 if crate::physics::contact::circle_circle(
                     query,
@@ -21542,19 +21535,21 @@ impl RolloutWorld {
         if wave.collision_mask & (1 << 23) != 0 {
             // RigidBodyAffector: BlackHole.AddForce, without the impulse's
             // sixty-fold conversion.
-            for hole in &mut self.black_holes {
-                if !hole.active
-                    || hole
-                        .entity
-                        .is_none_or(|entity| self.entities[entity].flags & E_ACTIVE == 0)
-                    || crate::physics::contact::circle_circle(
-                        query,
-                        Circle {
-                            center: hole.position,
-                            radius: hole.radius,
-                        },
-                    )
-                    .is_none()
+            for hole_index in 0..self.black_holes.len() {
+                if !self.black_holes[hole_index].active
+                    || self.black_holes[hole_index].entity.is_none_or(|entity| !self.collides(entity))
+                {
+                    continue;
+                }
+                let hole = &mut self.black_holes[hole_index];
+                if crate::physics::contact::circle_circle(
+                    query,
+                    Circle {
+                        center: hole.position,
+                        radius: hole.radius,
+                    },
+                )
+                .is_none()
                 {
                     continue;
                 }
@@ -23594,7 +23589,7 @@ impl RolloutWorld {
                 // rebuilding its offset, aim basis or scale a second time.
                 let player = &self.players[player_index];
                 let entity = Self::hurtbox_entity(player);
-                if entity == usize::MAX || self.entities[entity].flags & E_ACTIVE == 0 {
+                if !self.collides(entity) {
                     continue;
                 }
                 if !retained.contains(&entity) {
@@ -23619,16 +23614,18 @@ impl RolloutWorld {
                 };
                 target.base.external_velocity += force * Fix::from_int(35);
             }
-            for clone in &mut self.abilityless_clones {
+            for clone_index in 0..self.abilityless_clones.len() {
+                let clone = &self.abilityless_clones[clone_index];
                 let Some(entity) = clone
                     .entity
                     .filter(|entity| clone.active && retained.contains(entity))
                 else {
                     continue;
                 };
-                if self.entities[entity].flags & E_ACTIVE == 0 {
+                if !self.collides(entity) {
                     continue;
                 }
+                let clone = &mut self.abilityless_clones[clone_index];
                 let delta = clone.base.position - wave.position;
                 let distance = (delta.length_squared() / Fix::from_int(10)).max(Fix::from_int(3));
                 let scale_force = (wave.scale + Fix::ONE) / Fix::from_int(2);
@@ -26387,16 +26384,17 @@ impl RolloutWorld {
                 self.players[player_index].base.external_velocity -= (pull * strength) * direction;
             }
         }
-        for item in &mut self.thrown_items {
-            let Some(entity) = item.entity else {
+        for item_index in 0..self.thrown_items.len() {
+            let Some(entity) = self.thrown_items[item_index].entity else {
                 continue;
             };
-            if !item.active
-                || item.magnet_holder.is_some()
-                || self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED
+            if !self.thrown_items[item_index].active
+                || self.thrown_items[item_index].magnet_holder.is_some()
+                || !self.collides(entity)
             {
                 continue;
             }
+            let item = &mut self.thrown_items[item_index];
             // CollideBox tests the DetPhysics collider (MagnetGun.cs:511).
             let radius = thrown_item_radius(data, *item);
             if crate::physics::contact::circle_box(
@@ -27345,7 +27343,7 @@ impl RolloutWorld {
             MagnetHeld::Boulder(i) => self.macho_boulders.get(i).is_some_and(|v| {
                 v.active
                     && v.platform_index < self.platforms.len()
-                    && self.entities[self.platform_entities[v.platform_index]].flags & E_ACTIVE != 0
+                    && self.collides(self.platform_entities[v.platform_index])
             }),
             MagnetHeld::AbilityPickup(i) => self
                 .ability_pickups
@@ -27570,10 +27568,10 @@ impl RolloutWorld {
                         .iter()
                         .filter(|node| node.active && !node.macho_carried)
                         .filter_map(|node| {
-                            let entity = &self.entities[node.entity?];
-                            if entity.flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
+                            if !self.collides(node.entity?) {
                                 return None;
                             }
+                            let entity = &self.entities[node.entity?];
                             let circle = Circle {
                                 center: node.collider_center,
                                 radius: node.radius,
@@ -28203,7 +28201,7 @@ impl RolloutWorld {
             .enumerate()
             .rfind(|&(entity, row)| {
                 row.kind == 2
-                    && row.flags & E_ACTIVE != 0
+                    && self.collides(entity)
                     && excluded != Some(entity)
                     && Self::entity_rounded_rect(*row).is_some_and(|shape| shape.overlaps(origin))
             })
@@ -30302,10 +30300,20 @@ impl RolloutWorld {
         self.begin_blink_object_tunnel(entity, data.blink.wall_duration, data);
     }
 
-    /// DetPhysics.IsActive: the GameObject is active and its collider enabled.
+    /// DetPhysics.IsActive (DetPhysics.cs:1658-1665): the GameObject is
+    /// active in the hierarchy and its collider enabled. DetPhysics filters
+    /// on it when it builds pairs and in every cast and overlap query, so
+    /// every pair builder and query here asks this. A circle or box answers
+    /// through `detphysics_collider`, which knows what hides each kind; a
+    /// rounded rect through its row.
     fn collides(&self, entity: usize) -> bool {
-        entity != usize::MAX
-            && self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
+        let Some(row) = self.entities.get(entity) else {
+            return false;
+        };
+        match row.kind {
+            0 | 1 => self.detphysics_collider(entity).is_some(),
+            _ => row.flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED,
+        }
     }
 
     /// A form row whose GameObject ExitAbility deactivated earlier this pass;
@@ -34154,7 +34162,7 @@ impl RolloutWorld {
             let entity = Self::hurtbox_entity(player);
             if entity == usize::MAX
                 || self.entities[entity].layer != LAYER_PLAYER
-                || self.entities[entity].flags & E_ACTIVE == 0
+                || !self.collides(entity)
             {
                 continue;
             }
@@ -34176,7 +34184,7 @@ impl RolloutWorld {
                 continue;
             };
             if self.entities[entity].layer != LAYER_PLAYER
-                || self.entities[entity].flags & E_ACTIVE == 0
+                || !self.collides(entity)
             {
                 continue;
             }
@@ -35721,7 +35729,7 @@ impl RolloutWorld {
                 let Some(row) = self.entities.get(entity).copied() else {
                     continue;
                 };
-                if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED) {
+                if !self.collides(entity) {
                     continue;
                 }
                 let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
@@ -35900,7 +35908,7 @@ impl RolloutWorld {
         let missile_box = missile.collider();
         let missile_rank = self.part_rank(Part::Missile(missile_index));
         let live = |entity: Option<usize>| {
-            entity.is_some_and(|entity| self.entities[entity].flags & 3 == 3)
+            entity.is_some_and(|entity| self.collides(entity))
         };
         let mut contacts = [(Part::Spike(0), Contact::default(), false); 8];
         let mut count = 0;
@@ -36348,9 +36356,7 @@ impl RolloutWorld {
             // pair, so an item a Blink tunnel deactivated calls nothing back.
             if !self.thrown_items[item_index].active
                 || self.thrown_items[item_index].callback_registered_tick == self.tick
-                || self.thrown_items[item_index]
-                    .entity
-                    .is_none_or(|entity| self.detphysics_collider(entity).is_none())
+                || self.thrown_items[item_index].entity.is_none_or(|entity| !self.collides(entity))
             {
                 continue;
             }
@@ -37124,7 +37130,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let row = self.entities[Self::hurtbox_entity(&self.players[player_index])];
-                if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED) {
+                if !self.collides(Self::hurtbox_entity(&self.players[player_index])) {
                     continue;
                 }
                 let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
@@ -37187,7 +37193,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
-                if self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
+                if !self.collides(entity) {
                     continue;
                 }
                 let radius = Fix::from_raw(self.entities[entity].radius);
@@ -37221,7 +37227,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
-                if self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
+                if !self.collides(entity) {
                     continue;
                 }
                 let radius = Fix::from_raw(self.entities[entity].radius);
@@ -37254,7 +37260,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
-                if self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
+                if !self.collides(entity) {
                     continue;
                 }
                 let radius = Fix::from_raw(self.entities[entity].radius);
@@ -37339,7 +37345,7 @@ impl RolloutWorld {
                     continue;
                 }
                 let entity = cloud.entity.expect("registered smoke cloud");
-                if self.entities[entity].flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED {
+                if !self.collides(entity) {
                     continue;
                 }
                 let radius = Fix::from_raw(self.entities[entity].radius);
@@ -38956,7 +38962,7 @@ impl RolloutWorld {
             let clone_min = self.swept_min(Swept::Clone(clone_index));
             for (entity, row) in self.entities.iter().copied().enumerate() {
                 if Some(entity) == clone_entity
-                    || row.flags & (E_ACTIVE | E_ENABLED) != E_ACTIVE | E_ENABLED
+                    || !self.collides(entity)
                     || !matches!(row.layer, LAYER_PROJECTILE | 16 | 18)
                 {
                     continue;
@@ -39422,7 +39428,7 @@ impl RolloutWorld {
             let row = self.entities[entity];
             if entity == roller_entity
                 || row.kind > 1
-                || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                || !self.collides(entity)
                 || data.roll.collision_mask & (1u32 << row.layer) == 0
                 || !self.circle_overlaps_entity(query, entity)
             {
@@ -39511,7 +39517,7 @@ impl RolloutWorld {
             for (entity, row) in self.entities.iter().copied().enumerate() {
                 if entity == roller_entity
                     || row.kind > 1
-                    || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                    || !self.collides(entity)
                     || data.roll.collision_mask & (1u32 << row.layer) == 0
                     || !self.circle_overlaps_entity(query, entity)
                 {
