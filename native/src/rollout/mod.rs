@@ -38368,8 +38368,12 @@ impl RolloutWorld {
         // detaches it the same way; a dead ExitAbility hands it back to the
         // slime, whose killPlayer detaches it (SlimeController.cs:210-219).
         // Only Rock has no PlayerBody: its rope belongs to BounceBall, whose
-        // AttachRope has no Dettach call at all (BounceBall.cs:205-223).
-        if self.players[index].active != ActiveAbility::Rock && self.players[index].rope.is_some() {
+        // own ExitAbility hands it back the same way (BounceBall.cs:243). An
+        // exit handed straight to the Ability carries no rope, and Rock's
+        // Ability has no PlayerBody to take one from (Ability.cs:141-145).
+        if (self.players[index].active != ActiveAbility::Rock || form_exit)
+            && self.players[index].rope.is_some()
+        {
             let top = self.players[index].rope_top;
             self.attach_player_rope(index, None, top);
         }
