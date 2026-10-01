@@ -6268,7 +6268,6 @@ impl RolloutWorld {
             // copy has shaken.
             let before = self.ability_pickups[index].hierarchy_base;
             self.run_spawned_before(data, updater_dt, 100_000_000 + before);
-            self.blink_platform_tunnels_tick(data, updater_dt, Some(before));
             self.ability_pickup_tick(index, data, updater_dt, wobble);
         }
         self.scratch.pickup_order = order;
@@ -16087,8 +16086,9 @@ impl RolloutWorld {
     /// SimpleSparkNode.UpdateSim in hierarchy order (SimpleSparkNode.cs:224-245)
     /// for the nodes below `before`, once per pass: a node reads its partners'
     /// state, and connecting instantiates the lightning, claiming spawn
-    /// hierarchy. A wall QuantumTunnel older than the node has already hidden
-    /// or restored its wall; a younger one has not.
+    /// hierarchy. The updatables older than the node have taken their turns
+    /// (a wall QuantumTunnel has hidden or restored its wall); younger ones
+    /// have not.
     fn tesla_nodes_update(&mut self, data: &data::RolloutData, updater_dt: Fix, before: u32) {
         let mut order = std::mem::take(&mut self.scratch.item_order);
         hierarchy_order(&mut order, &self.tesla_nodes, |node| node.hierarchy_base);
@@ -16099,7 +16099,7 @@ impl RolloutWorld {
             }
             node.updated_tick = Some(self.tick);
             let before = node.hierarchy_base;
-            self.blink_platform_tunnels_tick(data, updater_dt, Some(before));
+            self.run_spawned_before(data, updater_dt, 100_000_000 + before);
             // IsDestroyed skips its UpdateSim and its orb's.
             if self.tesla_nodes[node_index].destroyed_tick == Some(self.tick) {
                 continue;
