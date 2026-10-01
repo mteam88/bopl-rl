@@ -2995,7 +2995,7 @@ impl ActiveAbility {
 }
 
 #[derive(Clone, Copy)]
-struct DuplicatorRayHit {
+struct ClosestRayHit {
     entity: usize,
     distance: Fix,
     position: Vec2,
@@ -26374,45 +26374,22 @@ impl RolloutWorld {
         // overlapping rounded rectangle in DetPhysics registration order.
         let mut selected = self
             .point_check_all_rounded_rects(origin, excluded)
-            .map(|entity| DuplicatorRayHit {
+            .map(|entity| ClosestRayHit {
                 entity,
                 distance: Fix::from_f32(0.001),
                 position: origin,
             });
 
         if selected.is_none() {
-            let side = direction.perp() * gun.triple_raycast_radius;
-            let center =
-                self.duplicator_raycast_one(origin, direction, max_distance, mask, excluded, data);
-            let positive = self.duplicator_raycast_one(
-                origin + side,
+            selected = self.raycast_to_closest_triple(
+                origin,
                 direction,
                 max_distance,
                 mask,
+                gun.triple_raycast_radius,
                 excluded,
                 data,
             );
-            let negative = self.duplicator_raycast_one(
-                origin - side,
-                direction,
-                max_distance,
-                mask,
-                excluded,
-                data,
-            );
-            let center_distance = center.map_or(Fix::MAX, |hit| hit.distance);
-            let positive_distance = positive.map_or(Fix::MAX, |hit| hit.distance);
-            let negative_distance = negative.map_or(Fix::MAX, |hit| hit.distance);
-            selected = if center_distance < positive_distance && center_distance < negative_distance
-            {
-                center
-            } else if positive_distance < center_distance && positive_distance < negative_distance {
-                positive
-            } else if negative_distance < positive_distance && negative_distance < center_distance {
-                negative
-            } else {
-                center
-            };
         }
 
         // ShootDuplicator overwrites an initial below-water hit with the
@@ -26762,8 +26739,43 @@ impl RolloutWorld {
             .map(|(entity, _)| entity)
     }
 
-    /// DetPhysics.RaycastToClosest (DetPhysics.cs:2021).
-    fn duplicator_raycast_one(
+    /// DetPhysics.RaycastToClosestTriple (DetPhysics.cs:1998-2019): three
+    /// parallel RaycastToClosest rays, `radius` either side, and the
+    /// strictly nearest of them, the centre one on any tie.
+    #[allow(clippy::too_many_arguments)]
+    fn raycast_to_closest_triple(
+        &mut self,
+        origin: Vec2,
+        direction: Vec2,
+        max_distance: Fix,
+        mask: u32,
+        radius: Fix,
+        excluded: Option<usize>,
+        data: &data::RolloutData,
+    ) -> Option<ClosestRayHit> {
+        let side = direction.perp() * radius;
+        let center = self.raycast_to_closest(origin, direction, max_distance, mask, excluded, data);
+        let positive = self.raycast_to_closest(origin + side, direction, max_distance, mask, excluded, data);
+        let negative = self.raycast_to_closest(origin - side, direction, max_distance, mask, excluded, data);
+        let center_distance = center.map_or(Fix::MAX, |hit| hit.distance);
+        let positive_distance = positive.map_or(Fix::MAX, |hit| hit.distance);
+        let negative_distance = negative.map_or(Fix::MAX, |hit| hit.distance);
+        if center_distance < positive_distance && center_distance < negative_distance {
+            center
+        } else if positive_distance < center_distance && positive_distance < negative_distance {
+            positive
+        } else if negative_distance < positive_distance && negative_distance < center_distance {
+            negative
+        } else {
+            center
+        }
+    }
+
+    /// DetPhysics.RaycastToClosest (DetPhysics.cs:2021-2093): purges
+    /// destroyed colliders, then takes the nearest active rounded rect,
+    /// circle or box on a `mask` layer within `max_distance`, the first of
+    /// equals in that order.
+    fn raycast_to_closest(
         &mut self,
         origin: Vec2,
         direction: Vec2,
@@ -26771,7 +26783,7 @@ impl RolloutWorld {
         mask: u32,
         excluded: Option<usize>,
         data: &data::RolloutData,
-    ) -> Option<DuplicatorRayHit> {
+    ) -> Option<ClosestRayHit> {
         self.remove_destroyed_colliders();
         let mut best = None;
         let mut nearest = Fix::MAX;
@@ -26787,45 +26799,19 @@ impl RolloutWorld {
                 }
                 // DetPhysics.IsActive also asks the collider to be enabled, so
                 // the ray passes through an ignited FlammableSmoke (FlammableSmoke.cs:86-88).
-                let body = self.is_body_collider(entity).then(|| self.detphysics_collider(entity));
-                if matches!(body, Some(None)) || body.is_none() && !self.collides(entity) {
-                    continue;
-                }
-                let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
                 let distance = match kind {
-                    _ if let Some(Some(collider)) = body => {
-                        collider.raycast(origin, direction).map(|hit| hit.near)
-                    }
-                    0 => Circle {
-                        center,
-                        radius: Fix::from_raw(row.radius),
-                    }
-                    .raycast(origin, direction)
-                    .map(|hit| hit.near),
-                    1 => {
-                        let right =
-                            Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-                        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-                        (right != Vec2::ZERO && up != Vec2::ZERO)
-                            .then(|| OrientedBox {
-                                center,
-                                right,
-                                up,
-                                inverse_extents: self.entity_inverse_extents[entity],
-                            })
-                            .and_then(|shape| shape.raycast(origin, direction))
-                            .map(|hit| hit.near)
-                    }
-                    _ => Self::entity_rounded_rect(&self.entity_inverse_extents, entity, row)
+                    2 if self.collides(entity) => Self::entity_rounded_rect(&self.entity_inverse_extents, entity, row)
                         .and_then(|shape| shape.raycast(origin, direction))
                         .map(|hit| hit.near),
+                    2 => None,
+                    _ => self.ray_row_hit(entity, row, origin, direction),
                 };
                 if let Some(distance) = distance
                     && distance < nearest
                     && distance <= max_distance
                 {
                     nearest = distance;
-                    best = Some(DuplicatorRayHit {
+                    best = Some(ClosestRayHit {
                         entity,
                         distance,
                         position: origin + direction * distance,
@@ -26848,7 +26834,7 @@ impl RolloutWorld {
                     && hit.near <= max_distance
                 {
                     nearest = hit.near;
-                    best = Some(DuplicatorRayHit {
+                    best = Some(ClosestRayHit {
                         entity: usize::MAX,
                         distance: hit.near,
                         position: origin + direction * hit.near,
@@ -28349,13 +28335,13 @@ impl RolloutWorld {
         // query before its ordinary masked raycast.
         let point_hit = self
             .point_check_all_rounded_rects(origin, None)
-            .map(|entity| DuplicatorRayHit {
+            .map(|entity| ClosestRayHit {
                 entity,
                 distance: Fix::ZERO,
                 position: origin,
             });
         let hit = point_hit.or_else(|| {
-            self.duplicator_raycast_one(origin, direction, max_distance, mask, None, data)
+            self.raycast_to_closest(origin, direction, max_distance, mask, None, data)
         });
 
         if !already_hit_water && origin.y <= data.maps[self.map].scene_water_height() {
@@ -28746,13 +28732,13 @@ impl RolloutWorld {
         // applying its layer mask. Registration order is the tie-break.
         let point_hit = self
             .point_check_all_rounded_rects(origin, excluded)
-            .map(|entity| DuplicatorRayHit {
+            .map(|entity| ClosestRayHit {
                 entity,
                 distance: Fix::ZERO,
                 position: origin,
             });
         let hit = point_hit.or_else(|| {
-            self.duplicator_raycast_one(origin, direction, max_distance, mask, excluded, data)
+            self.raycast_to_closest(origin, direction, max_distance, mask, excluded, data)
         });
 
         // Casting below the water plane deliberately feeds the gun's own
@@ -30005,13 +29991,13 @@ impl RolloutWorld {
         // that layer.
         let point_hit = self
             .point_check_all_rounded_rects(origin, None)
-            .map(|entity| DuplicatorRayHit {
+            .map(|entity| ClosestRayHit {
                 entity,
                 distance: Fix::ZERO,
                 position: origin,
             });
         let Some(hit) = point_hit.or_else(|| {
-            self.duplicator_raycast_one(origin, direction, max_distance, mask, None, data)
+            self.raycast_to_closest(origin, direction, max_distance, mask, None, data)
         }) else {
             return;
         };
