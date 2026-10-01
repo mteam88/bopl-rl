@@ -8193,52 +8193,19 @@ impl RolloutWorld {
         if has(ABILITY_DRILL) {
             self.drill_contacts();
         }
-        // DetPhysics corrects every Circle/RR pair before any Circle/Circle
-        // one, so an item's wall correction moves it before an arrow's
-        // manifold with it is built.
-        if has_thrown_item
-            || has(ABILITY_TESLA)
-            || has(ABILITY_ROCK)
-            || has(ABILITY_PORTAL_GUN)
-            || has(ABILITY_BOW)
-            || has(ABILITY_DUPLICATOR)
-            || has(ABILITY_GRAPPLING_HOOK)
-            || has(ABILITY_BLACK_HOLE)
-        {
-            self.circle_wall_group(data);
-        }
-        let has_pickups = self.ability_spawner_enabled || !self.ability_pickups.is_empty();
-        if has_thrown_item
-            || has(ABILITY_TESLA)
-            || has(ABILITY_PORTAL_GUN)
-            || has(ABILITY_ROCK)
-            || has(ABILITY_DUPLICATOR)
-            || has(ABILITY_BOW)
-            || has_pickups
-        {
-            self.circle_circle_group(data);
-        }
+        // DetPhysics runs every narrow-phase group every Simulate; one with
+        // no parts makes no pairs. It corrects every Circle/RR pair before any
+        // Circle/Circle one, so an item's wall correction moves it before an
+        // arrow's manifold with it is built.
+        self.circle_wall_group(data);
+        self.circle_circle_group(data);
         if has(ABILITY_GRAPPLING_HOOK) {
             self.grapple_hook_pairs();
         }
         // The Circle/Box group, after the corrections of every Circle/Circle
-        // pair.
-        if has_thrown_item
-            || has(ABILITY_TESLA)
-            || has(ABILITY_PORTAL_GUN)
-            || has(ABILITY_ROCK)
-            || has(ABILITY_DUPLICATOR)
-            || has(ABILITY_BOW)
-            || has(ABILITY_BLACK_HOLE)
-            || has(ABILITY_SPIKE)
-            || has(ABILITY_MISSILE)
-            || has_pickups
-        {
-            self.thrown_item_pair_contacts(data);
-        }
-        if has(ABILITY_MISSILE) || has(ABILITY_ENGINE) || has(ABILITY_SPIKE) {
-            self.box_box_group(data);
-        }
+        // pair, then the Box/Box group.
+        self.thrown_item_pair_contacts(data);
+        self.box_box_group(data);
         if has(ABILITY_MISSILE) {
             self.guided_missile_contacts(data);
         }
