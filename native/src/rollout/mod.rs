@@ -27313,8 +27313,10 @@ impl RolloutWorld {
                     // Shoot then casts the landing rays over a 0.0001 s step
                     // (MagnetGun.cs:474). attachToGround puts the slime
                     // straight into State.land, ending the ragdoll, after its
-                    // pass and so its animator already ran. A slime updating
-                    // after its holder lands in its own ragdoll pass.
+                    // pass. That pass's OldUpdate returned in State.ragdoll
+                    // (SlimeController.cs:787-790), before the state switch
+                    // and AlignTransformAir, and its animator already ran. A
+                    // slime updating after its holder lands in its own pass.
                     let attached =
                         slot.base.collision_rays_over(terrain!(self), Fix::from_f64(0.0001));
                     if attached && slot.pass_start.0 == self.tick {
@@ -27322,7 +27324,8 @@ impl RolloutWorld {
                         if slot.base.attach_upside_down == Some(true) {
                             slot.facing_right = !slot.facing_right;
                         }
-                        slot.begin_land(true);
+                        slot.begin_land(false);
+                        slot.obs_state_disabled_this_tick = true;
                     }
                 }
                 if speed.y > Fix::ZERO
