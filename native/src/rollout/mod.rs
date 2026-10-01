@@ -13003,7 +13003,7 @@ impl RolloutWorld {
                     let entity = hit.index;
                     let target = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity);
                     self.players[index].base.position = near;
-                    self.form_target_on_collide(entity, index, PassPhase::Updater, data);
+                    self.form_target_on_collide(entity, index, Vec2::UP, PassPhase::Updater, data);
                     // hitbox.OnCollide: the Meteor's own PlayerCollision, from
                     // its UpdateSim. A Rock (no PlayerCollision) or an
                     // invulnerable target survives, and can still kill the
@@ -13168,10 +13168,14 @@ impl RolloutWorld {
     /// MeteorSmash.Dash and Roll.CollideExtraHurtBoxes call it from their own
     /// UpdateSim, so whatever it kills or destroys there is gone before this
     /// pass's DetPhysics (MeteorSmash.cs:408, Roll.cs:298, 332).
+    ///
+    /// `normal` is the CollisionInformation's: Vec2.up from the Dash
+    /// (MeteorSmash.cs:404), unset from CollideExtraHurtBoxes (Roll.cs:323-331).
     fn form_target_on_collide(
         &mut self,
         entity: usize,
         caster: usize,
+        normal: Vec2,
         phase: PassPhase,
         data: &data::RolloutData,
     ) {
@@ -13183,9 +13187,16 @@ impl RolloutWorld {
             .iter()
             .position(|slot| self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity)
         {
-            // PlayerCollision.OnCollide. Rock.prefab has none: only its
-            // BounceBall hears the contact.
-            if self.players[target].active != ActiveAbility::Rock && self.hittable(target) {
+            if self.players[target].active == ActiveAbility::Rock {
+                // Rock.prefab has no PlayerCollision: its DPhysicsCircle hands
+                // the contact to BounceBall.OnCollide, which a Player-layer
+                // collider kicks along the normal (BounceBall.cs:310-317).
+                if self.players[target].rope.is_none() {
+                    self.players[target].rock.body.force +=
+                        normal * data.rock.player_collision_bounce * Fix::from_int(60);
+                }
+            } else if self.hittable(target) {
+                // PlayerCollision.OnCollide.
                 self.kill_with(target, killer, CAUSE_OTHER, route, true, true, false);
             }
             return;
@@ -36202,7 +36213,7 @@ impl RolloutWorld {
                 CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
                 CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
                 CallbackHit::FormTarget { entity, caster } => {
-                    self.form_target_on_collide(entity, caster, PassPhase::Callback, data);
+                    self.form_target_on_collide(entity, caster, Vec2::ZERO, PassPhase::Callback, data);
                 }
                 CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
                 CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
@@ -38821,7 +38832,7 @@ impl RolloutWorld {
             // it begins the reciprocal Roll hurtbox callback walk.
             for hit_offset in 0..hit_count {
                 let entity = self.scratch.ray_hits[hit_offset].index;
-                self.form_target_on_collide(entity, roller, PassPhase::Updater, data);
+                self.form_target_on_collide(entity, roller, Vec2::ZERO, PassPhase::Updater, data);
             }
 
             for hit_offset in 0..hit_count {
