@@ -717,8 +717,8 @@ impl RolloutWorld {
     /// DetPhysics' Circle/Circle group, after every Circle/RoundedRect pair
     /// and before the Circle/Box pairs' narrow phase: every manifold is built
     /// before the first resolves (DetPhysics.cs:3052-3089). Its callbacks the
-    /// rollout reacts to are a hook's, a Rock's bounce off another Rock and a
-    /// Smoke's, which reads `cc_contacts`.
+    /// rollout reacts to are a hook's, a hole's, a Rock's bounce off another
+    /// Rock and a Smoke's, which reads `cc_contacts`.
     pub(super) fn circle_circle_group(&mut self, data: &data::RolloutData) {
         let mut parts = std::mem::take(&mut self.scratch.cb_parts);
         parts.clear();
@@ -772,12 +772,21 @@ impl RolloutWorld {
                 parts.push(Part::Arrow(i));
             }
         }
+        for (i, hole) in self.black_holes.iter().enumerate() {
+            if hole.active && !self.blink_object_hidden(hole.entity) {
+                parts.push(Part::Hole(i));
+            }
+        }
         self.scratch.arrow_landings.clear();
         parts.sort_by_key(|&part| self.part_rank(part));
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
         for (k, &current) in parts.iter().enumerate() {
             for &prior in &parts[..k] {
+                // A hook's pair with a hole is grapple_hook_pairs'.
+                if matches!((prior, current), (Part::Hook(_), Part::Hole(_)) | (Part::Hole(_), Part::Hook(_))) {
+                    continue;
+                }
                 // SameCompositeAs: nodes of one platform share its composite.
                 if self.part_composite(prior).is_some_and(|c| Some(c) == self.part_composite(current))
                     || !data.layers_collide(self.part_layer(prior, data), self.part_layer(current, data))
@@ -797,6 +806,10 @@ impl RolloutWorld {
         // earlier-sorted side's first.
         for &(a, b, _) in &contacts {
             for (side, other) in [(a, b), (b, a)] {
+                if let Part::Hole(hole) = side {
+                    self.queue_black_hole_pair(hole, other);
+                    continue;
+                }
                 // SmokeGrenadeExplode2 goes off on any collider but a
                 // Projectile that does not ignite explosives, as a portal
                 // shot's or an arrow's (SmokeGrenadeExplode2.cs:63-78,

@@ -17422,12 +17422,12 @@ impl RolloutWorld {
         }
     }
 
-    /// BlackHole.OnCollide's pairs. DetPhysics finds a hole's walls in the
-    /// Circle/RoundedRect group and its other colliders in the Circle/Circle
-    /// and Circle/Box groups, and calls every pair back from its queue after
-    /// all groups resolved, in SortAndSweep pair order (DetPhysics.cs:3197-3199).
-    /// The pairs with a missile, Spike or rocket engine box come from
-    /// `circle_box_group`.
+    /// BlackHole.OnCollide's pairs with colliders no narrow-phase group moves:
+    /// markers, clouds, slime and form boxes and clones. DetPhysics calls
+    /// every pair back from its queue after all groups resolved, in
+    /// SortAndSweep pair order (DetPhysics.cs:3197-3199). The circles the
+    /// groups correct pair in `circle_circle_group`, and the missile, Spike
+    /// and rocket engine boxes in `circle_box_group`.
     /// The callback reads the hole's mass only then (BlackHole.cs:447), so a
     /// white hole's pairs are queued too.
     fn black_hole_contacts(&mut self) {
@@ -17451,86 +17451,6 @@ impl RolloutWorld {
                 let hit = CallbackHit::BlackHole { hole: hole_index, target, inverse_mass };
                 world.scratch.callback_hits.push(((group, later, earlier), hit));
             };
-
-            for arrow_index in 0..self.arrows.len() {
-                let arrow = self.arrows[arrow_index];
-                if !arrow.active || !arrow.registered || self.blink_object_hidden(arrow.entity) {
-                    continue;
-                }
-                let other = Circle {
-                    center: arrow.position,
-                    radius: arrow.collider_radius,
-                };
-                if crate::physics::contact::circle_circle(circle, other).is_some() {
-                    let other = self.part_rank(Part::Arrow(arrow_index));
-                    queue(self, HoleTarget::Arrow(arrow_index), arrow.inverse_mass, other, GROUP_CC);
-                }
-            }
-
-            for pickup_index in 0..self.ability_pickups.len() {
-                let pickup = self.ability_pickups[pickup_index];
-                let Some(entity) = pickup.entity else {
-                    continue;
-                };
-                if self.detphysics_collider(entity).is_some()
-                    && self.circle_overlaps_entity(circle, entity)
-                {
-                    let other = self.part_rank(Part::Pickup(pickup_index));
-                    let target = HoleTarget::Pickup(pickup_index);
-                    queue(self, target, pickup.body.inverse_mass, other, GROUP_CC);
-                }
-            }
-
-            for item_index in 0..self.thrown_items.len() {
-                let item = self.thrown_items[item_index];
-                let Some(entity) = item.entity else {
-                    continue;
-                };
-                if !item.active
-                    || !self.collides(entity)
-                    || !self.circle_overlaps_entity(circle, entity)
-                {
-                    continue;
-                }
-                // SmokeGrenadeExplode2.OnCollide takes the hole like any other
-                // non-projectile collider, unless the hole's callback already
-                // destroyed it (SmokeGrenadeExplode2.cs:63-77). A pair calls
-                // back its earlier-sorted collider first (DetPhysics.cs:2186, 3070).
-                let other = self.part_rank(Part::Item(item_index));
-                let (later, earlier) = sweep_pair(rank, other);
-                let smoke = CallbackHit::ItemDetonate { item: item_index, count: 1 };
-                let smoke_first = item.ability == ABILITY_SMOKE && earlier == other;
-                if smoke_first {
-                    self.scratch.callback_hits.push(((GROUP_CC, later, earlier), smoke));
-                }
-                queue(self, HoleTarget::Item(item_index), item.body.inverse_mass, other, GROUP_CC);
-                if item.ability == ABILITY_SMOKE && !smoke_first {
-                    self.scratch.callback_hits.push(((GROUP_CC, later, earlier), smoke));
-                }
-            }
-
-            for shot_index in 0..self.portal_shots.len() {
-                let shot = self.portal_shots[shot_index];
-                let Some(entity) = shot.entity else {
-                    continue;
-                };
-                if shot.active && shot.registered && self.circle_overlaps_entity(circle, entity) {
-                    let other = self.part_rank(Part::Shot(shot_index));
-                    queue(self, HoleTarget::Shot(shot_index), shot.body.inverse_mass, other, GROUP_CC);
-                }
-            }
-
-            for rock_index in 0..self.duplicated_rocks.len() {
-                let rock = self.duplicated_rocks[rock_index];
-                let Some(entity) = rock.entity else {
-                    continue;
-                };
-                if rock.active && self.circle_overlaps_entity(circle, entity) {
-                    let other = self.part_rank(Part::DuplicatedRock(rock_index));
-                    let target = HoleTarget::DuplicatedRock(rock_index);
-                    queue(self, target, rock.body.inverse_mass, other, GROUP_CC);
-                }
-            }
 
             // Colliders with no other callback here: ranked, and grouped by
             // shape, from their rows.
@@ -17579,61 +17499,13 @@ impl RolloutWorld {
                 }
             }
 
-            // A composite child's collider answers with its CompositeBody's
-            // inverse mass. The boxes (missiles, Spikes, rocket engines) pair
-            // with holes in circle_box_group.
-            for node_index in 0..self.tesla_nodes.len() {
-                let node = self.tesla_nodes[node_index];
-                let Some(entity) = node.entity else {
-                    continue;
-                };
-                if node.active
-                    && !node.macho_carried
-                    && node.platform_index < self.platform_dynamics.len()
-                    && self.circle_overlaps_entity(circle, entity)
-                {
-                    let inverse_mass = self.platform_dynamics[node.platform_index].body.inverse_mass;
-                    let other = self.part_rank(Part::Node(node_index));
-                    queue(self, HoleTarget::Node(node_index), inverse_mass, other, GROUP_CC);
-                }
-            }
-
-            // Another hole: both callbacks run, the earlier-sorted one's first.
-            for other_index in 0..hole_index {
-                let other = self.black_holes[other_index];
-                if !other.active || self.blink_object_hidden(other.entity) {
-                    continue;
-                }
-                let other_circle = Circle {
-                    center: other.position,
-                    radius: other.radius,
-                };
-                if crate::physics::contact::circle_circle(circle, other_circle).is_none() {
-                    continue;
-                }
-                let other_rank = hole_rank(self, &other);
-                let (later, earlier) = sweep_pair(rank, other_rank);
-                let this = CallbackHit::BlackHole {
-                    hole: hole_index,
-                    target: HoleTarget::Hole(other_index),
-                    inverse_mass: -Fix::ONE,
-                };
-                let that = CallbackHit::BlackHole {
-                    hole: other_index,
-                    target: HoleTarget::Hole(hole_index),
-                    inverse_mass: -Fix::ONE,
-                };
-                let (first, second) = if earlier == rank { (this, that) } else { (that, this) };
-                self.scratch.callback_hits.push(((GROUP_CC, later, earlier), first));
-                self.scratch.callback_hits.push(((GROUP_CC, later, earlier), second));
-            }
-
             // Slimes and abilityless clones, on the Player layer. Grow reads
             // the collider's inverseMass: -1 unless a BoplBody owns it, as the
             // Rock form's BounceBall does.
             for player_index in 0..self.players.len() {
                 let player = &self.players[player_index];
-                if !self.playable_slot(player) || player.out {
+                // The Rock form's circle pairs in the Circle/Circle group.
+                if !self.playable_slot(player) || player.out || player.active == ActiveAbility::Rock {
                     continue;
                 }
                 let entity = Self::hurtbox_entity(player);
@@ -17655,15 +17527,10 @@ impl RolloutWorld {
                 if !overlaps {
                     continue;
                 }
-                let inverse_mass = if player.active == ActiveAbility::Rock {
-                    player.rock.body.inverse_mass
-                } else {
-                    -Fix::ONE
-                };
                 let hit = CallbackHit::BlackHole {
                     hole: hole_index,
                     target: HoleTarget::Player(player_index, player.active == ActiveAbility::None),
-                    inverse_mass,
+                    inverse_mass: -Fix::ONE,
                 };
                 self.queue_callback_hit(player_index, true, rank, hit);
             }
@@ -17678,6 +17545,56 @@ impl RolloutWorld {
                 }
             }
         }
+    }
+
+    /// BlackHole.OnCollide queued for a pair the Circle/Circle group found
+    /// on the positions the Circle/RoundedRect corrections left. The callback
+    /// reads the other collider's inverse mass, a composite child's being its
+    /// CompositeBody's (BlackHole.cs:447).
+    fn queue_black_hole_pair(&mut self, hole: usize, other: Part) {
+        let hole_rank = self.part_rank(Part::Hole(hole));
+        let (target, inverse_mass) = match other {
+            Part::Arrow(i) => (HoleTarget::Arrow(i), self.arrows[i].inverse_mass),
+            Part::Pickup(i) => {
+                let pickup = self.ability_pickups[i];
+                if pickup.entity.and_then(|entity| self.detphysics_collider(entity)).is_none() {
+                    return;
+                }
+                (HoleTarget::Pickup(i), pickup.body.inverse_mass)
+            }
+            Part::Item(i) => {
+                let item = self.thrown_items[i];
+                if !item.entity.is_some_and(|entity| self.collides(entity)) {
+                    return;
+                }
+                (HoleTarget::Item(i), item.body.inverse_mass)
+            }
+            Part::Shot(i) => (HoleTarget::Shot(i), self.portal_shots[i].body.inverse_mass),
+            Part::DuplicatedRock(i) => (HoleTarget::DuplicatedRock(i), self.duplicated_rocks[i].body.inverse_mass),
+            Part::Node(i) => {
+                let platform = self.tesla_nodes[i].platform_index;
+                (HoleTarget::Node(i), self.platform_dynamics[platform].body.inverse_mass)
+            }
+            Part::Hole(i) => (HoleTarget::Hole(i), -Fix::ONE),
+            // Grow reads the Rock's BounceBall body.
+            Part::Rock(player) => {
+                let slot = &self.players[player];
+                if !self.playable_slot(slot) || slot.out || !self.collides(slot.rock_entity) {
+                    return;
+                }
+                let hit = CallbackHit::BlackHole {
+                    hole,
+                    target: HoleTarget::Player(player, false),
+                    inverse_mass: slot.rock.body.inverse_mass,
+                };
+                self.queue_callback_hit(player, true, hole_rank, hit);
+                return;
+            }
+            Part::Hook(_) | Part::Engine(_) | Part::Spike(_) | Part::Missile(_) => unreachable!(),
+        };
+        let (later, earlier) = sweep_pair(hole_rank, self.part_rank(other));
+        let hit = CallbackHit::BlackHole { hole, target, inverse_mass };
+        self.scratch.callback_hits.push(((GROUP_CC, later, earlier), hit));
     }
 
     /// BlackHole.OnCollide (BlackHole.cs:445-593), run from DetPhysics'
@@ -44784,7 +44701,7 @@ mod tests {
             ..BlackHoleState::default()
         });
 
-        world.black_hole_contacts();
+        world.circle_circle_group(data::get());
         world.run_callback_hits(data::get());
 
         assert!(world.black_holes[0].active);
