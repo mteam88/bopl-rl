@@ -29744,6 +29744,13 @@ impl RolloutWorld {
             extents,
         );
         self.sync_form_box(index, collider);
+        // UpdatePhysicsPositions also hands the body its orientation
+        // (DPhysicsBox.cs:287-289). A form that exits on its entry pass never
+        // publishes active, so its hidden row keeps this rotation.
+        let entity = Self::hurtbox_entity(&self.players[index]);
+        if let Some(row) = self.entities.get_mut(entity) {
+            row.rotation = rotation.raw();
+        }
     }
 
     /// GunTransform.OnEnterAbility's sync, from `sync_gun_hurtbox`.
