@@ -4086,6 +4086,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Tesla
             | ActiveAbility::BlackHole
             | ActiveAbility::Drill
+            | ActiveAbility::Beam
     )
 }
 
@@ -10078,12 +10079,6 @@ impl RolloutWorld {
             // each ExitAbility writes its own fields over it before the slime
             // restores from it.
             match active {
-                ActiveAbility::Beam => {
-                    // Beam.ExitAbility pops the body up and hands on the entry
-                    // facing and the body's externalVelocity (Beam.cs:511-522).
-                    slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
-                    slot.facing_right = slot.beam.entry_facing_right;
-                }
                 ActiveAbility::Meteor => {
                     // MeteorSmash.ExitAbility passes the packet on untouched
                     // (MeteorSmash.cs:196-205): isFacingRight false.
@@ -14150,6 +14145,15 @@ impl RolloutWorld {
                 info.velocity = slot.base.velocity;
                 info.external_velocity = slot.base.external_velocity;
                 info.facing_right = (info.velocity + info.external_velocity).x >= Fix::ZERO;
+            }
+            ActiveAbility::Beam => {
+                // Beam.ExitAbility (Beam.cs:509-538) pops the body up first.
+                let data = data::get();
+                let slot = &mut self.players[index];
+                slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
+                slot.base.rotation = Fix::ZERO;
+                info.take_body(&slot.base);
+                info.facing_right = slot.beam.entry_facing_right;
             }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
@@ -18790,56 +18794,6 @@ impl RolloutWorld {
         }
     }
 
-    fn exit_beam(&mut self, index: usize, enter_jump: bool, data: &data::RolloutData) {
-        let grounded = self.players[index].base.grounded
-            && self.players[index]
-                .base
-                .ground
-                .is_some_and(|ground| self.platforms.iter().any(|platform| platform.id == ground));
-        let form_position = self.players[index].base.position;
-        // Beam.MovePlayer updates LocalPlatformPos without moving the body;
-        // SyncPhysicsTo(AbilityExitInfo) places the slime from that local at
-        // Beam's radius and aligns it to the normal there.
-        if grounded {
-            self.sync_exit_to_ground(index);
-        }
-        {
-            let slot = &mut self.players[index];
-            slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
-            slot.set_active_form(&mut self.entities, ActiveAbility::None);
-            if !grounded {
-                slot.set_ordinary_body_scale(slot.player_scale);
-                slot.restore_slime_radius();
-            }
-            slot.base.constants = data.player.constants.clone();
-            slot.facing_right = slot.beam.entry_facing_right;
-            if grounded {
-                // SyncPhysicsTo(AbilityExitInfo) discards self-imposed
-                // velocity when the reported attachment remains valid.
-                slot.base.velocity = Vec2::ZERO;
-                // EnterIdle; the slime's OldUpdate already passed this pass.
-                slot.obs_state = STATE_IDLE;
-                slot.state_ticks = 0;
-                slot.obs_state_held_this_tick = true;
-                if enter_jump {
-                    // A jump press leaves Beam with enterJump, and the slime
-                    // jumps off the ground it lands on (SlimeController.cs:242).
-                    let strength = slot.base.constants.jump_strength;
-                    slot.base.record_upside_down_jump(&self.platforms);
-                    slot.base.jump_with_strength(&self.platforms, strength);
-                }
-            } else {
-                slot.base.rotation = Fix::ZERO;
-                slot.base.up = Vec2::UP;
-                slot.base.grounded = false;
-                slot.exit_to_fall(terrain!(self));
-            }
-            slot.reported_position = form_position;
-            slot.reported_tick = self.tick;
-            slot.base.sync_collider();
-        }
-    }
-
     fn beam_tick(
         &mut self,
         index: usize,
@@ -18938,7 +18892,7 @@ impl RolloutWorld {
         // the slime's AbilityExitInfo and deactivates the form before its
         // PlayerBody or Beam update this pass.
         if exit_now {
-            self.exit_beam(index, false, data);
+            self.exit_form(index);
             if let Some(orb) = self.players[index].beam.orb
                 && self.beam_orbs[orb].active
                 && let Some(entity) = self.beam_orbs[orb].entity
@@ -19031,13 +18985,8 @@ impl RolloutWorld {
                 // The orb collider still syncs to the prior late pose this pass.
                 self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
                 self.stop_beam(index);
-                self.exit_beam(index, false, data);
-                // The landing exits `justlanded`, so attachToGround sets
-                // State.land after EnterIdle (SlimeController.cs:238-240).
-                let slot = &mut self.players[index];
-                if slot.base.grounded {
-                    slot.begin_land(true);
-                }
+                // Beam.cs:563-575 exits `justlanded`.
+                self.exit_form_with(index, ExitInfo { just_landed: true, ..ExitInfo::default() });
                 return;
             }
         } else if self.players[index].base.grounded {
@@ -19120,7 +19069,7 @@ impl RolloutWorld {
             if action.buttons & 1 != 0 && !self.players[index].base.previous_jump {
                 self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
                 self.stop_beam(index);
-                self.exit_beam(index, true, data);
+                self.exit_form_with(index, ExitInfo { enter_jump: true, ..ExitInfo::default() });
                 return;
             }
             let maximum = if self.players[index].beam.in_air {
@@ -19139,7 +19088,7 @@ impl RolloutWorld {
             && action.buttons & 1 != 0
             && !self.players[index].base.previous_jump
         {
-            self.exit_beam(index, true, data);
+            self.exit_form_with(index, ExitInfo { enter_jump: true, ..ExitInfo::default() });
             return;
         }
 
@@ -19229,7 +19178,7 @@ impl RolloutWorld {
             && action.buttons & 1 != 0
             && !self.players[index].base.previous_jump
         {
-            self.exit_beam(index, true, data);
+            self.exit_form_with(index, ExitInfo { enter_jump: true, ..ExitInfo::default() });
             return true;
         }
         false
