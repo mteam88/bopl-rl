@@ -4512,7 +4512,6 @@ struct PlatformScratch {
     wave_order: Vec<(UpdaterKey, bool, usize)>,
     /// Guided-Missile Box/Box manifolds. Every manifold is captured before
     /// either Missile callback destroys a participant.
-    missile_contacts: Vec<(usize, usize, Contact)>,
     /// This pass's hitbox callbacks, run together by `run_callback_hits`.
     callback_hits: Vec<(CallbackKey, CallbackHit)>,
     /// Slime-vs-slime shoves of one DetPhysics pass: (pushed, other, lower id).
@@ -4604,7 +4603,6 @@ impl PlatformScratch {
             pickup_order: Vec::with_capacity(16),
             spike_order: Vec::with_capacity(16),
             wave_order: Vec::with_capacity(16),
-            missile_contacts: Vec::with_capacity(256),
             callback_hits: Vec::with_capacity(16),
             ray_hits: Vec::with_capacity(192),
             duplicate_shake_order: Vec::with_capacity(64),
@@ -8239,11 +8237,11 @@ impl RolloutWorld {
         {
             self.thrown_item_pair_contacts(data);
         }
+        if has(ABILITY_MISSILE) || has(ABILITY_ENGINE) || has(ABILITY_SPIKE) {
+            self.box_box_group(data);
+        }
         if has(ABILITY_MISSILE) {
             self.guided_missile_contacts(data);
-        }
-        if has(ABILITY_ENGINE) || has(ABILITY_SPIKE) {
-            self.composite_child_box_contacts();
         }
         if has_thrown_item {
             self.thrown_items_contacts(data);
@@ -35137,154 +35135,15 @@ impl RolloutWorld {
         missile.active && missile.registered && !self.blink_object_hidden(missile.entity)
     }
 
-    /// Missile/Missile Box/Box pairs. DetPhysics builds the complete batch
-    /// before it resolves any.
-    fn guided_missile_pair_contacts(&mut self) {
-        let mut contacts = std::mem::take(&mut self.scratch.missile_contacts);
-        contacts.clear();
-        let mut order = std::mem::take(&mut self.scratch.item_order);
-        order.clear();
-        order.extend((0..self.guided_missiles.len()).filter(|&index| self.guided_missile_live(index)));
-        order.sort_unstable_by_key(|&index| self.part_rank(Part::Missile(index)));
-        for (k, &current) in order.iter().enumerate() {
-            for &prior in &order[..k] {
-                if !self.swept_pair(Swept::Part(Part::Missile(prior)), Swept::Part(Part::Missile(current))) {
-                    continue;
-                }
-                let a_box = self.guided_missiles[prior].collider(&self.entity_inverse_extents);
-                let b_box = self.guided_missiles[current].collider(&self.entity_inverse_extents);
-                let a_rank = self.part_rank(Part::Missile(prior));
-                let b_rank = self.part_rank(Part::Missile(current));
-                if let Some((contact, _)) = swept_box_box(a_box, a_rank, b_box, b_rank) {
-                    contacts.push((prior, current, contact));
-                }
-            }
-        }
-        self.scratch.item_order = order;
-
-        for &(first, second, contact) in &contacts {
-            let first_rank = self.part_rank(Part::Missile(first));
-            let second_rank = self.part_rank(Part::Missile(second));
-            self.queue_missile_blast(first, GROUP_BB, second_rank);
-            self.queue_missile_blast(second, GROUP_BB, first_rank);
-            let a = self.guided_missiles[first];
-            let b = self.guided_missiles[second];
-            let mut a_body = a.body;
-            let mut b_body = b.body;
-            resolve(contact, &mut a_body, &mut b_body, a.position, b.position);
-            let correction =
-                positional_correction(contact, a_body.inverse_mass, b_body.inverse_mass, false);
-            self.guided_missiles[first].position += correction[0];
-            self.guided_missiles[first].body = a_body;
-            self.guided_missiles[second].position += correction[1];
-            self.guided_missiles[second].body = b_body;
-        }
-        self.scratch.missile_contacts = contacts;
-    }
-
-    /// The Guided Missile's box against the Spike and rocket engine boxes of
-    /// attached platforms: the item layer collides with
-    /// LethalTerrain and NonLethalTerrain. ResolveCollision uses the
-    /// CompositeBody; PositionalCorrection takes the child's own inverse mass
-    /// and moves the child and CompositeBody.position. Each pair queues its
-    /// sides' OnCollide, the earlier side first: a young spike ahead of the
-    /// missile knocks it before Missile.OnCollide destroys it, and one behind
-    /// it finds the missile destroyed.
-    fn guided_missile_child_contacts(&mut self, missile_index: usize) {
-        let missile = self.guided_missiles[missile_index];
-        let missile_box = missile.collider(&self.entity_inverse_extents);
-        let missile_rank = self.part_rank(Part::Missile(missile_index));
-        let live = |entity: Option<usize>| {
-            entity.is_some_and(|entity| self.collides(entity))
-        };
-        let mut contacts = [(Part::Spike(0), Contact::default(), false); 8];
-        let mut count = 0;
-        for (index, spike) in self.spike_attacks.iter().enumerate() {
-            if count == contacts.len() || !spike.active || spike.macho_carried || !live(spike.entity) {
-                continue;
-            }
-            let child = Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, *spike);
-            let child_rank = self.part_rank(Part::Spike(index));
-            if let Some((contact, child_first)) = swept_box_box(child, child_rank, missile_box, missile_rank) {
-                contacts[count] = (Part::Spike(index), contact, child_first);
-                count += 1;
-            }
-        }
-        for (index, engine) in self.engines.iter().enumerate() {
-            if count == contacts.len() || !engine.active || engine.macho_carried || !live(engine.entity) {
-                continue;
-            }
-            let child = engine.rocket_box(&self.entity_inverse_extents);
-            let child_rank = self.part_rank(Part::Engine(index));
-            if let Some((contact, child_first)) = swept_box_box(child, child_rank, missile_box, missile_rank) {
-                contacts[count] = (Part::Engine(index), contact, child_first);
-                count += 1;
-            }
-        }
-        if count == 0 {
-            return;
-        }
-        let mut body = missile.body;
-        let mut center = missile.position;
-        for &(child, contact, child_first) in &contacts[..count] {
-            let child_rank = self.part_rank(child);
-            if !child_first {
-                self.queue_missile_blast(missile_index, GROUP_BB, child_rank);
-            }
-            if let Part::Spike(spike) = child {
-                let (later, earlier) = sweep_pair(child_rank, missile_rank);
-                let target = Part::Missile(missile_index);
-                let hit = CallbackHit::SpikeShove { spike, target, point: contact.point };
-                self.scratch.callback_hits.push(((GROUP_BB, later, earlier), hit));
-            }
-            if child_first {
-                self.queue_missile_blast(missile_index, GROUP_BB, child_rank);
-            }
-            let (platform_index, child_inverse_mass) = match child {
-                Part::Spike(i) => (self.spike_attacks[i].platform_index, self.spike_attacks[i].body.inverse_mass),
-                Part::Engine(i) => (self.engines[i].platform_index, self.engines[i].body.inverse_mass),
-                _ => unreachable!(),
-            };
-            let platform_center = self.platform_dynamics[platform_index].composite_position;
-            let mut platform_body = self.platform_dynamics[platform_index].body;
-            let (platform_delta, missile_delta) = if child_first {
-                resolve(contact, &mut platform_body, &mut body, platform_center, center);
-                let correction =
-                    positional_correction(contact, child_inverse_mass, body.inverse_mass, false);
-                (correction[0], correction[1])
-            } else {
-                resolve(contact, &mut body, &mut platform_body, center, platform_center);
-                let correction =
-                    positional_correction(contact, body.inverse_mass, child_inverse_mass, false);
-                (correction[1], correction[0])
-            };
-            self.platform_dynamics[platform_index].body = platform_body;
-            self.platform_dynamics[platform_index].composite_position += platform_delta;
-            match child {
-                Part::Spike(i) => self.spike_attacks[i].collider_center += platform_delta,
-                Part::Engine(i) => self.engines[i].collider_center += platform_delta,
-                _ => unreachable!(),
-            }
-            center += missile_delta;
-        }
-        self.platforms_changed();
-        let live = &mut self.guided_missiles[missile_index];
-        live.position = center;
-        live.body = body;
-    }
-
-    /// The Guided Missile's box in the Box/Box group, after the Circle/Box
-    /// one: its pairs with other missiles and platform children, and the
-    /// trigger pairs that only call back: water, explosions and slimes. Each
-    /// pair queues Missile.OnCollide; a held missile suppresses it after
-    /// DetPhysics resolved the pair.
+    /// The Guided Missile's trigger pairs in the Box/Box group, which only
+    /// call back: water, explosions and slimes. Each pair queues
+    /// Missile.OnCollide; a held missile suppresses it after DetPhysics
+    /// resolved the pair.
     fn guided_missile_contacts(&mut self, data: &data::RolloutData) {
-        self.guided_missile_pair_contacts();
         for missile_index in 0..self.guided_missiles.len() {
             if !self.guided_missile_live(missile_index) {
                 continue;
             }
-            self.guided_missile_child_contacts(missile_index);
             let missile = self.guided_missiles[missile_index];
             let missile_box = missile.collider(&self.entity_inverse_extents);
             let swept = Swept::Part(Part::Missile(missile_index));
@@ -35529,103 +35388,6 @@ impl RolloutWorld {
         row.vx = 0;
         row.vy = 0;
         row.angular_velocity = 0;
-    }
-
-    /// Item circles participate in ordinary rigid-body contacts.
-    /// DetPhysics' Box/Box group between composite children of different
-    /// platforms: RocketEngine boxes (layer 21) and Spike attack boxes
-    /// (layer 16), which meet each other and themselves. Pairs come out of the
-    /// sort-and-sweep with A the box whose bounds start first. Every manifold
-    /// is built before any resolves; ResolveCollision swaps each child for its
-    /// combined body and position, and PositionalCorrection takes the
-    /// children's own inverse masses and moves their colliders and
-    /// CompositeBody.position (DetPhysics.cs:3131-3168, PhysTools.cs:1006).
-    fn composite_child_box_contacts(&mut self) {
-        const SPIKE: usize = 1 << 16;
-        let live = |platform: usize, entity: Option<usize>| {
-            platform < self.platforms.len() && !self.attached_hidden(platform, entity)
-        };
-        // (child, platform, entity, box, collider in the sweep)
-        let mut children = Vec::new();
-        for (index, engine) in self.engines.iter().enumerate() {
-            if !engine.active || engine.macho_carried || !live(engine.platform_index, engine.entity) {
-                continue;
-            }
-            let swept = Swept::Part(Part::Engine(index));
-            children.push((index, engine.platform_index, engine.entity, engine.rocket_box(&self.entity_inverse_extents), swept));
-        }
-        for (index, spike) in self.spike_attacks.iter().copied().enumerate() {
-            if !spike.active || spike.macho_carried || !live(spike.platform_index, spike.entity) {
-                continue;
-            }
-            let attack_box = Self::spike_attack_box_in(&self.platform_dynamics, &self.entity_inverse_extents, spike);
-            let swept = Swept::Part(Part::Spike(index));
-            children.push((SPIKE + index, spike.platform_index, spike.entity, attack_box, swept));
-        }
-        if children.len() < 2 {
-            return;
-        }
-        let rank = |swept: Swept, entity| sweep_rank(&self.entities, self.swept_min(swept), entity);
-        children.sort_by_key(|&(_, _, entity, _, swept)| rank(swept, entity));
-        let mut contacts = Vec::new();
-        for current in 0..children.len() {
-            let (_, b_platform, _, b_box, b_swept) = children[current];
-            for prior in 0..current {
-                let (_, a_platform, _, a_box, a_swept) = children[prior];
-                if a_platform == b_platform || !self.swept_pair(a_swept, b_swept) {
-                    continue;
-                }
-                let a_rank = rank(a_swept, children[prior].2);
-                let b_rank = rank(b_swept, children[current].2);
-                if let Some((contact, _)) = swept_box_box(a_box, a_rank, b_box, b_rank) {
-                    contacts.push((children[prior].0, children[current].0, contact, sweep_pair(a_rank, b_rank)));
-                }
-            }
-        }
-        let child = |world: &Self, child: usize| {
-            if child >= SPIKE {
-                let spike = world.spike_attacks[child - SPIKE];
-                (spike.platform_index, spike.body.inverse_mass)
-            } else {
-                let engine = world.engines[child];
-                (engine.platform_index, engine.body.inverse_mass)
-            }
-        };
-        for (a, b, contact, (later, earlier)) in contacts {
-            // PrepareCollisionCallBacks queues A's callback, then B's; only a
-            // SpikeAttack listens on its box.
-            for (child, other) in [(a, b), (b, a)] {
-                if child >= SPIKE {
-                    let target =
-                        if other >= SPIKE { Part::Spike(other - SPIKE) } else { Part::Engine(other) };
-                    let hit = CallbackHit::SpikeShove { spike: child - SPIKE, target, point: contact.point };
-                    self.scratch.callback_hits.push(((GROUP_BB, later, earlier), hit));
-                }
-            }
-            let (a_platform, a_inverse_mass) = child(self, a);
-            let (b_platform, b_inverse_mass) = child(self, b);
-            let mut a_body = self.platform_dynamics[a_platform].body;
-            let mut b_body = self.platform_dynamics[b_platform].body;
-            resolve(
-                contact,
-                &mut a_body,
-                &mut b_body,
-                self.platform_dynamics[a_platform].composite_position,
-                self.platform_dynamics[b_platform].composite_position,
-            );
-            let correction = positional_correction(contact, a_inverse_mass, b_inverse_mass, false);
-            self.platform_dynamics[a_platform].body = a_body;
-            self.platform_dynamics[b_platform].body = b_body;
-            for (index, platform, delta) in [(a, a_platform, correction[0]), (b, b_platform, correction[1])] {
-                self.platform_dynamics[platform].composite_position += delta;
-                if index >= SPIKE {
-                    self.spike_attacks[index - SPIKE].collider_center += delta;
-                } else {
-                    self.engines[index].collider_center += delta;
-                }
-            }
-            self.platforms_changed();
-        }
     }
 
     /// The Circle/Circle group, then the Circle/Box group built from the

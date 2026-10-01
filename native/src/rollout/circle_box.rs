@@ -895,6 +895,59 @@ impl RolloutWorld {
         self.scratch.cc_contacts = contacts;
     }
 
+    /// DetPhysics' Box/Box group, after the Circle/Box one: rocket engine and
+    /// spike boxes of different platforms and Guided Missiles. Every manifold
+    /// is built before the first resolves, each queues A's OnCollide then
+    /// B's, and ResolveCollision works on a child's CompositeBody while
+    /// PositionalCorrection takes its own inverse mass (DetPhysics.cs:3131-3168).
+    pub(super) fn box_box_group(&mut self, data: &data::RolloutData) {
+        let mut parts = std::mem::take(&mut self.scratch.cb_parts);
+        parts.clear();
+        for (i, engine) in self.engines.iter().enumerate() {
+            if self.child_registered(engine.entity) {
+                parts.push(Part::Engine(i));
+            }
+        }
+        for (i, spike) in self.spike_attacks.iter().enumerate() {
+            if self.child_registered(spike.entity) {
+                parts.push(Part::Spike(i));
+            }
+        }
+        for i in 0..self.guided_missiles.len() {
+            if self.guided_missile_live(i) {
+                parts.push(Part::Missile(i));
+            }
+        }
+        parts.sort_by_key(|&part| self.part_rank(part));
+        let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
+        contacts.clear();
+        for (k, &current) in parts.iter().enumerate() {
+            for &prior in &parts[..k] {
+                if self.part_composite(prior).is_some_and(|c| Some(c) == self.part_composite(current))
+                    || !data.layers_collide(self.part_layer(prior, data), self.part_layer(current, data))
+                    || !self.swept_pair(Swept::Part(prior), Swept::Part(current))
+                {
+                    continue;
+                }
+                if let Some(contact) = self.part_collider(prior).contact(self.part_collider(current)) {
+                    contacts.push((prior, current, contact));
+                }
+            }
+        }
+        for &(a, b, contact) in &contacts {
+            let (later, earlier) = sweep_pair(self.part_rank(a), self.part_rank(b));
+            self.queue_collide((GROUP_BB, later, earlier), a, b, contact);
+        }
+        for &(a, b, contact) in &contacts {
+            self.resolve_parts(a, b, contact);
+        }
+        if !contacts.is_empty() {
+            self.platforms_changed();
+        }
+        self.scratch.cb_parts = parts;
+        self.scratch.cc_contacts = contacts;
+    }
+
     /// PrepareCollisionCallBacks for one manifold: A's OnCollide with B as the
     /// collider, then B's with A, both with the manifold's normal and point
     /// (DetPhysics.cs:2406-2438). Only colliders whose OnCollide the rollout
