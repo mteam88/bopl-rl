@@ -1948,6 +1948,9 @@ pub struct FormScale {
     /// The form's FixTransform, which DetPhysics syncs its box from whether
     /// the form is casting, hidden by a teleport or gone inactive.
     pub pose: FormPose,
+    /// The FixTransform the form's box took at the last SyncAll: the body's
+    /// while the form is live, `pose` once it is out (DetPhysics.cs:2517-2524).
+    pub synced: FormPose,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1969,6 +1972,7 @@ impl FormScale {
                 radius,
                 physics_scale: Fix::ONE,
                 pose: self.pose,
+                synced: self.synced,
                 ..FormScale::default()
             };
         }
@@ -1997,6 +2001,7 @@ impl FormScale {
                 scale: Fix::ONE,
                 circle_radius: radius,
                 pose: self.pose,
+                synced: self.synced,
                 ..FormScale::default()
             };
         }
@@ -2015,6 +2020,7 @@ impl FormScale {
                 radius: physics_radius,
                 physics_scale: Fix::ONE,
                 pose: self.pose,
+                synced: self.synced,
                 ..FormScale::default()
             };
         }
@@ -2144,10 +2150,6 @@ pub struct MeteorState {
     pub external_velocity: Vec2,
     pub grounded_entry: bool,
     pub dash_updates: u32,
-    /// FixTransform.up as DetPhysics last synced the hurtbox.
-    pub collider_up: Vec2,
-    /// The hurtbox's rotation at that sync.
-    pub collider_rotation: Fix,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -3861,6 +3863,20 @@ impl PlayerSlot {
         let base = &self.base;
         self.forms[self.active_slot].pose =
             FormPose { position: base.position, orientation: base.orientation };
+    }
+
+    /// SyncAllPhysicsObjectsToFixTransformPosition for the form boxes: each
+    /// `registered` box takes its FixTransform, a hidden form's included
+    /// (DetPhysics.cs:2517-2524). The live form's FixTransform is the body.
+    fn sync_form_boxes(&mut self, registered: [bool; 3]) {
+        let live = (self.active != ActiveAbility::None).then_some(self.active_slot);
+        for s in (0..self.forms.len()).filter(|&s| registered[s]) {
+            self.forms[s].synced = if live == Some(s) {
+                FormPose { position: self.base.position, orientation: self.base.orientation }
+            } else {
+                self.forms[s].pose
+            };
+        }
     }
 
     /// PlayerBody.rotation and up are the form FixTransform's own
@@ -8053,13 +8069,6 @@ impl RolloutWorld {
             let swallowed =
                 self.players[index].base.alive && self.players[index].blink_tunnel_active;
             if (self.playable(index) || swallowed) && !frozen {
-                // Meteor's row reads this in the form; its exits leave the
-                // hidden form box on the up it last had.
-                if self.players[index].active == ActiveAbility::Meteor {
-                    let slot = &mut self.players[index];
-                    slot.meteor.collider_up = slot.base.up();
-                    slot.meteor.collider_rotation = slot.base.rotation();
-                }
                 if self.players[index].active == ActiveAbility::Beam {
                     let slot = &mut self.players[index];
                     slot.beam.collider_position = slot.base.position;
@@ -8191,6 +8200,15 @@ impl RolloutWorld {
         // SyncAll: each DetPhysics collider takes its FixTransform. A shake,
         // a PlatformTransform resize or a portal teleport moved only the
         // transform, so raycasts and BlackHole saw the collider until now.
+        // SyncAll has no IsActive or time stop check: every box still
+        // registered takes its FixTransform, and RemoveDestroyedColliders
+        // has dropped the destroyed ones just before (DetPhysics.cs:2731-2735).
+        for index in 0..self.players.len().min(player_count) {
+            let registered = self.players[index].form_entities.map(|entity| {
+                entity != usize::MAX && self.entities[entity].flags & (E_DESTROYED | E_REMOVED) == 0
+            });
+            self.players[index].sync_form_boxes(registered);
+        }
         if self.platforms.iter().any(|platform| platform.collider.inner.center != platform.surface.center) {
             for platform in self.platforms.iter_mut() {
                 platform.collider.inner.center = platform.surface.center;
@@ -13613,8 +13631,6 @@ impl RolloutWorld {
     /// returns attached where the form's body landed, with no ground speed.
     fn exit_meteor_grounded(&mut self, index: usize) {
         let slot = &mut self.players[index];
-        slot.meteor.collider_up = slot.base.up();
-        slot.meteor.collider_rotation = slot.base.rotation();
         let mut info = ExitInfo { facing_right: true, just_landed: true, ..ExitInfo::default() };
         info.take_body(&slot.base);
         info.grounded = true;
@@ -13627,8 +13643,6 @@ impl RolloutWorld {
     /// attach it to a wall it came to rest inside.
     fn exit_meteor_air(&mut self, index: usize) {
         let slot = &mut self.players[index];
-        slot.meteor.collider_up = Vec2::UP;
-        slot.meteor.collider_rotation = Fix::ZERO;
         let base = &slot.base;
         let info = ExitInfo {
             position: base.position,
@@ -41518,13 +41532,13 @@ impl RolloutWorld {
                     // Ability.ExitAbility leaves the hidden form box where the
                     // form stood (Ability.cs:139-153); the slime may already
                     // have moved on, through a portal say.
-                    let root = if meteoring { synced } else { exit_position };
-                    let rotation = if meteoring { rotation } else { slot.meteor.collider_rotation };
+                    let form = slot.forms[slot.entity_slot(meteor_e)];
+                    let root = if meteoring { form.synced.position } else { exit_position };
+                    let rotation = form.synced.orientation.rotation();
                     let basis = Vec2::angle(rotation);
                     // DPhysicsBox: position + ComplexMul(fixTrans.right, offset),
                     // with right kept exactly as the surface normal turned.
-                    let right = slot.meteor.collider_up.perp_cw();
-                    let form = slot.forms[slot.entity_slot(meteor_e)];
+                    let right = form.synced.orientation.up().perp_cw();
                     let offset = if form.scale == Fix::ZERO {
                         data.meteor.collider_offset
                     } else {
