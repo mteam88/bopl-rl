@@ -6937,17 +6937,11 @@ impl RolloutWorld {
             *obs_state = STATE_FALL;
             *state_ticks = 0;
         }
-        // The last statement of OldUpdate is `if (!IsGrounded())
-        // AlignTransformAir()` (SlimeController.cs:890-892). That IsGrounded()
-        // is the pre-Move one, less whatever Jump() just ungrounded, so a pass
-        // that only walked off the ledge inside Move still took the grounded
-        // branch and did not re-aim. A pass that entered an ability returned
-        // long before reaching this line.
-        if !held && (!base.pre_move_grounded || jumped) {
-            // AlignTransformAir (SlimeController.cs:967-982): consume the
-            // ground normal Jump() left behind, then aim from the raw stick
-            // against MIN_TURNSPEED 0.02 - not from the ground alignment, and
-            // with no DEADZONE test.
+        // AlignTransformAir (SlimeController.cs:967-982): consume the ground
+        // normal Jump() left behind, then aim from the raw stick against
+        // MIN_TURNSPEED 0.02 - not from the ground alignment, and with no
+        // DEADZONE test.
+        fn align_transform_air(base: &mut Player, facing_right: &mut bool, dir: Vec2) {
             if std::mem::take(&mut base.was_upside_down) {
                 *facing_right = !*facing_right;
             }
@@ -6957,13 +6951,27 @@ impl RolloutWorld {
                 *facing_right = true;
             }
         }
-        // A pass that Move carries off the ground (a ledge, a portal) still
-        // ran OldUpdate's `switch (currentState)` on the ground state
-        // PlayerPhysics.UpdateSim left, and attachToGround still flipped a
-        // sprite it attached upside down; OnNoLongerGrounded only replaces the
-        // state that switch set with State.fall.
+        // The last statement of OldUpdate is `if (!IsGrounded())
+        // AlignTransformAir()` (SlimeController.cs:890-892). That IsGrounded()
+        // is the pre-Move one, less whatever Jump() just ungrounded, so a pass
+        // that only walked off the ledge inside Move still took the grounded
+        // branch and did not re-aim. A pass that entered an ability returned
+        // long before reaching this line. A jump that leaves the ground aims
+        // after the state switch below, which ran before Jump()
+        // (SlimeController.cs:834-870); one that Move lands again aims before
+        // that landing's attachToGround.
+        let jumped_off = jumped && !base.grounded;
+        if !held && (!base.pre_move_grounded || jumped) && !jumped_off {
+            align_transform_air(base, facing_right, dir);
+        }
+        // A pass that Move carries off the ground (a ledge, a portal, or its
+        // own Jump()) still ran OldUpdate's `switch (currentState)` on the
+        // ground state PlayerPhysics.UpdateSim left, re-aiming the sprite,
+        // and attachToGround still flipped a sprite it attached upside down;
+        // OnNoLongerGrounded only replaces the state that switch set with
+        // State.fall.
         let carried_off = !base.grounded;
-        if carried_off && base.pre_move_grounded && !jumped {
+        if carried_off && base.pre_move_grounded {
             *obs_state = entry_state;
         }
         // SlimeController flag5: stick magnitude past DEADZONE 0.4 (the
@@ -7079,6 +7087,9 @@ impl RolloutWorld {
         if carried_off {
             *obs_state = STATE_FALL;
             *state_ticks = 0;
+        }
+        if !held && jumped_off {
+            align_transform_air(base, facing_right, dir);
         }
     }
 
