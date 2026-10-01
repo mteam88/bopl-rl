@@ -2180,14 +2180,6 @@ pub struct GunState {
     /// The hurtbox centre GunTransform.OnEnterAbility synced. DetPhysics
     /// moves it again only at the end of the pass.
     pub hurtbox_center: Vec2,
-    /// Tick on which FreezeRayGun called Ability.ExitAbility directly. That
-    /// bypass retains the gun form's aimed FixTransform basis for its final
-    /// DetPhysics sync instead of zeroing it through GunTransform.ExitAbility.
-    pub forced_exit_tick: u32,
-    /// That retained FixTransform: its right vector and rotation.
-    pub forced_exit_basis: (Vec2, Fix),
-    /// The form entity the bypass left behind.
-    pub forced_exit_entity: usize,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -3792,6 +3784,17 @@ impl PlayerSlot {
     /// transform keeps the rotation the body last had.
     fn keep_form_rotation(&mut self) {
         self.forms[self.active_slot].pose.orientation = self.base.orientation;
+    }
+
+    /// A form's `body.up = up`. Run after DropPlatformTest's exit (the rest
+    /// of a form's UpdateSim, e.g. GunTransform.cs:147-151), it turns the
+    /// disabled form's FixTransform, which its box keeps syncing.
+    fn set_form_up(&mut self, up: Vec2) {
+        if self.active == ActiveAbility::None {
+            self.forms[self.active_slot].pose.orientation.set_up(up);
+        } else {
+            self.base.set_up(up);
+        }
     }
 
     /// The FixTransform `frozen`'s form row publishes.
@@ -24874,11 +24877,8 @@ impl RolloutWorld {
             slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = data.freeze.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback. Fired after DropPlatformTest's
-            // exit (GunTransform.cs:147-151), both land on the disabled form.
-            if slot.active != ActiveAbility::None {
-                slot.base.set_up(slot.gun.aim.perp());
-            }
+            // it again for the shot and knockback.
+            slot.set_form_up(slot.gun.aim.perp());
         }
         let firepoint = {
             let slot = &self.players[index];
@@ -25046,11 +25046,8 @@ impl RolloutWorld {
             slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = data.blink.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback. Fired after DropPlatformTest's
-            // exit (GunTransform.cs:147-151), both land on the disabled form.
-            if slot.active != ActiveAbility::None {
-                slot.base.set_up(slot.gun.aim.perp());
-            }
+            // it again for the shot and knockback.
+            slot.set_form_up(slot.gun.aim.perp());
         }
         let firepoint = {
             let slot = &self.players[index];
@@ -25215,11 +25212,8 @@ impl RolloutWorld {
             slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = ray.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback. Fired after DropPlatformTest's
-            // exit (GunTransform.cs:147-151), both land on the disabled form.
-            if slot.active != ActiveAbility::None {
-                slot.base.set_up(slot.gun.aim.perp());
-            }
+            // it again for the shot and knockback.
+            slot.set_form_up(slot.gun.aim.perp());
         }
         let firepoint = {
             let slot = &self.players[index];
@@ -25540,8 +25534,7 @@ impl RolloutWorld {
             if self.apply_platform_drop(index) {
                 let slot = &mut self.players[index];
                 if !slot.magnet.has_fired {
-                    let (s, aim) = (slot.entity_slot(slot.magnet_entity), slot.magnet.aim);
-                    slot.forms[s].pose.orientation.set_up(aim.perp());
+                    slot.set_form_up(slot.magnet.aim.perp());
                 }
                 return;
             }
@@ -27061,11 +27054,8 @@ impl RolloutWorld {
             slot.form_gravity[slot.active_slot] = Fix::ONE;
             slot.gun.fire_ticks = gun.fire_ticks;
             // GunTransform.Fire assigns up from inputVector before normalizing
-            // it again for the shot and knockback. Fired after DropPlatformTest's
-            // exit (GunTransform.cs:147-151), both land on the disabled form.
-            if slot.active != ActiveAbility::None {
-                slot.base.set_up(slot.gun.aim.perp());
-            }
+            // it again for the shot and knockback.
+            slot.set_form_up(slot.gun.aim.perp());
         }
         let firepoint = {
             let slot = &self.players[index];
@@ -30649,18 +30639,6 @@ impl RolloutWorld {
         let was_bow = self.players[victim].active == ActiveAbility::Bow;
         let deferred = was_bow && self.players[victim].base.grounded;
         let slot = &mut self.players[victim];
-        if matches!(
-            slot.active,
-            ActiveAbility::Freeze
-                | ActiveAbility::Blink
-                | ActiveAbility::GrowthRay
-                | ActiveAbility::ShrinkRay
-                | ActiveAbility::Duplicator
-        ) {
-            slot.gun.forced_exit_tick = self.tick;
-            slot.gun.forced_exit_basis = (slot.base.up().perp_cw(), slot.base.rotation());
-            slot.gun.forced_exit_entity = Self::hurtbox_entity(slot);
-        }
         if slot.active == ActiveAbility::Throw {
             let throw = &mut slot.macho_throw;
             throw.forced_exit_tick = Some(self.tick);
@@ -41019,15 +40997,6 @@ impl RolloutWorld {
                         (pose.position, pose.orientation.rotation(), pose.orientation.up())
                     })
             };
-            // A gun form a freeze ray forced out this pass. The bypass's
-            // Ability.ExitAbility skips GunTransform.ExitAbility's rotation
-            // reset (FreezeRayGun.cs:128, GunTransform.cs:84-98), so the form
-            // stays synced on its aimed basis where it stood.
-            let forced_exit_e = if slot.gun.forced_exit_tick == self.tick {
-                slot.gun.forced_exit_entity
-            } else {
-                usize::MAX
-            };
             let dash_exit_rotation = slot.base.dash.exit_rotation;
             let data = data::get();
 
@@ -41383,174 +41352,46 @@ impl RolloutWorld {
                     push_box.rotation = rotation.raw();
                 }
             }
-            if freeze_e != usize::MAX {
-                let freeze_box = &mut self.entities[freeze_e];
-                let forced_exit = forced_exit_e == freeze_e;
-                let flags = form_box_flags(alive && freezing);
-                if sync_form_row(freeze_box, flags, freezing, entered == freeze_e, slot.base.id) {
+            // The GunTransform forms (FreezeRayGun, Blink, the scale rays and
+            // the Duplicator share its rules).
+            for (gun_e, active, offset) in [
+                (freeze_e, freezing, data.freeze.collider_offset),
+                (blink_e, blinking, data.blink.collider_offset),
+                (growth_ray_e, growing, data.scale_rays.growth.collider_offset),
+                (shrink_ray_e, shrinking, data.scale_rays.shrink.collider_offset),
+                (duplicator_e, duplicating, data.duplicator.collider_offset),
+            ] {
+                if gun_e == usize::MAX {
+                    continue;
+                }
+                let row = &mut self.entities[gun_e];
+                let flags = form_box_flags(alive && active);
+                if sync_form_row(row, flags, active, entered == gun_e, slot.base.id) {
                     // GunTransform only writes `body.up` from the aim while the
                     // shot is pending (GunTransform.cs:184-192) and once more
                     // inside Fire (GunTransform.cs:120-121); afterwards the form
                     // keeps the orientation it fired at. The DetPhysics-synced
-                    // body rotation already carries that latch, so publish it
-                    // rather than re-deriving an angle from the live aim.
-                    let (root, rotation) = if freezing {
-                        (synced, rotation)
-                    } else if forced_exit {
-                        // The bypass leaves the disabled form's FixTransform on
-                        // its aimed basis, which `exit_form_for_freeze` saved
-                        // before zeroing the shared body for the restored slime.
-                        // It stays where ExitAbility published it (Ability.cs:150-152);
-                        // the restored slime may move on this pass.
-                        (exit_position, slot.gun.forced_exit_basis.1)
-                    } else {
-                        (exit_position, Fix::ZERO)
-                    };
-                    let basis = Vec2::angle(rotation);
+                    // body rotation already carries that latch. Once out, the
+                    // form's FixTransform is where its exit left it: zeroed by
+                    // GunTransform.ExitAbility (GunTransform.cs:86), aimed when
+                    // FreezeRayGun went straight to Ability.ExitAbility
+                    // (FreezeRayGun.cs:128), turned again by a Fire that follows
+                    // DropPlatformTest's exit (GunTransform.cs:147-151).
+                    let s = slot.entity_slot(gun_e);
+                    let pose = slot.forms[s].pose;
                     // DPhysicsBox translates its authored offset with the
                     // exact FixTransform basis copied/assigned by GunTransform,
                     // while its axes are rebuilt from the scalar angle.
-                    let offset_basis = if freezing {
-                        slot.gun.collider_up.perp_cw()
-                    } else if forced_exit {
-                        slot.gun.forced_exit_basis.0
+                    let (root, rotation, offset_basis) = if active {
+                        (synced, rotation, slot.gun.collider_up.perp_cw())
                     } else {
-                        basis
-                    };
-                    let s = slot.entity_slot(freeze_e);
-                    let offset = slot.gun_offset(s, data.freeze.collider_offset);
-                    let center = root + offset_basis.complex_mul(offset);
-                    let collider = stored_box(
-                        center,
-                        basis,
-                        self.entity_inverse_extents[freeze_e],
-                    );
-                    freeze_box.x = center.x.raw();
-                    freeze_box.y = center.y.raw();
-                    freeze_box.vx = 0;
-                    freeze_box.vy = 0;
-                    freeze_box.right_x = collider.right.x.raw();
-                    freeze_box.right_y = collider.right.y.raw();
-                    freeze_box.up_x = collider.up.x.raw();
-                    freeze_box.up_y = collider.up.y.raw();
-                    freeze_box.rotation = rotation.raw();
-                }
-            }
-            if blink_e != usize::MAX {
-                let blink_box = &mut self.entities[blink_e];
-                let forced_exit = forced_exit_e == blink_e;
-                let flags = form_box_flags(alive && blinking);
-                if sync_form_row(blink_box, flags, blinking, entered == blink_e, slot.base.id) {
-                    let (root, rotation) = if blinking {
-                        // Latched at the shot, as at the Freeze row above.
-                        (synced, rotation)
-                    } else if forced_exit {
-                        (exit_position, slot.gun.forced_exit_basis.1)
-                    } else {
-                        (exit_position, Fix::ZERO)
+                        let orientation = pose.orientation;
+                        (exit_position, orientation.rotation(), orientation.up().perp_cw())
                     };
                     let basis = Vec2::angle(rotation);
-                    let offset_basis = if blinking {
-                        slot.gun.collider_up.perp_cw()
-                    } else if forced_exit {
-                        slot.gun.forced_exit_basis.0
-                    } else {
-                        basis
-                    };
-                    let s = slot.entity_slot(blink_e);
-                    let offset = slot.gun_offset(s, data.blink.collider_offset);
+                    let offset = slot.gun_offset(s, offset);
                     let center = root + offset_basis.complex_mul(offset);
-                    let collider = stored_box(
-                        center,
-                        basis,
-                        self.entity_inverse_extents[blink_e],
-                    );
-                    blink_box.x = center.x.raw();
-                    blink_box.y = center.y.raw();
-                    blink_box.vx = 0;
-                    blink_box.vy = 0;
-                    blink_box.right_x = collider.right.x.raw();
-                    blink_box.right_y = collider.right.y.raw();
-                    blink_box.up_x = collider.up.x.raw();
-                    blink_box.up_y = collider.up.y.raw();
-                    blink_box.rotation = rotation.raw();
-                }
-            }
-            for (ray_e, active, ray) in [
-                (growth_ray_e, growing, &data.scale_rays.growth),
-                (shrink_ray_e, shrinking, &data.scale_rays.shrink),
-            ] {
-                if ray_e == usize::MAX {
-                    continue;
-                }
-                let ray_box = &mut self.entities[ray_e];
-                let forced_exit = forced_exit_e == ray_e;
-                let flags = form_box_flags(alive && active);
-                if sync_form_row(ray_box, flags, active, entered == ray_e, slot.base.id) {
-                    let (root, rotation) = if active {
-                        // Latched at the shot, as at the Freeze row above.
-                        (synced, rotation)
-                    } else if forced_exit {
-                        (exit_position, slot.gun.forced_exit_basis.1)
-                    } else {
-                        (exit_position, Fix::ZERO)
-                    };
-                    let basis = Vec2::angle(rotation);
-                    let offset_basis = if active {
-                        slot.gun.collider_up.perp_cw()
-                    } else if forced_exit {
-                        slot.gun.forced_exit_basis.0
-                    } else {
-                        basis
-                    };
-                    let s = slot.entity_slot(ray_e);
-                    let offset = slot.gun_offset(s, ray.collider_offset);
-                    let center = root + offset_basis.complex_mul(offset);
-                    let collider = stored_box(
-                        center,
-                        basis,
-                        self.entity_inverse_extents[ray_e],
-                    );
-                    ray_box.x = center.x.raw();
-                    ray_box.y = center.y.raw();
-                    ray_box.vx = 0;
-                    ray_box.vy = 0;
-                    ray_box.right_x = collider.right.x.raw();
-                    ray_box.right_y = collider.right.y.raw();
-                    ray_box.up_x = collider.up.x.raw();
-                    ray_box.up_y = collider.up.y.raw();
-                    ray_box.rotation = rotation.raw();
-                }
-            }
-            if duplicator_e != usize::MAX {
-                let row = &mut self.entities[duplicator_e];
-                let forced_exit = forced_exit_e == duplicator_e;
-                let flags = form_box_flags(alive && duplicating);
-                if sync_form_row(row, flags, duplicating, entered == duplicator_e, slot.base.id) {
-                    let (root, rotation) = if duplicating {
-                        // Latched at the shot, as at the Freeze row above.
-                        (synced, rotation)
-                    } else if forced_exit {
-                        (exit_position, slot.gun.forced_exit_basis.1)
-                    } else {
-                        (exit_position, Fix::ZERO)
-                    };
-                    let basis = Vec2::angle(rotation);
-                    let offset_basis = if duplicating {
-                        slot.gun.collider_up.perp_cw()
-                    } else if forced_exit {
-                        slot.gun.forced_exit_basis.0
-                    } else {
-                        basis
-                    };
-                    let s = slot.entity_slot(duplicator_e);
-                    let offset = slot.gun_offset(s, data.duplicator.collider_offset);
-                    let center = root + offset_basis.complex_mul(offset);
-                    let collider = stored_box(
-                        center,
-                        basis,
-                        self.entity_inverse_extents[duplicator_e],
-                    );
+                    let collider = stored_box(center, basis, self.entity_inverse_extents[gun_e]);
                     row.x = center.x.raw();
                     row.y = center.y.raw();
                     row.vx = 0;
