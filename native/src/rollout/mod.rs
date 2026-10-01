@@ -41187,45 +41187,22 @@ impl RolloutWorld {
                 let throw_box = &mut self.entities[throw_e];
                 // Each slot's prefab owns its row, so a Missile slot's row
                 // keeps the missile box while another throw form is out.
-                let missile_row = missile_form
-                    || (0..3).any(|s| {
-                        slot.form_entities[s] == throw_e && slot.abilities[s] == ABILITY_MISSILE
-                    });
                 let live = throwing || missile_form;
                 let flags = form_box_flags(alive && live);
                 if sync_form_row(throw_box, flags, live, entered == throw_e, slot.base.id) {
                     let at_sync = slot.forms[slot.entity_slot(throw_e)].synced;
-                    let (center, rotation) = if missile_form {
+                    // A grounded form's box keeps this pass's recoil drift and
+                    // turn; LateUpdateSim moves only the body. A timed exit
+                    // leaves the box at the form's pose; the slime that lands
+                    // or re-grounds turns on its own.
+                    let (center, rotation) = if live {
                         (at_sync.position, at_sync.orientation.rotation())
-                    } else if throwing {
-                        // A grounded form's box keeps this pass's recoil
-                        // drift and turn; LateUpdateSim moves only the body.
-                        (synced, rotation)
                     } else if let Some((position, rotation, _)) = frozen_pose(throw_e) {
                         (position, rotation)
                     } else {
-                        // A timed exit leaves the box at the form's pose;
-                        // the slime that lands or re-grounds turns on its own.
-                        let rotation = if missile_row {
-                            at_sync.orientation.rotation()
-                        } else {
-                            slot.forms[slot.entity_slot(throw_e)].pose.orientation.rotation()
-                        };
-                        (exit_position, rotation)
+                        (exit_position, at_sync.orientation.rotation())
                     };
-                    let hurtbox = if missile_row {
-                        stored_box(
-                            center,
-                            Vec2::angle(rotation),
-                            self.entity_inverse_extents[throw_e],
-                        )
-                    } else {
-                        stored_box(
-                            center,
-                            Vec2::angle(rotation),
-                            self.entity_inverse_extents[throw_e],
-                        )
-                    };
+                    let hurtbox = stored_box(center, Vec2::angle(rotation), self.entity_inverse_extents[throw_e]);
                     throw_box.x = center.x.raw();
                     throw_box.y = center.y.raw();
                     throw_box.vx = 0;
