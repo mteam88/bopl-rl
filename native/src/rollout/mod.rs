@@ -1893,11 +1893,6 @@ pub struct PlatformDynamics {
     /// The tunnel's updater slot: spawned updaters created after it (a
     /// Black Hole) see the wall it restores on the same pass.
     pub blink_tunnel_hierarchy: u32,
-    /// The deactivation pass still receives the rider's scheduled LateUpdate,
-    /// but DetPhysics freezes the inactive platform body immediately.
-    pub blink_deactivated_tick: Option<u32>,
-    /// The pass the tunnel restored the wall (QuantumTunnel.cs:163-166).
-    pub blink_reactivated_tick: Option<u32>,
     /// `(orientation, Vec2::angle(orientation))` from the last integration:
     /// a platform that translates without rotating (sudden death, a spring
     /// settling) keeps its basis instead of consulting the sine table twice.
@@ -5871,8 +5866,6 @@ impl RolloutWorld {
                 blink_tunnel_delay: Fix::ZERO,
                 blink_tunnel_age: Fix::ZERO,
                 blink_tunnel_hierarchy: 0,
-                blink_deactivated_tick: None,
-                blink_reactivated_tick: None,
                 basis: None,
                 start_radius: p.start_radius,
             });
@@ -17103,14 +17096,7 @@ impl RolloutWorld {
                     _ if composite => dynamics.root_body.inverse_mass,
                     _ => dynamics.body.inverse_mass,
                 };
-                // A wall QuantumTunnel registered after this hole hides or
-                // restores its wall only after the hole has pulled
-                // (QuantumTunnel.cs:136, 163-166), while the Blink tunnel
-                // step ahead of this window has already toggled it.
-                let toggled_later = (dynamics.blink_deactivated_tick == Some(self.tick)
-                    || dynamics.blink_reactivated_tick == Some(self.tick))
-                    && dynamics.blink_tunnel_hierarchy > self.black_holes[hole_index].hierarchy_base;
-                if inverse_mass == Fix::ZERO || self.platforms[platform_index].active == toggled_later {
+                if inverse_mass == Fix::ZERO || !self.platforms[platform_index].active {
                     continue;
                 }
                 // The DetPhysics collider copy, which a ShakablePlatform
@@ -19543,8 +19529,6 @@ impl RolloutWorld {
             blink_tunnel_delay: Fix::ZERO,
             blink_tunnel_age: Fix::ZERO,
             blink_tunnel_hierarchy: 0,
-            blink_deactivated_tick: None,
-            blink_reactivated_tick: None,
             basis: None,
             start_radius: radius,
         });
@@ -28881,7 +28865,6 @@ impl RolloutWorld {
             dynamics.blink_tunnel_initialized = false;
             dynamics.blink_tunnel_delay = Fix::ZERO;
             dynamics.blink_tunnel_age = Fix::ZERO;
-            dynamics.blink_deactivated_tick = None;
             self.platforms_changed();
             return;
         }
@@ -29910,7 +29893,6 @@ impl RolloutWorld {
                 self.platforms[platform_index].active = false;
                 let state = &mut self.platform_dynamics[platform_index];
                 state.blink_tunnel_initialized = true;
-                state.blink_deactivated_tick = Some(self.tick);
                 self.platforms_changed();
             }
             let reactivated =
@@ -29919,8 +29901,6 @@ impl RolloutWorld {
                 self.platforms[platform_index].active = true;
                 let state = &mut self.platform_dynamics[platform_index];
                 state.blink_tunnel_active = false;
-                state.blink_deactivated_tick = None;
-                state.blink_reactivated_tick = Some(self.tick);
                 self.platforms_changed();
             }
             self.platform_dynamics[platform_index].blink_tunnel_age += updater_dt;
@@ -31156,8 +31136,6 @@ impl RolloutWorld {
         // and one of a wall whose tunnel is still waiting is never hidden.
         dynamics.blink_tunnel_active = false;
         dynamics.blink_tunnel_initialized = false;
-        dynamics.blink_deactivated_tick = None;
-        dynamics.blink_reactivated_tick = None;
 
         let source_row = self.entities[self.platform_entities[source]];
         let entity = self.entities.len();
@@ -31932,8 +31910,6 @@ impl RolloutWorld {
             blink_tunnel_delay: Fix::ZERO,
             blink_tunnel_age: Fix::ZERO,
             blink_tunnel_hierarchy: 0,
-            blink_deactivated_tick: None,
-            blink_reactivated_tick: None,
             basis: None,
             start_radius: pd.spawn_radius * scale,
         });
