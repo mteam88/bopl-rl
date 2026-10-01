@@ -115,6 +115,11 @@ impl RolloutWorld {
                 Some(entity) => self.current_bounds(Swept::Row(entity), data),
                 None => NOWHERE,
             },
+            // DetPhysics swept a beam's box before UpdateBeams resized it.
+            Swept::Part(Part::Explosion(Blast::Beam(i))) => {
+                self.beam_pool[i].contact_collider.map_or(NOWHERE, box_bounds)
+            }
+            Swept::Part(Part::Explosion(blast)) => self.current_bounds(Swept::Row(self.blast_entity(blast)), data),
             Swept::Part(part) => self.part_collider(part).bounds(),
             Swept::Player(index) => {
                 let slot = &self.players[index];
@@ -205,6 +210,10 @@ impl RolloutWorld {
             Swept::Part(Part::Body(i)) => sweep.players.get(i),
             Swept::Part(Part::Clone(i)) => sweep.clones.get(i),
             Swept::Part(Part::Cloud(i)) => self.smoke_clouds[i].entity.and_then(|entity| sweep.rows.get(entity)),
+            Swept::Part(Part::Explosion(Blast::Beam(i))) => {
+                return Some(self.beam_pool[i].contact_collider.map_or(NOWHERE, box_bounds));
+            }
+            Swept::Part(Part::Explosion(blast)) => sweep.rows.get(self.blast_entity(blast)),
             // A trigger no group moves: SortAndSweep bounded it where it is.
             Swept::Part(Part::Hook(_) | Part::Hole(_) | Part::Line(_)) => {
                 return Some(self.current_bounds(collider, data::get()));

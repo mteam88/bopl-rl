@@ -36,6 +36,29 @@ pub(super) enum Part {
     Line(usize),
     /// A Smoke cloud's FlammableSmoke circle.
     Cloud(usize),
+    /// An Explosion-layer collider but the Tesla lightning.
+    Explosion(Blast),
+}
+
+/// The Explosion-layer colliders, by the collection that owns them; the
+/// Tesla lightning is `Part::Line`. The collision matrix pairs them with the
+/// Player, Projectile, item, Smoke, waterMask and orb layers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Blast {
+    /// GrenadeExplode's XGunExplosion box.
+    Grenade(usize),
+    /// A MineExplosion box: a Missile's, a Mine's or a bounds UpEffect's.
+    Mine(usize),
+    /// SmokeGrenadeExplode2's SmokeExplosion box.
+    Smoke(usize),
+    /// MeteorSmash's MeteorSmear_explo box.
+    Smear(usize),
+    /// One of a Drill's three invisibleHitbox boxes, by player and box.
+    Drill(usize, usize),
+    /// A pooled BeamObject box.
+    Beam(usize),
+    /// The Beam staff's orbAnim circle.
+    Orb(usize),
 }
 
 /// Arrow.StickTo: Player, item, wall, LethalTerrain and NonLethalTerrain
@@ -99,6 +122,95 @@ impl RolloutWorld {
                 let entity = cloud.entity.expect("registered smoke cloud");
                 Collider::Circle(Circle { center: cloud.position, radius: Fix::from_raw(self.entities[entity].radius) })
             }
+            // SetDimensions resized the beam's box after SortAndSweep bounded
+            // it, so the narrow phase tests the new box.
+            Part::Explosion(Blast::Beam(i)) => Collider::Box(self.beam_pool[i].hitbox.collider.expect("a live beam box")),
+            Part::Explosion(blast) => {
+                let entity = self.blast_entity(blast);
+                let row = self.entities[entity];
+                if row.kind == 0 {
+                    let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
+                    return Collider::Circle(Circle { center, radius: Fix::from_raw(row.radius) });
+                }
+                Collider::Box(Self::row_box(&self.entity_inverse_extents, entity, row))
+            }
+        }
+    }
+
+    /// An Explosion-layer collider's row.
+    pub(super) fn blast_entity(&self, blast: Blast) -> usize {
+        let entity = match blast {
+            Blast::Grenade(i) => self.grenade_explosions[i].entity,
+            Blast::Mine(i) => self.missile_explosions[i].entity,
+            Blast::Smoke(i) => self.smoke_explosions[i].entity,
+            Blast::Smear(i) => self.meteor_smears[i].entity,
+            Blast::Drill(p, k) => {
+                let slot = &self.players[p];
+                Some(slot.drill_hitbox_entities[slot.active_slot][k]).filter(|&entity| entity != usize::MAX)
+            }
+            Blast::Beam(i) => self.beam_pool[i].entity,
+            Blast::Orb(i) => self.beam_orbs[i].entity,
+        };
+        entity.expect("a registered Explosion-layer collider")
+    }
+
+    /// Whether an Explosion-layer collider is in this Simulate's pairs:
+    /// registered, DetPhysics.IsActive and its hitbox enabled. An Explosion
+    /// with hitBoxActiveOnlyFirstFrame enables its box only until its first
+    /// UpdateSim (Explosion.cs:37-66); a MeteorSmear's, a BeamObject's and
+    /// the orb's stay enabled; a Drill's HitboxCombo enables its boxes once
+    /// it drills (Drill.cs:199, 283-289); StartBeam enables the orb's and
+    /// StopOrbAnim disables it (Beam.cs:344, 395). A beam box pairs on the
+    /// box SortAndSweep bounded before UpdateBeams resized it.
+    fn blast_part(&self, blast: Blast) -> bool {
+        let live = match blast {
+            Blast::Grenade(i) => self.grenade_explosions[i].active && self.grenade_explosions[i].registered,
+            Blast::Mine(i) => self.missile_explosions[i].active && self.missile_explosions[i].registered,
+            Blast::Smoke(i) => self.smoke_explosions[i].active && self.smoke_explosions[i].registered,
+            Blast::Smear(i) => self.meteor_smears[i].active,
+            Blast::Drill(p, k) => {
+                let slot = &self.players[p];
+                self.playable(p)
+                    && slot.active == ActiveAbility::Drill
+                    && slot.drill.phase != 0
+                    && slot.drill_hitbox_entities[slot.active_slot][k] != usize::MAX
+            }
+            Blast::Beam(i) => {
+                let slot = &self.beam_pool[i];
+                i < self.scratch.beam_contacts && slot.contact_collider.is_some() && slot.hitbox.collider.is_some()
+            }
+            Blast::Orb(i) => self.beam_orbs[i].active && self.beam_orbs[i].enabled,
+        };
+        live && self.collides(self.blast_entity(blast))
+    }
+
+    /// Every Explosion-layer collider in this Simulate's pairs, circles or
+    /// boxes.
+    fn push_blasts(&self, parts: &mut Vec<Part>, circles: bool) {
+        let blasts = (0..self.grenade_explosions.len())
+            .map(Blast::Grenade)
+            .chain((0..self.missile_explosions.len()).map(Blast::Mine))
+            .chain((0..self.smoke_explosions.len()).map(Blast::Smoke))
+            .chain((0..self.meteor_smears.len()).map(Blast::Smear))
+            .chain((0..self.players.len()).flat_map(|p| (0..3).map(move |k| Blast::Drill(p, k))))
+            .chain((0..self.beam_pool.len()).map(Blast::Beam))
+            .chain((0..self.beam_orbs.len()).map(Blast::Orb));
+        for blast in blasts {
+            if matches!(blast, Blast::Orb(_)) == circles && self.blast_part(blast) {
+                parts.push(Part::Explosion(blast));
+            }
+        }
+    }
+
+    /// FlammableSmoke.OnCollide's test: the collider carries an Explosion
+    /// with igniteFlammables (XGunExplosion, MineExplosion, SmokeExplosion,
+    /// BeamObject, orbAnim and Chain_Lightning prefabs; MeteorSmear_explo's
+    /// is off, and a Drill's invisibleHitbox has none).
+    fn ignites_flammables(other: Part) -> bool {
+        match other {
+            Part::Line(_) => true,
+            Part::Explosion(blast) => !matches!(blast, Blast::Smear(_) | Blast::Drill(..)),
+            _ => false,
         }
     }
 
@@ -135,6 +247,7 @@ impl RolloutWorld {
             Part::Hole(_) => LAYER_RIGID_BODY_AFFECTOR,
             Part::Line(_) => data.tesla.lightning_layer,
             Part::Cloud(i) => self.entities[self.smoke_clouds[i].entity.expect("registered smoke cloud")].layer,
+            Part::Explosion(blast) => self.entities[self.blast_entity(blast)].layer,
             Part::Body(_) | Part::Clone(_) => self.entities[self.part_entity(part).expect("registered body")].layer,
         }
     }
@@ -142,21 +255,6 @@ impl RolloutWorld {
     /// Its place in SortAndSweep's order.
     pub(super) fn part_rank(&self, part: Part) -> SweepRank {
         sweep_rank(&self.entities, self.swept_min(Swept::Part(part)), self.part_entity(part))
-    }
-
-    /// Any collider's place in SortAndSweep's order.
-    pub(super) fn swept_rank(&self, collider: Swept) -> SweepRank {
-        let entity = match collider {
-            Swept::Part(part) => self.part_entity(part),
-            Swept::Player(i) => Some(Self::hurtbox_entity(&self.players[i])),
-            Swept::Clone(i) => self.abilityless_clones[i].entity,
-            Swept::Arrow(i) => self.arrows[i].entity,
-            Swept::DuplicatedRock(i) => self.duplicated_rocks[i].entity,
-            Swept::Pickup(i) => self.ability_pickups[i].entity,
-            Swept::Row(entity) => Some(entity),
-            Swept::Water => None,
-        };
-        sweep_rank(&self.entities, self.swept_min(collider), entity)
     }
 
     /// A wall's place in SortAndSweep's order, from the collider the
@@ -192,6 +290,7 @@ impl RolloutWorld {
             Part::Clone(i) => self.abilityless_clones[i].entity,
             Part::Line(i) => self.tesla_nodes[i].line_entity,
             Part::Cloud(i) => self.smoke_clouds[i].entity,
+            Part::Explosion(blast) => Some(self.blast_entity(blast)),
         }
     }
 
@@ -213,7 +312,8 @@ impl RolloutWorld {
             | Part::Body(_)
             | Part::Clone(_)
             | Part::Line(_)
-            | Part::Cloud(_) => None,
+            | Part::Cloud(_)
+            | Part::Explosion(_) => None,
         }
     }
 
@@ -241,6 +341,8 @@ impl RolloutWorld {
             // The lightning's box is a trigger.
             Part::Line(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
             Part::Cloud(i) => self.smoke_clouds[i].body,
+            // An Explosion's box has no BoplBody.
+            Part::Explosion(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
         }
     }
 
@@ -262,6 +364,7 @@ impl RolloutWorld {
             Part::Clone(i) => self.abilityless_clones[i].active,
             Part::Line(i) => self.tesla_nodes[i].line_entity.is_some(),
             Part::Cloud(i) => self.smoke_clouds[i].active,
+            Part::Explosion(blast) => self.blast_part(blast),
         }
     }
 
@@ -349,7 +452,7 @@ impl RolloutWorld {
                 self.smoke_clouds[i].body = body;
                 self.smoke_clouds[i].position += delta;
             }
-            Part::Body(_) | Part::Clone(_) | Part::Line(_) => {}
+            Part::Body(_) | Part::Clone(_) | Part::Line(_) | Part::Explosion(_) => {}
         }
         if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_) | Part::Arrow(_), Some(entity)) =
             (part, self.part_entity(part))
@@ -389,6 +492,7 @@ impl RolloutWorld {
             Part::Body(_) | Part::Clone(_) => self.part_collider(part).center(),
             Part::Line(i) => self.tesla_nodes[i].line_center,
             Part::Cloud(i) => self.smoke_clouds[i].position,
+            Part::Explosion(_) => self.part_collider(part).center(),
         }
     }
 
@@ -495,7 +599,8 @@ impl RolloutWorld {
             | Part::Hole(_)
             | Part::Body(_)
             | Part::Clone(_)
-            | Part::Line(_) => unreachable!(),
+            | Part::Line(_)
+            | Part::Explosion(_) => unreachable!(),
         }
     }
 
@@ -563,32 +668,6 @@ impl RolloutWorld {
         self.collides(entity).then_some(self.entities[entity].kind == 0)
     }
 
-    /// Whether a Player-layer row is a slime's, form's, clone's or Rock's
-    /// collider that the Circle/Circle and Circle/Box groups pair, so its
-    /// pairs' callbacks queue there.
-    pub(super) fn grouped_body_entity(&self, entity: usize) -> bool {
-        (0..self.players.len()).any(|i| {
-            (self.body_part_circle(i).is_some() && Self::hurtbox_entity(&self.players[i]) == entity)
-                || (self.players[i].active == ActiveAbility::Rock
-                    && self.playable(i)
-                    && self.players[i].rock_entity == entity)
-        }) || (0..self.abilityless_clones.len())
-            .any(|i| self.clone_part_circle(i).is_some() && self.abilityless_clones[i].entity == Some(entity))
-            || self
-                .duplicated_rocks
-                .iter()
-                .any(|rock| rock.active && !self.blink_object_hidden(rock.entity) && rock.entity == Some(entity))
-    }
-
-    /// Whether a row is a collider the groups pair, a slime's, form's,
-    /// clone's or Rock's or a Tesla node's lightning, so its pairs' callbacks
-    /// queue there rather than from a trigger pass.
-    pub(super) fn grouped_entity(&self, entity: usize) -> bool {
-        self.grouped_body_entity(entity)
-            || (0..self.tesla_nodes.len())
-                .any(|i| self.tesla_nodes[i].line_entity == Some(entity) && self.line_part(i))
-    }
-
     /// DetPhysics' Circle/Box group. Rigid pairs resolve in sweep order with
     /// PositionalCorrection on each side's own inverse mass; every pair
     /// queues both sides' OnCollide, which run after the last group.
@@ -653,6 +732,7 @@ impl RolloutWorld {
                 parts.push(Part::Clone(i));
             }
         }
+        self.push_blasts(&mut parts, true);
         let circles = parts.len();
         for (i, engine) in self.engines.iter().enumerate() {
             if self.child_registered(engine.entity) {
@@ -684,6 +764,7 @@ impl RolloutWorld {
                 parts.push(Part::Clone(i));
             }
         }
+        self.push_blasts(&mut parts, false);
         let mut contacts = std::mem::take(&mut self.scratch.cb_contacts);
         contacts.clear();
         for &circle in &parts[..circles] {
@@ -953,6 +1034,7 @@ impl RolloutWorld {
                 parts.push(Part::Clone(i));
             }
         }
+        self.push_blasts(&mut parts, true);
         parts.sort_by_key(|&part| self.part_rank(part));
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
@@ -1027,6 +1109,7 @@ impl RolloutWorld {
                 parts.push(Part::Clone(i));
             }
         }
+        self.push_blasts(&mut parts, false);
         parts.sort_by_key(|&part| self.part_rank(part));
         let mut contacts = std::mem::take(&mut self.scratch.cc_contacts);
         contacts.clear();
@@ -1119,41 +1202,40 @@ impl RolloutWorld {
         }
         match receiver {
             Part::Hole(hole) => self.black_hole_on_collide(hole, other, data),
-            Part::Item(item) => match self.thrown_items[item].ability {
-                // SmokeGrenadeExplode2 goes off on any collider but a
-                // Projectile that does not ignite explosives, as a portal
-                // shot's or an arrow's (SmokeGrenadeExplode2.cs:63-78,
-                // Arrow.prefab IgnitesExplosives 0). The hook is on the Rope
-                // layer, so a Smoke it touches goes off.
-                ABILITY_SMOKE if !matches!(other, Part::Shot(_) | Part::Arrow(_)) => {
-                    self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
-                }
-                // Mine.OnCollide: an arrow is an igniter, and the Mine sees
-                // the contact whether or not the arrow landed first
-                // (Mine.cs:227-235).
-                // Mine.Igniters holds the lightning's layer too.
-                ABILITY_MINE if matches!(other, Part::Arrow(_) | Part::Line(_)) => {
-                    self.run_callback_hit(CallbackHit::MineIgnite { item }, data);
-                }
-                // GrenadeExplode.OnCollide goes off on a Player-layer collider
-                // but its owner's, unless it detonates on its owner, and the
-                // holding MagnetGun's hurtbox; Mine.OnCollide ignites on one
-                // but the holding MagnetGun's (GrenadeExplode.cs:41-68,
-                // Mine.cs:227-235).
-                // GrenadeExplode.OnCollide goes off on the Explosion layer,
-                // the lightning's (GrenadeExplode.cs:78-81).
-                ABILITY_GRENADE if self.part_layer(other, data) == LAYER_EXPLOSION => {
-                    self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
-                }
-                ability @ (ABILITY_GRENADE | ABILITY_MINE) if self.part_layer(other, data) == LAYER_PLAYER => {
-                    let state = self.thrown_items[item];
-                    let entity = collider.expect("grouped Player-layer part");
-                    if state.magnet_holder.is_some_and(|holder| self.players[holder].magnet_entity == entity) {
-                        return;
+            Part::Item(item) => {
+                let layer = self.part_layer(other, data);
+                let state = self.thrown_items[item];
+                match state.ability {
+                    // SmokeGrenadeExplode2 goes off on any collider but a
+                    // Projectile that does not ignite explosives, which no
+                    // Projectile prefab does (SmokeGrenadeExplode2.cs:63-78;
+                    // IgnitesExplosives 0 on Arrow, MeteorSmear, ...).
+                    ABILITY_SMOKE if layer != LAYER_PROJECTILE => {
+                        self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
                     }
-                    if ability == ABILITY_MINE {
+                    // Mine.OnCollide arms on its Igniters' layers unless the
+                    // collider is the holding MagnetGun's hurtbox, and sees an
+                    // arrow's contact whether or not it landed first
+                    // (Mine.cs:227-235).
+                    ABILITY_MINE if MINE_IGNITERS & (1 << layer) != 0 => {
+                        if state.magnet_holder.is_some_and(|holder| Some(self.players[holder].magnet_entity) == collider) {
+                            return;
+                        }
                         self.run_callback_hit(CallbackHit::MineIgnite { item }, data);
-                    } else {
+                    }
+                    // GrenadeExplode.OnCollide goes off on the Explosion layer
+                    // (GrenadeExplode.cs:78-81).
+                    ABILITY_GRENADE if layer == LAYER_EXPLOSION => {
+                        self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
+                    }
+                    // and on a Player-layer collider but its owner's, unless it
+                    // detonates on its owner, and the holding MagnetGun's
+                    // hurtbox (GrenadeExplode.cs:41-68).
+                    ABILITY_GRENADE if layer == LAYER_PLAYER => {
+                        let entity = collider.expect("grouped Player-layer part");
+                        if state.magnet_holder.is_some_and(|holder| self.players[holder].magnet_entity == entity) {
+                            return;
+                        }
                         // The collider's IPlayerIdHolder: a slime's or form's
                         // own player, whatever its row last published.
                         let holder_id = match other {
@@ -1164,9 +1246,9 @@ impl RolloutWorld {
                             self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             // The form's circle calls BounceBall's OnCollide and its
             // PlayerCollision's (DPhysicsCircle.cs:330-346), and a spike's,
             // a lethal Tesla node's or its lightning's zero-owner Explosion
@@ -1235,7 +1317,8 @@ impl RolloutWorld {
                     | Part::Body(_)
                     | Part::Clone(_)
                     | Part::Line(_)
-                    | Part::Cloud(_) => return,
+                    | Part::Cloud(_)
+                    | Part::Explosion(_) => return,
                 };
                 self.rope_hook_collide(rope, target);
             }
@@ -1255,12 +1338,12 @@ impl RolloutWorld {
             // FlammableSmoke.OnCollide Ignites the cloud on an Explosion with
             // igniteFlammables, as the lightning's (FlammableSmoke.cs:91-98).
             Part::Cloud(cloud) => {
-                if let (Part::Line(_), Some(entity)) = (other, self.smoke_clouds[cloud].entity) {
+                if let (true, Some(entity)) = (Self::ignites_flammables(other), self.smoke_clouds[cloud].entity) {
                     self.run_callback_hit(CallbackHit::SmokeIgnite { cloud, entity }, data);
                 }
             }
-            // Missile.OnCollide ignores RigidBodyAffector (Missile.cs:183).
-            Part::Missile(missile) if self.part_layer(other, data) != LAYER_RIGID_BODY_AFFECTOR => {
+            // Missile.OnCollide ignores RigidBodyAffector and Rope (Missile.cs:183).
+            Part::Missile(missile) if !matches!(self.part_layer(other, data), LAYER_RIGID_BODY_AFFECTOR | LAYER_ROPE) => {
                 self.run_callback_hit(CallbackHit::MissileBlast { missile }, data);
             }
             // PlayerCollision.OnCollide refuses a collider an earlier callback
@@ -1365,7 +1448,7 @@ impl RolloutWorld {
             // Smoke (layer 22) pairs with RigidBodyAffector, so an unlit
             // cloud is eaten like any other positive-mass circle.
             Part::Cloud(i) => (HoleTarget::Cloud(i), self.smoke_clouds[i].body.inverse_mass),
-            Part::Hook(_) | Part::Line(_) => return,
+            Part::Hook(_) | Part::Line(_) | Part::Explosion(_) => return,
         };
         self.black_hole_collide(hole, target, inverse_mass, data);
     }

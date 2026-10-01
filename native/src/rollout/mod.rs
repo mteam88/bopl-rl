@@ -24,7 +24,7 @@ mod circle_box;
 mod dotnet_sort;
 mod rope_abilities;
 mod sweep;
-use circle_box::Part;
+use circle_box::{Blast, Part};
 use sweep::Swept;
 use rope_abilities::HookTarget;
 
@@ -258,9 +258,6 @@ fn swept_box_box(a: OrientedBox, a_rank: SweepRank, b: OrientedBox, b_rank: Swee
 /// (DetPhysics.cs:1684-1708), ahead of every collider in the sweep.
 const QUERY_RANK: SweepRank = (Fix::MIN, 0, 0);
 
-fn earliest_key(first: &mut Option<CallbackKey>, key: CallbackKey) {
-    *first = Some(first.map_or(key, |first| first.min(key)));
-}
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct CSlime {
@@ -485,20 +482,6 @@ const LAYER_WATER: u32 = 4;
 const LAYER_RIGID_BODY_AFFECTOR: u32 = 23;
 const LAYER_ROPE: u32 = 24;
 const LAYER_EXPLOSION: u32 = 18;
-/// What sets off a thrown Grenade: GrenadeExplode.OnCollide has no mask
-/// field; it branches on NameToLayer (GrenadeExplode.cs:43-81) and goes off
-/// on a Player-layer collider (IPlayerIdHolder), the Explosion layer, and a
-/// Projectile that ignites explosives, which no Projectile prefab does
-/// (IgnitesExplosives 0 on Arrow, MeteorSmear, PortalShot, ...).
-const GRENADE_DETONATORS: u32 = 1 << LAYER_PLAYER | 1 << LAYER_EXPLOSION;
-/// What sets off a thrown Smoke here: SmokeGrenadeExplode2.OnCollide goes off
-/// on every layer but those Projectiles (SmokeGrenadeExplode2.cs:63-77).
-/// Water and walls are called back from their own groups.
-const SMOKE_DETONATORS: u32 = !(1 << LAYER_PROJECTILE
-    | 1 << LAYER_WATER
-    | 1 << LAYER_WALL
-    | 1 << LAYER_LETHAL_TERRAIN
-    | 1 << LAYER_NON_LETHAL_TERRAIN);
 /// Mine.Igniters (Mine_0.prefab 262912: Player, Projectile, Explosion).
 const MINE_IGNITERS: u32 = 1 << LAYER_PLAYER | 1 << LAYER_PROJECTILE | 1 << LAYER_EXPLOSION;
 
@@ -1313,23 +1296,6 @@ impl DetCollider {
             Self::Box(collider) => collider.raycast(origin, direction),
             Self::Circle(collider) => collider.raycast(origin, direction),
         }
-    }
-
-    /// Whether the narrow phase finds the two colliders touching, each at
-    /// its place in the sweep.
-    fn touches(self, rank: SweepRank, other: Self, other_rank: SweepRank) -> bool {
-        use crate::physics::contact::{circle_box, circle_circle};
-        match (self, other) {
-            (Self::Circle(a), Self::Circle(b)) => circle_circle(a, b).is_some(),
-            (Self::Circle(a), Self::Box(b)) | (Self::Box(b), Self::Circle(a)) => circle_box(a, b).is_some(),
-            (Self::Box(a), Self::Box(b)) => swept_box_box(a, rank, b, other_rank).is_some(),
-        }
-    }
-
-    /// The contact group DetPhysics calls the pair back in: Circle/Circle,
-    /// Circle/Box, then Box/Box.
-    fn pair_group(self, other: Self) -> u8 {
-        GROUP_CC + matches!(self, Self::Box(_)) as u8 + matches!(other, Self::Box(_)) as u8
     }
 }
 
@@ -4495,6 +4461,9 @@ struct PlatformScratch {
     updater_hierarchy: u32,
     /// The Circle/Box group's colliders, circles first, and its manifolds.
     cb_parts: Vec<Part>,
+    /// The beam pool's slots DetPhysics simulated this pass: those live with
+    /// an active box before UpdateBeams.
+    beam_contacts: usize,
     cb_contacts: Vec<(CallbackKey, Part, Part, Contact)>,
     /// The Box/RoundedRect or Circle/RoundedRect group's parts, and its
     /// manifolds in sweep order: (key, part, wall, contact).
@@ -8136,7 +8105,7 @@ impl RolloutWorld {
             self.ropes_physics(physics_dt);
         }
         if has(ABILITY_BEAM) {
-            let beam_contact_count = self
+            self.scratch.beam_contacts = self
                 .beam_pool
                 .iter()
                 .take_while(|slot| {
@@ -8147,7 +8116,7 @@ impl RolloutWorld {
                 })
                 .count();
             self.beam_physics_tick(data);
-            self.beam_contacts(beam_contact_count);
+            self.beam_contacts();
         }
         if has(ABILITY_DRILL) {
             self.drill_contacts();
@@ -18762,10 +18731,10 @@ impl RolloutWorld {
 
     /// BeamObject's hits. A PlayerCollision.OnCollide is a callback: it runs
     /// from the queue after every group resolved, in SortAndSweep pair order.
-    fn beam_contacts(&mut self, contact_count: usize) {
+    fn beam_contacts(&mut self) {
         let sweep_x = self.sweep_x();
         let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        for slot in self.beam_pool.iter().take(contact_count) {
+        for slot in self.beam_pool.iter().take(self.scratch.beam_contacts) {
             let Some(entity) = slot.entity else {
                 continue;
             };
@@ -18874,32 +18843,6 @@ impl RolloutWorld {
                     let slime = self.players[victim].active == ActiveAbility::None;
                     let kill = CallbackHit::Kill { player: victim, killer, cause: CAUSE_BEAMED, slime };
                     self.scratch.callback_hits.push(((group, later, earlier), kill));
-                }
-            }
-            // BeamObject is also an Explosion with igniteFlammables
-            // (BeamObject.prefab), so it lights the smoke it touches.
-            let beam_rank = sweep_rank(&self.entities, axis(swept.min), Some(entity));
-            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
-                if !cloud.active || !cloud.registered {
-                    continue;
-                }
-                let entity = cloud.entity.expect("registered smoke cloud");
-                if !self.collides(entity) {
-                    continue;
-                }
-                let radius = Fix::from_raw(self.entities[entity].radius);
-                let center = cloud.position;
-                if swept.max.x <= center.x - radius
-                    || swept.min.x >= center.x + radius
-                    || swept.max.y <= center.y - radius
-                    || swept.min.y >= center.y + radius
-                {
-                    continue;
-                }
-                if crate::physics::contact::circle_box(Circle { center, radius }, hitbox).is_some()
-                {
-                    let key = self.smoke_ignite_key(entity, false, beam_rank);
-                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
                 }
             }
         }
@@ -29246,64 +29189,6 @@ impl RolloutWorld {
         }
     }
 
-    /// How SortAndSweep holds the entity's collider: a slime's registered
-    /// shape, a clone's, or its row.
-    fn entity_swept(&self, entity: usize) -> Swept {
-        if let Some(index) = self.players.iter().position(|slot| Self::hurtbox_entity(slot) == entity) {
-            return Swept::Player(index);
-        }
-        if let Some(index) =
-            self.abilityless_clones.iter().position(|clone| clone.active && clone.entity == Some(entity))
-        {
-            return Swept::Clone(index);
-        }
-        if let Some(index) =
-            self.arrows.iter().position(|arrow| arrow.active && arrow.registered && arrow.entity == Some(entity))
-        {
-            return Swept::Arrow(index);
-        }
-        if let Some(index) = self.thrown_items.iter().position(|item| item.active && item.entity == Some(entity)) {
-            return Swept::Part(Part::Item(index));
-        }
-        Swept::Row(entity)
-    }
-
-    /// DetPhysics' pairs of one collider with every other collider on a layer
-    /// in `mask`, for a callback that reads the other collider's layer
-    /// against a LayerMask (GrenadeExplode.OnCollide, Mine.cs:229): the layer
-    /// matrix lets the layers meet, SortAndSweep paired the two, and the
-    /// narrow phase finds them touching, each at the shape
-    /// `detphysics_collider` gives, which is DetPhysics.IsActive. Yields the
-    /// other collider's entity, the pair's callback group and its sweep rank.
-    /// The colliders the groups pair queue their callbacks there.
-    fn layer_contacts(
-        &self,
-        swept: Swept,
-        layer: u32,
-        collider: DetCollider,
-        mask: u32,
-    ) -> impl Iterator<Item = (usize, u8, SweepRank)> + '_ {
-        let data = data::get();
-        let own_rank = self.swept_rank(swept);
-        (0..self.entities.len()).filter_map(move |entity| {
-            let other_layer = self.entities[entity].layer;
-            if other_layer >= 32
-                || mask & (1 << other_layer) == 0
-                || !data.layers_collide(layer, other_layer)
-                || self.grouped_entity(entity)
-            {
-                return None;
-            }
-            let other = self.detphysics_collider(entity)?;
-            let other_swept = self.entity_swept(entity);
-            let rank = sweep_rank(&self.entities, self.swept_min(other_swept), Some(entity));
-            if !self.swept_pair(swept, other_swept) || !other.touches(rank, collider, own_rank) {
-                return None;
-            }
-            Some((entity, collider.pair_group(other), rank))
-        })
-    }
-
     /// Whether the entity is a slime's current hurtbox or an abilityless
     /// clone's, the entities `detphysics_collider` answers for.
     fn is_body_collider(&self, entity: usize) -> bool {
@@ -34364,7 +34249,8 @@ impl RolloutWorld {
             | Part::Body(_)
             | Part::Clone(_)
             | Part::Line(_)
-            | Part::Cloud(_) => {
+            | Part::Cloud(_)
+            | Part::Explosion(_) => {
                 unreachable!()
             }
         }
@@ -34487,7 +34373,6 @@ impl RolloutWorld {
                     self.queue_missile_blast(missile_index, GROUP_BB, rank);
                 }
             }
-            self.queue_missile_trigger_blasts(missile_index, missile_box);
             if let Some(entity) = missile.entity {
                 let row = &mut self.entities[entity];
                 row.x = missile.position.x.raw();
@@ -34497,35 +34382,6 @@ impl RolloutWorld {
                 row.rotation = missile.body.orientation.raw();
                 row.angular_velocity = missile.body.angular_velocity.raw();
             }
-        }
-    }
-
-    /// Missile.OnCollide goes off on every layer but RigidBodyAffector and
-    /// Rope (Missile.cs:183); missiles, platform children, water and slimes
-    /// come from their own pairs, the Explosion layer from here. A missile explosion
-    /// on its blasting pass queues its own pairs (queue_blast_hit_missiles).
-    fn queue_missile_trigger_blasts(
-        &mut self,
-        missile_index: usize,
-        missile_box: OrientedBox,
-    ) {
-        let missile_entity = self.guided_missiles[missile_index].entity;
-        let layer = missile_entity.map_or(LAYER_ITEM, |entity| self.entities[entity].layer);
-        let mut blasts = [(0u8, SweepRank::default()); 16];
-        let mut count = 0;
-        for (entity, group, rank) in self.layer_contacts(
-            Swept::Part(Part::Missile(missile_index)),
-            layer,
-            DetCollider::Box(missile_box),
-            1 << LAYER_EXPLOSION,
-        ) {
-            if Some(entity) != missile_entity && !self.blasting_missile_explosion(entity) && count < blasts.len() {
-                blasts[count] = (group, rank);
-                count += 1;
-            }
-        }
-        for &(group, rank) in &blasts[..count] {
-            self.queue_missile_blast(missile_index, group, rank);
         }
     }
 
@@ -34725,15 +34581,7 @@ impl RolloutWorld {
                 }
                 continue;
             }
-            // DetPhysics calls GrenadeExplode.OnCollide and
-            // SmokeGrenadeExplode2.OnCollide back after every contact group,
-            // in sweep order among the other callbacks. GrenadeExplode.Detonate
-            // has no guard against a second call, so a grenade spawns one
-            // Explosion for each pair that sets it off; the item queues once,
-            // at its first pair, with the pair count.
-            let item_rank = self.part_rank(Part::Item(item_index));
-            let mut first_key: Option<CallbackKey> = None;
-            let mut detonations = 0;
+            // SmokeGrenadeExplode2.OnCollide with the scene water.
             if item.ability == ABILITY_SMOKE
                 && item.detonates_on_owner
                 && let Some((water_position, water_extents, _)) = data.maps[self.map].water
@@ -34744,75 +34592,12 @@ impl RolloutWorld {
                     data::surface_extents(water_extents),
                 );
                 if crate::physics::contact::circle_box(circle, water).is_some() {
+                    let item_rank = self.part_rank(Part::Item(item_index));
                     let rank = sweep_rank(&self.entities, self.box_sweep_min(water), None);
                     let (later, earlier) = sweep_pair(item_rank, rank);
-                    detonations += 1;
-                    earliest_key(&mut first_key, (GROUP_CB, later, earlier));
+                    let hit = CallbackHit::ItemDetonate { item: item_index, count: 1 };
+                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
                 }
-            }
-            if matches!(item.ability, ABILITY_GRENADE | ABILITY_SMOKE) {
-                let owner_id = player_id(&self.players, item.owner);
-                // Only the holding MagnetGun's hurtbox is exempt, and only
-                // GrenadeExplode checks it.
-                let holder = item
-                    .magnet_holder
-                    .filter(|_| item.ability == ABILITY_GRENADE)
-                    .map(|holder| self.players[holder].magnet_entity);
-                let item_entity = item.entity.expect("registered item");
-                // The pair comes from the broadphase, swept before a wall or
-                // an arrow corrected the item this pass; the manifold then
-                // tests the corrected circle.
-                let detonators =
-                    if item.ability == ABILITY_GRENADE { GRENADE_DETONATORS } else { SMOKE_DETONATORS };
-                let contacts = self.layer_contacts(
-                    Swept::Part(Part::Item(item_index)),
-                    self.entities[item_entity].layer,
-                    DetCollider::Circle(circle),
-                    detonators,
-                );
-                for (entity, group, rank) in contacts {
-                    let row = self.entities[entity];
-                    if entity == item_entity
-                        || (row.layer == LAYER_PLAYER
-                            && ((row.owner == owner_id && !item.detonates_on_owner) || Some(entity) == holder))
-                    {
-                        continue;
-                    }
-                    let (later, earlier) = sweep_pair(item_rank, rank);
-                    earliest_key(&mut first_key, (group, later, earlier));
-                    detonations += 1;
-                }
-            }
-            // Mine.OnCollide arms on its Igniters' layers unless the collider
-            // is the holding MagnetGun's hurtbox (Mine.cs:227-235).
-            if item.ability == ABILITY_MINE {
-                let holder = item.magnet_holder.map(|holder| self.players[holder].magnet_entity);
-                let item_entity = item.entity.expect("registered item");
-                let first = self
-                    .layer_contacts(
-                        Swept::Part(Part::Item(item_index)),
-                        self.entities[item_entity].layer,
-                        DetCollider::Circle(circle),
-                        MINE_IGNITERS,
-                    )
-                    .filter(|&(entity, ..)| Some(entity) != holder)
-                    .map(|(_, group, rank)| {
-                        let (later, earlier) = sweep_pair(item_rank, rank);
-                        (group, later, earlier)
-                    })
-                    .min();
-                if let Some(key) = first {
-                    self.scratch.callback_hits.push((key, CallbackHit::MineIgnite { item: item_index }));
-                }
-            }
-
-            // SmokeGrenadeExplode2.OnCollide ignores every contact, not only
-            // the owner's, until hurtOwnerDelay has run out.
-            if let Some(key) = first_key
-                && (item.ability != ABILITY_SMOKE || item.detonates_on_owner)
-            {
-                let hit = CallbackHit::ItemDetonate { item: item_index, count: detonations };
-                self.scratch.callback_hits.push((key, hit));
             }
         }
     }
@@ -34931,43 +34716,6 @@ impl RolloutWorld {
                     self.queue_callback_kill(player_index, false, hitbox_rank, killer, cause);
                 }
             }
-            self.queue_blast_hit_missiles(hitbox, explosion.entity);
-        }
-    }
-
-    /// A missile explosion's row on the pass its hitbox kills.
-    fn blasting_missile_explosion(&self, entity: usize) -> bool {
-        self.missile_explosions.iter().any(|explosion| {
-            explosion.active
-                && explosion.registered
-                && explosion.age == 1
-                && explosion.entity == Some(entity)
-                && !self.blink_object_hidden(explosion.entity)
-        })
-    }
-
-    /// Queues Missile.OnCollide for the missiles touching this blast. The
-    /// pairs are Box/Box.
-    fn queue_blast_hit_missiles(
-        &mut self,
-        hitbox: OrientedBox,
-        entity: Option<usize>,
-    ) {
-        let hitbox_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), entity);
-        for index in 0..self.guided_missiles.len() {
-            let missile = self.guided_missiles[index];
-            if !self.guided_missile_live(index) {
-                continue;
-            }
-            let missile_box = missile.collider(&self.entity_inverse_extents);
-            let missile_rank =
-                sweep_rank(&self.entities, self.box_sweep_min(missile_box), missile.entity);
-            if swept_box_box(missile_box, missile_rank, hitbox, hitbox_rank).is_none() {
-                continue;
-            }
-            let (later, earlier) = sweep_pair(hitbox_rank, missile_rank);
-            let key = (GROUP_BB, later, earlier);
-            self.scratch.callback_hits.push((key, CallbackHit::MissileBlast { missile: index }));
         }
     }
 
@@ -35440,14 +35188,6 @@ impl RolloutWorld {
         }
     }
 
-    /// A cloud's pair with an Explosion collider: Circle/Circle with an orb,
-    /// Circle/Box with a box.
-    fn smoke_ignite_key(&self, cloud_entity: usize, explosion_is_circle: bool, explosion: SweepRank) -> CallbackKey {
-        let cloud = sweep_rank(&self.entities, self.swept_min(Swept::Row(cloud_entity)), Some(cloud_entity));
-        let (later, earlier) = sweep_pair(explosion, cloud);
-        (if explosion_is_circle { GROUP_CC } else { GROUP_CB }, later, earlier)
-    }
-
     /// FlammableSmoke.OnCollide: an Explosion with igniteFlammables Ignites
     /// the cloud, which restarts its detonation clock and disables its
     /// collider (FlammableSmoke.cs:85-98). An Explosion destroys itself only
@@ -35463,79 +35203,6 @@ impl RolloutWorld {
     }
 
     fn smoke_contacts(&mut self, data: &data::RolloutData) {
-        // Both grenade and smoke explosions have `igniteFlammables`; their
-        // boxes are enabled only on their first registered physics pass.
-        // FlammableSmoke.OnCollide runs from the callback queue, so a cloud
-        // stays enabled for every group of this pass and each Explosion that
-        // met it queues its own Ignite.
-        for explosion in self.grenade_explosions.iter().copied() {
-            if !explosion.active || !explosion.registered || explosion.age != 1 {
-                continue;
-            }
-            let hitbox = OrientedBox::from_basis(
-                explosion.position,
-                Vec2::RIGHT,
-                data.grenade.explosion_extents * explosion.scale,
-            );
-            let explosion_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), explosion.entity);
-            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
-                if !cloud.active || !cloud.registered {
-                    continue;
-                }
-                let entity = cloud.entity.expect("registered smoke cloud");
-                if !self.collides(entity) {
-                    continue;
-                }
-                let radius = Fix::from_raw(self.entities[entity].radius);
-                if crate::physics::contact::circle_box(
-                    Circle {
-                        center: cloud.position,
-                        radius,
-                    },
-                    hitbox,
-                )
-                .is_some()
-                {
-                    let key = self.smoke_ignite_key(entity, false, explosion_rank);
-                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
-                }
-            }
-        }
-
-        for explosion in self.missile_explosions.iter().copied() {
-            if !explosion.active || !explosion.registered || explosion.age != 1 {
-                continue;
-            }
-            let hitbox = OrientedBox::from_basis(
-                explosion.position,
-                Vec2::RIGHT,
-                data.missile.explosion_extents * explosion.scale,
-            );
-            let explosion_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), explosion.entity);
-            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
-                if !cloud.active || !cloud.registered {
-                    continue;
-                }
-                let entity = cloud.entity.expect("registered smoke cloud");
-                if !self.collides(entity) {
-                    continue;
-                }
-                let radius = Fix::from_raw(self.entities[entity].radius);
-                if crate::physics::contact::circle_box(
-                    Circle {
-                        center: cloud.position,
-                        radius,
-                    },
-                    hitbox,
-                )
-                .is_some()
-                {
-                    let key = self.smoke_ignite_key(entity, false, explosion_rank);
-                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
-                }
-            }
-        }
-
         for explosion_index in 0..self.smoke_explosions.len() {
             let explosion = self.smoke_explosions[explosion_index];
             if !explosion.active || !explosion.registered || explosion.age != 1 {
@@ -35544,30 +35211,6 @@ impl RolloutWorld {
             let extents = data.smoke.explosion_extents * explosion.scale;
             let center = explosion.position + data.smoke.explosion_collider_offset * explosion.scale;
             let hitbox = OrientedBox::from_basis(center, Vec2::RIGHT, extents);
-            let explosion_rank = sweep_rank(&self.entities, self.box_sweep_min(hitbox), explosion.entity);
-            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
-                if !cloud.active || !cloud.registered {
-                    continue;
-                }
-                let entity = cloud.entity.expect("registered smoke cloud");
-                if !self.collides(entity) {
-                    continue;
-                }
-                let radius = Fix::from_raw(self.entities[entity].radius);
-                if crate::physics::contact::circle_box(
-                    Circle {
-                        center: cloud.position,
-                        radius,
-                    },
-                    hitbox,
-                )
-                .is_some()
-                {
-                    let key = self.smoke_ignite_key(entity, false, explosion_rank);
-                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
-                }
-            }
-
             let mut victims = [false; MAX_BODIES];
             for (player_index, victim) in victims.iter_mut().enumerate().take(self.players.len()) {
                 // A slime in its spawn animation already has its hurtbox on,
@@ -35605,47 +35248,6 @@ impl RolloutWorld {
                     };
                     let hitbox_rank = sweep_rank(&self.entities, hitbox_min, explosion.entity);
                     self.queue_callback_kill(player_index, false, hitbox_rank, killer, cause);
-                }
-            }
-        }
-
-        // The Beam's orb is an Explosion that keeps its hitbox
-        // (orbAnim.prefab: hitBoxActiveOnlyFirstFrame 0, igniteFlammables 1).
-        // An ignited cloud has disabled its own collider, so it is lit once.
-        for orb in self.beam_orbs.iter().copied() {
-            let Some(orb_entity) = orb.entity else {
-                continue;
-            };
-            if !orb.active
-                || !orb.enabled
-                || !self.collides(orb_entity)
-                || self.blink_object_hidden(orb.entity)
-            {
-                continue;
-            }
-            let row = self.entities[orb_entity];
-            let hitbox = Circle {
-                center: Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y)),
-                radius: Fix::from_raw(row.radius),
-            };
-            let orb_min = if self.sweep_x() { hitbox.center.x } else { hitbox.center.y } - hitbox.radius;
-            let orb_rank = sweep_rank(&self.entities, orb_min, Some(orb_entity));
-            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
-                if !cloud.active || !cloud.registered {
-                    continue;
-                }
-                let entity = cloud.entity.expect("registered smoke cloud");
-                if !self.collides(entity) {
-                    continue;
-                }
-                let radius = Fix::from_raw(self.entities[entity].radius);
-                let body = Circle {
-                    center: cloud.position,
-                    radius,
-                };
-                if crate::physics::contact::circle_circle(body, hitbox).is_some() {
-                    let key = self.smoke_ignite_key(entity, true, orb_rank);
-                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
                 }
             }
         }
