@@ -81,7 +81,7 @@ pub(crate) struct RolloutRope {
     /// Updater hierarchy of the Rope prefab, whose RopeAttachment follows it:
     /// Mjolnir hammers interleave with its UpdateSim by this number.
     pub hierarchy: u32,
-    pub born_tick: u32,
+    pub appended: u32,
     pub disabled_this_frame: bool,
     pub time_air_start: Fix,
     pub time_air_end: Fix,
@@ -203,11 +203,11 @@ fn parent_position(
         RopeParent::Item(item, id) => {
             (items[item].active && items[item].id == id).then_some(items[item].position)
         }
-        RopeParent::Shot(shot, born) => (shots[shot].active && shots[shot].born_tick == born)
+        RopeParent::Shot(shot, born) => (shots[shot].active && shots[shot].appended == born)
             .then_some(shots[shot].position),
         RopeParent::Spike(index, born) => {
             let spike = &spikes[index];
-            if !spike.active || spike.born_tick != born {
+            if !spike.active || spike.placed_tick != born {
                 return None;
             }
             // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
@@ -216,7 +216,7 @@ fn parent_position(
         }
         RopeParent::Node(index, born) => {
             let node = &nodes[index];
-            if !node.active || node.born_tick != born {
+            if !node.active || node.placed_tick != born {
                 return None;
             }
             // SyncGameObject places the FixTransform its collider offset
@@ -471,7 +471,7 @@ fn empty_rope() -> RolloutRope {
         owner: 0,
         number: 0,
         hierarchy: 0,
-        born_tick: 0,
+        appended: 0,
         disabled_this_frame: false,
         time_air_start: Fix::ZERO,
         time_air_end: Fix::ZERO,
@@ -581,7 +581,7 @@ impl RolloutWorld {
         rope.owner = owner;
         rope.number = self.next_rope_number;
         rope.hierarchy = hierarchy;
-        rope.born_tick = self.tick;
+        rope.appended = self.tick + 1;
         rope.disabled_this_frame = false;
         rope.time_air_start = Fix::ZERO;
         rope.time_air_end = if self.players[owner].base.grounded {
@@ -964,7 +964,7 @@ impl RolloutWorld {
         let source = &data::get().ropes;
         for index in 0..self.ropes.len() {
             if !self.ropes[index].physics.enabled
-                || self.ropes[index].born_tick == self.tick
+                || self.ropes[index].appended > self.tick
                 || self.ropes[index].hook_entity.is_none()
                 || !hierarchies.contains(&self.ropes[index].hierarchy)
                 || self.ropes[index].grapple_ran_tick == Some(self.tick)
@@ -972,8 +972,8 @@ impl RolloutWorld {
                 continue;
             }
             self.ropes[index].grapple_ran_tick = Some(self.tick);
-            let hierarchy = 100_000_000 + self.ropes[index].hierarchy;
-            self.run_spawned_before(data::get(), DT * self.player_time_scale, hierarchy);
+            let key = updater_key(self.ropes[index].appended, 100_000_000 + self.ropes[index].hierarchy);
+            self.run_spawned_before(data::get(), DT * self.player_time_scale, key);
             if !self.ropes[index].physics.enabled {
                 continue;
             }
@@ -1301,7 +1301,7 @@ impl RolloutWorld {
         let water = data::get().maps[self.map].scene_water_height();
         for index in 0..self.ropes.len() {
             if !self.ropes[index].physics.enabled
-                || self.ropes[index].born_tick == self.tick
+                || self.ropes[index].appended > self.tick
                 || !hierarchies.contains(&self.ropes[index].hierarchy)
                 || self.ropes[index].rope_ran_tick == Some(self.tick)
                 || self.ropes[index].after_changer != self.scratch.ropes_changer_pass
@@ -1315,7 +1315,8 @@ impl RolloutWorld {
             // asks activeInHierarchy, and a Throw boulder's ShakablePlatform
             // has moved the body it reads.
             let hierarchy = self.ropes[index].hierarchy;
-            self.run_spawned_before(data::get(), DT * self.player_time_scale, 100_000_000 + hierarchy);
+            let key = updater_key(self.ropes[index].appended, 100_000_000 + hierarchy);
+            self.run_spawned_before(data::get(), DT * self.player_time_scale, key);
             if !self.ropes[index].physics.enabled {
                 continue;
             }
@@ -1480,7 +1481,7 @@ impl RolloutWorld {
     pub(super) fn rope_parents_update(&mut self, pass: RopeParentPass) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         for index in 0..self.ropes.len() {
-            if !self.ropes[index].physics.enabled || self.ropes[index].born_tick == self.tick {
+            if !self.ropes[index].physics.enabled || self.ropes[index].appended > self.tick {
                 continue;
             }
             let Some(parent) = self.ropes[index].parent else {
@@ -1880,7 +1881,7 @@ impl RolloutWorld {
             // any other body.
             HookTarget::Player(player) => RopeParent::Rock(player),
             HookTarget::Item(index) => RopeParent::Item(index, self.thrown_items[index].id),
-            HookTarget::Shot(index) => RopeParent::Shot(index, self.portal_shots[index].born_tick),
+            HookTarget::Shot(index) => RopeParent::Shot(index, self.portal_shots[index].appended),
             // A Bow arrow's circle is on Projectile, which RopeHook attaches
             // to with no offset (RopeHook.cs:160-172).
             HookTarget::Arrow(index) => RopeParent::Arrow(index, self.arrows[index].id),
@@ -1894,7 +1895,7 @@ impl RolloutWorld {
                 let root = node.collider_center
                     - node.collider_offset.complex_mul(Vec2::angle(node.collider_rotation));
                 offset = (position - root).complex_mul(Vec2::angle(-node.collider_rotation)) / node.scale;
-                RopeParent::Node(index, node.born_tick)
+                RopeParent::Node(index, node.placed_tick)
             }
             HookTarget::Spike(index) => {
                 // A SpikeAttack box sits on LethalTerrain, which the hook takes
@@ -1908,7 +1909,7 @@ impl RolloutWorld {
                 let rotation =
                     self.platform_dynamics[spike.platform_index].body.orientation + spike.relative_rotation;
                 offset = (position - root).complex_mul(Vec2::angle(-rotation)) / spike.scale;
-                RopeParent::Spike(index, spike.born_tick)
+                RopeParent::Spike(index, spike.placed_tick)
             }
         };
         let scale = match parent {
@@ -1975,7 +1976,7 @@ impl RolloutWorld {
             if clone.base.grounded
                 && clone.ground_destroyed.is_none()
                 && rope.physics.time_since_hook_arrived > Fix::ZERO
-                && rope.born_tick != self.tick
+                && rope.appended <= self.tick
                 && clone.grip.attach_tick != self.tick
             {
                 let body = UngroundBody::Clone(clone);
@@ -2020,7 +2021,7 @@ impl RolloutWorld {
                 && !self.players[player].rewind.rewinding
                 && !self.ground_gone(player)
                 && self.ropes[rope_index].physics.time_since_hook_arrived > Fix::ZERO
-                && self.ropes[rope_index].born_tick != self.tick
+                && self.ropes[rope_index].appended <= self.tick
                 && self.players[player].rope_attach_tick != self.tick
             {
                 let slot = &mut self.players[player];
@@ -2085,7 +2086,7 @@ impl RolloutWorld {
             // current Updater list, so its RopeAttachment has no late pass
             // on the cast tick. PlayerBody is an authored component and does
             // pin the player endpoint immediately.
-            if rope.born_tick != self.tick
+            if rope.appended <= self.tick
                 && let Some(platform) = rope.platform
                 && rope.platform_attach_tick != self.tick
             {
@@ -2106,7 +2107,7 @@ impl RolloutWorld {
                 let endpoint = if rope.platform_top { 0 } else { rope.physics.count - 1 };
                 rope.physics.segment[endpoint] = rope.platform_anchor;
             }
-            if rope.born_tick != self.tick
+            if rope.appended <= self.tick
                 && let Some(hole_index) = rope.black_hole
                 && hole_index < self.black_holes.len()
                 && self.black_holes[hole_index].active
@@ -2120,8 +2121,8 @@ impl RolloutWorld {
             // cast tick leaves the end on the hook: the attachment has no late
             // pass yet (RopeAttachment.cs:170-178).
             let position = match rope.parent {
-                _ if rope.born_tick == self.tick => None,
-                Some(RopeParent::Shot(shot, born)) if shots[shot].born_tick == born => {
+                _ if rope.appended > self.tick => None,
+                Some(RopeParent::Shot(shot, born)) if shots[shot].appended == born => {
                     Some(shots[shot].position)
                 }
                 // An item a DetPhysics callback destroyed after this pass's
@@ -2154,7 +2155,7 @@ impl RolloutWorld {
     /// order, so it pins the end where the shake left the mine.
     pub(super) fn ropes_late_on_older_mines(&mut self) {
         for rope in &mut self.ropes {
-            if !rope.physics.enabled || rope.born_tick == self.tick || rope.hook_active {
+            if !rope.physics.enabled || rope.appended > self.tick || rope.hook_active {
                 continue;
             }
             let Some(RopeParent::Item(item, id)) = rope.parent else {
