@@ -7549,6 +7549,12 @@ impl RolloutWorld {
         self.scratch.updater_cursor = (self.tick, (0, 0, 0));
         self.append_updater_batch();
         self.register_pending_objects(data);
+        // A Duplicator copy's item collider registers at its Init, ahead of
+        // the walk in which its Grenade.UpdateSim lets the copy go
+        // (Updater.cs:271-279).
+        if has(ABILITY_DUPLICATOR) {
+            self.register_pending_duplicated_items(data);
+        }
         self.init_pending_grenade_fuses(data);
         if has(ABILITY_TIME_STOP) {
             self.register_pending_time_stops();
@@ -7894,9 +7900,6 @@ impl RolloutWorld {
         }
         if has(ABILITY_METEOR) {
             self.meteor_smears_tick(data);
-        }
-        if has(ABILITY_DUPLICATOR) {
-            self.register_pending_duplicated_items(data);
         }
         // Updater's walk reaches the end of its list before DetPhysics
         // simulates (Updater.cs:298-303): every updatable no earlier turn
