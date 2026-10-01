@@ -143,6 +143,7 @@ pub(super) enum HookTarget {
     Player(usize),
     Clone(usize),
     Spike(usize),
+    Engine(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -160,6 +161,8 @@ pub enum RopeParent {
     Node(usize, u32),
     /// A Bow arrow by slot and id: its circle is on Projectile.
     Arrow(usize, u32),
+    /// A RocketEngine by slot and birth tick: its box is on NonLethalTerrain.
+    Engine(usize, u32),
 }
 
 /// The SpikeAttack FixTransform's pose: SyncGameObject's copy of the box
@@ -176,11 +179,12 @@ fn parent_position(
     players: &[PlayerSlot],
     items: &[ThrownItem],
     shots: &[PortalShotState],
-    (spikes, nodes, dynamics, arrows): (
+    (spikes, nodes, dynamics, arrows, engines): (
         &[SpawnedSpike],
         &[SpawnedTeslaNode],
         &[PlatformDynamics],
         &[Arrow],
+        &[SpawnedEngine],
     ),
     parent: RopeParent,
     offset: Vec2,
@@ -215,6 +219,17 @@ fn parent_position(
         }
         RopeParent::Arrow(index, id) => {
             (arrows[index].active && arrows[index].id == id).then_some(arrows[index].position)
+        }
+        RopeParent::Engine(index, born) => {
+            let engine = &engines[index];
+            // MachoThrow2 hides a carried engine's GameObject.
+            if !engine.active || engine.macho_carried || engine.appended != born {
+                return None;
+            }
+            // RopeAttachment.LateUpdateSim (RopeAttachment.cs:174).
+            let right = Vec2::angle(engine.transform_rotation);
+            let root = engine.transform_position();
+            Some(root + right.perp() * offset.y * engine.scale + right * offset.x * engine.scale)
         }
     }
 }
@@ -1492,14 +1507,16 @@ impl RolloutWorld {
         }
     }
 
-    /// A SpikeAttack or SparkNode hangs under its platform's GameObject
-    /// (Spike.cs:122, PlaceSparkNode.cs:40), so it leaves the hierarchy with
+    /// A SpikeAttack, SparkNode or RocketEngine hangs under its platform's
+    /// GameObject (Spike.cs:122, PlaceSparkNode.cs:40, PlaceRocketEngine.cs:45),
+    /// so it leaves the hierarchy with
     /// the platform, and RopeAttachment.UpdateSim's activeInHierarchy test
     /// lets go of it (RopeAttachment.cs:96-100).
     fn parent_platform_active(&self, parent: RopeParent) -> bool {
         let platform = match parent {
             RopeParent::Spike(spike, _) => self.spike_attacks[spike].platform_index,
             RopeParent::Node(node, _) => self.tesla_nodes[node].platform_index,
+            RopeParent::Engine(engine, _) => self.engines[engine].platform_index,
             _ => return true,
         };
         self.platforms[platform].active
@@ -1531,7 +1548,7 @@ impl RolloutWorld {
                 &self.players,
                 &self.thrown_items,
                 &self.portal_shots,
-                (&self.spike_attacks, &self.tesla_nodes, &self.platform_dynamics, &self.arrows),
+                (&self.spike_attacks, &self.tesla_nodes, &self.platform_dynamics, &self.arrows, &self.engines),
                 parent,
                 self.ropes[index].parent_offset,
             )
@@ -1556,6 +1573,7 @@ impl RolloutWorld {
                         spike_transform(&self.spike_attacks[spike], &self.platform_dynamics).0
                     }
                     RopeParent::Node(node, _) => self.tesla_nodes[node].transform_position(),
+                    RopeParent::Engine(engine, _) => self.engines[engine].transform_position(),
                     _ => position,
                 };
                 let arm = (self.ropes[index].platform_anchor - centre).normalized_safe();
@@ -1568,6 +1586,9 @@ impl RolloutWorld {
                     ),
                     RopeParent::Node(node, _) => Some(
                         &mut self.platform_dynamics[self.tesla_nodes[node].platform_index].body,
+                    ),
+                    RopeParent::Engine(engine, _) => Some(
+                        &mut self.platform_dynamics[self.engines[engine].platform_index].body,
                     ),
                     RopeParent::Arrow(..) => None,
                 };
@@ -1783,6 +1804,18 @@ impl RolloutWorld {
                     hits.push((rope, GROUP_CB, rank, HookTarget::Spike(index)));
                 }
             }
+            for index in 0..self.engines.len() {
+                if self.engines[index].entity.is_some_and(|entity| self.collides(entity))
+                    && crate::physics::contact::circle_box(
+                        circle,
+                        self.engines[index].rocket_box(&self.entity_inverse_extents),
+                    )
+                    .is_some()
+                {
+                    let rank = self.part_rank(Part::Engine(index));
+                    hits.push((rope, GROUP_CB, rank, HookTarget::Engine(index)));
+                }
+            }
         }
         for (rope, group, rank, target) in hits {
             self.queue_hook_hit(rope, group, rank, target);
@@ -1944,6 +1977,19 @@ impl RolloutWorld {
                 offset = (position - root).complex_mul(Vec2::angle(-rotation)) / spike.scale;
                 RopeParent::Spike(index, spike.placed_tick)
             }
+            HookTarget::Engine(index) => {
+                // A RocketEngine box sits on NonLethalTerrain, which the hook
+                // takes only when its centre is inside the collider
+                // (RopeHook.cs:91-98, 158-171).
+                let engine = self.engines[index];
+                if !engine.rocket_box(&self.entity_inverse_extents).overlaps(position) {
+                    return;
+                }
+                offset = (position - engine.transform_position())
+                    .complex_mul(Vec2::angle(-engine.transform_rotation))
+                    / engine.scale;
+                RopeParent::Engine(index, engine.appended)
+            }
         };
         let scale = match parent {
             RopeParent::Rock(player) => self.players[player].rock_circle().scale,
@@ -1952,6 +1998,7 @@ impl RolloutWorld {
             RopeParent::Spike(spike, _) => self.spike_attacks[spike].scale,
             RopeParent::Node(node, _) => self.tesla_nodes[node].scale,
             RopeParent::Arrow(arrow, _) => self.arrows[arrow].scale,
+            RopeParent::Engine(engine, _) => self.engines[engine].scale,
         };
         let rope = &mut self.ropes[rope_index];
         rope.physics.mass_start = Fix::ONE;
@@ -2107,6 +2154,7 @@ impl RolloutWorld {
             &self.tesla_nodes[..],
             &self.platform_dynamics[..],
             &self.arrows[..],
+            &self.engines[..],
         );
         for rope in &mut self.ropes {
             // DetPhysics.VeryLateRopeUpdate clears this for all 128 pool

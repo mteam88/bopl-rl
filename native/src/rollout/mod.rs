@@ -1131,6 +1131,12 @@ pub struct SpawnedEngine {
 }
 
 impl SpawnedEngine {
+    /// FixTransform.position as SyncGameObject last set it: the box less its
+    /// offset, turned by its right.
+    fn transform_position(&self) -> Vec2 {
+        self.transform_center - self.collider_offset.complex_mul(Vec2::angle(self.transform_rotation))
+    }
+
     /// The box collider's inverseExtents, as in SpawnedSpike.
     fn inverse_extents(&self, table: &[Vec2]) -> Vec2 {
         table[self.entity.expect("a registered engine")]
