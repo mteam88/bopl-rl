@@ -3824,24 +3824,15 @@ impl PlayerSlot {
         self.base.scale = scale;
     }
 
-    /// SlimeController.attachToGround: State.land, and the land animation
-    /// whose setStateToIdle callback comes on the animator's LAND_TICKS + 1th
-    /// update (SlimeController.cs:1126-1129). `update_obs_state` counts this
-    /// pass off it. A slime whose SpriteAnimator (hierarchy 100000007, right
-    /// after SlimeController and before every ability component) already ran
-    /// this pass, because an ability exit, Roll or a Magnet holder landed it
-    /// later in the walk, starts the animation's count on the next pass.
     fn begin_land(&mut self, animator_ran: bool) {
-        self.obs_state = STATE_LAND;
-        self.state_ticks = LAND_TICKS + 1 + u32::from(animator_ran);
+        begin_land(&mut self.obs_state, &mut self.state_ticks, animator_ran);
     }
 
     /// SlimeController.ExitAbility enters Fall and raycasts at once
     /// (SlimeController.cs:249, 263-272). A landing on this pass begins the
     /// land animation after the slime's SpriteAnimator (hierarchy 100000007,
-    /// before every ability component) has already run, so it ends one tick
-    /// later than a landing in PlayerPhysics.UpdateSim; `update_obs_state`
-    /// adds this marker to LAND_TICKS.
+    /// before every ability component) has already run; `fall_state` marks
+    /// that for `begin_land`.
     ///
     /// onExitAbility takes this arm when SyncPhysicsTo(AbilityExitInfo) left
     /// the slime airborne, and that arm nulls attachedGround and
@@ -3877,7 +3868,9 @@ impl PlayerSlot {
             self.align_transform_air();
         }
         // The disabled slime's OldUpdate already passed this updater pass, so
-        // its closing AlignTransformAir waits for the next one.
+        // its closing AlignTransformAir waits for the next one. State.fall's
+        // state_ticks 1 tells `begin_land` the animator already ran; the state
+        // switch clears it on any pass that ends airborne.
         self.obs_state_held_this_tick = true;
         self.obs_state = STATE_FALL;
         self.state_ticks = 1;
@@ -3895,6 +3888,22 @@ impl PlayerSlot {
             self.facing_right = true;
         }
     }
+}
+
+/// SlimeController.attachToGround: State.land, and the land animation whose
+/// setStateToIdle callback comes on the animator's LAND_TICKS + 1th update
+/// (SlimeController.cs:1126-1129). Every landing comes before this pass's
+/// `update_obs_state`, which counts the pass off it. A slime whose
+/// SpriteAnimator (hierarchy 100000007, right after SlimeController and before
+/// every ability component) does not count this pass starts the animation's
+/// count on the next one: an ability exit, Roll or a Magnet holder landed it
+/// after the animator ran, or a non-instant ability disabled the slime with
+/// its animator (SlimeController.cs:190, 687-690). An exit's EnterFall marks
+/// State.fall for this (`PlayerSlot::fall_state`).
+fn begin_land(obs_state: &mut u32, state_ticks: &mut u32, animator_ran: bool) {
+    let after_exit = *obs_state == STATE_FALL && *state_ticks == 1;
+    *obs_state = STATE_LAND;
+    *state_ticks = LAND_TICKS + 1 + u32::from(animator_ran || after_exit);
 }
 
 /// Fills `order` with the slots of `pool` in Updater order: by the hierarchy
@@ -7004,8 +7013,7 @@ impl RolloutWorld {
             // callbacks, so they still land and chain on a held tick; only
             // `switch (currentState)` below is what OldUpdate returns before.
             STATE_FALL => {
-                // attachToGround: land animation, then idle (one tick longer
-                // after an ability exit, see `PlayerSlot::exit_to_fall`).
+                // attachToGround: land animation, then idle.
                 // Landing on a ceiling flips the sprite
                 // (SlimeController.cs:1131-1134). The test is the normal at
                 // the instant the raycast attached, recorded by
@@ -7023,8 +7031,9 @@ impl RolloutWorld {
                 {
                     *facing_right = align >= Fix::ZERO;
                 }
-                *obs_state = STATE_LAND;
-                *state_ticks += LAND_TICKS;
+                begin_land(obs_state, state_ticks, false);
+                // This switch is the pass's count off the land.
+                *state_ticks -= 1;
             }
             STATE_LAND => {
                 // `case State.land: if (Fix.Abs(fix) >= GROUNDALIGNMENTDEADZONE
@@ -10409,8 +10418,7 @@ impl RolloutWorld {
                         if slot.base.attach_upside_down == Some(true) {
                             slot.facing_right = !slot.facing_right;
                         }
-                        slot.obs_state = STATE_LAND;
-                        slot.state_ticks += LAND_TICKS + 1;
+                        slot.begin_land(false);
                     }
                     // The first pass after a tunnel: OldUpdate's publish of the
                     // pre-entry body wins the tie against EnterAbility's and
@@ -10439,11 +10447,7 @@ impl RolloutWorld {
                         // its attachToGround flips the slime's sprite after
                         // the cast read the facing (:1131-1134).
                         landing_flip = frozen.attach_upside_down == Some(true);
-                        slot.obs_state = STATE_LAND;
-                        // An instant ability leaves the state machine running
-                        // this pass, and it counts the pass off the land.
-                        slot.state_ticks += LAND_TICKS
-                            + if data.abilities[ability as usize].instant { 1 } else { 2 };
+                        slot.begin_land(!data.abilities[ability as usize].instant);
                     }
                     // EnterAbilityClearRope leaves the slime's PlayerBody
                     // this post-gravity history for the form's exit.
@@ -12654,8 +12658,7 @@ impl RolloutWorld {
         {
             // AttachToGround's synchronous callback enters Land after the
             // restored slime's air Move reaches the Bow's former surface.
-            self.players[index].obs_state = STATE_LAND;
-            self.players[index].state_ticks = LAND_TICKS;
+            self.players[index].begin_land(false);
         }
         // SlimeController writes Player.Scale to its hurtbox after OldUpdate;
         // PlayerPhysics observes this FixTransform scale on the next pass.
