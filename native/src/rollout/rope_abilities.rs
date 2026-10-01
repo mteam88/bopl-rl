@@ -103,12 +103,6 @@ pub(crate) struct RolloutRope {
     /// The pass and updater hierarchy of an UpdateSim that DestroyFix'd the
     /// platform; an older RopeAttachment still saw it alive that pass.
     pub platform_destroyed_at: (u32, u32),
-    /// This pass's UpdateSim waits for an older ScaleChanger on the platform.
-    pub after_changer: bool,
-    /// The Updater passes in which the hook's and the Rope's own UpdateSim
-    /// last took their turns.
-    pub grapple_ran_tick: Option<u32>,
-    pub rope_ran_tick: Option<u32>,
     /// Where the hook met a platform this pass. RopeHook.OnCollide takes the
     /// surface coordinate after DetPhysics synced the platform the contact
     /// passes pushed.
@@ -479,9 +473,6 @@ fn empty_rope() -> RolloutRope {
         platform_attach_tick: 0,
         platform_gone: false,
         platform_destroyed_at: (0, 0),
-        after_changer: false,
-        grapple_ran_tick: None,
-        rope_ran_tick: None,
         hook_hit: None,
         black_hole: None,
         black_hole_reel_frames: 0,
@@ -964,21 +955,32 @@ impl RolloutWorld {
         }
     }
 
-    pub(super) fn grapple_ropes_update(&mut self, hierarchies: std::ops::Range<u32>) {
+    /// The Updater key of rope `index`'s Rope.
+    pub(super) fn rope_key(&self, index: usize) -> UpdaterKey {
+        self.updater_key(self.ropes[index].appended, 100_000_000 + self.ropes[index].hierarchy)
+    }
+
+    /// Rope `index`'s turn in Updater's walk: Rope.UpdateSim, with the
+    /// hook's RopeAttachment and RopeHook that follow it on a flying hook,
+    /// and a platform or Black Hole RopeAttachment. Everything listed before
+    /// it has taken its turn: a wall QuantumTunnel (ShootQuantum reuses a
+    /// wall's tunnel) has hidden or restored its wall when the RopeAttachment
+    /// asks activeInHierarchy, a Throw boulder's ShakablePlatform has moved
+    /// the body it reads, an abilityless clone's PlayerBody has moved the
+    /// rope end it holds, a ScaleChanger has resized its platform, a hammer
+    /// has killed and a TeleportIndicator has detached its holder.
+    pub(super) fn rope_turn(&mut self, index: usize) {
+        self.grapple_rope_step(index);
+        self.rope_step(index);
+    }
+
+    fn grapple_rope_step(&mut self, rope: usize) {
         let source = &data::get().ropes;
-        for index in 0..self.ropes.len() {
+        for index in [rope] {
             if !self.ropes[index].physics.enabled
                 || self.ropes[index].appended > self.tick
                 || self.ropes[index].hook_entity.is_none()
-                || !hierarchies.contains(&self.ropes[index].hierarchy)
-                || self.ropes[index].grapple_ran_tick == Some(self.tick)
             {
-                continue;
-            }
-            self.ropes[index].grapple_ran_tick = Some(self.tick);
-            let key = self.updater_key(self.ropes[index].appended, 100_000_000 + self.ropes[index].hierarchy);
-            self.run_spawned_before(data::get(), DT * self.player_time_scale, key);
-            if !self.ropes[index].physics.enabled {
                 continue;
             }
             if self.ropes[index].hook_remove_next {
@@ -1293,33 +1295,17 @@ impl RolloutWorld {
         rope.physics.detach(top);
     }
 
-    /// Rope.UpdateSim and a platform RopeAttachment's UpdateSim for the ropes
-    /// whose hierarchy lies in `hierarchies`.
-    pub(super) fn ropes_update(&mut self, hierarchies: std::ops::Range<u32>) {
+    /// Rope.UpdateSim's own part and a platform or Black Hole
+    /// RopeAttachment's UpdateSim for rope `rope`.
+    fn rope_step(&mut self, rope: usize) {
         let stopped = self.player_time_scale < Fix::from_f32(0.01);
         let mut moved_platform = false;
         let water = data::get().maps[self.map].scene_water_height();
-        for index in 0..self.ropes.len() {
-            if !self.ropes[index].physics.enabled
-                || self.ropes[index].appended > self.tick
-                || !hierarchies.contains(&self.ropes[index].hierarchy)
-                || self.ropes[index].rope_ran_tick == Some(self.tick)
-                || self.ropes[index].after_changer != self.scratch.ropes_changer_pass
-            {
+        for index in [rope] {
+            if !self.ropes[index].physics.enabled || self.ropes[index].appended > self.tick {
                 continue;
             }
-            self.ropes[index].rope_ran_tick = Some(self.tick);
-            // The spawned updatables registered before this rope have taken
-            // their turns: a wall QuantumTunnel (ShootQuantum reuses a wall's
-            // tunnel) has hidden or restored its wall when the RopeAttachment
-            // asks activeInHierarchy, and a Throw boulder's ShakablePlatform
-            // has moved the body it reads.
             let hierarchy = self.ropes[index].hierarchy;
-            let key = self.updater_key(self.ropes[index].appended, 100_000_000 + hierarchy);
-            self.run_spawned_before(data::get(), DT * self.player_time_scale, key);
-            if !self.ropes[index].physics.enabled {
-                continue;
-            }
             if self.ropes[index].physics.time_since_hook_arrived >= Fix::ZERO {
                 self.ropes[index].physics.time_since_hook_arrived += DT * self.player_time_scale;
             }

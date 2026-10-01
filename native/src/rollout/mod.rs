@@ -4247,7 +4247,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 40)
+    matches!(kind, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 40)
 }
 
 /// The place just after `key`.
@@ -4487,8 +4487,6 @@ struct PlatformScratch {
     /// Grounded slimes a wall squished this pass: (abilityless clone,
     /// player or clone index).
     squished: Vec<(bool, usize)>,
-    /// Ropes below this hierarchy have run their UpdateSim this pass.
-    ropes_updated_below: u32,
     /// The row hierarchies of the Duplicator copies the current Duplicated
     /// platform pass runs; None runs them all.
     duplicates_window: Option<std::ops::Range<u32>>,
@@ -4516,10 +4514,6 @@ struct PlatformScratch {
     form_flags_taken: u16,
     /// Bodies whose turn this pass took the frozen-player branch.
     frozen_turns: u16,
-    /// Ropes from this hierarchy up wait for the abilityless clone pass.
-    ropes_walk_limit: u32,
-    /// Set while the ropes waiting on a platform's ScaleChanger run.
-    ropes_changer_pass: bool,
     /// Sorted collider query output shared by Dash, Meteor and Roll, retained
     /// across casts so the hot rollout never allocates for source collider lists.
     ray_hits: Vec<SortedRayHit>,
@@ -4566,7 +4560,6 @@ impl PlatformScratch {
             ray_hits: Vec::with_capacity(192),
             duplicate_shake_order: Vec::with_capacity(64),
             duplicate_shake_offsets: Vec::with_capacity(64),
-            ropes_walk_limit: u32::MAX,
             ..PlatformScratch::default()
         }
     }
@@ -7667,7 +7660,6 @@ impl RolloutWorld {
         // Forms that ended earlier in the pass cleared the Player's form
         // flags before any body's turn can set them again.
         self.track_form_flags();
-        self.scratch.ropes_walk_limit = u32::MAX;
         self.scratch.turn_order = player_order;
         self.scratch.turn_key = player_key;
         self.scratch.turn_count = player_count;
@@ -7736,69 +7728,23 @@ impl RolloutWorld {
         if has(ABILITY_MAGNET) {
             self.magnet_parries_tick(data);
         }
-        // A rope newer than an abilityless clone updates after the clone's
-        // PlayerBody has moved the rope end it holds.
-        let first_clone = self
-            .abilityless_clones
-            .iter()
-            .filter(|clone| {
-                clone.active && !self.updater_passed(self.updater_key(clone.appended, 100_000_000 + clone.hierarchy_base))
-            })
-            .map(|clone| clone.hierarchy_base)
-            .min()
-            .unwrap_or(u32::MAX);
-        self.scratch.ropes_walk_limit = first_clone;
-        if has(ABILITY_GRAPPLING_HOOK) {
-            self.grapple_ropes_update(0..first_clone);
-        }
-        // Updater interleaves the ropes with the Mjolnir hammers by hierarchy:
-        // a rope newer than the oldest live hammer waits for the hammer loop in
-        // thrown_items_integrate, so a hammer's kill detaches it first.
-        let first_hammer = self
-            .thrown_items
-            .iter()
-            .filter(|item| item.active && item.ability == ABILITY_MJOLNIR)
-            .map(|item| item.hierarchy_base)
-            .min()
-            .unwrap_or(u32::MAX);
-        self.scratch.ropes_updated_below = if has_rope { first_hammer } else { u32::MAX };
-        // A TeleportIndicator firing this pass detaches the teleported
-        // players' ropes at its own turn, so a rope newer than it already
-        // sees the rope released and its RopeAttachment stops pulling.
-        let first_teleport = self
-            .players
-            .iter()
-            .filter_map(|slot| slot.teleport_pending_marker)
-            .map(|marker| self.teleport_marker_pool[marker])
-            .filter(|marker| marker.active)
-            .map(|marker| marker.hierarchy_base)
-            .min()
-            .unwrap_or(u32::MAX);
-        let ropes_before_clones = first_clone.min(first_hammer);
-        // A rope hanging from a platform that an older Shrink or Growth Ray
-        // ScaleChanger resizes this pass hangs from, and collides with, the
-        // resized platform.
-        let mut ropes_after_changers = false;
-        if has_rope && !self.scale_changers.is_empty() {
+        // Each Rope's turn in Updater's walk (Updater.cs:298-303): the
+        // updatables listed before it, an abilityless clone, a Mjolnir hammer,
+        // a TeleportIndicator or a ScaleChanger among them, take theirs first.
+        if has_rope {
             for index in 0..self.ropes.len() {
                 let rope = &self.ropes[index];
-                let after = rope.hierarchy < ropes_before_clones
-                    && rope.rope_ran_tick != Some(self.tick)
-                    && rope.platform.is_some_and(|platform| {
-                        self.scale_changers.iter().any(|changer| {
-                            changer.active
-                                && changer.target_kind == 2
-                                && changer.appended <= self.tick
-                                && changer.victim == platform
-                                && changer.hierarchy_base < rope.hierarchy
-                        })
-                    });
-                self.ropes[index].after_changer = after;
-                ropes_after_changers |= after;
+                if !rope.physics.enabled || rope.appended > self.tick {
+                    continue;
+                }
+                let key = self.rope_key(index);
+                if self.updater_passed(key) {
+                    continue;
+                }
+                self.run_spawned_before(data, updater_dt, key);
+                self.updater_take_turn(key);
+                self.rope_turn(index);
             }
-        }
-        if has_rope {
-            self.ropes_update(0..ropes_before_clones.min(first_teleport));
         }
         if has(ABILITY_BEAM) {
             self.beam_orbs_tick(data);
@@ -7903,9 +7849,6 @@ impl RolloutWorld {
             self.teleport_effects_tick(data, updater_dt);
             self.teleport_pending_tick(data, updater_dt, u32::MAX);
         }
-        if has_rope && first_teleport < ropes_before_clones {
-            self.ropes_update(first_teleport..ropes_before_clones);
-        }
         if has(ABILITY_BLINK) {
             self.blink_tunnels_tick(data, updater_dt);
             self.blink_platform_tunnels_tick(data, updater_dt, None);
@@ -7946,14 +7889,6 @@ impl RolloutWorld {
         if has(ABILITY_GROWTH_RAY) || has(ABILITY_SHRINK_RAY) {
             self.scale_changers_tick(data, updater_dt, deferred_spikes, deferred_updaters);
         }
-        if ropes_after_changers {
-            self.scratch.ropes_changer_pass = true;
-            self.ropes_update(0..ropes_before_clones);
-            self.scratch.ropes_changer_pass = false;
-            for rope in &mut self.ropes {
-                rope.after_changer = false;
-            }
-        }
         if has(ABILITY_DUPLICATOR) {
             self.duplicate_platform_effects_tick(data, updater_dt, None);
         }
@@ -7966,7 +7901,6 @@ impl RolloutWorld {
         // Updater's walk reaches the end of its list before DetPhysics
         // simulates (Updater.cs:298-303): every updatable no earlier turn
         // brought it to takes its turn now, in list order, once.
-        self.scratch.ropes_walk_limit = u32::MAX;
         self.run_spawned_before(data, updater_dt, (self.tick + 1, 0, 0));
         // DetPhysics syncs each Beam orb's collider from the FixTransform the
         // last Beam.LateUpdateSim wrote, whether or not that form is still out.
@@ -7997,12 +7931,6 @@ impl RolloutWorld {
         }
         if has_clones {
             self.abilityless_clones_tick(data, updater_dt);
-        }
-        if has(ABILITY_GRAPPLING_HOOK) && first_clone < u32::MAX {
-            self.grapple_ropes_update(first_clone..u32::MAX);
-        }
-        if has_rope && first_clone < first_hammer {
-            self.ropes_update(first_clone..first_hammer);
         }
         if has_clones && has(ABILITY_BLINK) {
             self.blink_clone_tunnels_tick(data, updater_dt);
@@ -8533,20 +8461,9 @@ impl RolloutWorld {
         for (i, node) in self.tesla_nodes.iter().enumerate() {
             push(self.updater_key(node.appended, 100_000_000 + node.hierarchy_base), 16, i);
         }
-        // A rope newer than a live abilityless clone waits for the clone's
-        // PlayerBody, which moves the rope end it holds, in the clone pass;
-        // one waiting on an older platform ScaleChanger runs in that pass.
         for (i, rope) in self.ropes.iter().enumerate() {
-            if rope.physics.enabled
-                && rope.hierarchy < self.scratch.ropes_walk_limit
-                && rope.after_changer == self.scratch.ropes_changer_pass
-            {
-                if rope.grapple_ran_tick != Some(tick) && rope.hook_entity.is_some() {
-                    push(self.updater_key(rope.appended, 100_000_000 + rope.hierarchy), 7, i);
-                }
-                if rope.rope_ran_tick != Some(tick) {
-                    push(self.updater_key(rope.appended, 100_000_000 + rope.hierarchy), 8, i);
-                }
+            if rope.physics.enabled {
+                push(self.rope_key(i), 8, i);
             }
             if rope.physics.enabled && rope.parent.is_some() {
                 push(self.rope_attachment_key(i), 29, i);
@@ -8666,8 +8583,7 @@ impl RolloutWorld {
                 4 => self.portals_update(data, updater_dt, turn),
                 5 => self.ability_pickups_tick_before(hierarchy - 99_999_999, data, updater_dt),
                 6 => self.engines_tick(data, updater_dt, turn),
-                7 => self.grapple_ropes_update(hierarchy - 100_000_000..hierarchy - 99_999_999),
-                8 => self.ropes_update(hierarchy - 100_000_000..hierarchy - 99_999_999),
+                8 => self.rope_turn(index),
                 9 => self.smoke_clouds_update_early(data, updater_dt, turn),
                 10 => self.scale_changer_step(index, data, updater_dt),
                 11 => self.duplicate_platform_effects_tick(
@@ -8716,12 +8632,6 @@ impl RolloutWorld {
             // Updater never returns to a turn it has passed: one skipped here,
             // hidden or disabled, waits for the next pass.
             self.updater_take_turn(key);
-            let tick = Some(tick);
-            match kind {
-                7 => self.ropes[index].grapple_ran_tick = tick,
-                8 => self.ropes[index].rope_ran_tick = tick,
-                _ => {}
-            }
         }
         self.scratch.spawned_queue = queue;
         self.updater_pass_to(before);
@@ -33268,20 +33178,12 @@ impl RolloutWorld {
         // and a fuse or the bounds setting off an item claim spawn hierarchy, a
         // smoke detonation draws from the shared RNG, and an older hammer still
         // sees its owner alive when a newer one kills that owner, only vanishing
-        // the pass after (Mjolnir.cs:126-131). The ropes older than an item
-        // update before it.
+        // the pass after (Mjolnir.cs:126-131).
         let mut order = std::mem::take(&mut self.scratch.item_order);
         updater_order(&mut order, &self.thrown_items, |item| self.updater_key(item.appended, 100_000_000 + item.hierarchy_base));
         for &item_index in &order {
             if self.teleport_revealed_this_pass(self.thrown_items[item_index].entity) {
                 continue;
-            }
-            let hierarchy = self.thrown_items[item_index].hierarchy_base;
-            if self.thrown_items[item_index].active
-                && self.scratch.ropes_updated_below < hierarchy
-            {
-                self.ropes_update(self.scratch.ropes_updated_below..hierarchy);
-                self.scratch.ropes_updated_below = hierarchy;
             }
             let ability = self.thrown_items[item_index].ability;
             if ability == ABILITY_MJOLNIR && self.take_updater_turn(item_index, data, updater_dt) {
@@ -33290,11 +33192,6 @@ impl RolloutWorld {
             self.thrown_item_update(item_index, data, updater_dt);
         }
         self.scratch.item_order = order;
-        // The ropes newer than every hammer, still ahead of DetPhysics.
-        if self.scratch.ropes_updated_below < u32::MAX {
-            self.ropes_update(self.scratch.ropes_updated_below..u32::MAX);
-            self.scratch.ropes_updated_below = u32::MAX;
-        }
 
         // DetPhysics then integrates each body on its own.
         for item_index in 0..self.thrown_items.len() {
