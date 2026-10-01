@@ -26,6 +26,8 @@ pub(super) enum Part {
     Hook(usize),
     /// A Bow arrow's circle.
     Arrow(usize),
+    /// A BlackHole's circle.
+    Hole(usize),
 }
 
 /// Arrow.StickTo: Player, item, wall, LethalTerrain and NonLethalTerrain
@@ -70,6 +72,10 @@ impl RolloutWorld {
                 center: self.arrows[i].position,
                 radius: self.arrows[i].collider_radius,
             }),
+            Part::Hole(i) => Collider::Circle(Circle {
+                center: self.black_holes[i].position,
+                radius: self.black_holes[i].radius,
+            }),
         }
     }
 
@@ -92,6 +98,7 @@ impl RolloutWorld {
             }
             Part::Hook(r) => self.ropes[r].hook_entity.map_or(LAYER_ROPE, |entity| self.entities[entity].layer),
             Part::Arrow(i) => self.arrows[i].entity.map_or(LAYER_PROJECTILE, |entity| self.entities[entity].layer),
+            Part::Hole(_) => LAYER_RIGID_BODY_AFFECTOR,
         }
     }
 
@@ -128,6 +135,7 @@ impl RolloutWorld {
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].entity,
             Part::Hook(r) => self.ropes[r].hook_entity,
             Part::Arrow(i) => self.arrows[i].entity,
+            Part::Hole(i) => self.black_holes[i].entity,
         }
     }
 
@@ -144,7 +152,8 @@ impl RolloutWorld {
             | Part::Pickup(_)
             | Part::DuplicatedRock(_)
             | Part::Hook(_)
-            | Part::Arrow(_) => None,
+            | Part::Arrow(_)
+            | Part::Hole(_) => None,
         }
     }
 
@@ -165,6 +174,7 @@ impl RolloutWorld {
             // trigger that never resolves (DPhysicsCircle.cs:278-283).
             Part::Hook(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
             Part::Arrow(i) => self.arrows[i].body(&data::get().arrow.body),
+            Part::Hole(i) => Body { inverse_mass: -Fix::ONE, velocity: self.black_holes[i].body_velocity, ..Body::default() },
         }
     }
 
@@ -181,6 +191,7 @@ impl RolloutWorld {
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].active,
             Part::Hook(r) => self.hook_live(r),
             Part::Arrow(i) => self.arrows[i].active,
+            Part::Hole(i) => self.black_holes[i].active,
         }
     }
 
@@ -200,6 +211,7 @@ impl RolloutWorld {
             (Part::DuplicatedRock(i), None) => (self.duplicated_rocks[i].body, self.duplicated_rocks[i].position),
             (Part::Hook(r), None) => (self.part_body(part), self.ropes[r].hook_position),
             (Part::Arrow(i), None) => (self.part_body(part), self.arrows[i].position),
+            (Part::Hole(i), None) => (self.part_body(part), self.black_holes[i].position),
             _ => unreachable!(),
         }
     }
@@ -254,6 +266,7 @@ impl RolloutWorld {
             }
             Part::Hook(_) => {}
             Part::Arrow(i) => self.set_arrow_body(i, body, delta),
+            Part::Hole(i) => self.black_holes[i].body_velocity = body.velocity,
         }
         if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_) | Part::Arrow(_), Some(entity)) =
             (part, self.part_entity(part))
@@ -289,6 +302,7 @@ impl RolloutWorld {
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].position,
             Part::Hook(r) => self.ropes[r].hook_position,
             Part::Arrow(i) => self.arrows[i].position,
+            Part::Hole(i) => self.black_holes[i].position,
         }
     }
 
@@ -309,6 +323,16 @@ impl RolloutWorld {
             let mut body = self.part_body(part);
             body.apply_impulse(force, arm);
             self.set_arrow_body(i, body, Vec2::ZERO);
+            return;
+        }
+        if let Part::Hole(i) = part {
+            let mut body = self.part_body(part);
+            body.apply_impulse(force, arm);
+            self.black_holes[i].body_velocity = body.velocity;
+            if let Some(entity) = self.black_holes[i].entity {
+                self.entities[entity].vx = body.velocity.x.raw();
+                self.entities[entity].vy = body.velocity.y.raw();
+            }
             return;
         }
         let body = match (part, self.part_composite(part)) {
@@ -368,7 +392,7 @@ impl RolloutWorld {
             Part::Arrow(i) => self.arrows[i].force += force,
             // A RopeHook's circle has no BoplBody, so nothing integrates it.
             Part::Hook(_) => {}
-            Part::Node(_) | Part::Engine(_) | Part::Spike(_) => unreachable!(),
+            Part::Node(_) | Part::Engine(_) | Part::Spike(_) | Part::Hole(_) => unreachable!(),
         }
     }
 
@@ -414,6 +438,11 @@ impl RolloutWorld {
         for i in 0..self.arrows.len() {
             if self.arrow_registered(i) {
                 parts.push(Part::Arrow(i));
+            }
+        }
+        for (i, hole) in self.black_holes.iter().enumerate() {
+            if hole.active && !self.blink_object_hidden(hole.entity) {
+                parts.push(Part::Hole(i));
             }
         }
         let circles = parts.len();
@@ -463,12 +492,29 @@ impl RolloutWorld {
                 // Projectile that does not ignite explosives.
                 self.scratch.callback_hits.push((key, CallbackHit::ItemDetonate { item, count: 1 }));
             }
+            // BlackHole.OnCollide reads the collider's inverseMass, a
+            // composite child's CompositeBody's.
+            if let Part::Hole(hole) = circle {
+                let target = match part {
+                    Part::Engine(i) => HoleTarget::Engine(i),
+                    Part::Spike(i) => HoleTarget::Spike(i),
+                    Part::Missile(i) => HoleTarget::Missile(i),
+                    _ => unreachable!(),
+                };
+                let inverse_mass = match self.part_composite(part) {
+                    Some(platform) => self.platform_dynamics[platform].body.inverse_mass,
+                    None => self.part_body(part).inverse_mass,
+                };
+                let hit = CallbackHit::BlackHole { hole, target, inverse_mass };
+                self.scratch.callback_hits.push((key, hit));
+            }
             match part {
                 Part::Spike(spike) => {
                     let hit = CallbackHit::SpikeShove { spike, target: circle, point: contact.point };
                     self.scratch.callback_hits.push((key, hit));
                 }
-                Part::Missile(missile) => {
+                // Missile.OnCollide ignores RigidBodyAffector (Missile.cs:183).
+                Part::Missile(missile) if self.part_layer(circle, data) != LAYER_RIGID_BODY_AFFECTOR => {
                     self.scratch.callback_hits.push((key, CallbackHit::MissileBlast { missile }));
                 }
                 _ => {}
@@ -638,7 +684,7 @@ impl RolloutWorld {
                     Part::Arrow(i) => HookTarget::Arrow(i),
                     // A hook on a Duplicator copy has no rope parent here yet.
                     Part::DuplicatedRock(_) => continue,
-                    Part::Engine(_) | Part::Spike(_) | Part::Missile(_) | Part::Hook(_) => unreachable!(),
+                    Part::Engine(_) | Part::Spike(_) | Part::Missile(_) | Part::Hook(_) | Part::Hole(_) => unreachable!(),
                 };
                 self.queue_hook_hit(rope, GROUP_CC, self.part_rank(other), target);
             }

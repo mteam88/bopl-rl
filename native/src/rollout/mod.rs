@@ -424,6 +424,7 @@ const LAYER_WEAPON: u32 = 13;
 const LAYER_WALL: u32 = 11;
 const LAYER_NON_LETHAL_TERRAIN: u32 = 21;
 const LAYER_WATER: u32 = 4;
+const LAYER_RIGID_BODY_AFFECTOR: u32 = 23;
 const LAYER_ROPE: u32 = 24;
 
 const CAUSE_OTHER: u32 = 0;
@@ -2201,6 +2202,11 @@ pub struct BlackHoleState {
     pub duplicated: bool,
     pub duplicate_lifespan: i32,
     pub duplicate_shake_offset: Vec2,
+    /// The velocity of its DetPhysics body. The collider registers with
+    /// inverseMass -1, which IntegrateBody skips (DPhysicsCircle.cs:278-283,
+    /// DetPhysics.cs:2757-2764), so an impulse on it, a young Spike's shove,
+    /// stays there and in the export.
+    pub body_velocity: Vec2,
 }
 
 impl BlackHoleState {
@@ -7753,6 +7759,7 @@ impl RolloutWorld {
             || has(ABILITY_PORTAL_GUN)
             || has(ABILITY_ROCK)
             || has(ABILITY_BOW)
+            || has(ABILITY_BLACK_HOLE)
         {
             self.thrown_item_pair_contacts(data);
         }
@@ -16925,6 +16932,7 @@ impl RolloutWorld {
             duplicated: false,
             duplicate_lifespan: 0,
             duplicate_shake_offset: Vec2::ZERO,
+            body_velocity: Vec2::ZERO,
         };
         if let Some(free) = self.black_holes.iter().position(|hole| !hole.active) {
             self.black_holes[free] = hole;
@@ -17445,6 +17453,8 @@ impl RolloutWorld {
     /// Circle/RoundedRect group and its other colliders in the Circle/Circle
     /// and Circle/Box groups, and calls every pair back from its queue after
     /// all groups resolved, in SortAndSweep pair order (DetPhysics.cs:3197-3199).
+    /// The pairs with a missile, Spike or rocket engine box come from
+    /// `circle_box_group`.
     /// The callback reads the hole's mass only then (BlackHole.cs:447), so a
     /// white hole's pairs are queued too.
     fn black_hole_contacts(&mut self) {
@@ -17570,18 +17580,6 @@ impl RolloutWorld {
                 }
             }
 
-            for missile_index in 0..self.guided_missiles.len() {
-                let missile = self.guided_missiles[missile_index];
-                let Some(entity) = missile.entity else {
-                    continue;
-                };
-                if missile.active && missile.registered && self.circle_overlaps_entity(circle, entity) {
-                    let other = self.part_rank(Part::Missile(missile_index));
-                    let target = HoleTarget::Missile(missile_index);
-                    queue(self, target, missile.body.inverse_mass, other, GROUP_CB);
-                }
-            }
-
             // Colliders with no other callback here: ranked, and grouped by
             // shape, from their rows.
             let row_rank = |world: &Self, entity: usize| {
@@ -17630,37 +17628,8 @@ impl RolloutWorld {
             }
 
             // A composite child's collider answers with its CompositeBody's
-            // inverse mass.
-            for spike_index in 0..self.spike_attacks.len() {
-                let spike = self.spike_attacks[spike_index];
-                let Some(entity) = spike.entity else {
-                    continue;
-                };
-                if spike.active
-                    && !spike.macho_carried
-                    && spike.platform_index < self.platform_dynamics.len()
-                    && self.circle_overlaps_entity(circle, entity)
-                {
-                    let inverse_mass = self.platform_dynamics[spike.platform_index].body.inverse_mass;
-                    let other = self.part_rank(Part::Spike(spike_index));
-                    queue(self, HoleTarget::Spike(spike_index), inverse_mass, other, GROUP_CB);
-                }
-            }
-            for engine_index in 0..self.engines.len() {
-                let engine = self.engines[engine_index];
-                let Some(entity) = engine.entity else {
-                    continue;
-                };
-                if engine.active
-                    && !engine.macho_carried
-                    && engine.platform_index < self.platform_dynamics.len()
-                    && self.circle_overlaps_entity(circle, entity)
-                {
-                    let inverse_mass = self.platform_dynamics[engine.platform_index].body.inverse_mass;
-                    let other = self.part_rank(Part::Engine(engine_index));
-                    queue(self, HoleTarget::Engine(engine_index), inverse_mass, other, GROUP_CB);
-                }
-            }
+            // inverse mass. The boxes (missiles, Spikes, rocket engines) pair
+            // with holes in circle_box_group.
             for node_index in 0..self.tesla_nodes.len() {
                 let node = self.tesla_nodes[node_index];
                 let Some(entity) = node.entity else {
@@ -28372,6 +28341,7 @@ impl RolloutWorld {
             duplicated: true,
             duplicate_lifespan: 480,
             duplicate_shake_offset: Vec2::ZERO,
+            body_velocity: Vec2::ZERO,
         };
         self.pending_black_holes.push(clone);
     }
