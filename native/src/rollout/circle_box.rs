@@ -556,8 +556,10 @@ impl RolloutWorld {
             let bounds = collider.bounds();
             let rank = self.part_rank(part);
             for wall in 0..self.platforms.len() {
-                // SameCompositeAs: a child never meets its own platform.
+                // SameCompositeAs: a child never meets its own platform. A wall
+                // destroyed before this pass left in RemoveDestroyedColliders.
                 if !self.platforms[wall].active
+                    || self.entities[self.platform_entities[wall]].flags & E_DESTROYED != 0
                     || self.part_composite(part) == Some(wall)
                     || !self.wall_swept(wall, bounds)
                 {
@@ -603,6 +605,22 @@ impl RolloutWorld {
                 Part::Spike(spike) => CallbackHit::SpikeWallKnock { spike, wall, point: contact.point, wall_layer },
                 // Missile.cs:181-192.
                 Part::Missile(missile) => CallbackHit::MissileBlast { missile },
+                // RopeHook.cs:86-131.
+                Part::Hook(rope) => CallbackHit::RopeHook { rope, target: HookTarget::Platform(wall) },
+                // BlackHole.OnCollide eats a wall only when the collider the
+                // manifold copied contains the hole's centre, even though the
+                // two overlap much earlier (BlackHole.cs:207-210, 516-547).
+                Part::Hole(hole)
+                    if wall_layer
+                        && walls
+                            .get(wall)
+                            .copied()
+                            .unwrap_or(self.platforms[wall].collider)
+                            .overlaps(self.black_holes[hole].position) =>
+                {
+                    let inverse_mass = self.platform_dynamics[wall].body.inverse_mass;
+                    CallbackHit::BlackHole { hole, target: HoleTarget::Wall(wall), inverse_mass }
+                }
                 _ => continue,
             };
             self.scratch.callback_hits.push((key, hit));

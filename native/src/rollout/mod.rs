@@ -7871,9 +7871,6 @@ impl RolloutWorld {
         if has_rope {
             self.ropes_physics(physics_dt);
         }
-        if has(ABILITY_GRAPPLING_HOOK) {
-            self.grapple_hook_wall_pairs();
-        }
         if has(ABILITY_BEAM) {
             let beam_contact_count = self
                 .beam_pool
@@ -7903,6 +7900,8 @@ impl RolloutWorld {
             || has(ABILITY_PORTAL_GUN)
             || has(ABILITY_BOW)
             || has(ABILITY_DUPLICATOR)
+            || has(ABILITY_GRAPPLING_HOOK)
+            || has(ABILITY_BLACK_HOLE)
         {
             self.circle_wall_group();
         }
@@ -17637,27 +17636,6 @@ impl RolloutWorld {
                 let hit = CallbackHit::BlackHole { hole: hole_index, target, inverse_mass };
                 world.scratch.callback_hits.push(((group, later, earlier), hit));
             };
-
-            // A wall is eaten only when the collider the manifold copied
-            // contains the hole's centre (BlackHole.cs:209, 516-547), even
-            // though the two overlap much earlier. A wall destroyed before
-            // this pass is out of DetPhysics.
-            for platform_index in 0..self.platforms.len() {
-                let platform_entity = self.platform_entities[platform_index];
-                if self.entities[platform_entity].flags & E_DESTROYED != 0
-                    || !self.platforms[platform_index].active
-                {
-                    continue;
-                }
-                let collider = self.circle_collider(platform_index);
-                if crate::physics::contact::circle_rounded(circle, collider).is_some()
-                    && collider.overlaps(hole.position)
-                {
-                    let inverse_mass = self.platform_dynamics[platform_index].body.inverse_mass;
-                    let wall = self.wall_rank(platform_index);
-                    queue(self, HoleTarget::Wall(platform_index), inverse_mass, wall, GROUP_CIRCLE_RR);
-                }
-            }
 
             for arrow_index in 0..self.arrows.len() {
                 let arrow = self.arrows[arrow_index];
@@ -36263,6 +36241,16 @@ impl RolloutWorld {
         for (i, rock) in self.duplicated_rocks.iter().enumerate() {
             if rock.active && !self.blink_object_hidden(rock.entity) {
                 parts.push(Part::DuplicatedRock(i));
+            }
+        }
+        for rope in 0..self.ropes.len() {
+            if self.hook_live(rope) {
+                parts.push(Part::Hook(rope));
+            }
+        }
+        for (i, hole) in self.black_holes.iter().enumerate() {
+            if hole.active && !self.blink_object_hidden(hole.entity) {
+                parts.push(Part::Hole(i));
             }
         }
         let walls = std::mem::take(&mut self.scratch.circle_colliders);

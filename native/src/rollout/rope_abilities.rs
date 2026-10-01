@@ -1688,26 +1688,6 @@ impl RolloutWorld {
             .push(((group, later, earlier), CallbackHit::RopeHook { rope, target }));
     }
 
-    /// The hooks' Circle/RoundedRect pairs.
-    pub(super) fn grapple_hook_wall_pairs(&mut self) {
-        for rope in 0..self.ropes.len() {
-            if !self.hook_live(rope) {
-                continue;
-            }
-            let circle = self.hook_circle(rope);
-            for platform in 0..self.platforms.len() {
-                if !self.collides(self.platform_entities[platform])
-                    || crate::physics::contact::circle_rounded(circle, self.platforms[platform].collider)
-                        .is_none()
-                {
-                    continue;
-                }
-                let rank = self.wall_rank(platform);
-                self.queue_hook_hit(rope, GROUP_CIRCLE_RR, rank, HookTarget::Platform(platform));
-            }
-        }
-    }
-
     /// The hooks' pairs with black holes, which circle_circle_group does not
     /// list yet, and their Circle/Box pairs, on the colliders the
     /// Circle/Circle corrections left.
