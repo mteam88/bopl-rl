@@ -13135,6 +13135,15 @@ impl RolloutWorld {
                         return;
                     }
                 }
+                // UpdateSim's VelocityBasedRaycasts follows every state but
+                // Dash and does not ask isGrounded: a hit that drives the
+                // waiting form into its ground lands it, and it exits grounded
+                // (MeteorSmash.cs:292-295, PlayerPhysics.CollisionRaycasts).
+                let dt = self.players[index].base.fixed_delta_time;
+                if self.players[index].base.collision_rays_over(terrain!(self), dt) {
+                    self.exit_meteor_grounded(index, data);
+                    return;
+                }
                 // The animator's Jump callback runs after Ability.UpdateSim.
                 published = Some(self.players[index].base.position);
                 if self.players[index].meteor.ticks > data.meteor.ground_enter_ticks {
