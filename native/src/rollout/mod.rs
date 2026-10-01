@@ -2374,7 +2374,10 @@ pub struct PlatformState {
 #[derive(Clone, Copy, Default)]
 pub struct GoldMushroomState {
     pub active: bool,
-    pub pending_init: bool,
+    /// The pass Updater appends the SuperStarEffect and the prefab's
+    /// registered base: its place in Updater's list.
+    pub appended: u32,
+    pub hierarchy_base: u32,
     pub time: Fix,
     /// Entity id of the slime that cast it (SuperStarEffect.slime).
     pub slime_id: u32,
@@ -4253,7 +4256,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
+    matches!(kind, 0 | 1 | 2 | 3 | 4 | 5 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28)
 }
 
 /// The place just after `key`.
@@ -7707,7 +7710,6 @@ impl RolloutWorld {
         }
         self.scratch.turn_count = 0;
         let recorded = self.scratch.turns_recorded;
-        let jump_pressed_by_player = self.scratch.clone_jump_pressed;
         self.scratch.updater_hierarchy = u32::MAX;
         // SlimeController.Awake adds the RewindRecorder to the slime itself,
         // so it updates with the player prefab, ahead of every spawned
@@ -7833,16 +7835,25 @@ impl RolloutWorld {
             // still advance DynamicAbilityPickup.
             self.ability_pickups_tick_before(deferred_to, data, updater_dt);
         }
-        // SuperStarEffect prefabs spawned during a slime update join the
-        // updater list on the following tick. Once live they run after player
-        // forms and can overwrite the tick's vertical self-imposed velocity.
+        // A SuperStarEffect takes its turn in Updater's one walk: the
+        // slime that cast it appended it the next pass (Updater.cs:258-282),
+        // and the walk runs it at its place in the list, ahead of a form
+        // listed after it (Updater.cs:298-303).
         if has(ABILITY_GOLD_MUSHROOM) {
-            for (index, &jump_pressed) in jump_pressed_by_player
-                .iter()
-                .enumerate()
-                .take(self.players.len())
-            {
-                self.gold_mushroom_tick(index, jump_pressed, data);
+            for index in 0..self.players.len() {
+                for effect_slot in 0..3 {
+                    let effect = self.players[index].gold_mushroom[effect_slot];
+                    if !effect.active || effect.appended > self.tick {
+                        continue;
+                    }
+                    let key = self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base);
+                    if self.updater_passed(key) {
+                        continue;
+                    }
+                    self.run_spawned_before(data, updater_dt, key);
+                    self.updater_take_turn(key);
+                    self.gold_mushroom_step(index, effect_slot, data);
+                }
             }
         }
         // Runtime-spawned platforms register behind the player/ability
@@ -8616,6 +8627,11 @@ impl RolloutWorld {
             if slot.respawn_ticks > 0 {
                 push(self.chooser_key(i), 27, i);
             }
+            for (s, effect) in slot.gold_mushroom.iter().enumerate() {
+                if effect.active {
+                    push(self.updater_key(effect.appended, 100_000_000 + effect.hierarchy_base), 28, i * 3 + s);
+                }
+            }
         }
         for (i, missile) in self.guided_missiles.iter().enumerate() {
             if missile.active
@@ -8682,6 +8698,7 @@ impl RolloutWorld {
                 24 => self.spike_attack_step(data, updater_dt, index),
                 25 | 26 => self.shockwave_step(kind == 26, index, data),
                 27 => self.stock_chooser_step(index, data),
+                28 => self.gold_mushroom_step(index / 3, index % 3, data),
                 // Grenade.UpdateSim: a fuse that runs out detonates at the
                 // item's own turn, before a younger cloud's FlammableSmoke
                 // detonates.
@@ -10751,12 +10768,14 @@ impl RolloutWorld {
                     ABILITY_GOLD_MUSHROOM => {
                         // SuperStar.UseAbility instantiates the SuperStarEffect
                         // prefab (SuperStar.cs:33).
-                        self.register_prefab(&data.abilities[ability as usize].effect_registrations);
+                        let hierarchy_base = self.register_prefab(&data.abilities[ability as usize].effect_registrations);
                         let slime_id = self.entities[self.players[index].body_entity].id;
+                        let appended = self.tick + 1;
                         let slot = &mut self.players[index];
                         slot.gold_mushroom[s] = GoldMushroomState {
                             active: true,
-                            pending_init: true,
+                            appended,
+                            hierarchy_base,
                             time: Fix::ZERO,
                             slime_id,
                         };
@@ -14034,7 +14053,10 @@ impl RolloutWorld {
         slot.base.radius = slot.slime_radius;
     }
 
-    fn gold_mushroom_tick(&mut self, index: usize, jump_pressed: bool, data: &data::RolloutData) {
+    /// SuperStarEffect.UpdateSim for player `index`'s effect in
+    /// `effect_slot`, on the jump edge Updater took before any updatable.
+    fn gold_mushroom_step(&mut self, index: usize, effect_slot: usize, data: &data::RolloutData) {
+        let jump_pressed = self.scratch.clone_jump_pressed[index];
         let ability = &data.abilities[ABILITY_GOLD_MUSHROOM as usize];
         let duration = ability.effect_duration.expect("Gold Mushroom duration");
         let air_jump = ability
@@ -14061,21 +14083,17 @@ impl RolloutWorld {
             .get(self.players[index].body_entity)
             .map_or(0, |row| row.id);
         let slot = &mut self.players[index];
-        for effect_slot in 0..slot.gold_mushroom.len() {
+        {
             let effect = &mut slot.gold_mushroom[effect_slot];
             if !effect.active {
-                continue;
-            }
-            if effect.pending_init {
-                effect.pending_init = false;
-                continue;
+                return;
             }
             // Player.IsAlive remains true while a stock replacement exists;
             // final elimination ends the effect on its next updater pass.
             if slot.out {
                 effect.active = false;
                 slot.cooldowns[effect_slot] = restored_cooldown;
-                continue;
+                return;
             }
             effect.time += DT;
             // The kick goes to the slime or to its active form; a Teleport or
