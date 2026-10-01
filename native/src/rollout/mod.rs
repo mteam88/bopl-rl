@@ -24957,17 +24957,23 @@ impl RolloutWorld {
 
     fn magnet_update_held_item(&mut self, index: usize, data: &data::RolloutData) {
         let held = self.players[index].magnet.held;
+        // nullItemTypeIfDropped lets go only of an item destroyed or inactive;
+        // one an Arrow.OnCollide Dropped out of its BoplBody hold is held
+        // again below, and a thief pauses the gun through OnItemWasStolen
+        // instead (MagnetGun.cs:899-918, 1070-1090, BoplBody.cs:285-298).
         let valid = match held {
             MagnetHeld::Nothing => false,
-            MagnetHeld::ThrownItem(i) => self.thrown_items.get(i).is_some_and(|v| {
-                v.active && v.magnet_holder == Some(index) && !self.blink_object_hidden(v.entity)
-            }),
-            MagnetHeld::Missile(i) => self.guided_missiles.get(i).is_some_and(|v| {
-                v.active && v.magnet_holder == Some(index) && !self.blink_object_hidden(v.entity)
-            }),
-            MagnetHeld::Arrow(i) => self.arrows.get(i).is_some_and(|v| {
-                v.active && v.magnet_holder == Some(index) && !self.blink_object_hidden(v.entity)
-            }),
+            MagnetHeld::ThrownItem(i) => self
+                .thrown_items
+                .get(i)
+                .is_some_and(|v| v.active && !self.blink_object_hidden(v.entity)),
+            MagnetHeld::Missile(i) => self
+                .guided_missiles
+                .get(i)
+                .is_some_and(|v| v.active && !self.blink_object_hidden(v.entity)),
+            MagnetHeld::Arrow(i) => {
+                self.arrows.get(i).is_some_and(|v| v.active && !self.blink_object_hidden(v.entity))
+            }
             MagnetHeld::Player(slime) => self.magnet_holdable(slime),
             MagnetHeld::Rock(i) => {
                 i < self.players.len()
@@ -24990,18 +24996,14 @@ impl RolloutWorld {
                 .portal_shots
                 .get(i)
                 .is_some_and(|v| v.active && v.registered && !self.blink_object_hidden(v.entity)),
-            MagnetHeld::RevivalMarker(i) => self.revival_marker_pool.get(i).is_some_and(|v| {
-                v.active
-                    && v.registered
-                    && v.magnet_holder == Some(index)
-                    && !self.blink_object_hidden(v.entity)
-            }),
-            MagnetHeld::TeleportMarker(i) => self.teleport_marker_pool.get(i).is_some_and(|v| {
-                v.active
-                    && v.registered
-                    && v.magnet_holder == Some(index)
-                    && !self.blink_object_hidden(v.entity)
-            }),
+            MagnetHeld::RevivalMarker(i) => self
+                .revival_marker_pool
+                .get(i)
+                .is_some_and(|v| v.active && v.registered && !self.blink_object_hidden(v.entity)),
+            MagnetHeld::TeleportMarker(i) => self
+                .teleport_marker_pool
+                .get(i)
+                .is_some_and(|v| v.active && v.registered && !self.blink_object_hidden(v.entity)),
         };
         if !valid {
             let state = &mut self.players[index].magnet;
