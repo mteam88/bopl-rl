@@ -12262,6 +12262,9 @@ impl RolloutWorld {
                         if self.ability_boundary_kill(index) {
                             return;
                         }
+                        // The form's PlayerBody steps on the entry pass too,
+                        // holding the rope Ability.EnterAbility handed it.
+                        self.form_body_move(index, jump_pressed);
                         return;
                     }
                     // Other catalog abilities are never simulated here.
