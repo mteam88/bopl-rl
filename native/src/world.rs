@@ -80,6 +80,10 @@ pub struct Player {
     /// body and can lead this value by one updater phase.
     #[serde(skip, default = "default_scale")]
     pub scale: Fix,
+    /// PlayerPhysics.prevScal: the scale `radius` last followed. UpdateScale
+    /// multiplies the radius by `scale / prevScal` (PlayerPhysics.cs:106-123).
+    #[serde(skip, default = "default_scale")]
+    pub(crate) physics_scale: Fix,
     pub grounded: bool,
     pub ground: Option<u32>,
     pub local: Fix,

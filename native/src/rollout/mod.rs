@@ -2516,9 +2516,6 @@ pub struct AbilitylessClone {
     pub ground_destroyed: Option<DestroyedGround>,
     /// The clone's PlayerBody hold on a rope a rope ability hooked it with.
     pub grip: rope_abilities::RopeGrip,
-    /// PlayerPhysics.prevScal: the radius follows the hurtbox's
-    /// `player.Scale` one pass later, as a slime's does.
-    pub physics_scale: Fix,
     pub eating: EatingState,
     /// The pass and the position before this clone's updaters ran on it: an
     /// Updater object older than the clone still sees it there.
@@ -3318,12 +3315,6 @@ pub struct PlayerSlot {
     pub ability_entry_action: Action,
     /// Player.Scale, which ScaleChanger mutates after the player updaters.
     pub player_scale: Fix,
-    /// PlayerPhysics.prevScal for the ordinary slime body. Its radius follows
-    /// FixTransform scale one player-updater pass after the hurtbox does.
-    pub physics_scale: Fix,
-    /// The slime's own PlayerPhysics radius, kept while a form's body stands
-    /// in for it.
-    pub slime_radius: Fix,
     /// DPhysicsBox stores inverse extents and updates them by the rounded
     /// old-to-new scale ratio. Keeping that representation reproduces the
     /// few-raw-unit drift that an absolute authored_extents * scale loses.
@@ -3927,6 +3918,13 @@ impl PlayerSlot {
 
     /// The only writer of `active`. Entering a form hides the slime
     /// (SlimeController.cs:190) and leaving it shows the slime again.
+    /// A test's form entry: the slime goes inactive as it stands.
+    #[cfg(test)]
+    fn enter_test_form(&mut self, entities: &mut [CEntity], form: ActiveAbility) {
+        self.slime = self.base.clone();
+        self.set_active_form(entities, form);
+    }
+
     /// A form leaves through `leave_form`, which hands the body back first.
     fn set_active_form(&mut self, entities: &mut [CEntity], form: ActiveAbility) {
         self.active = form;
@@ -4124,21 +4122,14 @@ impl PlayerSlot {
         ]
     }
 
-    /// SyncPhysicsTo(AbilityExitInfo)'s UpdateScale: the kept slime radius
+    /// SyncPhysicsTo(AbilityExitInfo)'s UpdateScale: the slime's radius
     /// catches up to the Player.Scale onExitAbility just gave the hurtbox.
-    fn exit_slime_radius(&self) -> Fix {
-        let scale = hurtbox_scale(self.player_scale);
-        if scale != self.physics_scale {
-            self.slime_radius * (scale / self.physics_scale)
-        } else {
-            self.slime_radius
-        }
-    }
-
     fn restore_slime_radius(&mut self) {
-        self.base.radius = self.exit_slime_radius();
-        self.slime_radius = self.base.radius;
-        self.physics_scale = hurtbox_scale(self.player_scale);
+        let scale = hurtbox_scale(self.player_scale);
+        if scale != self.base.physics_scale {
+            self.base.radius *= scale / self.base.physics_scale;
+        }
+        self.base.physics_scale = scale;
     }
 
     /// SlimeController resets a released IgnoreNextCooldown slot to its
@@ -5978,6 +5969,7 @@ impl RolloutWorld {
                     radius: data.player.radius,
                     space: def.level_type == 2,
                     scale: Fix::ONE,
+                    physics_scale: Fix::ONE,
                     grounded: false,
                     ground: None,
                     local: Fix::ZERO,
@@ -6050,8 +6042,6 @@ impl RolloutWorld {
                 pass_start: (u32::MAX, Vec2::ZERO),
                 ability_entry_action: Action::default(),
                 player_scale: Fix::ONE,
-                physics_scale: Fix::ONE,
-                slime_radius: data.player.radius,
                 body_collider_scale: Fix::ONE,
                 invisible: false,
                 invisible_time: Fix::ZERO,
@@ -6842,7 +6832,6 @@ impl RolloutWorld {
         slot.blink_tunnel_age = clone.blink_tunnel_age;
         slot.blink_tunnel_released = clone.blink_tunnel_released;
         slot.ground_destroyed = clone.ground_destroyed;
-        slot.physics_scale = clone.physics_scale;
         slot.eating = clone.eating;
         slot.pass_start = clone.pass_start;
         self.players[body] = slot;
@@ -10138,9 +10127,9 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             let skipped = slot.base.skip_next_gravity;
-            if slot.base.scale != slot.physics_scale && !skipped {
-                slot.base.radius *= slot.base.scale / slot.physics_scale;
-                slot.physics_scale = slot.base.scale;
+            if slot.base.scale != slot.base.physics_scale && !skipped {
+                slot.base.radius *= slot.base.scale / slot.base.physics_scale;
+                slot.base.physics_scale = slot.base.scale;
             }
         }
         let ragdoll_ended = self.players[index].obs_state == STATE_RAGDOLL;
@@ -10506,7 +10495,6 @@ impl RolloutWorld {
                     slot.slime.scale = scale;
                     slot.slime_tick = self.tick;
                     slot.inactive_obs_state = slot.obs_state;
-                    slot.slime_radius = slot.base.radius;
                     if !data.abilities[ability as usize].instant {
                         // Ability.EnterAbility: the form's own PlayerPhysics
                         // and PlayerBody become the live body.
@@ -13617,7 +13605,7 @@ impl RolloutWorld {
                 if slot.base.grounded
                     && let Some(normal) = normal
                 {
-                    info.position = position - normal * (slot.base.radius - slot.slime_radius);
+                    info.position = position - normal * (slot.base.radius - slot.slime.radius);
                 }
             }
             ActiveAbility::Meteor => {
@@ -13832,9 +13820,11 @@ impl RolloutWorld {
         }
         slot.reported_position = slot.base.position;
         slot.reported_tick = tick;
+        // The slime's own radius, which the form's would leak over.
+        let radius = slot.slime.radius;
         slot.leave_form(&mut self.entities, woken);
         slot.base.constants = data::get().player.constants.clone();
-        slot.base.radius = slot.slime_radius;
+        slot.base.radius = radius;
     }
 
     /// SuperStarEffect.UpdateSim for player `index`'s effect in
@@ -21044,7 +21034,6 @@ impl RolloutWorld {
         // the dead slime was in (PlayerCollision.cs:249).
         slot.base.constants = data.player.constants.clone();
         slot.base.skip_next_gravity = false;
-        slot.physics_scale = Fix::ONE;
         slot.body_collider_scale = Fix::ONE;
         self.entity_inverse_extents[slot.body_entity] = Vec2::new(
             Fix::ONE / data.player.hurtbox_extents.x,
@@ -21060,6 +21049,7 @@ impl RolloutWorld {
         slot.empty_prefab_facing();
         slot.timers.fill(Fix::from_f32(-1.5));
         slot.leave_form(&mut self.entities, false);
+        slot.base.physics_scale = Fix::ONE;
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
         // strand the dead slime let go keeps hanging, since only the
@@ -21545,7 +21535,6 @@ impl RolloutWorld {
         // with no pending skipNextUpdate (PlayerPhysics.cs:118-121).
         slot.base.constants = data.player.constants.clone();
         slot.base.skip_next_gravity = false;
-        slot.physics_scale = Fix::ONE;
         slot.body_collider_scale = Fix::ONE;
         self.entity_inverse_extents[slot.body_entity] = Vec2::new(
             Fix::ONE / data.player.hurtbox_extents.x,
@@ -21557,6 +21546,7 @@ impl RolloutWorld {
         slot.base.sync_collider(slot.hurtbox_inverse_extents(&self.entity_inverse_extents));
         slot.empty_prefab_facing();
         slot.leave_form(&mut self.entities, false);
+        slot.base.physics_scale = Fix::ONE;
         slot.rock = RockState::default();
         // The clone's WebSwing and HookshotInstant are new instances: a
         // strand the dead slime let go keeps hanging, since only the
@@ -26470,6 +26460,7 @@ impl RolloutWorld {
             radius: data.player.radius,
             space: data.maps[self.map].level_type == 2,
             scale: Fix::ONE,
+            physics_scale: Fix::ONE,
             grounded: false,
             ground: None,
             local: Fix::ZERO,
@@ -26518,7 +26509,6 @@ impl RolloutWorld {
             late_pull: Vec2::ZERO,
             ground_destroyed: None,
             grip: rope_abilities::RopeGrip::default(),
-            physics_scale: Fix::ONE,
             eating: EatingState::default(),
             pass_start: (u32::MAX, Vec2::ZERO),
             drowned_tick: u32::MAX,
@@ -35268,9 +35258,9 @@ impl RolloutWorld {
         {
             // PlayerPhysics.UpdateScale.
             let clone = &mut self.abilityless_clones[clone_index];
-            if clone.base.scale != clone.physics_scale {
-                clone.base.radius *= clone.base.scale / clone.physics_scale;
-                clone.physics_scale = clone.base.scale;
+            if clone.base.scale != clone.base.physics_scale {
+                clone.base.radius *= clone.base.scale / clone.base.physics_scale;
+                clone.base.physics_scale = clone.base.scale;
             }
         }
         if !stopped {
@@ -40042,7 +40032,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         assert!(world.players[0].base.grounded);
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Roll);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Roll);
         world.players[0].base.velocity = Vec2::new(Fix::from_int(3), Fix::from_int(4));
         world.players[0].base.external_velocity = Vec2::ZERO;
         world.players[0].base.grounded_speed = Fix::from_int(99);
@@ -40126,7 +40116,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         assert!(world.players[0].base.grounded);
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Push);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Push);
         world.players[0].base.grounded_speed = Fix::from_int(12);
         let expected =
             world.players[0].base.grounded_speed * world.players[0].base.constants.friction;
@@ -40434,7 +40424,7 @@ mod tests {
             .surface
             .position(Fix::ZERO, world.players[0].base.radius);
         let normal = platform.surface.normal(landing);
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Missile);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Missile);
         world.players[0].missile.phase = 2;
         world.players[0].missile.projectile = Some(0);
         world.players[0].base.position = landing + normal * Fix::from_f64(0.01);
@@ -40476,7 +40466,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let target_entity = world.players[1].body_entity;
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Rock);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Rock);
         world.players[0].rope = Some(0);
         world.players[0].forms[0] = FormBody {
             scale: Fix::ONE,
@@ -40571,7 +40561,7 @@ mod tests {
         world.reset(&test_config()).unwrap();
         let platform = world.spawn_ability_platform(0, Vec2::ZERO, Fix::ONE);
         world.platforms[platform].active = false;
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Platform);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Platform);
         world.players[0].platform.phase = PLATFORM_ROTATION;
         world.players[0].platform.platform_index = platform;
         world.players[0].platform.ticks =
@@ -40714,7 +40704,7 @@ mod tests {
         config.player[0].abilities[0] = ABILITY_BLINK;
         world.reset(&config).unwrap();
         let entity = world.players[0].blink_entity;
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Blink);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Blink);
         world.entities[entity].flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
 
         world.kill(0, ENVIRONMENT, CAUSE_ACCIDENT, false, false);
@@ -40805,7 +40795,7 @@ mod tests {
         world.players[0].magnet.aim = Vec2::RIGHT;
         world.players[0].base.set_up(Vec2::UP);
         world.players[0].base.position = Vec2::new(Fix::from_int(2), Fix::from_int(20));
-        world.players[1].set_active_form(&mut world.entities, ActiveAbility::Drill);
+        world.players[1].enter_test_form(&mut world.entities, ActiveAbility::Drill);
         world.players[1].base.position = Vec2::new(Fix::from_int(30), Fix::from_int(30));
         let firepoint = world.magnet_firepoint(0, data::get());
 
@@ -40848,7 +40838,7 @@ mod tests {
         config.player[0].abilities[0] = ABILITY_MAGNET;
         world.reset(&config).unwrap();
         let data = data::get();
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Magnet);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Magnet);
         world.players[0].magnet.phase = 2;
         world.players[0].magnet.aim = Vec2::RIGHT;
         world.players[0].base.set_up(Vec2::UP);
@@ -41026,7 +41016,7 @@ mod tests {
     fn grounded_throw_exits_after_losing_ground() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Grenade);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Grenade);
         world.players[0].throw_item.grounded = true;
         world.players[0].base.grounded = false;
         world.players[0].base.ground = None;
@@ -41041,7 +41031,7 @@ mod tests {
     fn airborne_mine_entry_uses_live_ground_on_landing_fire() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Mine);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Mine);
         world.players[0].throw_item.grounded = false;
         world.players[0].throw_item.direction = Vec2::UP;
 
@@ -41209,7 +41199,7 @@ mod tests {
     fn grounded_time_stop_can_cancel_during_entry_animation() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::TimeStop);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::TimeStop);
         world.players[0].active_slot = 0;
         world.players[0].cast_spell.phase = 0;
         world.players[0].cast_spell.time = DT;
@@ -41223,7 +41213,7 @@ mod tests {
     fn frozen_airborne_quick_spell_does_not_gain_gravity() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Gust);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Gust);
         world.players[0].base.grounded = false;
         world.players[0].base.velocity = Vec2::ZERO;
         world.players[0].base.external_velocity = Vec2::ZERO;
@@ -41355,7 +41345,7 @@ mod tests {
             scale: Fix::ONE,
             ..Shockwave::default()
         };
-        world.players[1].set_active_form(&mut world.entities, ActiveAbility::Drill);
+        world.players[1].enter_test_form(&mut world.entities, ActiveAbility::Drill);
         world.players[1].base.grounded = true;
         world.players[1].base.position = origin + Vec2::RIGHT;
         world.players[1].base.external_velocity = Vec2::ZERO;
@@ -41376,7 +41366,7 @@ mod tests {
         world.players[0].base.grounded = false;
         world.players[0].base.ground = None;
         let start = world.players[0].base.position;
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::TimeStop);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::TimeStop);
         world.players[0].player_scale = Fix::from_int(2);
         let self_imposed = Vec2::new(Fix::from_int(3), Fix::from_int(-2));
         world.players[0].base.velocity = self_imposed;
@@ -41425,7 +41415,7 @@ mod tests {
             caster: 0,
             ..TimeStopEffect::default()
         });
-        world.players[1].set_active_form(&mut world.entities, ActiveAbility::TimeStop);
+        world.players[1].enter_test_form(&mut world.entities, ActiveAbility::TimeStop);
         world.players[1].cast_spell.phase = 2;
         world.players[1].cast_spell.ticks = data::get().time_stop.cast_spell_ticks;
 
@@ -41610,7 +41600,7 @@ mod tests {
     fn planted_object_exit_enters_stop_for_reversed_ground_input() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Engine);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Engine);
         world.players[0].facing_right = true;
         world.players[0].last_movement_input = -Vec2::RIGHT;
 
@@ -41619,7 +41609,7 @@ mod tests {
         assert_eq!(world.players[0].obs_state, STATE_STOP);
         assert_eq!(world.players[0].state_ticks, STOP_TICKS + 2);
 
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Tesla);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Tesla);
         world.players[0].last_movement_input = Vec2::RIGHT;
         world.exit_form(0);
         assert_eq!(world.players[0].obs_state, STATE_IDLE);
@@ -41667,7 +41657,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let data = data::get();
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Engine);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Engine);
         world.players[0].active_slot = 0;
 
         for tick in 1..=data.engine.buffer_size {
@@ -41709,7 +41699,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let start = world.players[0].base.position;
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Grenade);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Grenade);
         world.players[0].active_slot = 0;
         world.players[0].player_scale = Fix::from_int(2);
         world.players[0].facing_right = false;
@@ -41741,7 +41731,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let start = world.players[0].base.position;
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Mine);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Mine);
         world.players[0].active_slot = 0;
         world.players[0].forms[0].scale = Fix::from_int(2);
         world.players[0].facing_right = false;
@@ -41830,7 +41820,7 @@ mod tests {
     fn freeze_exit_restores_scaled_slime_radius() {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
-        world.players[0].set_active_form(&mut world.entities, ActiveAbility::Freeze);
+        world.players[0].enter_test_form(&mut world.entities, ActiveAbility::Freeze);
         world.players[0].player_scale = Fix::from_int(2);
         world.players[0].slime.scale = Fix::from_int(2);
         world.players[0].base.grounded = false;
