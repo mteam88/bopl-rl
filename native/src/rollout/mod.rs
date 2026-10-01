@@ -9,6 +9,7 @@
 use crate::{
     fixed::Fix,
     geometry::{Circle, OrientedBox, RayHit, RoundedRect},
+    orientation::Orientation,
     physics::{Body, Contact, positional_correction, resolve},
     random::Random,
     surface::Surface,
@@ -1843,8 +1844,7 @@ pub struct FormScale {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FormPose {
     pub position: Vec2,
-    pub up: Vec2,
-    pub rotation: Fix,
+    pub orientation: Orientation,
 }
 
 impl FormScale {
@@ -3530,8 +3530,8 @@ impl PlayerSlot {
     /// pose, and its Scale only when it differs (HitboxCombo.cs:87-98).
     fn update_drill_hitboxes(&mut self, data: &data::RolloutData) {
         self.drill.hitbox_position = self.base.position;
-        self.drill.hitbox_up = self.base.up;
-        self.drill.hitbox_rotation = self.base.rotation;
+        self.drill.hitbox_up = self.base.up();
+        self.drill.hitbox_rotation = self.base.rotation();
         let scale = hurtbox_scale(self.player_scale);
         for (form, &(_, extents)) in
             self.drill_hitbox_scales[self.active_slot].iter_mut().zip(&data.drill.hitboxes)
@@ -3569,7 +3569,7 @@ impl PlayerSlot {
     /// against the body's new rotation and faces along it.
     fn beam_on_ungrounded(&mut self) {
         if !self.beam.in_air {
-            let right = self.base.up.perp_cw();
+            let right = self.base.up().perp_cw();
             let staff = self.beam.staff_dir;
             self.beam.relative_staff_dir = staff.complex_mul(Vec2::new(right.x, -right.y));
             self.facing_right = staff.dot(right) > Fix::ZERO;
@@ -3653,16 +3653,14 @@ impl PlayerSlot {
     fn sync_form_pose(&mut self) {
         let base = &self.base;
         self.forms[self.active_slot].pose =
-            FormPose { position: base.position, up: base.up, rotation: base.rotation };
+            FormPose { position: base.position, orientation: base.orientation };
     }
 
     /// PlayerBody.rotation and up are the form FixTransform's own
     /// (PlayerBody.cs:54-76): once Ability.ExitAbility disables the form, its
     /// transform keeps the rotation the body last had.
     fn keep_form_rotation(&mut self) {
-        let (up, rotation) = (self.base.up, self.base.rotation);
-        let pose = &mut self.forms[self.active_slot].pose;
-        (pose.up, pose.rotation) = (up, rotation);
+        self.forms[self.active_slot].pose.orientation = self.base.orientation;
     }
 
     /// The FixTransform `frozen`'s form row publishes.
@@ -3679,7 +3677,7 @@ impl PlayerSlot {
         } else if let Some(platform) = self.base.platform(platforms) {
             platform.surface.normal(self.base.position)
         } else {
-            self.base.up
+            self.base.up()
         };
         self.gun.hurtbox_center = self.base.position
             + self.gun.collider_up.perp_cw().complex_mul(self.gun_offset(self.active_slot, offset));
@@ -5626,8 +5624,7 @@ impl RolloutWorld {
                     out_of_bounds: false,
                     id: i as u32 + 1,
                     position: spawn,
-                    rotation: Fix::ZERO,
-                    up: Vec2::UP,
+                    orientation: Orientation::ZERO,
                     velocity: Vec2::ZERO,
                     external_velocity: Vec2::ZERO,
                     radius: data.player.radius,
@@ -6903,7 +6900,7 @@ impl RolloutWorld {
                 position: slot.base.position,
                 velocity: slot.base.velocity,
                 external_velocity: slot.base.external_velocity,
-                rotation: slot.base.rotation,
+                rotation: slot.base.rotation(),
                 cooldowns: [timer; 3],
             });
         }
@@ -7792,17 +7789,17 @@ impl RolloutWorld {
                 // hidden form box on the up it last had.
                 if self.players[index].active == ActiveAbility::Meteor {
                     let slot = &mut self.players[index];
-                    slot.meteor.collider_up = slot.base.up;
-                    slot.meteor.collider_rotation = slot.base.rotation;
+                    slot.meteor.collider_up = slot.base.up();
+                    slot.meteor.collider_rotation = slot.base.rotation();
                 }
                 if self.players[index].active == ActiveAbility::Beam {
                     let slot = &mut self.players[index];
                     slot.beam.collider_position = slot.base.position;
-                    slot.beam.collider_up = slot.base.up;
-                    slot.beam.collider_rotation = slot.base.rotation;
+                    slot.beam.collider_up = slot.base.up();
+                    slot.beam.collider_rotation = slot.base.rotation();
                 }
                 if self.players[index].active == ActiveAbility::Push {
-                    self.players[index].push.collider_up = self.players[index].base.up;
+                    self.players[index].push.collider_up = self.players[index].base.up();
                 } else if matches!(
                     self.players[index].active,
                     ActiveAbility::Freeze
@@ -7811,7 +7808,7 @@ impl RolloutWorld {
                         | ActiveAbility::ShrinkRay
                         | ActiveAbility::Duplicator
                 ) {
-                    self.players[index].gun.collider_up = self.players[index].base.up;
+                    self.players[index].gun.collider_up = self.players[index].base.up();
                 }
                 self.players[index].base.sync_collider();
                 if self.players[index].active == ActiveAbility::Throw {
@@ -7819,7 +7816,7 @@ impl RolloutWorld {
                         let base = &self.players[index].base;
                         (
                             base.position,
-                            base.up.perp_cw(),
+                            base.up().perp_cw(),
                             base.collider_rotation,
                             base.collider_basis,
                         )
@@ -7937,8 +7934,8 @@ impl RolloutWorld {
         for slot in &mut self.players {
             if slot.active == ActiveAbility::TimeStop {
                 slot.cast_spell.collider_position = slot.base.position;
-                slot.cast_spell.collider_right = slot.base.up.perp_cw();
-                slot.cast_spell.collider_rotation = slot.base.rotation;
+                slot.cast_spell.collider_right = slot.base.up().perp_cw();
+                slot.cast_spell.collider_rotation = slot.base.rotation();
             }
         }
         self.refresh_actor_entities();
@@ -10111,7 +10108,7 @@ impl RolloutWorld {
         }
         base.ground
             .and_then(|id| self.platforms.iter().find(|p| p.id == id))
-            .map_or(base.up, |p| p.surface.normal(base.position))
+            .map_or(base.up(), |p| p.surface.normal(base.position))
             .normalized()
     }
 
@@ -10195,8 +10192,7 @@ impl RolloutWorld {
             if let Some(lost) = slot.ground_destroyed.take()
                 && slot.base.grounded
             {
-                slot.base.rotation = Fix::ZERO;
-                slot.base.up = Vec2::UP;
+                slot.base.set_rotation(Fix::ZERO);
                 slot.base.unground(lost.attached(tick), false);
                 slot.base.ground = None;
                 if matches!(
@@ -10310,8 +10306,7 @@ impl RolloutWorld {
             // in this pass while `isGrounded` was still true. BowTransform,
             // by contrast, owns this check and applies gravity after it.
             if slot.active == ActiveAbility::None {
-                slot.base.rotation = Fix::ZERO;
-                slot.base.up = Vec2::UP;
+                slot.base.set_rotation(Fix::ZERO);
                 slot.base.skip_next_gravity = true;
                 // UnGround raises OnNoLongerGrounded, which sets State.fall
                 // at once (SlimeController.cs:1061-1065, 956-958), so a Move
@@ -10510,7 +10505,7 @@ impl RolloutWorld {
                     slot.ability_origin_tick = self.tick;
                     slot.ability_origin_velocity = frozen.velocity + frozen.external_velocity;
                     slot.ability_origin_external = frozen.external_velocity;
-                    slot.ability_origin_rotation = frozen.rotation;
+                    slot.ability_origin_rotation = frozen.rotation();
                     slot.ability_origin_state = slot.obs_state;
                     slot.ability_origin_ground = frozen.ground.filter(|_| frozen.grounded);
                     // SlimeController still writes Player.Scale to its hurtbox
@@ -10642,7 +10637,7 @@ impl RolloutWorld {
                         let attached_ground = self.players[index].base.ground;
                         let started = {
                             let slot = &mut self.players[index];
-                            slot.rewind.begin(slot.base.position, slot.base.rotation, s)
+                            slot.rewind.begin(slot.base.position, slot.base.rotation(), s)
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
@@ -10772,7 +10767,7 @@ impl RolloutWorld {
                         slot.throw_item = ThrowItemState {
                             grounded,
                             direction: Vec2::UP,
-                            collider_rotation: slot.base.rotation,
+                            collider_rotation: slot.base.rotation(),
                             ..ThrowItemState::default()
                         };
                         if !grounded {
@@ -10817,10 +10812,10 @@ impl RolloutWorld {
                         // SparkShot.OnEnterAbility syncs the hurtbox after
                         // SyncPhysicsTo, then restores PlayerInfo's rotation
                         // (SparkShot.cs:6-8).
-                        let entry = (slot.base.rotation, slot.base.up);
+                        let entry = slot.base.rotation();
                         self.sync_physics_to_player_info(index, form_radius);
                         let slot = &mut self.players[index];
-                        let entry_rotation = slot.base.rotation;
+                        let entry_rotation = slot.base.rotation();
                         slot.missile = MissileFormState {
                             collider_rotation: entry_rotation,
                             ..MissileFormState::default()
@@ -10832,7 +10827,7 @@ impl RolloutWorld {
                         );
                         let collider = DetCollider::Box(collider);
                         Self::sync_form_row(&mut self.entities, slot.throw_entity, collider);
-                        (slot.base.rotation, slot.base.up) = entry;
+                        slot.base.set_rotation(entry);
                         // The form's Ability.UpdateSim runs on the entry
                         // pass ahead of its PlayerPhysics and PlayerBody,
                         // publishing the collider SparkShot just synced.
@@ -10888,7 +10883,7 @@ impl RolloutWorld {
                                 .expect("valid Missile gravity constants");
                                 slot.base.collision_rays(terrain!(self));
                                 if slot.base.grounded {
-                                    slot.missile.collider_rotation = slot.base.rotation;
+                                    slot.missile.collider_rotation = slot.base.rotation();
                                 }
                             }
                             if self.players[index].base.grounded {
@@ -10929,7 +10924,7 @@ impl RolloutWorld {
                                 let held = self.form_rope_release(index);
                                 let slot = &mut self.players[index];
                                 if slot.base.grounded {
-                                    slot.missile.collider_rotation = slot.base.rotation;
+                                    slot.missile.collider_rotation = slot.base.rotation();
                                 } else {
                                     slot.base.position +=
                                         (slot.base.velocity + slot.base.external_velocity) * DT;
@@ -10974,7 +10969,7 @@ impl RolloutWorld {
                         let slot = &mut self.players[index];
                         slot.base.sync_collider();
                         slot.base.collider.center =
-                            slot.base.position + slot.base.up.perp_cw().complex_mul(offset);
+                            slot.base.position + slot.base.up().perp_cw().complex_mul(offset);
                         slot.base.synced = slot.base.collider;
                         slot.reported_position = slot.base.position;
                         slot.base.velocity = Vec2::ZERO;
@@ -11051,8 +11046,7 @@ impl RolloutWorld {
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
                         slot.base.position = form_position;
-                        slot.base.rotation = Fix::ZERO;
-                        slot.base.up = Vec2::UP;
+                        slot.base.set_rotation(Fix::ZERO);
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
@@ -11173,8 +11167,7 @@ impl RolloutWorld {
                         let form_position = slot.base.position;
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
-                        slot.base.rotation = Fix::ZERO;
-                        slot.base.up = Vec2::UP;
+                        slot.base.set_rotation(Fix::ZERO);
                         slot.meteor = MeteorState {
                             phase: if grounded { 0 } else { 2 },
                             true_min_hold_time: if grounded {
@@ -11220,7 +11213,7 @@ impl RolloutWorld {
                         slot.active_slot = s;
                         slot.ability_entry_action = action;
                         slot.telemetry.ability_activations[s] += 1;
-                        let (rotation, up) = (slot.base.rotation, slot.base.up);
+                        let (rotation, up) = (slot.base.rotation(), slot.base.up());
                         let form = slot.forms[s];
                         let offset = if form.scale == Fix::ZERO { data.mine.collider_offset } else { form.offset };
                         let extents = data::surface_extents(data.mine.hurtbox_extents);
@@ -11228,8 +11221,7 @@ impl RolloutWorld {
                         // ThrowItem.OnEnterAbility then hands the body PlayerInfo's
                         // rotation (ThrowItem.cs:116-118).
                         let slot = &mut self.players[index];
-                        slot.base.rotation = rotation;
-                        slot.base.up = up;
+                        slot.base.set_rotation(rotation);
                         slot.throw_item = ThrowItemState {
                             grounded,
                             direction: Vec2::UP,
@@ -11385,7 +11377,7 @@ impl RolloutWorld {
                             // SlimeController signs an airborne forwardsVector
                             // by facing and then flips it again for a left-facing
                             // slime, so an airborne form starts aimed right.
-                            let forward = slot.base.up.perp_cw();
+                            let forward = slot.base.up().perp_cw();
                             if !grounded {
                                 Vec2::RIGHT
                             } else if slot.facing_right {
@@ -11421,7 +11413,7 @@ impl RolloutWorld {
                             // SlimeController signs an airborne forwardsVector
                             // by facing and then flips it again for a left-facing
                             // slime, so an airborne form starts aimed right.
-                            let forward = slot.base.up.perp_cw();
+                            let forward = slot.base.up().perp_cw();
                             if !grounded {
                                 Vec2::RIGHT
                             } else if slot.facing_right {
@@ -11458,7 +11450,7 @@ impl RolloutWorld {
                             // SlimeController signs an airborne forwardsVector
                             // by facing and then flips it again for a left-facing
                             // slime, so an airborne form starts aimed right.
-                            let forward = slot.base.up.perp_cw();
+                            let forward = slot.base.up().perp_cw();
                             if !grounded {
                                 Vec2::RIGHT
                             } else if slot.facing_right {
@@ -11498,7 +11490,7 @@ impl RolloutWorld {
                             // SlimeController signs an airborne forwardsVector
                             // by facing and then flips it again for a left-facing
                             // slime, so an airborne form starts aimed right.
-                            let forward = slot.base.up.perp_cw();
+                            let forward = slot.base.up().perp_cw();
                             if !grounded {
                                 Vec2::RIGHT
                             } else if slot.facing_right {
@@ -11543,7 +11535,7 @@ impl RolloutWorld {
                             // SlimeController signs an airborne forwardsVector
                             // by facing and then flips it again for a left-facing
                             // slime, so an airborne form starts aimed right.
-                            let forward = slot.base.up.perp_cw();
+                            let forward = slot.base.up().perp_cw();
                             if !grounded {
                                 Vec2::RIGHT
                             } else if slot.facing_right {
@@ -11591,7 +11583,7 @@ impl RolloutWorld {
                         // runs off world right, not off the aim. Only the
                         // tail of UpdateSim turns the body to the aim
                         // (MagnetGun.cs:1256).
-                        self.players[index].base.up = Vec2::UP;
+                        self.players[index].base.set_rotation(Fix::ZERO);
                         self.form_entry_turn(data, index);
                         self.magnet_tick(index, action, movement_input, data, false);
                         return;
@@ -11759,13 +11751,11 @@ impl RolloutWorld {
                         slot.base.constants = data.black_hole.constants.clone();
                         // BlackHoleClap.OnEnterAbility syncs the box, then gives
                         // the body PlayerInfo's rotation back (BlackHoleClap.cs).
-                        let entry = (slot.base.rotation, slot.base.up);
+                        let entry = slot.base.rotation();
                         self.form_enter(index, radius, offset, data.black_hole.hurtbox_extents);
                         let slot = &mut self.players[index];
-                        (slot.base.rotation, slot.base.up) = entry;
+                        slot.base.set_rotation(entry);
                         if !grounded {
-                            // The rotation setter rebuilds up.
-                            slot.base.up = Vec2::angle(slot.base.rotation).perp();
                             slot.base.velocity *= Fix::from_f32(0.05);
                             slot.base.external_velocity *= Fix::from_f32(0.05);
                         }
@@ -11817,7 +11807,7 @@ impl RolloutWorld {
                         // the re-placed position before the hurtbox sync.
                         self.sync_physics_to_player_info(index, form_radius);
                         let base = &self.players[index].base;
-                        let (form_position, form_up) = (base.position, base.up);
+                        let (form_position, form_up) = (base.position, base.up());
                         let ground = base.ground;
                         let mut facing_right = self.players[index].facing_right;
                         if let Some(platform) = ground
@@ -11885,7 +11875,7 @@ impl RolloutWorld {
                         let player_up = self.entry_up(index);
                         let (position, rotation, scale) = {
                             let slot = &self.players[index];
-                            (slot.base.position, slot.base.rotation, slot.player_scale)
+                            (slot.base.position, slot.base.rotation(), slot.player_scale)
                         };
                         let slot = &mut self.players[index];
                         slot.timers[s] = Fix::ZERO;
@@ -11902,9 +11892,8 @@ impl RolloutWorld {
                         slot.base.position = position
                             + (data.drill.on_enter_offset * scale).complex_mul(player_up.perp_cw());
                         slot.base.velocity = self_imposed;
-                        slot.base.rotation = rotation;
+                        slot.base.set_rotation(rotation);
                         let right = Vec2::angle(rotation);
-                        slot.base.up = right.perp();
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
@@ -11916,7 +11905,7 @@ impl RolloutWorld {
                             data.drill.collider_offset,
                         );
                         let collider = slot.forms[s].hurtbox(
-                            slot.base.position + slot.forms[s].offset.complex_mul(slot.base.up.perp_cw()),
+                            slot.base.position + slot.forms[s].offset.complex_mul(slot.base.up().perp_cw()),
                             right,
                             data::surface_extents(data.drill.hurtbox_extents) * scale,
                         );
@@ -11973,7 +11962,7 @@ impl RolloutWorld {
                         // (Beam.cs:9-16).
                         self.sync_physics_to_player_info(index, physics_radius);
                         let form_position = self.players[index].base.position;
-                        let right = self.players[index].base.up.perp_cw();
+                        let right = self.players[index].base.up().perp_cw();
                         let mut aim = action.direction();
                         if aim == Vec2::ZERO {
                             aim = if entry_facing_right { right } else { -right };
@@ -11991,7 +11980,7 @@ impl RolloutWorld {
                         };
                         {
                             let slot = &mut self.players[index];
-                            let entry_up = if grounded { slot.base.up } else { Vec2::UP };
+                            let entry_up = if grounded { slot.base.up() } else { Vec2::UP };
                             slot.timers[s] = Fix::ZERO;
                             slot.set_active_form(&mut self.entities, ActiveAbility::Beam);
                             slot.active_slot = s;
@@ -12023,11 +12012,11 @@ impl RolloutWorld {
                                 current_ground: if grounded { slot.base.ground } else { None },
                                 entry_facing_right,
                                 collider_position: form_position,
-                                collider_up: slot.base.up,
-                                collider_rotation: slot.base.rotation,
+                                collider_up: slot.base.up(),
+                                collider_rotation: slot.base.rotation(),
                                 ..BeamState::default()
                             };
-                            let entry_rotation = if grounded { slot.base.rotation } else { Fix::ZERO };
+                            let entry_rotation = if grounded { slot.base.rotation() } else { Fix::ZERO };
                             let collider = slot.forms[s].hurtbox(
                                 entry_center,
                                 Vec2::angle(entry_rotation),
@@ -12039,8 +12028,7 @@ impl RolloutWorld {
                                 slot.base.velocity = self_imposed;
                             } else {
                                 slot.base.velocity = Vec2::ZERO;
-                                slot.base.rotation = Fix::ZERO;
-                                slot.base.up = Vec2::UP;
+                                slot.base.set_rotation(Fix::ZERO);
                                 slot.base.grounded = false;
                                 slot.base.ground = None;
                                 slot.base.grounded_speed = Fix::ZERO;
@@ -12086,8 +12074,7 @@ impl RolloutWorld {
                         slot.base.velocity = Vec2::ZERO;
                         slot.base.external_velocity = Vec2::ZERO;
                         // PlatformTransform.OnEnterAbility (PlatformTransform.cs:122).
-                        slot.base.rotation = Fix::ZERO;
-                        slot.base.up = Vec2::UP;
+                        slot.base.set_rotation(Fix::ZERO);
                         slot.base.grounded = false;
                         slot.base.ground = None;
                         slot.base.grounded_speed = Fix::ZERO;
@@ -12434,7 +12421,7 @@ impl RolloutWorld {
             } else {
                 slot.roll.time_since_release += slot.base.fixed_delta_time;
                 if slot.roll.jump_button_has_been_up && jump_down {
-                    let right = slot.base.up.perp_cw();
+                    let right = slot.base.up().perp_cw();
                     let velocity = right * slot.roll.grounded_speed * Fix::from_f32(0.75);
                     UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
                     slot.base.velocity = velocity;
@@ -13338,8 +13325,8 @@ impl RolloutWorld {
     /// returns attached where the form's body landed, with no ground speed.
     fn exit_meteor_grounded(&mut self, index: usize) {
         let slot = &mut self.players[index];
-        slot.meteor.collider_up = slot.base.up;
-        slot.meteor.collider_rotation = slot.base.rotation;
+        slot.meteor.collider_up = slot.base.up();
+        slot.meteor.collider_rotation = slot.base.rotation();
         let mut info = ExitInfo { facing_right: true, just_landed: true, ..ExitInfo::default() };
         info.take_body(&slot.base);
         info.grounded = true;
@@ -13599,7 +13586,7 @@ impl RolloutWorld {
                 // GunTransform.ExitAbility (GunTransform.cs:84-98); the Bow
                 // leaves groundedLocalPosition as it came.
                 let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
                 let local = info.local;
                 info.take_body(&slot.base);
@@ -13635,7 +13622,7 @@ impl RolloutWorld {
             ActiveAbility::Platform => {
                 // PlatformTransform.ExitAbility (PlatformTransform.cs:456-473).
                 let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 info.facing_right = slot.platform.input.x >= Fix::ZERO;
                 info.position = slot.base.position;
                 info.velocity = slot.base.velocity;
@@ -13647,7 +13634,7 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 let s = slot.rock_slot();
                 slot.forms[s].write_circle_scale(slot.rock.exit_scale, min, max);
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 let velocity = slot.rock.body.velocity;
                 info.facing_right = velocity.x >= Fix::ZERO;
                 info.position = slot.base.position;
@@ -13657,7 +13644,7 @@ impl RolloutWorld {
                 // MagnetGun.ExitAbility (MagnetGun.cs:356-373).
                 self.drop_magnet_held_item(index);
                 let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
                 info.take_body(&slot.base);
                 info.facing_right = slot.magnet.aim.x >= Fix::ZERO;
@@ -13667,7 +13654,7 @@ impl RolloutWorld {
                 // collider stays where UnGround left the body.
                 let data = data::get();
                 let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 UngroundBody::Form(slot).unground(&self.platforms, tick, true);
                 slot.cast_spell.collider_position = slot.base.position;
                 slot.cast_spell.collider_right = Vec2::RIGHT;
@@ -13690,14 +13677,14 @@ impl RolloutWorld {
                 let surface = ground.and_then(|id| {
                     self.platforms.iter().find(|platform| platform.id == id).map(|p| &p.surface)
                 });
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 slot.base.unground(surface, true);
                 info.take_body(&slot.base);
             }
             ActiveAbility::Push => {
                 // ControlPlatform.ExitAbility (ControlPlatform.cs:104-118).
                 let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 info.take_body(&slot.base);
                 info.facing_right = slot.facing_right;
             }
@@ -13706,7 +13693,7 @@ impl RolloutWorld {
                 // |selfImposedVelocity|, zero on the ground, and only a
                 // grounded packet reads it.
                 let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 info.take_body(&slot.base);
                 info.grounded_speed = Fix::ZERO;
                 info.facing_right = slot.facing_right;
@@ -13719,7 +13706,7 @@ impl RolloutWorld {
                 // (PlayerPhysics.cs:392-396).
                 let tick = self.tick;
                 let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 let position = slot.base.position;
                 let forwards = (slot.base.attached_ground(&self.platforms).map(|p| &p.surface))
                     .or_else(|| slot.dead_ground(tick))
@@ -13750,8 +13737,8 @@ impl RolloutWorld {
                 self.deactivate_drill_hitboxes(index);
                 let slot = &mut self.players[index];
                 slot.drill.collider_position = slot.base.position;
-                slot.drill.collider_up = slot.base.up;
-                slot.drill.collider_rotation = slot.base.rotation;
+                slot.drill.collider_up = slot.base.up();
+                slot.drill.collider_rotation = slot.base.rotation();
                 info.velocity = slot.base.velocity;
                 info.external_velocity = slot.base.external_velocity;
                 info.facing_right = (info.velocity + info.external_velocity).x >= Fix::ZERO;
@@ -13761,7 +13748,7 @@ impl RolloutWorld {
                 let data = data::get();
                 let slot = &mut self.players[index];
                 slot.base.velocity += Vec2::UP * data.beam.exit_up_speed;
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 info.take_body(&slot.base);
                 info.facing_right = slot.beam.entry_facing_right;
             }
@@ -13772,7 +13759,7 @@ impl RolloutWorld {
                 // died, sits PlayerAbilityRadiusDiff inside the form's.
                 let tick = self.tick;
                 let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 info.take_body(&slot.base);
                 info.grounded_speed = (slot.base.velocity + slot.base.external_velocity).length();
                 info.facing_right = slot.facing_right;
@@ -13795,7 +13782,7 @@ impl RolloutWorld {
                 // held boulder and leaves the packet's externalVelocity.
                 self.drop_macho_held_boulder(index, data::get());
                 let slot = &mut self.players[index];
-                slot.base.rotation = Fix::ZERO;
+                slot.base.set_rotation(Fix::ZERO);
                 let external = info.external_velocity;
                 info.take_body(&slot.base);
                 info.external_velocity = external;
@@ -13806,8 +13793,8 @@ impl RolloutWorld {
                 // packet's velocities. The frozen form keeps the pose the
                 // landing or a moving ground left it with.
                 let slot = &mut self.players[index];
-                slot.throw_item.collider_rotation = slot.base.rotation;
-                slot.throw_item.collider_right = slot.base.up.perp_cw();
+                slot.throw_item.collider_rotation = slot.base.rotation();
+                slot.throw_item.collider_right = slot.base.up().perp_cw();
                 let (velocity, external) = (info.velocity, info.external_velocity);
                 info.take_body(&slot.base);
                 info.velocity = velocity;
@@ -13824,7 +13811,7 @@ impl RolloutWorld {
                 // payload still held; the frozen form keeps its rotation.
                 self.release_held_throw_item_on_exit(index, false, data::get());
                 let slot = &mut self.players[index];
-                slot.throw_item.collider_rotation = slot.base.rotation;
+                slot.throw_item.collider_rotation = slot.base.rotation();
                 info.take_body(&slot.base);
                 info.just_landed = info.grounded;
                 info.facing_right = slot.facing_right;
@@ -13866,8 +13853,7 @@ impl RolloutWorld {
     /// (BlackHoleClap.cs:135-148, SparkShot.cs:164-178).
     fn lost_ground_packet(&mut self, index: usize) -> ExitInfo {
         let base = &mut self.players[index].base;
-        base.rotation = Fix::ZERO;
-        base.up = Vec2::UP;
+        base.set_rotation(Fix::ZERO);
         ExitInfo {
             position: base.position,
             velocity: base.velocity,
@@ -13882,7 +13868,7 @@ impl RolloutWorld {
     /// facing right (SparkShot.cs:142-161).
     fn spark_shot_landing_exit(&mut self, index: usize) {
         let slot = &mut self.players[index];
-        slot.base.rotation = Fix::ZERO;
+        slot.base.set_rotation(Fix::ZERO);
         let mut info = ExitInfo { just_landed: true, facing_right: true, ..ExitInfo::default() };
         info.take_body(&slot.base);
         self.ability_exit(index, info);
@@ -13898,8 +13884,7 @@ impl RolloutWorld {
         }
         // `body.rotation = 0`: the FixTransform setter rebuilds up too.
         let slot = &mut self.players[index];
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
+        slot.base.set_rotation(Fix::ZERO);
         let aim = match slot.active {
             ActiveAbility::Bow => slot.bow.aim,
             ActiveAbility::Magnet => slot.magnet.aim,
@@ -13952,8 +13937,7 @@ impl RolloutWorld {
             slot.base.ground = None;
             slot.ground_destroyed = None;
             slot.base.grounded_speed = Fix::ZERO;
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
+            slot.base.set_rotation(Fix::ZERO);
         }
         if slot.base.grounded {
             // EnterStop or EnterIdle; attachToGround starts the land and turns
@@ -14119,7 +14103,7 @@ impl RolloutWorld {
                         position: slot.base.position,
                         velocity: slot.base.velocity,
                         external_velocity: slot.base.external_velocity,
-                        rotation: slot.base.rotation,
+                        rotation: slot.base.rotation(),
                         cooldowns: slot.timers,
                     });
                 }
@@ -14141,8 +14125,7 @@ impl RolloutWorld {
                 slot.base.position = position;
                 slot.base.velocity = destination.velocity;
                 slot.base.external_velocity = destination.external_velocity;
-                slot.base.rotation = destination.rotation;
-                slot.base.up = Vec2::angle(destination.rotation).perp();
+                slot.base.set_rotation(destination.rotation);
                 // ReleaseControl's UnGround keeps attachedGround, so the next
                 // UnGround (another Rewind's) lifts off it again.
                 let surface = slot.rewind.attached_ground.and_then(|id| {
@@ -14229,8 +14212,7 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity +=
                 ((desired - slot.base.external_velocity) / Fix::from_int(35)) * Fix::from_int(35);
-            slot.base.rotation = rotation;
-            slot.base.up = Vec2::angle(rotation).perp();
+            slot.base.set_rotation(rotation);
             if done {
                 slot.rewind.finish_next_tick = true;
             }
@@ -14324,8 +14306,8 @@ impl RolloutWorld {
         {
             let slot = &mut self.players[index];
             slot.cast_spell.collider_position = published_position;
-            slot.cast_spell.collider_right = slot.base.up.perp_cw();
-            slot.cast_spell.collider_rotation = slot.base.rotation;
+            slot.cast_spell.collider_right = slot.base.up().perp_cw();
+            slot.cast_spell.collider_rotation = slot.base.rotation();
         }
         // CastSpell.UpdateSim: on a live ground the form slides by its
         // external velocity along the surface, which spends it, so a grounded
@@ -14719,7 +14701,7 @@ impl RolloutWorld {
             return false;
         };
         let body_position = self.players[index].base.position;
-        let body_right = self.players[index].base.up.perp_cw();
+        let body_right = self.players[index].base.up().perp_cw();
         let facing_sign = if self.players[index].facing_right {
             -Fix::ONE
         } else {
@@ -15053,7 +15035,7 @@ impl RolloutWorld {
             return false;
         };
         let body_position = self.players[index].base.position;
-        let body_right = self.players[index].base.up.perp_cw();
+        let body_right = self.players[index].base.up().perp_cw();
         let facing_sign = if self.players[index].facing_right {
             -Fix::ONE
         } else {
@@ -16755,8 +16737,8 @@ impl RolloutWorld {
         // to, not at the one the pass began with. The port snapshotted it
         // before the motion and published a hurtbox a pass stale.
         slot.black_hole_cast.collider_position = slot.base.position;
-        slot.black_hole_cast.collider_up = slot.base.up;
-        slot.black_hole_cast.collider_rotation = slot.base.rotation;
+        slot.black_hole_cast.collider_up = slot.base.up();
+        slot.black_hole_cast.collider_rotation = slot.base.rotation();
     }
 
     fn black_hole_cast_tick(&mut self, index: usize, data: &data::RolloutData) {
@@ -16793,7 +16775,7 @@ impl RolloutWorld {
                 data.black_hole.spawn_offset.y,
             );
             let scale = (slot.player_scale / Fix::from_int(3)).clamp(Fix::ONE, Fix::from_int(2));
-            let position = slot.base.position + scale * slot.base.up.perp_cw().complex_mul(local);
+            let position = slot.base.position + scale * slot.base.up().perp_cw().complex_mul(local);
             slot.pending_black_hole = Some((position, self.next_spawn_hierarchy));
             self.next_spawn_hierarchy += data.black_hole.updatable_count;
         }
@@ -17988,7 +17970,7 @@ impl RolloutWorld {
         self.players[index].drill.time += DT;
         let (position, right, up) = {
             let body = &self.players[index].base;
-            (body.position, body.up.perp_cw(), body.up)
+            (body.position, body.up().perp_cw(), body.up())
         };
         let query = RoundedRect {
             inner: OrientedBox {
@@ -18022,7 +18004,7 @@ impl RolloutWorld {
                     Fix::ONE
                 }
                 * DT;
-            let from = -self.players[index].base.up;
+            let from = -self.players[index].base.up();
             let cross_before = from.cross(aim);
             let turn = Vec2::angle(if cross_before < Fix::ZERO {
                 -increment
@@ -18035,8 +18017,7 @@ impl RolloutWorld {
             }
             let new_up = -direction;
             let body = &mut self.players[index].base;
-            body.up = new_up;
-            body.rotation = new_up.perp_cw().normalized_angle();
+            body.set_up(new_up);
         }
         if stuck {
             self.players[index].base.velocity = Vec2::ZERO;
@@ -18051,7 +18032,7 @@ impl RolloutWorld {
                 if platform
                     .surface
                     .normal(self.players[index].base.position)
-                    .dot(self.players[index].base.up)
+                    .dot(self.players[index].base.up())
                     <= Fix::ZERO
                 {
                     self.exit_drill(index, false, data);
@@ -18081,7 +18062,7 @@ impl RolloutWorld {
             .is_some_and(|rope| rope < self.ropes.len() && self.ropes[rope].physics.enabled);
         if self.players[index].drill.underground {
             let speed = self.players[index].base.velocity.length();
-            let direction = -self.players[index].base.up;
+            let direction = -self.players[index].base.up();
             self.players[index].base.velocity =
                 direction * speed + direction * data.drill.drill_strength * DT;
         } else if !rope_enabled {
@@ -18124,8 +18105,8 @@ impl RolloutWorld {
             drill.ticks = 0;
         }
         self.players[index].drill.collider_position = self.players[index].base.position;
-        self.players[index].drill.collider_up = self.players[index].base.up;
-        self.players[index].drill.collider_rotation = self.players[index].base.rotation;
+        self.players[index].drill.collider_up = self.players[index].base.up();
+        self.players[index].drill.collider_rotation = self.players[index].base.rotation();
         self.players[index].update_drill_hitboxes(data);
     }
 
@@ -18136,7 +18117,7 @@ impl RolloutWorld {
         let mut position = slot.base.position;
         if use_offset {
             position -= (data.drill.on_enter_offset * slot.player_scale)
-                .complex_mul(slot.base.up.perp_cw());
+                .complex_mul(slot.base.up().perp_cw());
         }
         self.exit_form_with(index, ExitInfo { position, ..ExitInfo::default() });
     }
@@ -18354,7 +18335,7 @@ impl RolloutWorld {
                 self.players[index].beam.staff_dir = next;
                 self.players[index].beam.relative_staff_dir = next;
             } else {
-                let right = self.players[index].base.up.perp_cw();
+                let right = self.players[index].base.up().perp_cw();
                 if first_frame {
                     let facing_right = self.players[index].facing_right;
                     let (staff, relative, aimed_up) =
@@ -18376,7 +18357,7 @@ impl RolloutWorld {
             }
         }
         if !self.players[index].beam.in_air {
-            let right = self.players[index].base.up.perp_cw();
+            let right = self.players[index].base.up().perp_cw();
             self.players[index].beam.staff_dir =
                 right.complex_mul(self.players[index].beam.relative_staff_dir);
         } else {
@@ -18386,8 +18367,7 @@ impl RolloutWorld {
             } else {
                 -staff
             };
-            self.players[index].base.up = up;
-            self.players[index].base.rotation = up.perp_cw().normalized_angle();
+            self.players[index].base.set_up(up);
         }
     }
 
@@ -18499,7 +18479,7 @@ impl RolloutWorld {
                 // child-animation handoff pass; enterAir is a single clip.
                 let handoff_tick = u32::from(!self.players[index].beam.in_air);
                 if self.players[index].beam.phase_ticks > enter_ticks + handoff_tick {
-                    let right = self.players[index].base.up.perp_cw();
+                    let right = self.players[index].base.up().perp_cw();
                     // StartBeam moves the hurtbox to its air offset (Beam.cs:345).
                     let s = self.players[index].active_slot;
                     self.players[index].forms[s].offset = data.beam.air_offset;
@@ -18739,8 +18719,8 @@ impl RolloutWorld {
 
         self.players[index].base.previous_jump = action.buttons & 1 != 0;
         self.players[index].beam.collider_position = self.players[index].base.position;
-        self.players[index].beam.collider_up = self.players[index].base.up;
-        self.players[index].beam.collider_rotation = self.players[index].base.rotation;
+        self.players[index].beam.collider_up = self.players[index].base.up();
+        self.players[index].beam.collider_rotation = self.players[index].base.rotation();
     }
 
     /// Beam.OnLeftFirstFrame: SetFacingDirection, then UpdateSim(Fix.Zero)
@@ -18757,7 +18737,7 @@ impl RolloutWorld {
         // UpdateSim(0) holds the orb first like any other pass.
         self.hold_beam_orb(index);
         let aim = action.direction();
-        let right = self.players[index].base.up.perp_cw();
+        let right = self.players[index].base.up().perp_cw();
         let facing = if aim == Vec2::ZERO {
             if self.players[index].beam.entry_facing_right { right } else { -right }
         } else {
@@ -18841,7 +18821,7 @@ impl RolloutWorld {
     fn beam_orb_late_position(slot: &PlayerSlot) -> Option<Vec2> {
         let state = slot.beam;
         let body = slot.base.position;
-        let right = slot.base.up.perp_cw();
+        let right = slot.base.up().perp_cw();
         let scale = slot.forms[slot.active_slot].scale;
         let facing = if slot.facing_right { Fix::ONE } else { -Fix::ONE };
         let local = |x: Fix, y: Fix| body + Vec2::new(x * facing, y).complex_mul(right) * scale;
@@ -19582,7 +19562,7 @@ impl RolloutWorld {
             local.y += data.macho_throw.boulder_radius * (boulder_scale - Fix::ONE)
                 + data.macho_throw.ground_to_hands * (slot.base.scale - Fix::ONE);
         }
-        slot.base.position + local.complex_mul(slot.base.up.perp_cw())
+        slot.base.position + local.complex_mul(slot.base.up().perp_cw())
     }
 
     fn macho_update_held_boulder(
@@ -19617,7 +19597,7 @@ impl RolloutWorld {
         }
         let velocity = self.platform_dynamics[platform_index].body.velocity;
         let position = self.macho_held_position(index, data);
-        let rotation = self.players[index].base.rotation;
+        let rotation = self.players[index].base.rotation();
         if sync_pose {
             // The pre-physics UpdateSim write.
             self.players[index].macho_throw.late_pose = None;
@@ -20228,7 +20208,7 @@ impl RolloutWorld {
                 local.x = -local.x;
             }
             let position = self.players[index].base.position
-                + local.complex_mul(self.players[index].base.up.perp_cw());
+                + local.complex_mul(self.players[index].base.up().perp_cw());
             self.spawn_macho_boulder(index, position, false, data)
         } else {
             let Some(held) = self.players[index].macho_throw.held_boulder else {
@@ -20243,8 +20223,8 @@ impl RolloutWorld {
         if !quick && let Some((position, rotation)) = self.players[index].macho_throw.late_pose.take() {
             self.place_macho_boulder(platform_index, position, rotation);
         }
-        let body_right = self.players[index].base.up.perp_cw();
-        let body_up = self.players[index].base.up;
+        let body_right = self.players[index].base.up().perp_cw();
+        let body_up = self.players[index].base.up();
         let mut minimum = if quick {
             Vec2::RIGHT
         } else {
@@ -22359,8 +22339,7 @@ impl RolloutWorld {
         slot.pending_ability_hierarchy = [u32::MAX; 3];
         slot.base.position = position;
         slot.base.external_velocity = Vec2::ZERO;
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
+        slot.base.set_rotation(Fix::ZERO);
         slot.base.grounded = false;
         slot.base.ground = None;
         slot.base.grounded_speed = Fix::ZERO;
@@ -23941,14 +23920,14 @@ impl RolloutWorld {
     /// collider is manually initialized by `Fire`, so it joins DetPhysics in
     /// the cast pass even though its MonoUpdatables initialize next pass.
     fn spawn_guided_missile(&mut self, index: usize, data: &data::RolloutData) -> usize {
-        let rotation = self.players[index].base.rotation;
+        let rotation = self.players[index].base.rotation();
         let right = Vec2::angle(rotation);
         let up = right.perp();
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.missile.spark_updatable_count;
         let mut body = data.missile.spark_body;
         body.orientation = rotation;
-        body.velocity = self.players[index].base.up * data.missile.projectile_start_speed;
+        body.velocity = self.players[index].base.up() * data.missile.projectile_start_speed;
         // Fire runs from the animator's callback, before Ability.UpdateSim
         // assigns this pass's Player.Scale, so the form's transform still has
         // the scale its box was last given (SparkShot.cs:111-113).
@@ -24026,7 +24005,7 @@ impl RolloutWorld {
     fn missile_form_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
         // DPhysicsBox publishes the basis from the start of SparkShot's pass;
         // PlayerPhysics may align the live transform later in that pass.
-        self.players[index].missile.collider_rotation = self.players[index].base.rotation;
+        self.players[index].missile.collider_rotation = self.players[index].base.rotation();
         // The form's updatables run SpriteAnimator, Ability, PlayerCollision,
         // PlayerPhysics, DestroyIfOutsideSceneBounds, SparkShot, DPhysicsBox,
         // PlayerBody. The animator's callbacks advance the phases first.
@@ -24074,7 +24053,7 @@ impl RolloutWorld {
             .expect("valid Missile gravity constants");
             slot.base.collision_rays(terrain!(self));
             if slot.base.grounded {
-                slot.missile.collider_rotation = slot.base.rotation;
+                slot.missile.collider_rotation = slot.base.rotation();
             }
         }
         // On the pass the boundary fires, SparkShot never steers the live
@@ -24142,7 +24121,7 @@ impl RolloutWorld {
             // Move aligned the transform to the surface where the body stands;
             // DetPhysics publishes that rotation.
             if slot.base.grounded {
-                slot.missile.collider_rotation = slot.base.rotation;
+                slot.missile.collider_rotation = slot.base.rotation();
             }
             // SparkShot calls PlayerPhysics.Move(zero) above, then the later
             // PlayerBody component still integrates and damps external
@@ -24174,7 +24153,7 @@ impl RolloutWorld {
             // A landing in Move's own query attaches the form and aligns its
             // FixTransform, which DetPhysics publishes before LateUpdateSim.
             if slot.base.grounded {
-                slot.missile.collider_rotation = slot.base.rotation;
+                slot.missile.collider_rotation = slot.base.rotation();
             } else {
                 slot.base.position += (slot.base.velocity + slot.base.external_velocity) * DT;
             }
@@ -24239,7 +24218,7 @@ impl RolloutWorld {
             data.mine.collider_offset,
         );
         slot.base.radius = form.physics_radius();
-        self.players[index].throw_item.collider_rotation = self.players[index].base.rotation;
+        self.players[index].throw_item.collider_rotation = self.players[index].base.rotation();
         // Mine.prefab is boundary/ability 5/6 - DestroyIfOutsideSceneBounds 5,
         // ThrowItem 6, PlayerBody 8 - so the boundary runs *before* ThrowItem's
         // own update. This comment used to claim the reverse, which is the same
@@ -24262,7 +24241,7 @@ impl RolloutWorld {
                 .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
                 .map(|platform| &platform.surface)
                 .or(slot.dead_ground(self.tick))
-                .map_or(slot.base.up, |surface| surface.normal(slot.base.position))
+                .map_or(slot.base.up(), |surface| surface.normal(slot.base.position))
         } else {
             Vec2::UP
         };
@@ -24322,8 +24301,8 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             slot.base.position += slot.base.external_velocity * slot.base.fixed_delta_time;
             slot.base.external_velocity *= Fix::from_f64(0.95);
-            slot.throw_item.collider_rotation = slot.base.rotation;
-            slot.throw_item.collider_right = slot.base.up.perp_cw();
+            slot.throw_item.collider_rotation = slot.base.rotation();
+            slot.throw_item.collider_right = slot.base.up().perp_cw();
         } else {
             let this = &mut *self;
             let slot = &mut this.players[index];
@@ -24351,18 +24330,18 @@ impl RolloutWorld {
                     // A landing before the throw fires it from the ground
                     // (Direction.DOWN, the gExit animation) and keeps the
                     // form; PlayerBody then moves it (ThrowItem.cs:404-411).
-                    slot.throw_item.direction = -slot.base.up;
+                    slot.throw_item.direction = -slot.base.up();
                     self.fire_mine(index, data);
                     let slot = &mut self.players[index];
                     slot.base.position += slot.base.external_velocity * slot.base.fixed_delta_time;
                     slot.base.external_velocity *= Fix::from_f64(0.95);
-                    slot.throw_item.collider_rotation = slot.base.rotation;
-                    slot.throw_item.collider_right = slot.base.up.perp_cw();
+                    slot.throw_item.collider_rotation = slot.base.rotation();
+                    slot.throw_item.collider_right = slot.base.up().perp_cw();
                     return;
                 }
                 self.exit_mine(index);
             } else {
-                slot.throw_item.collider_right = slot.base.up.perp_cw();
+                slot.throw_item.collider_right = slot.base.up().perp_cw();
                 self.form_body_step(index);
             }
         }
@@ -24380,7 +24359,7 @@ impl RolloutWorld {
                 .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
                 .map(|platform| &platform.surface)
                 .or(slot.dead_ground(self.tick))
-                .map_or(slot.base.up, |surface| surface.normal(slot.base.position))
+                .map_or(slot.base.up(), |surface| surface.normal(slot.base.position))
         } else {
             Vec2::UP
         };
@@ -24542,7 +24521,7 @@ impl RolloutWorld {
     }
 
     fn throw_item_tick(&mut self, index: usize, action: Action, data: &data::RolloutData) {
-        self.players[index].throw_item.collider_rotation = self.players[index].base.rotation;
+        self.players[index].throw_item.collider_rotation = self.players[index].base.rotation();
         let ability = active_throw_ability(self.players[index].active);
         let gd = throw_config(data, ability);
         let aim = action.direction();
@@ -24629,7 +24608,7 @@ impl RolloutWorld {
                     .and_then(|ground| self.platforms.iter().find(|platform| platform.id == ground))
                     .map(|platform| &platform.surface)
                     .or(slot.dead_ground(self.tick))
-                    .map_or(slot.base.up, |surface| surface.normal(slot.base.position));
+                    .map_or(slot.base.up(), |surface| surface.normal(slot.base.position));
                 slot.facing_right = normal.cross(aim.normalized_safe()) < Fix::ZERO;
             } else {
                 slot.facing_right = aim.x > Fix::ZERO;
@@ -24689,7 +24668,7 @@ impl RolloutWorld {
                 }
             }
             let slot = &mut self.players[index];
-            slot.throw_item.collider_rotation = slot.base.rotation;
+            slot.throw_item.collider_rotation = slot.base.rotation();
             self.form_body_step(index);
         } else {
             // ThrowItem2 keeps its own PlayerBody live throughout the aerial
@@ -24757,7 +24736,7 @@ impl RolloutWorld {
         // the child's local x coordinate.
         dummy *= slot.player_scale;
         dummy.x *= local_sign;
-        slot.base.position + dummy.complex_mul(Vec2::angle(slot.base.rotation))
+        slot.base.position + dummy.complex_mul(Vec2::angle(slot.base.rotation()))
     }
 
     /// ThrowItem2.grenade while it is alive. A destroyed payload reads null
@@ -24792,7 +24771,7 @@ impl RolloutWorld {
             callback_registered_tick: u32::MAX,
             position,
             body: Body {
-                orientation: self.players[index].base.rotation,
+                orientation: self.players[index].base.rotation(),
                 ..config.item_body
             },
             scale: self.players[index].player_scale,
@@ -24873,7 +24852,7 @@ impl RolloutWorld {
             gd.air_position
         } * slot.player_scale
             * local_sign;
-        let basis = Vec2::angle(slot.base.rotation);
+        let basis = Vec2::angle(slot.base.rotation());
         let position = slot.base.position + local.complex_mul(basis);
         let charge = (state.fire_input_time * gd.force_gain_speed)
             .max(Fix::ZERO)
@@ -25099,8 +25078,7 @@ impl RolloutWorld {
 
         let slot = &mut self.players[index];
         if !slot.gun.has_fired {
-            slot.base.up = slot.gun.aim.perp();
-            slot.base.rotation = slot.gun.aim.normalized_angle();
+            slot.base.set_up(slot.gun.aim.perp());
             if slot.base.velocity.length() > gun.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * gun.max_slow_mo_speed;
             }
@@ -25149,8 +25127,7 @@ impl RolloutWorld {
             // it again for the shot and knockback. Fired after DropPlatformTest's
             // exit (GunTransform.cs:147-151), both land on the disabled form.
             if slot.active != ActiveAbility::None {
-                slot.base.up = slot.gun.aim.perp();
-                slot.base.rotation = slot.gun.aim.normalized_angle();
+                slot.base.set_up(slot.gun.aim.perp());
             }
         }
         let firepoint = {
@@ -25165,7 +25142,7 @@ impl RolloutWorld {
 
         let slot = &mut self.players[index];
         if grounded {
-            slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.freeze.knockback);
+            slot.base.velocity = -(normal.unwrap_or(slot.base.up()) * data.freeze.knockback);
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         } else {
             slot.base.velocity = -(aim * data.freeze.knockback);
@@ -25273,8 +25250,7 @@ impl RolloutWorld {
 
         let slot = &mut self.players[index];
         if !slot.gun.has_fired {
-            slot.base.up = slot.gun.aim.perp();
-            slot.base.rotation = slot.gun.aim.normalized_angle();
+            slot.base.set_up(slot.gun.aim.perp());
             if slot.base.velocity.length() > gun.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * gun.max_slow_mo_speed;
             }
@@ -25323,8 +25299,7 @@ impl RolloutWorld {
             // it again for the shot and knockback. Fired after DropPlatformTest's
             // exit (GunTransform.cs:147-151), both land on the disabled form.
             if slot.active != ActiveAbility::None {
-                slot.base.up = slot.gun.aim.perp();
-                slot.base.rotation = slot.gun.aim.normalized_angle();
+                slot.base.set_up(slot.gun.aim.perp());
             }
         }
         let firepoint = {
@@ -25339,7 +25314,7 @@ impl RolloutWorld {
 
         let slot = &mut self.players[index];
         if grounded {
-            slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.blink.knockback);
+            slot.base.velocity = -(normal.unwrap_or(slot.base.up()) * data.blink.knockback);
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         } else {
             slot.base.velocity = -(aim * data.blink.knockback);
@@ -25439,8 +25414,7 @@ impl RolloutWorld {
 
         let slot = &mut self.players[index];
         if !slot.gun.has_fired {
-            slot.base.up = slot.gun.aim.perp();
-            slot.base.rotation = slot.gun.aim.normalized_angle();
+            slot.base.set_up(slot.gun.aim.perp());
             if slot.base.velocity.length() > ray.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * ray.max_slow_mo_speed;
             }
@@ -25494,8 +25468,7 @@ impl RolloutWorld {
             // it again for the shot and knockback. Fired after DropPlatformTest's
             // exit (GunTransform.cs:147-151), both land on the disabled form.
             if slot.active != ActiveAbility::None {
-                slot.base.up = slot.gun.aim.perp();
-                slot.base.rotation = slot.gun.aim.normalized_angle();
+                slot.base.set_up(slot.gun.aim.perp());
             }
         }
         let firepoint = {
@@ -25510,7 +25483,7 @@ impl RolloutWorld {
 
         let slot = &mut self.players[index];
         if grounded {
-            slot.base.velocity = -(normal.unwrap_or(slot.base.up) * ray.knockback);
+            slot.base.velocity = -(normal.unwrap_or(slot.base.up()) * ray.knockback);
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         } else {
             slot.base.velocity = -(aim * ray.knockback);
@@ -25605,8 +25578,7 @@ impl RolloutWorld {
 
         let slot = &mut self.players[index];
         if !slot.gun.has_fired {
-            slot.base.up = slot.gun.aim.perp();
-            slot.base.rotation = slot.gun.aim.normalized_angle();
+            slot.base.set_up(slot.gun.aim.perp());
             if slot.base.velocity.length() > gun.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * gun.max_slow_mo_speed;
             }
@@ -25824,8 +25796,7 @@ impl RolloutWorld {
                 let slot = &mut self.players[index];
                 if !slot.magnet.has_fired {
                     let (s, aim) = (slot.entity_slot(slot.magnet_entity), slot.magnet.aim);
-                    slot.forms[s].pose.up = aim.perp();
-                    slot.forms[s].pose.rotation = aim.normalized_angle();
+                    slot.forms[s].pose.orientation.set_up(aim.perp());
                 }
                 return;
             }
@@ -25833,8 +25804,7 @@ impl RolloutWorld {
 
         let slot = &mut self.players[index];
         if !slot.magnet.has_fired {
-            slot.base.up = slot.magnet.aim.perp();
-            slot.base.rotation = slot.magnet.aim.normalized_angle();
+            slot.base.set_up(slot.magnet.aim.perp());
             if slot.base.velocity.length() > magnet.max_slow_mo_speed {
                 slot.base.velocity = slot.base.velocity.normalized() * magnet.max_slow_mo_speed;
             }
@@ -26180,7 +26150,7 @@ impl RolloutWorld {
     fn magnet_firepoint(&self, index: usize, _data: &data::RolloutData) -> Vec2 {
         let slot = &self.players[index];
         // FixTransform keeps right as MulByNegI(up) (FixTransform.cs:50-60).
-        let up = slot.base.up;
+        let up = slot.base.up();
         let right = up.perp_cw();
         // OnScaleChanged scales the serialized firepoint while extraOffset is
         // assigned in world units from the selected object.
@@ -26225,7 +26195,7 @@ impl RolloutWorld {
         let offset_x =
             slot.gun_firepoint_offsets[slot.active_slot].x
                 + slot.magnet_extra_offsets[slot.active_slot].x;
-        let root = firepoint - slot.base.up.perp_cw() * offset_x;
+        let root = firepoint - slot.base.up().perp_cw() * offset_x;
         // body.fixtrans.Scale, as Ability (hierarchy 3) left it last pass.
         let side = data.magnet.raycast_offset * slot.forms[slot.active_slot].scale;
         let distance = offset_x + Fix::from_int(1000);
@@ -27204,8 +27174,7 @@ impl RolloutWorld {
                 if let Some(slot) = self.players.get_mut(i) {
                     slot.base.velocity = speed;
                     if right != Vec2::ZERO {
-                        slot.base.up = right.perp();
-                        slot.base.rotation = right.normalized_angle();
+                        slot.base.set_right(right);
                     }
                     // ApplyRagDoll leaves the skipNextUpdate this pass's hold
                     // already set (MagnetGun.cs:1127-1128).
@@ -27318,10 +27287,9 @@ impl RolloutWorld {
         slot.magnet.phase = 5;
         slot.magnet.animation = 3;
         slot.magnet.animation_ticks = 0;
-        slot.base.up = facing.perp();
-        slot.base.rotation = facing.normalized_angle();
+        slot.base.set_right(facing);
         if grounded {
-            slot.base.velocity = -(normal.unwrap_or(slot.base.up) * data.magnet.knockback);
+            slot.base.velocity = -(normal.unwrap_or(slot.base.up()) * data.magnet.knockback);
             // UnGround(nullRotation) resets the FixTransform (MagnetGun.cs:408).
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         } else {
@@ -27351,8 +27319,7 @@ impl RolloutWorld {
             // it again for the shot and knockback. Fired after DropPlatformTest's
             // exit (GunTransform.cs:147-151), both land on the disabled form.
             if slot.active != ActiveAbility::None {
-                slot.base.up = slot.gun.aim.perp();
-                slot.base.rotation = slot.gun.aim.normalized_angle();
+                slot.base.set_up(slot.gun.aim.perp());
             }
         }
         let firepoint = {
@@ -27367,7 +27334,7 @@ impl RolloutWorld {
 
         let slot = &mut self.players[index];
         if grounded {
-            slot.base.velocity = -(normal.unwrap_or(slot.base.up) * gun.knockback);
+            slot.base.velocity = -(normal.unwrap_or(slot.base.up()) * gun.knockback);
             UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
         } else {
             slot.base.velocity = -(aim * gun.knockback);
@@ -28002,8 +27969,7 @@ impl RolloutWorld {
             out_of_bounds: false,
             id: source.id,
             position,
-            rotation: Fix::ZERO,
-            up: Vec2::UP,
+            orientation: Orientation::ZERO,
             velocity: launch_direction * Fix::from_f64(1.3) * data.player.constants.jump_strength,
             external_velocity: Vec2::ZERO,
             radius: data.player.radius,
@@ -29792,8 +29758,7 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             slot.base.align_to(up);
         } else if !slot.base.grounded {
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
+            slot.base.set_rotation(Fix::ZERO);
             slot.base.ground = None;
             slot.base.grounded_speed = Fix::ZERO;
         }
@@ -29805,7 +29770,7 @@ impl RolloutWorld {
     fn form_enter(&mut self, index: usize, radius: Fix, offset: Vec2, extents: Vec2) {
         self.sync_physics_to_player_info(index, radius);
         let slot = &self.players[index];
-        self.sync_form_entry(index, slot.base.position, slot.base.up, offset, extents);
+        self.sync_form_entry(index, slot.base.position, slot.base.up(), offset, extents);
     }
 
     /// GunTransform.OnEnterAbility (GunTransform.cs:62-82): Ability.EnterAbility
@@ -29827,7 +29792,7 @@ impl RolloutWorld {
     /// (BowTransform.cs:90-102, GunTransform.cs:69-80, MagnetGun.cs:296-325).
     fn aim_form_entry_tail(&mut self, index: usize) {
         let slot = &mut self.players[index];
-        slot.base.rotation = Fix::ZERO;
+        slot.base.set_rotation(Fix::ZERO);
         if slot.base.grounded {
             slot.base.external_velocity = Vec2::ZERO;
         } else {
@@ -29844,7 +29809,7 @@ impl RolloutWorld {
     fn form_enter_circle(&mut self, index: usize, physics: Fix, radius: Fix, offset: Vec2) {
         self.sync_physics_to_player_info(index, physics);
         let slot = &self.players[index];
-        let center = slot.base.position + slot.base.up.perp_cw().complex_mul(offset);
+        let center = slot.base.position + slot.base.up().perp_cw().complex_mul(offset);
         let entity = Self::hurtbox_entity(slot);
         let circle = DetCollider::Circle(Circle { center, radius });
         Self::sync_form_row(&mut self.entities, entity, circle);
@@ -30181,7 +30146,8 @@ impl RolloutWorld {
         let slot = &mut self.players[victim];
         // QuantumTunnel.Init reassigns the victim's rotation, which rebuilds
         // its basis from the angle and drops the exact aimed vector.
-        slot.base.up = Vec2::angle(slot.base.rotation).perp();
+        let rotation = slot.base.rotation();
+        slot.base.set_rotation(rotation);
         // SetActive(false) freezes the form's box at the transform its
         // PlayerBody already moved this pass (QuantumTunnel.cs:132-136).
         // Every later Simulate still syncs the hidden box from that transform,
@@ -30189,8 +30155,8 @@ impl RolloutWorld {
         // moves (DetPhysics.cs:2499-2531).
         if slot.active == ActiveAbility::BlackHole {
             slot.black_hole_cast.collider_position = slot.base.position;
-            slot.black_hole_cast.collider_up = slot.base.up;
-            slot.black_hole_cast.collider_rotation = slot.base.rotation;
+            slot.black_hole_cast.collider_up = slot.base.up();
+            slot.black_hole_cast.collider_rotation = slot.base.rotation();
         }
         if slot.active != ActiveAbility::None {
             slot.sync_form_pose();
@@ -30232,7 +30198,7 @@ impl RolloutWorld {
             row.right_y = (body.collider.right * body.scale).y.raw();
             row.up_x = (body.collider.up * body.scale).x.raw();
             row.up_y = (body.collider.up * body.scale).y.raw();
-            row.rotation = body.rotation.raw();
+            row.rotation = body.rotation().raw();
         }
     }
 
@@ -30568,11 +30534,11 @@ impl RolloutWorld {
                 // which for a Bow is the rotation its box reads.
                 let slot = &mut self.players[victim];
                 if slot.active == ActiveAbility::Bow {
-                    slot.bow.form_rotation = slot.base.rotation;
+                    slot.bow.form_rotation = slot.base.rotation();
                 }
                 if slot.active == ActiveAbility::BlackHole {
-                    slot.black_hole_cast.collider_up = slot.base.up;
-                    slot.black_hole_cast.collider_rotation = slot.base.rotation;
+                    slot.black_hole_cast.collider_up = slot.base.up();
+                    slot.black_hole_cast.collider_rotation = slot.base.rotation();
                 }
             } else {
                 self.release_airborne_blink_player(victim);
@@ -30923,7 +30889,7 @@ impl RolloutWorld {
                 | ActiveAbility::Duplicator
         ) {
             slot.gun.forced_exit_tick = self.tick;
-            slot.gun.forced_exit_basis = (slot.base.up.perp_cw(), slot.base.rotation);
+            slot.gun.forced_exit_basis = (slot.base.up().perp_cw(), slot.base.rotation());
             slot.gun.forced_exit_entity = Self::hurtbox_entity(slot);
         }
         if matches!(
@@ -30936,16 +30902,16 @@ impl RolloutWorld {
         ) {
             // The throw form's box syncs once more from its FixTransform,
             // which LateUpdateSim last turned onto the surface.
-            slot.throw_item.collider_rotation = slot.base.rotation;
+            slot.throw_item.collider_rotation = slot.base.rotation();
         }
         if slot.active == ActiveAbility::Throw {
             let throw = &mut slot.macho_throw;
             throw.forced_exit_tick = Some(self.tick);
             throw.collider_position = slot.base.position;
-            throw.collider_right = slot.base.up.perp_cw();
-            if throw.collider_rotation != slot.base.rotation {
-                throw.collider_rotation = slot.base.rotation;
-                throw.collider_basis = Vec2::angle(slot.base.rotation);
+            throw.collider_right = slot.base.up().perp_cw();
+            if throw.collider_rotation != slot.base.rotation() {
+                throw.collider_rotation = slot.base.rotation();
+                throw.collider_basis = Vec2::angle(slot.base.rotation());
             }
         }
         slot.base.dash.active = false;
@@ -31037,8 +31003,7 @@ impl RolloutWorld {
             slot.base.velocity = Vec2::ZERO;
             // SlimeController.EnterFall always straightens the ordinary
             // FixTransform when a timed ragdoll expires in mid-air.
-            slot.base.rotation = Fix::ZERO;
-            slot.base.up = Vec2::UP;
+            slot.base.set_rotation(Fix::ZERO);
             if slot.base.grounded {
                 // This EnterFall re-aims even on the ground.
                 slot.align_transform_air();
@@ -31110,8 +31075,7 @@ impl RolloutWorld {
                     duration: Fix::from_f32(0.35),
                 };
                 slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
-                slot.base.rotation = Vec2::UP.normalized_angle();
-                slot.base.up = Vec2::UP.perp();
+                slot.base.set_right(Vec2::UP);
                 slot.timers.fill(Fix::ZERO);
                 continue;
             }
@@ -31149,8 +31113,7 @@ impl RolloutWorld {
                 slot.ragdoll.hold_on_ground = slot.base.grounded;
                 slot.base.velocity = Vec2::new(Fix::ZERO, Fix::from_int(4));
                 // FixTransform.right = normalized release speed.
-                slot.base.rotation = Vec2::UP.normalized_angle();
-                slot.base.up = Vec2::UP.perp();
+                slot.base.set_right(Vec2::UP);
                 slot.timers.fill(Fix::ZERO);
             }
         }
@@ -32366,7 +32329,7 @@ impl RolloutWorld {
                 None => slot
                     .base
                     .platform(platforms)
-                    .map_or(slot.base.up, |platform| platform.surface.normal(slot.base.position)),
+                    .map_or(slot.base.up(), |platform| platform.surface.normal(slot.base.position)),
             };
             slot.base.velocity = -(normal * bow.knockback);
             UngroundBody::Form(slot).unground(platforms, tick, false);
@@ -32460,7 +32423,7 @@ impl RolloutWorld {
                     self.platforms[platform_index].surface.right = up.perp_cw();
                     self.platforms[platform_index].surface.up = up;
                     self.platforms_changed();
-                    self.players[index].base.rotation = rotation;
+                    self.players[index].base.set_up(up);
                     // FixTransform.up stores the exact Slerp axes
                     // (FixTransform.cs:49-59); State.Size sizes along them.
                     self.players[index].platform.sizing_right = up.perp_cw();
@@ -32594,7 +32557,7 @@ impl RolloutWorld {
         // rotated into that frame with `new Vec2(-body.rotation)`
         // (PlatformTransform.cs:294): trig of the scalar, not the conjugate.
         let basis = self.players[index].platform.sizing_right;
-        let conj = Vec2::angle(-self.players[index].base.rotation);
+        let conj = Vec2::angle(-self.players[index].base.rotation());
         // The cursor is measured from the ability's own fixTrans.position
         // (PlatformTransform.cs:294-300): the platform centre as it was
         // before the previous DetPhysics pass moved it, not the live one.
@@ -33818,7 +33781,7 @@ impl RolloutWorld {
             let slot = &mut self.players[victim];
             slot.late_obs_tick = self.tick;
             slot.late_obs_position = slot.base.position;
-            slot.late_obs_rotation = slot.base.rotation;
+            slot.late_obs_rotation = slot.base.rotation();
             slot.late_obs_state = slot.obs_state;
             slot.captured_by_ball = Some(item_index);
             slot.poke_invulnerable = true;
@@ -34885,8 +34848,7 @@ impl RolloutWorld {
         slot.base.position = position;
         slot.base.velocity = velocity;
         if eject_direction != Vec2::ZERO {
-            slot.base.rotation = eject_direction.normalized_angle();
-            slot.base.up = eject_direction.perp();
+            slot.base.set_right(eject_direction);
         }
         // ReleaseVictim never ungrounds: a victim that landed during the
         // capture stays attached, and its LateUpdateSim puts it back on the
@@ -34935,8 +34897,7 @@ impl RolloutWorld {
         )
         .normalized_safe();
         if eject_direction != Vec2::ZERO {
-            clone.base.rotation = eject_direction.normalized_angle();
-            clone.base.up = eject_direction.perp();
+            clone.base.set_right(eject_direction);
         }
         clone.base.grounded = false;
         clone.base.ground = None;
@@ -37260,8 +37221,8 @@ impl RolloutWorld {
                 slot.reported_tick = self.tick;
                 slot.base.external_velocity *= Fix::from_f64(0.95);
                 slot.drill.collider_position = slot.base.position;
-                slot.drill.collider_up = slot.base.up;
-                slot.drill.collider_rotation = slot.base.rotation;
+                slot.drill.collider_up = slot.base.up();
+                slot.drill.collider_rotation = slot.base.rotation();
                 slot.update_drill_hitboxes(data);
                 return;
             }
@@ -38051,8 +38012,7 @@ impl RolloutWorld {
             // clone's SlimeController zeros its rotation and UnGrounds like
             // a slime's, lifting off a ground destroyed earlier this pass
             // (SlimeController.cs:1061-1065).
-            clone.base.rotation = Fix::ZERO;
-            clone.base.up = Vec2::UP;
+            clone.base.set_rotation(Fix::ZERO);
             clone.base.skip_next_gravity = true;
             clone.base.unground(lost.attached(self.tick), false);
             clone.base.ground = None;
@@ -38274,7 +38234,7 @@ impl RolloutWorld {
                 right_y: collider.right.y.raw(),
                 up_x: collider.up.x.raw(),
                 up_y: collider.up.y.raw(),
-                rotation: clone.base.rotation.raw(),
+                rotation: clone.base.rotation().raw(),
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
             };
@@ -38631,7 +38591,7 @@ impl RolloutWorld {
                 // body.up rewrites the form's own rotation (FixTransform.up).
                 let other = rope.physics.segment[rope.physics.count - 1 - endpoint];
                 let up = -(position - other).normalized_safe();
-                self.players[index].base.up = up;
+                self.players[index].base.set_up(up);
                 self.players[index].rock.body.orientation = up.perp_cw().normalized_angle();
             }
             if rope.physics.time_since_hook_arrived > Fix::ZERO
@@ -38663,8 +38623,7 @@ impl RolloutWorld {
             }
             let shift = slot.rock.body.integrate(physics_dt, Fix::from_int(-40));
             slot.base.position += shift;
-            slot.base.rotation = slot.rock.body.orientation;
-            slot.base.up = Vec2::angle(slot.base.rotation).perp();
+            slot.base.set_rotation(slot.rock.body.orientation);
             slot.base.velocity = slot.rock.body.velocity;
         }
     }
@@ -40196,8 +40155,7 @@ impl RolloutWorld {
         slot.base.position = data.maps[self.map].respawn_points[1];
         slot.base.velocity = Vec2::ZERO;
         slot.base.external_velocity = Vec2::ZERO;
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
+        slot.base.set_rotation(Fix::ZERO);
         slot.base.grounded = false;
         slot.base.ground = None;
         slot.base.grounded_speed = Fix::ZERO;
@@ -41480,7 +41438,7 @@ impl RolloutWorld {
                     .filter(|frozen| frozen.entity == entity && frozen.posed)
                     .map(|frozen| {
                         let pose = slot.frozen_pose(frozen);
-                        (pose.position, pose.rotation, pose.up)
+                        (pose.position, pose.orientation.rotation(), pose.orientation.up())
                     })
             };
             // A gun form a freeze ray forced out this pass. The bypass's
@@ -42140,9 +42098,9 @@ impl RolloutWorld {
                     // drop's UpdateSim may aim again (MagnetGun.cs:358, 1256).
                     let form = &slot.forms[slot.entity_slot(magnet_e)];
                     let (root, rotation, offset_basis) = if magnetizing {
-                        (synced, slot.base.rotation, slot.base.up.perp_cw())
+                        (synced, slot.base.rotation(), slot.base.up().perp_cw())
                     } else {
-                        (exit_position, form.pose.rotation, form.pose.up.perp_cw())
+                        (exit_position, form.pose.orientation.rotation(), form.pose.orientation.up().perp_cw())
                     };
                     let basis = Vec2::angle(rotation);
                     let center = root + offset_basis.complex_mul(form.offset);
@@ -42192,7 +42150,7 @@ impl RolloutWorld {
                     // in ExitAbility, PlatformTransform.cs:462, at the ejected
                     // position the exit pass published).
                     let (center, rotation) = if transforming {
-                        (slot.base.position, slot.base.rotation)
+                        (slot.base.position, slot.base.rotation())
                     } else {
                         (exit_position, Fix::ZERO)
                     };
@@ -42222,7 +42180,7 @@ impl RolloutWorld {
                 }
                 if gusting || was_active {
                     let (position, rotation) = if gusting {
-                        (slot.base.position, slot.base.rotation)
+                        (slot.base.position, slot.base.rotation())
                     } else {
                         (exit_position, Fix::ZERO)
                     };
@@ -42252,7 +42210,7 @@ impl RolloutWorld {
                 }
                 if reviving || was_active {
                     let (position, rotation) = if reviving {
-                        (slot.base.position, slot.base.rotation)
+                        (slot.base.position, slot.base.rotation())
                     } else {
                         (exit_position, Fix::ZERO)
                     };
@@ -42285,7 +42243,7 @@ impl RolloutWorld {
                         || frozen_pose(spike_e).is_some()
                     {
                         let pose = slot.forms[slot.entity_slot(spike_e)].pose;
-                        (pose.position, pose.rotation, pose.up.perp_cw(), Vec2::angle(pose.rotation))
+                        (pose.position, pose.orientation.rotation(), pose.orientation.up().perp_cw(), Vec2::angle(pose.orientation.rotation()))
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
@@ -42327,7 +42285,7 @@ impl RolloutWorld {
                         || frozen_pose(engine_e).is_some()
                     {
                         let pose = slot.forms[slot.entity_slot(engine_e)].pose;
-                        (pose.position, pose.rotation, pose.up.perp_cw(), Vec2::angle(pose.rotation))
+                        (pose.position, pose.orientation.rotation(), pose.orientation.up().perp_cw(), Vec2::angle(pose.orientation.rotation()))
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
@@ -42369,7 +42327,7 @@ impl RolloutWorld {
                         || frozen_pose(tesla_e).is_some()
                     {
                         let pose = slot.forms[slot.entity_slot(tesla_e)].pose;
-                        (pose.position, pose.rotation, pose.up.perp_cw(), Vec2::angle(pose.rotation))
+                        (pose.position, pose.orientation.rotation(), pose.orientation.up().perp_cw(), Vec2::angle(pose.orientation.rotation()))
                     } else {
                         (exit_position, Fix::ZERO, Vec2::RIGHT, Vec2::RIGHT)
                     };
@@ -42417,7 +42375,7 @@ impl RolloutWorld {
                             slot.black_hole_cast.collider_up.perp_cw(),
                         )
                     } else {
-                        (exit_position, slot.base.rotation, slot.base.up.perp_cw())
+                        (exit_position, slot.base.rotation(), slot.base.up().perp_cw())
                     };
                     let form = slot.forms[slot.active_slot];
                     let offset = if form.scale == Fix::ZERO {
@@ -42514,7 +42472,7 @@ impl RolloutWorld {
                 }
                 if drilling || was_active || entered_now {
                     let (position, up, rotation) = if drilling {
-                        (slot.base.position, slot.base.up, slot.base.rotation)
+                        (slot.base.position, slot.base.up(), slot.base.rotation())
                     } else {
                         (
                             slot.drill.collider_position,
@@ -42788,7 +42746,7 @@ impl RolloutWorld {
                 }
                 if gusting || was_active {
                     let (position, rotation) = if gusting {
-                        (slot.base.position, slot.base.rotation)
+                        (slot.base.position, slot.base.rotation())
                     } else {
                         (exit_position, Fix::ZERO)
                     };
@@ -42908,7 +42866,7 @@ impl RolloutWorld {
                 y: clone.base.position.y.raw(),
                 vx: (clone.base.velocity + clone.base.external_velocity).x.raw(),
                 vy: (clone.base.velocity + clone.base.external_velocity).y.raw(),
-                rotation: clone.base.rotation.raw(),
+                rotation: clone.base.rotation().raw(),
                 scale: clone.base.scale.raw(),
                 abilities: [0; 3],
                 ability_flags: [0; 3],
@@ -43012,7 +42970,7 @@ impl RolloutWorld {
                     (
                         slot.base.position,
                         slot.base.velocity + slot.base.external_velocity,
-                        slot.base.rotation,
+                        slot.base.rotation(),
                         slot.obs_state,
                     )
                 };
@@ -44505,7 +44463,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         world.players[0].magnet.aim = Vec2::RIGHT;
-        world.players[0].base.up = Vec2::UP;
+        world.players[0].base.set_up(Vec2::UP);
         world.players[0].base.position = Vec2::new(Fix::from_int(2), Fix::from_int(20));
         world.players[1].set_active_form(&mut world.entities, ActiveAbility::Drill);
         world.players[1].base.position = Vec2::new(Fix::from_int(30), Fix::from_int(30));
@@ -44553,7 +44511,7 @@ mod tests {
         world.players[0].set_active_form(&mut world.entities, ActiveAbility::Magnet);
         world.players[0].magnet.phase = 2;
         world.players[0].magnet.aim = Vec2::RIGHT;
-        world.players[0].base.up = Vec2::UP;
+        world.players[0].base.set_up(Vec2::UP);
         let firepoint = world.magnet_firepoint(0, data);
         world.revival_marker_pool.push(RevivalMarker {
             active: true,
@@ -45446,7 +45404,7 @@ mod tests {
         world.players[0].active_slot = 0;
         world.players[0].player_scale = Fix::from_int(2);
         world.players[0].facing_right = false;
-        world.players[0].base.rotation = Fix::ZERO;
+        world.players[0].base.set_rotation(Fix::ZERO);
         world.players[0].throw_item.grounded = false;
         world.players[0].throw_item.direction = Vec2::RIGHT;
         world.players[0].throw_item.fire_input_time = Fix::ZERO;
@@ -45499,7 +45457,7 @@ mod tests {
         let start = world.players[0].base.position;
         let slot = world.players[0].active_slot;
         world.players[0].forms[slot].scale = Fix::from_int(2);
-        world.players[0].base.rotation = Fix::ZERO;
+        world.players[0].base.set_rotation(Fix::ZERO);
 
         let missile = world.spawn_guided_missile(0, data::get());
 
@@ -45676,7 +45634,7 @@ mod tests {
             player.position = position;
             player.velocity = Vec2::ZERO;
             player.external_velocity = Vec2::ZERO;
-            player.rotation = Fix::from_f32(0.5);
+            player.set_rotation(Fix::from_f32(0.5));
             player.grounded = true;
             player.ground = Some(platform_id);
             player.local = Fix::ZERO;
@@ -45693,7 +45651,7 @@ mod tests {
         world.player_tick(0, Action::default(), Vec2::ZERO, false, data::get());
         assert!(!world.players[0].base.grounded);
         assert_eq!(world.players[0].base.ground, None);
-        assert_eq!(world.players[0].base.rotation, Fix::ZERO);
+        assert_eq!(world.players[0].base.rotation(), Fix::ZERO);
         assert_eq!(world.players[0].base.velocity, Vec2::ZERO);
         assert_eq!(world.players[0].base.position, position);
     }

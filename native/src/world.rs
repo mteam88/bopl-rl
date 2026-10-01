@@ -3,6 +3,7 @@
 use crate::{
     fixed::Fix,
     geometry::{OrientedBox, RoundedRect},
+    orientation::Orientation,
     surface::Surface,
     vector::Vec2,
 };
@@ -66,8 +67,9 @@ pub struct Player {
     pub out_of_bounds: bool,
     pub id: u32,
     pub position: Vec2,
-    pub rotation: Fix,
-    pub up: Vec2,
+    /// The body FixTransform's rotation and up, only ever set together.
+    #[serde(flatten)]
+    pub orientation: Orientation,
     pub velocity: Vec2,
     pub external_velocity: Vec2,
     pub radius: Fix,
@@ -687,26 +689,48 @@ impl Player {
             }
         }
     }
+    pub fn rotation(&self) -> Fix {
+        self.orientation.rotation()
+    }
+    pub fn up(&self) -> Vec2 {
+        self.orientation.up()
+    }
+    pub fn right(&self) -> Vec2 {
+        self.orientation.right()
+    }
+    /// `body.rotation = value` (FixTransform.cs:42-47).
+    pub fn set_rotation(&mut self, rotation: Fix) {
+        self.orientation.set_rotation(rotation);
+    }
+    /// `body.up = value` (FixTransform.cs:55-60).
+    pub fn set_up(&mut self, up: Vec2) {
+        self.orientation.set_up(up);
+    }
+    /// `body.right = value` (FixTransform.cs:68-73).
+    pub fn set_right(&mut self, right: Vec2) {
+        self.orientation.set_right(right);
+    }
     pub(crate) fn align(&mut self, platform: &Platform) {
         self.align_to(platform.surface.normal(self.position));
     }
     /// `align` with the surface normal already evaluated.
     pub(crate) fn align_to(&mut self, up: Vec2) {
-        self.up = up;
-        match self.aligned {
-            Some((cached_up, rotation)) if cached_up == up => self.rotation = rotation,
+        let rotation = match self.aligned {
+            Some((cached_up, rotation)) if cached_up == up => rotation,
             _ => {
-                self.rotation = up.perp_cw().normalized_angle();
-                self.aligned = Some((up, self.rotation));
+                let rotation = up.perp_cw().normalized_angle();
+                self.aligned = Some((up, rotation));
+                rotation
             }
-        }
+        };
+        self.orientation.set_up_with_angle(up, rotation);
     }
     fn ground_state(&self) -> crate::player_ground::State {
         crate::player_ground::State {
             position: self.position,
-            rotation: self.rotation,
-            up: self.up,
-            right: self.up.perp_cw(),
+            rotation: self.rotation(),
+            up: self.up(),
+            right: self.right(),
             velocity: self.velocity,
             external_velocity: self.external_velocity,
             radius: self.radius,
@@ -718,8 +742,8 @@ impl Player {
     }
     fn apply_ground_state(&mut self, motion: crate::player_ground::State) {
         self.position = motion.position;
-        self.rotation = motion.rotation;
-        self.up = motion.up;
+        // The pair player_ground's own setter mirrors built.
+        self.orientation.set_up_with_angle(motion.up, motion.rotation);
         self.velocity = motion.velocity;
         self.external_velocity = motion.external_velocity;
         self.grounded = motion.grounded;
@@ -740,7 +764,7 @@ impl Player {
         // (player_physics.rs attaches before it notifies), so the normal it
         // sees is the post-attach one - exactly the `up` just stored, and not
         // the normal at the raw raycast point nor the end-of-tick one.
-        self.attach_upside_down = Some(self.up.y < Fix::ZERO);
+        self.attach_upside_down = Some(self.up().y < Fix::ZERO);
     }
     pub(crate) fn collision_rays(&mut self, terrain: Terrain) {
         self.collision_rays_over(terrain, self.fixed_delta_time);
@@ -842,8 +866,7 @@ impl Player {
         else {
             // SlimeController.UpdateSim handles a destroyed retained ground
             // before calling Move: it zeros rotation, then UnGround(false).
-            self.rotation = Fix::ZERO;
-            self.up = Vec2::UP;
+            self.set_rotation(Fix::ZERO);
             self.unground(None, false);
             return;
         };
@@ -981,7 +1004,7 @@ impl Player {
             .grounded
             .then(|| platforms.iter().find(|p| Some(p.id) == self.ground))
             .flatten()
-            .map_or(self.up, |p| p.surface.normal(self.position));
+            .map_or(self.up(), |p| p.surface.normal(self.position));
         self.pre_move_grounded = self.grounded;
     }
     /// SlimeController.UpdateSim after PlayerPhysics.UpdateSim has applied
@@ -1078,7 +1101,7 @@ impl Player {
     pub(crate) fn push_from(&mut self, other: Vec2, lower_id: bool) {
         let Some(direction) = crate::player_collision::overlap_push_direction(
             self.position,
-            self.up,
+            self.up(),
             self.radius,
             other,
             if lower_id { -1 } else { 0 },
@@ -1110,9 +1133,9 @@ impl Player {
             } * self.scale;
             Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y)
         };
-        if self.rotation != self.collider_rotation || self.collider_basis == Vec2::ZERO {
-            self.collider_basis = Vec2::angle(self.rotation);
-            self.collider_rotation = self.rotation;
+        if self.rotation() != self.collider_rotation || self.collider_basis == Vec2::ZERO {
+            self.collider_basis = Vec2::angle(self.rotation());
+            self.collider_rotation = self.rotation();
         }
         let basis = self.collider_basis;
         self.collider = OrientedBox {

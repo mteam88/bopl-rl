@@ -63,12 +63,11 @@ impl Player {
                 .dot(Vec2::UP)
                 .acos()
                 .expect("normalized direction");
-            self.rotation = if self.dash.input.x > Fix::ZERO {
+            self.set_rotation(if self.dash.input.x > Fix::ZERO {
                 Fix::TAU - angle
             } else {
                 angle
-            };
-            self.up = Vec2::angle(self.rotation).perp();
+            });
             self.dash.updates = 0;
             self.velocity = Vec2::ZERO;
             self.external_velocity = Vec2::ZERO;
@@ -119,7 +118,7 @@ impl Player {
                     }
                     self.position = position;
                 }
-                self.dash.exit_rotation = self.rotation;
+                self.dash.exit_rotation = self.rotation();
                 // The endpoint the rope exit pins; the rollout's Dash exit
                 // hands the slime over from here.
                 self.dash.exit_position = self.position;
