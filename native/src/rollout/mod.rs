@@ -40441,8 +40441,12 @@ impl RolloutWorld {
                         circle.y = slot.base.position.y.raw();
                     }
                 } else if publish {
-                    circle.x = slot.base.position.x.raw();
-                    circle.y = slot.base.position.y.raw();
+                    // BounceBall.ExitAbility leaves the Rock's FixTransform
+                    // where its body ended (BounceBall.cs:231-240), and
+                    // DetPhysics syncs the deactivated box there.
+                    let position = if rocking { slot.base.position } else { exit_position };
+                    circle.x = position.x.raw();
+                    circle.y = position.y.raw();
                     circle.vx = slot.rock.body.velocity.x.raw();
                     circle.vy = slot.rock.body.velocity.y.raw();
                     circle.radius = slot.rock_circle().circle_radius.raw();
