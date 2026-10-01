@@ -22989,9 +22989,11 @@ impl RolloutWorld {
             };
             // DPhysicsCircle joins DetPhysics in its own Init, so a cloud or
             // an arrow spawned after the wave in the same pass is not there
-            // yet when the wave's Init casts.
+            // yet when the wave's Init casts. Nor is a hole clapped after it,
+            // whose Init follows the wave's on this pass.
             let wave_born = wave.born_tick;
             let wave_hierarchy = wave.hierarchy_base;
+            let tick = self.tick;
             let unregistered = |entity: usize| {
                 self.smoke_clouds.iter().any(|cloud| {
                     cloud.active
@@ -23003,6 +23005,11 @@ impl RolloutWorld {
                         && arrow.entity == Some(entity)
                         && arrow.born_tick == wave_born
                         && arrow.hierarchy_base > wave_hierarchy
+                }) || self.black_holes.iter().any(|hole| {
+                    hole.active
+                        && hole.entity == Some(entity)
+                        && hole.born_tick == tick
+                        && hole.hierarchy_base > wave_hierarchy
                 })
             };
             // DetPhysics.CircleCastAll fills Shockwave's 50-entry buffer in
@@ -23019,7 +23026,9 @@ impl RolloutWorld {
                             || row.id <= previous_id
                             || !self.collides(entity)
                             || config.mask & (1 << row.layer) == 0
-                            || ((row.layer == data.smoke.cloud_layer || row.layer == LAYER_PROJECTILE)
+                            || ((row.layer == data.smoke.cloud_layer
+                                || row.layer == LAYER_PROJECTILE
+                                || row.layer == data.black_hole.layer)
                                 && unregistered(entity))
                         {
                             continue;
