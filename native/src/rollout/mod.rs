@@ -17090,10 +17090,14 @@ impl RolloutWorld {
             // Remaining registered circle bodies, in source registry groups.
             for pickup_index in 0..self.ability_pickups.len() {
                 let pickup = self.ability_pickups[pickup_index];
-                if pickup.entity.and_then(|entity| self.detphysics_collider(entity)).is_none() {
+                // BlackHole reads the circle's collider centre, which an
+                // earlier updater's vibration has not moved (BlackHole.cs:353).
+                let Some(DetCollider::Circle(collider)) =
+                    pickup.entity.and_then(|entity| self.detphysics_collider(entity))
+                else {
                     continue;
-                }
-                let center = pickup.center();
+                };
+                let center = collider.center;
                 if let Some(force) = Self::black_hole_force(
                     position,
                     center,
