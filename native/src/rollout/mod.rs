@@ -6701,7 +6701,10 @@ impl RolloutWorld {
         } else if count > 0 {
             (count, Fix::from_int(100_000))
         } else {
-            self.register_prefab(&data.abilities[ability as usize].registrations);
+            // OnCollide's instance stays behind at the origin and registers
+            // with the rest.
+            let base = self.register_prefab(&data.abilities[ability as usize].registrations);
+            self.pending_orphan_abilities.push((base, ability));
             (0, Fix::from_int(100))
         };
         // OnCollide instantiated the slot's previous pickup this pass too.
