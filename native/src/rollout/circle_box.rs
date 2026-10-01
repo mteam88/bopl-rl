@@ -411,9 +411,10 @@ impl RolloutWorld {
         }
     }
 
-    /// A platform child in this Simulate's pairs: DetPhysics.IsActive on the
-    /// live hierarchy, so a wall a QuantumTunnel showed again this pass brings
-    /// its children back before their rows are republished.
+    /// A part in this Simulate's pairs: DetPhysics.IsActive on the live
+    /// hierarchy, so a wall a QuantumTunnel showed again this pass brings its
+    /// children back before their rows are republished, and an item a Blink
+    /// tunnel holds stays out.
     fn child_registered(&self, entity: Option<usize>) -> bool {
         entity.is_some_and(|entity| self.collides(entity))
     }
@@ -426,7 +427,7 @@ impl RolloutWorld {
         parts.clear();
         for (i, item) in self.thrown_items.iter().enumerate() {
             if item.active
-                && item.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                && self.child_registered(item.entity)
                 && item.callback_registered_tick != self.tick
             {
                 parts.push(Part::Item(i));
@@ -687,7 +688,7 @@ impl RolloutWorld {
         parts.clear();
         for (i, item) in self.thrown_items.iter().enumerate() {
             if item.active
-                && item.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                && self.child_registered(item.entity)
                 && item.callback_registered_tick != self.tick
             {
                 parts.push(Part::Item(i));
@@ -700,10 +701,7 @@ impl RolloutWorld {
                 && !node.macho_carried
                 && node.platform_index < self.platforms.len()
                 && node.body.inverse_mass >= Fix::ZERO
-                && !self.attached_hidden(node.platform_index, node.entity)
-                && node.entity.is_some_and(|entity| {
-                    self.entities[entity].flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
-                })
+                && self.child_registered(node.entity)
             {
                 parts.push(Part::Node(i));
             }

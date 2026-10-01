@@ -1591,7 +1591,7 @@ impl RolloutWorld {
                 active_count += 1;
             }
         }
-        for entity in self.entities.iter().filter(|entity| entity.kind < 2 && entity.flags & 3 == 3) {
+        for entity in self.entities.iter().filter(|entity| entity.kind < 2 && row_is_active(entity)) {
             mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
             active_count += 1;
         }
@@ -1696,7 +1696,7 @@ impl RolloutWorld {
             }
             let circle = self.hook_circle(rope);
             for platform in 0..self.platforms.len() {
-                if self.entities[self.platform_entities[platform]].flags & E_ACTIVE == 0
+                if !self.collides(self.platform_entities[platform])
                     || crate::physics::contact::circle_rounded(circle, self.platforms[platform].collider)
                         .is_none()
                 {
@@ -1763,8 +1763,7 @@ impl RolloutWorld {
             for index in 0..self.spike_attacks.len() {
                 let spike = self.spike_attacks[index];
                 if spike.active
-                    && !spike.macho_carried
-                    && spike.entity.is_some_and(|entity| self.entities[entity].flags & E_ACTIVE != 0)
+                    && spike.entity.is_some_and(|entity| self.collides(entity))
                     && crate::physics::contact::circle_box(circle, self.spike_attack_box(spike)).is_some()
                 {
                     let rank = self.part_rank(Part::Spike(index));

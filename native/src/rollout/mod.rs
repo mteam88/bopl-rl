@@ -348,6 +348,14 @@ const E_CONTACT_DAMAGE_KNOWN: u32 = 1 << 14;
 /// remove-destroyed step). Such rows are not emitted.
 const E_REMOVED: u32 = 1 << 31;
 
+/// DetPhysics.IsActive (DetPhysics.cs:1658-1665) as a row last published it:
+/// the GameObject active in the hierarchy and the collider enabled. A live
+/// object answers through `Rollout::collides`, which reads what hid it this
+/// pass; code that only holds the rows asks this.
+fn row_is_active(row: &CEntity) -> bool {
+    row.flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
+}
+
 /// A destroyed collider's row. Its body keeps the negative inverse mass that
 /// the oracle reports as `E_TRIGGER`.
 #[inline]
@@ -6252,7 +6260,7 @@ impl RolloutWorld {
         for entity in self
             .entities
             .iter()
-            .filter(|entity| entity.kind < 2 && entity.flags & 3 == 3)
+            .filter(|entity| entity.kind < 2 && row_is_active(entity))
         {
             mean += Vec2::new(Fix::from_raw(entity.x), Fix::from_raw(entity.y));
             active_count += 1;
@@ -19360,7 +19368,7 @@ impl RolloutWorld {
         for kind in [0, 1] {
             for (entity, row) in entities.iter().enumerate() {
                 if row.kind != kind
-                    || row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+                    || !row_is_active(row)
                     || mask & (1u32 << row.layer) == 0
                 {
                     continue;
@@ -30312,7 +30320,7 @@ impl RolloutWorld {
         };
         match row.kind {
             0 | 1 => self.detphysics_collider(entity).is_some(),
-            _ => row.flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED,
+            _ => row_is_active(row),
         }
     }
 
@@ -30499,8 +30507,7 @@ impl RolloutWorld {
         }
         if let Some(item) = self.thrown_items.iter().find(|item| item.active && item.entity == Some(entity)) {
             let row = self.entities[entity];
-            return (row.flags & (E_ACTIVE | E_ENABLED) == (E_ACTIVE | E_ENABLED)
-                && !self.blink_object_hidden(Some(entity)))
+            return (row_is_active(&row) && !self.blink_object_hidden(Some(entity)))
             .then_some(DetCollider::Circle(Circle { center: item.position, radius: item.collider_radius }));
         }
         // A Tesla line's box is on its node; its row carries only the centre.
@@ -30535,7 +30542,7 @@ impl RolloutWorld {
     /// while it is active, enabled and not hidden in a Blink tunnel.
     fn row_collider(&self, entity: usize) -> Option<DetCollider> {
         let row = *self.entities.get(entity)?;
-        if row.flags & (E_ACTIVE | E_ENABLED) != (E_ACTIVE | E_ENABLED)
+        if !row_is_active(&row)
             || row.flags & (E_DESTROYED | E_REMOVED) != 0
             || self.blink_object_hidden(Some(entity))
         {
@@ -37081,51 +37088,30 @@ impl RolloutWorld {
         if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
             return crate::physics::contact::circle_box(hitbox, player.base.collider).is_some();
         }
-        let entity = Self::hurtbox_entity(player);
-        if !self.collides(entity) {
-            return false;
+        match self.hurtbox_collider(player_index) {
+            Some(DetCollider::Circle(circle)) => crate::physics::contact::circle_circle(hitbox, circle).is_some(),
+            Some(DetCollider::Box(shape)) => crate::physics::contact::circle_box(hitbox, shape).is_some(),
+            None => false,
         }
-        let row = self.entities[entity];
-        let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-        if row.kind == 0 {
-            let circle = Circle { center, radius: Fix::from_raw(row.radius) };
-            return crate::physics::contact::circle_circle(hitbox, circle).is_some();
-        }
-        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-        let inverse_extents = Vec2::new(Fix::ONE / right.length(), Fix::ONE / up.length());
-        let shape = OrientedBox { center, right, up, inverse_extents };
-        crate::physics::contact::circle_box(hitbox, shape).is_some()
     }
 
     /// Whether a box hitbox overlaps the player's registered Player-layer
-    /// shape. The slime and Dash use their own box; any other form is the row
-    /// its prefab registered, such as Bow's rotated box.
+    /// shape. The slime and Dash use their own box; any other form is the
+    /// collider its prefab registered, such as Bow's rotated box, as
+    /// DetPhysics holds it. On the entry pass OnEnterAbility has already
+    /// activated and synced it, though its row only turns active when the
+    /// pass publishes (`hurtbox_collider`).
     fn player_hit_by_box(&self, player_index: usize, hitbox: OrientedBox, hitbox_rank: SweepRank) -> bool {
         let player = &self.players[player_index];
         let rank = self.player_sweep_rank(player_index);
         if matches!(player.active, ActiveAbility::None | ActiveAbility::Dash) {
             return swept_box_box(player.base.collider, rank, hitbox, hitbox_rank).is_some();
         }
-        let entity = Self::hurtbox_entity(player);
-        if entity != usize::MAX && self.entities[entity].flags & E_ACTIVE == 0 {
-            // The entry pass: OnEnterAbility already enabled and synced the
-            // hurtbox, and its row only turns active when the pass publishes.
-            return self.hurtbox_collider(player_index).is_some_and(|collider| match collider {
-                DetCollider::Box(shape) => swept_box_box(shape, rank, hitbox, hitbox_rank).is_some(),
-                DetCollider::Circle(circle) => crate::physics::contact::circle_box(circle, hitbox).is_some(),
-            });
+        match self.hurtbox_collider(player_index) {
+            Some(DetCollider::Box(shape)) => swept_box_box(shape, rank, hitbox, hitbox_rank).is_some(),
+            Some(DetCollider::Circle(circle)) => crate::physics::contact::circle_box(circle, hitbox).is_some(),
+            None => false,
         }
-        if !self.collides(entity) {
-            return false;
-        }
-        let row = self.entities[entity];
-        if row.kind == 0 {
-            let center = Vec2::new(Fix::from_raw(row.x), Fix::from_raw(row.y));
-            let circle = Circle { center, radius: Fix::from_raw(row.radius) };
-            return crate::physics::contact::circle_box(circle, hitbox).is_some();
-        }
-        swept_box_box(Self::row_box(row), rank, hitbox, hitbox_rank).is_some()
     }
 
     /// MeteorSmear carries Explosion with its hitbox live for the smear's whole
@@ -37401,7 +37387,7 @@ impl RolloutWorld {
                 .map(|e| {
                     (
                         Vec2::new(Fix::from_raw(e.x), Fix::from_raw(e.y)),
-                        e.flags & 3 == 3,
+                        row_is_active(e),
                     )
                 })
                 .filter_map(|(p, active)| active.then_some(p)),
