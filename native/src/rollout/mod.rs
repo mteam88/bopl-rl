@@ -4137,6 +4137,15 @@ enum CallbackHit {
     BlackHole { hole: usize, target: HoleTarget, inverse_mass: Fix },
 }
 
+/// What DestroyIfOutsideSceneBounds instantiates as an object leaves.
+#[derive(Clone, Copy)]
+pub enum BoundsEffect {
+    /// The two-updatable water splash.
+    Splash,
+    /// An UpEffect MineExplosion, unowned in the observation.
+    MineExplosion { position: Vec2, owner: usize },
+}
+
 /// The collider a BlackHole met.
 #[derive(Clone, Copy)]
 enum HoleTarget {
@@ -4471,10 +4480,10 @@ pub struct RolloutWorld {
     /// Base hierarchy for the next prefab instantiated after player spawn.
     pub next_spawn_hierarchy: u32,
     /// Instantiations made during the updater phase by objects this port
-    /// updates out of hierarchy order, as (object hierarchy, updatables).
+    /// updates out of hierarchy order, as (object hierarchy, spawn).
     /// Updater runs them in hierarchy order, so a spawn by a lower object
     /// claims its hierarchy first.
-    pub queued_spawns: Vec<(u32, u32)>,
+    pub queued_spawns: Vec<(u32, BoundsEffect)>,
     // Observation buffers. `entities`/`slimes` back the pointers in `state`.
     pub entities: Vec<CEntity>,
     pub slimes: Vec<CSlime>,
@@ -20914,6 +20923,31 @@ impl RolloutWorld {
         }
     }
 
+    /// SmokeCircle's DestroyIfOutsideSceneBounds below the floor: the water
+    /// splash, or past a space floor its UpEffect, a MineExplosion set on
+    /// Camera_YMin (DestroyIfOutsideSceneBounds.cs:69-80, SmokeCircle.prefab).
+    fn smoke_cloud_floor_effect(&self, cloud: &SmokeCloud) -> Option<BoundsEffect> {
+        let map = &data::get().maps[self.map];
+        if cloud.position.y >= map.lower_boundary() {
+            return None;
+        }
+        Some(if map.is_space() {
+            let position = Vec2::new(cloud.position.x, map.lower_boundary());
+            BoundsEffect::MineExplosion { position, owner: cloud.owner }
+        } else {
+            BoundsEffect::Splash
+        })
+    }
+
+    fn spawn_bounds_effect(&mut self, effect: BoundsEffect, data: &data::RolloutData) {
+        match effect {
+            BoundsEffect::Splash => self.next_spawn_hierarchy += 2,
+            BoundsEffect::MineExplosion { position, owner } => {
+                self.spawn_missile_explosion(position, owner, false, Fix::ONE, data);
+            }
+        }
+    }
+
     fn register_smoke_cloud(&mut self, cloud_index: usize, data: &data::RolloutData) {
         let cloud = self.smoke_clouds[cloud_index];
         let delay = self
@@ -20921,14 +20955,14 @@ impl RolloutWorld {
             .fix_range(data.smoke.min_ignition_delay, data.smoke.max_ignition_delay);
         // Newly instantiated cloud prefabs run Init (including the RNG
         // draw above) before their bounds updater in the same pass. A
-        // cloud born below WaterHeight is destroyed before its collider
-        // can appear in the public entity rows. It joined the updatables
-        // last, so its two-updatable water splash comes after whatever an
-        // older updater spawns this pass, such as a Mine's MineExplosion
-        // at the top bound (DestroyIfOutsideSceneBounds.cs).
-        if cloud.position.y < data::get().maps[self.map].lower_boundary() {
+        // cloud born below the floor is destroyed before its collider can
+        // appear in the public entity rows. It joined the updatables last,
+        // so its floor effect comes after whatever an older updater spawns
+        // this pass, such as a Mine's MineExplosion at the top bound
+        // (DestroyIfOutsideSceneBounds.cs).
+        if let Some(effect) = self.smoke_cloud_floor_effect(&cloud) {
             self.remove_smoke_cloud(cloud_index);
-            self.queued_spawns.push((100_000_000 + cloud.hierarchy_base, 2));
+            self.queued_spawns.push((100_000_000 + cloud.hierarchy_base, effect));
             return;
         }
         let entity = self.pooled_row(cloud.entity);
@@ -21347,23 +21381,12 @@ impl RolloutWorld {
         {
             return;
         }
-        if self.smoke_clouds[cloud_index].active
-            && self.smoke_clouds[cloud_index].registered
-            && self.smoke_clouds[cloud_index].position.y
-                < data::get().maps[self.map].lower_boundary()
+        let cloud = self.smoke_clouds[cloud_index];
+        if cloud.active
+            && cloud.registered
+            && let Some(effect) = self.smoke_cloud_floor_effect(&cloud)
         {
-            // SmokeCircle's DestroyIfOutsideSceneBounds instantiates the
-            // two-updatable water splash, or past the space floor its
-            // UpEffect, an unowned MineExplosion set on Camera_YMin
-            // (DestroyIfOutsideSceneBounds.cs:69-80, SmokeCircle.prefab).
-            let map = &data::get().maps[self.map];
-            if map.is_space() {
-                let cloud = self.smoke_clouds[cloud_index];
-                let position = Vec2::new(cloud.position.x, map.lower_boundary());
-                self.spawn_missile_explosion(position, cloud.owner, false, Fix::ONE, data);
-            } else {
-                self.next_spawn_hierarchy += 2;
-            }
+            self.spawn_bounds_effect(effect, data);
             self.remove_smoke_cloud(cloud_index);
             return;
         }
@@ -33358,7 +33381,7 @@ impl RolloutWorld {
                     if position.y < floor && !data.maps[self.map].is_space()
                         && let Some(entity) = self.arrows[i].entity
                     {
-                        self.queued_spawns.push((self.entities[entity].hierarchy, 2));
+                        self.queued_spawns.push((self.entities[entity].hierarchy, BoundsEffect::Splash));
                     }
                     self.destroy_arrow(i);
                     continue;
@@ -34858,9 +34881,11 @@ impl RolloutWorld {
     fn claim_queued_spawns(&mut self, hierarchy: u32) {
         self.queued_spawns.sort_by_key(|&(object, _)| object);
         let claimed = self.queued_spawns.partition_point(|&(object, _)| object < hierarchy);
-        for (_, updatables) in self.queued_spawns.drain(..claimed) {
-            self.next_spawn_hierarchy += updatables;
+        for i in 0..claimed {
+            let effect = self.queued_spawns[i].1;
+            self.spawn_bounds_effect(effect, data::get());
         }
+        self.queued_spawns.drain(..claimed);
     }
 
     fn spawn_grenade_explosion(
