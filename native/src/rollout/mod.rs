@@ -1358,6 +1358,31 @@ struct ThrowConfig<'a> {
 
 /// HitboxCombo.UpdateHitBoxPositionsAndScale for the active Drill slot's
 /// boxes, at the pose `drill.hitbox_*` holds (HitboxCombo.cs:87-98).
+/// A form row's flags, and whether it publishes the form's pose this sync.
+/// DetPhysics syncs every registered collider to its FixTransform each
+/// Simulate, a deactivated form's included (DetPhysics.cs:2498-2530). That
+/// transform moves only while the form is live and on the pass it leaves, so
+/// the row publishes while the form is live, at the first sync since it was
+/// entered (a form left in that same pass never showed active), and at the
+/// first sync after its last live one. EnterAbility gave the form its owner.
+fn sync_form_row(row: &mut CEntity, flags: u32, live: bool, entered: bool, owner: u32) -> bool {
+    let was_active = row.flags & E_ACTIVE != 0;
+    row.flags = flags;
+    if live || entered {
+        row.owner = owner;
+    }
+    live || entered || was_active
+}
+
+/// A form box's flags: a trigger, active while its form is live.
+fn form_box_flags(active: bool) -> u32 {
+    if active {
+        E_ACTIVE | E_ENABLED | E_TRIGGER
+    } else {
+        E_ENABLED | E_TRIGGER
+    }
+}
+
 fn place_drill_hitbox_rows(
     entities: &mut [CEntity],
     inverse_extents: &[Vec2],
@@ -2477,9 +2502,6 @@ pub struct DrillState {
     pub hitbox_position: Vec2,
     pub hitbox_up: Vec2,
     pub hitbox_rotation: Fix,
-    /// The pass whose OnEnterAbility or UpdateSim last moved the Drill's
-    /// FixTransform, which SyncAll then syncs its box to.
-    pub updated_tick: Option<u32>,
     /// A Black Hole ended the form with its hitboxes on. Their Hitbox
     /// updaters already ran, so they stay on until the next pass, where they
     /// find the form gone and destroy themselves (Hitbox.cs:19-24).
@@ -3253,6 +3275,8 @@ pub struct PlayerSlot {
     /// Where the form's FixTransform stopped when its GameObject went
     /// inactive: an exit, or a teleport hiding the form.
     pub form_frozen: Option<FrozenForm>,
+    /// The form row `set_active_form` entered since the last row sync.
+    pub form_entered: usize,
     /// The ground it stood on was destroyed. Unity keeps the rider grounded
     /// until its own next update, then ungrounds it.
     pub ground_destroyed: Option<DestroyedGround>,
@@ -3795,6 +3819,9 @@ impl PlayerSlot {
     /// (SlimeController.cs:190) and leaving it shows the slime again.
     fn set_active_form(&mut self, entities: &mut [CEntity], form: ActiveAbility) {
         self.active = form;
+        if form != ActiveAbility::None {
+            self.form_entered = RolloutWorld::hurtbox_entity(self);
+        }
         self.sync_slime_row(entities);
     }
 
@@ -5827,6 +5854,7 @@ impl RolloutWorld {
                 reported_position: spawn,
                 reported_tick: u32::MAX,
                 form_frozen: None,
+                form_entered: usize::MAX,
                 ground_destroyed: None,
                 bow: BowState::default(),
                 rock: RockState::default(),
@@ -17868,7 +17896,6 @@ impl RolloutWorld {
         self.players[index].scale_form(Fix::ZERO, data.drill.collider_offset, &mut self.entity_inverse_extents);
         self.players[index].reported_position = self.players[index].base.position;
         self.players[index].reported_tick = self.tick;
-        self.players[index].drill.updated_tick = Some(self.tick);
         if advance_animation {
             let drill = &mut self.players[index].drill;
             if drill.phase == 0 && drill.ticks >= data.drill.enter_ticks {
@@ -41162,6 +41189,7 @@ impl RolloutWorld {
             place_drill_hitbox_rows(&mut self.entities, &self.entity_inverse_extents, slot, data);
         }
         for index in 0..self.players.len() {
+            let entered = std::mem::replace(&mut self.players[index].form_entered, usize::MAX);
             let (
                 body_e,
                 dash_e,
@@ -41281,9 +41309,7 @@ impl RolloutWorld {
             // A gun form a freeze ray forced out this pass. The bypass's
             // Ability.ExitAbility skips GunTransform.ExitAbility's rotation
             // reset (FreezeRayGun.cs:128, GunTransform.cs:84-98), so the form
-            // stays synced on its aimed basis where it stood. One entered on
-            // this pass never published active, but EnterAbility gave it its
-            // owner.
+            // stays synced on its aimed basis where it stood.
             let forced_exit_e = if slot.gun.forced_exit_tick == self.tick {
                 slot.gun.forced_exit_entity
             } else {
@@ -41362,16 +41388,8 @@ impl RolloutWorld {
 
             if dash_e != usize::MAX {
                 let dash_box = &mut self.entities[dash_e];
-                let dash_was_active = dash_box.flags & E_ACTIVE != 0;
-                if alive && dashing {
-                    dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                    dash_box.owner = slot.base.id;
-                } else {
-                    dash_box.flags = E_ENABLED | E_TRIGGER;
-                }
-                // Ability.ExitAbility deactivates the body where it ended
-                // (Ability.cs:151-152); that pass still syncs it.
-                if (alive && dashing) || dash_was_active {
+                let flags = form_box_flags(alive && dashing);
+                if sync_form_row(dash_box, flags, dashing, entered == dash_e, slot.base.id) {
                     // The Dash body's FixTransform rotation is
                     // Tools.GetRotationFromDirection (Dash.cs:123-124, zero
                     // before performDash); `sync_collider` already built the
@@ -41411,14 +41429,8 @@ impl RolloutWorld {
             // only in PlayerPhysics.LateUpdateSim, after the sync.
             if bow_e != usize::MAX {
                 let bow_box = &mut self.entities[bow_e];
-                let bow_was_active = bow_box.flags & E_ACTIVE != 0;
-                if alive && bowing {
-                    bow_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                    bow_box.owner = slot.base.id;
-                } else {
-                    bow_box.flags = E_ENABLED | E_TRIGGER;
-                }
-                if (alive && bowing) || bow_was_active {
+                let flags = form_box_flags(alive && bowing);
+                if sync_form_row(bow_box, flags, bowing, entered == bow_e, slot.base.id) {
                     // Bow's own exits zero its body rotation before
                     // ExitAbility (BowTransform.cs:119, 225). FreezeRayGun
                     // invokes Ability.ExitAbility directly, so the disabled
@@ -41444,20 +41456,15 @@ impl RolloutWorld {
             }
             if throw_e != usize::MAX {
                 let throw_box = &mut self.entities[throw_e];
-                let was_active = throw_box.flags & E_ACTIVE != 0;
                 // Each slot's prefab owns its row, so a Missile slot's row
                 // keeps the missile box while another throw form is out.
                 let missile_row = missile_form
                     || (0..3).any(|s| {
                         slot.form_entities[s] == throw_e && slot.abilities[s] == ABILITY_MISSILE
                     });
-                if alive && (throwing || missile_form) {
-                    throw_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                    throw_box.owner = slot.base.id;
-                } else {
-                    throw_box.flags = E_ENABLED | E_TRIGGER;
-                }
-                if (alive && (throwing || missile_form)) || was_active {
+                let live = throwing || missile_form;
+                let flags = form_box_flags(alive && live);
+                if sync_form_row(throw_box, flags, live, entered == throw_e, slot.base.id) {
                     let (center, rotation) = if missile_form {
                         (synced, slot.missile.collider_rotation)
                     } else if throwing {
@@ -41502,14 +41509,8 @@ impl RolloutWorld {
             }
             if mine_e != usize::MAX {
                 let mine_box = &mut self.entities[mine_e];
-                let was_active = mine_box.flags & E_ACTIVE != 0;
-                if alive && mining {
-                    mine_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                    mine_box.owner = slot.base.id;
-                } else {
-                    mine_box.flags = E_ENABLED | E_TRIGGER;
-                }
-                if (alive && mining) || was_active {
+                let flags = form_box_flags(alive && mining);
+                if sync_form_row(mine_box, flags, mining, entered == mine_e, slot.base.id) {
                     let pose = slot.forms[slot.entity_slot(mine_e)].pose;
                     let (root, rotation, offset_basis) = if mining {
                         (synced, rotation, slot.base.collider_up.perp_cw())
@@ -41547,12 +41548,8 @@ impl RolloutWorld {
             }
             if rock_e != usize::MAX {
                 let circle = &mut self.entities[rock_e];
-                let was_active = circle.flags & E_ACTIVE != 0;
-                circle.flags = if alive && rocking {
-                    E_ACTIVE | E_ENABLED
-                } else {
-                    E_ENABLED
-                };
+                let flags = if alive && rocking { E_ACTIVE | E_ENABLED } else { E_ENABLED };
+                let publish = sync_form_row(circle, flags, rocking, entered == rock_e, slot.base.id);
                 // A Blink tunnel or teleport disables the Rock's GameObject,
                 // so its body stops, but the collider still follows the
                 // transform the tunnel moves.
@@ -41561,8 +41558,7 @@ impl RolloutWorld {
                         circle.x = slot.base.position.x.raw();
                         circle.y = slot.base.position.y.raw();
                     }
-                } else if rocking || was_active {
-                    circle.owner = slot.base.id;
+                } else if publish {
                     circle.x = slot.base.position.x.raw();
                     circle.y = slot.base.position.y.raw();
                     circle.vx = slot.rock.body.velocity.x.raw();
@@ -41589,16 +41585,8 @@ impl RolloutWorld {
             }
             if roll_e != usize::MAX {
                 let circle = &mut self.entities[roll_e];
-                let was_active = circle.flags & E_ACTIVE != 0;
-                circle.flags = if alive && rolling {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if rolling {
-                    circle.owner = slot.base.id;
-                }
-                if (alive && rolling) || was_active {
+                let flags = form_box_flags(alive && rolling);
+                if sync_form_row(circle, flags, rolling, entered == roll_e, slot.base.id) {
                     // Like the slime's box, the row is the collider DetPhysics
                     // synced; a grounded Roll moves after it (PlayerPhysics.cs:138).
                     let (position, rotation) = if rolling {
@@ -41616,16 +41604,8 @@ impl RolloutWorld {
             }
             if meteor_e != usize::MAX {
                 let box_row = &mut self.entities[meteor_e];
-                let was_active = box_row.flags & E_ACTIVE != 0;
-                box_row.flags = if alive && meteoring {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if meteoring {
-                    box_row.owner = slot.base.id;
-                }
-                if (alive && meteoring) || was_active {
+                let flags = form_box_flags(alive && meteoring);
+                if sync_form_row(box_row, flags, meteoring, entered == meteor_e, slot.base.id) {
                     // Ability.ExitAbility leaves the hidden form box where the
                     // form stood (Ability.cs:139-153); the slime may already
                     // have moved on, through a portal say.
@@ -41660,21 +41640,8 @@ impl RolloutWorld {
             }
             if push_e != usize::MAX {
                 let push_box = &mut self.entities[push_e];
-                let was_active = push_box.flags & E_ACTIVE != 0;
-                push_box.flags = if alive && pushing {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                // A form left in the pass it was entered (a magnet steal) never
-                // published active, but EnterAbility gave it its owner and
-                // DetPhysics syncs its frozen transform.
-                let exited_now =
-                    slot.form_frozen.is_some_and(|f| f.tick == self.tick && f.entity == push_e);
-                if pushing || exited_now {
-                    push_box.owner = slot.base.id;
-                }
-                if (alive && pushing) || was_active || exited_now {
+                let flags = form_box_flags(alive && pushing);
+                if sync_form_row(push_box, flags, pushing, entered == push_e, slot.base.id) {
                     let (root, rotation) = if pushing {
                         (synced, rotation)
                     } else {
@@ -41714,17 +41681,9 @@ impl RolloutWorld {
             }
             if freeze_e != usize::MAX {
                 let freeze_box = &mut self.entities[freeze_e];
-                let was_active = freeze_box.flags & E_ACTIVE != 0;
-                freeze_box.flags = if alive && freezing {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
                 let forced_exit = forced_exit_e == freeze_e;
-                if freezing || forced_exit {
-                    freeze_box.owner = slot.base.id;
-                }
-                if (alive && freezing) || was_active || forced_exit {
+                let flags = form_box_flags(alive && freezing);
+                if sync_form_row(freeze_box, flags, freezing, entered == freeze_e, slot.base.id) {
                     // GunTransform only writes `body.up` from the aim while the
                     // shot is pending (GunTransform.cs:184-192) and once more
                     // inside Fire (GunTransform.cs:120-121); afterwards the form
@@ -41775,17 +41734,9 @@ impl RolloutWorld {
             }
             if blink_e != usize::MAX {
                 let blink_box = &mut self.entities[blink_e];
-                let was_active = blink_box.flags & E_ACTIVE != 0;
-                blink_box.flags = if alive && blinking {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
                 let forced_exit = forced_exit_e == blink_e;
-                if blinking || forced_exit {
-                    blink_box.owner = slot.base.id;
-                }
-                if (alive && blinking) || was_active || forced_exit {
+                let flags = form_box_flags(alive && blinking);
+                if sync_form_row(blink_box, flags, blinking, entered == blink_e, slot.base.id) {
                     let (root, rotation) = if blinking {
                         // Latched at the shot, as at the Freeze row above.
                         (synced, rotation)
@@ -41829,17 +41780,9 @@ impl RolloutWorld {
                     continue;
                 }
                 let ray_box = &mut self.entities[ray_e];
-                let was_active = ray_box.flags & E_ACTIVE != 0;
-                ray_box.flags = if alive && active {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
                 let forced_exit = forced_exit_e == ray_e;
-                if active || forced_exit {
-                    ray_box.owner = slot.base.id;
-                }
-                if (alive && active) || was_active || forced_exit {
+                let flags = form_box_flags(alive && active);
+                if sync_form_row(ray_box, flags, active, entered == ray_e, slot.base.id) {
                     let (root, rotation) = if active {
                         // Latched at the shot, as at the Freeze row above.
                         (synced, rotation)
@@ -41877,17 +41820,9 @@ impl RolloutWorld {
             }
             if duplicator_e != usize::MAX {
                 let row = &mut self.entities[duplicator_e];
-                let was_active = row.flags & E_ACTIVE != 0;
-                row.flags = if alive && duplicating {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
                 let forced_exit = forced_exit_e == duplicator_e;
-                if duplicating || forced_exit {
-                    row.owner = slot.base.id;
-                }
-                if (alive && duplicating) || was_active || forced_exit {
+                let flags = form_box_flags(alive && duplicating);
+                if sync_form_row(row, flags, duplicating, entered == duplicator_e, slot.base.id) {
                     let (root, rotation) = if duplicating {
                         // Latched at the shot, as at the Freeze row above.
                         (synced, rotation)
@@ -41925,16 +41860,8 @@ impl RolloutWorld {
             }
             if magnet_e != usize::MAX {
                 let row = &mut self.entities[magnet_e];
-                let was_active = row.flags & E_ACTIVE != 0;
-                row.flags = if alive && magnetizing {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if magnetizing {
-                    row.owner = slot.base.id;
-                }
-                if (alive && magnetizing) || was_active {
+                let flags = form_box_flags(alive && magnetizing);
+                if sync_form_row(row, flags, magnetizing, entered == magnet_e, slot.base.id) {
                     // The form's one FixTransform rotation: the body's while
                     // it magnetizes, then the one its exit left, which a
                     // drop's UpdateSim may aim again (MagnetGun.cs:358, 1256).
@@ -41966,27 +41893,24 @@ impl RolloutWorld {
             // anticipation only (hurtBox.enabled until CreatePlatform).
             if circle_e != usize::MAX {
                 let circle = &mut self.entities[circle_e];
-                let circle_was_active = circle.flags & E_ACTIVE != 0;
                 let transforming = alive && slot.active == ActiveAbility::Platform;
-                if alive && anticipating {
-                    circle.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                    circle.owner = slot.base.id;
+                let flags = if alive && anticipating {
+                    E_ACTIVE | E_ENABLED | E_TRIGGER
                 } else if transforming {
-                    circle.flags = E_ACTIVE | E_TRIGGER;
-                    circle.owner = slot.base.id;
+                    E_ACTIVE | E_TRIGGER
                 } else {
                     let disabled = (0..3).any(|s| {
                         slot.form_entities[s] == circle_e
                             && slot.abilities[s] == ABILITY_PLATFORM
                             && slot.platform_hurtbox_disabled[s]
                     });
-                    circle.flags = if disabled {
+                    if disabled {
                         E_TRIGGER
                     } else {
                         E_ENABLED | E_TRIGGER
-                    };
-                }
-                if transforming || circle_was_active {
+                    }
+                };
+                if sync_form_row(circle, flags, transforming, entered == circle_e, slot.base.id) {
                     // DetPhysics copies the ability body's FixTransform rotation
                     // (body.up = Slerp(...), PlatformTransform.cs:281; zero again
                     // in ExitAbility, PlatformTransform.cs:462, at the ejected
@@ -42010,17 +41934,9 @@ impl RolloutWorld {
             // authored offset. It remains still through both animations.
             if gust_e != usize::MAX {
                 let circle = &mut self.entities[gust_e];
-                let was_active = circle.flags & E_ACTIVE != 0;
                 let gusting = alive && slot.active == ActiveAbility::Gust;
-                circle.flags = if gusting {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if gusting {
-                    circle.owner = slot.base.id;
-                }
-                if gusting || was_active {
+                let flags = form_box_flags(gusting);
+                if sync_form_row(circle, flags, gusting, entered == gust_e, slot.base.id) {
                     let (position, rotation) = if gusting {
                         (slot.base.position, slot.base.rotation())
                     } else {
@@ -42040,17 +41956,9 @@ impl RolloutWorld {
             }
             if revival_e != usize::MAX {
                 let circle = &mut self.entities[revival_e];
-                let was_active = circle.flags & E_ACTIVE != 0;
                 let reviving = alive && slot.active == ActiveAbility::Revival;
-                circle.flags = if reviving {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if reviving {
-                    circle.owner = slot.base.id;
-                }
-                if reviving || was_active {
+                let flags = form_box_flags(reviving);
+                if sync_form_row(circle, flags, reviving, entered == revival_e, slot.base.id) {
                     let (position, rotation) = if reviving {
                         (slot.base.position, slot.base.rotation())
                     } else {
@@ -42070,16 +41978,9 @@ impl RolloutWorld {
             }
             if spike_e != usize::MAX {
                 let box_row = &mut self.entities[spike_e];
-                let was_active = box_row.flags & E_ACTIVE != 0;
-                box_row.flags = if alive && spiking {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if spiking {
-                    box_row.owner = slot.base.id;
-                }
-                if spiking || was_active {
+                let flags = form_box_flags(alive && spiking);
+                let publish = sync_form_row(box_row, flags, spiking, entered == spike_e, slot.base.id);
+                if publish {
                     // The form's FixTransform, casting or hidden.
                     let (position, rotation, center_basis, collider_basis) = if spiking
                         || frozen_pose(spike_e).is_some()
@@ -42112,16 +42013,9 @@ impl RolloutWorld {
             }
             if engine_e != usize::MAX {
                 let box_row = &mut self.entities[engine_e];
-                let was_active = box_row.flags & E_ACTIVE != 0;
-                box_row.flags = if alive && planting_engine {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if planting_engine {
-                    box_row.owner = slot.base.id;
-                }
-                if planting_engine || was_active {
+                let flags = form_box_flags(alive && planting_engine);
+                let publish = sync_form_row(box_row, flags, planting_engine, entered == engine_e, slot.base.id);
+                if publish {
                     // The form's FixTransform, casting or hidden.
                     let (position, rotation, center_basis, collider_basis) = if planting_engine
                         || frozen_pose(engine_e).is_some()
@@ -42154,16 +42048,9 @@ impl RolloutWorld {
             }
             if tesla_e != usize::MAX {
                 let box_row = &mut self.entities[tesla_e];
-                let was_active = box_row.flags & E_ACTIVE != 0;
-                box_row.flags = if alive && planting_tesla {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if planting_tesla {
-                    box_row.owner = slot.base.id;
-                }
-                if planting_tesla || was_active {
+                let flags = form_box_flags(alive && planting_tesla);
+                let publish = sync_form_row(box_row, flags, planting_tesla, entered == tesla_e, slot.base.id);
+                if publish {
                     // The form's FixTransform, casting or hidden.
                     let (position, rotation, center_basis, collider_basis) = if planting_tesla
                         || frozen_pose(tesla_e).is_some()
@@ -42196,16 +42083,9 @@ impl RolloutWorld {
             }
             if black_hole_e != usize::MAX {
                 let box_row = &mut self.entities[black_hole_e];
-                let was_active = box_row.flags & E_ACTIVE != 0;
-                box_row.flags = if alive && casting_black_hole {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if casting_black_hole {
-                    box_row.owner = slot.base.id;
-                }
-                if casting_black_hole || was_active {
+                let flags = form_box_flags(alive && casting_black_hole);
+                let publish = sync_form_row(box_row, flags, casting_black_hole, entered == black_hole_e, slot.base.id);
+                if publish {
                     let (position, rotation, basis) = if let Some((position, rotation, up)) =
                         frozen_pose(black_hole_e)
                     {
@@ -42246,17 +42126,10 @@ impl RolloutWorld {
             }
             if macho_throw_e != usize::MAX {
                 let box_row = &mut self.entities[macho_throw_e];
-                let was_active = box_row.flags & E_ACTIVE != 0;
-                box_row.flags = if alive && macho_throwing {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if macho_throwing {
-                    box_row.owner = slot.base.id;
-                }
+                let flags = form_box_flags(alive && macho_throwing);
+                let publish = sync_form_row(box_row, flags, macho_throwing, entered == macho_throw_e, slot.base.id);
                 let forced_exit = slot.macho_throw.forced_exit_tick == Some(self.tick);
-                if macho_throwing || was_active {
+                if publish {
                     let (position, center_basis, rotation, collider_basis) = if let Some((
                         position,
                         rotation,
@@ -42299,20 +42172,8 @@ impl RolloutWorld {
             }
             if drill_e != usize::MAX {
                 let box_row = &mut self.entities[drill_e];
-                let was_active = box_row.flags & E_ACTIVE != 0;
-                box_row.flags = if alive && drilling {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                // A form left in the pass it was entered never published
-                // active, but EnterAbility gave it its owner and DetPhysics
-                // syncs its frozen transform.
-                let entered_now = slot.drill.updated_tick == Some(self.tick);
-                if drilling || entered_now {
-                    box_row.owner = slot.base.id;
-                }
-                if drilling || was_active || entered_now {
+                let flags = form_box_flags(alive && drilling);
+                if sync_form_row(box_row, flags, drilling, entered == drill_e, slot.base.id) {
                     let (position, up, rotation) = if drilling {
                         (slot.base.position, slot.base.up(), slot.base.rotation())
                     } else {
@@ -42349,16 +42210,9 @@ impl RolloutWorld {
             }
             if beam_e != usize::MAX {
                 let box_row = &mut self.entities[beam_e];
-                let was_active = box_row.flags & E_ACTIVE != 0;
-                box_row.flags = if alive && beaming {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if beaming {
-                    box_row.owner = slot.base.id;
-                }
-                if beaming || was_active {
+                let flags = form_box_flags(alive && beaming);
+                let publish = sync_form_row(box_row, flags, beaming, entered == beam_e, slot.base.id);
+                if publish {
                     let state = slot.beam;
                     let (position, up, rotation) = if beaming {
                         (state.collider_position, state.collider_up, state.collider_rotation)
@@ -42396,16 +42250,9 @@ impl RolloutWorld {
             }
             if time_stop_e != usize::MAX {
                 let circle = &mut self.entities[time_stop_e];
-                let was_active = circle.flags & E_ACTIVE != 0;
-                circle.flags = if alive && casting_time_stop {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if casting_time_stop {
-                    circle.owner = slot.base.id;
-                }
-                if casting_time_stop || was_active {
+                let flags = form_box_flags(alive && casting_time_stop);
+                let publish = sync_form_row(circle, flags, casting_time_stop, entered == time_stop_e, slot.base.id);
+                if publish {
                     let (position, rotation, basis) = (
                         slot.cast_spell.collider_position,
                         slot.cast_spell.collider_rotation,
@@ -42481,7 +42328,9 @@ impl RolloutWorld {
     /// exit-pass handling are identical to `refresh_actor_entities` above.
     fn refresh_simple_actor_entities(&mut self) {
         let data = data::get();
-        for slot in &self.players {
+        for index in 0..self.players.len() {
+            let entered = std::mem::replace(&mut self.players[index].form_entered, usize::MAX);
+            let slot = &self.players[index];
             if slot.slime_destroyed() || slot.revival_clone_pending || slot.stock_clone_pending {
                 continue;
             }
@@ -42536,14 +42385,9 @@ impl RolloutWorld {
 
             if slot.dash_entity != usize::MAX {
                 let dash_box = &mut self.entities[slot.dash_entity];
-                let dash_was_active = dash_box.flags & E_ACTIVE != 0;
-                if alive && dashing {
-                    dash_box.flags = E_ACTIVE | E_ENABLED | E_TRIGGER;
-                    dash_box.owner = slot.base.id;
-                } else {
-                    dash_box.flags = E_ENABLED | E_TRIGGER;
-                }
-                if (alive && dashing) || dash_was_active {
+                let flags = form_box_flags(alive && dashing);
+                let entered = entered == slot.dash_entity;
+                if sync_form_row(dash_box, flags, dashing, entered, slot.base.id) {
                     let (center, angle) = if alive && dashing {
                         (synced, rotation)
                     } else {
@@ -42568,17 +42412,10 @@ impl RolloutWorld {
 
             if slot.gust_entity != usize::MAX {
                 let circle = &mut self.entities[slot.gust_entity];
-                let was_active = circle.flags & E_ACTIVE != 0;
                 let gusting = alive && slot.active == ActiveAbility::Gust;
-                circle.flags = if gusting {
-                    E_ACTIVE | E_ENABLED | E_TRIGGER
-                } else {
-                    E_ENABLED | E_TRIGGER
-                };
-                if gusting {
-                    circle.owner = slot.base.id;
-                }
-                if gusting || was_active {
+                let flags = form_box_flags(gusting);
+                let entered = entered == slot.gust_entity;
+                if sync_form_row(circle, flags, gusting, entered, slot.base.id) {
                     let (position, rotation) = if gusting {
                         (slot.base.position, slot.base.rotation())
                     } else {
