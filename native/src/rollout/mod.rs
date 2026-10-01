@@ -18930,6 +18930,12 @@ impl RolloutWorld {
             )
             .expect("valid Beam aerial constants");
             self.players[index].base.collision_rays(terrain!(self));
+            // A ray landing already exits through OnGrounded, whose
+            // Beam.ExitAbility adds the exit up speed (Beam.cs:176-183, 511);
+            // the circle's attach below takes its grounded speed from that.
+            if self.players[index].base.grounded {
+                self.players[index].base.velocity += Vec2::UP * data.beam.exit_up_speed;
+            }
             // Beam.MovePlayer then lands on the first active wall its circle
             // overlaps, even after a ray hit (Beam.cs:556-560).
             let circle = Circle {
