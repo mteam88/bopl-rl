@@ -527,8 +527,111 @@ impl RolloutWorld {
         self.scratch.cb_contacts = contacts;
     }
 
+    /// DetPhysics' Box/RoundedRect or Circle/RoundedRect group
+    /// (DetPhysics.cs:2971-3048): every swept pair of a part with a wall makes
+    /// a manifold against `walls`, the colliders as the group's narrow phase
+    /// sees them, all built before any resolves. In SortAndSweep pair order
+    /// each queues the part's OnCollide (PrepareCollisionCallBacks,
+    /// DetPhysics.cs:2405-2437), then each pair that is no trigger resolves
+    /// with ResolveCollision and PositionalCorrection on each side's own
+    /// inverse mass.
+    pub(super) fn wall_group(&mut self, group: u8, parts: &[Part], walls: &[RoundedRect]) {
+        let mut contacts = std::mem::take(&mut self.scratch.wall_contacts);
+        contacts.clear();
+        for &part in parts {
+            let collider = self.part_collider(part);
+            let bounds = collider.bounds();
+            let rank = self.part_rank(part);
+            for wall in 0..self.platforms.len() {
+                // SameCompositeAs: a child never meets its own platform.
+                if !self.platforms[wall].active
+                    || self.part_composite(part) == Some(wall)
+                    || !self.wall_swept(wall, bounds)
+                {
+                    continue;
+                }
+                let rounded = walls.get(wall).copied().unwrap_or(self.platforms[wall].collider);
+                // A Box meets a RoundedRect as a RoundedRect of radius zero
+                // (PhysTools.cs:104-111).
+                let contact = match collider {
+                    Collider::Circle(circle) => crate::physics::contact::circle_rounded(circle, rounded),
+                    Collider::Box(inner) => {
+                        crate::physics::contact::rounded_rounded(RoundedRect { inner, radius: Fix::ZERO }, rounded)
+                    }
+                    Collider::RoundedRect(_) => unreachable!(),
+                };
+                if let Some(contact) = contact {
+                    let (later, earlier) = sweep_pair(rank, self.wall_rank(wall));
+                    contacts.push(((group, later, earlier), part, wall, contact));
+                    if matches!(part, Part::Shot(_)) {
+                        break;
+                    }
+                }
+            }
+        }
+        contacts.sort_by_key(|&(key, ..)| key);
+        for &(key, part, wall, contact) in &contacts {
+            let hit = match part {
+                // SmokeGrenadeExplode2.cs:63-78, Mjolnir.cs:292-318,
+                // BananaPeel.cs:113-138.
+                Part::Item(item) => match self.thrown_items[item].ability {
+                    ABILITY_SMOKE => CallbackHit::ItemDetonate { item, count: 1 },
+                    ABILITY_MJOLNIR => CallbackHit::MjolnirWall { item, wall },
+                    ABILITY_TACK => CallbackHit::TackWall { item, normal: contact.normal },
+                    _ => continue,
+                },
+                // PortalShot.cs:78-87.
+                Part::Shot(shot) => CallbackHit::PortalShotLand { shot, normal: -contact.normal },
+                // Arrow.cs:85-131.
+                Part::Arrow(arrow) => CallbackHit::ArrowLand { arrow, wall: Some(wall), part: None },
+                // SpikeAttack.cs:116-131.
+                Part::Spike(spike) => CallbackHit::SpikeWallKnock { spike, wall, point: contact.point },
+                // Missile.cs:181-192.
+                Part::Missile(missile) => CallbackHit::MissileBlast { missile },
+                _ => continue,
+            };
+            self.scratch.callback_hits.push((key, hit));
+        }
+        for &(_, part, wall, contact) in &contacts {
+            self.resolve_part_wall(part, wall, contact);
+        }
+        if !contacts.is_empty() {
+            self.platforms_changed();
+        }
+        self.scratch.wall_contacts = contacts;
+    }
+
+    /// Whether SortAndSweep paired a part's bounds with the wall it bounded
+    /// before this pass's RoundedRect/RoundedRect corrections.
+    fn wall_swept(&self, wall: usize, bounds: [Vec2; 2]) -> bool {
+        self.scratch
+            .callback_colliders
+            .get(wall)
+            .filter(|_| self.scratch.callback_tick == Some(self.tick))
+            .is_none_or(|&swept| sweep::swept_meet(bounds, Collider::RoundedRect(swept).bounds()))
+    }
+
+    /// ResolveCollision on the part's body, a composite child's
+    /// CompositeBody at CompositeBody.position, and the wall's, then
+    /// PositionalCorrection on each side's own inverse mass, unless either
+    /// is a trigger (DetPhysics.cs:2993-3008, 3033-3048).
+    fn resolve_part_wall(&mut self, part: Part, wall: usize, contact: Contact) {
+        let own = self.part_body(part).inverse_mass;
+        let (wall_position, wall_inverse_mass) = self.platform_contact_frame(wall);
+        if own < Fix::ZERO || wall_inverse_mass < Fix::ZERO {
+            return;
+        }
+        let (mut body, position) = self.part_resolve_body(part);
+        let mut wall_body = self.platform_dynamics[wall].body;
+        resolve(contact, &mut body, &mut wall_body, position, wall_position);
+        let correction = positional_correction(contact, own, wall_inverse_mass, false);
+        self.platform_dynamics[wall].body = wall_body;
+        self.set_part_body(part, body, correction[0]);
+        self.shift_platform_collider(wall, correction[1]);
+    }
+
     /// An arrow DetPhysics still simulates this pass.
-    fn arrow_registered(&self, i: usize) -> bool {
+    pub(super) fn arrow_registered(&self, i: usize) -> bool {
         let arrow = &self.arrows[i];
         arrow.active && arrow.registered && !self.blink_object_hidden(arrow.entity)
     }

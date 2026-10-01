@@ -4092,12 +4092,8 @@ struct PlatformScratch {
     /// The sweep axis DetPhysics.Simulate chose with those colliders.
     callback_sweep_x: bool,
     contacts: Vec<(usize, usize, Contact)>,
-    spike_wall_contacts: Vec<(usize, usize, Contact)>,
-    engine_wall_contacts: Vec<(usize, usize, Contact)>,
     /// Every collider's bounding box in this pass's SortAndSweep.
     sweep: sweep::SweepBounds,
-    rock_wall_contacts: Vec<(usize, usize, Contact)>,
-    duplicated_rock_wall_contacts: Vec<(usize, usize, Contact)>,
     /// Each slime's position before PlayerPhysics.LateUpdateSim follows its
     /// ground, where an older Mine's LateUpdateSim still finds it.
     before_ground_follow: [Vec2; MAX_BODIES],
@@ -4122,28 +4118,21 @@ struct PlatformScratch {
     /// The Circle/Box group's colliders, circles first, and its manifolds.
     cb_parts: Vec<Part>,
     cb_contacts: Vec<(CallbackKey, Part, Part, Contact)>,
-    tesla_wall_contacts: Vec<(usize, usize, Contact)>,
-    /// Portal shots' wall manifolds: (shot, wall, contact).
-    portal_shot_wall_contacts: Vec<(usize, usize, Contact)>,
+    /// The Box/RoundedRect or Circle/RoundedRect group's parts, and its
+    /// manifolds in sweep order: (key, part, wall, contact).
+    wall_parts: Vec<Part>,
+    wall_contacts: Vec<(CallbackKey, Part, usize, Contact)>,
     item_order: Vec<usize>,
     cc_contacts: Vec<(Part, Part, Contact)>,
     /// Each arrow's StickTo contacts in the Circle/Circle and Circle/Box
     /// groups, by callback key.
     arrow_landings: Vec<(usize, CallbackKey, Part)>,
-    item_platform_contacts: Vec<(usize, usize, Contact)>,
-    /// Sweep keys of the wall manifolds resolved as one batch: the
-    /// Circle/RoundedRect group's, or the Box/RoundedRect group's.
-    circle_wall_order: Vec<(SweepRank, SweepRank, u8, usize)>,
     pickup_order: Vec<usize>,
     /// Guided-Missile Box/Box manifolds. Every manifold is captured before
     /// either Missile callback destroys a participant.
     missile_contacts: Vec<(usize, usize, Contact)>,
-    missile_wall_contacts: Vec<(usize, usize, Contact)>,
     /// This pass's hitbox callbacks, run together by `run_callback_hits`.
     callback_hits: Vec<(CallbackKey, CallbackHit)>,
-    /// Arrow Circle/RoundedRectangle manifolds of one DetPhysics pass, in
-    /// resolution order.
-    arrow_platform_contacts: Vec<(usize, usize, Contact)>,
     /// Slime-vs-slime shoves of one DetPhysics pass: (pushed, other, lower id).
     /// This pass's Player.Scale changes by a ScaleChanger, in hierarchy order:
     /// (player, changer hierarchy, scale before).
@@ -4224,13 +4213,10 @@ impl PlatformScratch {
             item_order: Vec::with_capacity(192),
             cc_contacts: Vec::with_capacity(256),
             arrow_landings: Vec::with_capacity(16),
-            item_platform_contacts: Vec::with_capacity(256),
-            circle_wall_order: Vec::with_capacity(256),
+            wall_contacts: Vec::with_capacity(256),
             pickup_order: Vec::with_capacity(16),
             missile_contacts: Vec::with_capacity(256),
-            missile_wall_contacts: Vec::with_capacity(16),
             callback_hits: Vec::with_capacity(16),
-            arrow_platform_contacts: Vec::with_capacity(64),
             ray_hits: Vec::with_capacity(192),
             duplicate_shake_order: Vec::with_capacity(64),
             duplicate_shake_offsets: Vec::with_capacity(64),
@@ -4238,29 +4224,6 @@ impl PlatformScratch {
             ropes_walk_limit: u32::MAX,
             ..PlatformScratch::default()
         }
-    }
-
-    /// Whether DetPhysics' broadphase pairs the circle with the platform. The
-    /// sweep takes its bounding boxes before this pass's platform/platform
-    /// corrections move the wall, so a correction toward the circle does not
-    /// make a pair.
-    fn swept_pairs(&self, tick: u32, index: usize, circle: Circle) -> bool {
-        let Some(swept) = self
-            .callback_colliders
-            .get(index)
-            .filter(|_| self.callback_tick == Some(tick))
-        else {
-            return true;
-        };
-        let extent = Vec2::new(
-            swept.inner.right.x.abs() + swept.inner.up.x.abs() + swept.radius,
-            swept.inner.right.y.abs() + swept.inner.up.y.abs() + swept.radius,
-        );
-        let (low, high) = (swept.inner.center - extent, swept.inner.center + extent);
-        circle.center.x + circle.radius > low.x
-            && circle.center.x - circle.radius < high.x
-            && circle.center.y + circle.radius > low.y
-            && circle.center.y - circle.radius < high.y
     }
 }
 
@@ -7868,29 +7831,23 @@ impl RolloutWorld {
             self.beam_physics_tick(data);
             self.beam_contacts(beam_contact_count);
         }
-        if has(ABILITY_PORTAL_GUN) {
-            self.portal_shots_contacts();
-        }
         if has(ABILITY_BLACK_HOLE) {
             self.black_hole_contacts();
         }
         if has(ABILITY_DRILL) {
             self.drill_contacts();
         }
-        if has(ABILITY_TESLA) {
-            self.tesla_wall_contacts();
-        }
-        if has(ABILITY_ROCK) {
-            self.rock_wall_manifolds();
-        }
-        if has(ABILITY_DUPLICATOR) {
-            self.duplicated_rock_wall_manifolds();
-        }
         // DetPhysics corrects every Circle/RR pair before any Circle/Circle
         // one, so an item's wall correction moves it before an arrow's
         // manifold with it is built.
-        if has_thrown_item || has(ABILITY_TESLA) || has(ABILITY_ROCK) || has(ABILITY_PORTAL_GUN) || has(ABILITY_BOW) {
-            self.thrown_item_platform_contacts(data);
+        if has_thrown_item
+            || has(ABILITY_TESLA)
+            || has(ABILITY_ROCK)
+            || has(ABILITY_PORTAL_GUN)
+            || has(ABILITY_BOW)
+            || has(ABILITY_DUPLICATOR)
+        {
+            self.circle_wall_group();
         }
         let has_pickups = self.ability_spawner_enabled || !self.ability_pickups.is_empty();
         if has_thrown_item
@@ -7936,18 +7893,6 @@ impl RolloutWorld {
         }
         if has(ABILITY_ENGINE) || has(ABILITY_SPIKE) {
             self.composite_child_box_contacts();
-        }
-        if has(ABILITY_PORTAL_GUN) {
-            let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
-            self.queue_portal_shot_landings(&shot_contacts);
-            shot_contacts.clear();
-            self.scratch.portal_shot_wall_contacts = shot_contacts;
-        }
-        if has(ABILITY_MJOLNIR) {
-            self.queue_item_wall_callbacks(ABILITY_MJOLNIR);
-        }
-        if has(ABILITY_TACK) {
-            self.queue_item_wall_callbacks(ABILITY_TACK);
         }
         if has_thrown_item {
             self.thrown_items_contacts(data);
@@ -8621,62 +8566,6 @@ impl RolloutWorld {
                 }
             }
             marker.position += marker.body.integrate(physics_dt, Fix::from_int(-40));
-        }
-    }
-
-    /// Builds the portal shots' wall manifolds. They resolve with the other
-    /// Circle/RoundedRectangle pairs in sweep order, and PortalShot.OnCollide
-    /// lands the shot afterwards as a queued callback.
-    fn portal_shots_contacts(&mut self) {
-        let mut shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
-        shot_contacts.clear();
-        for shot_index in 0..self.portal_shots.len() {
-            if self.blink_object_hidden(self.portal_shots[shot_index].entity) {
-                continue;
-            }
-            if !self.portal_shots[shot_index].active {
-                continue;
-            }
-            let circle = Circle {
-                center: self.portal_shots[shot_index].position,
-                radius: self.portal_shots[shot_index].collider_radius,
-            };
-            if let Some((wall_index, contact)) = (0..self.platforms.len())
-                .filter(|&wall_index| {
-                    self.platforms[wall_index].active
-                        && self.scratch.swept_pairs(self.tick, wall_index, circle)
-                })
-                .find_map(|wall_index| {
-                    crate::physics::contact::circle_rounded(circle, self.circle_collider(wall_index))
-                        .map(|contact| (wall_index, contact))
-                })
-            {
-                shot_contacts.push((shot_index, wall_index, contact));
-            }
-        }
-        self.scratch.portal_shot_wall_contacts = shot_contacts;
-    }
-
-    fn resolve_portal_shot_wall_contact(&mut self, shot_index: usize, wall_index: usize, contact: Contact) {
-        let shot_position = self.portal_shots[shot_index].position;
-        let (wall_position, own_inverse_mass) = self.platform_contact_frame(wall_index);
-        let correction = {
-            let shot_body = &mut self.portal_shots[shot_index].body;
-            let wall_body = &mut self.platform_dynamics[wall_index].body;
-            resolve(contact, shot_body, wall_body, shot_position, wall_position);
-            positional_correction(contact, shot_body.inverse_mass, own_inverse_mass, false)
-        };
-        self.portal_shots[shot_index].position += correction[0];
-        self.shift_platform_collider(wall_index, correction[1]);
-    }
-
-    /// PortalShot.OnCollide with a wall is a DetPhysics callback, queued at
-    /// its Circle/RoundedRect pair's place (PortalShot.cs:78-87).
-    fn queue_portal_shot_landings(&mut self, shot_contacts: &[(usize, usize, Contact)]) {
-        for &(shot, wall, contact) in shot_contacts {
-            let (later, earlier) = sweep_pair(self.part_rank(Part::Shot(shot)), self.wall_rank(wall));
-            let hit = CallbackHit::PortalShotLand { shot, normal: -contact.normal };
-            self.scratch.callback_hits.push(((GROUP_CIRCLE_RR, later, earlier), hit));
         }
     }
 
@@ -35708,53 +35597,6 @@ impl RolloutWorld {
         self.remove_smoke_cloud(cloud_index);
     }
 
-    /// Circle/RR: DetPhysics builds every manifold first, then applies each
-    /// impulse and positional correction in SortAndSweep order
-    /// (DetPhysics.cs:3012-3048), like thrown items. A landing arrow kicks
-    /// its platform before the wall callback destroys it
-    /// (DetPhysics.cs:3195-3199), and a platform two arrows land on sees the
-    /// first one's impulse before the second's.
-    /// Arrows' Circle/RoundedRectangle manifolds. They resolve in sweep order
-    /// with the items', Tesla nodes', rocks' and portal shots'
-    /// (thrown_item_platform_contacts).
-    fn arrow_wall_manifolds(&mut self) {
-        let mut contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
-        contacts.clear();
-        for (i, arrow) in self.arrows.iter().enumerate() {
-            if !arrow.active || !arrow.registered || self.blink_object_hidden(arrow.entity) {
-                continue;
-            }
-            let circle = Circle {
-                center: arrow.position,
-                radius: arrow.collider_radius,
-            };
-            for (p, platform) in self.platforms.iter().enumerate() {
-                if !platform.active || !self.scratch.swept_pairs(self.tick, p, circle) {
-                    continue;
-                }
-                if let Some(contact) =
-                    crate::physics::contact::circle_rounded(circle, self.circle_collider(p))
-                {
-                    contacts.push((i, p, contact));
-                }
-            }
-        }
-        self.scratch.arrow_platform_contacts = contacts;
-    }
-
-    fn resolve_arrow_wall_contact(&mut self, i: usize, p: usize, contact: Contact, data: &data::RolloutData) {
-        let (platform_center, own_inverse_mass) = self.platform_contact_frame(p);
-        let mut arrow_body = self.arrows[i].body(&data.arrow.body);
-        let platform_body = &mut self.platform_dynamics[p].body;
-        resolve(contact, &mut arrow_body, platform_body, self.arrows[i].position, platform_center);
-        let correction = positional_correction(contact, arrow_body.inverse_mass, own_inverse_mass, false);
-        let arrow = &mut self.arrows[i];
-        arrow.velocity = arrow_body.velocity;
-        arrow.angular_velocity = arrow_body.angular_velocity;
-        arrow.position += correction[0];
-        self.shift_platform_collider(p, correction[1]);
-    }
-
     /// Arrow.OnCollide lands the arrow on its first StickTo callback in
     /// ToMakeCallBacks order: a wall's Circle/RR pair, then its Circle/Circle
     /// and Circle/Box pairs, which resolved in circle_circle_group and
@@ -35781,12 +35623,8 @@ impl RolloutWorld {
                 radius: arrow.collider_radius,
             };
             let arrow_rank = self.part_rank(Part::Arrow(i));
-            // Arrow.OnCollide with each StickTo pair; the first to run lands it.
-            for &(_, p, _) in self.scratch.arrow_platform_contacts.iter().filter(|&&(a, ..)| a == i) {
-                let (later, earlier) = sweep_pair(arrow_rank, self.wall_rank(p));
-                let hit = CallbackHit::ArrowLand { arrow: i, wall: Some(p), part: None };
-                landings.push(((GROUP_CIRCLE_RR, later, earlier), hit));
-            }
+            // Arrow.OnCollide with each StickTo pair; the first to run lands
+            // it. Its wall pairs queued in circle_wall_group.
             for &(_, key, part) in self.scratch.arrow_landings.iter().filter(|&&(a, ..)| a == i) {
                 landings.push((key, CallbackHit::ArrowLand { arrow: i, wall: None, part: Some(part) }));
             }
@@ -36260,259 +36098,61 @@ impl RolloutWorld {
         }
     }
 
-    /// DetPhysics resolves Circle/RoundedRectangle before Circle/Circle.
-    /// Keep this separate from item callbacks so all physical contacts finish
-    /// before GrenadeExplode observes Player-layer overlaps.
-    fn thrown_item_platform_contacts(&mut self, data: &data::RolloutData) {
-        // DetPhysics constructs every Circle/RoundedRectangle manifold before
-        // it resolves the first pair. A correction from an earlier item must
-        // therefore not change the manifold already queued for a later item.
-        self.arrow_wall_manifolds();
-        let mut all_contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
-        all_contacts.clear();
-        for (item_index, item) in self.thrown_items.iter().copied().enumerate() {
-            if !item.active
-                || item.entity.is_none()
-                || item.callback_registered_tick == self.tick
-                || self.blink_object_hidden(item.entity)
+    /// DetPhysics' Circle/RoundedRect group (DetPhysics.cs:3012-3048), after
+    /// the Box/RoundedRect group and before Circle/Circle, with the walls as
+    /// its narrow phase sees them. Rigid pairs resolve in sweep order, and
+    /// GrenadeExplode observes Player-layer overlaps only after all of them.
+    fn circle_wall_group(&mut self) {
+        let mut parts = std::mem::take(&mut self.scratch.wall_parts);
+        parts.clear();
+        for (i, item) in self.thrown_items.iter().enumerate() {
+            if item.active
+                && item.entity.is_some()
+                && item.callback_registered_tick != self.tick
+                && !self.blink_object_hidden(item.entity)
             {
-                continue;
-            }
-            let item_radius = thrown_item_radius(data, item);
-            let circle = Circle {
-                center: item.position,
-                radius: item_radius,
-            };
-            for (platform_index, platform) in self.platforms.iter().enumerate() {
-                if !platform.active {
-                    continue;
-                }
-                if !self.scratch.swept_pairs(self.tick, platform_index, circle) {
-                    continue;
-                }
-                if let Some(contact) =
-                    crate::physics::contact::circle_rounded(circle, self.circle_collider(platform_index))
-                {
-                    all_contacts.push((item_index, platform_index, contact));
-                }
+                parts.push(Part::Item(i));
             }
         }
-
-        // DetPhysics resolves the pairs in SortAndSweep order: by the rank of
-        // the pair's later bounding box on the sweep axis, then the earlier
-        // one's. A wall two items touch sees the first item's impulse and
-        // correction before the second's.
-        let mut node_contacts = std::mem::take(&mut self.scratch.tesla_wall_contacts);
-        let rock_contacts = std::mem::take(&mut self.scratch.rock_wall_contacts);
-        let mut duplicate_contacts = std::mem::take(&mut self.scratch.duplicated_rock_wall_contacts);
-        let shot_contacts = std::mem::take(&mut self.scratch.portal_shot_wall_contacts);
-        let arrow_contacts = std::mem::take(&mut self.scratch.arrow_platform_contacts);
-        let mut order = std::mem::take(&mut self.scratch.circle_wall_order);
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let item_min = |item_index: usize| self.swept_min(Swept::Part(Part::Item(item_index)));
-        let platform_min = |platform_index: usize| {
-            let swept = self
-                .scratch
-                .callback_colliders
-                .get(platform_index)
-                .filter(|_| self.scratch.callback_tick == Some(self.tick))
-                .copied()
-                .unwrap_or_else(|| self.circle_collider(platform_index));
-            axis(swept.inner.center)
-                - axis(swept.inner.right).abs()
-                - axis(swept.inner.up).abs()
-                - swept.radius
-        };
-        let wall_rank = |platform_index: usize| {
-            let entity = Some(self.platform_entities[platform_index]);
-            sweep_rank(&self.entities, platform_min(platform_index), entity)
-        };
-        let item_pair = |item_index: usize, platform_index: usize| {
-            let entity = self.thrown_items[item_index].entity;
-            let item = sweep_rank(&self.entities, item_min(item_index), entity);
-            sweep_pair(item, wall_rank(platform_index))
-        };
-        all_contacts.sort_by_key(|&(item_index, platform_index, _)| {
-            item_pair(item_index, platform_index)
-        });
-        // Tesla nodes' wall pairs are in the same Circle/RoundedRectangle
-        // batch, so their impulses interleave with the items' in sweep order.
-        let node_min = |node_index: usize| self.swept_min(Swept::Part(Part::Node(node_index)));
-        // Rock forms' wall pairs are in the batch too (rock_wall_manifolds).
-        let rock_min = |rock_index: usize| self.swept_min(Swept::Player(rock_index));
-        const ITEM: u8 = 0;
-        const NODE: u8 = 1;
-        // Portal shots are DetPhysics circles in the same batch.
-        let shot_min = |shot_index: usize| self.swept_min(Swept::Part(Part::Shot(shot_index)));
-        const ROCK: u8 = 2;
-        const SHOT: u8 = 3;
-        const ARROW: u8 = 4;
-        const DUPLICATED_ROCK: u8 = 5;
-        let duplicate_min = |rock_index: usize| self.swept_min(Swept::DuplicatedRock(rock_index));
-        let arrow_min = |arrow_index: usize| self.swept_min(Swept::Arrow(arrow_index));
-        let pair = |min: Fix, entity: Option<usize>, wall_index: usize| {
-            sweep_pair(sweep_rank(&self.entities, min, entity), wall_rank(wall_index))
-        };
-        order.clear();
-        order.extend(all_contacts.iter().enumerate().map(|(k, &(item_index, platform_index, _))| {
-            let (later, earlier) = item_pair(item_index, platform_index);
-            (later, earlier, ITEM, k)
-        }));
-        order.extend(node_contacts.iter().enumerate().map(|(k, &(node_index, wall_index, _))| {
-            let entity = self.tesla_nodes[node_index].entity;
-            let (later, earlier) = pair(node_min(node_index), entity, wall_index);
-            (later, earlier, NODE, k)
-        }));
-        order.extend(rock_contacts.iter().enumerate().map(|(k, &(rock_index, wall_index, _))| {
-            let entity = Some(self.players[rock_index].rock_entity);
-            let (later, earlier) = pair(rock_min(rock_index), entity, wall_index);
-            (later, earlier, ROCK, k)
-        }));
-        order.extend(shot_contacts.iter().enumerate().map(|(k, &(shot_index, wall_index, _))| {
-            let entity = self.portal_shots[shot_index].entity;
-            let (later, earlier) = pair(shot_min(shot_index), entity, wall_index);
-            (later, earlier, SHOT, k)
-        }));
-        order.extend(arrow_contacts.iter().enumerate().map(|(k, &(arrow_index, wall_index, _))| {
-            let entity = self.arrows[arrow_index].entity;
-            let (later, earlier) = pair(arrow_min(arrow_index), entity, wall_index);
-            (later, earlier, ARROW, k)
-        }));
-        order.extend(duplicate_contacts.iter().enumerate().map(|(k, &(rock_index, wall_index, _))| {
-            let entity = self.duplicated_rocks[rock_index].entity;
-            let (later, earlier) = pair(duplicate_min(rock_index), entity, wall_index);
-            (later, earlier, DUPLICATED_ROCK, k)
-        }));
-        order.sort_by_key(|&(high, low, _, _)| (high, low));
-        for &(_, _, kind, k) in &order {
-            if kind == NODE {
-                let (node_index, wall_index, contact) = node_contacts[k];
-                self.resolve_tesla_wall_contact(node_index, wall_index, contact);
-                continue;
-            }
-            if kind == ROCK {
-                let (rock_index, wall_index, contact) = rock_contacts[k];
-                self.resolve_rock_wall_contact(rock_index, wall_index, contact);
-                continue;
-            }
-            if kind == SHOT {
-                let (shot_index, wall_index, contact) = shot_contacts[k];
-                self.resolve_portal_shot_wall_contact(shot_index, wall_index, contact);
-                continue;
-            }
-            if kind == ARROW {
-                let (arrow_index, wall_index, contact) = arrow_contacts[k];
-                self.resolve_arrow_wall_contact(arrow_index, wall_index, contact, data);
-                continue;
-            }
-            if kind == DUPLICATED_ROCK {
-                let (rock_index, wall_index, contact) = duplicate_contacts[k];
-                self.resolve_duplicated_rock_wall_contact(rock_index, wall_index, contact);
-                continue;
-            }
-            let (item_index, platform_index, contact) = all_contacts[k];
-            let (platform_center, own_inverse_mass) = self.platform_contact_frame(platform_index);
-            let item = &mut self.thrown_items[item_index];
-            let platform_body = &mut self.platform_dynamics[platform_index].body;
-            resolve(contact, &mut item.body, platform_body, item.position, platform_center);
-            let correction =
-                positional_correction(contact, item.body.inverse_mass, own_inverse_mass, false);
-            item.position += correction[0];
-            self.shift_platform_collider(platform_index, correction[1]);
-        }
-        if !order.is_empty() {
-            self.platforms_changed();
-        }
-        // The manifolds belong to this pass. A game without Tesla never
-        // rebuilds them, and must not resolve a previous episode's.
-        node_contacts.clear();
-        self.scratch.tesla_wall_contacts = node_contacts;
-        let mut rock_contacts = rock_contacts;
-        rock_contacts.clear();
-        self.scratch.rock_wall_contacts = rock_contacts;
-        duplicate_contacts.clear();
-        self.scratch.duplicated_rock_wall_contacts = duplicate_contacts;
-        self.scratch.circle_wall_order = order;
-        // PortalShot.OnCollide lands the shot from the callback queue, after
-        // the Circle/Circle and Circle/Box groups have resolved it too.
-        self.scratch.portal_shot_wall_contacts = shot_contacts;
-        // Arrow.OnCollide reads them in arrows_contacts.
-        self.scratch.arrow_platform_contacts = arrow_contacts;
-
-        for item_index in 0..self.thrown_items.len() {
-            if !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].entity.is_none()
-                || self.thrown_items[item_index].callback_registered_tick == self.tick
-                || self.blink_object_hidden(self.thrown_items[item_index].entity)
+        // A node's circle is in DetPhysics while its row is.
+        for (i, node) in self.tesla_nodes.iter().enumerate() {
+            if node.active
+                && !node.macho_carried
+                && matches!(node.entity.and_then(|entity| self.detphysics_collider(entity)), Some(DetCollider::Circle(_)))
             {
-                continue;
-            }
-            let item = self.thrown_items[item_index];
-            let mut contacts = [(0usize, Contact::default()); 64];
-            let mut contact_count = 0;
-            for &(_, platform_index, contact) in all_contacts
-                .iter()
-                .filter(|(contact_item, _, _)| *contact_item == item_index)
-            {
-                if contact_count == contacts.len() {
-                    break;
-                }
-                contacts[contact_count] = (platform_index, contact);
-                contact_count += 1;
-            }
-            if contact_count == 0 {
-                continue;
-            }
-
-            let body = item.body;
-            let center = item.position;
-            let entity = item.entity.expect("contacting thrown-item collider");
-            {
-                let row = &mut self.entities[entity];
-                row.x = center.x.raw();
-                row.y = center.y.raw();
-                row.vx = body.velocity.x.raw();
-                row.vy = body.velocity.y.raw();
-                row.rotation = body.orientation.raw();
-                row.angular_velocity = body.angular_velocity.raw();
+                parts.push(Part::Node(i));
             }
         }
-        // SmokeGrenadeExplode2 goes off on a wall too: its callback waits in
-        // DetPhysics' queue at the pair's place (SmokeGrenadeExplode2.cs:63-78).
-        for &(item, platform, _) in &all_contacts {
-            if self.thrown_items[item].ability == ABILITY_SMOKE {
-                let (later, earlier) = sweep_pair(self.part_rank(Part::Item(item)), self.wall_rank(platform));
-                let hit = CallbackHit::ItemDetonate { item, count: 1 };
-                self.scratch.callback_hits.push(((GROUP_CIRCLE_RR, later, earlier), hit));
-            }
-        }
-        self.scratch.item_platform_contacts = all_contacts;
-    }
-
-    /// Each wall manifold of a registered Mjolnir or Tack queues the item's
-    /// OnCollide at its Circle/RoundedRect pair's place.
-    fn queue_item_wall_callbacks(&mut self, ability: u32) {
-        let contacts = std::mem::take(&mut self.scratch.item_platform_contacts);
-        for &(item, wall, contact) in &contacts {
-            let thrown = self.thrown_items[item];
-            if thrown.ability != ability
-                || !thrown.active
-                || thrown.entity.is_none()
-                || thrown.callback_registered_tick == self.tick
-                || self.blink_object_hidden(thrown.entity)
+        // A Blink tunnel or teleport disables the form's GameObject, taking
+        // its body out of DetPhysics.
+        for (i, slot) in self.players.iter().enumerate() {
+            if slot.active == ActiveAbility::Rock
+                && self.playable_slot(slot)
+                && !slot.blink_tunnel_active
+                && !slot.teleport_effect_active
             {
-                continue;
+                parts.push(Part::Rock(i));
             }
-            let (later, earlier) = sweep_pair(self.part_rank(Part::Item(item)), self.wall_rank(wall));
-            let hit = if ability == ABILITY_MJOLNIR {
-                CallbackHit::MjolnirWall { item, wall }
-            } else {
-                CallbackHit::TackWall { item, normal: contact.normal }
-            };
-            self.scratch.callback_hits.push(((GROUP_CIRCLE_RR, later, earlier), hit));
         }
-        self.scratch.item_platform_contacts = contacts;
+        for (i, shot) in self.portal_shots.iter().enumerate() {
+            if shot.active && !self.blink_object_hidden(shot.entity) {
+                parts.push(Part::Shot(i));
+            }
+        }
+        for i in 0..self.arrows.len() {
+            if self.arrow_registered(i) {
+                parts.push(Part::Arrow(i));
+            }
+        }
+        for (i, rock) in self.duplicated_rocks.iter().enumerate() {
+            if rock.active && !self.blink_object_hidden(rock.entity) {
+                parts.push(Part::DuplicatedRock(i));
+            }
+        }
+        let walls = std::mem::take(&mut self.scratch.circle_colliders);
+        self.wall_group(GROUP_CIRCLE_RR, &parts, &walls);
+        self.scratch.circle_colliders = walls;
+        self.scratch.wall_parts = parts;
     }
 
     /// Mjolnir.OnCollide with a wall: past its clang grace a launched hammer
@@ -39414,38 +39054,6 @@ impl RolloutWorld {
         }
     }
 
-    /// Duplicated rocks' Circle/RoundedRectangle manifolds, built with the
-    /// Rock forms' and resolved in the same sweep order
-    /// (thrown_item_platform_contacts).
-    fn duplicated_rock_wall_manifolds(&mut self) {
-        let mut scratch = std::mem::take(&mut self.scratch);
-        scratch.duplicated_rock_wall_contacts.clear();
-        for (rock_index, rock) in self.duplicated_rocks.iter().enumerate() {
-            let circle = Circle {
-                center: rock.position,
-                radius: rock.collider_radius,
-            };
-            if !rock.active || self.blink_object_hidden(rock.entity) {
-                continue;
-            }
-            for (wall_index, platform) in self.platforms.iter().enumerate() {
-                if !platform.active || !scratch.swept_pairs(self.tick, wall_index, circle) {
-                    continue;
-                }
-                let collider = scratch.circle_colliders.get(wall_index).copied();
-                if let Some(contact) = crate::physics::contact::circle_rounded(
-                    circle,
-                    collider.unwrap_or(platform.collider),
-                ) {
-                    scratch
-                        .duplicated_rock_wall_contacts
-                        .push((rock_index, wall_index, contact));
-                }
-            }
-        }
-        self.scratch = scratch;
-    }
-
     /// A Rock_noPlayer's Explosion against slimes' hurtboxes. It carries no
     /// BounceBall, so only the victim's PlayerCollision reacts, and its
     /// canHurtOwner lets it kill the slime it was copied from.
@@ -39482,24 +39090,6 @@ impl RolloutWorld {
                 self.queue_callback_kill(victim, true, rank, killer, cause);
             }
         }
-    }
-
-    fn resolve_duplicated_rock_wall_contact(
-        &mut self,
-        rock_index: usize,
-        wall_index: usize,
-        contact: Contact,
-    ) {
-        let rock_position = self.duplicated_rocks[rock_index].position;
-        let (wall_position, own_inverse_mass) = self.platform_contact_frame(wall_index);
-        let rock_body = &mut self.duplicated_rocks[rock_index].body;
-        let wall_body = &mut self.platform_dynamics[wall_index].body;
-        resolve(contact, rock_body, wall_body, rock_position, wall_position);
-        let correction =
-            positional_correction(contact, rock_body.inverse_mass, own_inverse_mass, false);
-        self.duplicated_rocks[rock_index].position += correction[0];
-        self.shift_platform_collider(wall_index, correction[1]);
-        self.sync_duplicated_rock_entity(rock_index);
     }
 
     /// Rounded-platform rigid-body stage. The order matches DetPhysics after
@@ -39598,129 +39188,6 @@ impl RolloutWorld {
             slot.base.up = Vec2::angle(slot.base.rotation).perp();
             slot.base.velocity = slot.rock.body.velocity;
         }
-    }
-
-    /// Circle/RoundedRect and player callbacks for BounceBall. Contacts are
-    /// captured before resolution, as DetPhysics does for each shape group.
-    /// A Tesla node's circle is a child of its platform's CompositeBody, so a
-    /// Circle/RoundedRect contact with another wall moves the whole composite.
-    /// Only the manifolds are built here: thrown_item_platform_contacts
-    /// resolves them in sweep order with the items' walls.
-    fn tesla_wall_contacts(&mut self) {
-        let mut scratch = std::mem::take(&mut self.scratch);
-        scratch.tesla_wall_contacts.clear();
-        for (node_index, node) in self.tesla_nodes.iter().enumerate() {
-            if !node.active || node.macho_carried {
-                continue;
-            }
-            let Some(DetCollider::Circle(circle)) =
-                node.entity.and_then(|entity| self.detphysics_collider(entity))
-            else {
-                continue;
-            };
-            for (wall_index, platform) in self.platforms.iter().enumerate() {
-                if wall_index == node.platform_index
-                    || !platform.active
-                    || !scratch.swept_pairs(self.tick, wall_index, circle)
-                {
-                    continue;
-                }
-                let collider = scratch.circle_colliders.get(wall_index).copied();
-                if let Some(contact) = crate::physics::contact::circle_rounded(
-                    circle,
-                    collider.unwrap_or(platform.collider),
-                ) {
-                    scratch
-                        .tesla_wall_contacts
-                        .push((node_index, wall_index, contact));
-                }
-            }
-        }
-        self.scratch = scratch;
-    }
-
-    /// Resolves one Tesla node's wall manifold, queued by tesla_wall_contacts.
-    /// The node's impulse and correction move its platform's composite.
-    fn resolve_tesla_wall_contact(
-        &mut self,
-        node_index: usize,
-        wall_index: usize,
-        contact: Contact,
-    ) {
-        let node = self.tesla_nodes[node_index];
-        let parent_index = node.platform_index;
-        let parent_position = self.platform_dynamics[parent_index].composite_position;
-        let (wall_position, wall_inverse_mass) = self.platform_contact_frame(wall_index);
-        let (node_body, wall_body) = if parent_index < wall_index {
-            let (left, right) = self.platform_dynamics.split_at_mut(wall_index);
-            (&mut left[parent_index].body, &mut right[0].body)
-        } else {
-            let (left, right) = self.platform_dynamics.split_at_mut(parent_index);
-            (&mut right[0].body, &mut left[wall_index].body)
-        };
-        resolve(contact, node_body, wall_body, parent_position, wall_position);
-        let correction =
-            positional_correction(contact, node.body.inverse_mass, wall_inverse_mass, false);
-        self.platform_dynamics[parent_index].composite_position += correction[0];
-        self.tesla_nodes[node_index].collider_center += correction[0];
-        self.shift_platform_collider(wall_index, correction[1]);
-    }
-
-    /// Rock forms' Circle/RoundedRectangle manifolds. DetPhysics builds
-    /// every manifold of the batch before resolving any, and resolves the
-    /// rocks' in the same sweep order as the items' and Tesla nodes'
-    /// (thrown_item_platform_contacts).
-    fn rock_wall_manifolds(&mut self) {
-        let mut scratch = std::mem::take(&mut self.scratch);
-        scratch.rock_wall_contacts.clear();
-        for (rock_index, slot) in self.players.iter().enumerate() {
-            // A Blink tunnel or teleport disables the form's GameObject,
-            // taking its body out of DetPhysics.
-            if slot.active != ActiveAbility::Rock
-                || !self.playable_slot(slot)
-                || slot.blink_tunnel_active
-                || slot.teleport_effect_active
-            {
-                continue;
-            }
-            let circle = Circle {
-                center: slot.base.position,
-                // Ability.UpdateSim restores Player.Scale before DetPhysics;
-                // BounceBall's pulse is applied only in the later LateUpdate.
-                radius: slot.rock_circle().circle_radius,
-            };
-            for (wall_index, platform) in self.platforms.iter().enumerate() {
-                if !platform.active || !scratch.swept_pairs(self.tick, wall_index, circle) {
-                    continue;
-                }
-                let collider = scratch.circle_colliders.get(wall_index).copied();
-                if let Some(contact) = crate::physics::contact::circle_rounded(
-                    circle,
-                    collider.unwrap_or(platform.collider),
-                ) {
-                    scratch
-                        .rock_wall_contacts
-                        .push((rock_index, wall_index, contact));
-                }
-            }
-        }
-        self.scratch = scratch;
-    }
-
-    fn resolve_rock_wall_contact(&mut self, rock_index: usize, wall_index: usize, contact: Contact) {
-        if self.players[rock_index].active != ActiveAbility::Rock {
-            return;
-        }
-        let rock_position = self.players[rock_index].base.position;
-        let (wall_position, own_inverse_mass) = self.platform_contact_frame(wall_index);
-        let rock_body = &mut self.players[rock_index].rock.body;
-        let wall_body = &mut self.platform_dynamics[wall_index].body;
-        resolve(contact, rock_body, wall_body, rock_position, wall_position);
-        let correction = positional_correction(contact, rock_body.inverse_mass, own_inverse_mass, false);
-        let rock_velocity = rock_body.velocity;
-        self.players[rock_index].base.position += correction[0];
-        self.shift_platform_collider(wall_index, correction[1]);
-        self.players[rock_index].base.velocity = rock_velocity;
     }
 
     /// A Rock form's Circle/Box pairs with slimes, forms and clones, which
@@ -40440,7 +39907,6 @@ impl RolloutWorld {
         // PlayerCollision's later squish callback tests that copy, before the
         // RR positional corrections below move either platform.
         let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
         let scratch = &mut self.scratch;
         scratch.callback_colliders.clear();
         scratch.callback_tick = Some(self.tick);
@@ -40507,294 +39973,44 @@ impl RolloutWorld {
         // children's colliders.
         let mut sweep = std::mem::take(&mut scratch.sweep);
         self.take_sweep(&mut sweep, data);
-        let missiles_hidden: Vec<bool> =
-            self.guided_missiles.iter().map(|missile| self.blink_object_hidden(missile.entity)).collect();
-        let scratch = &mut self.scratch;
-        scratch.sweep = sweep;
+        self.scratch.sweep = sweep;
 
-        // DetPhysics' Box/RoundedRect group follows RoundedRect/RoundedRect.
-        // SpikeAttack boxes are composite children, so impulses and
-        // positional correction move their attached platform body.
-        // DetPhysics builds every Box/RoundedRect manifold before it resolves
-        // any, then resolves them in SortAndSweep pair order: by the later
-        // bounding-box minimum on the sweep axis, then the earlier one. Two
-        // children of one composite touching walls in the same pass meet the
-        // combined body in that order.
-        // Box/RoundedRect manifolds share the circle batch's sort buffer.
-        const SPIKE: u8 = 0;
-        const ENGINE: u8 = 1;
-        const MISSILE: u8 = 2;
-        scratch.circle_wall_order.clear();
-        scratch.spike_wall_contacts.clear();
-        for (spike_index, spike) in self.spike_attacks.iter().enumerate() {
-            if !spike.active
-                || spike.macho_carried
-                || spike.platform_index >= self.platforms.len()
-                // Out of the hierarchy with its wall or on its own
-                // (`attached_hidden`, which `scratch` keeps out of reach). The
-                // row's E_ACTIVE is last pass's: a wall whose QuantumTunnel
-                // ended this pass brings its children back into this Simulate.
-                || !self.platforms[spike.platform_index].active
-                || Self::object_hidden_in(
-                    &self.entities,
-                    &self.blink_object_tunnels,
-                    &self.teleport_object_effects,
-                    spike.entity,
-                )
+        // DetPhysics' Box/RoundedRect group follows RoundedRect/RoundedRect,
+        // against the walls those corrections moved. SpikeAttack and
+        // RocketEngine boxes are composite children, a Guided Missile's a
+        // free body. A child out of the hierarchy with its wall or on its own
+        // is out of this Simulate (`attached_hidden`); the row's E_ACTIVE is
+        // last pass's, so a wall whose QuantumTunnel ended this pass brings
+        // its children back.
+        let mut parts = std::mem::take(&mut self.scratch.wall_parts);
+        parts.clear();
+        for (i, spike) in self.spike_attacks.iter().enumerate() {
+            if spike.active
+                && !spike.macho_carried
+                && spike.platform_index < self.platforms.len()
+                && !self.attached_hidden(spike.platform_index, spike.entity)
             {
-                continue;
-            }
-            let parent_index = spike.platform_index;
-            let parent = &self.platform_dynamics[parent_index].body;
-            let basis = Vec2::angle(parent.orientation + spike.relative_rotation);
-            let center = spike.collider_center;
-            let spike_extents = spike.box_extents();
-            let attack_box = OrientedBox {
-                center,
-                right: basis * spike_extents.x,
-                up: (Vec2::UP * spike_extents.y).complex_mul(basis),
-                inverse_extents: spike.inverse_extents,
-            };
-            let attack_rr = RoundedRect {
-                inner: attack_box,
-                radius: Fix::ZERO,
-            };
-            for (wall_index, platform) in self.platforms.iter().enumerate() {
-                if wall_index == parent_index
-                    || !platform.active
-                    || !Self::box_swept_with_wall(attack_rr, scratch.callback_colliders[wall_index])
-                {
-                    continue;
-                }
-                if let Some(contact) =
-                    crate::physics::contact::rounded_rounded(attack_rr, platform.collider)
-                {
-                    let box_min = axis(attack_box.center)
-                        - axis(attack_box.right).abs()
-                        - axis(attack_box.up).abs();
-                    let wall_min = axis(scratch.bounds[wall_index][0]);
-                    let wall = Some(self.platform_entities[wall_index]);
-                    let (later, earlier) = sweep_pair(
-                        sweep_rank(&self.entities, box_min, spike.entity),
-                        sweep_rank(&self.entities, wall_min, wall),
-                    );
-                    let k = scratch.spike_wall_contacts.len();
-                    scratch.circle_wall_order.push((later, earlier, SPIKE, k));
-                    scratch
-                        .spike_wall_contacts
-                        .push((spike_index, wall_index, contact));
-                }
+                parts.push(Part::Spike(i));
             }
         }
-        // RocketEngine uses the same Box/RoundedRect physical group as a
-        // SpikeAttack child, but has no collision callback of its own.
-        scratch.engine_wall_contacts.clear();
-        for (engine_index, engine) in self.engines.iter().enumerate() {
-            if !engine.active
-                || engine.macho_carried
-                || engine.platform_index >= self.platforms.len()
-                || !self.platforms[engine.platform_index].active
-                || Self::object_hidden_in(
-                    &self.entities,
-                    &self.blink_object_tunnels,
-                    &self.teleport_object_effects,
-                    engine.entity,
-                )
+        for (i, engine) in self.engines.iter().enumerate() {
+            if engine.active
+                && !engine.macho_carried
+                && engine.platform_index < self.platforms.len()
+                && !self.attached_hidden(engine.platform_index, engine.entity)
             {
-                continue;
-            }
-            let parent_index = engine.platform_index;
-            let basis = Vec2::angle(engine.collider_rotation);
-            let center = engine.collider_center;
-            let extents = engine.box_extents();
-            let box_rr = RoundedRect {
-                inner: OrientedBox {
-                    center,
-                    right: basis * extents.x,
-                    up: (Vec2::UP * extents.y).complex_mul(basis),
-                    inverse_extents: engine.inverse_extents,
-                },
-                radius: Fix::ZERO,
-            };
-            for (wall_index, platform) in self.platforms.iter().enumerate() {
-                if wall_index == parent_index
-                    || !platform.active
-                    || !Self::box_swept_with_wall(box_rr, scratch.callback_colliders[wall_index])
-                {
-                    continue;
-                }
-                if let Some(contact) =
-                    crate::physics::contact::rounded_rounded(box_rr, platform.collider)
-                {
-                    let box_min = axis(box_rr.inner.center)
-                        - axis(box_rr.inner.right).abs()
-                        - axis(box_rr.inner.up).abs();
-                    let wall_min = axis(scratch.bounds[wall_index][0]);
-                    let wall = Some(self.platform_entities[wall_index]);
-                    let (later, earlier) = sweep_pair(
-                        sweep_rank(&self.entities, box_min, engine.entity),
-                        sweep_rank(&self.entities, wall_min, wall),
-                    );
-                    let k = scratch.engine_wall_contacts.len();
-                    scratch.circle_wall_order.push((later, earlier, ENGINE, k));
-                    scratch
-                        .engine_wall_contacts
-                        .push((engine_index, wall_index, contact));
-                }
+                parts.push(Part::Engine(i));
             }
         }
-        // A Guided Missile's box is a free body on the item layer, which
-        // collides with walls.
-        scratch.missile_wall_contacts.clear();
-        for (missile_index, missile) in self.guided_missiles.iter().enumerate() {
-            if !missile.active || !missile.registered || missiles_hidden[missile_index] {
-                continue;
-            }
-            let missile_rr = RoundedRect {
-                inner: missile.collider(),
-                radius: Fix::ZERO,
-            };
-            for (wall_index, platform) in self.platforms.iter().enumerate() {
-                if !platform.active || !Self::box_swept_with_wall(missile_rr, scratch.callback_colliders[wall_index]) {
-                    continue;
-                }
-                if let Some(contact) = crate::physics::contact::rounded_rounded(missile_rr, platform.collider) {
-                    let box_min = axis(missile_rr.inner.center)
-                        - axis(missile_rr.inner.right).abs()
-                        - axis(missile_rr.inner.up).abs();
-                    let wall_min = axis(scratch.bounds[wall_index][0]);
-                    let wall = Some(self.platform_entities[wall_index]);
-                    let (later, earlier) = sweep_pair(
-                        sweep_rank(&self.entities, box_min, missile.entity),
-                        sweep_rank(&self.entities, wall_min, wall),
-                    );
-                    let k = scratch.missile_wall_contacts.len();
-                    scratch.circle_wall_order.push((later, earlier, MISSILE, k));
-                    scratch.missile_wall_contacts.push((missile_index, wall_index, contact));
-                }
+        for i in 0..self.guided_missiles.len() {
+            if self.guided_missile_live(i) {
+                parts.push(Part::Missile(i));
             }
         }
-        let mut order = std::mem::take(&mut scratch.circle_wall_order);
-        order.sort_by_key(|&(high, low, _, _)| (high, low));
-        for &(later, earlier, kind, k) in &order {
-            if kind == MISSILE {
-                let (missile_index, wall_index, contact) = scratch.missile_wall_contacts[k];
-                let dynamics = &mut self.platform_dynamics[wall_index];
-                let (wall_center, wall_inverse_mass) = if dynamics.attached_children != 0 {
-                    (dynamics.composite_position, dynamics.root_body.inverse_mass)
-                } else {
-                    (self.platforms[wall_index].surface.center, dynamics.body.inverse_mass)
-                };
-                let missile = &mut self.guided_missiles[missile_index];
-                resolve(contact, &mut missile.body, &mut dynamics.body, missile.position, wall_center);
-                let correction =
-                    positional_correction(contact, missile.body.inverse_mass, wall_inverse_mass, false);
-                missile.position += correction[0];
-                self.platforms[wall_index].surface.center += correction[1];
-                self.platforms[wall_index].collider.inner.center += correction[1];
-                if dynamics.attached_children != 0 {
-                    dynamics.composite_position += correction[1];
-                }
-                // Missile.OnCollide, queued in the same pair order.
-                let hit = CallbackHit::MissileBlast { missile: missile_index };
-                scratch.callback_hits.push(((GROUP_BOX_RR, later, earlier), hit));
-                continue;
-            }
-            if kind == SPIKE {
-                let (spike_index, wall_index, contact) = scratch.spike_wall_contacts[k];
-                let parent_index = self.spike_attacks[spike_index].platform_index;
-                let spike_body_position = self.platform_dynamics[parent_index].composite_position;
-                let wall_center = if self.platform_dynamics[wall_index].attached_children == 0 {
-                    self.platforms[wall_index].surface.center
-                } else {
-                    self.platform_dynamics[wall_index].composite_position
-                };
-                let wall_child_inverse_mass = self.platform_dynamics[wall_index].root_body.inverse_mass;
-                let (spike_body, wall_body) = if parent_index < wall_index {
-                    let (left, right) = self.platform_dynamics.split_at_mut(wall_index);
-                    (&mut left[parent_index].body, &mut right[0].body)
-                } else {
-                    let (left, right) = self.platform_dynamics.split_at_mut(parent_index);
-                    (&mut right[0].body, &mut left[wall_index].body)
-                };
-                resolve(
-                    contact,
-                    spike_body,
-                    wall_body,
-                    spike_body_position,
-                    wall_center,
-                );
-                let correction = positional_correction(
-                    contact,
-                    data.spike.attack_body.inverse_mass,
-                    wall_child_inverse_mass,
-                    false,
-                );
-                // Box correction moves the box and its CompositeBody.position,
-                // but does not directly move the rounded-rect child collider.
-                self.platform_dynamics[parent_index].composite_position += correction[0];
-                self.spike_attacks[spike_index].collider_center += correction[0];
-                self.platforms[wall_index].surface.center += correction[1];
-                self.platforms[wall_index].collider.inner.center += correction[1];
-                if self.platform_dynamics[wall_index].attached_children != 0 {
-                    self.platform_dynamics[wall_index].composite_position += correction[1];
-                }
-                continue;
-            }
-            let (engine_index, wall_index, contact) = scratch.engine_wall_contacts[k];
-            let engine = self.engines[engine_index];
-            let parent_index = engine.platform_index;
-            let engine_body_position = self.platform_dynamics[parent_index].composite_position;
-            let wall_center = if self.platform_dynamics[wall_index].attached_children == 0 {
-                self.platforms[wall_index].surface.center
-            } else {
-                self.platform_dynamics[wall_index].composite_position
-            };
-            let wall_child_inverse_mass = self.platform_dynamics[wall_index].root_body.inverse_mass;
-            let (engine_body, wall_body) = if parent_index < wall_index {
-                let (left, right) = self.platform_dynamics.split_at_mut(wall_index);
-                (&mut left[parent_index].body, &mut right[0].body)
-            } else {
-                let (left, right) = self.platform_dynamics.split_at_mut(parent_index);
-                (&mut right[0].body, &mut left[wall_index].body)
-            };
-            resolve(
-                contact,
-                engine_body,
-                wall_body,
-                engine_body_position,
-                wall_center,
-            );
-            let correction = positional_correction(
-                contact,
-                engine.body.inverse_mass,
-                wall_child_inverse_mass,
-                false,
-            );
-            self.platform_dynamics[parent_index].composite_position += correction[0];
-            self.engines[engine_index].collider_center += correction[0];
-            self.platforms[wall_index].surface.center += correction[1];
-            self.platforms[wall_index].collider.inner.center += correction[1];
-            if self.platform_dynamics[wall_index].attached_children != 0 {
-                self.platform_dynamics[wall_index].composite_position += correction[1];
-            }
-        }
-        // PrepareCollisionCallBacks queues the callbacks in the same pair
-        // order, so a spike touching two walls pushes itself off the first
-        // in sweep order.
-        for &(later, earlier, kind, k) in &order {
-            if kind == SPIKE {
-                let (spike, wall, contact) = scratch.spike_wall_contacts[k];
-                let hit = CallbackHit::SpikeWallKnock { spike, wall, point: contact.point };
-                scratch.callback_hits.push(((GROUP_BOX_RR, later, earlier), hit));
-            }
-        }
-        scratch.spike_wall_contacts.clear();
-        if !scratch.missile_wall_contacts.is_empty() {
-            self.platform_epoch += 1;
-        }
-        order.clear();
-        self.scratch.circle_wall_order = order;
+        let walls = std::mem::take(&mut self.scratch.box_callback_colliders);
+        self.wall_group(GROUP_BOX_RR, &parts, &walls);
+        self.scratch.box_callback_colliders = walls;
+        self.scratch.wall_parts = parts;
 
         // The Box/RR group runs after the RR/RR corrections, so its copy of
         // the wall already carries them.
@@ -40811,23 +40027,6 @@ impl RolloutWorld {
         // transformed owner is handled by deaths_tick using the position it
         // copied before physics. The separate ResizablePlatform prefab has no
         // boundary component: it remains a collidable body after that death.
-    }
-
-    /// DetPhysics pairs a Box with a RoundedRect only if their bounding boxes,
-    /// taken before the RoundedRect/RoundedRect corrections, strictly overlap
-    /// (SortAndSweep). A wall those corrections push into a box this pass is
-    /// not tested against it.
-    fn box_swept_with_wall(box_rr: RoundedRect, wall: RoundedRect) -> bool {
-        let bounds = |r: RoundedRect| {
-            let extent = Vec2::new(
-                r.inner.right.x.abs() + r.inner.up.x.abs() + r.radius,
-                r.inner.right.y.abs() + r.inner.up.y.abs() + r.radius,
-            );
-            [r.inner.center - extent, r.inner.center + extent]
-        };
-        let [a_min, a_max] = bounds(box_rr);
-        let [b_min, b_max] = bounds(wall);
-        a_max.x > b_min.x && a_min.x < b_max.x && a_max.y > b_min.y && a_min.y < b_max.y
     }
 
     /// A wall as the Circle/RoundedRect narrow phase saw it this pass.
