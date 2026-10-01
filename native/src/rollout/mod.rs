@@ -2633,6 +2633,8 @@ pub struct TeleportObjectEffect {
     /// Hierarchy of the TeleportIndicator whose UpdateSim hid the object:
     /// the object's own updaters that come earlier ran on the hiding pass.
     pub source_hierarchy: u32,
+    /// The pass the effect last took its Updater turn.
+    pub stepped_tick: Option<u32>,
 }
 
 /// One invisible Portal endpoint. Portals have no DetPhysics collider or
@@ -3371,6 +3373,8 @@ pub struct PlayerSlot {
     /// The effect's Updater hierarchy, and the pass its UpdateSim reenabled
     /// the player: updatables below it already saw the player inactive.
     pub teleport_effect_hierarchy: u32,
+    /// The pass the effect last took its Updater turn.
+    pub teleport_effect_stepped_tick: Option<u32>,
     /// (pass, TeleportIndicator hierarchy, position before it moved the
     /// player): an older Mjolnir still finds the slime there, active.
     pub teleported_from: (u32, u32, Vec2),
@@ -5778,6 +5782,7 @@ impl RolloutWorld {
                 teleport_effect_active: false,
                 teleport_effect_time: Fix::ZERO,
                 teleport_effect_hierarchy: 0,
+                teleport_effect_stepped_tick: None,
                 teleported_from: (u32::MAX, 0, Vec2::ZERO),
                 teleport_effect_released_tick: None,
                 teleport_effect_born_tick: 0,
@@ -7662,14 +7667,7 @@ impl RolloutWorld {
             self.revival_effects_tick(data);
         }
         if has(ABILITY_TELEPORT) {
-            // A slime's QuantumTunnel older than an effect draws its release
-            // position first; blink_tunnels_tick steps the newer effects.
-            let first_tunnel = if has(ABILITY_BLINK) {
-                self.first_blink_tunnel_hierarchy()
-            } else {
-                u32::MAX
-            };
-            self.teleport_effects_tick(data, updater_dt, 0..first_tunnel);
+            self.teleport_effects_tick(data, updater_dt);
             self.teleport_pending_tick(data, updater_dt, u32::MAX);
         }
         if has_rope && first_teleport < ropes_before_clones {
@@ -8391,6 +8389,17 @@ impl RolloutWorld {
             {
                 push(100_000_000 + slot.blink_tunnel_hierarchy, 20, i);
             }
+            if slot.teleport_effect_active
+                && slot.teleport_effect_born_tick != tick
+                && slot.teleport_effect_stepped_tick != Some(tick)
+            {
+                push(100_000_000 + slot.teleport_effect_hierarchy, 21, i);
+            }
+        }
+        for (i, effect) in self.teleport_object_effects.iter().enumerate() {
+            if effect.active && effect.born_tick != tick && effect.stepped_tick != Some(tick) {
+                push(100_000_000 + effect.hierarchy, 22, i);
+            }
         }
         for (i, clone) in self.abilityless_clones.iter().enumerate() {
             if clone.active && clone.born_tick < tick && clone.updater_ran_tick != Some(tick) {
@@ -8457,6 +8466,8 @@ impl RolloutWorld {
                 16 => self.tesla_nodes_update(data, updater_dt, hierarchy - 99_999_999),
                 17 => self.blink_object_tunnels_tick(data, updater_dt, Some(hierarchy - 99_999_999)),
                 20 => self.blink_tunnel_step(index, data, updater_dt),
+                21 => self.teleport_player_effect_step(index, data, updater_dt),
+                22 => self.teleport_object_effect_step(index, data, updater_dt),
                 // Grenade.UpdateSim: a fuse that runs out detonates at the
                 // item's own turn, before a younger cloud's FlammableSmoke
                 // detonates.
@@ -21536,64 +21547,87 @@ impl RolloutWorld {
         }
     }
 
-    /// Steps the TeleportedObjectEffects registered in `hierarchies`.
-    fn teleport_effects_tick(
-        &mut self,
-        data: &data::RolloutData,
-        updater_dt: Fix,
-        hierarchies: std::ops::Range<u32>,
-    ) {
-        for index in 0..self.players.len() {
-            if !self.players[index].teleport_effect_active
-                || !hierarchies.contains(&self.players[index].teleport_effect_hierarchy)
-                || self.players[index].teleport_effect_born_tick == self.tick
-            {
-                continue;
-            }
-            self.players[index].teleport_effect_time += updater_dt;
-            if self.players[index].teleport_effect_time > data.teleport.effect_duration {
-                self.players[index].set_teleport_hidden(&mut self.entities, false);
-                self.players[index].teleport_effect_time = Fix::ZERO;
-                self.players[index].teleport_effect_released_tick = Some(self.tick);
-            }
-            // TeleportedObjectEffect still shakes its visual copy on the
-            // destruction pass. RandomInsideUnitCircle performs two
-            // RandomFix calls; each spans integer floors and consumes two
-            // Unity.Mathematics.Random samples.
-            if self.player_time_scale >= Fix::from_f32(0.01) {
-                let _ = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-                let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+    /// TeleportedObjectEffect.UpdateSim for every effect that has not had
+    /// its turn this pass, in hierarchy order, each after the older
+    /// updatables it follows in the Updater.
+    fn teleport_effects_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
+        loop {
+            let tick = self.tick;
+            let players = (self.players.iter().enumerate())
+                .filter(|(_, slot)| {
+                    slot.teleport_effect_active
+                        && slot.teleport_effect_born_tick != tick
+                        && slot.teleport_effect_stepped_tick != Some(tick)
+                })
+                .map(|(index, slot)| (slot.teleport_effect_hierarchy, false, index));
+            let objects = (self.teleport_object_effects.iter().enumerate())
+                .filter(|(_, effect)| {
+                    effect.active && effect.born_tick != tick && effect.stepped_tick != Some(tick)
+                })
+                .map(|(index, effect)| (effect.hierarchy, true, index));
+            let Some((hierarchy, object, index)) = players.chain(objects).min() else {
+                return;
+            };
+            self.run_spawned_before(data, updater_dt, 100_000_000 + hierarchy);
+            if object {
+                self.teleport_object_effect_step(index, data, updater_dt);
+            } else {
+                self.teleport_player_effect_step(index, data, updater_dt);
             }
         }
-        for index in 0..self.teleport_object_effects.len() {
-            let effect = self.teleport_object_effects[index];
-            if !effect.active || effect.born_tick == self.tick || !hierarchies.contains(&effect.hierarchy)
+    }
+
+    /// TeleportedObjectEffect.UpdateSim for the effect holding a slime.
+    fn teleport_player_effect_step(&mut self, index: usize, data: &data::RolloutData, updater_dt: Fix) {
+        if self.players[index].teleport_effect_stepped_tick == Some(self.tick) {
+            return;
+        }
+        self.players[index].teleport_effect_stepped_tick = Some(self.tick);
+        self.players[index].teleport_effect_time += updater_dt;
+        if self.players[index].teleport_effect_time > data.teleport.effect_duration {
+            self.players[index].set_teleport_hidden(&mut self.entities, false);
+            self.players[index].teleport_effect_time = Fix::ZERO;
+            self.players[index].teleport_effect_released_tick = Some(self.tick);
+        }
+        // TeleportedObjectEffect still shakes its visual copy on the
+        // destruction pass. RandomInsideUnitCircle performs two
+        // RandomFix calls; each spans integer floors and consumes two
+        // Unity.Mathematics.Random samples.
+        if self.player_time_scale >= Fix::from_f32(0.01) {
+            let _ = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+            let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
+        }
+    }
+
+    /// TeleportedObjectEffect.UpdateSim for the effect holding an object.
+    fn teleport_object_effect_step(&mut self, index: usize, data: &data::RolloutData, updater_dt: Fix) {
+        if self.teleport_object_effects[index].stepped_tick == Some(self.tick) {
+            return;
+        }
+        self.teleport_object_effects[index].stepped_tick = Some(self.tick);
+        let effect = self.teleport_object_effects[index];
+        self.teleport_object_effects[index].age += updater_dt;
+        if self.teleport_object_effects[index].age > data.teleport.effect_duration {
+            if effect.entity < self.entities.len()
+                && self.entities[effect.entity].id == effect.entity_id
+                && self.entities[effect.entity].flags & (E_REMOVED | E_DESTROYED) == 0
             {
-                continue;
-            }
-            self.teleport_object_effects[index].age += updater_dt;
-            if self.teleport_object_effects[index].age > data.teleport.effect_duration {
-                if effect.entity < self.entities.len()
-                    && self.entities[effect.entity].id == effect.entity_id
-                    && self.entities[effect.entity].flags & (E_REMOVED | E_DESTROYED) == 0
+                self.entities[effect.entity].flags = effect.restore_flags;
+                self.teleport_object_effects[index].revealed_tick = Some(self.tick);
+                if let Some(platform_index) = self
+                    .platform_entities
+                    .iter()
+                    .position(|&candidate| candidate == effect.entity)
                 {
-                    self.entities[effect.entity].flags = effect.restore_flags;
-                    self.teleport_object_effects[index].revealed_tick = Some(self.tick);
-                    if let Some(platform_index) = self
-                        .platform_entities
-                        .iter()
-                        .position(|&candidate| candidate == effect.entity)
-                    {
-                        self.platforms[platform_index].active = true;
-                        self.platforms_changed();
-                    }
+                    self.platforms[platform_index].active = true;
+                    self.platforms_changed();
                 }
-                self.teleport_object_effects[index].active = false;
             }
-            if self.player_time_scale >= Fix::from_f32(0.01) {
-                let _ = self.rng.fix_range(Fix::ZERO, Fix::TAU);
-                let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
-            }
+            self.teleport_object_effects[index].active = false;
+        }
+        if self.player_time_scale >= Fix::from_f32(0.01) {
+            let _ = self.rng.fix_range(Fix::ZERO, Fix::TAU);
+            let _ = self.rng.fix_range(Fix::ZERO, Fix::ONE);
         }
     }
 
@@ -30303,6 +30337,7 @@ impl RolloutWorld {
             hierarchy: self.next_spawn_hierarchy,
             revealed_tick: None,
             source_hierarchy,
+            stepped_tick: None,
         };
         if let Some(index) = self
             .teleport_object_effects
@@ -30505,51 +30540,35 @@ impl RolloutWorld {
         }
     }
 
-    /// The oldest slime QuantumTunnel that `blink_tunnels_tick` steps this pass.
-    fn first_blink_tunnel_hierarchy(&self) -> u32 {
-        self.players
-            .iter()
-            .filter(|slot| slot.blink_tunnel_active && slot.blink_tunnel_born_tick != self.tick)
-            .map(|slot| slot.blink_tunnel_hierarchy)
-            .min()
-            .unwrap_or(u32::MAX)
-    }
-
     /// QuantumTunnel.UpdateSim for player victims. The visual copy has no
     /// collider row, so its clock, RNG, relocation and active state suffice.
-    /// The tunnels run in hierarchy order (QuantumTunnel.cs:144), after the
-    /// older wall tunnels: each release draws from the shared RNG and picks
-    /// among the walls left active.
+    /// Each tunnel takes its turn in hierarchy order (QuantumTunnel.cs:144),
+    /// after the older updatables: a release draws from the shared RNG and
+    /// picks among the walls left active.
     fn blink_tunnels_tick(&mut self, data: &data::RolloutData, updater_dt: Fix) {
-        // TeleportedObjectEffects from the first tunnel on run in turn with
-        // the tunnels; both draw from Updater's RNG (QuantumTunnel.cs:263-273,
-        // TeleportedObjectEffect.cs:38).
-        let mut effects_from = self.first_blink_tunnel_hierarchy();
-        let mut order = [0usize; MAX_BODIES];
-        let order = &mut order[..self.players.len()];
-        for (victim, slot) in order.iter_mut().enumerate() {
-            *slot = victim;
+        loop {
+            let tick = self.tick;
+            let next = (self.players.iter().enumerate())
+                .filter(|(_, slot)| {
+                    slot.blink_tunnel_active
+                        && slot.blink_tunnel_born_tick != tick
+                        && slot.blink_tunnel_stepped_tick != Some(tick)
+                })
+                .map(|(victim, slot)| (slot.blink_tunnel_hierarchy, victim))
+                .min();
+            let Some((hierarchy, victim)) = next else {
+                return;
+            };
+            self.run_spawned_before(data, updater_dt, 100_000_000 + hierarchy);
+            self.blink_tunnel_step(victim, data, updater_dt);
         }
-        order.sort_unstable_by_key(|&victim| (self.players[victim].blink_tunnel_hierarchy, victim));
-        for &victim in order.iter() {
-            if !self.players[victim].blink_tunnel_active
-                || self.players[victim].blink_tunnel_born_tick == self.tick
-            {
-                continue;
-            }
-            let hierarchy = self.players[victim].blink_tunnel_hierarchy;
-            self.blink_platform_tunnels_tick(data, updater_dt, Some(hierarchy));
-            self.teleport_effects_tick(data, updater_dt, effects_from..hierarchy);
-            effects_from = effects_from.max(hierarchy);
-            if self.players[victim].blink_tunnel_stepped_tick != Some(self.tick) {
-                self.blink_tunnel_step(victim, data, updater_dt);
-            }
-        }
-        self.teleport_effects_tick(data, updater_dt, effects_from..u32::MAX);
     }
 
     /// One slime QuantumTunnel's UpdateSim turn (QuantumTunnel.cs:144-196).
     fn blink_tunnel_step(&mut self, victim: usize, data: &data::RolloutData, updater_dt: Fix) {
+        if self.players[victim].blink_tunnel_stepped_tick == Some(self.tick) {
+            return;
+        }
         self.players[victim].blink_tunnel_stepped_tick = Some(self.tick);
         let hierarchy = self.players[victim].blink_tunnel_hierarchy;
         if self.players[victim].blink_tunnel_age > data.blink.player_duration {
