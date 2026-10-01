@@ -39702,14 +39702,15 @@ impl RolloutWorld {
                     continue;
                 }
                 row.flags |= E_PROJECTILE;
-                // The NativeAOT observer's generic Projectile fallback
-                // credits the owner's Bow slot when one exists.
-                row.reserved[0] = self.players[shot.owner]
-                    .abilities
-                    .iter()
-                    .copied()
-                    .find(|&ability| ability == ABILITY_BOW)
-                    .unwrap_or(ABILITY_NULL);
+                // SourceAbility's last loop credits a Projectile to the Bow
+                // slot of any listed slime whose GetPlayerId() is the row's
+                // owner (RlObservation.cs:201-217), so a second body's Bow
+                // counts for a shot the other body fired.
+                row.reserved[0] = if Self::player_holds(&self.players, &held, row.owner, ABILITY_BOW) {
+                    ABILITY_BOW
+                } else {
+                    ABILITY_NULL
+                };
             }
         }
         for smear in &self.meteor_smears {
