@@ -869,7 +869,7 @@ impl RolloutWorld {
         let hook_position = rope_end + aim * source.grapple_spawn_offset;
         let hook_id = self.next_id();
         let hook_entity = self.entities.len();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id: hook_id,
             kind: 0,
             layer: source.hook_layer,
@@ -883,7 +883,7 @@ impl RolloutWorld {
             radius: source.hook_radius.raw(),
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         let rope_index = self.allocate_rope(
             player,
             hook_position,

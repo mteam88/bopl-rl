@@ -228,11 +228,17 @@ fn sweep_rank(entities: &[CEntity], min: Fix, entity: Option<usize>) -> SweepRan
     (min, entities.get(entity).map_or(u32::MAX, |row| row.kind), entity)
 }
 
+/// Appends an entity row together with its collider's Box.inverseExtents
+/// (Box.cs:30-41), zero for a row with no box: the one way a row is added, so
+/// every row has its entry.
+fn push_entity(entities: &mut Vec<CEntity>, table: &mut Vec<Vec2>, row: CEntity, inverse_extents: Vec2) -> usize {
+    entities.push(row);
+    table.push(inverse_extents);
+    entities.len() - 1
+}
+
 /// Records the Box.inverseExtents of box row `entity` (Box.cs:30-41).
-fn set_inverse_extents(table: &mut Vec<Vec2>, entity: usize, value: Vec2) {
-    if table.len() <= entity {
-        table.resize(entity + 1, Vec2::ZERO);
-    }
+fn set_inverse_extents(table: &mut [Vec2], entity: usize, value: Vec2) {
     table[entity] = value;
 }
 
@@ -5210,7 +5216,7 @@ impl RolloutWorld {
                 *target = self.entities.len();
                 form_entities[i][s] = *target;
                 let id = self.next_id();
-                self.entities.push(CEntity {
+                self.push_entity(CEntity {
                     id,
                     kind: 0,
                     layer: LAYER_PLAYER,
@@ -5223,7 +5229,7 @@ impl RolloutWorld {
                     radius: radius.raw(),
                     inverse_mass: -(1 << 32),
                     ..CEntity::default()
-                });
+                }, Vec2::ZERO);
             }
         }
         if let Some((water_position, water_extents, water_hierarchy)) = def.water {
@@ -5231,13 +5237,8 @@ impl RolloutWorld {
             // DPhysicsBox's collider axes are `Vec2.right / inverseExtents.x`
             // (Box.SetRotation, Box.cs:33) with `inverseExtents = One / extents`,
             // the same round trip as the platform perimeters.
-            set_inverse_extents(
-                &mut self.entity_inverse_extents,
-                self.entities.len(),
-                Vec2::new(Fix::ONE / water_extents.x, Fix::ONE / water_extents.y),
-            );
             let water_extents = data::surface_extents(water_extents);
-            self.entities.push(CEntity {
+            self.push_entity(CEntity {
                 id: water_id,
                 kind: 1,
                 layer: LAYER_WATER,
@@ -5250,7 +5251,7 @@ impl RolloutWorld {
                 up_y: water_extents.y.raw(),
                 inverse_mass: -(1 << 32),
                 ..CEntity::default()
-            });
+            }, Vec2::new(Fix::ONE / water_extents.x, Fix::ONE / water_extents.y));
         }
         for i in 0..players {
             for s in 0..=slots {
@@ -5437,7 +5438,7 @@ impl RolloutWorld {
                 } else {
                     resolved_abilities[i][s - 1]
                 };
-                self.entities.push(CEntity {
+                self.push_entity(CEntity {
                     id,
                     kind: 1,
                     layer: LAYER_PLAYER,
@@ -5557,7 +5558,7 @@ impl RolloutWorld {
                     up_y: extents.y.raw(),
                     inverse_mass: -(1 << 32),
                     ..CEntity::default()
-                });
+                }, Vec2::ZERO);
                 set_inverse_extents(
                     &mut self.entity_inverse_extents,
                     *target,
@@ -5577,7 +5578,7 @@ impl RolloutWorld {
             intro_surface.center = start;
             let id = self.next_id();
             let entity = self.entities.len();
-            self.entities.push(CEntity {
+            self.push_entity(CEntity {
                 id,
                 kind: 2,
                 layer: LAYER_WALL,
@@ -5586,7 +5587,7 @@ impl RolloutWorld {
                 hierarchy: p.hierarchy,
                 inverse_mass: p.body.inverse_mass.raw(),
                 ..CEntity::default()
-            });
+            }, p.collider_inverse_extents);
             self.platforms.push(make_platform_with_inverse(
                 self.next_platform_id,
                 &intro_surface,
@@ -6123,7 +6124,7 @@ impl RolloutWorld {
             ..AbilityPickup::default()
         };
         state.sync_collider_to_fix_trans();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 0,
             layer: pickup.layer,
@@ -6136,7 +6137,7 @@ impl RolloutWorld {
             inverse_mass: body.inverse_mass.raw(),
             clock_rate: Fix::ONE.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         self.ability_pickups.push(state);
     }
 
@@ -6826,7 +6827,7 @@ impl RolloutWorld {
         if let Some((radius, offset, relative_hierarchy, target)) = circle {
             let id = self.next_id();
             let entity = self.entities.len();
-            self.entities.push(CEntity {
+            self.push_entity(CEntity {
                 id,
                 kind: 0,
                 layer: LAYER_PLAYER,
@@ -6838,7 +6839,7 @@ impl RolloutWorld {
                 radius: radius.raw(),
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
-            });
+            }, Vec2::ZERO);
             return Some((entity, true, target));
         }
 
@@ -6973,12 +6974,7 @@ impl RolloutWorld {
         };
         let id = self.next_id();
         let entity = self.entities.len();
-        set_inverse_extents(
-            &mut self.entity_inverse_extents,
-            entity,
-            Vec2::new((Fix::ONE / authored.x).abs(), (Fix::ONE / authored.y).abs()),
-        );
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 1,
             layer: LAYER_PLAYER,
@@ -6991,7 +6987,7 @@ impl RolloutWorld {
             up_y: extents.y.raw(),
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::new((Fix::ONE / authored.x).abs(), (Fix::ONE / authored.y).abs()));
         Some((entity, false, target))
     }
 
@@ -8362,7 +8358,7 @@ impl RolloutWorld {
         // appended after every still-registered circle even when its gameplay
         // state slot is reused, so retain a fresh observation row as well.
         let entity = self.entities.len();
-        self.entities.push(CEntity::default());
+        self.push_entity(CEntity::default(), Vec2::ZERO);
         let id = self.next_id();
         self.entities[entity] = CEntity {
             id,
@@ -11086,7 +11082,7 @@ impl RolloutWorld {
                             self.players[index].forms[s] = FormScale::default();
                             let id = self.next_id();
                             let entity = self.entities.len();
-                            self.entities.push(CEntity {
+                            self.push_entity(CEntity {
                                 id,
                                 kind: 0,
                                 layer: LAYER_PLAYER,
@@ -11098,7 +11094,7 @@ impl RolloutWorld {
                                 radius: data.rock.radius.raw(),
                                 inverse_mass: data.rock.body.inverse_mass.raw(),
                                 ..CEntity::default()
-                            });
+                            }, Vec2::ZERO);
                             self.players[index].form_entities[s] = entity;
                             self.players[index].rock_entity = entity;
                         }
@@ -13414,13 +13410,8 @@ impl RolloutWorld {
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += data.meteor.smear_updatable_count;
         let entity_index = self.entities.len();
-        set_inverse_extents(
-            &mut self.entity_inverse_extents,
-            entity_index,
-            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
-        );
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 1,
             layer: data.meteor.smear_layer,
@@ -13432,7 +13423,7 @@ impl RolloutWorld {
             up_y: axes.y.raw(),
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y));
         self.meteor_smears.push(MeteorSmear {
             active: true,
             appended: self.tick + 1,
@@ -14808,7 +14799,7 @@ impl RolloutWorld {
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 0,
             layer: data.tesla.node_layer,
@@ -14818,7 +14809,7 @@ impl RolloutWorld {
             radius: (data.tesla.node_radius * collider_scale).raw(),
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         let center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let node = SpawnedTeslaNode {
@@ -15135,9 +15126,8 @@ impl RolloutWorld {
         let collider_extents =
             Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity = self.entities.len();
-        set_inverse_extents(&mut self.entity_inverse_extents, entity, inverse_extents);
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 1,
             layer: data.engine.rocket_layer,
@@ -15152,7 +15142,7 @@ impl RolloutWorld {
             rotation: rocket_rotation.raw(),
             inverse_mass: data.engine.rocket_body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, inverse_extents);
         let engine = SpawnedEngine {
             updater_ran_tick: None,
             attach_order,
@@ -15480,9 +15470,8 @@ impl RolloutWorld {
         let collider_extents =
             Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity_index = self.entities.len();
-        set_inverse_extents(&mut self.entity_inverse_extents, entity_index, inverse_extents);
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 1,
             layer: data.spike.attack_layer,
@@ -15498,7 +15487,7 @@ impl RolloutWorld {
             rotation: spike_rotation.raw(),
             inverse_mass: data.spike.attack_body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, inverse_extents);
         let attack = SpawnedSpike {
             attach_order,
             active: true,
@@ -16006,7 +15995,7 @@ impl RolloutWorld {
         let node = self.tesla_nodes[node_index];
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 1,
             layer: data.tesla.lightning_layer,
@@ -16017,8 +16006,7 @@ impl RolloutWorld {
                 + data.tesla.lightning_collider_hierarchy,
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
-        });
-        set_inverse_extents(&mut self.entity_inverse_extents, entity, node.line_start_inverse_extents);
+        }, node.line_start_inverse_extents);
         self.tesla_nodes[node_index].line_entity = Some(entity);
     }
 
@@ -16871,7 +16859,7 @@ impl RolloutWorld {
             Self::black_hole_initial_radius(data.black_hole.start_radius, target_size, data);
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 0,
             layer: data.black_hole.layer,
@@ -16885,7 +16873,7 @@ impl RolloutWorld {
             radius: initial_radius.raw(),
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         let hole = BlackHoleState {
             active: true,
             appended: self.tick,
@@ -17804,7 +17792,7 @@ impl RolloutWorld {
             self.next_spawn_hierarchy += data.drill.hitbox_updatable_count;
             let entity = self.entities.len();
             let id = self.next_id();
-            self.entities.push(CEntity {
+            self.push_entity(CEntity {
                 id,
                 kind: 1,
                 layer: data.drill.hitbox_layer,
@@ -17814,12 +17802,7 @@ impl RolloutWorld {
                 reserved: [ABILITY_DRILL, 0],
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
-            });
-            set_inverse_extents(
-                &mut self.entity_inverse_extents,
-                entity,
-                Vec2::new((Fix::ONE / extents.x).abs(), (Fix::ONE / extents.y).abs()),
-            );
+            }, Vec2::new((Fix::ONE / extents.x).abs(), (Fix::ONE / extents.y).abs()));
             *entity_slot = entity;
         }
         self.players[index].drill_hitbox_entities[ability_slot] = entities;
@@ -18175,7 +18158,7 @@ impl RolloutWorld {
         self.next_spawn_hierarchy += data.beam.orb_updatable_count;
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 0,
             layer: data.beam.orb_layer,
@@ -18187,7 +18170,7 @@ impl RolloutWorld {
             radius: data.beam.orb_radius.raw(),
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         let orb = self.beam_orbs.len();
         self.beam_orbs.push(BeamOrbState {
             active: true,
@@ -19017,7 +19000,7 @@ impl RolloutWorld {
                 self.next_spawn_hierarchy += data.beam.object_updatable_count;
                 let entity = self.entities.len();
                 let id = self.next_id();
-                self.entities.push(CEntity {
+                self.push_entity(CEntity {
                     id,
                     kind: 1,
                     layer: data.beam.object_layer,
@@ -19025,7 +19008,7 @@ impl RolloutWorld {
                     hierarchy: 100_000_000 + hierarchy_base + data.beam.object_collider_hierarchy,
                     inverse_mass: -Fix::ONE.raw(),
                     ..CEntity::default()
-                });
+                }, Vec2::ZERO);
                 self.beam_pool[i] = BeamPoolSlot {
                     entity: Some(entity),
                     hitbox,
@@ -19089,7 +19072,7 @@ impl RolloutWorld {
             };
             let trace_entity = trace_entity.unwrap_or_else(|| {
                 let entity = self.entities.len();
-                self.entities.push(CEntity::default());
+                self.push_entity(CEntity::default(), Vec2::ZERO);
                 entity
             });
             if self.beam_pool[i].trace_entity != Some(trace_entity)
@@ -19917,7 +19900,7 @@ impl RolloutWorld {
         self.next_spawn_hierarchy += data.macho_throw.boulder_updatable_count;
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 2,
             layer: data.macho_throw.boulder_layer,
@@ -19925,7 +19908,7 @@ impl RolloutWorld {
             hierarchy: 100_000_000 + hierarchy_base + data.macho_throw.boulder_collider_hierarchy,
             inverse_mass: data.macho_throw.boulder_body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         let surface = Surface {
             center: position,
             right: Vec2::RIGHT,
@@ -20492,7 +20475,7 @@ impl RolloutWorld {
         let marker = self.revival_marker_pool[marker_index];
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 0,
             layer: data.revival.marker_layer,
@@ -20506,7 +20489,7 @@ impl RolloutWorld {
             radius: data.revival.marker_radius.raw(),
             inverse_mass: marker.body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         self.revival_marker_pool[marker_index].registered = true;
         self.revival_marker_pool[marker_index].entity = Some(entity);
     }
@@ -20515,7 +20498,7 @@ impl RolloutWorld {
         let marker = self.teleport_marker_pool[marker_index];
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 0,
             layer: data.teleport.marker_layer,
@@ -20529,7 +20512,7 @@ impl RolloutWorld {
             radius: data.teleport.marker_radius.raw(),
             inverse_mass: data.teleport.marker_body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         self.teleport_marker_pool[marker_index].registered = true;
         self.teleport_marker_pool[marker_index].entity = Some(entity);
     }
@@ -20538,6 +20521,10 @@ impl RolloutWorld {
     /// collider after every live one of its shape and closes gaps on removal,
     /// so the previous row is reused only while no live row of that shape
     /// follows it.
+    fn push_entity(&mut self, row: CEntity, inverse_extents: Vec2) -> usize {
+        push_entity(&mut self.entities, &mut self.entity_inverse_extents, row, inverse_extents)
+    }
+
     fn pooled_row(&mut self, previous: Option<usize>) -> usize {
         if let Some(row) = previous {
             let kind = self.entities[row].kind;
@@ -20548,8 +20535,7 @@ impl RolloutWorld {
                 return row;
             }
         }
-        self.entities.push(CEntity::default());
-        self.entities.len() - 1
+        self.push_entity(CEntity::default(), Vec2::ZERO)
     }
 
     /// Remove callback-destroyed items, then register the objects the
@@ -21881,7 +21867,7 @@ impl RolloutWorld {
             let id = self.next_id();
             *target = self.entities.len();
             form_entities[slot] = *target;
-            self.entities.push(CEntity {
+            self.push_entity(CEntity {
                 id,
                 kind: 0,
                 layer: LAYER_PLAYER,
@@ -21893,7 +21879,7 @@ impl RolloutWorld {
                 radius: radius.raw(),
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
-            });
+            }, Vec2::ZERO);
         }
 
         RevivalCircles {
@@ -21928,7 +21914,7 @@ impl RolloutWorld {
         let player_hierarchy = self.players[index].clone_player_hierarchy;
         let body_entity = self.entities.len();
         let body_id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id: body_id,
             kind: 1,
             layer: LAYER_PLAYER,
@@ -21941,13 +21927,7 @@ impl RolloutWorld {
             up_y: data.player.hurtbox_extents.y.raw(),
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
-        });
-        let body_extents = data.player.hurtbox_extents;
-        set_inverse_extents(
-            &mut self.entity_inverse_extents,
-            body_entity,
-            Vec2::new((Fix::ONE / body_extents.x).abs(), (Fix::ONE / body_extents.y).abs()),
-        );
+        }, Vec2::new((Fix::ONE / data.player.hurtbox_extents.x).abs(), (Fix::ONE / data.player.hurtbox_extents.y).abs()));
         let mut dash_entities = [usize::MAX; 3];
         let mut bow_entity = usize::MAX;
         let mut throw_entities = [usize::MAX; 3];
@@ -22084,7 +22064,7 @@ impl RolloutWorld {
             let id = self.next_id();
             *target = self.entities.len();
             form_entities[slot] = *target;
-            self.entities.push(CEntity {
+            self.push_entity(CEntity {
                 id,
                 kind: 1,
                 layer: LAYER_PLAYER,
@@ -22167,7 +22147,7 @@ impl RolloutWorld {
                 up_y: extents.y.raw(),
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
-            });
+            }, Vec2::ZERO);
             set_inverse_extents(
                 &mut self.entity_inverse_extents,
                 *target,
@@ -22399,7 +22379,7 @@ impl RolloutWorld {
                 };
                 *target = self.entities.len();
                 form_entities[slot] = *target;
-                self.entities.push(CEntity {
+                self.push_entity(CEntity {
                     kind: 0,
                     layer: LAYER_PLAYER,
                     flags: E_ENABLED | E_TRIGGER | ability_collider_flags(abilities[slot]),
@@ -22410,7 +22390,7 @@ impl RolloutWorld {
                     radius: radius.raw(),
                     inverse_mass: -Fix::ONE.raw(),
                     ..CEntity::default()
-                });
+                }, Vec2::ZERO);
                 new_circle_entities[new_circle_count] = *target;
                 new_circle_count += 1;
             }
@@ -22438,7 +22418,7 @@ impl RolloutWorld {
                     magnet_hold_ticks: -1,
                     body_prev_scale: Fix::ONE,
                 });
-                self.entities.push(CEntity {
+                self.push_entity(CEntity {
                     kind: 0,
                     layer: data.revival.marker_layer,
                     owner: player_id(&self.players, index),
@@ -22451,7 +22431,7 @@ impl RolloutWorld {
                     radius: data.revival.marker_radius.raw(),
                     inverse_mass: data.revival.marker_body.inverse_mass.raw(),
                     ..CEntity::default()
-                });
+                }, Vec2::ZERO);
                 new_circle_entities[new_circle_count] = entity;
                 new_circle_count += 1;
             }
@@ -22459,7 +22439,7 @@ impl RolloutWorld {
             let body_entity = self.entities.len();
             let body_collider =
                 OrientedBox::from_basis(position, Vec2::RIGHT, data.player.hurtbox_extents);
-            self.entities.push(CEntity {
+            self.push_entity(CEntity {
                 kind: 1,
                 layer: LAYER_PLAYER,
                 owner: player_id(&self.players, index),
@@ -22473,8 +22453,7 @@ impl RolloutWorld {
                 up_y: body_collider.up.y.raw(),
                 inverse_mass: -Fix::ONE.raw(),
                 ..CEntity::default()
-            });
-            set_inverse_extents(&mut self.entity_inverse_extents, body_entity, body_collider.inverse_extents);
+            }, body_collider.inverse_extents);
             new_box_entities[new_box_count] = body_entity;
             new_box_count += 1;
             let mut dash_entities = [usize::MAX; 3];
@@ -22613,7 +22592,7 @@ impl RolloutWorld {
                 *target = self.entities.len();
                 form_entities[slot] = *target;
                 let collider = OrientedBox::from_basis(Vec2::ZERO, Vec2::RIGHT, extents);
-                self.entities.push(CEntity {
+                self.push_entity(CEntity {
                     kind: 1,
                     layer: LAYER_PLAYER,
                     flags: E_ENABLED | E_TRIGGER | ability_collider_flags(abilities[slot]),
@@ -22697,7 +22676,7 @@ impl RolloutWorld {
                     up_y: collider.up.y.raw(),
                     inverse_mass: -Fix::ONE.raw(),
                     ..CEntity::default()
-                });
+                }, Vec2::ZERO);
                 set_inverse_extents(
                     &mut self.entity_inverse_extents,
                     *target,
@@ -24734,8 +24713,12 @@ impl RolloutWorld {
             item.hurt_owner_delay = gd.hurt_owner_delay * slot.player_scale.max(Fix::ONE);
             if item.entity.is_none() {
                 item.id = new_collider_id.expect("new grenade collider id");
-                self.entities.push(CEntity::default());
-                item.entity = Some(self.entities.len() - 1);
+                item.entity = Some(push_entity(
+                    &mut self.entities,
+                    &mut self.entity_inverse_extents,
+                    CEntity::default(),
+                    Vec2::ZERO,
+                ));
             }
             // ManualInit, then `grenadeBody.UpdateSim(Fix.Zero)` takes the whole
             // scale change since the prefab in one ratio (ThrowItem2.cs:222-226).
@@ -24807,7 +24790,7 @@ impl RolloutWorld {
         item.id = id;
         let entity = self.entities.len();
         item.entity = Some(entity);
-        self.entities.push(CEntity {
+        push_entity(&mut self.entities, &mut self.entity_inverse_extents, CEntity {
             id: item.id,
             kind: 0,
             layer: config.item_layer,
@@ -24825,7 +24808,7 @@ impl RolloutWorld {
             radius: (config.item_radius * item.scale).raw(),
             inverse_mass: item.body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         if by_callback {
             item.callback_registered_tick = self.tick;
         }
@@ -27703,7 +27686,7 @@ impl RolloutWorld {
         hole.collider_start_radius = hole.radius;
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 0,
             layer: data.black_hole.layer,
@@ -27716,7 +27699,7 @@ impl RolloutWorld {
             radius: hole.radius.raw(),
             inverse_mass: -Fix::ONE.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         hole.entity = Some(entity);
         if let Some(free) = self.black_holes.iter().position(|hole| !hole.active) {
             self.black_holes[free] = hole;
@@ -27930,7 +27913,7 @@ impl RolloutWorld {
         let mut rock = self.pending_duplicated_rocks[index];
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 0,
             layer: 16,
@@ -27945,7 +27928,7 @@ impl RolloutWorld {
             angular_velocity: rock.body.angular_velocity.raw(),
             inverse_mass: rock.body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         rock.entity = Some(entity);
         if let Some(free) = self.duplicated_rocks.iter().position(|rock| !rock.active) {
             self.duplicated_rocks[free] = rock;
@@ -28036,9 +28019,8 @@ impl RolloutWorld {
         let collider_extents =
             Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity = self.entities.len();
-        set_inverse_extents(&mut self.entity_inverse_extents, entity, inverse_extents);
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 1,
             layer: data.spike.attack_layer,
@@ -28053,7 +28035,7 @@ impl RolloutWorld {
             rotation: rotation.raw(),
             inverse_mass: data.spike.attack_body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, inverse_extents);
         let clone = SpawnedSpike {
             attach_order,
             active: true,
@@ -28145,9 +28127,8 @@ impl RolloutWorld {
         let collider_extents =
             Vec2::new(Fix::ONE / inverse_extents.x, Fix::ONE / inverse_extents.y);
         let entity = self.entities.len();
-        set_inverse_extents(&mut self.entity_inverse_extents, entity, inverse_extents);
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 1,
             layer: data.engine.rocket_layer,
@@ -28162,7 +28143,7 @@ impl RolloutWorld {
             rotation: rotation.raw(),
             inverse_mass: data.engine.rocket_body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, inverse_extents);
         let clone = SpawnedEngine {
             updater_ran_tick: None,
             attach_order,
@@ -28248,7 +28229,7 @@ impl RolloutWorld {
         let attach_order = self.attach_child_body(platform_index, data.tesla.node_body);
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 0,
             layer: data.tesla.node_layer,
@@ -28258,7 +28239,7 @@ impl RolloutWorld {
             radius: (data.tesla.node_radius * source.scale).raw(),
             inverse_mass: data.tesla.node_body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         let center = parent_position
             + relative_center.complex_mul(self.platforms[platform_index].surface.right);
         let clone = SpawnedTeslaNode {
@@ -28895,7 +28876,7 @@ impl RolloutWorld {
         let entity = self.entities.len();
         let id = self.next_id();
         let center = pickup.synced_center;
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 0,
             layer: data.pickup.layer,
@@ -28910,7 +28891,7 @@ impl RolloutWorld {
             angular_velocity: pickup.body.angular_velocity.raw(),
             inverse_mass: pickup.body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         let pickup = &mut self.ability_pickups[index];
         pickup.entity = Some(entity);
         // DynamicAbilityPickup.initSelf calls InitPickup(..., Vec2.up)
@@ -28955,7 +28936,7 @@ impl RolloutWorld {
                 collider_hierarchy += 1;
             }
             let id = self.next_id();
-            self.entities.push(CEntity {
+            self.push_entity(CEntity {
                 id,
                 kind: 0,
                 layer,
@@ -28970,7 +28951,7 @@ impl RolloutWorld {
                 angular_velocity: item.body.angular_velocity.raw(),
                 inverse_mass: item.body.inverse_mass.raw(),
                 ..CEntity::default()
-            });
+            }, Vec2::ZERO);
             let item = &mut self.thrown_items[index];
             item.id = id;
             item.entity = Some(self.entities.len() - 1);
@@ -31824,14 +31805,14 @@ impl RolloutWorld {
         let source_row = self.entities[self.platform_entities[source]];
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             hierarchy: 100_000_000 + hierarchy_base + collider_hierarchy,
             x: position.x.raw(),
             y: position.y.raw(),
             flags: E_ACTIVE | E_ENABLED,
             ..source_row
-        });
+        }, self.entity_inverse_extents[self.platform_entities[source]]);
         // A boulder's copy is a fresh, undropped Boulder: Drop only wrote the
         // source's live body, so its BoplBody holds the prefab gravity and
         // bounciness (DPhysicsRoundedRect.SetGravityScale, SetBounciness).
@@ -32515,7 +32496,7 @@ impl RolloutWorld {
         // next.
         let hierarchy_base = self.next_spawn_hierarchy;
         self.next_spawn_hierarchy += pd.spawn_updatable_count;
-        self.entities.push(CEntity {
+        self.push_entity(CEntity {
             id,
             kind: 2,
             layer: LAYER_WALL,
@@ -32525,7 +32506,7 @@ impl RolloutWorld {
             hierarchy: 100_000_000 + hierarchy_base + pd.spawn_collider_hierarchy,
             inverse_mass: pd.spawn_body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         let surface = Surface {
             center: position,
             right: Vec2::RIGHT,
@@ -32961,7 +32942,7 @@ impl RolloutWorld {
     /// Mine.Init draws its hover offset from the shared RNG (Mine.cs:77-80).
     fn register_mine(&mut self, index: usize, data: &data::RolloutData) {
         let id = self.next_id();
-        self.entities.push(CEntity::default());
+        self.push_entity(CEntity::default(), Vec2::ZERO);
         let entity = self.entities.len() - 1;
         let random_offset =
             Fix::ONE - self.rng.fix_range(Fix::ZERO, Fix::from_int(2)) * data.mine.hover_period;
@@ -38064,14 +38045,9 @@ impl RolloutWorld {
         let hierarchy = 100_000_000 + clone.hierarchy_base + 6;
         let entity = self.entities.len();
         let id = self.next_id();
-        self.entities.push(CEntity { id, hierarchy, ..CEntity::default() });
         // The clone's own hurtbox, built at the authored extents (Box.cs:41).
         let extents = data::get().player.hurtbox_extents;
-        set_inverse_extents(
-            &mut self.entity_inverse_extents,
-            entity,
-            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
-        );
+        self.push_entity(CEntity { id, hierarchy, ..CEntity::default() }, Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y));
         self.abilityless_clones[clone_index].entity = Some(entity);
         self.sync_abilityless_clone_entity(clone_index);
     }
@@ -43693,7 +43669,7 @@ mod tests {
         world.reset(&test_config()).unwrap();
         let entity = world.entities.len();
         let id = world.next_id();
-        world.entities.push(CEntity {
+        world.push_entity(CEntity {
             id,
             kind: 0,
             layer: 10,
@@ -43701,7 +43677,7 @@ mod tests {
             radius: Fix::ONE.raw(),
             inverse_mass: (-Fix::ONE).raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
 
         world.begin_scale_change_entity(entity, true, 1);
         world.scale_changers[0].active = false;
@@ -43874,10 +43850,10 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let entity = world.entities.len();
-        world.entities.push(CEntity {
+        world.push_entity(CEntity {
             flags: E_ACTIVE | E_ENABLED,
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         world.thrown_items.push(ThrownItem {
             active: true,
             owner: 0,
@@ -43932,12 +43908,7 @@ mod tests {
             ..GuidedMissile::default()
         });
         let extents = data::get().missile.spark_extents;
-        set_inverse_extents(
-            &mut world.entity_inverse_extents,
-            world.entities.len(),
-            Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y),
-        );
-        world.entities.push(CEntity::default());
+        world.push_entity(CEntity::default(), Vec2::new(Fix::ONE / extents.x, Fix::ONE / extents.y));
 
         world.missile_form_tick(
             0,
@@ -43982,10 +43953,10 @@ mod tests {
         let clone_position = world.abilityless_clones[0].base.position;
         world.players[1].base.position = clone_position + Vec2::RIGHT * Fix::from_int(20);
         let ball_entity = world.entities.len();
-        world.entities.push(CEntity {
+        world.push_entity(CEntity {
             flags: E_ACTIVE | E_ENABLED,
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         world.thrown_items.push(ThrownItem {
             active: true,
             owner: 0,
@@ -44139,11 +44110,11 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let entity = world.entities.len();
-        world.entities.push(CEntity {
+        world.push_entity(CEntity {
             layer: 16,
             owner: 2,
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
 
         assert_eq!(world.projectile_credit(entity), (2, true, CAUSE_OTHER));
     }
@@ -44153,7 +44124,7 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let entity = world.entities.len();
-        world.entities.push(CEntity::default());
+        world.push_entity(CEntity::default(), Vec2::ZERO);
         world.missile_explosions.push(MissileExplosion {
             active: true,
             entity: Some(entity),
@@ -44228,7 +44199,7 @@ mod tests {
         let entity = world.entities.len();
         let id = world.next_id();
         let radius = data::get().teleport.marker_radius;
-        world.entities.push(CEntity {
+        world.push_entity(CEntity {
             id,
             kind: 0,
             layer: data::get().teleport.marker_layer,
@@ -44236,7 +44207,7 @@ mod tests {
             radius: radius.raw(),
             inverse_mass: data::get().teleport.marker_body.inverse_mass.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         world.teleport_marker_pool.push(TeleportMarker {
             active: true,
             entity: Some(entity),
@@ -44262,21 +44233,21 @@ mod tests {
         let mut world = RolloutWorld::new();
         world.reset(&test_config()).unwrap();
         let spike_entity = world.entities.len();
-        world.entities.push(CEntity::default());
+        world.push_entity(CEntity::default(), Vec2::ZERO);
         world.spike_attacks.push(SpawnedSpike {
             active: true,
             entity: Some(spike_entity),
             ..SpawnedSpike::default()
         });
         let node_entity = world.entities.len();
-        world.entities.push(CEntity::default());
+        world.push_entity(CEntity::default(), Vec2::ZERO);
         world.tesla_nodes.push(SpawnedTeslaNode {
             active: true,
             entity: Some(node_entity),
             ..SpawnedTeslaNode::default()
         });
         let hole_entity = world.entities.len();
-        world.entities.push(CEntity::default());
+        world.push_entity(CEntity::default(), Vec2::ZERO);
         world.black_holes.push(BlackHoleState {
             active: true,
             entity: Some(hole_entity),
@@ -44527,10 +44498,10 @@ mod tests {
         world.reset(&test_config()).unwrap();
         world.tick = 2;
         let entity = world.entities.len();
-        world.entities.push(CEntity {
+        world.push_entity(CEntity {
             flags: E_ACTIVE | E_ENABLED,
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         world.thrown_items.push(ThrownItem {
             active: true,
             owner: 0,
@@ -44827,17 +44798,17 @@ mod tests {
         let data = data::get();
         let fire = data.engine.fire_offset - data.engine.rocket_collider_offset;
         let older = world.entities.len();
-        world.entities.push(CEntity {
+        world.push_entity(CEntity {
             flags: E_ACTIVE | E_ENABLED,
             radius: data.smoke.cloud_base_radius.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         let newer = world.entities.len();
-        world.entities.push(CEntity {
+        world.push_entity(CEntity {
             flags: E_ACTIVE | E_ENABLED,
             radius: data.smoke.cloud_base_radius.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         world.smoke_clouds.push(SmokeCloud {
             active: true,
             registered: true,
@@ -44973,7 +44944,7 @@ mod tests {
         let center = Vec2::new(Fix::ZERO, Fix::from_int(20));
         let cloud_position = center + Vec2::RIGHT;
         let cloud_entity = world.entities.len();
-        world.entities.push(CEntity {
+        world.push_entity(CEntity {
             id: 900_001,
             kind: 0,
             layer: 22,
@@ -44982,7 +44953,7 @@ mod tests {
             y: cloud_position.y.raw(),
             radius: data::get().smoke.cloud_base_radius.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         world.smoke_clouds.push(SmokeCloud {
             active: true,
             registered: true,
@@ -45012,7 +44983,7 @@ mod tests {
         let center = Vec2::new(Fix::ZERO, Fix::from_int(20));
         let rock_position = center + Vec2::RIGHT;
         let rock_entity = world.entities.len();
-        world.entities.push(CEntity {
+        world.push_entity(CEntity {
             id: 900_001,
             kind: 0,
             layer: 16,
@@ -45021,7 +44992,7 @@ mod tests {
             y: rock_position.y.raw(),
             radius: data::get().rock.radius.raw(),
             ..CEntity::default()
-        });
+        }, Vec2::ZERO);
         world.duplicated_rocks.push(DuplicatedRock {
             active: true,
             entity: Some(rock_entity),
@@ -45051,7 +45022,7 @@ mod tests {
         let center = Vec2::new(Fix::ZERO, Fix::from_int(20));
         world.spawn_ability_platform(0, center, Fix::ONE);
         for id in 1..=50 {
-            world.entities.push(CEntity {
+            world.push_entity(CEntity {
                 id: 1_000_000 + id,
                 kind: 0,
                 layer: LAYER_PLAYER,
@@ -45060,7 +45031,7 @@ mod tests {
                 y: center.y.raw(),
                 radius: Fix::ONE.raw(),
                 ..CEntity::default()
-            });
+            }, Vec2::ZERO);
         }
         world.gust_waves[0] = Shockwave {
             active: true,
