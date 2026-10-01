@@ -4520,10 +4520,6 @@ struct PlatformScratch {
     /// This pass's Player.Scale changes by a ScaleChanger, in hierarchy order:
     /// (player, changer hierarchy, scale before).
     player_scale_changes: Vec<(usize, u32, Fix)>,
-    /// This pass's platforms before a spawned ScaleChanger or
-    /// DuplicatePlatformEffect resized them: (platform, updater hierarchy,
-    /// shape before).
-    platform_resizes: Vec<(usize, u32, Platform)>,
     /// Grounded slimes a wall squished this pass: (abilityless clone,
     /// player or clone index).
     squished: Vec<(bool, usize)>,
@@ -7708,7 +7704,6 @@ impl RolloutWorld {
         // Forms that ended earlier in the pass cleared the Player's form
         // flags before any body's turn can set them again.
         self.track_form_flags();
-        self.scratch.platform_resizes.clear();
         self.scratch.ropes_walk_limit = u32::MAX;
         self.scratch.turn_order = player_order;
         self.scratch.turn_key = player_key;
@@ -30673,11 +30668,6 @@ impl RolloutWorld {
                 ray.multiplier
             };
             let value = dynamics.scale + ray.scale_curve.evaluate(time) * multiplier;
-            self.scratch.platform_resizes.push((
-                effect.victim,
-                effect.hierarchy_base,
-                self.platforms[effect.victim].clone(),
-            ));
             self.set_platform_scale(effect.victim, value, true);
             self.scale_changers[index].time = time;
             return;
@@ -30833,11 +30823,6 @@ impl RolloutWorld {
             // updates after that platform's StickyRR.UpdateBounds.
             let source = snapshot.source;
             let source_scale = self.platform_dynamics[source].scale;
-            self.scratch.platform_resizes.push((
-                source,
-                snapshot.hierarchy_base,
-                self.platforms[source].clone(),
-            ));
             self.set_platform_scale(source, effect_scale, true);
             let collider = self.platforms[source].collider;
             let extents = collider.calc_extents();
@@ -36988,7 +36973,7 @@ impl RolloutWorld {
                 let grounded = clone.base.grounded;
                 let integrate = clone.base.move_unintegrated(action, movement, walls, None);
                 if grounded && integrate {
-                    clone.drop_platform_test(walls.platforms(), &walls.world.platform_dynamics, tick);
+                    clone.drop_platform_test(&walls.platforms, &walls.platform_dynamics, tick);
                 }
                 integrate
             });
@@ -37049,51 +37034,16 @@ impl RolloutWorld {
         self.sync_abilityless_clone_entity(clone_index);
     }
 
-    /// `slot_physics` for an abilityless clone, against the walls its updater
-    /// turn sees.
+    /// `slot_physics` for an abilityless clone.
     fn clone_physics<R>(
         &mut self,
         clone_index: usize,
-        physics: impl FnOnce(&mut AbilitylessClone, &mut CloneWalls) -> R,
+        physics: impl FnOnce(&mut AbilitylessClone, &mut Self) -> R,
     ) -> R {
         let mut clones = std::mem::take(&mut self.abilityless_clones);
-        let hierarchy = clones[clone_index].hierarchy_base;
-        let mut walls = CloneWalls { view: self.clone_turn_platforms(hierarchy), world: self, hierarchy };
-        let result = physics(&mut clones[clone_index], &mut walls);
+        let result = physics(&mut clones[clone_index], self);
         self.abilityless_clones = clones;
         result
-    }
-
-    /// The platforms as an abilityless clone's updater turn sees them, when an
-    /// updater after it changes one this pass. A wall QuantumTunnel registered
-    /// after the clone hides its wall (QuantumTunnel.cs:136) or restores it
-    /// (QuantumTunnel.cs:163-166) only after the clone's updaters, while the
-    /// Blink tunnel step or a later BlackHole has already toggled it here; a
-    /// resizer after the clone has not resized its platform yet.
-    fn clone_turn_platforms(&self, hierarchy: u32) -> Option<Platforms> {
-        let toggled_later = |index: usize| {
-            let state = &self.platform_dynamics[index];
-            (state.blink_deactivated_tick == Some(self.tick)
-                || state.blink_reactivated_tick == Some(self.tick))
-                && state.blink_tunnel_hierarchy > hierarchy
-        };
-        let resized_later = |index: usize| {
-            (self.scratch.platform_resizes.iter())
-                .find(|&&(platform, changer, _)| platform == index && changer > hierarchy)
-                .map(|(_, _, before)| before)
-        };
-        (0..self.platforms.len())
-            .any(|index| toggled_later(index) || resized_later(index).is_some())
-            .then(|| {
-                // Its own broad phase covers the resized colliders.
-                (self.platforms.iter().enumerate())
-                    .map(|(index, platform)| Platform {
-                        active: platform.active != toggled_later(index),
-                        ..resized_later(index).unwrap_or(platform).clone()
-                    })
-                    .collect::<Vec<_>>()
-                    .into()
-            })
     }
 
     /// `biting_tick` for a clone: a swallowing clone grows its Player, the body
@@ -41831,35 +41781,6 @@ impl Walls for RolloutWorld {
         excluded: Option<usize>,
     ) -> Option<(usize, Fix, Vec2)> {
         RolloutWorld::raycast_to_closest_rounded_rect(self, origin, direction, distance, excluded, None)
-    }
-}
-
-/// An abilityless clone's walls: the world's, with `clone_turn_platforms`
-/// standing in while an updater after the clone changes a platform this pass.
-struct CloneWalls<'a> {
-    world: &'a mut RolloutWorld,
-    hierarchy: u32,
-    view: Option<Platforms>,
-}
-
-impl Walls for CloneWalls<'_> {
-    fn platforms(&self) -> &[Platform] {
-        self.view.as_deref().unwrap_or(&self.world.platforms)
-    }
-    fn raycast_to_closest_rounded_rect(
-        &mut self,
-        origin: Vec2,
-        direction: Vec2,
-        distance: Fix,
-        excluded: Option<usize>,
-    ) -> Option<(usize, Fix, Vec2)> {
-        if self.view.is_none() {
-            return Walls::raycast_to_closest_rounded_rect(self.world, origin, direction, distance, excluded);
-        }
-        self.world.remove_destroyed_colliders();
-        self.view = self.world.clone_turn_platforms(self.hierarchy);
-        let view = self.view.as_ref().expect("the clone's turn still differs");
-        view.terrain().raycast_to_closest_rounded_rect(origin, direction, distance, excluded)
     }
 }
 
