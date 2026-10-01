@@ -911,9 +911,6 @@ pub struct GuidedMissile {
     /// (DPhysicsBox.cs:212-214); later ones divide the row's.
     pub start_inverse_extents: Vec2,
     pub instability_ticks: u32,
-    /// The pass whose Updater turn Missile.UpdateSim has taken. A newer
-    /// updater, such as a Shockwave, acts on the missile after its thrust.
-    pub updater_ran_tick: Option<u32>,
     /// `DetPhysics.duplicatedObjects` state for Missile copies. Keeping this
     /// on the pooled projectile avoids a side allocation in the hot path.
     pub duplicated: bool,
@@ -4267,7 +4264,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 1 | 4 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
+    matches!(kind, 1 | 4 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
 }
 
 /// The place just after `key`.
@@ -8638,7 +8635,6 @@ impl RolloutWorld {
         }
         for (i, missile) in self.guided_missiles.iter().enumerate() {
             if missile.active
-                && missile.updater_ran_tick != Some(tick)
                 && !self.blink_object_hidden(missile.entity)
             {
                 push(self.updater_key(missile.appended, 100_000_000 + missile.hierarchy_base), 19, i);
@@ -32543,7 +32539,10 @@ impl RolloutWorld {
                 continue;
             }
 
-            if self.guided_missiles[index].updater_ran_tick != Some(self.tick) {
+            // A Spark the walk never reached takes its Missile.UpdateSim
+            // turn here; one it passed, run or skipped, does not.
+            let missile = &self.guided_missiles[index];
+            if !self.updater_passed(self.updater_key(missile.appended, 100_000_000 + missile.hierarchy_base)) {
                 self.guided_missile_update_sim(index, physics_dt, being_held, data);
             }
             let missile = &mut self.guided_missiles[index];
@@ -32568,9 +32567,7 @@ impl RolloutWorld {
         being_held: bool,
         data: &data::RolloutData,
     ) {
-        let tick = self.tick;
         let missile = &mut self.guided_missiles[index];
-        missile.updater_ran_tick = Some(tick);
         missile.instability_ticks += 1;
         // SparkShot.UpdateSim still advances its instability counter while
         // GameTime is frozen, but AddForce scales by FixedTimeStep. Do not
