@@ -7774,6 +7774,12 @@ impl RolloutWorld {
                     slot.meteor.collider_up = slot.base.up;
                     slot.meteor.collider_rotation = slot.base.rotation;
                 }
+                if self.players[index].active == ActiveAbility::Beam {
+                    let slot = &mut self.players[index];
+                    slot.beam.collider_position = slot.base.position;
+                    slot.beam.collider_up = slot.base.up;
+                    slot.beam.collider_rotation = slot.base.rotation;
+                }
                 if self.players[index].active == ActiveAbility::Push {
                     self.players[index].push.collider_up = self.players[index].base.up;
                 } else if matches!(
