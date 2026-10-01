@@ -10052,7 +10052,7 @@ impl RolloutWorld {
         {
             return;
         }
-        if let Some(eating) = self.bite(slot.base.scale, slot.team, slot.base.collider, prey) {
+        if let Some(eating) = self.bite(slot.base.scale, slot.team, prey) {
             let slot = &mut self.players[eater];
             slot.obs_state = STATE_BITING;
             slot.eating = EatingState { swallowing: slot.eating.swallowing, ..eating };
@@ -10071,7 +10071,7 @@ impl RolloutWorld {
             return;
         }
         let team = self.players[owner].team;
-        if let Some(eating) = self.bite(clone.base.scale, team, clone.base.collider, prey) {
+        if let Some(eating) = self.bite(clone.base.scale, team, prey) {
             let clone = &mut self.abilityless_clones[eater];
             clone.obs_state = STATE_BITING;
             clone.eating = EatingState { swallowing: clone.eating.swallowing, ..eating };
@@ -10080,34 +10080,22 @@ impl RolloutWorld {
 
     /// OnCollide's bite test on the touched collider's own FixTransform
     /// scale, then Bite, which resolves a form's collider to its slime and
-    /// refuses a body whose active PlayerCollision is invulnerable
-    /// (SlimeController.cs:1142-1170, 1211-1219).
-    fn bite(
-        &self,
-        scale: Fix,
-        team: u32,
-        collider: OrientedBox,
-        prey: Prey,
-    ) -> Option<EatingState> {
-        let (prey_scale, prey_box, prey_team, invulnerable, eating) = match prey {
+    /// refuses a body whose active PlayerCollision is invulnerable. OnCollide
+    /// trusts the pair's manifold and tests no overlap of its own
+    /// (SlimeController.cs:1142-1170, 1206-1219).
+    fn bite(&self, scale: Fix, team: u32, prey: Prey) -> Option<EatingState> {
+        let (prey_scale, prey_team, invulnerable, eating) = match prey {
             Prey::Player(victim) => {
                 let slot = &self.players[victim];
-                let (prey_scale, prey_box) = if slot.active == ActiveAbility::None {
-                    (slot.base.scale, slot.base.synced)
-                } else {
-                    // Ability.UpdateSim gives the form's collider Player.Scale.
-                    let form = match self.hurtbox_collider(victim) {
-                        Some(DetCollider::Box(form)) => form,
-                        _ => slot.base.synced,
-                    };
-                    (slot.player_scale, form)
-                };
+                // Ability.UpdateSim gives the form's collider Player.Scale.
+                let prey_scale =
+                    if slot.active == ActiveAbility::None { slot.base.scale } else { slot.player_scale };
                 let eating = EatingState {
                     victim,
                     victim_deaths: slot.deaths,
                     ..EatingState::default()
                 };
-                (prey_scale, prey_box, slot.team, slot.poke_invulnerable, eating)
+                (prey_scale, slot.team, slot.poke_invulnerable, eating)
             }
             Prey::Clone(clone_index) => {
                 let clone = &self.abilityless_clones[clone_index];
@@ -10117,14 +10105,12 @@ impl RolloutWorld {
                     ..EatingState::default()
                 };
                 let team = self.players[clone.owner].team;
-                let prey_box = clone.base.synced;
-                (clone.base.scale, prey_box, team, clone.poke_invulnerable, eating)
+                (clone.base.scale, team, clone.poke_invulnerable, eating)
             }
         };
         if scale - prey_scale < SCALE_DIFF_BEFORE_NOM_NOM
             || team == prey_team
             || invulnerable
-            || crate::physics::contact::box_box(collider, prey_box).is_none()
         {
             return None;
         }
