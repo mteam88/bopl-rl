@@ -622,8 +622,12 @@ impl RolloutWorld {
                 Part::Spike(spike) => CallbackHit::SpikeWallKnock { spike, wall, point: contact.point, wall_layer },
                 // Missile.cs:181-192.
                 Part::Missile(missile) => CallbackHit::MissileBlast { missile },
-                // RopeHook.cs:86-131.
-                Part::Hook(rope) => CallbackHit::RopeHook { rope, target: HookTarget::Platform(wall) },
+                // RopeHook.OnCollide tests the collider the manifold copied
+                // (RopeHook.cs:86-131).
+                Part::Hook(rope) => {
+                    let collider = walls.get(wall).copied().unwrap_or(self.platforms[wall].collider);
+                    CallbackHit::RopeHook { rope, target: HookTarget::Platform(wall, collider) }
+                }
                 // BlackHole.OnCollide eats a wall only when the collider the
                 // manifold copied contains the hole's centre, even though the
                 // two overlap much earlier (BlackHole.cs:207-210, 516-547).

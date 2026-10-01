@@ -144,7 +144,8 @@ pub(crate) struct RolloutRope {
 /// What a RopeHook's circle met in one DetPhysics pair.
 #[derive(Clone, Copy)]
 pub(super) enum HookTarget {
-    Platform(usize),
+    /// A wall, with the collider its manifold copied.
+    Platform(usize, RoundedRect),
     BlackHole(usize),
     Item(usize),
     Shot(usize),
@@ -1768,9 +1769,10 @@ impl RolloutWorld {
         let position = self.ropes[rope_index].hook_position;
         let mut offset = Vec2::ZERO;
         let parent = match target {
-            HookTarget::Platform(platform) => {
-                // A wall takes the hook only when its centre is inside it.
-                if !self.platforms[platform].collider.overlaps(position) {
+            HookTarget::Platform(platform, collider) => {
+                // A wall takes the hook only when its centre is inside the
+                // collider the pair's manifold copied (RopeHook.cs:92-99).
+                if !collider.overlaps(position) {
                     return;
                 }
                 let local = self.platforms[platform]
