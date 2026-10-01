@@ -649,6 +649,23 @@ impl Arrow {
         }
     }
 
+    /// Arrow.UpdateSim on a body nothing holds: its up follows the velocity
+    /// (Arrow.cs:66-74), once per updater pass. A newer updatable that
+    /// pushes the arrow in the same pass, a Gust or the RopeAttachment of a
+    /// hook caught on it, runs after it and calls this first.
+    fn align_to_velocity(&mut self, tick: u32) {
+        if self.updater_tick == tick {
+            return;
+        }
+        let speed = self.velocity.length();
+        let up = if speed == Fix::ZERO { Vec2::UP } else { self.velocity / speed };
+        // DetPhysics.IntegrateBody wraps the orientation into [0, 2pi)
+        // (DetPhysics.cs:1645) and SyncGameObject writes it back to the
+        // arrow's FixTransform, so a straight shot reads 0, not 2pi.
+        self.rotation = up.perp_cw().normalized_angle();
+        self.updater_tick = tick;
+    }
+
     /// BoplBody.UpdateSim divides the inverse mass and inertia by a scale
     /// change since it last ran.
     fn sync_mass(&mut self) {
@@ -23220,15 +23237,8 @@ impl RolloutWorld {
             if !arrow.active || !arrow.registered {
                 continue;
             }
-            if dt > Fix::ZERO && arrow.magnet_hold_ticks < 0 && arrow.updater_tick != tick {
-                let speed = arrow.velocity.length();
-                let up = if speed == Fix::ZERO {
-                    Vec2::UP
-                } else {
-                    arrow.velocity / speed
-                };
-                arrow.rotation = up.perp_cw().normalized_angle();
-                arrow.updater_tick = tick;
+            if dt > Fix::ZERO && arrow.magnet_hold_ticks < 0 {
+                arrow.align_to_velocity(tick);
             }
             let direction = arrow.position - wave.position;
             let distance = (direction.length_squared() / Fix::from_int(10)).max(Fix::from_f64(1.5));
@@ -33195,18 +33205,8 @@ impl RolloutWorld {
                 // Arrow.UpdateSim runs in the updater pass, before DetPhysics
                 // integrates gravity and position. Preserve that authored phase
                 // for the policy-visible collider orientation.
-                if !being_held && arrow.updater_tick != self.tick {
-                    let speed = arrow.velocity.length();
-                    let up = if speed == Fix::ZERO {
-                        Vec2::UP
-                    } else {
-                        arrow.velocity / speed
-                    };
-                    // DetPhysics.IntegrateBody wraps the orientation into [0, 2pi)
-                    // (DetPhysics.cs:1645) and SyncGameObject writes it back to the
-                    // arrow's FixTransform, so a straight shot reads 0, not 2pi.
-                    arrow.rotation = up.perp_cw().normalized_angle();
-                    arrow.updater_tick = self.tick;
+                if !being_held {
+                    arrow.align_to_velocity(self.tick);
                 }
             }
             if hidden {
