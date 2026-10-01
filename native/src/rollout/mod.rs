@@ -34916,8 +34916,10 @@ impl RolloutWorld {
             Part::DuplicatedRock(i) => {
                 (spawned_hierarchy(self.duplicated_rocks[i].hierarchy_base), data.rock.no_player_child_count)
             }
-            // Not on a StickTo layer.
-            Part::Pickup(_) | Part::Hook(_) | Part::Arrow(_) | Part::Hole(_) => unreachable!(),
+            // Not on a StickTo layer, or on the Player layer without a BoplBody.
+            Part::Pickup(_) | Part::Hook(_) | Part::Arrow(_) | Part::Hole(_) | Part::Body(_) | Part::Clone(_) => {
+                unreachable!()
+            }
         }
     }
 

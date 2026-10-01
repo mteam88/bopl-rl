@@ -92,10 +92,7 @@ impl RolloutWorld {
         if row.kind == 0 {
             return Collider::Circle(Circle { center, radius: Fix::from_raw(row.radius) });
         }
-        let right = Vec2::new(Fix::from_raw(row.right_x), Fix::from_raw(row.right_y));
-        let up = Vec2::new(Fix::from_raw(row.up_x), Fix::from_raw(row.up_y));
-        let inverse_extents = self.box_inverse_extents(entity, right, up);
-        Collider::Box(OrientedBox { center, right, up, inverse_extents })
+        Collider::Box(Self::row_box(&self.entity_inverse_extents, entity, row))
     }
 
     /// The layer SortAndSweep checks against the collision matrix.
