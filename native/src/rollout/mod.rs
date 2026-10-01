@@ -3820,6 +3820,18 @@ impl PlayerSlot {
         self.base.scale = scale;
     }
 
+    /// SlimeController.attachToGround: State.land, and the land animation
+    /// whose setStateToIdle callback comes on the animator's LAND_TICKS + 1th
+    /// update (SlimeController.cs:1126-1129). `update_obs_state` counts this
+    /// pass off it. A slime whose SpriteAnimator (hierarchy 100000007, right
+    /// after SlimeController and before every ability component) already ran
+    /// this pass, because an ability exit, Roll or a Magnet holder landed it
+    /// later in the walk, starts the animation's count on the next pass.
+    fn begin_land(&mut self, animator_ran: bool) {
+        self.obs_state = STATE_LAND;
+        self.state_ticks = LAND_TICKS + 1 + u32::from(animator_ran);
+    }
+
     /// SlimeController.ExitAbility enters Fall and raycasts at once
     /// (SlimeController.cs:249, 263-272). A landing on this pass begins the
     /// land animation after the slime's SpriteAnimator (hierarchy 100000007,
@@ -10871,8 +10883,7 @@ impl RolloutWorld {
                                 if self.players[index].base.grounded {
                                     let slot = &mut self.players[index];
                                     slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                                    slot.obs_state = STATE_LAND;
-                                    slot.state_ticks = LAND_TICKS + 2;
+                                    slot.begin_land(true);
                                     slot.reported_position = slot.base.position;
                                     slot.reported_tick = self.tick;
                                     // The `justlanded` exit's SyncPhysicsTo
@@ -12982,8 +12993,7 @@ impl RolloutWorld {
             slot.state_ticks = 0;
             slot.obs_state_held_this_tick = true;
             if just_landed {
-                slot.obs_state = STATE_LAND;
-                slot.state_ticks = LAND_TICKS + 2;
+                slot.begin_land(true);
             }
         } else {
             slot.base.position = exit_position;
@@ -13617,8 +13627,7 @@ impl RolloutWorld {
         slot.base.ground = Some(platform_id);
         slot.base.local = local;
         slot.base.grounded_speed = Fix::ZERO;
-        slot.obs_state = STATE_LAND;
-        slot.state_ticks = LAND_TICKS + 2;
+        slot.begin_land(true);
         slot.reported_position = landing;
         slot.reported_tick = self.tick;
         self.sync_exit_to_ground(index);
@@ -13637,8 +13646,7 @@ impl RolloutWorld {
         slot.base.constants = data.player.constants.clone();
         slot.base.grounded_speed = Fix::ZERO;
         slot.base.rotation = Fix::ZERO;
-        slot.obs_state = STATE_LAND;
-        slot.state_ticks = LAND_TICKS + 2;
+        slot.begin_land(true);
         slot.reported_position = slot.base.position;
         slot.reported_tick = self.tick;
         self.sync_exit_to_ground(index);
@@ -18924,8 +18932,7 @@ impl RolloutWorld {
                 // State.land after EnterIdle (SlimeController.cs:238-240).
                 let slot = &mut self.players[index];
                 if slot.base.grounded {
-                    slot.obs_state = STATE_LAND;
-                    slot.state_ticks = LAND_TICKS + 2;
+                    slot.begin_land(true);
                 }
                 return;
             }
@@ -24528,8 +24535,7 @@ impl RolloutWorld {
                 // SparkShot's landing exit hands over isFacingRight true.
                 slot.facing_right = true;
                 slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                slot.obs_state = STATE_LAND;
-                slot.state_ticks = LAND_TICKS + 2;
+                slot.begin_land(true);
                 // Ability.ExitAbility publishes the collider DetPhysics
                 // last synced, as Ability.UpdateSim already did this pass.
                 // SyncPhysicsTo UpdateScales the slime radius and re-places
@@ -24598,8 +24604,7 @@ impl RolloutWorld {
                 slot.throw_item.collider_right = slot.base.up.perp_cw();
                 slot.reported_tick = self.tick;
                 if grounded {
-                    slot.obs_state = STATE_LAND;
-                    slot.state_ticks = LAND_TICKS + 2;
+                    slot.begin_land(true);
                 } else {
                     slot.base.rotation = Fix::ZERO;
                     slot.base.up = Vec2::UP;
@@ -24767,8 +24772,7 @@ impl RolloutWorld {
                 }
                 let slot = &mut self.players[index];
                 slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                slot.obs_state = STATE_LAND;
-                slot.state_ticks = LAND_TICKS + 2;
+                slot.begin_land(true);
                 slot.reported_position = slot.base.position;
                 // The landing aligned the form before ExitAbility froze it.
                 slot.throw_item.collider_rotation = slot.base.rotation;
@@ -24971,8 +24975,7 @@ impl RolloutWorld {
                     // ThrowItem2 marks a grounded exit as `justlanded`.
                     // SlimeController starts `land` after the slime's own
                     // animator has already updated in this pass.
-                    slot.obs_state = STATE_LAND;
-                    slot.state_ticks = LAND_TICKS + 2;
+                    slot.begin_land(true);
                 } else {
                     slot.base.rotation = Fix::ZERO;
                     slot.base.up = Vec2::UP;
@@ -25166,8 +25169,7 @@ impl RolloutWorld {
                 self.release_held_throw_item_on_exit(index, false, data);
                 let slot = &mut self.players[index];
                 slot.set_active_form(&mut self.entities, ActiveAbility::None);
-                slot.obs_state = STATE_LAND;
-                slot.state_ticks = LAND_TICKS + 2;
+                slot.begin_land(true);
                 // The form's own body attached, so its box turns with it.
                 slot.throw_item.collider_rotation = slot.base.rotation;
                 slot.reported_position = slot.base.position;
@@ -27722,9 +27724,9 @@ impl RolloutWorld {
                     slot.obs_state = STATE_RAGDOLL;
                     // Shoot then casts the landing rays over a 0.0001 s step
                     // (MagnetGun.cs:474). attachToGround puts the slime
-                    // straight into State.land, ending the ragdoll. A slime
-                    // updating after its holder lands in its own ragdoll pass;
-                    // one whose pass already ran has already run its animator.
+                    // straight into State.land, ending the ragdoll, after its
+                    // pass and so its animator already ran. A slime updating
+                    // after its holder lands in its own ragdoll pass.
                     let attached =
                         slot.base.collision_rays_over(terrain!(self), Fix::from_f64(0.0001));
                     if attached && slot.pass_start.0 == self.tick {
@@ -27732,8 +27734,7 @@ impl RolloutWorld {
                         if slot.base.attach_upside_down == Some(true) {
                             slot.facing_right = !slot.facing_right;
                         }
-                        slot.obs_state = STATE_LAND;
-                        slot.state_ticks = LAND_TICKS + 1;
+                        slot.begin_land(true);
                     }
                 }
                 if speed.y > Fix::ZERO
