@@ -4157,8 +4157,14 @@ impl PlayerSlot {
     /// `begin_land`.
     fn enter_fall(&mut self, terrain: Terrain) {
         self.fall_state();
-        if !self.base.grounded {
-            self.base.collision_rays(terrain);
+        // The rays' attachToGround callback enters State.land at once and
+        // turns a slime set down on a ceiling (SlimeController.cs:270,
+        // 1126-1134), even on a pass whose state switch already ran.
+        if !self.base.grounded && self.base.collision_rays(terrain) {
+            if self.base.attach_upside_down == Some(true) {
+                self.facing_right = !self.facing_right;
+            }
+            self.begin_land(false);
         }
     }
 

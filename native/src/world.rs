@@ -764,8 +764,10 @@ impl Player {
         // the normal at the raw raycast point nor the end-of-tick one.
         self.attach_upside_down = Some(self.up().y < Fix::ZERO);
     }
-    pub(crate) fn collision_rays(&mut self, terrain: Terrain) {
-        self.collision_rays_over(terrain, self.fixed_delta_time);
+    /// VelocityBasedRaycasts over FixedDeltaTime. Returns whether a ray hit
+    /// and attached the body.
+    pub(crate) fn collision_rays(&mut self, terrain: Terrain) -> bool {
+        self.collision_rays_over(terrain, self.fixed_delta_time)
     }
     /// VelocityBasedRaycasts with the caller's time step, which scales the
     /// rays' length. Returns whether a ray hit and attached the body.
