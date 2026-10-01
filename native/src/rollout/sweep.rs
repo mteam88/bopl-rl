@@ -111,6 +111,10 @@ impl RolloutWorld {
             Swept::Part(Part::Arrow(i)) => self.current_bounds(Swept::Arrow(i), data),
             Swept::Part(Part::Body(i)) => self.current_bounds(Swept::Player(i), data),
             Swept::Part(Part::Clone(i)) => self.current_bounds(Swept::Clone(i), data),
+            Swept::Part(Part::Cloud(i)) => match self.smoke_clouds[i].entity {
+                Some(entity) => self.current_bounds(Swept::Row(entity), data),
+                None => NOWHERE,
+            },
             Swept::Part(part) => self.part_collider(part).bounds(),
             Swept::Player(index) => {
                 let slot = &self.players[index];
@@ -200,6 +204,7 @@ impl RolloutWorld {
             Swept::Part(Part::Arrow(i)) => sweep.arrows.get(i),
             Swept::Part(Part::Body(i)) => sweep.players.get(i),
             Swept::Part(Part::Clone(i)) => sweep.clones.get(i),
+            Swept::Part(Part::Cloud(i)) => self.smoke_clouds[i].entity.and_then(|entity| sweep.rows.get(entity)),
             // A trigger no group moves: SortAndSweep bounded it where it is.
             Swept::Part(Part::Hook(_) | Part::Hole(_) | Part::Line(_)) => {
                 return Some(self.current_bounds(collider, data::get()));

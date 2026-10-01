@@ -8128,9 +8128,6 @@ impl RolloutWorld {
             self.beam_physics_tick(data);
             self.beam_contacts(beam_contact_count);
         }
-        if has(ABILITY_BLACK_HOLE) {
-            self.black_hole_contacts();
-        }
         if has(ABILITY_DRILL) {
             self.drill_contacts();
         }
@@ -8170,9 +8167,6 @@ impl RolloutWorld {
         }
         if has(ABILITY_SMOKE) {
             self.smoke_contacts(data);
-        }
-        if has(ABILITY_TESLA) {
-            self.tesla_contacts();
         }
         if has_clones {
             self.abilityless_clone_contacts();
@@ -16328,45 +16322,6 @@ impl RolloutWorld {
         self.spike_attacks[spike_index].pushed_this_frame = true;
     }
 
-    fn tesla_contacts(&mut self) {
-        // Smoke collides with the Explosion-layer lightning but not with the
-        // node's LethalTerrain or NonLethalTerrain circle.
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let box_min = |b: OrientedBox| axis(b.center) - axis(b.right).abs() - axis(b.up).abs();
-        for node_index in 0..self.tesla_nodes.len() {
-            if !self.line_part(node_index) {
-                continue;
-            }
-            let node = &self.tesla_nodes[node_index];
-            let line = OrientedBox {
-                center: node.line_center,
-                right: node.line_right,
-                up: node.line_up,
-                inverse_extents: self.entity_inverse_extents[node.line_entity.expect("lit line")],
-            };
-            for (cloud_index, cloud) in self.smoke_clouds.iter().enumerate() {
-                if !cloud.active || !cloud.registered {
-                    continue;
-                }
-                let entity = cloud.entity.expect("registered smoke cloud");
-                if !self.collides(entity) {
-                    continue;
-                }
-                let smoke = Circle {
-                    center: cloud.position,
-                    radius: Fix::from_raw(self.entities[entity].radius),
-                };
-                if crate::physics::contact::circle_box(smoke, line).is_some() {
-                    // The lightning line has no entity row.
-                    let line_rank = sweep_rank(&self.entities, box_min(line), None);
-                    let key = self.smoke_ignite_key(entity, false, line_rank);
-                    self.scratch.callback_hits.push((key, CallbackHit::SmokeIgnite { cloud: cloud_index, entity }));
-                }
-            }
-        }
-    }
-
     fn revival_tick(&mut self, index: usize, data: &data::RolloutData) {
         let slot = &mut self.players[index];
         slot.revival.ticks += 1;
@@ -17147,64 +17102,6 @@ impl RolloutWorld {
                 row.x = position.x.raw();
                 row.y = position.y.raw();
                 row.radius = radius.raw();
-            }
-        }
-    }
-
-    /// BlackHole.OnCollide's pairs with the smoke clouds, which are not group
-    /// parts yet. DetPhysics calls every pair back from its queue after all
-    /// groups resolved, in SortAndSweep pair order (DetPhysics.cs:3197-3199).
-    /// Every other collider pairs in `circle_circle_group` and
-    /// `circle_box_group`. Revival and Teleport markers sit on the spell
-    /// layer, which the collision matrix pairs with no named layer, so the
-    /// sweep never pairs them with a hole (DetPhysics.cs:2183, 2252).
-    /// The callback reads the hole's mass only then (BlackHole.cs:447), so a
-    /// white hole's pairs are queued too.
-    fn black_hole_contacts(&mut self) {
-        let sweep_x = self.sweep_x();
-        let axis = |v: Vec2| if sweep_x { v.x } else { v.y };
-        let hole_rank = |world: &Self, hole: &BlackHoleState| {
-            sweep_rank(&world.entities, axis(hole.position) - hole.radius, hole.entity)
-        };
-        for hole_index in 0..self.black_holes.len() {
-            let hole = self.black_holes[hole_index];
-            if !hole.active || self.blink_object_hidden(hole.entity) {
-                continue;
-            }
-            let rank = hole_rank(self, &hole);
-            let circle = Circle {
-                center: hole.position,
-                radius: hole.radius,
-            };
-            let queue = |world: &mut Self, target: HoleTarget, inverse_mass: Fix, other: SweepRank, group: u8| {
-                let (later, earlier) = sweep_pair(rank, other);
-                let hit = CallbackHit::BlackHole { hole: hole_index, target, inverse_mass };
-                world.scratch.callback_hits.push(((group, later, earlier), hit));
-            };
-
-            // Colliders with no other callback here: ranked, and grouped by
-            // shape, from their rows.
-            let row_rank = |world: &Self, entity: usize| {
-                sweep_rank(&world.entities, world.swept_min(Swept::Row(entity)), Some(entity))
-            };
-            let row_group = |world: &Self, entity: usize| {
-                if world.entities[entity].kind == 0 { GROUP_CC } else { GROUP_CB }
-            };
-            // Smoke (layer 22) pairs with RigidBodyAffector, so an unlit cloud
-            // is eaten like any other positive-mass circle.
-            for cloud_index in 0..self.smoke_clouds.len() {
-                let cloud = self.smoke_clouds[cloud_index];
-                let Some(entity) = cloud.entity else {
-                    continue;
-                };
-                if cloud.active
-                    && cloud.registered
-                    && self.collides(entity)
-                    && self.circle_overlaps_entity(circle, entity)
-                {
-                    let (other, group) = (row_rank(self, entity), row_group(self, entity));
-                    queue(self, HoleTarget::Cloud(cloud_index), cloud.body.inverse_mass, other, group);
-                }
             }
         }
     }
@@ -34406,7 +34303,8 @@ impl RolloutWorld {
             | Part::Hole(_)
             | Part::Body(_)
             | Part::Clone(_)
-            | Part::Line(_) => {
+            | Part::Line(_)
+            | Part::Cloud(_) => {
                 unreachable!()
             }
         }

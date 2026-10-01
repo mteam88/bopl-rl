@@ -34,6 +34,8 @@ pub(super) enum Part {
     Clone(usize),
     /// A lit Tesla connection's StretchableLightning box, by parent node.
     Line(usize),
+    /// A Smoke cloud's FlammableSmoke circle.
+    Cloud(usize),
 }
 
 /// Arrow.StickTo: Player, item, wall, LethalTerrain and NonLethalTerrain
@@ -92,6 +94,11 @@ impl RolloutWorld {
                     inverse_extents: self.entity_inverse_extents[node.line_entity.expect("a registered lightning")],
                 })
             }
+            Part::Cloud(i) => {
+                let cloud = &self.smoke_clouds[i];
+                let entity = cloud.entity.expect("registered smoke cloud");
+                Collider::Circle(Circle { center: cloud.position, radius: Fix::from_raw(self.entities[entity].radius) })
+            }
         }
     }
 
@@ -127,6 +134,7 @@ impl RolloutWorld {
             Part::Arrow(i) => self.arrows[i].entity.map_or(LAYER_PROJECTILE, |entity| self.entities[entity].layer),
             Part::Hole(_) => LAYER_RIGID_BODY_AFFECTOR,
             Part::Line(_) => data.tesla.lightning_layer,
+            Part::Cloud(i) => self.entities[self.smoke_clouds[i].entity.expect("registered smoke cloud")].layer,
             Part::Body(_) | Part::Clone(_) => self.entities[self.part_entity(part).expect("registered body")].layer,
         }
     }
@@ -183,6 +191,7 @@ impl RolloutWorld {
             Part::Body(i) => Some(Self::hurtbox_entity(&self.players[i])),
             Part::Clone(i) => self.abilityless_clones[i].entity,
             Part::Line(i) => self.tesla_nodes[i].line_entity,
+            Part::Cloud(i) => self.smoke_clouds[i].entity,
         }
     }
 
@@ -203,7 +212,8 @@ impl RolloutWorld {
             | Part::Hole(_)
             | Part::Body(_)
             | Part::Clone(_)
-            | Part::Line(_) => None,
+            | Part::Line(_)
+            | Part::Cloud(_) => None,
         }
     }
 
@@ -230,6 +240,7 @@ impl RolloutWorld {
             Part::Body(_) | Part::Clone(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
             // The lightning's box is a trigger.
             Part::Line(_) => Body { inverse_mass: -Fix::ONE, ..Body::default() },
+            Part::Cloud(i) => self.smoke_clouds[i].body,
         }
     }
 
@@ -250,6 +261,7 @@ impl RolloutWorld {
             Part::Body(i) => self.hittable(i),
             Part::Clone(i) => self.abilityless_clones[i].active,
             Part::Line(i) => self.tesla_nodes[i].line_entity.is_some(),
+            Part::Cloud(i) => self.smoke_clouds[i].active,
         }
     }
 
@@ -270,6 +282,7 @@ impl RolloutWorld {
             (Part::Hook(r), None) => (self.part_body(part), self.ropes[r].hook_position),
             (Part::Arrow(i), None) => (self.part_body(part), self.arrows[i].position),
             (Part::Hole(i), None) => (self.part_body(part), self.black_holes[i].position),
+            (Part::Cloud(i), None) => (self.smoke_clouds[i].body, self.smoke_clouds[i].position),
             _ => unreachable!(),
         }
     }
@@ -332,6 +345,10 @@ impl RolloutWorld {
             Part::Hook(_) => {}
             Part::Arrow(i) => self.set_arrow_body(i, body, delta),
             Part::Hole(i) => self.black_holes[i].body_velocity = body.velocity,
+            Part::Cloud(i) => {
+                self.smoke_clouds[i].body = body;
+                self.smoke_clouds[i].position += delta;
+            }
             Part::Body(_) | Part::Clone(_) | Part::Line(_) => {}
         }
         if let (Part::Item(_) | Part::Shot(_) | Part::Missile(_) | Part::Arrow(_), Some(entity)) =
@@ -371,6 +388,7 @@ impl RolloutWorld {
             Part::Hole(i) => self.black_holes[i].position,
             Part::Body(_) | Part::Clone(_) => self.part_collider(part).center(),
             Part::Line(i) => self.tesla_nodes[i].line_center,
+            Part::Cloud(i) => self.smoke_clouds[i].position,
         }
     }
 
@@ -418,6 +436,7 @@ impl RolloutWorld {
             (Part::Shot(i), None) => &mut self.portal_shots[i].body,
             (Part::Missile(i), None) => &mut self.guided_missiles[i].body,
             (Part::Rock(i), None) => &mut self.players[i].rock.body,
+            (Part::Cloud(i), None) => &mut self.smoke_clouds[i].body,
             _ => unreachable!(),
         };
         body.apply_impulse(force, arm);
@@ -467,6 +486,7 @@ impl RolloutWorld {
             Part::Pickup(i) => self.ability_pickups[i].body.force += force,
             Part::DuplicatedRock(i) => self.duplicated_rocks[i].body.force += force,
             Part::Arrow(i) => self.arrows[i].force += force,
+            Part::Cloud(i) => self.smoke_clouds[i].body.force += force,
             // A RopeHook's circle has no BoplBody, so nothing integrates it.
             Part::Hook(_) => {}
             Part::Node(_)
@@ -526,6 +546,13 @@ impl RolloutWorld {
             node.destroyed_tick == Some(self.tick)
         };
         present && node.lethal && node.line_entity.is_some_and(|entity| row_is_active(&self.entities[entity]))
+    }
+
+    /// Whether a Smoke cloud's circle is in this Simulate's pairs: Ignite
+    /// disables it (FlammableSmoke.cs:85-89).
+    fn cloud_part(&self, i: usize) -> bool {
+        let cloud = &self.smoke_clouds[i];
+        cloud.active && cloud.registered && cloud.entity.is_some_and(|entity| self.collides(entity))
     }
 
     /// Whether an abilityless clone's collider is in this Simulate's pairs,
@@ -590,6 +617,11 @@ impl RolloutWorld {
         for (i, hole) in self.black_holes.iter().enumerate() {
             if hole.active && !self.blink_object_hidden(hole.entity) {
                 parts.push(Part::Hole(i));
+            }
+        }
+        for i in 0..self.smoke_clouds.len() {
+            if self.cloud_part(i) {
+                parts.push(Part::Cloud(i));
             }
         }
         for (i, rock) in self.duplicated_rocks.iter().enumerate() {
@@ -897,6 +929,11 @@ impl RolloutWorld {
                 parts.push(Part::Hole(i));
             }
         }
+        for i in 0..self.smoke_clouds.len() {
+            if self.cloud_part(i) {
+                parts.push(Part::Cloud(i));
+            }
+        }
         for i in 0..self.players.len() {
             if self.body_part_circle(i) == Some(true) {
                 parts.push(Part::Body(i));
@@ -1029,6 +1066,7 @@ impl RolloutWorld {
                     | Part::Missile(_)
                     | Part::Body(_)
                     | Part::Clone(_)
+                    | Part::Cloud(_)
             ) {
                 let collider = self.part_entity(other);
                 self.scratch.callback_hits.push((key, CallbackHit::Collide { receiver, other, collider, contact }));
@@ -1067,14 +1105,6 @@ impl RolloutWorld {
                     | Part::Spike(_)
                     | Part::Missile(_)
             )
-        {
-            return;
-        }
-        // Of the lightning's pairs only a slime's, form's, clone's and Mine's
-        // run here yet.
-        if matches!(other, Part::Line(_))
-            && !matches!(receiver, Part::Body(_) | Part::Clone(_) | Part::Rock(_))
-            && !matches!(receiver, Part::Item(item) if self.thrown_items[item].ability == ABILITY_MINE)
         {
             return;
         }
@@ -1190,7 +1220,8 @@ impl RolloutWorld {
                     | Part::Hole(_)
                     | Part::Body(_)
                     | Part::Clone(_)
-                    | Part::Line(_) => return,
+                    | Part::Line(_)
+                    | Part::Cloud(_) => return,
                 };
                 self.rope_hook_collide(rope, target);
             }
@@ -1209,6 +1240,13 @@ impl RolloutWorld {
                 }
                 let hit = CallbackHit::SpikeShove { spike, target: other, point: contact.point };
                 self.run_callback_hit(hit, data);
+            }
+            // FlammableSmoke.OnCollide Ignites the cloud on an Explosion with
+            // igniteFlammables, as the lightning's (FlammableSmoke.cs:91-98).
+            Part::Cloud(cloud) => {
+                if let (Part::Line(_), Some(entity)) = (other, self.smoke_clouds[cloud].entity) {
+                    self.run_callback_hit(CallbackHit::SmokeIgnite { cloud, entity }, data);
+                }
             }
             // Missile.OnCollide ignores RigidBodyAffector (Missile.cs:183).
             Part::Missile(missile) if self.part_layer(other, data) != LAYER_RIGID_BODY_AFFECTOR => {
@@ -1313,7 +1351,9 @@ impl RolloutWorld {
             // Grow reads -1 from a collider no BoplBody owns.
             Part::Body(player) => (HoleTarget::Player(player, self.players[player].active == ActiveAbility::None), -Fix::ONE),
             Part::Clone(clone) => (HoleTarget::Clone(clone), -Fix::ONE),
-            // The lightning's pairs with a hole are not the groups' yet.
+            // Smoke (layer 22) pairs with RigidBodyAffector, so an unlit
+            // cloud is eaten like any other positive-mass circle.
+            Part::Cloud(i) => (HoleTarget::Cloud(i), self.smoke_clouds[i].body.inverse_mass),
             Part::Hook(_) | Part::Line(_) => return,
         };
         self.black_hole_collide(hole, target, inverse_mass, data);
