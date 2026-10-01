@@ -427,14 +427,20 @@ const LAYER_WATER: u32 = 4;
 const LAYER_RIGID_BODY_AFFECTOR: u32 = 23;
 const LAYER_ROPE: u32 = 24;
 const LAYER_EXPLOSION: u32 = 18;
-const LAYER_ORB: u32 = 26;
-/// What sets off a thrown Grenade or Smoke here: GrenadeExplode.OnCollide
-/// goes off on a Player-layer collider (IPlayerIdHolder), the Explosion
-/// layer, and a Projectile that ignites explosives, which no Projectile
-/// prefab does (IgnitesExplosives 0 on Arrow, MeteorSmear, PortalShot, ...).
-/// SmokeGrenadeExplode2 goes off on any layer but those Projectiles; its
-/// walls, water and other parts are called back from their own groups.
-const ITEM_DETONATORS: u32 = 1 << LAYER_PLAYER | 1 << LAYER_EXPLOSION;
+/// What sets off a thrown Grenade: GrenadeExplode.OnCollide has no mask
+/// field; it branches on NameToLayer (GrenadeExplode.cs:43-81) and goes off
+/// on a Player-layer collider (IPlayerIdHolder), the Explosion layer, and a
+/// Projectile that ignites explosives, which no Projectile prefab does
+/// (IgnitesExplosives 0 on Arrow, MeteorSmear, PortalShot, ...).
+const GRENADE_DETONATORS: u32 = 1 << LAYER_PLAYER | 1 << LAYER_EXPLOSION;
+/// What sets off a thrown Smoke here: SmokeGrenadeExplode2.OnCollide goes off
+/// on every layer but those Projectiles (SmokeGrenadeExplode2.cs:63-78).
+/// Water and walls are called back from their own groups.
+const SMOKE_DETONATORS: u32 = !(1 << LAYER_PROJECTILE
+    | 1 << LAYER_WATER
+    | 1 << LAYER_WALL
+    | 1 << LAYER_LETHAL_TERRAIN
+    | 1 << LAYER_NON_LETHAL_TERRAIN);
 /// Mine.Igniters (Mine_0.prefab 262912: Player, Projectile, Explosion).
 const MINE_IGNITERS: u32 = 1 << LAYER_PLAYER | 1 << LAYER_PROJECTILE | 1 << LAYER_EXPLOSION;
 
@@ -36100,9 +36106,9 @@ impl RolloutWorld {
         }
     }
 
-    /// Item-layer boxes also meet the Explosion and orb layers' triggers;
-    /// the layer matrix ignores EffectorZone and Smoke, and RigidBodyAffector
-    /// and Rope are Missile's two callback exclusions. A missile explosion
+    /// Missile.OnCollide goes off on every layer but RigidBodyAffector and
+    /// Rope (Missile.cs:183); missiles, platform children, water and slimes
+    /// come from their own pairs, the Explosion layer from here. A missile explosion
     /// on its blasting pass queues its own pairs (queue_blast_hit_missiles).
     fn queue_missile_trigger_blasts(
         &mut self,
@@ -36117,7 +36123,7 @@ impl RolloutWorld {
             Swept::Part(Part::Missile(missile_index)),
             layer,
             DetCollider::Box(missile_box),
-            1 << LAYER_EXPLOSION | 1 << LAYER_ORB,
+            1 << LAYER_EXPLOSION,
         ) {
             if Some(entity) != missile_entity && !self.blasting_missile_explosion(entity) && count < blasts.len() {
                 blasts[count] = (group, rank);
@@ -36725,16 +36731,19 @@ impl RolloutWorld {
                 // The pair comes from the broadphase, swept before a wall or
                 // an arrow corrected the item this pass; the manifold then
                 // tests the corrected circle.
+                let detonators =
+                    if item.ability == ABILITY_GRENADE { GRENADE_DETONATORS } else { SMOKE_DETONATORS };
                 let contacts = self.layer_contacts(
                     Swept::Part(Part::Item(item_index)),
                     self.entities[item_entity].layer,
                     DetCollider::Circle(circle),
-                    ITEM_DETONATORS,
+                    detonators,
                 );
                 for (entity, group, rank) in contacts {
                     let row = self.entities[entity];
-                    if row.layer == LAYER_PLAYER
-                        && ((row.owner == owner_id && !item.detonates_on_owner) || Some(entity) == holder)
+                    if entity == item_entity
+                        || (row.layer == LAYER_PLAYER
+                            && ((row.owner == owner_id && !item.detonates_on_owner) || Some(entity) == holder))
                     {
                         continue;
                     }
