@@ -15265,6 +15265,13 @@ impl RolloutWorld {
     /// `synced`: DetPhysics.Destroy* ran SynCompositeToFixTransAndRelativeValues
     /// first. MachoThrow2's pickup calls Remove*FromComposite directly.
     fn rebuild_platform_attachment_body(&mut self, platform_index: usize, synced: bool) {
+        if synced {
+            // SynCompositeToFixTransAndRelativeValues first puts the rounded
+            // rect's collider on its FixTransform, which this pass's updaters
+            // may have moved since the last Simulate (DetPhysics.cs:2467-2476).
+            self.platforms[platform_index].collider.inner.center = self.platforms[platform_index].surface.center;
+            self.platforms_changed();
+        }
         let old = self.platform_dynamics[platform_index].body;
         // CreateMultiComposite folds the remaining children into the rect's
         // body one CombineBodies at a time, circles (Tesla nodes) before boxes
