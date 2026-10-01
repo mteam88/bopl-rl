@@ -23477,7 +23477,15 @@ impl RolloutWorld {
         // the offset is scaled as a Vec2 once, and each basis vector is then
         // multiplied by a plain scalar. Scaling after the basis multiply floors
         // each component a second time, moving the spawn by up to 4 raw.
-        let offset = data.mine.throw_position * self.players[index].player_scale;
+        // The form's box still has the Player.Scale the last pass's
+        // Ability.UpdateSim gave it: the Fire callback runs ahead of this
+        // pass's (Ability.cs:135), and the mine takes that scale too
+        // (ThrowItem.cs:234).
+        let scale = {
+            let slot = &self.players[index];
+            slot.forms[slot.active_slot].scale
+        };
+        let offset = data.mine.throw_position * scale;
         let position = self.players[index].base.position + up * offset.y + side * offset.x;
         let velocity = if grounded {
             let strength = if self.players[index].throw_item.direction.dot(up) < Fix::ZERO {
@@ -23513,11 +23521,11 @@ impl RolloutWorld {
                 velocity,
                 ..data.mine.item_body
             },
-            scale: self.players[index].player_scale,
+            scale,
             body_scale: Fix::ONE,
             body_ran_tick: None,
             update_ran_tick: None,
-            collider_radius: data.mine.item_radius * self.players[index].player_scale,
+            collider_radius: data.mine.item_radius * scale,
             fuse: Fix::MAX,
             hurt_owner_delay: Fix::ZERO,
             detonates_on_owner: false,
@@ -43726,7 +43734,7 @@ mod tests {
         let start = world.players[0].base.position;
         world.players[0].set_active_form(&mut world.entities, ActiveAbility::Mine);
         world.players[0].active_slot = 0;
-        world.players[0].player_scale = Fix::from_int(2);
+        world.players[0].forms[0].scale = Fix::from_int(2);
         world.players[0].facing_right = false;
         world.players[0].throw_item.grounded = false;
         world.players[0].base.grounded = false;
