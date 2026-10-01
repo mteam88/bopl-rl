@@ -15464,6 +15464,13 @@ impl RolloutWorld {
         let right = self.platforms[platform_index].surface.right;
         let position = dynamics.composite_position;
         let inverse = Vec2::angle(-orientation);
+        if synced {
+            // The sync placed every child collider on the rounded rect's
+            // FixTransform, which Simulate's SyncGameObject left on the
+            // rect's corrected centre, and they stay there until the next
+            // Simulate (DetPhysics.cs:1588-1611).
+            self.sync_composite_children(platform_index, position, orientation);
+        }
         let refit = |relative: Vec2, center: Vec2| {
             if synced {
                 relative.complex_mul(right).complex_mul(inverse)
@@ -27296,9 +27303,8 @@ impl RolloutWorld {
     /// DetPhysics.SynCompositeToFixTransAndRelativeValues for the children of
     /// the composite rooted on `platform`, whose transform is at `position`
     /// (DetPhysics.cs:2467-2496). Only the child colliders move.
-    fn sync_composite_children(&mut self, platform: usize, position: Vec2) {
+    fn sync_composite_children(&mut self, platform: usize, position: Vec2, orientation: Fix) {
         let right = self.platforms[platform].surface.right;
-        let orientation = self.platform_dynamics[platform].body.orientation;
         for spike in &mut self.spike_attacks {
             if spike.active && !spike.macho_carried && spike.platform_index == platform {
                 spike.collider_center = position + spike.relative_center.complex_mul(right);
@@ -27545,7 +27551,8 @@ impl RolloutWorld {
                 // rounded rect in collider order pushes the boulder fully out.
                 // Only the transform moves; the colliders stay where
                 // UpdatePhysicsPositions put them until the next Simulate.
-                self.sync_composite_children(platform, position);
+                let orientation = self.platform_dynamics[platform].body.orientation;
+                self.sync_composite_children(platform, position, orientation);
                 let mut shape = self.platforms[platform].collider;
                 shape.inner.center = position;
                 let collider_position = position;
@@ -39734,7 +39741,8 @@ impl RolloutWorld {
             if let Some(rotation) = dynamics.transform_rotation.take() {
                 dynamics.body.orientation = rotation;
             }
-            self.sync_composite_children(i, center);
+            let orientation = self.platform_dynamics[i].body.orientation;
+            self.sync_composite_children(i, center, orientation);
         }
     }
 
