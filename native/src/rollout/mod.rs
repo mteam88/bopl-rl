@@ -9575,6 +9575,26 @@ impl RolloutWorld {
                     Self::portal_velocity(entry, exit, item.body.velocity);
             }
         }
+        for index in 0..self.smoke_clouds.len() {
+            let cloud = self.smoke_clouds[index];
+            // A lit cloud has disabled only its collider; its GameObject stays
+            // active, so the portal still carries it (Portal.cs:155).
+            let Some(entity) = cloud.entity.filter(|_| {
+                cloud.active && cloud.registered && cloud.body.inverse_mass > Fix::ZERO
+            }) else {
+                continue;
+            };
+            if self.entities[entity].flags & E_ACTIVE == 0 {
+                continue;
+            }
+            if let Some((exit, position)) =
+                self.portal_body_exit(endpoint_index, entity, cloud.position, data)
+            {
+                self.smoke_clouds[index].position = position;
+                self.smoke_clouds[index].body.velocity =
+                    Self::portal_velocity(entry, exit, cloud.body.velocity);
+            }
+        }
         for index in 0..self.guided_missiles.len() {
             let missile = self.guided_missiles[index];
             let Some(entity) = missile.entity.filter(|_| {
