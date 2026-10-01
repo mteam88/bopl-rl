@@ -371,6 +371,15 @@ fn row_is_active(row: &CEntity) -> bool {
     row.flags & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
 }
 
+/// A platform row's flags, from the platform's own state: DetPhysics.IsActive's
+/// two halves, the GameObject and its collider, and whether children make it
+/// a composite.
+fn platform_row_flags(platform: &Platform, dynamics: &PlatformDynamics) -> u32 {
+    (if dynamics.intro_disabled { 0 } else { E_ENABLED })
+        | (if platform.active { E_ACTIVE } else { 0 })
+        | (if dynamics.attached_children == 0 { 0 } else { E_COMPOSITE })
+}
+
 /// A destroyed collider's row. Its body keeps the negative inverse mass that
 /// the oracle reports as `E_TRIGGER`.
 #[inline]
@@ -29587,8 +29596,22 @@ impl RolloutWorld {
         };
         match row.kind {
             0 | 1 => self.detphysics_collider(entity).is_some(),
-            _ => row_is_active(row),
+            _ => match self.platform_entities.iter().position(|&candidate| candidate == entity) {
+                Some(platform) => self.platform_is_active(platform),
+                None => row_is_active(row),
+            },
         }
+    }
+
+    /// DetPhysics.IsActive for a platform's rounded rect. GameObject.SetActive
+    /// and the collider's enabled flag take effect at once, so it reads the
+    /// platform's live state; the row's flags are only the observation
+    /// snapshot the refresh writes. A destroyed or dropped row stays out
+    /// (DetPhysics.cs:1658-1665, 2731).
+    fn platform_is_active(&self, platform: usize) -> bool {
+        let row = &self.entities[self.platform_entities[platform]];
+        let live = platform_row_flags(&self.platforms[platform], &self.platform_dynamics[platform]);
+        row.flags & (E_DESTROYED | E_REMOVED) == 0 && live & (E_ACTIVE | E_ENABLED) == E_ACTIVE | E_ENABLED
     }
 
     /// A form row whose GameObject ExitAbility deactivated earlier this pass;
@@ -42473,16 +42496,7 @@ impl RolloutWorld {
                 &dynamics.root_body
             };
             if e.flags & E_DESTROYED == 0 {
-                e.flags = if dynamics.intro_disabled {
-                    0
-                } else {
-                    E_ENABLED
-                } | if platform.active { E_ACTIVE } else { 0 }
-                    | if dynamics.attached_children == 0 {
-                        0
-                    } else {
-                        E_COMPOSITE
-                    };
+                e.flags = platform_row_flags(platform, dynamics);
             }
             e.vx = observed_body.velocity.x.raw();
             e.vy = observed_body.velocity.y.raw();
