@@ -2984,6 +2984,55 @@ pub enum ActiveAbility {
     Platform,
 }
 
+impl ActiveAbility {
+    /// The ability whose prefab this form is; ABILITY_NULL for the slime.
+    fn ability_id(self) -> u32 {
+        match self {
+            ActiveAbility::None => ABILITY_NULL,
+            ActiveAbility::Dash => ABILITY_DASH,
+            ActiveAbility::Bow => ABILITY_BOW,
+            ActiveAbility::Grenade => ABILITY_GRENADE,
+            ActiveAbility::Tack => ABILITY_TACK,
+            ActiveAbility::Mjolnir => ABILITY_MJOLNIR,
+            ActiveAbility::PokeBall => ABILITY_POKE_BALL,
+            ActiveAbility::Smoke => ABILITY_SMOKE,
+            ActiveAbility::Rock => ABILITY_ROCK,
+            ActiveAbility::Roll => ABILITY_ROLL,
+            ActiveAbility::Meteor => ABILITY_METEOR,
+            ActiveAbility::Push => ABILITY_PUSH,
+            ActiveAbility::Freeze => ABILITY_FREEZE,
+            ActiveAbility::Blink => ABILITY_BLINK,
+            ActiveAbility::GrowthRay => ABILITY_GROWTH_RAY,
+            ActiveAbility::ShrinkRay => ABILITY_SHRINK_RAY,
+            ActiveAbility::Missile => ABILITY_MISSILE,
+            ActiveAbility::Mine => ABILITY_MINE,
+            ActiveAbility::Spike => ABILITY_SPIKE,
+            ActiveAbility::Engine => ABILITY_ENGINE,
+            ActiveAbility::Tesla => ABILITY_TESLA,
+            ActiveAbility::TimeStop => ABILITY_TIME_STOP,
+            ActiveAbility::Gust => ABILITY_GUST,
+            ActiveAbility::Revival => ABILITY_REVIVAL,
+            ActiveAbility::BlackHole => ABILITY_BLACK_HOLE,
+            ActiveAbility::Throw => ABILITY_THROW,
+            ActiveAbility::Drill => ABILITY_DRILL,
+            ActiveAbility::Beam => ABILITY_BEAM,
+            ActiveAbility::Duplicator => ABILITY_DUPLICATOR,
+            ActiveAbility::Magnet => ABILITY_MAGNET,
+            ActiveAbility::Platform => ABILITY_PLATFORM,
+        }
+    }
+
+    /// SyncRotationToPlatform of the PlayerPhysics that moves this form: the
+    /// slime's, or the form prefab's own. A form with none keeps the field's
+    /// initializer (PlayerPhysics.cs:37).
+    fn sync_rotation_to_platform(self, data: &data::RolloutData) -> bool {
+        match self {
+            ActiveAbility::None => data.player.sync_rotation_to_platform,
+            form => data.abilities[form.ability_id() as usize].sync_rotation_to_platform.unwrap_or(true),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct DuplicatorRayHit {
     entity: usize,
@@ -3915,6 +3964,7 @@ impl PlayerSlot {
     /// (SlimeController.cs:190) and leaving it shows the slime again.
     fn set_active_form(&mut self, entities: &mut [CEntity], form: ActiveAbility) {
         self.active = form;
+        self.base.sync_rotation_to_platform = form.sync_rotation_to_platform(data::get());
         if form != ActiveAbility::None {
             self.form_entered = RolloutWorld::hurtbox_entity(self);
         }
@@ -5937,6 +5987,7 @@ impl RolloutWorld {
                     collider_rotation: Fix::ZERO,
                     collider_up: Vec2::UP,
                     collider_basis: Vec2::ZERO,
+                    sync_rotation_to_platform: data.player.sync_rotation_to_platform,
                     aligned: None,
                     input_normalized: None,
                 },
@@ -8326,22 +8377,6 @@ impl RolloutWorld {
             {
                 continue;
             }
-            // SyncRotationToPlatform is off on the gun, Bow, Dash, Magnet
-            // and quick-spell prefabs: a grounded form keeps its own angle.
-            let keeps_rotation = matches!(
-                self.players[index].active,
-                ActiveAbility::Dash
-                    | ActiveAbility::Bow
-                    | ActiveAbility::Freeze
-                    | ActiveAbility::Blink
-                    | ActiveAbility::GrowthRay
-                    | ActiveAbility::ShrinkRay
-                    | ActiveAbility::Duplicator
-                    | ActiveAbility::Magnet
-                    | ActiveAbility::Gust
-                    | ActiveAbility::TimeStop
-                    | ActiveAbility::Revival
-            );
             if let Some(platform_index) = ground_index
                 && !self.platforms[platform_index].active
             {
@@ -8350,21 +8385,12 @@ impl RolloutWorld {
                 let platform = &self.platforms[platform_index];
                 let base = &mut self.players[index].base;
                 base.position = platform.surface.position(base.local, base.radius);
-                if !keeps_rotation {
+                if base.sync_rotation_to_platform {
                     base.align(platform);
                 }
                 continue;
             }
-            let platforms = &self.platforms;
-            let base = &mut self.players[index].base;
-            if keeps_rotation {
-                if !base.dash.active {
-                    let platform = base.platform(platforms).expect("grounded rider has a platform");
-                    base.position = platform.surface.position(base.local, base.radius);
-                }
-            } else {
-                base.late_step(platforms);
-            }
+            self.players[index].base.late_step(&self.platforms);
         }
         if has_clones {
             for clone in &mut self.abilityless_clones {
@@ -14267,39 +14293,7 @@ impl RolloutWorld {
         // player: the slime's, or the form's own, which is lower for every
         // form but Throw (SuperStarEffect.UpdateSim). A form with no
         // PlayerPhysics gets no kick.
-        let form = match self.players[index].active {
-            ActiveAbility::None => ABILITY_NULL,
-            ActiveAbility::Dash => ABILITY_DASH,
-            ActiveAbility::Bow => ABILITY_BOW,
-            ActiveAbility::Grenade => ABILITY_GRENADE,
-            ActiveAbility::Tack => ABILITY_TACK,
-            ActiveAbility::Mjolnir => ABILITY_MJOLNIR,
-            ActiveAbility::PokeBall => ABILITY_POKE_BALL,
-            ActiveAbility::Smoke => ABILITY_SMOKE,
-            ActiveAbility::Rock => ABILITY_ROCK,
-            ActiveAbility::Roll => ABILITY_ROLL,
-            ActiveAbility::Meteor => ABILITY_METEOR,
-            ActiveAbility::Push => ABILITY_PUSH,
-            ActiveAbility::Freeze => ABILITY_FREEZE,
-            ActiveAbility::Blink => ABILITY_BLINK,
-            ActiveAbility::GrowthRay => ABILITY_GROWTH_RAY,
-            ActiveAbility::ShrinkRay => ABILITY_SHRINK_RAY,
-            ActiveAbility::Missile => ABILITY_MISSILE,
-            ActiveAbility::Mine => ABILITY_MINE,
-            ActiveAbility::Spike => ABILITY_SPIKE,
-            ActiveAbility::Engine => ABILITY_ENGINE,
-            ActiveAbility::Tesla => ABILITY_TESLA,
-            ActiveAbility::TimeStop => ABILITY_TIME_STOP,
-            ActiveAbility::Gust => ABILITY_GUST,
-            ActiveAbility::Revival => ABILITY_REVIVAL,
-            ActiveAbility::BlackHole => ABILITY_BLACK_HOLE,
-            ActiveAbility::Throw => ABILITY_THROW,
-            ActiveAbility::Drill => ABILITY_DRILL,
-            ActiveAbility::Beam => ABILITY_BEAM,
-            ActiveAbility::Duplicator => ABILITY_DUPLICATOR,
-            ActiveAbility::Magnet => ABILITY_MAGNET,
-            ActiveAbility::Platform => ABILITY_PLATFORM,
-        };
+        let form = self.players[index].active.ability_id();
         let jump_strength = if form == ABILITY_NULL {
             Some(data.player.constants.jump_strength)
         } else {
@@ -27942,6 +27936,7 @@ impl RolloutWorld {
             collider_rotation: Fix::ZERO,
             collider_up: Vec2::UP,
             collider_basis: Vec2::RIGHT,
+            sync_rotation_to_platform: data.player.sync_rotation_to_platform,
             aligned: None,
             input_normalized: None,
         };

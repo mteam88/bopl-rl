@@ -138,6 +138,7 @@ struct RawPhysics {
 struct RawPlayer {
     physics: RawPhysics,
     hurtbox_extents: RawVec2,
+    sync_rotation_to_platform: bool,
     spawn_anim_ticks: u32,
     fast_spawn_anim_ticks: u32,
 }
@@ -1236,6 +1237,7 @@ struct RawAbility {
     form_jump_speed: Option<i64>,
     form_jump_strength: Option<i64>,
     effect_prefab: Option<String>,
+    sync_rotation_to_platform: Option<bool>,
 }
 
 /// A platform component whose UpdateSim the rollout runs, as the exporter
@@ -1396,6 +1398,8 @@ pub struct MovementData {
     pub constants: crate::world::MovementConstants,
     pub radius: Fix,
     pub hurtbox_extents: Vec2,
+    /// The slime's PlayerPhysics.SyncRotationToPlatform.
+    pub sync_rotation_to_platform: bool,
     pub spawn_anim_ticks: u32,
     pub fast_spawn_anim_ticks: u32,
 }
@@ -2323,6 +2327,9 @@ pub struct AbilityData {
     /// (`RolloutData::registrations`).
     pub registrations: Vec<u32>,
     pub effect_registrations: Vec<u32>,
+    /// The form prefab's PlayerPhysics.SyncRotationToPlatform, when it has a
+    /// PlayerPhysics.
+    pub sync_rotation_to_platform: Option<bool>,
 }
 pub struct RolloutData {
     pub maps: Vec<MapDef>,
@@ -2673,6 +2680,7 @@ pub fn get() -> &'static RolloutData {
                 constants: constants(&raw.prefabs.player.physics),
                 radius: Fix::from_raw(raw.prefabs.player.physics.radius),
                 hurtbox_extents: raw.prefabs.player.hurtbox_extents.get(),
+                sync_rotation_to_platform: raw.prefabs.player.sync_rotation_to_platform,
                 spawn_anim_ticks: raw.prefabs.player.spawn_anim_ticks,
                 fast_spawn_anim_ticks: raw.prefabs.player.fast_spawn_anim_ticks,
             },
@@ -3746,6 +3754,7 @@ pub fn get() -> &'static RolloutData {
                         form_jump_strength: ability.form_jump_strength.map(Fix::from_raw),
                         registrations,
                         effect_registrations,
+                        sync_rotation_to_platform: ability.sync_rotation_to_platform,
                     }
                 })
                 .collect(),

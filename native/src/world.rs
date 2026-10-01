@@ -153,6 +153,12 @@ pub struct Player {
     /// not pay for the sine table again (zero until the first sync).
     #[serde(default)]
     pub collider_basis: Vec2,
+    /// The live PlayerPhysics' SyncRotationToPlatform: its Move and
+    /// LateUpdateSim turn a grounded body to the surface only when it is set
+    /// (PlayerPhysics.cs:143, 221, 268); AttachToGround and SyncPhysicsTo
+    /// align it regardless (PlayerPhysics.cs:508, 569).
+    #[serde(default = "default_true")]
+    pub sync_rotation_to_platform: bool,
     /// `(up, rotation)` as `align` last derived them: a step along a flat
     /// stretch of surface keeps the same normal, so the arc-cosine is not
     /// paid again for the same input (the value is identical either way).
@@ -884,7 +890,9 @@ impl Player {
             return;
         }
         // The position has not moved since `normal` was evaluated above.
-        self.align_to(normal);
+        if self.sync_rotation_to_platform {
+            self.align_to(normal);
+        }
         let speed = (self.grounded_speed + self.external_velocity.dot(forward)) * speed_scale;
         self.move_along_surface(platform_index, forward, speed, terrain);
     }
@@ -1180,7 +1188,9 @@ impl Player {
             && let Some(platform) = self.attached_ground(platforms)
         {
             self.position = platform.surface.position(self.local, self.radius);
-            self.align(platform);
+            if self.sync_rotation_to_platform {
+                self.align(platform);
+            }
         }
     }
 }

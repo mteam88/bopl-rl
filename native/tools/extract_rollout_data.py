@@ -482,6 +482,7 @@ def main():
             "air_accel": fix(phys, "airAccel"),
         }.items()},
         "hurtbox_extents": vec2(box, "startExtents"),
+        "sync_rotation_to_platform": phys["SyncRotationToPlatform"],
         "spawn_anim_ticks": sum(abs(d) for d in slime_anims["spawn"]),
         # SlimeController.ReSpawnFast uses SpeedUpAnimation(anim, 4): C#
         # integer division per frame, with every duration clamped to >= 1.
@@ -2171,6 +2172,11 @@ def main():
         types = {c["type"] for c in components}
         form_jump_strength = (fix(component(prefab, "PlayerPhysics"), "jumpStrength")
                               if {"PlayerBody", "PlayerPhysics"} <= types else None)
+        # PlayerPhysics.SyncRotationToPlatform: whether its Move and
+        # LateUpdateSim turn a grounded body to the surface (PlayerPhysics.cs:
+        # 143, 221, 268). None for a form with no PlayerPhysics.
+        sync_rotation_to_platform = (component(prefab, "PlayerPhysics")["SyncRotationToPlatform"]
+                                     if "PlayerPhysics" in types else None)
         if item["name"] == "Gold mushroom":
             star = next(c for c in components if c["type"] == "SuperStar")
             effect = ASSETS[guid_of(star["properties"]["effectPrefab"])]
@@ -2203,6 +2209,7 @@ def main():
             "air_jump_strength": air_jump_strength,
             "form_jump_speed": form_jump_speed,
             "form_jump_strength": form_jump_strength,
+            "sync_rotation_to_platform": sync_rotation_to_platform,
             "effect_updatable_count": effect_updatable_count,
             "effect_prefab": effect["path"] if item["name"] == "Gold mushroom" else None,
         })
