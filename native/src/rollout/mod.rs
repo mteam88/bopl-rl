@@ -1253,6 +1253,11 @@ pub struct SpawnedTeslaNode {
     /// animator still runs it out and its callback makes the node lethal
     /// until the next UpdateSim finds it unconnected.
     pub orb_enter_left: u32,
+    /// DetPhysics.UpdateDuplicatedObjects took it before the updatables ran,
+    /// so the pass-opening loop has run its OnDestroyUpdatable already, while
+    /// its GameObject and its partners' references to it last until the
+    /// pass-end DestroyImmediate (Updater.cs:285-296, 338-343).
+    pub destroy_ran: bool,
     pub line_hierarchy_base: u32,
     pub line_appended: u32,
     pub line_entity: Option<usize>,
@@ -14986,16 +14991,17 @@ impl RolloutWorld {
 
     /// `deferred`: the node was Updater.DestroyFix'd mid-pass, so its
     /// OnDestroyUpdatable (and the lines it destroys) waits for the end of
-    /// the pass, after every LateUpdateSim.
+    /// the pass, after every LateUpdateSim. Otherwise UpdateDuplicatedObjects
+    /// took it as the pass opened and it runs now.
     fn remove_tesla_node(&mut self, node_index: usize, deferred: bool) {
         if !self.tesla_nodes[node_index].active {
             return;
         }
-        if deferred {
-            self.mark_tesla_node_destroyed(node_index);
-        } else {
+        if !deferred {
             self.tesla_node_destroyed(node_index, false);
+            self.tesla_nodes[node_index].destroy_ran = true;
         }
+        self.mark_tesla_node_destroyed(node_index);
         self.tesla_nodes[node_index].active = false;
         self.tesla_nodes[node_index].macho_carried = false;
         if let Some(entity) = self.tesla_nodes[node_index].entity {
@@ -15004,7 +15010,7 @@ impl RolloutWorld {
         self.platforms_changed();
     }
 
-    /// Updater.DestroyFix mid-pass: from here the node is IsDestroyed.
+    /// Updater.DestroyFix: from here the node is IsDestroyed.
     fn mark_tesla_node_destroyed(&mut self, node_index: usize) {
         if let Some(entity) = self.tesla_nodes[node_index].entity {
             self.entities[entity].flags = E_DESTROYED | E_COMPOSITE | E_FIX_DESTROYED;
@@ -15023,8 +15029,7 @@ impl RolloutWorld {
     }
 
     /// SimpleSparkNode.OnDestroyUpdatable: it deactivates its own connection
-    /// and a connected parent's, and the partners lose their reference to
-    /// it (SimpleSparkNode.cs:140-150).
+    /// and a connected parent's (SimpleSparkNode.cs:140-150).
     fn tesla_node_destroyed(&mut self, node_index: usize, deferred: bool) {
         if self.tesla_nodes[node_index].connected {
             self.disconnect_tesla_node(node_index, deferred);
@@ -15035,6 +15040,13 @@ impl RolloutWorld {
         {
             self.disconnect_tesla_node(parent, deferred);
         }
+    }
+
+    /// DestroyImmediate: the partners' references to the node go null. A
+    /// parent that connected to it again after its OnDestroyUpdatable stays
+    /// connected with no child, and its EnterOrb runs on into
+    /// ActivateLightning (SimpleSparkNode.cs:219-260).
+    fn tesla_node_unlink(&mut self, node_index: usize) {
         let child = self.tesla_nodes[node_index].child;
         let parent = self.tesla_nodes[node_index].parent;
         if let Some(child) = child
@@ -15046,6 +15058,10 @@ impl RolloutWorld {
             && parent < self.tesla_nodes.len()
         {
             self.tesla_nodes[parent].child = None;
+            let node = &mut self.tesla_nodes[parent];
+            if node.connected && !node.lethal {
+                node.orb_enter_left = data::get().tesla.enter_ticks + 1 - node.orb_ticks;
+            }
         }
     }
 
@@ -15056,8 +15072,14 @@ impl RolloutWorld {
         updater_order(&mut order, &self.tesla_nodes, |node| self.updater_key(node.appended, 100_000_000 + node.hierarchy_base));
         for &node_index in order.iter().rev() {
             if fix_destroyed(&self.entities, self.tesla_nodes[node_index].entity) {
-                self.tesla_node_destroyed(node_index, true);
+                if !self.tesla_nodes[node_index].destroy_ran {
+                    self.tesla_node_destroyed(node_index, true);
+                }
+                self.tesla_node_unlink(node_index);
             }
+        }
+        for node in &mut self.tesla_nodes {
+            node.destroy_ran = false;
         }
         self.scratch.item_order = order;
     }
@@ -27614,7 +27636,11 @@ impl RolloutWorld {
             duplicate_shake_offset: Vec2::ZERO,
             ..SpawnedTeslaNode::default()
         };
-        if let Some(free) = self.tesla_nodes.iter().position(|node| self.child_slot_free(node.active, node.entity)) {
+        if let Some(free) = self
+            .tesla_nodes
+            .iter()
+            .position(|node| self.child_slot_free(node.active, node.entity) && !fix_destroyed(&self.entities, node.entity))
+        {
             self.tesla_nodes[free] = clone;
         } else {
             self.tesla_nodes.push(clone);
@@ -42331,7 +42357,7 @@ mod tests {
         assert!(!world.tesla_nodes[0].active);
         assert!(!world.tesla_nodes[1].connected);
         assert!(!world.tesla_nodes[1].lethal);
-        assert_eq!(world.tesla_nodes[1].parent, None);
+        assert_eq!(world.tesla_nodes[1].parent, Some(0));
         assert_eq!(world.tesla_nodes[1].platform_index, 0);
     }
 
