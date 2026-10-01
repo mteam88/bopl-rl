@@ -1345,6 +1345,25 @@ impl RolloutWorld {
                             self.run_callback_hit(CallbackHit::ItemDetonate { item, count: 1 }, data);
                         }
                     }
+                    // PokeBall.OnCollide captures the SlimeController on a
+                    // Player-layer collider's FixTransform, a slime's own box
+                    // or an abilityless clone's, unless it is its thrower's;
+                    // the first capture in callback order wins (PokeBall.cs:122-141).
+                    ABILITY_POKE_BALL if layer == LAYER_PLAYER => {
+                        let owner = player_id(&self.players, state.owner);
+                        let hit = match (other, collider) {
+                            (Part::Body(player), Some(body))
+                                if body == self.players[player].body_entity && self.players[player].base.id != owner =>
+                            {
+                                CallbackHit::PokeCapture { item, victim: player, clone: false }
+                            }
+                            (Part::Clone(clone), _) if self.abilityless_clones[clone].base.id != owner => {
+                                CallbackHit::PokeCapture { item, victim: clone, clone: true }
+                            }
+                            _ => return,
+                        };
+                        self.run_callback_hit(hit, data);
+                    }
                     _ => {}
                 }
             }

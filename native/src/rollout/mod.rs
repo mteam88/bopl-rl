@@ -8014,7 +8014,6 @@ impl RolloutWorld {
         self.thrown_item_pair_contacts(data);
         self.box_box_group(data);
         self.sync_guided_missile_rows();
-        self.thrown_items_contacts(data);
         for roller in 0..self.players.len() {
             self.roll_hurtbox_contacts(roller, data);
         }
@@ -33891,74 +33890,6 @@ impl RolloutWorld {
         self.circle_box_group(data);
     }
 
-    fn thrown_items_contacts(&mut self, data: &data::RolloutData) {
-        for item_index in 0..self.thrown_items.len() {
-            // DetPhysics leaves a collider that fails IsActive out of every
-            // pair, so an item a Blink tunnel deactivated calls nothing back.
-            if !self.thrown_items[item_index].active
-                || self.thrown_items[item_index].callback_registered_tick == self.tick
-                || self.thrown_items[item_index].entity.is_none_or(|entity| !self.collides(entity))
-            {
-                continue;
-            }
-            let item = self.thrown_items[item_index];
-            let item_radius = thrown_item_radius(data, item);
-            let circle = Circle {
-                center: item.position,
-                radius: item_radius,
-            };
-            if item.ability == ABILITY_POKE_BALL && item.launched && item.capture_victim.is_none() {
-                // PokeBall.TryProximityCapture runs in UpdateSim and uses the
-                // smaller authored 0.8-player-radius query. The item circle can
-                // still overlap the ordinary slime's Player-layer box later in
-                // DetPhysics. PokeBall.OnCollide then captures that slime. This
-                // is observable on the first pass after Bow exits: the updater
-                // query misses, Bow's disabled box has been replaced by the
-                // ordinary collider, and the physics callback catches it.
-                //
-                // DetPhysics constructs all manifolds before invoking either
-                // callback, so retain the synchronized collider position for
-                // the rest of this contact pass. BeginCapture only moves the
-                // live PlayerBody; the box is synchronized next pass.
-                // PokeBall.OnCollide with each Player-layer box, queued at its
-                // Circle/Box pair; the first in callback order captures
-                // (PokeBall.cs:122-141).
-                let owner = item.owner;
-                let ball = self.part_rank(Part::Item(item_index));
-                // A slime in its spawn animation already has its hurtbox.
-                for player_index in 0..self.players.len() {
-                    if player_index == owner
-                        || !self.hittable(player_index)
-                        || self.players[player_index].active != ActiveAbility::None
-                        || self.players[player_index].base.dash.active
-                        || crate::physics::contact::circle_box(circle, self.players[player_index].base.collider).is_none()
-                    {
-                        continue;
-                    }
-                    let (later, earlier) = sweep_pair(ball, self.player_sweep_rank(player_index));
-                    let hit = CallbackHit::PokeCapture { item: item_index, victim: player_index, clone: false };
-                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
-                }
-                for clone_index in 0..self.abilityless_clones.len() {
-                    let clone = &self.abilityless_clones[clone_index];
-                    if !clone.active
-                        || !clone.base.alive
-                        || clone.owner == owner
-                        || self.abilityless_clone_hidden(clone)
-                        || crate::physics::contact::circle_box(circle, clone.base.collider).is_none()
-                    {
-                        continue;
-                    }
-                    let rank = sweep_rank(&self.entities, self.swept_min(Swept::Clone(clone_index)), clone.entity);
-                    let (later, earlier) = sweep_pair(ball, rank);
-                    let hit = CallbackHit::PokeCapture { item: item_index, victim: clone_index, clone: true };
-                    self.scratch.callback_hits.push(((GROUP_CB, later, earlier), hit));
-                }
-                continue;
-            }
-        }
-    }
-
     fn clone_sweep_rank(&self, clone_index: usize) -> SweepRank {
         let min = self.swept_min(Swept::Clone(clone_index));
         sweep_rank(&self.entities, min, self.abilityless_clones[clone_index].entity)
@@ -41352,40 +41283,6 @@ mod tests {
             newer * amplitude
         );
         assert_eq!(world.arrows[0].duplicate_shake_offset, older * amplitude);
-    }
-
-    #[test]
-    fn arrow_contact_does_not_ignite_grenade() {
-        let mut world = RolloutWorld::new();
-        world.reset(&test_config()).unwrap();
-        world.tick = 2;
-        let entity = world.entities.len();
-        world.push_entity(CEntity {
-            flags: E_ACTIVE | E_ENABLED,
-            ..CEntity::default()
-        }, Vec2::ZERO);
-        world.thrown_items.push(ThrownItem {
-            active: true,
-            owner: 0,
-            ability: ABILITY_GRENADE,
-            entity: Some(entity),
-            position: Vec2::ZERO,
-            scale: Fix::ONE,
-            collider_radius: data::get().grenade.item_radius,
-            ..ThrownItem::default()
-        });
-        world.arrows.push(Arrow {
-            active: true,
-            registered: true,
-            position: Vec2::ZERO,
-            scale: Fix::ONE,
-            ..Arrow::default()
-        });
-
-        world.thrown_items_contacts(data::get());
-
-        assert!(world.thrown_items[0].active);
-        assert!(world.grenade_explosions.is_empty());
     }
 
     #[test]
