@@ -4088,6 +4088,7 @@ fn exits_through_packet(active: ActiveAbility) -> bool {
             | ActiveAbility::Drill
             | ActiveAbility::Beam
             | ActiveAbility::Roll
+            | ActiveAbility::Meteor
     )
 }
 
@@ -10080,12 +10081,6 @@ impl RolloutWorld {
             // each ExitAbility writes its own fields over it before the slime
             // restores from it.
             match active {
-                ActiveAbility::Meteor => {
-                    // MeteorSmash.ExitAbility passes the packet on untouched
-                    // (MeteorSmash.cs:196-205): isFacingRight false.
-                    slot.facing_right = false;
-                    slot.base.external_velocity = Vec2::ZERO;
-                }
                 ActiveAbility::Throw => {
                     // MachoThrow2.cs:785; it leaves externalVelocity default.
                     slot.facing_right = slot.macho_throw.facing_right;
@@ -13171,7 +13166,7 @@ impl RolloutWorld {
                 // (MeteorSmash.cs:292-295, PlayerPhysics.CollisionRaycasts).
                 let dt = self.players[index].base.fixed_delta_time;
                 if self.players[index].base.collision_rays_over(terrain!(self), dt) {
-                    self.exit_meteor_grounded(index, data);
+                    self.exit_meteor_grounded(index);
                     return;
                 }
                 // The animator's Jump callback runs after Ability.UpdateSim.
@@ -13193,7 +13188,7 @@ impl RolloutWorld {
                     // anything already overhead.
                     slot.base.collision_rays(terrain!(self));
                     if self.players[index].base.grounded {
-                        self.exit_meteor_grounded(index, data);
+                        self.exit_meteor_grounded(index);
                         return;
                     }
                     let slot = &mut self.players[index];
@@ -13216,7 +13211,7 @@ impl RolloutWorld {
                     * data.meteor.jump_speed;
                 slot.base.collision_rays(terrain!(self));
                 if self.players[index].base.grounded {
-                    self.exit_meteor_grounded(index, data);
+                    self.exit_meteor_grounded(index);
                     return;
                 }
                 // PlayerBody moves by selfImposed plus external velocity,
@@ -13251,7 +13246,7 @@ impl RolloutWorld {
                 slot.base.external_velocity *= Fix::from_f64(0.8);
                 slot.base.collision_rays(terrain!(self));
                 if self.players[index].base.grounded {
-                    self.exit_meteor_grounded(index, data);
+                    self.exit_meteor_grounded(index);
                     return;
                 }
                 // Meteor's DestroyIfOutsideSceneBounds sits between
@@ -13290,7 +13285,10 @@ impl RolloutWorld {
     }
 
     fn meteor_dash(&mut self, index: usize, data: &data::RolloutData) {
-        // RaycastAll (MeteorSmash.cs:335).
+        // MeteorSmash.Dash zeroes both velocities, then RaycastAll
+        // (MeteorSmash.cs:330-335).
+        self.players[index].base.velocity = Vec2::ZERO;
+        self.players[index].base.external_velocity = Vec2::ZERO;
         self.remove_destroyed_colliders();
         let start = self.players[index].base.position;
         let scene_water = data.maps[self.map].scene_water_height();
@@ -13457,7 +13455,7 @@ impl RolloutWorld {
                     self.spawn_meteor_smear(start, near, index, data);
                     self.players[index].base.position =
                         Vec2::new(start.x, scene_water - Fix::from_int(20));
-                    self.exit_meteor_air(index, data);
+                    self.exit_meteor_air(index);
                     return;
                 }
                 _ => unreachable!(),
@@ -13489,7 +13487,7 @@ impl RolloutWorld {
 
         self.spawn_meteor_smear(start, Vec2::new(start.x, scene_water), index, data);
         self.players[index].base.position = Vec2::new(start.x, scene_water - Fix::from_int(10));
-        self.exit_meteor_air(index, data);
+        self.exit_meteor_air(index);
     }
 
     fn projectile_credit(&self, entity: usize) -> (u32, bool, u32) {
@@ -13671,69 +13669,51 @@ impl RolloutWorld {
         let landing = surface.position(local, radius);
         let local = surface.local_position(landing, radius).unwrap_or(local);
         let landing = surface.position(local, radius);
-        let platform_id = self.platforms[platform_index].id;
+        // AttachToGround zeroes both velocities and aligns the body.
+        let platform = &self.platforms[platform_index];
         let slot = &mut self.players[index];
         slot.meteor.phase = 3;
         slot.meteor.dash_updates = 0;
-        // The smash exits through ExitAbilityGrounded, isFacingRight true.
-        slot.facing_right = true;
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
         slot.base.position = landing;
-        slot.base.constants = data.player.constants.clone();
-        slot.base.external_velocity = Vec2::ZERO;
         slot.base.grounded = true;
-        slot.base.ground = Some(platform_id);
+        slot.base.ground = Some(platform.id);
         slot.base.local = local;
-        slot.base.grounded_speed = Fix::ZERO;
-        slot.begin_land(true);
-        slot.reported_position = landing;
-        slot.reported_tick = self.tick;
-        self.sync_exit_to_ground(index);
-        let slot = &mut self.players[index];
-        slot.meteor.collider_up = slot.base.up;
-        slot.meteor.collider_rotation = slot.base.collider_rotation;
-    }
-
-    /// MeteorSmash.ExitAbilityGrounded: the slime returns attached where the
-    /// form's VelocityBasedRaycasts landed it, with no ground speed.
-    fn exit_meteor_grounded(&mut self, index: usize, data: &data::RolloutData) {
-        let slot = &mut self.players[index];
-        // MeteorSmash exits hand over isFacingRight true.
-        slot.facing_right = true;
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        slot.base.constants = data.player.constants.clone();
-        slot.base.grounded_speed = Fix::ZERO;
-        slot.base.rotation = Fix::ZERO;
-        slot.begin_land(true);
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
-        self.sync_exit_to_ground(index);
-        let slot = &mut self.players[index];
-        slot.meteor.collider_up = slot.base.up;
-        slot.meteor.collider_rotation = slot.base.collider_rotation;
-    }
-
-    fn exit_meteor_air(&mut self, index: usize, data: &data::RolloutData) {
-        let slot = &mut self.players[index];
-        slot.facing_right = true;
-        slot.set_active_form(&mut self.entities, ActiveAbility::None);
-        // onExitAbility assigns Player.Scale to the slime's hurtbox, and
-        // SyncPhysicsTo's UpdateScale brings the kept slime radius up to it.
-        slot.set_ordinary_body_scale(slot.player_scale);
-        slot.restore_slime_radius();
-        slot.base.constants = data.player.constants.clone();
         slot.base.velocity = Vec2::ZERO;
         slot.base.external_velocity = Vec2::ZERO;
-        slot.base.grounded = false;
-        slot.base.rotation = Fix::ZERO;
-        slot.base.up = Vec2::UP;
-        slot.reported_position = slot.base.position;
-        slot.reported_tick = self.tick;
+        slot.base.align(platform);
+        self.exit_meteor_grounded(index);
+    }
+
+    /// MeteorSmash.ExitAbilityGrounded (MeteorSmash.cs:207-222): the slime
+    /// returns attached where the form's body landed, with no ground speed.
+    fn exit_meteor_grounded(&mut self, index: usize) {
+        let slot = &mut self.players[index];
+        slot.meteor.collider_up = slot.base.up;
+        slot.meteor.collider_rotation = slot.base.rotation;
+        let mut info = ExitInfo { facing_right: true, just_landed: true, ..ExitInfo::default() };
+        info.take_body(&slot.base);
+        info.grounded = true;
+        info.grounded_speed = Fix::ZERO;
+        self.exit_form_with(index, info);
+    }
+
+    /// MeteorSmash.ExitAbilityNoGround (MeteorSmash.cs:224-238). Dash left no
+    /// velocity, so EnterFall's rays are point queries at the slime, which
+    /// attach it to a wall it came to rest inside.
+    fn exit_meteor_air(&mut self, index: usize) {
+        let slot = &mut self.players[index];
         slot.meteor.collider_up = Vec2::UP;
         slot.meteor.collider_rotation = Fix::ZERO;
-        // The dash left no velocity, so EnterFall's rays are point queries
-        // at the slime, which attach it to a wall it came to rest inside.
-        slot.exit_to_fall(terrain!(self));
+        let base = &slot.base;
+        let info = ExitInfo {
+            position: base.position,
+            velocity: base.velocity,
+            external_velocity: base.external_velocity,
+            radius: base.radius,
+            facing_right: true,
+            ..ExitInfo::default()
+        };
+        self.exit_form_with(index, info);
     }
 
     fn spawn_meteor_smear(&mut self, from: Vec2, to: Vec2, owner: usize, data: &data::RolloutData) {
@@ -14114,6 +14094,10 @@ impl RolloutWorld {
                 {
                     info.position = position - normal * (slot.base.radius - slot.slime_radius);
                 }
+            }
+            ActiveAbility::Meteor => {
+                // MeteorSmash.ExitAbility passes the packet on untouched
+                // (MeteorSmash.cs:196-205).
             }
             _ => unreachable!("form_exit_ability: {}", active as u8),
         }
@@ -26964,7 +26948,7 @@ impl RolloutWorld {
             }
         }
 
-        let (mut position, velocity, scale, boulder_recoil) = match held {
+        let (position, velocity, scale, boulder_recoil) = match held {
             MagnetHeld::ThrownItem(i) => {
                 let item = self.thrown_items[i];
                 (item.position, item.body.velocity, item.scale, false)
@@ -27032,15 +27016,12 @@ impl RolloutWorld {
             MagnetHeld::Nothing => return,
         };
         // MagnetGun exits an ability form with an ungrounded packet placed at
-        // its CurrentFirePoint, but the form's own ExitAbility overwrites that
-        // position with its body's. MeteorSmash passes it on.
+        // its CurrentFirePoint.
         let firepoint = self.magnet_firepoint(index, data);
-        if let MagnetHeld::Player(victim) = held {
-            match self.players[victim].active {
-                ActiveAbility::Meteor => position = firepoint,
-                ActiveAbility::Throw => self.drop_macho_held_boulder(victim, data),
-                _ => {}
-            }
+        if let MagnetHeld::Player(victim) = held
+            && self.players[victim].active == ActiveAbility::Throw
+        {
+            self.drop_macho_held_boulder(victim, data);
         }
 
         if self.players[index].magnet.phase == 1 {
