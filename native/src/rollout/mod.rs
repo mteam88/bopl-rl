@@ -10772,7 +10772,7 @@ impl RolloutWorld {
                         // 1084), so the live body this pass is the form's and
                         // its own bounds component is what observes it, before
                         // the form moves.
-                        if self.ability_boundary_kill(index, false) {
+                        if self.ability_boundary_kill(index) {
                             return;
                         }
                         if grounded {
@@ -11022,7 +11022,7 @@ impl RolloutWorld {
                         // 1084), so the live body this pass is the form's and
                         // its own bounds component is what observes it, before
                         // the form moves.
-                        if self.ability_boundary_kill(index, false) {
+                        if self.ability_boundary_kill(index) {
                             return;
                         }
                         self.players[index].rock_body_mass();
@@ -11068,7 +11068,7 @@ impl RolloutWorld {
                         // 1084), so the live body this pass is the form's and
                         // its own bounds component is what observes it, before
                         // the form moves.
-                        if self.ability_boundary_kill(index, false) {
+                        if self.ability_boundary_kill(index) {
                             return;
                         }
                         self.roll_tick(index, action, data);
@@ -11199,7 +11199,7 @@ impl RolloutWorld {
                         // 1084), so the live body this pass is the form's and
                         // its own bounds component is what observes it, before
                         // the form moves.
-                        if self.ability_boundary_kill(index, false) {
+                        if self.ability_boundary_kill(index) {
                             return;
                         }
                         self.time_stop_cast_tick(index, action, jump_pressed, data);
@@ -11716,7 +11716,7 @@ impl RolloutWorld {
                         );
                         slot.base.radius = slot.forms[s].physics_radius();
                         self.form_entry_turn(data, index);
-                        if self.ability_boundary_kill(index, false) {
+                        if self.ability_boundary_kill(index) {
                             return;
                         }
                         // BlackHoleClap follows the animator. Its first active
@@ -11987,7 +11987,7 @@ impl RolloutWorld {
                         // 1084), so the live body this pass is the form's and
                         // its own bounds component is what observes it, before
                         // the form moves.
-                        if self.ability_boundary_kill(index, false) {
+                        if self.ability_boundary_kill(index) {
                             return;
                         }
                         self.beam_tick(index, action, jump_pressed, false, data);
@@ -12038,7 +12038,7 @@ impl RolloutWorld {
                         // 1084), so the live body this pass is the form's and
                         // its own bounds component is what observes it, before
                         // the form moves.
-                        if self.ability_boundary_kill(index, false) {
+                        if self.ability_boundary_kill(index) {
                             return;
                         }
                         return;
@@ -12812,7 +12812,7 @@ impl RolloutWorld {
                 // MeteorSmash.UpdateSim and PlayerBody, so it observes the
                 // vibrated position and the body is never integrated after.
                 // MeteorSmash.ExitAbility does not unground (MeteorSmash.cs:196).
-                if self.ability_boundary_kill(index, false) {
+                if self.ability_boundary_kill(index) {
                     return;
                 }
                 self.form_body_step(index);
@@ -12828,7 +12828,7 @@ impl RolloutWorld {
                     slot.base.position =
                         Vec2::new(slot.base.position.x, scene_water - Fix::from_int(20));
                 }
-                if self.ability_boundary_kill(index, false) {
+                if self.ability_boundary_kill(index) {
                     return;
                 }
                 self.form_body_step(index);
@@ -13030,7 +13030,7 @@ impl RolloutWorld {
             slot.meteor.dash_updates = 0;
             slot.base.velocity = Vec2::ZERO;
             slot.base.external_velocity = Vec2::ZERO;
-            if self.ability_boundary_kill(index, false) {
+            if self.ability_boundary_kill(index) {
                 return;
             }
             self.form_body_step(index);
@@ -16713,7 +16713,7 @@ impl RolloutWorld {
         // BlackHoleClap's DestroyIfOutsideSceneBounds runs before PlayerBody
         // integrates this pass; its ExitAbility publishes the attached
         // position without ungrounding (BlackHoleClap.cs:158).
-        if self.ability_boundary_kill(index, false) {
+        if self.ability_boundary_kill(index) {
             return;
         }
         self.black_hole_form_motion(index);
@@ -18471,7 +18471,7 @@ impl RolloutWorld {
         // SpriteAnimator and before PlayerBody and Beam, so the orb goes
         // unheld on the pass it fires, keeping the pose DetPhysics synced it
         // to. Beam.ExitAbility does not UnGround.
-        if advance_animation && self.ability_boundary_kill(index, false) {
+        if advance_animation && self.ability_boundary_kill(index) {
             self.update_beam_orb_position(index, undrifted, late_up, late_staff, late_facing, late_scale);
             return;
         }
@@ -20380,7 +20380,7 @@ impl RolloutWorld {
         self.players[index].base.gravity_step(terrain!(self));
         // DestroyIfOutsideSceneBounds (5) runs before PlayerBody, and
         // MachoThrow2.ExitAbility drops the held boulder.
-        if self.ability_boundary_kill(index, false) {
+        if self.ability_boundary_kill(index) {
             self.drop_macho_held_boulder(index, data);
             return;
         }
@@ -23987,7 +23987,7 @@ impl RolloutWorld {
         // On the pass the boundary fires, SparkShot never steers the live
         // projectile. SparkShot's ExitAbility does not unground.
         let lost = std::mem::take(&mut self.players[index].ground_destroyed);
-        if self.ability_boundary_kill(index, false) {
+        if self.ability_boundary_kill(index) {
             return;
         }
 
@@ -24154,7 +24154,7 @@ impl RolloutWorld {
         // Ability-ordered Player.Position publish already happened before this
         // function ran, so the kill may take it directly. ThrowItem.ExitAbility
         // publishes the attached position without ungrounding (ThrowItem.cs:165).
-        if self.ability_boundary_kill(index, false) {
+        if self.ability_boundary_kill(index) {
             return;
         }
         let button = 2u8 << self.players[index].active_slot;
@@ -24404,11 +24404,10 @@ impl RolloutWorld {
     /// `boundary_death` attributes the kill with CauseOfDeath.Other
     /// (DestroyIfOutsideSceneBounds.cs:135-141, SlimeController.cs:217).
     ///
-    /// `unground` follows the form's own ExitAbility: the GunTransform family
-    /// (BowTransform.cs:120, GunTransform.cs:87, MagnetGun.cs:359) calls
-    /// PlayerPhysics.UnGround before publishing the position, so a grounded
-    /// body dies 0.05 off its surface; ThrowItem2 and SparkShot publish the
-    /// attached position unchanged (ThrowItem2.cs:199, SparkShot.cs:283).
+    /// `boundary_death` then runs the form's own ExitAbility through
+    /// kill_with, so the GunTransform family's UnGround moves a grounded body
+    /// 0.05 off its surface before the slime takes its position
+    /// (BowTransform.cs:120, GunTransform.cs:87, MagnetGun.cs:359).
     ///
     /// Returns true when the body died; callers must return immediately so
     /// the rest of the prefab's updaters, PlayerBody included, do not run.
@@ -24426,15 +24425,12 @@ impl RolloutWorld {
         slot.reported_tick = tick;
     }
 
-    fn ability_boundary_kill(&mut self, index: usize, unground: bool) -> bool {
+    fn ability_boundary_kill(&mut self, index: usize) -> bool {
         if !self.players[index].base.alive || !self.players[index].base.outside_bounds() {
             return false;
         }
         self.players[index].base.alive = false;
         self.players[index].base.out_of_bounds = true;
-        if unground {
-            UngroundBody::Form(&mut self.players[index]).unground(&self.platforms, self.tick, true);
-        }
         self.players[index].reported_position = self.players[index].base.position;
         true
     }
@@ -24525,7 +24521,7 @@ impl RolloutWorld {
         // and the released item keeps the position it was given on the
         // previous pass. ThrowItem2.ExitAbility publishes the attached
         // position without ungrounding (ThrowItem2.cs:199).
-        if self.ability_boundary_kill(index, false) {
+        if self.ability_boundary_kill(index) {
             return;
         }
         if aim != Vec2::ZERO && !self.players[index].throw_item.has_inputted_fire {
@@ -24994,7 +24990,7 @@ impl RolloutWorld {
         }
         // DestroyIfOutsideSceneBounds follows GunTransform, so a recoil that
         // lands below the bound exits the form before the bound can kill it.
-        if self.ability_boundary_kill(index, true) {
+        if self.ability_boundary_kill(index) {
             return;
         }
         // Ability.UpdateSim follows GunTransform: it rescales the form and
@@ -25168,7 +25164,7 @@ impl RolloutWorld {
         }
         // DestroyIfOutsideSceneBounds follows GunTransform, so a recoil that
         // lands below the bound exits the form before the bound can kill it.
-        if self.ability_boundary_kill(index, true) {
+        if self.ability_boundary_kill(index) {
             return;
         }
         // Ability.UpdateSim follows GunTransform: it rescales the form and
@@ -25334,7 +25330,7 @@ impl RolloutWorld {
         }
         // DestroyIfOutsideSceneBounds follows GunTransform, so a recoil that
         // lands below the bound exits the form before the bound can kill it.
-        if self.ability_boundary_kill(index, true) {
+        if self.ability_boundary_kill(index) {
             return;
         }
         // Ability.UpdateSim follows GunTransform: it rescales the form and
@@ -25500,7 +25496,7 @@ impl RolloutWorld {
         }
         // DestroyIfOutsideSceneBounds follows GunTransform, so a recoil that
         // lands below the bound exits the form before the bound can kill it.
-        if self.ability_boundary_kill(index, true) {
+        if self.ability_boundary_kill(index) {
             return;
         }
         // Ability.UpdateSim follows GunTransform: it rescales the form and
@@ -25568,7 +25564,7 @@ impl RolloutWorld {
         self.players[index].reported_tick = self.tick;
 
         // MagnetGun's DestroyIfOutsideSceneBounds precedes PlayerBody.
-        if self.ability_boundary_kill(index, true) {
+        if self.ability_boundary_kill(index) {
             return;
         }
 
@@ -32002,19 +31998,9 @@ impl RolloutWorld {
         // The Bow's DestroyIfOutsideSceneBounds (hierarchy 50) runs after
         // PlayerPhysics (48) and before BowTransform (51), so a Bow below the
         // water dies before OldUpdate can fire, and PlayerBody never
-        // integrates it. BowTransform.ExitAbility ungrounds the body first
-        // (BowTransform.cs:120), so a grounded Bow dies 0.05 off its
-        // surface, and that is the position the slime takes over
-        // (BowTransform.cs:124, SlimeController.cs:217).
-        {
-            let slot = &mut self.players[index];
-            if slot.base.outside_bounds() {
-                slot.base.alive = false; // game_tick attributes it after this updater
-                slot.base.out_of_bounds = true;
-                UngroundBody::Form(slot).unground(&self.platforms, self.tick, true);
-                slot.reported_position = slot.base.position;
-                return;
-            }
+        // integrates it.
+        if self.ability_boundary_kill(index) {
+            return;
         }
         let slot_button = 2u8 << self.players[index].active_slot;
         let button_down = action.buttons & slot_button != 0;
@@ -37370,11 +37356,12 @@ impl RolloutWorld {
             } else {
                 CAUSE_OTHER
             };
-            // The boundary component already ran the form's ExitAbility.
-            // The slime's boundary kill ignores invulnerability; a form's
-            // ExitAbility kills through the slime's killPlayer, which does not.
+            // selfDestruct hands a form's own ExitAbility the dead packet
+            // (DestroyIfOutsideSceneBounds.cs:135-141). The slime's boundary
+            // kill ignores invulnerability; a form's ExitAbility kills through
+            // the slime's killPlayer, which does not.
             let ignore_invulnerability = cause == CAUSE_ACCIDENT;
-            self.kill_with(index, ENVIRONMENT, cause, KillRoute::Updater, false, false, ignore_invulnerability);
+            self.kill_with(index, ENVIRONMENT, cause, KillRoute::Updater, false, true, ignore_invulnerability);
         }
     }
 
@@ -39730,14 +39717,21 @@ impl RolloutWorld {
                 row.up_y = (Fix::from_raw(row.up_y) * ratio).raw();
             }
         }
-        if matches!(
-            self.players[index].active,
-            ActiveAbility::Grenade
-                | ActiveAbility::Smoke
-                | ActiveAbility::Tack
-                | ActiveAbility::Mjolnir
-                | ActiveAbility::PokeBall
-        ) {
+        // ThrowItem2.ExitAbility tosses a payload still held. It goes ahead
+        // of the rest of the form's exit so a callback's kill registers the
+        // payload as a callback's. BlackHole hands the form's Ability its exit
+        // instead, and Grenade.UpdateSim lets the payload go on the next pass
+        // (BlackHole.cs:486-495, Grenade.cs:54-58).
+        if form_exit
+            && matches!(
+                self.players[index].active,
+                ActiveAbility::Grenade
+                    | ActiveAbility::Smoke
+                    | ActiveAbility::Tack
+                    | ActiveAbility::Mjolnir
+                    | ActiveAbility::PokeBall
+            )
+        {
             self.release_held_throw_item_on_exit(index, callback, data::get());
         }
         if self.players[index].active == ActiveAbility::Throw {
@@ -39799,8 +39793,7 @@ impl RolloutWorld {
         }
         // BlackHole hands the form's Ability its exit, skipping
         // Drill.ExitAbility, so nothing turns the hitboxes off this pass.
-        if callback
-            && !form_exit
+        if !form_exit
             && self.players[index].active == ActiveAbility::Drill
             && self.players[index].drill.phase != 0
         {
