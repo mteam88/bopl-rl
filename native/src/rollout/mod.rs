@@ -4092,8 +4092,9 @@ enum CallbackHit {
     /// PlayerCollision.OnCollide's wall branch squishing a grounded slime,
     /// a player's or an abilityless clone's (PlayerCollision.cs:327-347).
     Squish { clone: bool, index: usize },
-    /// A young SpikeAttack.OnCollide with a wall (SpikeAttack.cs:116-131).
-    SpikeWallKnock { spike: usize, wall: usize, point: Vec2 },
+    /// A young SpikeAttack.OnCollide with a rounded rect, on the wall layer
+    /// or not (SpikeAttack.cs:116-141).
+    SpikeWallKnock { spike: usize, wall: usize, point: Vec2, wall_layer: bool },
     /// BlackHole.OnCollide with `target`, whose collider's inverseMass was
     /// `inverse_mass` when the pair was found.
     BlackHole { hole: usize, target: HoleTarget, inverse_mass: Fix },
@@ -37023,19 +37024,20 @@ impl RolloutWorld {
                 CallbackHit::BlackHole { hole, target, inverse_mass } => {
                     self.black_hole_collide(hole, target, inverse_mass, data);
                 }
-                CallbackHit::SpikeWallKnock { spike, wall, point } => {
+                CallbackHit::SpikeWallKnock { spike, wall, point, wall_layer } => {
                     if self.player_time_scale < Fix::from_f32(0.01)
                         || self.spike_attacks[spike].time >= data.spike.push_time
                         || self.entities[self.platform_entities[wall]].flags & E_DESTROYED != 0
                     {
                         continue;
                     }
+                    let strength = if wall_layer { data.spike.knock_wall } else { data.spike.knock_player };
                     let direction = (point - self.spike_attack_root(spike)).normalized_safe();
                     let wall_arm = (point - self.platforms[wall].surface.center).normalized_safe();
                     self.platform_dynamics[wall]
                         .body
-                        .apply_impulse(direction * data.spike.knock_wall, wall_arm);
-                    self.spike_attack_self_push(spike, point, data.spike.knock_wall, data);
+                        .apply_impulse(direction * strength, wall_arm);
+                    self.spike_attack_self_push(spike, point, strength, data);
                 }
                 CallbackHit::MineIgnite { item } => {
                     let mine = &mut self.thrown_items[item];
