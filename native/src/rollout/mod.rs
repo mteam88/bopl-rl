@@ -13022,13 +13022,8 @@ impl RolloutWorld {
                         continue;
                     }
                     self.players[index].base.position = near;
-                    let caster_id = self.players[index].base.id;
-                    // Dash runs in MeteorSmash.UpdateSim and calls the hit's
-                    // OnCollide itself, so DetPhysics drops the victim before
-                    // this pass's contacts. A Rock's callback is BounceBall.
-                    if self.players[target].active != ActiveAbility::Rock {
-                        self.kill(target, caster_id, CAUSE_OTHER, false, true);
-                    }
+                    let entity = Self::hurtbox_entity(&self.players[target]);
+                    self.form_target_on_collide(entity, near, index, KillRoute::Updater, data);
                     // A Rock (no PlayerCollision) or an invulnerable target
                     // survives, and the reciprocal PlayerCollision callback
                     // can still kill the Meteor against a lethal form.
@@ -13049,7 +13044,7 @@ impl RolloutWorld {
                 2 => {
                     let entity = hit.index;
                     self.players[index].base.position = near;
-                    self.player_form_target_callback(entity, near, index, KillRoute::Updater, data);
+                    self.form_target_on_collide(entity, near, index, KillRoute::Updater, data);
                     let row = self.entities[entity];
                     if row.flags & E_DESTROYED == 0
                         && matches!(row.layer, LAYER_PROJECTILE | 16 | 18 | 26)
@@ -13203,11 +13198,11 @@ impl RolloutWorld {
         }
     }
 
-    /// The target's OnCollide with a form's hitbox. MeteorSmash.Dash and
-    /// Roll.CollideExtraHurtBoxes call it from their own UpdateSim, so an item
-    /// it destroys there is gone before this pass's DetPhysics
-    /// (MeteorSmash.cs:408, Roll.cs:298, 332).
-    fn player_form_target_callback(
+    /// The target's collisionCallback.OnCollide with a form's hitbox.
+    /// MeteorSmash.Dash and Roll.CollideExtraHurtBoxes call it from their own
+    /// UpdateSim, so whatever it kills or destroys there is gone before this
+    /// pass's DetPhysics (MeteorSmash.cs:408, Roll.cs:298, 332).
+    fn form_target_on_collide(
         &mut self,
         entity: usize,
         near: Vec2,
@@ -13216,6 +13211,27 @@ impl RolloutWorld {
         data: &data::RolloutData,
     ) {
         let by_callback = route != KillRoute::Updater;
+        let killer = self.players[caster].base.id;
+        if let Some(target) = self
+            .players
+            .iter()
+            .position(|slot| self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity)
+        {
+            // PlayerCollision.OnCollide. Rock.prefab has none: only its
+            // BounceBall hears the contact.
+            if self.players[target].active != ActiveAbility::Rock {
+                self.kill_with(target, killer, CAUSE_OTHER, route, true, true, false);
+            }
+            return;
+        }
+        if let Some(clone) = self
+            .abilityless_clones
+            .iter()
+            .position(|clone| clone.active && clone.entity == Some(entity))
+        {
+            self.kill_abilityless_clone(clone, killer, CAUSE_OTHER, route, true);
+            return;
+        }
         if let Some(arrow_index) = self
             .arrows
             .iter()
@@ -36322,7 +36338,7 @@ impl RolloutWorld {
                 CallbackHit::ArrowLand { arrow, wall, part } => self.arrow_land(arrow, wall, part, data),
                 CallbackHit::PortalShotLand { shot, normal } => self.portal_shot_wall_callback(shot, normal, data),
                 CallbackHit::FormTarget { entity, near, caster } => {
-                    self.player_form_target_callback(entity, near, caster, KillRoute::Callback, data);
+                    self.form_target_on_collide(entity, near, caster, KillRoute::Callback, data);
                 }
                 CallbackHit::RollerHit { roller, entity } => self.roller_hit(roller, entity),
                 CallbackHit::SmokeIgnite { cloud, entity } => self.ignite_smoke(cloud, entity),
@@ -38941,21 +38957,7 @@ impl RolloutWorld {
             // it begins the reciprocal Roll hurtbox callback walk.
             for hit_offset in 0..hit_count {
                 let entity = self.scratch.ray_hits[hit_offset].index;
-                if let Some(target) = self.players.iter().position(|slot| {
-                    self.playable_slot(slot) && Self::hurtbox_entity(slot) == entity
-                }) {
-                    self.kill(target, roller_id, CAUSE_OTHER, true, true);
-                    continue;
-                }
-                if let Some(clone) = self
-                    .abilityless_clones
-                    .iter()
-                    .position(|clone| clone.active && clone.entity == Some(entity))
-                {
-                    self.kill_abilityless_clone(clone, roller_id, CAUSE_OTHER, KillRoute::OnCollide, true);
-                    continue;
-                }
-                self.player_form_target_callback(entity, center, roller, KillRoute::Updater, data);
+                self.form_target_on_collide(entity, center, roller, KillRoute::Updater, data);
             }
 
             for hit_offset in 0..hit_count {
