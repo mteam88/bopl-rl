@@ -3871,6 +3871,8 @@ enum PickupTaker {
 enum CallbackHit {
     /// RopeHook.OnCollide with the collider the hook met.
     RopeHook { rope: usize, target: HookTarget },
+    /// PlayerCollision.OnCollide with a player's own or another's arrow.
+    ArrowKill { victim: usize, owner: u32 },
     /// PlayerCollision.OnCollide with a lethal hitbox.
     Kill { player: usize, killer: u32, cause: u32 },
     /// Missile.OnCollide with anything but a RigidBodyAffector or Rope.
@@ -35426,7 +35428,7 @@ impl RolloutWorld {
     /// this pass still observes the corrected collider and resolved body,
     /// flagged destroyed and ownerless; the next pass removes it.
     fn arrows_contacts(&mut self, data: &data::RolloutData) {
-        // PlayerCollision kills in callback order: (key, arrow owner, victim).
+        // PlayerCollision callbacks, queued at their pairs: (key, arrow owner, victim).
         let mut player_hits: Vec<(CallbackKey, u32, usize)> = Vec::new();
         let sweep_x = self.sweep_x();
         for i in 0..self.arrows.len() {
@@ -35553,19 +35555,24 @@ impl RolloutWorld {
             }
         }
         self.scratch.arrow_landings.clear();
-        player_hits.sort_by_key(|&(key, ..)| key);
-        for (_, owner, victim) in player_hits {
-            if !self.players[victim].base.alive {
-                continue;
-            }
-            let victim_id = self.players[victim].base.id;
-            let cause = if owner == victim_id { CAUSE_ACCIDENT } else { CAUSE_OTHER };
-            // An invulnerable victim (inside a Poke Ball) makes killPlayer
-            // return false, and PlayerCollision counts no arrow hit.
-            let killed = self.kill(victim, owner, cause, true, true);
-            if killed && owner != victim_id && owner >= 1 {
-                self.players[owner as usize - 1].telemetry.arrow_hits += 1;
-            }
+        for (key, owner, victim) in player_hits {
+            self.scratch.callback_hits.push((key, CallbackHit::ArrowKill { victim, owner }));
+        }
+    }
+
+    /// PlayerCollision.OnCollide with an arrow, run from the callback queue
+    /// in its pair's place (PlayerCollision.cs:352-458, 465).
+    fn arrow_kill(&mut self, victim: usize, owner: u32) {
+        if !self.players[victim].base.alive {
+            return;
+        }
+        let victim_id = self.players[victim].base.id;
+        let cause = if owner == victim_id { CAUSE_ACCIDENT } else { CAUSE_OTHER };
+        // An invulnerable victim (inside a Poke Ball) makes killPlayer
+        // return false, and PlayerCollision counts no arrow hit.
+        let killed = self.kill(victim, owner, cause, true, true);
+        if killed && owner != victim_id && owner >= 1 {
+            self.players[owner as usize - 1].telemetry.arrow_hits += 1;
         }
     }
 
@@ -36980,6 +36987,7 @@ impl RolloutWorld {
         hits.sort_by_key(|&(key, _)| key);
         for &(_, hit) in &hits {
             match hit {
+                CallbackHit::ArrowKill { victim, owner } => self.arrow_kill(victim, owner),
                 CallbackHit::Kill { player, killer, cause } => {
                     if self.hittable(player) {
                         self.kill(player, killer, cause, true, true);
