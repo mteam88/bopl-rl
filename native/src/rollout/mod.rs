@@ -784,12 +784,6 @@ pub struct ThrownItem {
     /// while Shockwave.Init runs before the updater pass. Retain only the
     /// regular-pass impulse until Mjolnir has updated its recall velocity.
     pub pending_gust_impulse: Vec2,
-    /// The pass whose Updater turn this item's UpdateSim (a Tack's
-    /// BananaPeel, a Poke Ball's or a Mjolnir's) has taken. An older item runs
-    /// ahead of a newer object that acts on it, and never twice in one pass;
-    /// a Shockwave pushes an item that has run directly and holds its
-    /// impulse for one still to run.
-    pub updater_ran_tick: Option<u32>,
     /// Mine.Init/LateUpdateSim state. Keeping it in the pooled item avoids a
     /// side allocation for every autonomous mine.
     pub random_offset: Fix,
@@ -4264,7 +4258,7 @@ type UpdaterKey = (u32, u32, u32);
 /// `run_spawned_before`'s kinds that keep Updater's place
 /// (`World::updater_passed`) rather than a mark of the turn they ran.
 fn cursor_kind(kind: u8) -> bool {
-    matches!(kind, 1 | 4 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
+    matches!(kind, 1 | 2 | 3 | 4 | 6 | 9 | 10 | 11 | 13 | 14 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27)
 }
 
 /// The place just after `key`.
@@ -8522,18 +8516,13 @@ impl RolloutWorld {
             }
         }
         for (i, item) in self.thrown_items.iter().enumerate() {
-            if item.updater_ran_tick != Some(tick) {
-                match item.ability {
-                    ABILITY_POKE_BALL | ABILITY_TACK => push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 2, i),
-                    ABILITY_MJOLNIR => push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 3, i),
-                    ABILITY_GRENADE | ABILITY_SMOKE if item.active => {
-                        push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 18, i)
-                    }
-                    _ if item.active && item.body_ran_tick != Some(tick) => {
-                        push(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base), 15, i)
-                    }
-                    _ => {}
-                }
+            let key = self.updater_key(item.appended, 100_000_000 + item.hierarchy_base);
+            match item.ability {
+                ABILITY_POKE_BALL | ABILITY_TACK => push(key, 2, i),
+                ABILITY_MJOLNIR => push(key, 3, i),
+                ABILITY_GRENADE | ABILITY_SMOKE if item.active => push(key, 18, i),
+                _ if item.active && item.body_ran_tick != Some(tick) => push(key, 15, i),
+                _ => {}
             }
         }
         for (i, portal) in self.portals.iter().enumerate() {
@@ -8729,7 +8718,6 @@ impl RolloutWorld {
             let tick = Some(tick);
             match kind {
                 0 => self.platform_dynamics[index].updater_ran_tick = tick,
-                2 | 3 | 18 => self.thrown_items[index].updater_ran_tick = tick,
                 7 => self.ropes[index].grapple_ran_tick = tick,
                 8 => self.ropes[index].rope_ran_tick = tick,
                 // A pickup newer than a live ScaleChanger keeps its turn
@@ -21214,7 +21202,7 @@ impl RolloutWorld {
                     && !self.teleport_skips_entity(entity)
                     && !self.blink_object_hidden(Some(entity))
                 {
-                    if self.take_updater_turn(item_index) {
+                    if self.take_updater_turn(item_index, data, updater_dt) {
                         match self.thrown_items[item_index].ability {
                             ABILITY_TACK => self.tack_tick(item_index, data, updater_dt),
                             ABILITY_POKE_BALL => self.poke_ball_tick(item_index, data, updater_dt),
@@ -22633,18 +22621,19 @@ impl RolloutWorld {
                 .apply_impulse(impulse, arm);
             applied = true;
         }
-        let tick = self.tick;
         for target in 0..wave.item_count {
             let item_index = wave.item_indices[target];
-            let Some(item) = self.thrown_items.get_mut(item_index) else {
+            let Some(item) = self.thrown_items.get(item_index) else {
                 continue;
             };
+            // A tack or hammer that has already taken its Updater turn this
+            // pass takes the wave's impulse directly.
+            let defer = defer_mjolnir
+                && !self.updater_passed(self.updater_key(item.appended, 100_000_000 + item.hierarchy_base));
+            let item = &mut self.thrown_items[item_index];
             if !item.active || item.entity.is_none() {
                 continue;
             }
-            // A tack or hammer that has already taken its Updater turn this
-            // pass takes the wave's impulse directly.
-            let defer = defer_mjolnir && item.updater_ran_tick != Some(tick);
             // The regular pass reads the FixTransform after BananaPeel.UpdateSim
             // pinned a settled tack back to its settle point.
             let position = if defer && item.ability == ABILITY_TACK && item.settled {
@@ -23565,7 +23554,6 @@ impl RolloutWorld {
             phase: 0,
             killed_players: 0,
             pending_gust_impulse: Vec2::ZERO,
-            updater_ran_tick: None,
             random_offset: Fix::ZERO,
             time_since_anticipation: Fix::ZERO,
             prev_chase_dir: Vec2::RIGHT,
@@ -23929,7 +23917,6 @@ impl RolloutWorld {
             phase: 0,
             killed_players: 0,
             pending_gust_impulse: Vec2::ZERO,
-            updater_ran_tick: None,
             random_offset: Fix::ZERO,
             time_since_anticipation: Fix::ZERO,
             prev_chase_dir: Vec2::RIGHT,
@@ -33168,13 +33155,19 @@ impl RolloutWorld {
     /// a stock-respawned slime go ahead of it: a ball's hold moves it before
     /// its SlimeController publishes Player.Position, and a tack tests it
     /// before it moves.
-    /// Claims item `item_index`'s Updater turn this pass; false once taken.
-    fn take_updater_turn(&mut self, item_index: usize) -> bool {
-        let item = &mut self.thrown_items[item_index];
-        if item.updater_ran_tick == Some(self.tick) {
+    /// Item `item_index`'s UpdateSim (a Tack's BananaPeel, a Poke Ball's or
+    /// a Mjolnir's) takes its Updater turn: everything listed before it runs
+    /// first, and the walk moves past it. False once the walk has passed it
+    /// this pass, run or skipped: an older item runs ahead of a newer object
+    /// that acts on it, and never twice in one pass.
+    fn take_updater_turn(&mut self, item_index: usize, data: &data::RolloutData, updater_dt: Fix) -> bool {
+        let item = &self.thrown_items[item_index];
+        let key = self.updater_key(item.appended, 100_000_000 + item.hierarchy_base);
+        if self.updater_passed(key) {
             return false;
         }
-        item.updater_ran_tick = Some(self.tick);
+        self.run_spawned_before(data, updater_dt, key);
+        self.updater_take_turn(key);
         true
     }
 
@@ -33213,7 +33206,7 @@ impl RolloutWorld {
         for &item_index in &order {
             // The TeleportedObjectEffect that reactivates an item is newer, so
             // the item's own UpdateSim was skipped this pass.
-            if !self.take_updater_turn(item_index)
+            if !self.take_updater_turn(item_index, data, updater_dt)
                 || self.teleport_revealed_this_pass(self.thrown_items[item_index].entity)
             {
                 continue;
@@ -33578,7 +33571,7 @@ impl RolloutWorld {
         }));
         order.sort_unstable_by_key(|&index| (self.updater_key(self.thrown_items[index].appended, 100_000_000 + self.thrown_items[index].hierarchy_base), index));
         for &item_index in &order {
-            if self.take_updater_turn(item_index)
+            if self.take_updater_turn(item_index, data, updater_dt)
                 && !self.teleport_revealed_this_pass(self.thrown_items[item_index].entity)
             {
                 self.mjolnir_hammer_update(item_index, data, updater_dt);
@@ -33630,7 +33623,7 @@ impl RolloutWorld {
                 self.scratch.ropes_updated_below = hierarchy;
             }
             let ability = self.thrown_items[item_index].ability;
-            if ability == ABILITY_MJOLNIR && self.take_updater_turn(item_index) {
+            if ability == ABILITY_MJOLNIR && self.take_updater_turn(item_index, data, updater_dt) {
                 self.mjolnir_hammer_update(item_index, data, updater_dt);
             }
             self.thrown_item_update(item_index, data, updater_dt);
